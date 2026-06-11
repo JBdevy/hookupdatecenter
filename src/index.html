@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hook Update Center</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="../assets/logo.png" class="logo-hook" alt="Hook Update Center" />
+        <div>
+          <strong>Hook</strong>
+          <span>Update Center</span>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav-item active" data-view="home">Atualização</button>
+        <button class="nav-item" data-view="license">Ativação</button>
+        <button class="nav-item" data-view="status">Status</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span id="platformLabel">Sistema</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section id="homeView" class="view active">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">VS Hook</p>
+            <h1>Central de atualizações</h1>
+            <p class="muted">Verifique novidades, baixe atualizações e reinstale o VS Hook quando precisar.</p>
+          </div>
+          <button id="checkButton" class="primary-button">Conferir atualização</button>
+        </div>
+
+        <div id="noUpdateCard" class="card hidden">
+          <h2>Nenhuma publicação carregada</h2>
+          <p class="muted">Clique em conferir atualização para buscar a versão mais recente disponível.</p>
+        </div>
+
+        <div id="updateCard" class="card hidden">
+          <div class="update-header">
+            <div>
+              <p class="eyebrow">Última publicação disponível</p>
+              <h2 id="updateTitle">VS Hook</h2>
+            </div>
+            <span id="versionBadge" class="badge">v0.0.0</span>
+          </div>
+
+          <div class="video-box">
+            <iframe id="youtubeFrame" title="Vídeo da atualização" src="" allowfullscreen></iframe>
+          </div>
+
+          <p id="updateDescription" class="description"></p>
+
+          <ul id="changelogList" class="changelog"></ul>
+
+          <div class="actions">
+            <button id="downloadButton" class="primary-button">Baixar / Reinstalar VS Hook</button>
+            <button id="laterButton" class="secondary-button">Fechar para tray</button>
+          </div>
+        </div>
+
+        <div id="downloadCard" class="card hidden">
+          <h2>Baixando atualização</h2>
+          <p class="muted">Aguarde até o download finalizar. Em seguida, clique em instalar.</p>
+          <div class="progress-shell">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <div class="progress-row">
+            <span id="progressText">0%</span>
+            <button id="installButton" class="primary-button hidden">Instalar</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="licenseView" class="view">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">Licença VS Hook</p>
+            <h1>Ativação por CPF + e-mail</h1>
+            <p class="muted">Use o CPF e o e-mail informados na compra para ativar o VS Hook.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Ativar VS Hook</h2>
+
+          <div class="form-grid">
+            <label>
+              CPF usado na compra
+              <input id="cpfInput" type="text" placeholder="000.000.000-00" autocomplete="off" />
+            </label>
+
+            <label>
+              E-mail usado na compra
+              <input id="emailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="activateButton" class="primary-button">Ativar licença</button>
+            <button id="licenseCheckButton" class="secondary-button">Verificar licença</button>
+          </div>
+
+          <div id="licenseMessage" class="license-message muted"></div>
+        </div>
+
+        <div class="card">
+          <h2>Status da licença</h2>
+          <div class="status-grid">
+            <div>
+              <span>Situação</span>
+              <strong id="licenseActive">--</strong>
+            </div>
+            <div>
+              <span>Computadores usados</span>
+              <strong id="licenseDevices">--</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="statusView" class="view">
+        <div class="card">
+          <h2>Status do VS Hook</h2>
+          <div class="status-grid">
+            <div>
+              <span>Versão instalada</span>
+              <strong id="currentVersion">--</strong>
+            </div>
+            <div>
+              <span>Última verificação</span>
+              <strong id="lastCheck">--</strong>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong id="updateStatus">--</strong>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+
+  <div id="appModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal">
+      <div id="modalIcon" class="modal-icon error">×</div>
+      <h2 id="modalTitle">Aviso</h2>
+      <p id="modalMessage">Mensagem</p>
+      <button id="modalOkButton" class="primary-button modal-button">OK</button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+{
+  "name": "hook-update-center",
+  "version": "1.0.0",
+  "description": "Hook Update Center - atualizador do VS Hook",
+  "main": "src/main.js",
+  "author": "Hook Developer",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --publish never",
+    "build:win": "electron-builder --win nsis --publish never",
+    "build:mac": "electron-builder --mac dmg pkg zip --universal --publish never"
+  },
+  "dependencies": {
+    "electron-store": "8.2.0"
+  },
+  "devDependencies": {
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3"
+  },
+  "build": {
+    "appId": "com.hookdeveloper.updatecenter",
+    "productName": "Hook Update Center",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Hook-Update-Center-${version}-Windows.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "pkg",
+        "zip"
+      ],
+      "minimumSystemVersion": "11.0",
+      "category": "public.app-category.utilities",
+      "artifactName": "Hook-Update-Center-${version}-macOS.${ext}"
+    }
+  }
+}

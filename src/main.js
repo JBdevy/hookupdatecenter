@@ -1,0 +1,797 @@
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
+const Store = require('electron-store');
+const { spawn, execFile, execFileSync } = require('child_process');
+
+const store = new Store({
+  defaults: {
+    currentVersion: '1.0.0',
+    lastCheck: null,
+    updateAvailable: false,
+    latestUpdate: null,
+    lastNotifiedUpdateId: null,
+    downloadedFiles: null,
+    license: {
+      cpf: '',
+      email: '',
+      machineId: '',
+      active: false,
+      devicesUsed: 0,
+      maxDevices: 0,
+      lastStatusAt: null
+    },
+    autoStart: true
+  }
+});
+
+let mainWindow = null;
+let tray = null;
+let checkTimer = null;
+
+const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
+const UPDATE_API_URL = `${BACKEND_URL}/api/latest`;
+const CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
+const LICENSE_PRODUCT = 'VSLIVE';
+const LICENSE_SECRET_A = 'JBKeys_VSLIVE_CORE';
+const LICENSE_SECRET_B = 'VSLIVE_2026_ONLINE';
+const LICENSE_SECRET_C = 'JBK_ADMIN_OFFLINE';
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1040,
+    height: 720,
+    minWidth: 920,
+    minHeight: 620,
+    show: false,
+    backgroundColor: '#0b0b10',
+    title: 'Hook Update Center',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  Menu.setApplicationMenu(null);
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
+
+  mainWindow.on('close', (event) => {
+    if (!app.isQuiting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, '..', 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png');
+  tray = new Tray(iconPath);
+  tray.setToolTip('Hook Update Center');
+  rebuildTrayMenu();
+
+  tray.on('click', () => {
+    showMainWindow();
+  });
+}
+
+function rebuildTrayMenu() {
+  const latest = store.get('latestUpdate');
+  const updateText = latest?.version ? `Última publicação: ${latest.version}` : 'Atualizações: aguardando';
+  const license = store.get('license') || {};
+  const licenseText = license.active ? 'Licença: ativa' : 'Licença: pendente';
+
+  const menu = Menu.buildFromTemplate([
+    { label: 'Hook Update Center', enabled: false },
+    { label: updateText, enabled: false },
+    { label: licenseText, enabled: false },
+    { type: 'separator' },
+    { label: 'Abrir Central', click: showMainWindow },
+    { label: 'Conferir atualização agora', click: () => checkForUpdates(true) },
+    { label: 'Verificar licença agora', click: () => checkLicenseStatus(true) },
+    { type: 'separator' },
+    { label: 'Sair', click: () => { app.isQuiting = true; app.quit(); } }
+  ]);
+  tray.setContextMenu(menu);
+}
+
+function showMainWindow() {
+  if (!mainWindow) createWindow();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function notifyUpdate(update) {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({
+    title: update.title || 'Nova atualização do VS Hook disponível',
+    body: `Versão ${update.version || ''} disponível. Clique para conferir.`,
+    silent: false
+  });
+  n.on('click', showMainWindow);
+  n.show();
+}
+
+function notifyLicense(message) {
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: 'VS Hook',
+    body: message,
+    silent: false
+  }).show();
+}
+
+function normalizeCpf(value) {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeMachineId(value) {
+  return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function simpleHash(str) {
+  str = String(str || '');
+  let h1 = 0x45D9;
+  let h2 = 0x2710;
+
+  for (let i = 1; i <= str.length; i += 1) {
+    const b = str.charCodeAt(i - 1);
+    h1 = (h1 ^ (b * i + 17)) & 0xFFFFFF;
+    h2 = (h2 + ((b + (i - 1)) * 131)) & 0xFFFFFF;
+    h1 = (h1 * 33 + h2) & 0xFFFFFF;
+    h2 = (h2 * 17 + h1) & 0xFFFFFF;
+  }
+
+  const n = (((h1 << 12) >>> 0) + h2) >>> 0;
+  return n.toString(16).toUpperCase().padStart(8, '0');
+}
+
+function generateExpectedLicense(machineId) {
+  const normalized = normalizeMachineId(machineId);
+  const a = simpleHash(`${normalized}|${LICENSE_PRODUCT}|${LICENSE_SECRET_A}`);
+  const b = simpleHash(`${LICENSE_SECRET_B}|${normalized}|${a}`);
+  const c = simpleHash(`${a}|${LICENSE_SECRET_C}|${normalized}|${b}`);
+  return `${LICENSE_PRODUCT}-${a.slice(0, 4)}-${a.slice(4, 8)}-${b.slice(0, 4)}-${c.slice(0, 4)}`;
+}
+
+function runCapture(command, args = []) {
+  return new Promise((resolve) => {
+    execFile(command, args, { windowsHide: true, timeout: 8000 }, (error, stdout) => {
+      if (error) return resolve('');
+      resolve(String(stdout || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim());
+    });
+  });
+}
+
+function getSharedMachineIdPath() {
+  if (process.platform === 'win32') {
+    const publicDir = process.env.PUBLIC || process.env.ALLUSERSPROFILE || 'C:\\Users\\Public';
+    return path.join(publicDir, 'vslive_machine_id.dat');
+  }
+  if (process.platform === 'darwin') {
+    return '/Users/Shared/.vslive_machine_id';
+  }
+  return path.join(os.homedir(), '.vslive_machine_id');
+}
+
+function getSharedLicensePath() {
+  if (process.platform === 'win32') {
+    const programData = process.env.PROGRAMDATA || process.env.ProgramData || 'C:\\ProgramData';
+    return path.join(programData, 'HookDeveloper', 'VSCore', 'sys_runtime.dat');
+  }
+  if (process.platform === 'darwin') {
+    return '/Library/Application Support/HookDeveloper/VSCore/sys_runtime.dat';
+  }
+  return path.join(os.homedir(), '.hookdeveloper', 'vscore', 'sys_runtime.dat');
+}
+
+function getLegacyLicensePaths() {
+  const paths = [
+    path.join(os.homedir(), '.vshook_license.json')
+  ];
+
+  if (process.platform === 'win32') {
+    const publicDir = process.env.PUBLIC || process.env.ALLUSERSPROFILE || 'C:\\Users\\Public';
+    paths.push(path.join(publicDir, 'vshook_license.json'));
+  } else if (process.platform === 'darwin') {
+    paths.push('/Users/Shared/.vshook_license.json');
+  }
+
+  return paths;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function writeFileWithPrivilegeIfNeeded(filePath, content) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf8');
+    return;
+  } catch (error) {
+    if (process.platform !== 'darwin') throw error;
+  }
+
+  const encoded = Buffer.from(content, 'utf8').toString('base64');
+  const dir = path.dirname(filePath);
+  const command = [
+    'mkdir -p', shellQuote(dir),
+    '&&',
+    'printf', shellQuote(encoded),
+    '| base64 -D >', shellQuote(filePath),
+    '&& chmod 644', shellQuote(filePath)
+  ].join(' ');
+
+  execFileSync('osascript', [
+    '-e',
+    `do shell script ${JSON.stringify(command)} with administrator privileges`
+  ], { stdio: 'ignore' });
+}
+
+function removeFileWithPrivilegeIfNeeded(filePath) {
+  try {
+    fs.rmSync(filePath, { force: true });
+    if (!fs.existsSync(filePath)) return;
+  } catch (_) {}
+
+  if (process.platform === 'darwin') {
+    try {
+      const command = `rm -f ${shellQuote(filePath)}`;
+      execFileSync('osascript', [
+        '-e',
+        `do shell script ${JSON.stringify(command)} with administrator privileges`
+      ], { stdio: 'ignore' });
+    } catch (_) {}
+  }
+}
+
+async function getWindowsAnchor() {
+  const probes = [
+    ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "(Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid).MachineGuid"]],
+    ['reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']],
+    ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(Get-CimInstance Win32_ComputerSystemProduct).UUID']],
+    ['wmic.exe', ['csproduct', 'get', 'uuid']]
+  ];
+
+  for (const [cmd, args] of probes) {
+    const raw = await runCapture(cmd, args);
+    const guid = raw.match(/([0-9A-Fa-f-][0-9A-Fa-f-]+)/);
+    if (guid?.[1]) return normalizeMachineId(guid[1]);
+  }
+  return '';
+}
+
+async function getMacAnchor() {
+  const probes = [
+    ['/bin/sh', ['-c', `ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ {print $(NF-1)}'`]],
+    ['/bin/sh', ['-c', `system_profiler SPHardwareDataType | awk -F': ' '/Hardware UUID/ {print $2}'`]]
+  ];
+
+  for (const [cmd, args] of probes) {
+    const raw = await runCapture(cmd, args);
+    const guid = raw.match(/([0-9A-Fa-f-][0-9A-Fa-f-]+)/);
+    if (guid?.[1]) return normalizeMachineId(guid[1]);
+  }
+  return '';
+}
+
+async function getMachineId() {
+  const machinePath = getSharedMachineIdPath();
+  try {
+    const cached = normalizeMachineId(fs.readFileSync(machinePath, 'utf8'));
+    if (/^[0-9A-F]+$/.test(cached)) return cached;
+  } catch (_) {}
+
+  let anchor = '';
+  if (process.platform === 'win32') anchor = await getWindowsAnchor();
+  if (process.platform === 'darwin') anchor = await getMacAnchor();
+  if (!anchor) anchor = normalizeMachineId(os.hostname() || 'UNKNOWNHOST');
+
+  const machineId = simpleHash(`${LICENSE_PRODUCT}|${anchor}`);
+  try {
+    fs.mkdirSync(path.dirname(machinePath), { recursive: true });
+    fs.writeFileSync(machinePath, machineId, 'utf8');
+  } catch (_) {}
+
+  return machineId;
+}
+
+function saveLocalLicense({ cpf, email, machineId, licenseKey, payload }) {
+  const licensePath = getSharedLicensePath();
+  const data = {
+    v: 1,
+    product: LICENSE_PRODUCT,
+    mid: normalizeMachineId(machineId),
+    sig: normalizeLicenseKeyForFile(licenseKey),
+    cpf: normalizeCpf(cpf),
+    email: normalizeEmail(email),
+    ts: new Date().toISOString(),
+    
+    payload: payload || null
+  };
+
+  writeFileWithPrivilegeIfNeeded(licensePath, JSON.stringify(data));
+  return licensePath;
+}
+
+function normalizeLicenseKeyForFile(value) {
+  return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function removeLocalLicense() {
+  const licensePath = getSharedLicensePath();
+  removeFileWithPrivilegeIfNeeded(licensePath);
+
+  for (const legacyPath of getLegacyLicensePaths()) {
+    try { fs.rmSync(legacyPath, { force: true }); } catch (_) {}
+  }
+
+  return licensePath;
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+function normalizeUpdate(raw) {
+  if (!raw) return null;
+  const source = raw.update || raw.latest || raw;
+
+  const files = source.files || {};
+  const windows = source.windows || files.windows || {};
+  const macos = source.macos || files.macos || {};
+
+  return {
+    updateId: source.updateId || source.id || source.publishedAt || source.version || null,
+    product: source.product || 'vs-hook',
+    version: source.version || '',
+    title: source.title || 'Atualização do VS Hook disponível',
+    description: source.description || '',
+    youtubeUrl: source.youtubeUrl || source.videoUrl || source.video || '',
+    changelog: Array.isArray(source.changelog)
+      ? source.changelog
+      : String(source.description || '').split('\n').map((line) => line.trim()).filter(Boolean),
+    publishedAt: source.publishedAt || source.createdAt || null,
+    files: {
+      windows: {
+        lua: windows.lua || windows.luaUrl || windows.vsHookLua || windows.vsHookLuaUrl || windows.script || windows.scriptUrl || '',
+        vshookDll: windows.vshookDll || windows.vshookDllUrl || windows.reaperVshookDll || windows.reaperVshookDllUrl || windows.vshook || windows.vshookUrl || '',
+        jsApiDll: windows.jsApiDll || windows.jsApiDllUrl || windows.reaperJsApiDll || windows.reaperJsApiDllUrl || windows.jsapi || windows.jsapiUrl || ''
+      },
+      macos: {
+        lua: macos.lua || macos.luaUrl || macos.vsHookLua || macos.vsHookLuaUrl || macos.script || macos.scriptUrl || '',
+        vshookDylib: macos.vshookDylib || macos.vshookDylibUrl || macos.reaperVshookDylib || macos.reaperVshookDylibUrl || macos.vshook || macos.vshookUrl || '',
+        jsApiDylib: macos.jsApiDylib || macos.jsApiDylibUrl || macos.reaperJsApiDylib || macos.reaperJsApiDylibUrl || macos.jsapi || macos.jsapiUrl || '',
+        jsApiArmDylib: macos.jsApiArmDylib || macos.jsApiArmDylibUrl || macos.reaperJsApiArmDylib || macos.reaperJsApiArmDylibUrl || '',
+        jsApiIntelDylib: macos.jsApiIntelDylib || macos.jsApiIntelDylibUrl || macos.reaperJsApiIntelDylib || macos.reaperJsApiIntelDylibUrl || ''
+      }
+    }
+  };
+}
+
+async function checkForUpdates(manual = false) {
+  const now = new Date().toISOString();
+  store.set('lastCheck', now);
+
+  try {
+    const raw = await fetchJson(UPDATE_API_URL, { cache: 'no-store' });
+    const update = normalizeUpdate(raw);
+
+    const updateId = update?.updateId || null;
+    const lastNotified = store.get('lastNotifiedUpdateId');
+    const shouldNotify = !!updateId && updateId !== lastNotified;
+
+    store.set('latestUpdate', update);
+    store.set('updateAvailable', shouldNotify);
+    rebuildTrayMenu();
+
+    if (mainWindow) {
+      mainWindow.webContents.send('update-status', getAppState());
+    }
+
+    if (shouldNotify && !manual) {
+      notifyUpdate(update);
+      store.set('lastNotifiedUpdateId', updateId);
+    }
+
+    if (manual) showMainWindow();
+
+    return { ok: true, hasUpdate: shouldNotify, update, state: getAppState() };
+  } catch (error) {
+    if (mainWindow) mainWindow.webContents.send('update-error', error.message);
+    return { ok: false, error: error.message, state: getAppState() };
+  }
+}
+
+async function checkLicenseStatus(manual = false) {
+  const license = store.get('license') || {};
+  const cpf = normalizeCpf(license.cpf);
+  const email = normalizeEmail(license.email);
+  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+
+  if (!cpf || !email || !machineId) {
+    return { ok: false, message: 'Licença ainda não ativada.', state: getAppState() };
+  }
+
+  try {
+    const result = await fetchJson(`${BACKEND_URL}/api/license/status`, {
+      method: 'POST',
+      body: JSON.stringify({ cpf, email, machineId, platform: process.platform })
+    });
+
+    const active = result.active !== false && result.ok !== false;
+    const nextLicense = {
+      ...license,
+      cpf,
+      email,
+      machineId,
+      active,
+      devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
+      maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+      lastStatusAt: new Date().toISOString()
+    };
+
+    store.set('license', nextLicense);
+
+    if (!active) {
+      removeLocalLicense();
+      notifyLicense('Este computador foi desvinculado da licença do VS Hook.');
+    }
+
+    rebuildTrayMenu();
+    if (mainWindow) mainWindow.webContents.send('license-status', getAppState());
+
+    return { ok: true, active, result, state: getAppState() };
+  } catch (error) {
+    if (manual) dialog.showErrorBox('Erro ao verificar licença', error.message);
+    return { ok: false, error: error.message, state: getAppState() };
+  }
+}
+
+function getAppState() {
+  return {
+    currentVersion: store.get('currentVersion'),
+    lastCheck: store.get('lastCheck'),
+    updateAvailable: store.get('updateAvailable'),
+    latestUpdate: store.get('latestUpdate'),
+    lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
+    downloadedFiles: store.get('downloadedFiles'),
+    license: store.get('license'),
+    
+    platform: process.platform,
+    machineIdPath: getSharedMachineIdPath(),
+    licensePath: getSharedLicensePath()
+  };
+}
+
+function ensureAbsoluteUrl(url) {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${BACKEND_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+function getPlatformFiles(update) {
+  const platformKey = process.platform === 'darwin' ? 'macos' : 'windows';
+  return update?.files?.[platformKey] || {};
+}
+
+function buildPayloadEntries(files) {
+  if (process.platform === 'win32') {
+    return [
+      { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
+      { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
+      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
+    ].filter((entry) => !!entry.url);
+  }
+
+  if (process.platform === 'darwin') {
+    const jsApiUrl = ensureAbsoluteUrl(
+      process.arch === 'arm64'
+        ? (files.jsApiArmDylib || files.jsApiDylib || files.jsApiIntelDylib)
+        : (files.jsApiIntelDylib || files.jsApiDylib || files.jsApiArmDylib)
+    );
+
+    return [
+      { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
+      { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
+      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
+    ].filter((entry) => !!entry.url);
+  }
+
+  return [];
+}
+
+async function downloadFile(url, destPath, onProgress) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Falha ao baixar ${url}: HTTP ${response.status}`);
+
+  const total = Number(response.headers.get('content-length')) || 0;
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+  const file = fs.createWriteStream(destPath);
+  let downloaded = 0;
+
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    file.write(buffer);
+    file.end();
+    await new Promise((resolve, reject) => {
+      file.on('finish', resolve);
+      file.on('error', reject);
+    });
+    onProgress(100);
+    return;
+  }
+
+  const reader = response.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = Buffer.from(value);
+      downloaded += chunk.length;
+
+      if (!file.write(chunk)) {
+        await new Promise((resolve) => file.once('drain', resolve));
+      }
+
+      if (total > 0) onProgress(Math.round((downloaded / total) * 100));
+    }
+  } finally {
+    file.end();
+  }
+
+  await new Promise((resolve, reject) => {
+    file.on('finish', resolve);
+    file.on('error', reject);
+  });
+
+  onProgress(100);
+}
+
+async function downloadLatestUpdate() {
+  let update = store.get('latestUpdate');
+  if (!update?.files) {
+    const checked = await checkForUpdates(true);
+    update = checked.update || store.get('latestUpdate');
+  }
+
+  if (!update) throw new Error('Nenhuma atualização disponível no momento.');
+
+  const files = getPlatformFiles(update);
+  const entries = buildPayloadEntries(files);
+
+  if (entries.length === 0) {
+    throw new Error('Atualização indisponível para este sistema no momento.');
+  }
+
+  const downloadDir = path.join(app.getPath('userData'), 'downloads', update.updateId || update.version || 'latest');
+  const output = {};
+
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
+    const dest = path.join(downloadDir, entry.filename);
+    await downloadFile(entry.url, dest, (fileProgress) => {
+      const totalProgress = Math.round(((i * 100) + fileProgress) / entries.length);
+      if (mainWindow) mainWindow.webContents.send('download-progress', totalProgress);
+    });
+    output[entry.key] = dest;
+  }
+
+  store.set('downloadedFiles', {
+    updateId: update.updateId,
+    version: update.version,
+    files: output
+  });
+
+  if (mainWindow) mainWindow.webContents.send('download-progress', 100);
+  return { ok: true, files: output };
+}
+
+function copyFileEnsured(source, destination) {
+  if (!source || !fs.existsSync(source)) return;
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+}
+
+function getWindowsPublicVsHookDir() {
+  const publicDir = process.env.PUBLIC || process.env.ALLUSERSPROFILE || 'C:\\Users\\Public';
+  return path.join(publicDir, 'VS Hook APP');
+}
+
+function getWindowsReaperUserPluginsDir() {
+  const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appData, 'REAPER', 'UserPlugins');
+}
+
+function installWindowsPayload(files) {
+  copyFileEnsured(files.lua, path.join(getWindowsPublicVsHookDir(), 'VS Hook.lua'));
+  copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
+  copyFileEnsured(files.jsApiDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_js_ReaScriptAPI64.dll'));
+}
+
+function installMacPayload(files) {
+  const commands = [];
+  const luaSource = files.lua;
+  const vshookSource = files.vshookDylib;
+  const jsApiSource = files.jsApiDylib;
+
+  commands.push('set -e');
+  commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
+  commands.push('GLOBAL_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
+  commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
+  commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
+
+  if (luaSource) commands.push(`cp -f ${shellQuote(luaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook.lua"`);
+  if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
+  if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
+  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
+
+  commands.push('for USER_HOME in /Users/*; do');
+  commands.push('  [ -d "$USER_HOME" ] || continue');
+  commands.push('  USER_NAME=$(basename "$USER_HOME")');
+  commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
+  commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
+  commands.push('  USER_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
+  commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
+  commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
+  if (luaSource) commands.push(`  cp -f ${shellQuote(luaSource)} "$USER_SCRIPT_DIR/VS Hook.lua"`);
+  if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
+  if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
+  commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
+  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
+  commands.push('done');
+
+  const script = commands.join('\n');
+  execFileSync('osascript', [
+    '-e',
+    `do shell script ${JSON.stringify(script)} with administrator privileges`
+  ], { stdio: 'ignore' });
+}
+
+async function installDownloadedUpdate() {
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Instalar', 'Cancelar'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Instalar/Reinstalar VS Hook',
+    message: 'Feche o REAPER antes de continuar.',
+    detail: process.platform === 'darwin'
+      ? 'O Hook Update Center vai instalar o VS Hook.lua e os plugins do REAPER. O macOS pode pedir a senha do administrador.'
+      : 'O Hook Update Center vai instalar o VS Hook.lua e os plugins do REAPER.'
+  });
+
+  if (result.response !== 0) return { ok: false, cancelled: true };
+
+  const downloaded = store.get('downloadedFiles');
+  const files = downloaded?.files || {};
+
+  if (process.platform === 'win32') {
+    installWindowsPayload(files);
+  } else if (process.platform === 'darwin') {
+    installMacPayload(files);
+  } else {
+    throw new Error('Sistema operacional não suportado.');
+  }
+
+  if (downloaded?.version) {
+    store.set('currentVersion', downloaded.version);
+    store.set('updateAvailable', false);
+    rebuildTrayMenu();
+  }
+
+  return { ok: true, installedVersion: downloaded?.version || store.get('currentVersion') };
+}
+
+ipcMain.handle('get-state', async () => {
+  const license = store.get('license') || {};
+  if (!license.machineId) {
+    store.set('license', { ...license, machineId: await getMachineId() });
+  }
+  return getAppState();
+});
+
+ipcMain.handle('check-updates', () => checkForUpdates(true));
+ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
+ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
+ipcMain.handle('download-update', () => downloadLatestUpdate());
+ipcMain.handle('install-update', () => installDownloadedUpdate());
+
+ipcMain.handle('activate-license', async (_event, payload) => {
+  const cpf = normalizeCpf(payload?.cpf);
+  const email = normalizeEmail(payload?.email);
+  const machineId = await getMachineId();
+
+  if (!cpf || cpf.length < 11) {
+    throw new Error('Digite um CPF válido.');
+  }
+  if (!email || !email.includes('@')) {
+    throw new Error('Digite o e-mail usado na compra.');
+  }
+
+  const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
+    method: 'POST',
+    body: JSON.stringify({ cpf, email, machineId, platform: process.platform })
+  });
+
+  const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
+  saveLocalLicense({ cpf, email, machineId, licenseKey, payload: result });
+
+  const nextLicense = {
+    cpf,
+    email,
+    machineId,
+    active: true,
+    devicesUsed: result.devicesUsed ?? result.usedDevices ?? 1,
+    maxDevices: result.maxDevices ?? 2,
+    lastStatusAt: new Date().toISOString()
+  };
+
+  store.set('license', nextLicense);
+  rebuildTrayMenu();
+
+  if (mainWindow) mainWindow.webContents.send('license-status', getAppState());
+
+  return { ok: true, license: nextLicense, result, state: getAppState() };
+});
+
+app.whenReady().then(async () => {
+  app.setLoginItemSettings({ openAtLogin: true });
+  store.set('autoStart', true);
+  Menu.setApplicationMenu(null);
+  createWindow();
+  createTray();
+
+  const license = store.get('license') || {};
+  if (!license.machineId) {
+    store.set('license', { ...license, machineId: await getMachineId() });
+  }
+
+  await checkForUpdates(false);
+  await checkLicenseStatus(false);
+
+  checkTimer = setInterval(async () => {
+    await checkForUpdates(false);
+    await checkLicenseStatus(false);
+  }, CHECK_INTERVAL_MS);
+});
+
+app.on('window-all-closed', (event) => {
+  event.preventDefault();
+});
+
+app.on('before-quit', () => {
+  if (checkTimer) clearInterval(checkTimer);
+});
