@@ -16,6 +16,8 @@ const store = new Store({
     downloadedFiles: null,
     license: {
       cpf: '',
+      cnpj: '',
+      document: '',
       email: '',
       machineId: '',
       active: false,
@@ -33,6 +35,7 @@ let checkTimer = null;
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest`;
+const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 const LICENSE_PRODUCT = 'VSLIVE';
@@ -126,8 +129,21 @@ function notifyLicense(message) {
   }).show();
 }
 
-function normalizeCpf(value) {
+function normalizeDocument(value) {
   return String(value || '').replace(/\D+/g, '');
+}
+
+function splitDocument(value) {
+  const document = normalizeDocument(value);
+  return {
+    document,
+    cpf: document.length === 11 ? document : '',
+    cnpj: document.length === 14 ? document : ''
+  };
+}
+
+function normalizeCpf(value) {
+  return normalizeDocument(value);
 }
 
 function normalizeEmail(value) {
@@ -306,14 +322,16 @@ async function getMachineId() {
   return machineId;
 }
 
-function saveLocalLicense({ cpf, email, machineId, licenseKey, payload }) {
+function saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload }) {
   const licensePath = getSharedLicensePath();
   const data = {
     v: 1,
     product: LICENSE_PRODUCT,
     mid: normalizeMachineId(machineId),
     sig: normalizeLicenseKeyForFile(licenseKey),
-    cpf: normalizeCpf(cpf),
+    cpf: normalizeDocument(cpf),
+    cnpj: normalizeDocument(cnpj),
+    document: normalizeDocument(document || cpf || cnpj),
     email: normalizeEmail(email),
     ts: new Date().toISOString(),
     
@@ -432,24 +450,29 @@ async function checkForUpdates(manual = false) {
 
 async function checkLicenseStatus(manual = false) {
   const license = store.get('license') || {};
-  const cpf = normalizeCpf(license.cpf);
+  const docParts = splitDocument(license.document || license.cpf || license.cnpj);
+  const cpf = docParts.cpf;
+  const cnpj = docParts.cnpj;
+  const document = docParts.document;
   const email = normalizeEmail(license.email);
   const machineId = normalizeMachineId(license.machineId || await getMachineId());
 
-  if (!cpf || !email || !machineId) {
+  if (!email || !machineId) {
     return { ok: false, message: 'Licença ainda não ativada.', state: getAppState() };
   }
 
   try {
     const result = await fetchJson(`${BACKEND_URL}/api/license/status`, {
       method: 'POST',
-      body: JSON.stringify({ cpf, email, machineId, platform: process.platform })
+      body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform })
     });
 
     const active = result.active !== false && result.ok !== false;
     const nextLicense = {
       ...license,
       cpf,
+      cnpj,
+      document,
       email,
       machineId,
       active,
@@ -715,6 +738,38 @@ async function installDownloadedUpdate() {
   return { ok: true, installedVersion: downloaded?.version || store.get('currentVersion') };
 }
 
+
+function normalizeSupportUrl(data) {
+  const raw =
+    data?.whatsappUrl ||
+    data?.supportUrl ||
+    data?.url ||
+    data?.whatsapp ||
+    data?.phone ||
+    data?.number ||
+    '';
+
+  const value = String(raw || '').trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+
+  const digits = value.replace(/\D+/g, '');
+  if (!digits) return null;
+  return `https://wa.me/${digits}`;
+}
+
+async function openSupport() {
+  const data = await fetchJson(SUPPORT_API_URL, { cache: 'no-store' });
+  const supportUrl = normalizeSupportUrl(data);
+
+  if (!supportUrl) {
+    throw new Error('SUPPORT_UNAVAILABLE');
+  }
+
+  await shell.openExternal(supportUrl);
+  return { ok: true, url: supportUrl };
+}
+
 ipcMain.handle('get-state', async () => {
   const license = store.get('license') || {};
   if (!license.machineId) {
@@ -726,16 +781,20 @@ ipcMain.handle('get-state', async () => {
 ipcMain.handle('check-updates', () => checkForUpdates(true));
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
+ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('download-update', () => downloadLatestUpdate());
 ipcMain.handle('install-update', () => installDownloadedUpdate());
 
 ipcMain.handle('activate-license', async (_event, payload) => {
-  const cpf = normalizeCpf(payload?.cpf);
+  const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
+  const cpf = docParts.cpf;
+  const cnpj = docParts.cnpj;
+  const document = docParts.document;
   const email = normalizeEmail(payload?.email);
   const machineId = await getMachineId();
 
-  if (!cpf || cpf.length < 11) {
-    throw new Error('Digite um CPF válido.');
+  if (document && document.length !== 11 && document.length !== 14) {
+    throw new Error('Digite um CPF ou CNPJ válido.');
   }
   if (!email || !email.includes('@')) {
     throw new Error('Digite o e-mail usado na compra.');
@@ -743,14 +802,16 @@ ipcMain.handle('activate-license', async (_event, payload) => {
 
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
-    body: JSON.stringify({ cpf, email, machineId, platform: process.platform })
+    body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform })
   });
 
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
-  saveLocalLicense({ cpf, email, machineId, licenseKey, payload: result });
+  saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload: result });
 
   const nextLicense = {
     cpf,
+    cnpj,
+    document,
     email,
     machineId,
     active: true,

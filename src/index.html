@@ -21,6 +21,7 @@
         <button class="nav-item active" data-view="home">Atualização</button>
         <button class="nav-item" data-view="license">Ativação</button>
         <button class="nav-item" data-view="status">Status</button>
+        <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -84,8 +85,8 @@
         <div class="hero-card">
           <div>
             <p class="eyebrow">Licença VS Hook</p>
-            <h1>Ativação por CPF + e-mail</h1>
-            <p class="muted">Use o CPF e o e-mail informados na compra para ativar o VS Hook.</p>
+            <h1>Ativação por documento + e-mail</h1>
+            <p class="muted">Use o CPF ou CNPJ e o e-mail informados na compra para ativar o VS Hook.</p>
           </div>
         </div>
 
@@ -94,8 +95,8 @@
 
           <div class="form-grid">
             <label>
-              CPF usado na compra
-              <input id="cpfInput" type="text" placeholder="000.000.000-00" autocomplete="off" />
+              CPF ou CNPJ usado na compra
+              <input id="cpfInput" type="text" placeholder="CPF ou CNPJ" autocomplete="off" />
             </label>
 
             <label>
@@ -107,6 +108,7 @@
           <div class="actions">
             <button id="activateButton" class="primary-button">Ativar licença</button>
             <button id="licenseCheckButton" class="secondary-button">Verificar licença</button>
+            <button id="supportButton" class="secondary-button support-button" type="button">Suporte</button>
           </div>
 
           <div id="licenseMessage" class="license-message muted"></div>

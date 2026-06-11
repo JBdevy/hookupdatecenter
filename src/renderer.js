@@ -15,12 +15,12 @@ function friendlyError(error, fallback) {
   const lower = message.toLowerCase();
 
   if (lower.includes('cpf não encontrado') || lower.includes('cpf nao encontrado')) {
-    return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF e o e-mail usados na compra.';
+    return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.';
   }
 
   if (lower.includes('e-mail') || lower.includes('email')) {
     if (lower.includes('não encontrado') || lower.includes('nao encontrado') || lower.includes('não confere') || lower.includes('nao confere')) {
-      return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF e o e-mail usados na compra.';
+      return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.';
     }
   }
 
@@ -108,7 +108,7 @@ function renderState(nextState) {
   }
 
   const license = state.license || {};
-  $('#cpfInput').value = license.cpf || $('#cpfInput').value || '';
+  $('#cpfInput').value = license.document || license.cpf || license.cnpj || $('#cpfInput').value || '';
   $('#emailInput').value = license.email || $('#emailInput').value || '';
   $('#licenseActive').textContent = license.active ? 'Ativa' : 'Pendente';
   $('#licenseActive').classList.toggle('ok-text', !!license.active);
@@ -133,8 +133,25 @@ async function init() {
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideModal(); });
 
   $$('.nav-item').forEach((button) => {
-    button.addEventListener('click', () => setView(button.dataset.view));
+    if (button.dataset.view) {
+      button.addEventListener('click', () => setView(button.dataset.view));
+    }
   });
+
+  const openSupport = async () => {
+    try {
+      await window.hookUpdateCenter.openSupport();
+    } catch (error) {
+      showModal({
+        title: 'Suporte',
+        message: 'Suporte indisponível no momento. Tente novamente mais tarde.',
+        type: 'error'
+      });
+    }
+  };
+
+  $('#supportNavButton')?.addEventListener('click', openSupport);
+  $('#supportButton')?.addEventListener('click', openSupport);
 
   $('#checkButton').addEventListener('click', async () => {
     $('#checkButton').disabled = true;
@@ -197,7 +214,7 @@ async function init() {
       $('#licenseMessage').textContent = 'Licença ativada com sucesso.';
     } catch (error) {
       $('#licenseMessage').textContent = friendlyError(error, 'Erro ao ativar licença.');
-      showModal({ title: 'Licença não encontrada', message: friendlyError(error, 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF e o e-mail usados na compra.'), type: 'error' });
+      showModal({ title: 'Licença não encontrada', message: friendlyError(error, 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.'), type: 'error' });
     } finally {
       $('#activateButton').disabled = false;
       $('#activateButton').textContent = 'Ativar licença';
@@ -214,7 +231,7 @@ async function init() {
       if (!result.active) {
         showModal({
           title: 'Licença não encontrada',
-          message: 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF e o e-mail usados na compra.',
+          message: 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.',
           type: 'error'
         });
       }

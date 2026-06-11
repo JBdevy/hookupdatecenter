@@ -247,3 +247,10 @@ input:focus {
   min-width: 180px;
   justify-content: center;
 }
+
+.support-nav {
+  border-color: rgba(158,255,0,.18);
+}
+.support-button {
+  border: 1px solid rgba(158,255,0,.22);
+}

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   activateLicense: (payload) => ipcRenderer.invoke('activate-license', payload),
   checkLicenseStatus: () => ipcRenderer.invoke('check-license-status'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openSupport: () => ipcRenderer.invoke('open-support'),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data)),
   onLicenseStatus: (callback) => ipcRenderer.on('license-status', (_event, data) => callback(data)),
   onUpdateError: (callback) => ipcRenderer.on('update-error', (_event, message) => callback(message)),
