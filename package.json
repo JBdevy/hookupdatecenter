@@ -35,7 +35,8 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "Hook-Update-Center-${version}-Windows.${ext}"
+      "artifactName": "Hook-Update-Center-${version}-Windows.${ext}",
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -52,7 +53,9 @@
       ],
       "minimumSystemVersion": "11.0",
       "category": "public.app-category.utilities",
-      "artifactName": "Hook-Update-Center-${version}-macOS.${ext}"
-    }
+      "artifactName": "Hook-Update-Center-${version}-macOS.${ext}",
+      "icon": "assets/icon.icns"
+    },
+    "icon": "assets/icon.png"
   }
 }

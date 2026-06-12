@@ -43,6 +43,16 @@ const LICENSE_SECRET_A = 'JBKeys_VSLIVE_CORE';
 const LICENSE_SECRET_B = 'VSLIVE_2026_ONLINE';
 const LICENSE_SECRET_C = 'JBK_ADMIN_OFFLINE';
 
+function getAppIconPath() {
+  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  return path.join(__dirname, '..', 'assets', iconName);
+}
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.hookdeveloper.updatecenter');
+}
+
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1040,
@@ -52,11 +62,13 @@ function createWindow() {
     show: false,
     backgroundColor: '#0b0b10',
     title: 'Hook Update Center',
+    icon: getAppIconPath(),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webviewTag: true
     }
   });
 

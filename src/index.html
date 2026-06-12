@@ -54,8 +54,11 @@
             <span id="versionBadge" class="badge">v0.0.0</span>
           </div>
 
-          <div class="video-box">
-            <iframe id="youtubeFrame" title="Vídeo da atualização" src="" allowfullscreen></iframe>
+          <div id="videoBox" class="video-box video-preview">
+            <button id="openVideoModalButton" class="video-play-button" type="button">
+              <span class="play-icon">▶</span>
+              <span>Assistir vídeo da atualização</span>
+            </button>
           </div>
 
           <p id="updateDescription" class="description"></p>
@@ -153,6 +156,20 @@
     </main>
   </div>
 
+
+
+  <div id="videoModal" class="video-modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="video-modal-panel">
+      <div class="video-modal-header">
+        <div>
+          <p class="eyebrow">Vídeo da atualização</p>
+          <h2 id="videoModalTitle">VS Hook</h2>
+        </div>
+        <button id="closeVideoModalButton" class="video-close-button" type="button">×</button>
+      </div>
+      <webview id="youtubeWebview" class="youtube-webview" src="about:blank" allowpopups></webview>
+    </div>
+  </div>
 
   <div id="appModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
     <div class="hook-modal">

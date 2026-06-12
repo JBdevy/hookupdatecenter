@@ -2,6 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
 
 let state = null;
+let currentYoutubeWatchUrl = "";
 
 function cleanErrorMessage(error) {
   let message = String(error?.message || error || 'Erro inesperado.');
@@ -50,6 +51,25 @@ function hideModal() {
   $('#appModal').classList.add('hidden');
 }
 
+function openVideoModal() {
+  if (!currentYoutubeWatchUrl) {
+    showModal({
+      title: 'Vídeo indisponível',
+      message: 'Nenhum vídeo foi publicado para esta atualização.',
+      type: 'error'
+    });
+    return;
+  }
+
+  $('#youtubeWebview').src = currentYoutubeWatchUrl;
+  $('#videoModal').classList.remove('hidden');
+}
+
+function closeVideoModal() {
+  $('#youtubeWebview').src = 'about:blank';
+  $('#videoModal').classList.add('hidden');
+}
+
 
 function setView(viewName) {
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
@@ -62,14 +82,29 @@ function formatDate(value) {
   return new Date(value).toLocaleString('pt-BR');
 }
 
-function normalizeYoutubeUrl(url) {
-  if (!url) return '';
-  if (url.includes('/embed/')) return url;
-  const watchMatch = url.match(/[?&]v=([^&]+)/);
-  if (watchMatch) return `https://www.youtube.com/embed/${watchMatch[1]}`;
-  const shortMatch = url.match(/youtu\.be\/([^?&]+)/);
-  if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}`;
-  return url;
+function extractYoutubeId(url) {
+  const value = String(url || '').trim();
+  if (!value) return '';
+
+  const embedMatch = value.match(/youtube\.com\/embed\/([^?&/]+)/i);
+  if (embedMatch) return embedMatch[1];
+
+  const watchMatch = value.match(/[?&]v=([^&]+)/i);
+  if (watchMatch) return watchMatch[1];
+
+  const shortMatch = value.match(/youtu\.be\/([^?&/]+)/i);
+  if (shortMatch) return shortMatch[1];
+
+  const shortsMatch = value.match(/youtube\.com\/shorts\/([^?&/]+)/i);
+  if (shortsMatch) return shortsMatch[1];
+
+  return '';
+}
+
+function normalizeYoutubeWatchUrl(url) {
+  const id = extractYoutubeId(url);
+  if (id) return `https://www.youtube.com/watch?v=${id}`;
+  return String(url || '').trim();
 }
 
 function escapeHtml(value) {
@@ -100,8 +135,10 @@ function renderState(nextState) {
     $('#versionBadge').textContent = update.version ? `v${update.version}` : 'VS Hook';
     $('#updateDescription').textContent = update.description || '';
 
-    const iframeUrl = normalizeYoutubeUrl(update.youtubeUrl || '');
-    $('#youtubeFrame').src = iframeUrl;
+    const rawYoutubeUrl = update.youtubeUrl || '';
+    currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
+    $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
+    $('#videoModalTitle').textContent = update.title || `VS Hook ${update.version || ''}`;
 
     const changelog = Array.isArray(update.changelog) ? update.changelog : [];
     $('#changelogList').innerHTML = changelog.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
@@ -130,7 +167,12 @@ async function init() {
 
   $('#modalOkButton').addEventListener('click', hideModal);
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
-  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideModal(); });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
+      else hideModal();
+    }
+  });
 
   $$('.nav-item').forEach((button) => {
     if (button.dataset.view) {
@@ -152,6 +194,12 @@ async function init() {
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
   $('#supportButton')?.addEventListener('click', openSupport);
+
+  $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
+  $('#closeVideoModalButton')?.addEventListener('click', closeVideoModal);
+  $('#videoModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'videoModal') closeVideoModal();
+  });
 
   $('#checkButton').addEventListener('click', async () => {
     $('#checkButton').disabled = true;
