@@ -35,6 +35,7 @@ let checkTimer = null;
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest`;
+const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -426,6 +427,46 @@ function normalizeUpdate(raw) {
   };
 }
 
+
+function normalizeUpdatesList(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : (
+      Array.isArray(raw?.updates) ? raw.updates :
+      Array.isArray(raw?.history) ? raw.history :
+      Array.isArray(raw?.items) ? raw.items :
+      Array.isArray(raw?.data) ? raw.data :
+      []
+    );
+
+  return list.map(normalizeUpdate).filter((update) => update && (update.version || update.updateId || hasInstallableFiles(update)));
+}
+
+async function getPreviousUpdates() {
+  const endpoints = [
+    UPDATES_HISTORY_API_URL,
+    `${BACKEND_URL}/api/updates/history?limit=50`,
+    `${BACKEND_URL}/api/public/updates?limit=50`
+  ];
+
+  let lastError = null;
+
+  for (const url of endpoints) {
+    try {
+      const raw = await fetchJson(url, { cache: 'no-store' });
+      return { ok: true, updates: normalizeUpdatesList(raw) };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  return {
+    ok: false,
+    error: lastError?.message || 'Não foi possível carregar as atualizações anteriores.',
+    updates: []
+  };
+}
+
 async function checkForUpdates(manual = false) {
   const now = new Date().toISOString();
   store.set('lastCheck', now);
@@ -613,8 +654,8 @@ async function downloadFile(url, destPath, onProgress) {
   onProgress(100);
 }
 
-async function downloadLatestUpdate() {
-  let update = store.get('latestUpdate');
+async function downloadLatestUpdate(updateOverride = null) {
+  let update = updateOverride || store.get('latestUpdate');
   if (!update?.files) {
     const checked = await checkForUpdates(true);
     update = checked.update || store.get('latestUpdate');
@@ -716,20 +757,6 @@ function installMacPayload(files) {
 }
 
 async function installDownloadedUpdate() {
-  const result = await dialog.showMessageBox(mainWindow, {
-    type: 'warning',
-    buttons: ['Instalar', 'Cancelar'],
-    defaultId: 0,
-    cancelId: 1,
-    title: 'Instalar/Reinstalar VS Hook',
-    message: 'Feche o REAPER antes de continuar.',
-    detail: process.platform === 'darwin'
-      ? 'O Hook Update Center vai instalar o VS Hook.lua e os plugins do REAPER. O macOS pode pedir a senha do administrador.'
-      : 'O Hook Update Center vai instalar o VS Hook.lua e os plugins do REAPER.'
-  });
-
-  if (result.response !== 0) return { ok: false, cancelled: true };
-
   const downloaded = store.get('downloadedFiles');
   const files = downloaded?.files || {};
 
@@ -794,7 +821,8 @@ ipcMain.handle('check-updates', () => checkForUpdates(true));
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
-ipcMain.handle('download-update', () => downloadLatestUpdate());
+ipcMain.handle('get-previous-updates', () => getPreviousUpdates());
+ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payload?.update || null));
 ipcMain.handle('install-update', () => installDownloadedUpdate());
 
 ipcMain.handle('activate-license', async (_event, payload) => {

@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getState: () => ipcRenderer.invoke('get-state'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
-  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  downloadUpdate: (payload) => ipcRenderer.invoke('download-update', payload),
+  getPreviousUpdates: () => ipcRenderer.invoke('get-previous-updates'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   activateLicense: (payload) => ipcRenderer.invoke('activate-license', payload),
   checkLicenseStatus: () => ipcRenderer.invoke('check-license-status'),

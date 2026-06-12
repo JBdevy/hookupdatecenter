@@ -3,6 +3,7 @@ const $$ = (selector) => document.querySelectorAll(selector);
 
 let state = null;
 let currentYoutubeWatchUrl = "";
+let pendingConfirmResolve = null;
 
 function cleanErrorMessage(error) {
   let message = String(error?.message || error || 'Erro inesperado.');
@@ -49,6 +50,27 @@ function showModal({ title = 'Aviso', message = '', type = 'info' }) {
 
 function hideModal() {
   $('#appModal').classList.add('hidden');
+  const okButton = $('#modalOkButton');
+  const cancelButton = $('#modalCancelButton');
+  if (okButton) okButton.textContent = 'OK';
+  if (cancelButton) cancelButton.classList.add('hidden');
+  if (pendingConfirmResolve) {
+    const resolve = pendingConfirmResolve;
+    pendingConfirmResolve = null;
+    resolve(false);
+  }
+}
+
+function confirmModal({ title = 'Confirmar', message = '', type = 'info', okText = 'Continuar', cancelText = 'Cancelar' }) {
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+    showModal({ title, message, type });
+    const okButton = $('#modalOkButton');
+    const cancelButton = $('#modalCancelButton');
+    okButton.textContent = okText;
+    cancelButton.textContent = cancelText;
+    cancelButton.classList.remove('hidden');
+  });
 }
 
 function openVideoModal() {
@@ -162,10 +184,119 @@ async function refreshState() {
   renderState(await window.hookUpdateCenter.getState());
 }
 
+
+function getPlatformFilesForUpdate(update) {
+  const platformKey = state?.platform === 'darwin' ? 'macos' : 'windows';
+  return update?.files?.[platformKey] || {};
+}
+
+function hasInstallableFiles(update) {
+  const files = getPlatformFilesForUpdate(update);
+  return Object.values(files || {}).some(Boolean);
+}
+
+function renderPreviousUpdates(updates) {
+  const list = $('#previousUpdatesList');
+  if (!Array.isArray(updates) || updates.length === 0) {
+    list.innerHTML = `
+      <div class="card">
+        <h2>Nenhuma versão encontrada</h2>
+        <p class="muted">Ainda não existem atualizações anteriores disponíveis.</p>
+      </div>
+    `;
+    return;
+  }
+
+  list.innerHTML = updates.map((update, index) => {
+    const version = escapeHtml(update.version || 'Sem versão');
+    const title = escapeHtml(update.title || `VS Hook ${version}`);
+    const date = escapeHtml(formatDate(update.publishedAt || update.createdAt));
+    const description = escapeHtml(update.description || '');
+
+    return `
+      <div class="card previous-update-card">
+        <div class="update-header">
+          <div>
+            <p class="eyebrow">Versão anterior</p>
+            <h2>${title}</h2>
+            <p class="muted">${date}</p>
+          </div>
+          <span class="badge">v${version}</span>
+        </div>
+        ${description ? `<p class="description">${description}</p>` : ''}
+        <div class="actions">
+          <button class="primary-button previous-download-button" data-index="${index}">Baixar esta versão</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  list.querySelectorAll('.previous-download-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.index);
+      const update = updates[index];
+      if (!hasInstallableFiles(update)) {
+        showModal({ title: 'Versão indisponível', message: 'Não há arquivos disponíveis para esta versão neste sistema.', type: 'error' });
+        return;
+      }
+
+      try {
+        $('#downloadCard').classList.remove('hidden');
+        setView('home');
+        button.disabled = true;
+        button.textContent = 'Baixando...';
+        $('#progressBar').style.width = '0%';
+        $('#progressText').textContent = '0%';
+        $('#installButton').classList.add('hidden');
+        await window.hookUpdateCenter.downloadUpdate({ update });
+      } catch (error) {
+        showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar esta versão.'), type: 'error' });
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Baixar esta versão';
+      }
+    });
+  });
+}
+
+async function loadPreviousUpdates() {
+  const button = $('#refreshPreviousButton');
+  try {
+    button.disabled = true;
+    button.textContent = 'Carregando...';
+    const result = await window.hookUpdateCenter.getPreviousUpdates();
+    if (result.ok === false) {
+      showModal({
+        title: 'Histórico indisponível',
+        message: friendlyError(result.error || '', 'Não foi possível carregar as atualizações anteriores.'),
+        type: 'error'
+      });
+    }
+    renderPreviousUpdates(result.updates || []);
+  } catch (error) {
+    showModal({ title: 'Erro ao carregar versões', message: friendlyError(error, 'Não foi possível carregar as atualizações anteriores.'), type: 'error' });
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Carregar versões';
+  }
+}
+
 async function init() {
   await refreshState();
 
-  $('#modalOkButton').addEventListener('click', hideModal);
+  $('#modalOkButton').addEventListener('click', () => {
+    if (pendingConfirmResolve) {
+      const resolve = pendingConfirmResolve;
+      pendingConfirmResolve = null;
+      $('#appModal').classList.add('hidden');
+      $('#modalOkButton').textContent = 'OK';
+      $('#modalCancelButton').classList.add('hidden');
+      resolve(true);
+      return;
+    }
+    hideModal();
+  });
+  $('#modalCancelButton').addEventListener('click', hideModal);
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -176,7 +307,10 @@ async function init() {
 
   $$('.nav-item').forEach((button) => {
     if (button.dataset.view) {
-      button.addEventListener('click', () => setView(button.dataset.view));
+      button.addEventListener('click', () => {
+        setView(button.dataset.view);
+        if (button.dataset.view === 'previous') loadPreviousUpdates();
+      });
     }
   });
 
@@ -232,6 +366,16 @@ async function init() {
   });
 
   $('#installButton').addEventListener('click', async () => {
+    const confirmed = await confirmModal({
+      title: 'Instalar VS Hook',
+      message: 'Feche o REAPER antes de continuar. O Hook Update Center vai instalar o VS Hook e os arquivos necessários.',
+      type: 'info',
+      okText: 'Instalar',
+      cancelText: 'Cancelar'
+    });
+
+    if (!confirmed) return;
+
     try {
       const result = await window.hookUpdateCenter.installUpdate();
       if (result.ok) {

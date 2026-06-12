@@ -19,6 +19,7 @@
 
       <nav>
         <button class="nav-item active" data-view="home">Atualização</button>
+        <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
@@ -80,6 +81,25 @@
           <div class="progress-row">
             <span id="progressText">0%</span>
             <button id="installButton" class="primary-button hidden">Instalar</button>
+          </div>
+        </div>
+      </section>
+
+
+      <section id="previousView" class="view">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">Histórico</p>
+            <h1>Atualizações anteriores</h1>
+            <p class="muted">Baixe e instale versões anteriores do VS Hook quando precisar.</p>
+          </div>
+          <button id="refreshPreviousButton" class="primary-button">Carregar versões</button>
+        </div>
+
+        <div id="previousUpdatesList" class="updates-list">
+          <div class="card">
+            <h2>Nenhuma versão carregada</h2>
+            <p class="muted">Clique em carregar versões para buscar o histórico de atualizações.</p>
           </div>
         </div>
       </section>
@@ -176,7 +196,10 @@
       <div id="modalIcon" class="modal-icon error">×</div>
       <h2 id="modalTitle">Aviso</h2>
       <p id="modalMessage">Mensagem</p>
-      <button id="modalOkButton" class="primary-button modal-button">OK</button>
+      <div class="modal-actions">
+        <button id="modalCancelButton" class="secondary-button modal-button hidden">Cancelar</button>
+        <button id="modalOkButton" class="primary-button modal-button">OK</button>
+      </div>
     </div>
   </div>
 
