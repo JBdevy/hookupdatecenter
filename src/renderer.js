@@ -141,8 +141,9 @@ function escapeHtml(value) {
 function renderState(nextState) {
   state = nextState;
   const isMac = state.platform === 'darwin';
+  const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
-  $('#platformLabel').textContent = isMac ? 'macOS 11+' : 'Windows 10/11';
+  $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
   $('#currentVersion').textContent = state.currentVersion || '--';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
   $('#updateStatus').textContent = state.latestUpdate ? 'Última publicação carregada' : 'Aguardando publicação';
@@ -192,6 +193,15 @@ function getPlatformFilesForUpdate(update) {
 
 function hasInstallableFiles(update) {
   const files = getPlatformFilesForUpdate(update);
+  if (!files) return false;
+
+  if (state?.platform === 'darwin') {
+    const jsApi = state?.arch === 'arm64'
+      ? (files.jsApiArmDylib || files.jsApiDylib)
+      : (files.jsApiIntelDylib || files.jsApiDylib);
+    return !!(files.lua || files.vshookDylib || jsApi);
+  }
+
   return Object.values(files || {}).some(Boolean);
 }
 

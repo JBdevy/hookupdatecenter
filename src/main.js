@@ -391,13 +391,19 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+function pickFirst(...values) {
+  return values.find((value) => String(value || '').trim()) || '';
+}
+
 function normalizeUpdate(raw) {
   if (!raw) return null;
   const source = raw.update || raw.latest || raw;
 
   const files = source.files || {};
-  const windows = source.windows || files.windows || {};
-  const macos = source.macos || files.macos || {};
+  const windows = source.windows || files.windows || files.win32 || {};
+  const macos = source.macos || source.mac || files.macos || files.mac || files.darwin || {};
+  const macIntel = macos.intel || macos.x64 || macos.macIntel || files.macIntel || files.macosIntel || {};
+  const macArm = macos.arm || macos.arm64 || macos.appleSilicon || macos.macArm || files.macArm || files.macosArm || files.appleSilicon || files.macosAppleSilicon || {};
 
   return {
     updateId: source.updateId || source.id || source.publishedAt || source.version || null,
@@ -412,16 +418,16 @@ function normalizeUpdate(raw) {
     publishedAt: source.publishedAt || source.createdAt || null,
     files: {
       windows: {
-        lua: windows.lua || windows.luaUrl || windows.vsHookLua || windows.vsHookLuaUrl || windows.script || windows.scriptUrl || '',
-        vshookDll: windows.vshookDll || windows.vshookDllUrl || windows.reaperVshookDll || windows.reaperVshookDllUrl || windows.vshook || windows.vshookUrl || '',
-        jsApiDll: windows.jsApiDll || windows.jsApiDllUrl || windows.reaperJsApiDll || windows.reaperJsApiDllUrl || windows.jsapi || windows.jsapiUrl || ''
+        lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
+        vshookDll: pickFirst(windows.vshookDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
+        jsApiDll: pickFirst(windows.jsApiDll, windows.jsApiDllUrl, windows.reaperJsApiDll, windows.reaperJsApiDllUrl, windows.jsapi, windows.jsapiUrl, windows.reaper_js_ReaScriptAPI64, windows.reaper_js_ReaScriptAPI64_url)
       },
       macos: {
-        lua: macos.lua || macos.luaUrl || macos.vsHookLua || macos.vsHookLuaUrl || macos.script || macos.scriptUrl || '',
-        vshookDylib: macos.vshookDylib || macos.vshookDylibUrl || macos.reaperVshookDylib || macos.reaperVshookDylibUrl || macos.vshook || macos.vshookUrl || '',
-        jsApiDylib: macos.jsApiDylib || macos.jsApiDylibUrl || macos.reaperJsApiDylib || macos.reaperJsApiDylibUrl || macos.jsapi || macos.jsapiUrl || '',
-        jsApiArmDylib: macos.jsApiArmDylib || macos.jsApiArmDylibUrl || macos.reaperJsApiArmDylib || macos.reaperJsApiArmDylibUrl || '',
-        jsApiIntelDylib: macos.jsApiIntelDylib || macos.jsApiIntelDylibUrl || macos.reaperJsApiIntelDylib || macos.reaperJsApiIntelDylibUrl || ''
+        lua: pickFirst(macos.lua, macos.luaUrl, macos.vsHookLua, macos.vsHookLuaUrl, macos.script, macos.scriptUrl, source.lua, source.luaUrl),
+        vshookDylib: pickFirst(macos.vshookDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
+        jsApiDylib: pickFirst(macos.jsApiDylib, macos.jsApiDylibUrl, macos.reaperJsApiDylib, macos.reaperJsApiDylibUrl, macos.jsapi, macos.jsapiUrl, macos.universalJsApiDylib, macos.universalJsApiDylibUrl),
+        jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
+        jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url)
       }
     }
   };
@@ -562,6 +568,7 @@ function getAppState() {
     license: store.get('license'),
     
     platform: process.platform,
+    arch: process.arch,
     machineIdPath: getSharedMachineIdPath(),
     licensePath: getSharedLicensePath()
   };
@@ -588,10 +595,11 @@ function buildPayloadEntries(files) {
   }
 
   if (process.platform === 'darwin') {
+    const isAppleSilicon = process.arch === 'arm64';
     const jsApiUrl = ensureAbsoluteUrl(
-      process.arch === 'arm64'
-        ? (files.jsApiArmDylib || files.jsApiDylib || files.jsApiIntelDylib)
-        : (files.jsApiIntelDylib || files.jsApiDylib || files.jsApiArmDylib)
+      isAppleSilicon
+        ? (files.jsApiArmDylib || files.jsApiDylib)
+        : (files.jsApiIntelDylib || files.jsApiDylib)
     );
 
     return [
@@ -670,6 +678,15 @@ async function downloadLatestUpdate(updateOverride = null) {
     throw new Error('Atualização indisponível para este sistema no momento.');
   }
 
+  if (process.platform === 'darwin') {
+    const hasJsApi = entries.some((entry) => entry.key === 'jsApiDylib');
+    if (!hasJsApi) {
+      throw new Error(process.arch === 'arm64'
+        ? 'Arquivo macOS Apple Silicon não disponível nesta atualização.'
+        : 'Arquivo macOS Intel não disponível nesta atualização.');
+    }
+  }
+
   const downloadDir = path.join(app.getPath('userData'), 'downloads', update.updateId || update.version || 'latest');
   const output = {};
 
@@ -704,13 +721,50 @@ function getWindowsPublicVsHookDir() {
   return path.join(publicDir, 'VS Hook APP');
 }
 
+function getWindowsLegacyVsHookDir() {
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  return path.join(programFiles, 'VS Hook APP');
+}
+
+function copyFileWithWindowsAdminFallback(source, destination) {
+  if (!source || !fs.existsSync(source)) return;
+
+  try {
+    copyFileEnsured(source, destination);
+    return;
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+  }
+
+  const script = [
+    `$source = ${JSON.stringify(source)}`,
+    `$destination = ${JSON.stringify(destination)}`,
+    '$directory = Split-Path -Parent $destination',
+    'New-Item -ItemType Directory -Force -Path $directory | Out-Null',
+    'Copy-Item -LiteralPath $source -Destination $destination -Force'
+  ].join('; ');
+
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const command = `Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}' -Verb RunAs -Wait`;
+
+  execFileSync('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command', command
+  ], { stdio: 'ignore', windowsHide: true });
+}
+
 function getWindowsReaperUserPluginsDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   return path.join(appData, 'REAPER', 'UserPlugins');
 }
 
 function installWindowsPayload(files) {
-  copyFileEnsured(files.lua, path.join(getWindowsPublicVsHookDir(), 'VS Hook.lua'));
+  const luaFileName = 'VS Hook.lua';
+
+  copyFileEnsured(files.lua, path.join(getWindowsPublicVsHookDir(), luaFileName));
+  copyFileWithWindowsAdminFallback(files.lua, path.join(getWindowsLegacyVsHookDir(), luaFileName));
+
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
   copyFileEnsured(files.jsApiDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_js_ReaScriptAPI64.dll'));
 }
