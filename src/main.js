@@ -36,7 +36,7 @@ let checkTimer = null;
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest`;
-const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50`;
+const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -439,6 +439,15 @@ function normalizeUpdate(raw) {
 }
 
 
+function updateMatchesCurrentPlatform(update) {
+  const platformKey = getPlatformKey();
+  const changed = update?.changed || update?.files?.changed || {};
+  if (Object.prototype.hasOwnProperty.call(changed, platformKey)) {
+    return Boolean(changed[platformKey]);
+  }
+  return hasInstallableFiles(update);
+}
+
 function normalizeUpdatesList(raw) {
   const list = Array.isArray(raw)
     ? raw
@@ -450,14 +459,17 @@ function normalizeUpdatesList(raw) {
       []
     );
 
-  return list.map(normalizeUpdate).filter((update) => update && (update.version || update.updateId || hasInstallableFiles(update)));
+  return list
+    .map(normalizeUpdate)
+    .filter((update) => update && (update.version || update.updateId || hasInstallableFiles(update)) && updateMatchesCurrentPlatform(update));
 }
 
 async function getPreviousUpdates() {
   const endpoints = [
     UPDATES_HISTORY_API_URL,
+    `${BACKEND_URL}/api/updates/history?limit=50&platform=${getPlatformKey()}`,
     `${BACKEND_URL}/api/updates/history?limit=50`,
-    `${BACKEND_URL}/api/public/updates?limit=50`
+    `${BACKEND_URL}/api/public/updates?limit=50&platform=${getPlatformKey()}`
   ];
 
   let lastError = null;
