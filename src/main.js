@@ -35,7 +35,7 @@ let tray = null;
 let checkTimer = null;
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
-const UPDATE_API_URL = `${BACKEND_URL}/api/latest`;
+const UPDATE_API_URL = `${BACKEND_URL}/api/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -405,19 +405,21 @@ function normalizeUpdate(raw) {
   const macos = source.macos || source.mac || files.macos || files.mac || files.darwin || {};
   const macIntel = macos.intel || macos.x64 || macos.macIntel || files.macIntel || files.macosIntel || {};
   const macArm = macos.arm || macos.arm64 || macos.appleSilicon || macos.macArm || files.macArm || files.macosArm || files.appleSilicon || files.macosAppleSilicon || {};
+  const platforms = source.platforms || files.platforms || files._platforms || {};
+  const platformMeta = platforms?.[getPlatformKey()] || {};
 
   return {
-    updateId: source.updateId || source.id || source.publishedAt || source.version || null,
+    updateId: platformMeta.updateId || source.updateId || source.id || source.publishedAt || source.version || null,
     product: source.product || 'vs-hook',
-    version: source.version || '',
-    title: source.title || 'Atualização do VS Hook disponível',
-    description: source.description || '',
-    youtubeUrl: source.youtubeUrl || source.videoUrl || source.video || '',
+    version: platformMeta.version || source.version || '',
+    title: platformMeta.title || source.title || 'Atualização do VS Hook disponível',
+    description: platformMeta.description || source.description || '',
+    youtubeUrl: platformMeta.youtubeUrl || source.youtubeUrl || source.videoUrl || source.video || '',
     changelog: Array.isArray(source.changelog)
       ? source.changelog
       : String(source.description || '').split('\n').map((line) => line.trim()).filter(Boolean),
-    publishedAt: source.publishedAt || source.createdAt || null,
-    platforms: source.platforms || files.platforms || files._platforms || {},
+    publishedAt: platformMeta.changedAt || source.publishedAt || source.createdAt || null,
+    platforms,
     changed: source.changed || files.changed || {},
     files: {
       windows: {
