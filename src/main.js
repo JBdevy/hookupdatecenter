@@ -14,6 +14,7 @@ const store = new Store({
     latestUpdate: null,
     lastNotifiedUpdateId: null,
     downloadedFiles: null,
+    installedManifest: null,
     license: {
       cpf: '',
       cnpj: '',
@@ -416,6 +417,8 @@ function normalizeUpdate(raw) {
       ? source.changelog
       : String(source.description || '').split('\n').map((line) => line.trim()).filter(Boolean),
     publishedAt: source.publishedAt || source.createdAt || null,
+    platforms: source.platforms || files.platforms || files._platforms || {},
+    changed: source.changed || files.changed || {},
     files: {
       windows: {
         lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
@@ -428,8 +431,8 @@ function normalizeUpdate(raw) {
         hookLyricsLua: pickFirst(macos.hookLyricsLua, macos.hookLyricsLuaUrl, macos.lyricsLua, macos.lyricsLuaUrl, macos.hookLyrics, macos.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDylib: pickFirst(macos.vshookDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
         jsApiDylib: pickFirst(macos.jsApiDylib, macos.jsApiDylibUrl, macos.reaperJsApiDylib, macos.reaperJsApiDylibUrl, macos.jsapi, macos.jsapiUrl, macos.universalJsApiDylib, macos.universalJsApiDylibUrl),
-        jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
-        jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url)
+        jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.armJsApiDylib, macos.armJsApiDylibUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
+        jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.intelJsApiDylib, macos.intelJsApiDylibUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url)
       }
     }
   };
@@ -483,9 +486,9 @@ async function checkForUpdates(manual = false) {
     const raw = await fetchJson(UPDATE_API_URL, { cache: 'no-store' });
     const update = normalizeUpdate(raw);
 
-    const updateId = update?.updateId || null;
+    const updateId = getPlatformUpdateId(update);
     const lastNotified = store.get('lastNotifiedUpdateId');
-    const shouldNotify = !!updateId && updateId !== lastNotified;
+    const shouldNotify = !!updateId && updateId !== lastNotified && hasInstallableFiles(update);
 
     store.set('latestUpdate', update);
     store.set('updateAvailable', shouldNotify);
@@ -567,6 +570,7 @@ function getAppState() {
     latestUpdate: store.get('latestUpdate'),
     lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
     downloadedFiles: store.get('downloadedFiles'),
+    installedManifest: store.get('installedManifest'),
     license: store.get('license'),
     
     platform: process.platform,
@@ -582,9 +586,32 @@ function ensureAbsoluteUrl(url) {
   return `${BACKEND_URL}${url.startsWith('/') ? '' : '/'}${url}`;
 }
 
+function getPlatformKey() {
+  return process.platform === 'darwin' ? 'macos' : 'windows';
+}
+
 function getPlatformFiles(update) {
-  const platformKey = process.platform === 'darwin' ? 'macos' : 'windows';
-  return update?.files?.[platformKey] || {};
+  return update?.files?.[getPlatformKey()] || {};
+}
+
+function getPlatformUpdateId(update) {
+  const platformKey = getPlatformKey();
+  const platformMeta = update?.platforms?.[platformKey] || update?.files?.platforms?.[platformKey] || {};
+  return platformMeta.updateId || platformMeta.version || update?.updateId || update?.version || null;
+}
+
+function hasInstallableFiles(update) {
+  return buildPayloadEntries(getPlatformFiles(update)).length > 0;
+}
+
+function entriesChangedSinceLastInstall(update, entries) {
+  const platformKey = getPlatformKey();
+  const installed = store.get('installedManifest') || {};
+  const installedFiles = installed.platform === platformKey ? (installed.files || {}) : {};
+  return entries.filter((entry) => {
+    const previous = installedFiles[entry.key];
+    return !previous || previous.url !== entry.url;
+  });
 }
 
 function buildPayloadEntries(files) {
@@ -676,7 +703,9 @@ async function downloadLatestUpdate(updateOverride = null) {
   if (!update) throw new Error('Nenhuma atualização disponível no momento.');
 
   const files = getPlatformFiles(update);
-  const entries = buildPayloadEntries(files);
+  const allEntries = buildPayloadEntries(files);
+  const changedEntries = entriesChangedSinceLastInstall(update, allEntries);
+  const entries = changedEntries.length > 0 ? changedEntries : allEntries;
 
   if (entries.length === 0) {
     throw new Error('Atualização indisponível para este sistema no momento.');
@@ -705,9 +734,16 @@ async function downloadLatestUpdate(updateOverride = null) {
   }
 
   store.set('downloadedFiles', {
-    updateId: update.updateId,
+    updateId: getPlatformUpdateId(update),
+    globalUpdateId: update.updateId,
     version: update.version,
-    files: output
+    platform: getPlatformKey(),
+    files: output,
+    manifest: {
+      platform: getPlatformKey(),
+      updateId: getPlatformUpdateId(update),
+      files: Object.fromEntries(entries.map((entry) => [entry.key, { url: entry.url, filename: entry.filename }]))
+    }
   });
 
   if (mainWindow) mainWindow.webContents.send('download-progress', 100);
@@ -835,8 +871,20 @@ async function installDownloadedUpdate() {
     throw new Error('Sistema operacional não suportado.');
   }
 
+  if (downloaded?.manifest) {
+    const previous = store.get('installedManifest') || {};
+    const samePlatform = previous.platform === downloaded.manifest.platform;
+    store.set('installedManifest', {
+      platform: downloaded.manifest.platform,
+      updateId: downloaded.manifest.updateId,
+      files: { ...(samePlatform ? (previous.files || {}) : {}), ...(downloaded.manifest.files || {}) },
+      installedAt: new Date().toISOString()
+    });
+  }
+
   if (downloaded?.version) {
     store.set('currentVersion', downloaded.version);
+    store.set('lastNotifiedUpdateId', downloaded.updateId || downloaded.globalUpdateId || downloaded.version);
     store.set('updateAvailable', false);
     rebuildTrayMenu();
   }
