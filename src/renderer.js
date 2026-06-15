@@ -138,6 +138,20 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+
+function renderBridgeState(bridge) {
+  if (!bridge) return;
+  const runningText = $('#bridgeRunningText');
+  if (runningText) {
+    runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando como Bridge.' : (bridge.error ? `Conexão parada: ${bridge.error}` : 'Conexão parada.');
+    runningText.classList.toggle('ok-text', !!bridge.running);
+  }
+  if ($('#bridgeIp')) $('#bridgeIp').textContent = bridge.lanIp || '--';
+  if ($('#bridgeDirectorPort')) $('#bridgeDirectorPort').textContent = String(bridge.directorPort || '--');
+  if ($('#bridgeMusiciansPort')) $('#bridgeMusiciansPort').textContent = String(bridge.musiciansPort || '--');
+  if ($('#bridgeScriptsDir')) $('#bridgeScriptsDir').textContent = bridge.scriptsDir || '--';
+}
+
 function renderState(nextState) {
   state = nextState;
   const isMac = state.platform === 'darwin';
@@ -147,6 +161,22 @@ function renderState(nextState) {
   $('#currentVersion').textContent = state.currentVersion || '--';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
   $('#updateStatus').textContent = state.latestUpdate ? 'Última publicação carregada' : 'Aguardando publicação';
+
+  const hc = state.hookCenterLatest || {};
+  const hcText = $('#hookCenterUpdateText');
+  const hcButton = $('#hookCenterUpdateButton');
+  if (hcText && hcButton) {
+    if (state.hookCenterUpdateAvailable) {
+      hcText.textContent = `Nova versão disponível: ${hc.version || ''}. ${hc.notes || ''}`.trim();
+      hcButton.classList.remove('hidden');
+    } else if (hc.version) {
+      hcText.textContent = `Hook Center atualizado. Última versão publicada: ${hc.version}.`;
+      hcButton.classList.add('hidden');
+    } else {
+      hcText.textContent = 'Nenhuma atualização do Hook Center publicada.';
+      hcButton.classList.add('hidden');
+    }
+  }
 
   const hasLatest = !!state.latestUpdate;
   $('#noUpdateCard').classList.toggle('hidden', hasLatest);
@@ -167,6 +197,8 @@ function renderState(nextState) {
     $('#changelogList').innerHTML = changelog.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
   }
 
+  renderBridgeState(state.bridge);
+
   const license = state.license || {};
   $('#cpfInput').value = license.document || license.cpf || license.cnpj || $('#cpfInput').value || '';
   $('#emailInput').value = license.email || $('#emailInput').value || '';
@@ -179,6 +211,14 @@ function renderState(nextState) {
   } else if (!$('#licenseMessage').textContent) {
     $('#licenseMessage').textContent = 'Aguardando ativação.';
   }
+}
+
+
+async function refreshBridgeState() {
+  try {
+    const bridge = await window.hookUpdateCenter.getBridgeState();
+    renderBridgeState(bridge);
+  } catch (_) {}
 }
 
 async function refreshState() {
@@ -320,6 +360,7 @@ async function init() {
       button.addEventListener('click', () => {
         setView(button.dataset.view);
         if (button.dataset.view === 'previous') loadPreviousUpdates();
+        if (button.dataset.view === 'bridge') refreshBridgeState();
       });
     }
   });
@@ -337,6 +378,20 @@ async function init() {
   };
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
+  $('#restartBridgeButton')?.addEventListener('click', async () => {
+    try {
+      $('#restartBridgeButton').disabled = true;
+      $('#restartBridgeButton').textContent = 'Reiniciando...';
+      const bridge = await window.hookUpdateCenter.restartBridge();
+      renderBridgeState(bridge);
+      showModal({ title: 'Conexão reiniciada', message: 'A conexão via app foi reiniciada com sucesso.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Erro na conexão', message: friendlyError(error, 'Não foi possível reiniciar a conexão via app.'), type: 'error' });
+    } finally {
+      $('#restartBridgeButton').disabled = false;
+      $('#restartBridgeButton').textContent = 'Reiniciar conexão';
+    }
+  });
   $('#supportButton')?.addEventListener('click', openSupport);
 
   $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
@@ -378,7 +433,7 @@ async function init() {
   $('#installButton').addEventListener('click', async () => {
     const confirmed = await confirmModal({
       title: 'Instalar VS Hook',
-      message: 'Feche o REAPER antes de continuar. O Hook Update Center vai instalar o VS Hook e os arquivos necessários.',
+      message: 'Feche o REAPER antes de continuar. O Hook Center vai instalar o VS Hook e os arquivos necessários.',
       type: 'info',
       okText: 'Instalar',
       cancelText: 'Cancelar'
@@ -398,6 +453,32 @@ async function init() {
       }
     } catch (error) {
       showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar a atualização.'), type: 'error' });
+    }
+  });
+
+  $('#hookCenterUpdateButton')?.addEventListener('click', async () => {
+    const confirmed = await confirmModal({
+      title: 'Atualizar Hook Center',
+      message: state?.platform === 'darwin'
+        ? 'O DMG será baixado e aberto. Depois arraste o Hook Center para Aplicativos.'
+        : 'O instalador será baixado e executado. O Hook Center vai fechar para instalar a nova versão.',
+      type: 'info',
+      okText: 'Atualizar',
+      cancelText: 'Cancelar'
+    });
+    if (!confirmed) return;
+    try {
+      $('#hookCenterUpdateButton').disabled = true;
+      $('#hookCenterUpdateButton').textContent = 'Baixando...';
+      const result = await window.hookUpdateCenter.installHookCenterUpdate();
+      if (state?.platform === 'darwin') {
+        showModal({ title: 'DMG baixado', message: 'O instalador do Hook Center foi aberto. Instale por cima da versão atual.', type: 'success' });
+      }
+    } catch (error) {
+      showModal({ title: 'Erro ao atualizar Hook Center', message: friendlyError(error, 'Não foi possível atualizar o Hook Center.'), type: 'error' });
+    } finally {
+      $('#hookCenterUpdateButton').disabled = false;
+      $('#hookCenterUpdateButton').textContent = 'Atualizar Hook Center';
     }
   });
 
@@ -458,5 +539,5 @@ async function init() {
 }
 
 init().catch((error) => {
-  showModal({ title: 'Erro ao iniciar', message: friendlyError(error, 'Não foi possível iniciar o Hook Update Center.'), type: 'error' });
+  showModal({ title: 'Erro ao iniciar', message: friendlyError(error, 'Não foi possível iniciar o Hook Center.'), type: 'error' });
 });

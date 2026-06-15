@@ -398,3 +398,29 @@ input:focus {
 .modal-actions .modal-button {
   min-width: 130px;
 }
+
+.bridge-card-inline {
+  text-align: center;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.bridge-logo {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  margin-bottom: 12px;
+}
+
+.bridge-status-grid {
+  margin-top: 22px;
+  text-align: left;
+}
+
+.bridge-status-grid div:last-child {
+  grid-column: 1 / -1;
+}
+
+.bridge-status-grid strong {
+  word-break: break-word;
+}

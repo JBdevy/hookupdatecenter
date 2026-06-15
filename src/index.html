@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hook Update Center</title>
+  <title>Hook Center</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <img src="../assets/logo.png" class="logo-hook" alt="Hook Update Center" />
+        <img src="../assets/logo.png" class="logo-hook" alt="Hook Center" />
         <div>
           <strong>Hook</strong>
-          <span>Update Center</span>
+          <span>Center</span>
         </div>
       </div>
 
@@ -21,6 +21,7 @@
         <button class="nav-item active" data-view="home">Atualização</button>
         <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
+        <button class="nav-item" data-view="bridge">Conexão via app</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
@@ -152,6 +153,45 @@
         </div>
       </section>
 
+
+      <section id="bridgeView" class="view">
+        <div class="hero-card bridge-hero">
+          <div>
+            <p class="eyebrow">Hook Center Bridge</p>
+            <h1>Conexão via app</h1>
+            <p class="muted">O Hook Center já abre no tray com a conexão via app ligada automaticamente.</p>
+          </div>
+          <button id="restartBridgeButton" class="primary-button" type="button">Reiniciar conexão</button>
+        </div>
+
+        <div class="card bridge-card-inline">
+          <img src="../assets/logo.png" alt="VS Hook" class="bridge-logo" />
+          <h2>Hook Center está funcionando como Bridge</h2>
+          <p class="status ok-text" id="bridgeRunningText">Conexão ativa. O Hook Center já está funcionando como Bridge.</p>
+          <p>📱 Baixe o aplicativo <strong>VS Hook</strong> na Google Play ou App Store.</p>
+          <p>Após instalar o aplicativo, conecte seu celular à mesma rede Wi‑Fi deste computador para iniciar o controle remoto.</p>
+
+          <div class="status-grid bridge-status-grid">
+            <div>
+              <span>IP deste computador</span>
+              <strong id="bridgeIp">--</strong>
+            </div>
+            <div>
+              <span>Porta Diretor</span>
+              <strong id="bridgeDirectorPort">--</strong>
+            </div>
+            <div>
+              <span>Porta Músicos</span>
+              <strong id="bridgeMusiciansPort">--</strong>
+            </div>
+            <div>
+              <span>Pasta REAPER monitorada</span>
+              <strong id="bridgeScriptsDir">--</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="statusView" class="view">
         <div class="card">
           <h2>Status do VS Hook</h2>
@@ -168,6 +208,14 @@
               <span>Status</span>
               <strong id="updateStatus">--</strong>
             </div>
+          </div>
+        </div>
+
+        <div class="card" id="hookCenterUpdateCard">
+          <h2>Atualização do Hook Center</h2>
+          <p class="muted" id="hookCenterUpdateText">Verificando atualização do Hook Center...</p>
+          <div class="actions">
+            <button id="hookCenterUpdateButton" class="primary-button hidden" type="button">Atualizar Hook Center</button>
           </div>
         </div>
 

@@ -5,10 +5,13 @@ const os = require('os');
 const crypto = require('crypto');
 const Store = require('electron-store');
 const { spawn, execFile, execFileSync } = require('child_process');
+const { createBridgeServer, getLanIp, ensureJsonFile } = require('./bridge-server');
 
 const store = new Store({
   defaults: {
-    currentVersion: '1.0.0',
+    currentVersion: app.getVersion(),
+    hookCenterLatest: null,
+    hookCenterUpdateAvailable: false,
     lastCheck: null,
     updateAvailable: false,
     latestUpdate: null,
@@ -26,16 +29,28 @@ const store = new Store({
       maxDevices: 0,
       lastStatusAt: null
     },
-    autoStart: true
+    autoStart: true,
+    bridge: {
+      scriptsDir: '',
+      directorPort: 47831,
+      musiciansPort: 47832,
+      autoStart: true
+    }
   }
 });
 
 let mainWindow = null;
 let tray = null;
 let checkTimer = null;
+let bridgeServers = [];
+let bridgeInfos = [];
+let bridgeConfig = null;
+let bridgeLastError = '';
+let bridgeWatchTimer = null;
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest?platform=${getPlatformKey()}`;
+const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -51,7 +66,7 @@ function getAppIconPath() {
 }
 
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.hookdeveloper.updatecenter');
+  app.setAppUserModelId('com.hookdeveloper.hookcenter');
 }
 
 
@@ -63,7 +78,7 @@ function createWindow() {
     minHeight: 620,
     show: false,
     backgroundColor: '#0b0b10',
-    title: 'Hook Update Center',
+    title: 'Hook Center',
     icon: getAppIconPath(),
     autoHideMenuBar: true,
     webPreferences: {
@@ -89,7 +104,7 @@ function createWindow() {
 function createTray() {
   const iconPath = path.join(__dirname, '..', 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png');
   tray = new Tray(iconPath);
-  tray.setToolTip('Hook Update Center');
+  tray.setToolTip('Hook Center');
   rebuildTrayMenu();
 
   tray.on('click', () => {
@@ -102,11 +117,13 @@ function rebuildTrayMenu() {
   const updateText = latest?.version ? `Última publicação: ${latest.version}` : 'Atualizações: aguardando';
   const license = store.get('license') || {};
   const licenseText = license.active ? 'Licença: ativa' : 'Licença: pendente';
+  const bridgeText = bridgeServers.length > 0 ? 'Conexão via app: ativa' : 'Conexão via app: parada';
 
   const menu = Menu.buildFromTemplate([
-    { label: 'Hook Update Center', enabled: false },
+    { label: 'Hook Center', enabled: false },
     { label: updateText, enabled: false },
     { label: licenseText, enabled: false },
+    { label: bridgeText, enabled: false },
     { type: 'separator' },
     { label: 'Abrir Central', click: showMainWindow },
     { label: 'Conferir atualização agora', click: () => checkForUpdates(true) },
@@ -123,7 +140,31 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
+
+function compareVersions(a, b) {
+  const pa = String(a || '0').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '0').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+  }
+  return 0;
+}
+
+function notifyHookCenterUpdate(update) {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({
+    title: 'Nova versão do Hook Center disponível',
+    body: `Versão ${update.version || ''} disponível. Clique para atualizar.`,
+    silent: false
+  });
+  n.on('click', showMainWindow);
+  n.show();
+}
+
 function notifyUpdate(update) {
+
   if (!Notification.isSupported()) return;
   const n = new Notification({
     title: update.title || 'Nova atualização do VS Hook disponível',
@@ -526,6 +567,67 @@ async function checkForUpdates(manual = false) {
   }
 }
 
+
+function normalizeHookCenterUpdate(raw) {
+  if (!raw || raw.published === false) return null;
+  const downloadUrl = ensureAbsoluteUrl(raw.downloadUrl || (getPlatformKey() === 'macos' ? raw.macosUrl : raw.windowsUrl));
+  return {
+    product: 'hook-center',
+    updateId: raw.updateId || raw.version || null,
+    version: raw.version || '',
+    title: raw.title || 'Nova versão do Hook Center disponível',
+    notes: raw.notes || raw.description || '',
+    downloadUrl,
+    windowsUrl: ensureAbsoluteUrl(raw.windowsUrl),
+    macosUrl: ensureAbsoluteUrl(raw.macosUrl),
+    publishedAt: raw.publishedAt || null
+  };
+}
+
+async function checkHookCenterUpdates(manual = false) {
+  try {
+    const raw = await fetchJson(HOOK_CENTER_API_URL, { cache: 'no-store' });
+    const update = normalizeHookCenterUpdate(raw);
+    const currentVersion = app.getVersion();
+    const hasUpdate = !!(update?.version && update.downloadUrl && compareVersions(update.version, currentVersion) > 0);
+    store.set('hookCenterLatest', update);
+    store.set('hookCenterUpdateAvailable', hasUpdate);
+    if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+    if (hasUpdate && !manual) notifyHookCenterUpdate(update);
+    if (manual) showMainWindow();
+    return { ok: true, hasUpdate, update, state: getAppState() };
+  } catch (error) {
+    return { ok: false, error: error.message, state: getAppState() };
+  }
+}
+
+async function downloadAndInstallHookCenterUpdate() {
+  const checked = await checkHookCenterUpdates(true);
+  const update = checked.update || store.get('hookCenterLatest');
+  if (!update?.downloadUrl) throw new Error('Atualização do Hook Center indisponível para este sistema.');
+  if (!update.version || compareVersions(update.version, app.getVersion()) <= 0) {
+    throw new Error('O Hook Center já está atualizado.');
+  }
+
+  const ext = process.platform === 'darwin' ? '.dmg' : '.exe';
+  const baseName = process.platform === 'darwin' ? `Hook-Center-${update.version}-macOS${ext}` : `Hook-Center-${update.version}-Windows${ext}`;
+  const dest = path.join(app.getPath('downloads'), baseName);
+  await downloadFile(update.downloadUrl, dest, (progress) => {
+    if (mainWindow) mainWindow.webContents.send('download-progress', progress);
+  });
+
+  if (process.platform === 'win32') {
+    spawn(dest, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+    app.isQuiting = true;
+    app.quit();
+    return { ok: true, action: 'installer-started', path: dest };
+  }
+
+  await shell.openPath(dest);
+  shell.showItemInFolder(dest);
+  return { ok: true, action: 'dmg-opened', path: dest };
+}
+
 async function checkLicenseStatus(manual = false) {
   const license = store.get('license') || {};
   const docParts = splitDocument(license.document || license.cpf || license.cnpj);
@@ -576,12 +678,181 @@ async function checkLicenseStatus(manual = false) {
   }
 }
 
+
+function getDefaultReaperScriptsDir() {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'REAPER', 'Scripts');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'REAPER', 'Scripts');
+  }
+  return path.join(os.homedir(), '.config', 'REAPER', 'Scripts');
+}
+
+function readBridgeConfig() {
+  const stored = store.get('bridge') || {};
+  const defaults = {
+    scriptsDir: getDefaultReaperScriptsDir(),
+    directorPort: 47831,
+    musiciansPort: 47832,
+    autoStart: true
+  };
+  return { ...defaults, ...stored, scriptsDir: stored.scriptsDir || defaults.scriptsDir };
+}
+
+function saveBridgeConfig(config) {
+  store.set('bridge', { ...readBridgeConfig(), ...config });
+}
+
+function resolveBridgeScriptsDir(config) {
+  const envDir = process.env.VSHOOK_SCRIPTS_DIR;
+  const candidates = [envDir, config?.scriptsDir, getDefaultReaperScriptsDir()].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return path.resolve(candidate);
+    } catch (_) {}
+  }
+  const fallback = path.resolve(getDefaultReaperScriptsDir());
+  fs.mkdirSync(fallback, { recursive: true });
+  return fallback;
+}
+
+function getBridgeFallbackState(extra = {}) {
+  return {
+    bridgeVersion: 1,
+    projectName: 'Projeto sem nome',
+    projectPath: '',
+    connected: false,
+    updatedAt: null,
+    currentPage: 'regions',
+    markerMode: false,
+    currentPlaylistName: '',
+    activePlaylistId: null,
+    autoplayEnabled: false,
+    playing: false,
+    playingId: null,
+    selectedRegionId: null,
+    selectedRegionIds: [],
+    selectedPlaylistSongId: null,
+    selectedPlaylistSongIds: [],
+    selectedMarkerId: null,
+    regions: [],
+    playlists: [],
+    markers: [],
+    ...extra
+  };
+}
+
+function buildBridgeServers(config) {
+  const sharedDir = resolveBridgeScriptsDir(config);
+  const emptyAppDir = path.join(__dirname, 'bridge-empty-app');
+  fs.mkdirSync(emptyAppDir, { recursive: true });
+  const emptyIndex = path.join(emptyAppDir, 'index.html');
+  if (!fs.existsSync(emptyIndex)) {
+    fs.writeFileSync(emptyIndex, '<!doctype html><meta charset="utf-8"><title>VS Hook</title><body>VS Hook Bridge</body>', 'utf8');
+  }
+
+  return [
+    createBridgeServer({
+      appName: 'Diretor',
+      host: '0.0.0.0',
+      port: Number(config.directorPort) || 47831,
+      publicBridgeHost: getLanIp(),
+      appDir: emptyAppDir,
+      sharedDir,
+      fallbackState: getBridgeFallbackState({
+        selectedPlaylistSongIds: [],
+        clearButtonSide: 'right',
+        appActive: false,
+        timerRunning: false,
+        timerStartedAt: 0,
+        timerAccumulatedSec: 0
+      }),
+      routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
+    }),
+    createBridgeServer({
+      appName: 'Músicos',
+      host: '0.0.0.0',
+      port: Number(config.musiciansPort) || 47832,
+      publicBridgeHost: getLanIp(),
+      appDir: emptyAppDir,
+      sharedDir,
+      fallbackState: getBridgeFallbackState(),
+      routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
+    })
+  ];
+}
+
+async function stopBridgeServers() {
+  const running = [...bridgeServers];
+  bridgeServers = [];
+  bridgeInfos = [];
+  for (const server of running) {
+    try { await server.stop(); } catch (_) {}
+  }
+}
+
+async function startBridgeServers() {
+  await stopBridgeServers();
+  bridgeConfig = readBridgeConfig();
+  fs.mkdirSync(resolveBridgeScriptsDir(bridgeConfig), { recursive: true });
+  const nextServers = buildBridgeServers(bridgeConfig);
+  const nextInfos = [];
+
+  try {
+    for (const server of nextServers) {
+      const info = await server.start();
+      nextInfos.push(info);
+    }
+    bridgeServers = nextServers;
+    bridgeInfos = nextInfos;
+    bridgeLastError = '';
+    rebuildTrayMenu();
+    if (mainWindow) mainWindow.webContents.send('bridge-status', getBridgeState());
+    return getBridgeState();
+  } catch (error) {
+    bridgeLastError = error?.message || String(error || 'Erro desconhecido ao iniciar a conexão via app.');
+    for (const server of nextServers) {
+      try { await server.stop(); } catch (_) {}
+    }
+    bridgeServers = [];
+    bridgeInfos = [];
+    rebuildTrayMenu();
+    if (mainWindow) mainWindow.webContents.send('bridge-status', getBridgeState());
+    throw error;
+  }
+}
+
+async function ensureBridgeServersRunning() {
+  if (bridgeServers.length > 0) return getBridgeState();
+  return startBridgeServers();
+}
+
+function getBridgeState() {
+  const config = bridgeConfig || readBridgeConfig();
+  const lanIp = getLanIp();
+  return {
+    running: bridgeServers.length > 0,
+    lanIp,
+    scriptsDir: resolveBridgeScriptsDir(config),
+    directorPort: Number(config.directorPort) || 47831,
+    musiciansPort: Number(config.musiciansPort) || 47832,
+    directorUrl: `http://${lanIp}:${Number(config.directorPort) || 47831}`,
+    musiciansUrl: `http://${lanIp}:${Number(config.musiciansPort) || 47832}`,
+    infos: bridgeInfos,
+    error: bridgeLastError
+  };
+}
+
 function getAppState() {
   return {
-    currentVersion: store.get('currentVersion'),
+    currentVersion: app.getVersion(),
     lastCheck: store.get('lastCheck'),
     updateAvailable: store.get('updateAvailable'),
     latestUpdate: store.get('latestUpdate'),
+    hookCenterLatest: store.get('hookCenterLatest'),
+    hookCenterUpdateAvailable: store.get('hookCenterUpdateAvailable'),
     lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
     downloadedFiles: store.get('downloadedFiles'),
     installedManifest: store.get('installedManifest'),
@@ -590,7 +861,8 @@ function getAppState() {
     platform: process.platform,
     arch: process.arch,
     machineIdPath: getSharedMachineIdPath(),
-    licensePath: getSharedLicensePath()
+    licensePath: getSharedLicensePath(),
+    bridge: getBridgeState()
   };
 }
 
@@ -946,7 +1218,15 @@ ipcMain.handle('get-state', async () => {
   return getAppState();
 });
 
-ipcMain.handle('check-updates', () => checkForUpdates(true));
+ipcMain.handle('get-bridge-state', () => getBridgeState());
+ipcMain.handle('restart-bridge', () => startBridgeServers());
+ipcMain.handle('check-updates', async () => {
+  const result = await checkForUpdates(true);
+  await checkHookCenterUpdates(true);
+  return { ...result, state: getAppState() };
+});
+ipcMain.handle('check-hook-center-update', () => checkHookCenterUpdates(true));
+ipcMain.handle('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
@@ -1003,6 +1283,9 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   createWindow();
   createTray();
+  await ensureBridgeServersRunning().catch((error) => {
+    console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
+  });
 
   const license = store.get('license') || {};
   if (!license.machineId) {
@@ -1010,10 +1293,19 @@ app.whenReady().then(async () => {
   }
 
   await checkForUpdates(false);
+  await checkHookCenterUpdates(false);
   await checkLicenseStatus(false);
 
+  bridgeWatchTimer = setInterval(() => {
+    ensureBridgeServersRunning().catch((error) => {
+      console.error('[Hook Center] Tentativa de religar conexão via app falhou:', error?.message || error);
+    });
+  }, 30000);
+
   checkTimer = setInterval(async () => {
+    await ensureBridgeServersRunning().catch(() => {});
     await checkForUpdates(false);
+    await checkHookCenterUpdates(false);
     await checkLicenseStatus(false);
   }, CHECK_INTERVAL_MS);
 });
@@ -1023,5 +1315,7 @@ app.on('window-all-closed', (event) => {
 });
 
 app.on('before-quit', () => {
+  stopBridgeServers();
   if (checkTimer) clearInterval(checkTimer);
+  if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
 });

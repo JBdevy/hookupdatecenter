@@ -1,7 +1,7 @@
 {
-  "name": "hook-update-center",
+  "name": "hook-center",
   "version": "1.0.0",
-  "description": "Hook Update Center - atualizador do VS Hook",
+  "description": "Hook Center - atualizador, licença e conexão via app do VS Hook",
   "main": "src/main.js",
   "author": "Hook Developer",
   "license": "UNLICENSED",
@@ -20,8 +20,8 @@
     "electron-builder": "24.13.3"
   },
   "build": {
-    "appId": "com.hookdeveloper.updatecenter",
-    "productName": "Hook Update Center",
+    "appId": "com.hookdeveloper.hookcenter",
+    "productName": "Hook Center",
     "asar": true,
     "directories": {
       "output": "dist"
@@ -29,13 +29,14 @@
     "files": [
       "src/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "installer/**/*"
     ],
     "win": {
       "target": [
         "nsis"
       ],
-      "artifactName": "Hook-Update-Center-${version}-Windows.${ext}",
+      "artifactName": "Hook-Center-${version}-Windows.${ext}",
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -43,7 +44,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "include": "installer/uninstaller.nsh"
     },
     "mac": {
       "target": [
@@ -53,7 +55,7 @@
       ],
       "minimumSystemVersion": "11.0",
       "category": "public.app-category.utilities",
-      "artifactName": "Hook-Update-Center-${version}-macOS.${ext}",
+      "artifactName": "Hook-Center-${version}-macOS.${ext}",
       "icon": "assets/icon.icns"
     },
     "icon": "assets/icon.png"
