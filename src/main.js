@@ -751,9 +751,18 @@ function getBridgeFallbackState(extra = {}) {
   };
 }
 
+function getBridgeEmptyAppDir() {
+  // No app empacotado, __dirname fica dentro do app.asar.
+  // app.asar é arquivo, não pasta gravável. Por isso usamos userData.
+  if (app.isPackaged) {
+    return path.join(app.getPath('userData'), 'bridge-empty-app');
+  }
+  return path.join(__dirname, 'bridge-empty-app');
+}
+
 function buildBridgeServers(config) {
   const sharedDir = resolveBridgeScriptsDir(config);
-  const emptyAppDir = path.join(__dirname, 'bridge-empty-app');
+  const emptyAppDir = getBridgeEmptyAppDir();
   fs.mkdirSync(emptyAppDir, { recursive: true });
   const emptyIndex = path.join(emptyAppDir, 'index.html');
   if (!fs.existsSync(emptyIndex)) {
