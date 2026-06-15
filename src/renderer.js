@@ -143,7 +143,7 @@ function renderBridgeState(bridge) {
   if (!bridge) return;
   const runningText = $('#bridgeRunningText');
   if (runningText) {
-    runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando como Bridge.' : (bridge.error ? `Conexão parada: ${bridge.error}` : 'Conexão parada.');
+    runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando.' : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
     runningText.classList.toggle('ok-text', !!bridge.running);
   }
   if ($('#bridgeIp')) $('#bridgeIp').textContent = bridge.lanIp || '--';
