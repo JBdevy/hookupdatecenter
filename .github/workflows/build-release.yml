@@ -32,7 +32,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hook-update-center-windows
-          path: dist/*
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
 
   build-macos:
     runs-on: macos-14
@@ -57,7 +61,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hook-update-center-macos-universal
-          path: dist/*
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*.zip
+            dist/*.zip.blockmap
+            dist/*.pkg
+            dist/latest-mac.yml
+          if-no-files-found: error
 
   release:
     needs: [build-windows, build-macos]
@@ -72,7 +83,16 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/Hook-Center-*-Windows.exe
+            artifacts/**/Hook-Center-*-Windows.exe.blockmap
+            artifacts/**/latest.yml
+            artifacts/**/Hook-Center-*-macOS.dmg
+            artifacts/**/Hook-Center-*-macOS.dmg.blockmap
+            artifacts/**/Hook-Center-*-macOS.zip
+            artifacts/**/Hook-Center-*-macOS.zip.blockmap
+            artifacts/**/Hook-Center-*-macOS.pkg
+            artifacts/**/latest-mac.yml
           overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
