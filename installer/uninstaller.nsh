@@ -1,8 +1,11 @@
 !macro customUnInstall
   ; Arquivo de licença atual em C:\ProgramData
-  Delete "$COMMONAPPDATA\HookDeveloper\VSCore\sys_runtime.dat"
-  RMDir "$COMMONAPPDATA\HookDeveloper\VSCore"
-  RMDir "$COMMONAPPDATA\HookDeveloper"
+  ReadEnvStr $1 "PROGRAMDATA"
+  StrCmp $1 "" 0 +2
+  StrCpy $1 "C:\ProgramData"
+  Delete "$1\HookDeveloper\VSCore\sys_runtime.dat"
+  RMDir "$1\HookDeveloper\VSCore"
+  RMDir "$1\HookDeveloper"
 
   ; Pasta pública do Windows
   ReadEnvStr $0 "PUBLIC"
