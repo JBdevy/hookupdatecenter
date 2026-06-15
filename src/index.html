@@ -22,6 +22,7 @@
         <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
         <button class="nav-item" data-view="bridge">Conexão via app</button>
+        <button class="nav-item" data-view="lyrics">Hook Lyrics</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
@@ -155,22 +156,104 @@
 
 
       <section id="bridgeView" class="view">
-        <div class="hero-card bridge-hero">
+        <div class="hero-card bridge-hero app-store-hero">
           <div>
-            <p class="eyebrow">Hook Center Bridge</p>
-            <h1>Conexão via app</h1>
-            <p class="muted">O Hook Center já abre no tray com a conexão via app ligada automaticamente.</p>
+            <p class="eyebrow">Aplicativo VS Hook</p>
+            <h1>Baixe o app na loja</h1>
+            <p class="app-store-subtitle">Controle músicas, repertórios e partes direto pelo celular.</p>
+          </div>
+          <div class="app-store-badge">Disponível para baixar</div>
+        </div>
+
+        <div class="card app-download-card">
+          <img src="../assets/logo.png" alt="VS Hook" class="bridge-logo" />
+          <div class="app-download-copy">
+            <h2>Use o VS Hook no celular</h2>
+            <p>Abra a loja do seu celular, baixe o app <strong>VS Hook</strong> e conecte usando a mesma rede Wi‑Fi deste computador.</p>
           </div>
           <button id="restartBridgeButton" class="primary-button" type="button">Reiniciar conexão</button>
         </div>
 
-        <div class="card bridge-card-inline">
-          <img src="../assets/logo.png" alt="VS Hook" class="bridge-logo" />
-          <h2>Hook Center está funcionando como Bridge</h2>
+        <div class="card bridge-card-inline compact-connection-card">
+          <h2>Conexão pronta</h2>
           <p class="status ok-text" id="bridgeRunningText">Conexão ativa. O Hook Center já está funcionando.</p>
-          <p>📱 Abra o aplicativo <strong>VS Hook</strong> no celular.</p>
-          <p>Conecte o celular na mesma rede Wi‑Fi deste computador e o aplicativo encontrará o VS Hook automaticamente.</p>
-          <p class="muted">Se a conexão não aparecer no aplicativo, clique em <strong>Reiniciar conexão</strong> e tente novamente.</p>
+          <p class="muted">Se o app não encontrar automaticamente, clique em <strong>Reiniciar conexão</strong> e tente novamente.</p>
+        </div>
+      </section>
+
+
+
+      <section id="lyricsView" class="view">
+        <div class="hero-card bridge-hero">
+          <div>
+            <p class="eyebrow">Hook Lyrics</p>
+            <h1>Teleprompt externo</h1>
+            <p class="muted">Abra uma ou duas telas de letra e personalize a aparência de cada uma.</p>
+          </div>
+          <div class="actions">
+            <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Lyrics 1</button>
+            <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Lyrics 2</button>
+          </div>
+        </div>
+
+        <div class="lyrics-window-grid">
+          <div class="card lyrics-window-card">
+            <h2>Janela 1</h2>
+            <div class="lyrics-settings-grid">
+              <label>
+                Cor da letra
+                <input id="lyricsTextColor1" type="color" value="#ffea00" />
+              </label>
+              <label>
+                Cor do relógio
+                <input id="lyricsClockColor1" type="color" value="#00ff55" />
+              </label>
+              <label>
+                Fonte da letra
+                <select id="lyricsFontFamily1">
+                <option value="Arial">Arial</option>
+                <option value="Segoe UI">Segoe UI</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Tahoma">Tahoma</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Trebuchet MS">Trebuchet MS</option>
+                <option value="Impact">Impact</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions lyrics-actions">
+              <button id="saveLyricsSettingsButton1" class="primary-button" type="button">Salvar janela 1</button>
+            </div>
+          </div>
+
+          <div class="card lyrics-window-card">
+            <h2>Janela 2</h2>
+            <div class="lyrics-settings-grid">
+              <label>
+                Cor da letra
+                <input id="lyricsTextColor2" type="color" value="#ffea00" />
+              </label>
+              <label>
+                Cor do relógio
+                <input id="lyricsClockColor2" type="color" value="#00ff55" />
+              </label>
+              <label>
+                Fonte da letra
+                <select id="lyricsFontFamily2">
+                <option value="Arial">Arial</option>
+                <option value="Segoe UI">Segoe UI</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Tahoma">Tahoma</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Trebuchet MS">Trebuchet MS</option>
+                <option value="Impact">Impact</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions lyrics-actions">
+              <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Salvar janela 2</button>
+            </div>
+          </div>
         </div>
       </section>
 

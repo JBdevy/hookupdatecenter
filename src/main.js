@@ -35,6 +35,12 @@ const store = new Store({
       directorPort: 47831,
       musiciansPort: 47832,
       autoStart: true
+    },
+    lyrics: {
+      textColor: '#ffea00',
+      clockColor: '#00ff55',
+      fontFamily: 'Arial',
+      clockEnabled: true
     }
   }
 });
@@ -47,6 +53,7 @@ let bridgeInfos = [];
 let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
+const lyricsWindows = new Map();
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest?platform=${getPlatformKey()}`;
@@ -845,6 +852,123 @@ function getBridgeState() {
   };
 }
 
+
+function getLyricsDefaults() {
+  return {
+    textColor: '#ffea00',
+    clockColor: '#00ff55',
+    fontFamily: 'Arial',
+    clockEnabled: true
+  };
+}
+
+function normalizeLyricsSlot(slot = 1) {
+  return Number(slot) === 2 ? 2 : 1;
+}
+
+function getLyricsAllSettings() {
+  const saved = store.get('lyrics') || {};
+  const defaults = getLyricsDefaults();
+  return {
+    1: { ...defaults, ...(saved[1] || saved.one || saved.window1 || saved || {}) },
+    2: { ...defaults, ...(saved[2] || saved.two || saved.window2 || saved || {}) }
+  };
+}
+
+function getLyricsSettings(slot = 1) {
+  const id = normalizeLyricsSlot(slot);
+  return getLyricsAllSettings()[id];
+}
+
+function saveLyricsSettings(settings = {}, slot = 1) {
+  const id = normalizeLyricsSlot(slot || settings.slot);
+  const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact'];
+  const all = getLyricsAllSettings();
+  const next = { ...all[id] };
+  if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
+  if (typeof settings.clockColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.clockColor)) next.clockColor = settings.clockColor;
+  if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
+  if (typeof settings.clockEnabled === 'boolean') next.clockEnabled = settings.clockEnabled;
+  all[id] = next;
+  store.set('lyrics', all);
+  const win = lyricsWindows.get(id);
+  if (win && !win.isDestroyed()) win.webContents.send('lyrics-settings-updated', { slot: id, settings: next });
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lyrics-settings-updated', getLyricsAllSettings());
+  return next;
+}
+
+function getLyricsStatePath() {
+  const config = bridgeConfig || readBridgeConfig();
+  const sharedDir = resolveBridgeScriptsDir(config);
+  return path.join(sharedDir, 'vshook_lyrics_state.json');
+}
+
+function readJsonFileSafe(filePath, fallback = {}) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!String(raw || '').trim()) return fallback;
+    return JSON.parse(raw);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function getLyricsState() {
+  const data = readJsonFileSafe(getLyricsStatePath(), {});
+  return {
+    text: String(data.text || data.lyrics || ''),
+    song: String(data.song || data.currentSong || ''),
+    part: String(data.part || data.currentPart || ''),
+    timerRunning: Boolean(data.timerRunning),
+    timerStartedAt: Number(data.timerStartedAt || 0),
+    timerAccumulatedSec: Number(data.timerAccumulatedSec || 0),
+    playing: Boolean(data.playing),
+    updatedAt: data.updatedAt || null
+  };
+}
+
+function createLyricsWindow(slot = 1) {
+  const id = Number(slot) === 2 ? 2 : 1;
+  const existing = lyricsWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    existing.focus();
+    return { ok: true, alreadyOpen: true, slot: id };
+  }
+
+  const win = new BrowserWindow({
+    width: 980,
+    height: 560,
+    minWidth: 640,
+    minHeight: 360,
+    backgroundColor: '#000000',
+    title: 'Hook Lyrics',
+    icon: getAppIconPath(),
+    frame: false,
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  lyricsWindows.set(id, win);
+  win.loadFile(path.join(__dirname, 'lyrics.html'), { query: { slot: String(id) } });
+  win.once('ready-to-show', () => win.show());
+  win.on('closed', () => lyricsWindows.delete(id));
+  return { ok: true, slot: id };
+}
+
+function getLyricsWindowsState() {
+  return {
+    oneOpen: !!(lyricsWindows.get(1) && !lyricsWindows.get(1).isDestroyed()),
+    twoOpen: !!(lyricsWindows.get(2) && !lyricsWindows.get(2).isDestroyed())
+  };
+}
+
 function getAppState() {
   return {
     currentVersion: app.getVersion(),
@@ -862,7 +986,9 @@ function getAppState() {
     arch: process.arch,
     machineIdPath: getSharedMachineIdPath(),
     licensePath: getSharedLicensePath(),
-    bridge: getBridgeState()
+    bridge: getBridgeState(),
+    lyrics: getLyricsSettings(),
+    lyricsWindows: getLyricsWindowsState()
   };
 }
 
@@ -1233,6 +1359,21 @@ ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('get-previous-updates', () => getPreviousUpdates());
 ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payload?.update || null));
 ipcMain.handle('install-update', () => installDownloadedUpdate());
+ipcMain.handle('get-lyrics-settings', (_event, slot) => slot ? getLyricsSettings(slot) : getLyricsAllSettings());
+ipcMain.handle('save-lyrics-settings', (_event, payload) => saveLyricsSettings(payload || {}, payload?.slot));
+ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot));
+ipcMain.handle('close-lyrics-window', (_event, slot) => {
+  const id = Number(slot) === 2 ? 2 : 1;
+  const win = lyricsWindows.get(id);
+  if (win && !win.isDestroyed()) win.close();
+  return { ok: true, slot: id };
+});
+ipcMain.handle('get-lyrics-state', () => getLyricsState());
+ipcMain.handle('close-current-window', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) win.close();
+  return { ok: true };
+});
 
 ipcMain.handle('activate-license', async (_event, payload) => {
   const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
@@ -1315,6 +1456,7 @@ app.on('window-all-closed', (event) => {
 });
 
 app.on('before-quit', () => {
+  for (const win of lyricsWindows.values()) { try { if (win && !win.isDestroyed()) win.close(); } catch (_) {} }
   stopBridgeServers();
   if (checkTimer) clearInterval(checkTimer);
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);

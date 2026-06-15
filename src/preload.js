@@ -14,9 +14,16 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   openSupport: () => ipcRenderer.invoke('open-support'),
   getBridgeState: () => ipcRenderer.invoke('get-bridge-state'),
   restartBridge: () => ipcRenderer.invoke('restart-bridge'),
+  getLyricsSettings: (slot) => ipcRenderer.invoke('get-lyrics-settings', slot),
+  saveLyricsSettings: (payload) => ipcRenderer.invoke('save-lyrics-settings', payload),
+  openLyricsWindow: (slot) => ipcRenderer.invoke('open-lyrics-window', slot),
+  closeLyricsWindow: (slot) => ipcRenderer.invoke('close-lyrics-window', slot),
+  getLyricsState: () => ipcRenderer.invoke('get-lyrics-state'),
+  closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data)),
   onLicenseStatus: (callback) => ipcRenderer.on('license-status', (_event, data) => callback(data)),
   onBridgeStatus: (callback) => ipcRenderer.on('bridge-status', (_event, data) => callback(data)),
   onUpdateError: (callback) => ipcRenderer.on('update-error', (_event, message) => callback(message)),
-  onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (_event, progress) => callback(progress))
+  onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (_event, progress) => callback(progress)),
+  onLyricsSettingsUpdated: (callback) => ipcRenderer.on('lyrics-settings-updated', (_event, data) => callback(data))
 });

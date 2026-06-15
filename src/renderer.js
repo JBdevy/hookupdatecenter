@@ -139,6 +139,39 @@ function escapeHtml(value) {
 }
 
 
+
+function applyLyricsSettingsToForm(settings = {}) {
+  const all = settings[1] || settings[2] ? settings : { 1: settings, 2: settings };
+  [1, 2].forEach((slot) => {
+    const data = all[slot] || {};
+    const textColor = $(`#lyricsTextColor${slot}`);
+    const clockColor = $(`#lyricsClockColor${slot}`);
+    const fontFamily = $(`#lyricsFontFamily${slot}`);
+    if (textColor) textColor.value = data.textColor || '#ffea00';
+    if (clockColor) clockColor.value = data.clockColor || '#00ff55';
+    if (fontFamily) fontFamily.value = data.fontFamily || 'Arial';
+  });
+}
+
+async function refreshLyricsSettings() {
+  try {
+    applyLyricsSettingsToForm(await window.hookUpdateCenter.getLyricsSettings());
+  } catch (_) {}
+}
+
+async function saveLyricsSettingsFromForm(slot = 1) {
+  const id = Number(slot) === 2 ? 2 : 1;
+  const payload = {
+    slot: id,
+    textColor: $(`#lyricsTextColor${id}`)?.value || '#ffea00',
+    clockColor: $(`#lyricsClockColor${id}`)?.value || '#00ff55',
+    fontFamily: $(`#lyricsFontFamily${id}`)?.value || 'Arial'
+  };
+  const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
+  applyLyricsSettingsToForm({ [id]: saved });
+  return saved;
+}
+
 function renderBridgeState(bridge) {
   if (!bridge) return;
   const runningText = $('#bridgeRunningText');
@@ -361,6 +394,7 @@ async function init() {
         setView(button.dataset.view);
         if (button.dataset.view === 'previous') loadPreviousUpdates();
         if (button.dataset.view === 'bridge') refreshBridgeState();
+        if (button.dataset.view === 'lyrics') refreshLyricsSettings();
       });
     }
   });
@@ -393,6 +427,32 @@ async function init() {
     }
   });
   $('#supportButton')?.addEventListener('click', openSupport);
+
+  $('#openLyricsOneButton')?.addEventListener('click', async () => {
+    try { await saveLyricsSettingsFromForm(1); await window.hookUpdateCenter.openLyricsWindow(1); }
+    catch (error) { showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível abrir o Lyrics 1.'), type: 'error' }); }
+  });
+  $('#openLyricsTwoButton')?.addEventListener('click', async () => {
+    try { await saveLyricsSettingsFromForm(2); await window.hookUpdateCenter.openLyricsWindow(2); }
+    catch (error) { showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível abrir o Lyrics 2.'), type: 'error' }); }
+  });
+  $('#saveLyricsSettingsButton1')?.addEventListener('click', async () => {
+    try {
+      await saveLyricsSettingsFromForm(1);
+      showModal({ title: 'Hook Lyrics', message: 'A aparência da janela 1 foi salva.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
+    }
+  });
+  $('#saveLyricsSettingsButton2')?.addEventListener('click', async () => {
+    try {
+      await saveLyricsSettingsFromForm(2);
+      showModal({ title: 'Hook Lyrics', message: 'A aparência da janela 2 foi salva.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
+    }
+  });
+  window.hookUpdateCenter.onLyricsSettingsUpdated?.(applyLyricsSettingsToForm);
 
   $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
   $('#closeVideoModalButton')?.addEventListener('click', closeVideoModal);
