@@ -1,17 +1,22 @@
 !macro customUnInstall
-  ; Arquivo de licença atual
-  Delete "$PROGRAMDATA\HookDeveloper\VSCore\sys_runtime.dat"
-  RMDir "$PROGRAMDATA\HookDeveloper\VSCore"
-  RMDir "$PROGRAMDATA\HookDeveloper"
+  ; Arquivo de licença atual em C:\ProgramData
+  Delete "$COMMONAPPDATA\HookDeveloper\VSCore\sys_runtime.dat"
+  RMDir "$COMMONAPPDATA\HookDeveloper\VSCore"
+  RMDir "$COMMONAPPDATA\HookDeveloper"
+
+  ; Pasta pública do Windows
+  ReadEnvStr $0 "PUBLIC"
+  StrCmp $0 "" 0 +2
+  StrCpy $0 "$PROFILE\..\Public"
 
   ; Licenças legadas
-  Delete "$PUBLIC\vshook_license.json"
+  Delete "$0\vshook_license.json"
   Delete "$PROFILE\.vshook_license.json"
 
   ; Scripts instalados pelo Hook Update Center
-  Delete "$PUBLIC\VS Hook APP\VS Hook.lua"
-  Delete "$PUBLIC\VS Hook APP\Hook Lyrics.lua"
-  Delete "$PUBLIC\VS Hook APP\Hook lyrics.lua"
+  Delete "$0\VS Hook APP\VS Hook.lua"
+  Delete "$0\VS Hook APP\Hook Lyrics.lua"
+  Delete "$0\VS Hook APP\Hook lyrics.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook lyrics.lua"
@@ -24,6 +29,6 @@
   Delete "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll"
 
   ; Diretórios vazios
-  RMDir "$PUBLIC\VS Hook APP"
+  RMDir "$0\VS Hook APP"
   RMDir "$APPDATA\REAPER\Scripts\VS Hook APP"
 !macroend
