@@ -153,9 +153,19 @@ function applyLyricsSettingsToForm(settings = {}) {
   });
 }
 
+function applyTechnicalNoticeSettingsToForm(settings = {}) {
+  const textColor = $('#technicalNoticeTextColor');
+  const fontFamily = $('#technicalNoticeFontFamily');
+  if (textColor) textColor.value = settings.textColor || '#ffea00';
+  if (fontFamily) fontFamily.value = settings.fontFamily || 'Arial';
+}
+
 async function refreshLyricsSettings() {
   try {
     applyLyricsSettingsToForm(await window.hookUpdateCenter.getLyricsSettings());
+  } catch (_) {}
+  try {
+    applyTechnicalNoticeSettingsToForm(await window.hookUpdateCenter.getTechnicalNoticeSettings());
   } catch (_) {}
 }
 
@@ -169,6 +179,16 @@ async function saveLyricsSettingsFromForm(slot = 1) {
   };
   const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
   applyLyricsSettingsToForm({ [id]: saved });
+  return saved;
+}
+
+async function saveTechnicalNoticeSettingsFromForm() {
+  const payload = {
+    textColor: $('#technicalNoticeTextColor')?.value || '#ffea00',
+    fontFamily: $('#technicalNoticeFontFamily')?.value || 'Arial'
+  };
+  const saved = await window.hookUpdateCenter.saveTechnicalNoticeSettings(payload);
+  applyTechnicalNoticeSettingsToForm(saved);
   return saved;
 }
 
@@ -452,7 +472,16 @@ async function init() {
       showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
     }
   });
+  $('#saveTechnicalNoticeSettingsButton')?.addEventListener('click', async () => {
+    try {
+      await saveTechnicalNoticeSettingsFromForm();
+      showModal({ title: 'Avisos técnicos', message: 'A aparência dos avisos técnicos foi salva.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Avisos técnicos', message: friendlyError(error, 'Não foi possível salvar a aparência dos avisos técnicos.'), type: 'error' });
+    }
+  });
   window.hookUpdateCenter.onLyricsSettingsUpdated?.(applyLyricsSettingsToForm);
+  window.hookUpdateCenter.onTechnicalNoticeSettingsUpdated?.(applyTechnicalNoticeSettingsToForm);
 
   $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
   $('#closeVideoModalButton')?.addEventListener('click', closeVideoModal);

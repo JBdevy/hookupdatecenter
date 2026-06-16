@@ -1,6 +1,7 @@
 const timerEl = document.getElementById('lyricsTimer');
 const textEl = document.getElementById('lyricsText');
 const closeButton = document.getElementById('closeLyricsButton');
+const technicalNoticeEl = document.getElementById('technicalNotice');
 const params = new URLSearchParams(window.location.search);
 const lyricsSlot = Number(params.get('slot')) === 2 ? 2 : 1;
 
@@ -9,6 +10,11 @@ let settings = {
   clockColor: '#00ff55',
   fontFamily: 'Arial'
 };
+let technicalNoticeSettings = {
+  textColor: '#ffea00',
+  fontFamily: 'Arial'
+};
+let activeTechnicalNotice = null;
 let lastText = '';
 let timerRunning = false;
 let timerStartedAtMs = 0;
@@ -27,6 +33,32 @@ function applySettings(next = {}) {
   document.documentElement.style.setProperty('--lyrics-clock-color', normalizeColor(settings.clockColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-font', `${settings.fontFamily || 'Arial'}, sans-serif`);
   updateFontFit();
+}
+
+function applyTechnicalNoticeSettings(next = {}) {
+  technicalNoticeSettings = { ...technicalNoticeSettings, ...(next || {}) };
+  document.documentElement.style.setProperty('--notice-text-color', normalizeColor(technicalNoticeSettings.textColor, '#ffea00'));
+  document.documentElement.style.setProperty('--notice-font', `${technicalNoticeSettings.fontFamily || 'Arial'}, sans-serif`);
+}
+
+function formatTechnicalNoticeText(text) {
+  const clean = String(text || '').trim();
+  return clean ? `⚠️ ${clean} ⚠️` : '';
+}
+
+function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
+  activeTechnicalNotice = notice && typeof notice === 'object' ? notice : null;
+  const text = String(activeTechnicalNotice?.text || activeTechnicalNotice?.message || '').trim();
+  const expiresAt = Number(activeTechnicalNotice?.expiresAt || 0);
+  const active = !!text && Number.isFinite(expiresAt) && expiresAt > Date.now();
+  if (!technicalNoticeEl) return;
+  if (!active) {
+    technicalNoticeEl.textContent = '';
+    technicalNoticeEl.classList.add('hidden');
+    return;
+  }
+  technicalNoticeEl.textContent = formatTechnicalNoticeText(text);
+  technicalNoticeEl.classList.remove('hidden');
 }
 
 function formatTimer(sec) {
@@ -72,6 +104,9 @@ function updateFontFit() {
 async function pollState() {
   try {
     const state = await window.hookUpdateCenter.getLyricsState();
+    if (state.technicalNoticeSettings) applyTechnicalNoticeSettings(state.technicalNoticeSettings);
+    updateTechnicalNoticeVisual(state.technicalNotice || null);
+
     const nextText = String(state.text || '');
     if (nextText !== lastText) {
       lastText = nextText;
@@ -96,7 +131,9 @@ async function pollState() {
 
 async function init() {
   try { applySettings(await window.hookUpdateCenter.getLyricsSettings(lyricsSlot)); } catch (_) { applySettings(settings); }
+  try { applyTechnicalNoticeSettings(await window.hookUpdateCenter.getTechnicalNoticeSettings()); } catch (_) { applyTechnicalNoticeSettings(technicalNoticeSettings); }
   window.hookUpdateCenter.onLyricsSettingsUpdated?.(applySettings);
+  window.hookUpdateCenter.onTechnicalNoticeSettingsUpdated?.(applyTechnicalNoticeSettings);
   const stopCloseButtonDrag = (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -124,6 +161,7 @@ async function init() {
   await pollState();
   setInterval(pollState, 120);
   setInterval(updateTimerVisual, 250);
+  setInterval(() => updateTechnicalNoticeVisual(activeTechnicalNotice), 250);
 }
 
 init();

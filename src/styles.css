@@ -464,6 +464,7 @@ input[type="color"]:focus {
   gap: 16px;
 }
 .lyrics-window-card h2 { margin-bottom: 12px; }
+.technical-notice-settings-card { grid-column: 1 / -1; }
 .lyrics-window-card .lyrics-settings-grid {
   grid-template-columns: 1fr;
 }

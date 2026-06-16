@@ -871,6 +871,31 @@ function getLyricsDefaults() {
   };
 }
 
+function getTechnicalNoticeDefaults() {
+  return {
+    textColor: '#ffea00',
+    fontFamily: 'Arial'
+  };
+}
+
+function getTechnicalNoticeSettings() {
+  const saved = store.get('technicalNoticeSettings') || {};
+  return { ...getTechnicalNoticeDefaults(), ...saved };
+}
+
+function saveTechnicalNoticeSettings(settings = {}) {
+  const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact'];
+  const next = { ...getTechnicalNoticeSettings() };
+  if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
+  if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
+  store.set('technicalNoticeSettings', next);
+  for (const win of lyricsWindows.values()) {
+    if (win && !win.isDestroyed()) win.webContents.send('technical-notice-settings-updated', next);
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('technical-notice-settings-updated', next);
+  return next;
+}
+
 function normalizeLyricsSlot(slot = 1) {
   return Number(slot) === 2 ? 2 : 1;
 }
@@ -923,6 +948,31 @@ function readJsonFileSafe(filePath, fallback = {}) {
   }
 }
 
+function getTechnicalNoticeStatePath() {
+  const config = bridgeConfig || readBridgeConfig();
+  const sharedDir = resolveBridgeScriptsDir(config);
+  return path.join(sharedDir, 'vshook_technical_notice.json');
+}
+
+function getActiveTechnicalNotice() {
+  const data = readJsonFileSafe(getTechnicalNoticeStatePath(), null);
+  if (!data || typeof data !== 'object') return null;
+  const text = String(data.text || data.message || '').trim();
+  const expiresAt = Number(data.expiresAt || 0);
+  if (!text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  const source = String(data.source || 'recados').toLowerCase() === 'director' ? 'director' : 'recados';
+  return {
+    id: String(data.id || ''),
+    text,
+    message: text,
+    source,
+    priority: source === 'director' ? 2 : 1,
+    expiresAt,
+    expiresAtIso: data.expiresAtIso || new Date(expiresAt).toISOString(),
+    updatedAt: data.updatedAt || data.createdAt || null
+  };
+}
+
 function getLyricsState() {
   const data = readJsonFileSafe(getLyricsStatePath(), {});
   return {
@@ -933,7 +983,9 @@ function getLyricsState() {
     timerStartedAt: Number(data.timerStartedAt || 0),
     timerAccumulatedSec: Number(data.timerAccumulatedSec || 0),
     playing: Boolean(data.playing),
-    updatedAt: data.updatedAt || null
+    updatedAt: data.updatedAt || null,
+    technicalNotice: getActiveTechnicalNotice(),
+    technicalNoticeSettings: getTechnicalNoticeSettings()
   };
 }
 
@@ -997,6 +1049,7 @@ function getAppState() {
     licensePath: getSharedLicensePath(),
     bridge: getBridgeState(),
     lyrics: getLyricsSettings(),
+    technicalNoticeSettings: getTechnicalNoticeSettings(),
     lyricsWindows: getLyricsWindowsState()
   };
 }
@@ -1370,6 +1423,8 @@ ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payl
 ipcMain.handle('install-update', () => installDownloadedUpdate());
 ipcMain.handle('get-lyrics-settings', (_event, slot) => slot ? getLyricsSettings(slot) : getLyricsAllSettings());
 ipcMain.handle('save-lyrics-settings', (_event, payload) => saveLyricsSettings(payload || {}, payload?.slot));
+ipcMain.handle('get-technical-notice-settings', () => getTechnicalNoticeSettings());
+ipcMain.handle('save-technical-notice-settings', (_event, payload) => saveTechnicalNoticeSettings(payload || {}));
 ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot));
 ipcMain.handle('close-lyrics-window', (_event, slot) => {
   const id = Number(slot) === 2 ? 2 : 1;

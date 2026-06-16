@@ -2,6 +2,8 @@
   --lyrics-text-color: #ffea00;
   --lyrics-clock-color: #00ff55;
   --lyrics-font: Arial, sans-serif;
+  --notice-text-color: #ffea00;
+  --notice-font: Arial, sans-serif;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -84,4 +86,31 @@ body {
 @media (max-height: 500px) {
   .lyrics-stage { grid-template-rows: 56px 1fr; padding-top: 18px; }
   .lyrics-timer { font-size: clamp(28px, 6vw, 52px); }
+}
+
+
+.technical-notice {
+  -webkit-app-region: no-drag;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7vh 7vw;
+  pointer-events: none;
+  color: var(--notice-text-color);
+  font-family: var(--notice-font);
+  font-size: clamp(34px, 6.4vw, 96px);
+  line-height: 1.08;
+  font-weight: 900;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+  text-shadow: 0 .06em .06em rgba(0,0,0,.98), 0 0 28px rgba(0,0,0,.9);
+  background: radial-gradient(circle at center, rgba(0,0,0,.78), rgba(0,0,0,.34) 48%, rgba(0,0,0,.08));
+}
+.technical-notice.hidden {
+  display: none;
 }

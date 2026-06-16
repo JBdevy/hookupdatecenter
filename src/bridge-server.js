@@ -6,6 +6,8 @@ const { URL } = require('url')
 
 const PROJECT_STALE_MS = 120000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
+const TECHNICAL_NOTICE_DURATION_MS = 10000
+const TECHNICAL_NOTICE_MAX_LEN = 500
 
 function parseDateMs(value) {
   if (!value) return 0
@@ -189,6 +191,95 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8')
 }
 
+function simpleHash(str) {
+  const input = String(str ?? '')
+  let h1 = 0x45D9
+  let h2 = 0x2710
+
+  for (let i = 0; i < input.length; i += 1) {
+    const b = input.charCodeAt(i)
+    const pos = i + 1
+    h1 = (h1 ^ (b * pos + 17)) & 0xFFFFFF
+    h2 = (h2 + ((b + i) * 131)) & 0xFFFFFF
+    h1 = (h1 * 33 + h2) & 0xFFFFFF
+    h2 = (h2 * 17 + h1) & 0xFFFFFF
+  }
+
+  const n = (((h1 << 12) >>> 0) + h2) >>> 0
+  return n.toString(16).toUpperCase().padStart(8, '0')
+}
+
+function normalizeTechnicalNotice(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const text = String(raw.text || raw.message || '').trim()
+  const expiresAt = Number(raw.expiresAt || 0)
+  if (!text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
+  const source = String(raw.source || 'recados').toLowerCase() === 'director' ? 'director' : 'recados'
+  const priority = source === 'director' ? 2 : Math.max(1, Math.floor(Number(raw.priority) || 1))
+  return {
+    id: String(raw.id || ''),
+    text,
+    message: text,
+    source,
+    priority,
+    createdAt: raw.createdAt || null,
+    updatedAt: raw.updatedAt || raw.createdAt || null,
+    expiresAt,
+    expiresAtIso: raw.expiresAtIso || new Date(expiresAt).toISOString(),
+  }
+}
+
+function readActiveTechnicalNotice(noticeFile) {
+  return normalizeTechnicalNotice(readJson(noticeFile, null))
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function isTechnicalNoticeAuthorized(parsed, state, source) {
+  const sourceName = String(source || '').toLowerCase() === 'director' ? 'director' : 'recados'
+  const password = String(parsed.password || parsed.pass || '').trim()
+  const passwordHash = String(parsed.passwordHash || parsed.authHash || '').trim()
+
+  if (sourceName === 'director') {
+    const directorHash = String(state?.authHash || '').trim()
+    const sessionHash = String(parsed.sessionHash || parsed.directorHash || '').trim()
+    if (!state?.authEnabled || !directorHash || (sessionHash && sessionHash === directorHash)) return true
+  }
+
+  const configuredHash = firstString(
+    state?.recadosAuthHash,
+    state?.recadosPasswordHash,
+    state?.technicalNoticeAuthHash,
+    state?.technicalNoticePasswordHash,
+    state?.noticeAuthHash,
+    state?.noticePasswordHash
+  )
+  const configuredPassword = firstString(
+    state?.recadosPassword,
+    state?.technicalNoticePassword,
+    state?.noticePassword
+  )
+  const authRequired = Boolean(
+    state?.recadosAuthEnabled === true ||
+    state?.technicalNoticeAuthEnabled === true ||
+    state?.noticeAuthEnabled === true ||
+    configuredHash ||
+    configuredPassword
+  )
+
+  if (!authRequired) return true
+  if (configuredHash && passwordHash && passwordHash === configuredHash) return true
+  if (configuredHash && password && simpleHash(password) === configuredHash) return true
+  if (configuredPassword && password && password === configuredPassword) return true
+  return false
+}
+
 function getLanIp() {
   const nets = os.networkInterfaces()
   const ignored = ['loopback','topaz','km-test','virtual','vmware','virtualbox','hamachi','tailscale','tap','docker','hyper-v','vpn']
@@ -344,6 +435,7 @@ function createBridgeServer(options) {
   const sharedDir = options.sharedDir
   const stateFile = path.join(sharedDir, 'vshook_state.json')
   const commandsFile = path.join(sharedDir, 'vshook_commands.json')
+  const noticeFile = path.join(sharedDir, 'vshook_technical_notice.json')
   const routes = normalizeRoutes(options.routes)
   const fallbackState = options.fallbackState || {
     bridgeVersion: 1,
@@ -459,6 +551,69 @@ function createBridgeServer(options) {
         appName,
         ...buildProjectPayload(state),
         updatedAt: state.updatedAt || null,
+      })
+      return
+    }
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
+      sendJson(res, 200, { ok: true, notice: readActiveTechnicalNotice(noticeFile), now: Date.now() })
+      return
+    }
+
+    if (req.method === 'POST' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
+      let body = ''
+      let tooLarge = false
+      req.on('data', (chunk) => {
+        body += chunk.toString('utf8')
+        if (body.length > 1024 * 64) {
+          tooLarge = true
+          req.pause()
+        }
+      })
+      req.on('end', () => {
+        if (tooLarge) {
+          sendJson(res, 413, { ok: false, error: 'Recado muito grande' })
+          return
+        }
+        try {
+          const parsed = body ? JSON.parse(body) : {}
+          const text = String(parsed.text || parsed.message || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
+          const source = String(parsed.source || '').toLowerCase() === 'director' ? 'director' : 'recados'
+          const priority = source === 'director' ? 2 : 1
+          const state = readJson(stateFile, fallbackState)
+
+          if (!text) {
+            sendJson(res, 400, { ok: false, error: 'Digite um recado antes de enviar.' })
+            return
+          }
+          if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
+            sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
+            return
+          }
+
+          const activeNotice = readActiveTechnicalNotice(noticeFile)
+          if (activeNotice && activeNotice.priority > priority) {
+            sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
+            return
+          }
+
+          const now = Date.now()
+          const notice = {
+            id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
+            text,
+            message: text,
+            source,
+            priority,
+            createdAt: new Date(now).toISOString(),
+            updatedAt: new Date(now).toISOString(),
+            expiresAt: now + TECHNICAL_NOTICE_DURATION_MS,
+            expiresAtIso: new Date(now + TECHNICAL_NOTICE_DURATION_MS).toISOString(),
+          }
+          writeJson(noticeFile, notice)
+          sendJson(res, 200, { ok: true, notice, now })
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: 'JSON inválido' })
+        }
       })
       return
     }
