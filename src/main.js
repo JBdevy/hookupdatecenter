@@ -665,6 +665,9 @@ async function checkLicenseStatus(manual = false) {
       active,
       devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
       maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+      message: result.message || result.warning || '',
+      warning: result.warning || '',
+      reason: result.reason || '',
       lastStatusAt: new Date().toISOString()
     };
 
@@ -672,7 +675,7 @@ async function checkLicenseStatus(manual = false) {
 
     if (!active) {
       removeLocalLicense();
-      notifyLicense('Este computador foi desvinculado da licença do VS Hook.');
+      notifyLicense(result.message || 'Este computador foi desvinculado da licença do VS Hook.');
     }
 
     rebuildTrayMenu();
@@ -1503,6 +1506,9 @@ ipcMain.handle('activate-license', async (_event, payload) => {
     active: true,
     devicesUsed: result.devicesUsed ?? result.usedDevices ?? 1,
     maxDevices: result.maxDevices ?? 2,
+    message: result.message || result.warning || 'Licença ativada com sucesso.',
+    warning: result.warning || '',
+    reason: result.reason || 'active',
     lastStatusAt: new Date().toISOString()
   };
 

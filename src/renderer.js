@@ -26,6 +26,10 @@ function friendlyError(error, fallback) {
     }
   }
 
+  if (lower.includes('cancelamento da assinatura') || lower.includes('assinatura está atrasada') || lower.includes('assinatura esta atrasada') || lower.includes('licença será removido') || lower.includes('licenca sera removido') || lower.includes('terceiros') || lower.includes('compartilhamento')) {
+    return message;
+  }
+
   if (lower.includes('já possui') || lower.includes('limite') || lower.includes('computadores')) {
     return message;
   }
@@ -275,7 +279,10 @@ function renderState(nextState) {
   $('#licenseActive').classList.toggle('ok-text', !!license.active);
   $('#licenseDevices').textContent = `${license.devicesUsed || 0} de ${license.maxDevices || 0}`;
   
-  if (license.active) {
+  const licenseMessage = license.message || license.warning || '';
+  if (licenseMessage) {
+    $('#licenseMessage').textContent = licenseMessage;
+  } else if (license.active) {
     $('#licenseMessage').textContent = 'Licença ativa.';
   } else if (!$('#licenseMessage').textContent) {
     $('#licenseMessage').textContent = 'Aguardando ativação.';
@@ -603,10 +610,17 @@ async function init() {
       });
 
       renderState(result.state || await window.hookUpdateCenter.getState());
-      $('#licenseMessage').textContent = 'Licença ativada com sucesso.';
+      const msg = result?.result?.message || result?.result?.warning || 'Licença ativada com sucesso.';
+      $('#licenseMessage').textContent = msg;
+      if (result?.result?.warning) {
+        showModal({ title: 'Aviso da assinatura', message: msg, type: 'info' });
+      }
     } catch (error) {
-      $('#licenseMessage').textContent = friendlyError(error, 'Erro ao ativar licença.');
-      showModal({ title: 'Licença não encontrada', message: friendlyError(error, 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.'), type: 'error' });
+      const msg = friendlyError(error, 'Erro ao ativar licença.');
+      $('#licenseMessage').textContent = msg;
+      const lowerMsg = msg.toLowerCase();
+      const title = (lowerMsg.includes('terceiros') || lowerMsg.includes('compartilhamento')) ? 'Alerta de licença' : 'Licença não encontrada';
+      showModal({ title, message: msg, type: 'error' });
     } finally {
       $('#activateButton').disabled = false;
       $('#activateButton').textContent = 'Ativar licença';
@@ -619,11 +633,15 @@ async function init() {
       $('#licenseCheckButton').textContent = 'Verificando...';
       const result = await window.hookUpdateCenter.checkLicenseStatus();
       renderState(result.state || await window.hookUpdateCenter.getState());
-      $('#licenseMessage').textContent = result.active ? 'Licença ativa.' : 'Esta licença não está ativa.';
+      const msg = result?.result?.message || result?.result?.warning || (result.active ? 'Licença ativa.' : 'Esta licença não está ativa.');
+      $('#licenseMessage').textContent = msg;
+      if (result?.result?.warning && result.active) {
+        showModal({ title: 'Aviso da assinatura', message: msg, type: 'info' });
+      }
       if (!result.active) {
         showModal({
-          title: 'Licença não encontrada',
-          message: 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.',
+          title: 'Licença não ativa',
+          message: msg,
           type: 'error'
         });
       }
