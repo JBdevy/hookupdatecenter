@@ -5,7 +5,7 @@ const os = require('os');
 const crypto = require('crypto');
 const Store = require('electron-store');
 const { spawn, execFile, execFileSync } = require('child_process');
-const { createBridgeServer, getLanIp, ensureJsonFile } = require('./bridge-server');
+const { createBridgeServer, getLanIp, getAllLanIps, ensureJsonFile } = require('./bridge-server');
 
 const store = new Store({
   defaults: {
@@ -728,7 +728,7 @@ function resolveBridgeScriptsDir(config) {
 function getBridgeFallbackState(extra = {}) {
   return {
     bridgeVersion: 1,
-    projectName: 'Projeto sem nome',
+    projectName: '',
     projectPath: '',
     connected: false,
     updatedAt: null,
@@ -751,23 +751,26 @@ function getBridgeFallbackState(extra = {}) {
   };
 }
 
-function getBridgeEmptyAppDir() {
-  // No app empacotado, __dirname fica dentro do app.asar.
-  // app.asar é arquivo, não pasta gravável. Por isso usamos userData.
-  if (app.isPackaged) {
-    return path.join(app.getPath('userData'), 'bridge-empty-app');
+function getBridgeWebAppDir() {
+  const bundledAppDir = path.join(__dirname, 'bridge-web-app');
+  const bundledIndex = path.join(bundledAppDir, 'index.html');
+  if (fs.existsSync(bundledIndex)) return bundledAppDir;
+
+  // Fallback de segurança para builds antigos/incompletos.
+  const fallbackDir = app.isPackaged
+    ? path.join(app.getPath('userData'), 'bridge-empty-app')
+    : path.join(__dirname, 'bridge-empty-app');
+  fs.mkdirSync(fallbackDir, { recursive: true });
+  const fallbackIndex = path.join(fallbackDir, 'index.html');
+  if (!fs.existsSync(fallbackIndex)) {
+    fs.writeFileSync(fallbackIndex, '<!doctype html><meta charset="utf-8"><title>VS Hook</title><body>VS Hook Bridge</body>', 'utf8');
   }
-  return path.join(__dirname, 'bridge-empty-app');
+  return fallbackDir;
 }
 
 function buildBridgeServers(config) {
   const sharedDir = resolveBridgeScriptsDir(config);
-  const emptyAppDir = getBridgeEmptyAppDir();
-  fs.mkdirSync(emptyAppDir, { recursive: true });
-  const emptyIndex = path.join(emptyAppDir, 'index.html');
-  if (!fs.existsSync(emptyIndex)) {
-    fs.writeFileSync(emptyIndex, '<!doctype html><meta charset="utf-8"><title>VS Hook</title><body>VS Hook Bridge</body>', 'utf8');
-  }
+  const bridgeWebAppDir = getBridgeWebAppDir();
 
   return [
     createBridgeServer({
@@ -775,7 +778,7 @@ function buildBridgeServers(config) {
       host: '0.0.0.0',
       port: Number(config.directorPort) || 47831,
       publicBridgeHost: getLanIp(),
-      appDir: emptyAppDir,
+      appDir: bridgeWebAppDir,
       sharedDir,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
@@ -792,7 +795,7 @@ function buildBridgeServers(config) {
       host: '0.0.0.0',
       port: Number(config.musiciansPort) || 47832,
       publicBridgeHost: getLanIp(),
-      appDir: emptyAppDir,
+      appDir: bridgeWebAppDir,
       sharedDir,
       fallbackState: getBridgeFallbackState(),
       routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
@@ -848,14 +851,22 @@ async function ensureBridgeServersRunning() {
 function getBridgeState() {
   const config = bridgeConfig || readBridgeConfig();
   const lanIp = getLanIp();
+  const allLanIps = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const directorPort = Number(config.directorPort) || 47831;
+  const musiciansPort = Number(config.musiciansPort) || 47832;
   return {
     running: bridgeServers.length > 0,
     lanIp,
+    lanIps: allLanIps,
     scriptsDir: resolveBridgeScriptsDir(config),
-    directorPort: Number(config.directorPort) || 47831,
-    musiciansPort: Number(config.musiciansPort) || 47832,
-    directorUrl: `http://${lanIp}:${Number(config.directorPort) || 47831}`,
-    musiciansUrl: `http://${lanIp}:${Number(config.musiciansPort) || 47832}`,
+    directorPort,
+    musiciansPort,
+    directorUrl: `http://${lanIp}:${directorPort}`,
+    musiciansUrl: `http://${lanIp}:${musiciansPort}`,
+    browserUrl: `http://${lanIp}:${directorPort}/?qr=1&v=112`,
+    qrCodeUrl: `http://${lanIp}:${directorPort}/qr.svg?url=${encodeURIComponent(`http://${lanIp}:${directorPort}/?qr=1&v=112`)}`,
+    directorUrls: allLanIps.map((item) => `http://${item.ip}:${directorPort}`),
+    musiciansUrls: allLanIps.map((item) => `http://${item.ip}:${musiciansPort}`),
     infos: bridgeInfos,
     error: bridgeLastError
   };
@@ -866,6 +877,7 @@ function getLyricsDefaults() {
   return {
     textColor: '#ffea00',
     clockColor: '#00ff55',
+    borderColor: '#00ff55',
     fontFamily: 'Arial',
     clockEnabled: true
   };
@@ -874,6 +886,7 @@ function getLyricsDefaults() {
 function getTechnicalNoticeDefaults() {
   return {
     textColor: '#ffea00',
+    flashColor: '#ff0000',
     fontFamily: 'Arial'
   };
 }
@@ -887,6 +900,7 @@ function saveTechnicalNoticeSettings(settings = {}) {
   const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact'];
   const next = { ...getTechnicalNoticeSettings() };
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
+  if (typeof settings.flashColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.flashColor)) next.flashColor = settings.flashColor;
   if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
   store.set('technicalNoticeSettings', next);
   for (const win of lyricsWindows.values()) {
@@ -921,6 +935,7 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   const next = { ...all[id] };
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
   if (typeof settings.clockColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.clockColor)) next.clockColor = settings.clockColor;
+  if (typeof settings.borderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.borderColor)) next.borderColor = settings.borderColor;
   if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
   if (typeof settings.clockEnabled === 'boolean') next.clockEnabled = settings.clockEnabled;
   all[id] = next;
@@ -935,6 +950,12 @@ function getLyricsStatePath() {
   const config = bridgeConfig || readBridgeConfig();
   const sharedDir = resolveBridgeScriptsDir(config);
   return path.join(sharedDir, 'vshook_lyrics_state.json');
+}
+
+function getBridgeStatePath() {
+  const config = bridgeConfig || readBridgeConfig();
+  const sharedDir = resolveBridgeScriptsDir(config);
+  return path.join(sharedDir, 'vshook_state.json');
 }
 
 function readJsonFileSafe(filePath, fallback = {}) {
@@ -960,13 +981,17 @@ function getActiveTechnicalNotice() {
   const text = String(data.text || data.message || '').trim();
   const expiresAt = Number(data.expiresAt || 0);
   if (!text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
-  const source = String(data.source || 'recados').toLowerCase() === 'director' ? 'director' : 'recados';
+  const sourceText = String(data.source || 'recados').trim().toLowerCase();
+  const source = (sourceText === 'director' || sourceText === 'diretor')
+    ? 'director'
+    : ((sourceText === 'hooklyrics' || sourceText === 'hook-lyrics' || sourceText === 'lyrics') ? 'hooklyrics' : 'recados');
+  const priority = source === 'director' ? 3 : (source === 'recados' ? 2 : 1);
   return {
     id: String(data.id || ''),
     text,
     message: text,
     source,
-    priority: source === 'director' ? 2 : 1,
+    priority,
     expiresAt,
     expiresAtIso: data.expiresAtIso || new Date(expiresAt).toISOString(),
     updatedAt: data.updatedAt || data.createdAt || null
@@ -975,15 +1000,17 @@ function getActiveTechnicalNotice() {
 
 function getLyricsState() {
   const data = readJsonFileSafe(getLyricsStatePath(), {});
+  const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
+  const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
   return {
     text: String(data.text || data.lyrics || ''),
     song: String(data.song || data.currentSong || ''),
     part: String(data.part || data.currentPart || ''),
-    timerRunning: Boolean(data.timerRunning),
-    timerStartedAt: Number(data.timerStartedAt || 0),
-    timerAccumulatedSec: Number(data.timerAccumulatedSec || 0),
-    playing: Boolean(data.playing),
-    updatedAt: data.updatedAt || null,
+    timerRunning: Boolean(timerSource.timerRunning),
+    timerStartedAt: Number(timerSource.timerStartedAt || timerSource.timerStartedAtMs || 0),
+    timerAccumulatedSec: Number(timerSource.timerAccumulatedSec || 0),
+    playing: Boolean(data.playing || bridgeState.playing || bridgeState.isPlaying),
+    updatedAt: data.updatedAt || bridgeState.updatedAt || null,
     technicalNotice: getActiveTechnicalNotice(),
     technicalNoticeSettings: getTechnicalNoticeSettings()
   };
@@ -1004,7 +1031,7 @@ function createLyricsWindow(slot = 1) {
     minWidth: 640,
     minHeight: 360,
     backgroundColor: '#000000',
-    title: 'Hook Lyrics',
+    title: 'Teleprompt',
     icon: getAppIconPath(),
     frame: false,
     autoHideMenuBar: true,
@@ -1369,9 +1396,10 @@ async function installDownloadedUpdate() {
 
 function normalizeSupportUrl(data) {
   const raw =
-    data?.whatsappUrl ||
     data?.supportUrl ||
     data?.url ||
+    data?.link ||
+    data?.whatsappUrl ||
     data?.whatsapp ||
     data?.phone ||
     data?.number ||
@@ -1379,11 +1407,15 @@ function normalizeSupportUrl(data) {
 
   const value = String(raw || '').trim();
   if (!value) return null;
-  if (/^https?:\/\//i.test(value)) return value;
+  if (/^(https?:\/\/|mailto:|tel:|whatsapp:)/i.test(value)) return value;
 
+  const compact = value.replace(/\s+/g, '');
   const digits = value.replace(/\D+/g, '');
-  if (!digits) return null;
-  return `https://wa.me/${digits}`;
+  if (digits && digits.length >= 8 && digits === compact.replace(/^\+/, '')) {
+    return `https://wa.me/${digits}`;
+  }
+
+  return `https://${value}`;
 }
 
 async function openSupport() {

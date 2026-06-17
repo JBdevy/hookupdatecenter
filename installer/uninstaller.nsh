@@ -1,9 +1,115 @@
+; Hook Center NSIS hooks
+; - Desinstalação real: remove licença local, scripts e plugins instalados pelo Hook Center.
+; - Atualização/reinstalação: preserva licença, scripts e plugins para não desativar o cliente.
+
+!macro customInit
+  ; Antes de instalar/atualizar, salva uma cópia dos dados que não podem ser perdidos
+  ; caso o instalador antigo execute o uninstaller durante a atualização.
+  ReadEnvStr $R9 "PROGRAMDATA"
+  StrCmp $R9 "" 0 +2
+  StrCpy $R9 "C:\ProgramData"
+
+  ReadEnvStr $R8 "PUBLIC"
+  StrCmp $R8 "" 0 +2
+  StrCpy $R8 "$PROFILE\..\Public"
+
+  RMDir /r "$TEMP\HookCenterUpgradeBackup"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup\ProgramData"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup\ReaperScripts"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp"
+  CreateDirectory "$TEMP\HookCenterUpgradeBackup\UserPlugins"
+
+  IfFileExists "$R9\HookDeveloper\VSCore\sys_runtime.dat" 0 +2
+    CopyFiles /SILENT "$R9\HookDeveloper\VSCore\sys_runtime.dat" "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat"
+
+  IfFileExists "$R8\VS Hook APP\VS Hook.lua" 0 +2
+    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua"
+  IfFileExists "$R8\VS Hook APP\Hook Lyrics.lua" 0 +2
+    CopyFiles /SILENT "$R8\VS Hook APP\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua"
+
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua"
+
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\Hook Lyrics.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua"
+
+  IfFileExists "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll"
+  IfFileExists "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll" "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll"
+
+  ; Flag lida pelo uninstaller novo. Se uma atualização executar o uninstaller,
+  ; ele não deve limpar licença/script/plugin.
+  CreateDirectory "$R9\HookDeveloper\VSCore"
+  FileOpen $R7 "$R9\HookDeveloper\VSCore\installing.flag" w
+  FileWrite $R7 "installing"
+  FileClose $R7
+!macroend
+
+!macro customInstall
+  ; Restaura dados preservados depois da instalação/atualização.
+  ReadEnvStr $R9 "PROGRAMDATA"
+  StrCmp $R9 "" 0 +2
+  StrCpy $R9 "C:\ProgramData"
+
+  ReadEnvStr $R8 "PUBLIC"
+  StrCmp $R8 "" 0 +2
+  StrCpy $R8 "$PROFILE\..\Public"
+
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" 0 +3
+    CreateDirectory "$R9\HookDeveloper\VSCore"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" "$R9\HookDeveloper\VSCore\sys_runtime.dat"
+
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua" 0 +3
+    CreateDirectory "$R8\VS Hook APP"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua" "$R8\VS Hook APP\VS Hook.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua" 0 +3
+    CreateDirectory "$R8\VS Hook APP"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua" "$R8\VS Hook APP\Hook Lyrics.lua"
+
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua" 0 +3
+    CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua" 0 +3
+    CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua"
+
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua" 0 +3
+    CreateDirectory "$APPDATA\REAPER\Scripts"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua" "$APPDATA\REAPER\Scripts\VS Hook.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua" 0 +3
+    CreateDirectory "$APPDATA\REAPER\Scripts"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua" "$APPDATA\REAPER\Scripts\Hook Lyrics.lua"
+
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll" 0 +3
+    CreateDirectory "$APPDATA\REAPER\UserPlugins"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll" "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll" 0 +3
+    CreateDirectory "$APPDATA\REAPER\UserPlugins"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll" "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll"
+
+  Delete "$R9\HookDeveloper\VSCore\installing.flag"
+  RMDir /r "$TEMP\HookCenterUpgradeBackup"
+!macroend
+
 !macro customUnInstall
-  ; Arquivo de licença atual em C:\ProgramData
   ReadEnvStr $1 "PROGRAMDATA"
   StrCmp $1 "" 0 +2
   StrCpy $1 "C:\ProgramData"
+
+  ; Se este uninstaller for chamado durante atualização/reinstalação,
+  ; mantém licença, scripts e plugins.
+  IfFileExists "$1\HookDeveloper\VSCore\installing.flag" skip_hook_data_cleanup 0
+
+  ; Arquivo de licença atual em C:\ProgramData
   Delete "$1\HookDeveloper\VSCore\sys_runtime.dat"
+  Delete "$1\HookDeveloper\VSCore\installing.flag"
   RMDir "$1\HookDeveloper\VSCore"
   RMDir "$1\HookDeveloper"
 
@@ -34,4 +140,6 @@
   ; Diretórios vazios
   RMDir "$0\VS Hook APP"
   RMDir "$APPDATA\REAPER\Scripts\VS Hook APP"
+
+  skip_hook_data_cleanup:
 !macroend

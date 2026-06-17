@@ -1,8 +1,10 @@
 :root {
   --lyrics-text-color: #ffea00;
   --lyrics-clock-color: #00ff55;
+  --lyrics-border-color: #00ff55;
   --lyrics-font: Arial, sans-serif;
   --notice-text-color: #ffea00;
+  --notice-flash-color: #ff0000;
   --notice-font: Arial, sans-serif;
 }
 * { box-sizing: border-box; }
@@ -55,8 +57,11 @@ body {
   grid-template-rows: 90px 1fr;
   gap: 12px;
   background: #000;
+  border: 4px solid var(--lyrics-border-color);
+  box-shadow: inset 0 0 20px rgba(255,255,255,.06);
 }
 .lyrics-timer {
+  -webkit-app-region: no-drag;
   align-self: start;
   justify-self: center;
   color: var(--lyrics-clock-color);
@@ -67,6 +72,12 @@ body {
   letter-spacing: .12em;
   text-shadow: 0 0 18px rgba(0,255,85,.18);
   white-space: nowrap;
+  border: 3px solid var(--lyrics-border-color);
+  border-radius: 16px;
+  padding: 10px 22px;
+  background: rgba(0,0,0,.82);
+  position: relative;
+  z-index: 2147483620;
 }
 .lyrics-text {
   min-height: 0;
@@ -113,4 +124,45 @@ body {
 }
 .technical-notice.hidden {
   display: none;
+}
+
+body.notice-active .lyrics-text {
+  visibility: hidden;
+}
+
+body.notice-active .lyrics-stage {
+  background: #000;
+}
+
+body.notice-active .lyrics-timer,
+body.notice-active .close-button {
+  visibility: visible;
+}
+
+body.notice-active .technical-notice {
+  background: #000;
+  padding-top: min(28vh, 210px);
+}
+
+.technical-notice.notice-flash {
+  animation: technicalNoticeFlash 1.05s steps(1, end) 1;
+}
+
+@keyframes technicalNoticeFlash {
+  0%, 16.66% { background: var(--notice-flash-color); }
+  16.67%, 33.33% { background: #000; }
+  33.34%, 50% { background: var(--notice-flash-color); }
+  50.01%, 66.66% { background: #000; }
+  66.67%, 83.33% { background: var(--notice-flash-color); }
+  83.34%, 100% { background: #000; }
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 4px solid var(--lyrics-border-color);
+  pointer-events: none;
+  z-index: 2147483630;
+  box-shadow: inset 0 0 20px rgba(255,255,255,.06);
 }

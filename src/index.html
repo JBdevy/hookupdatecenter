@@ -22,7 +22,7 @@
         <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
         <button class="nav-item" data-view="bridge">Conexão via app</button>
-        <button class="nav-item" data-view="lyrics">Hook Lyrics</button>
+        <button class="nav-item" data-view="lyrics">Teleprompt</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
@@ -177,7 +177,29 @@
         <div class="card bridge-card-inline compact-connection-card">
           <h2>Conexão pronta</h2>
           <p class="status ok-text" id="bridgeRunningText">Conexão ativa. O Hook Center já está funcionando.</p>
-          <p class="muted">Se o app não encontrar automaticamente, clique em <strong>Reiniciar conexão</strong> e tente novamente.</p>
+
+          <div class="bridge-auto-panel">
+            <strong>Busca automática pela mesma rede Wi‑Fi</strong>
+            <p class="muted">Abra o app no celular e toque em procurar projeto.</p>
+          </div>
+
+          <div class="bridge-ip-panel">
+            <span>IP deste computador</span>
+            <strong id="bridgeLanIp">--</strong>
+          </div>
+
+          <p class="muted">Se trocar de Wi‑Fi com o Hook Center aberto, clique em <strong>Reiniciar conexão</strong> antes de procurar pelo app.</p>
+        </div>
+
+        <div class="card browser-access-card">
+          <div class="browser-access-copy">
+            <p class="eyebrow">Acesso pelo navegador</p>
+            <h2>Escaneie o QR Code</h2>
+            <p class="muted">Abra no navegador do celular usando a mesma rede Wi‑Fi deste computador.</p>
+          </div>
+          <div class="qr-box">
+            <img id="browserQrImage" alt="QR Code do acesso pelo navegador" />
+          </div>
         </div>
       </section>
 
@@ -186,23 +208,27 @@
       <section id="lyricsView" class="view">
         <div class="hero-card bridge-hero">
           <div>
-            <p class="eyebrow">Hook Lyrics</p>
+            <p class="eyebrow">Teleprompt</p>
             <h1>Teleprompt externo</h1>
             <p class="muted">Abra uma ou duas telas de letra e personalize a aparência de cada uma.</p>
           </div>
           <div class="actions">
-            <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Lyrics 1</button>
-            <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Lyrics 2</button>
+            <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Teleprompt 1</button>
+            <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Teleprompt 2</button>
           </div>
         </div>
 
         <div class="card lyrics-window-card technical-notice-settings-card">
           <h2>Avisos técnicos</h2>
-          <p class="muted">Ajuste a aparência dos recados que aparecem sobre as duas telas do Hook Lyrics.</p>
+          <p class="muted">Ajuste a aparência dos recados que aparecem sobre as duas telas do Teleprompt.</p>
           <div class="lyrics-settings-grid">
             <label>
               Cor do aviso
               <input id="technicalNoticeTextColor" type="color" value="#ffea00" />
+            </label>
+            <label>
+              Cor do pisca
+              <input id="technicalNoticeFlashColor" type="color" value="#ff0000" />
             </label>
             <label>
               Fonte do aviso
@@ -218,7 +244,7 @@
             </label>
           </div>
           <div class="actions lyrics-actions">
-            <button id="saveTechnicalNoticeSettingsButton" class="primary-button" type="button">Salvar avisos técnicos</button>
+            <button id="saveTechnicalNoticeSettingsButton" class="primary-button" type="button">Aplicar avisos técnicos</button>
           </div>
         </div>
 
@@ -235,6 +261,10 @@
                 <input id="lyricsClockColor1" type="color" value="#00ff55" />
               </label>
               <label>
+                Cor da borda
+                <input id="lyricsBorderColor1" type="color" value="#00ff55" />
+              </label>
+              <label>
                 Fonte da letra
                 <select id="lyricsFontFamily1">
                 <option value="Arial">Arial</option>
@@ -248,7 +278,7 @@
               </label>
             </div>
             <div class="actions lyrics-actions">
-              <button id="saveLyricsSettingsButton1" class="primary-button" type="button">Salvar janela 1</button>
+              <button id="saveLyricsSettingsButton1" class="primary-button" type="button">Aplicar janela 1</button>
             </div>
           </div>
 
@@ -264,6 +294,10 @@
                 <input id="lyricsClockColor2" type="color" value="#00ff55" />
               </label>
               <label>
+                Cor da borda
+                <input id="lyricsBorderColor2" type="color" value="#00ff55" />
+              </label>
+              <label>
                 Fonte da letra
                 <select id="lyricsFontFamily2">
                 <option value="Arial">Arial</option>
@@ -277,7 +311,7 @@
               </label>
             </div>
             <div class="actions lyrics-actions">
-              <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Salvar janela 2</button>
+              <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Aplicar janela 2</button>
             </div>
           </div>
         </div>

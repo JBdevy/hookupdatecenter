@@ -146,17 +146,21 @@ function applyLyricsSettingsToForm(settings = {}) {
     const data = all[slot] || {};
     const textColor = $(`#lyricsTextColor${slot}`);
     const clockColor = $(`#lyricsClockColor${slot}`);
+    const borderColor = $(`#lyricsBorderColor${slot}`);
     const fontFamily = $(`#lyricsFontFamily${slot}`);
     if (textColor) textColor.value = data.textColor || '#ffea00';
     if (clockColor) clockColor.value = data.clockColor || '#00ff55';
+    if (borderColor) borderColor.value = data.borderColor || data.clockColor || '#00ff55';
     if (fontFamily) fontFamily.value = data.fontFamily || 'Arial';
   });
 }
 
 function applyTechnicalNoticeSettingsToForm(settings = {}) {
   const textColor = $('#technicalNoticeTextColor');
+  const flashColor = $('#technicalNoticeFlashColor');
   const fontFamily = $('#technicalNoticeFontFamily');
   if (textColor) textColor.value = settings.textColor || '#ffea00';
+  if (flashColor) flashColor.value = settings.flashColor || '#ff0000';
   if (fontFamily) fontFamily.value = settings.fontFamily || 'Arial';
 }
 
@@ -175,6 +179,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     slot: id,
     textColor: $(`#lyricsTextColor${id}`)?.value || '#ffea00',
     clockColor: $(`#lyricsClockColor${id}`)?.value || '#00ff55',
+    borderColor: $(`#lyricsBorderColor${id}`)?.value || $(`#lyricsClockColor${id}`)?.value || '#00ff55',
     fontFamily: $(`#lyricsFontFamily${id}`)?.value || 'Arial'
   };
   const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
@@ -185,6 +190,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
 async function saveTechnicalNoticeSettingsFromForm() {
   const payload = {
     textColor: $('#technicalNoticeTextColor')?.value || '#ffea00',
+    flashColor: $('#technicalNoticeFlashColor')?.value || '#ff0000',
     fontFamily: $('#technicalNoticeFontFamily')?.value || 'Arial'
   };
   const saved = await window.hookUpdateCenter.saveTechnicalNoticeSettings(payload);
@@ -199,7 +205,17 @@ function renderBridgeState(bridge) {
     runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando.' : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
     runningText.classList.toggle('ok-text', !!bridge.running);
   }
-  if ($('#bridgeIp')) $('#bridgeIp').textContent = bridge.lanIp || '--';
+  if ($('#bridgeLanIp')) $('#bridgeLanIp').textContent = bridge.lanIp || '--';
+  const qrImage = $('#browserQrImage');
+  if (qrImage) {
+    if (bridge.qrCodeUrl && bridge.running) {
+      qrImage.src = `${bridge.qrCodeUrl}&t=${Date.now()}`;
+      qrImage.classList.remove('hidden');
+    } else {
+      qrImage.removeAttribute('src');
+      qrImage.classList.add('hidden');
+    }
+  }
   if ($('#bridgeDirectorPort')) $('#bridgeDirectorPort').textContent = String(bridge.directorPort || '--');
   if ($('#bridgeMusiciansPort')) $('#bridgeMusiciansPort').textContent = String(bridge.musiciansPort || '--');
   if ($('#bridgeScriptsDir')) $('#bridgeScriptsDir').textContent = bridge.scriptsDir || '--';
@@ -366,7 +382,7 @@ async function loadPreviousUpdates() {
   const button = $('#refreshPreviousButton');
   try {
     button.disabled = true;
-    button.textContent = 'Carregando...';
+    button.textContent = 'Verificando...';
     const result = await window.hookUpdateCenter.getPreviousUpdates();
     if (result.ok === false) {
       showModal({
@@ -448,28 +464,32 @@ async function init() {
   });
   $('#supportButton')?.addEventListener('click', openSupport);
 
+  $('#refreshPreviousButton')?.addEventListener('click', async () => {
+    await loadPreviousUpdates();
+  });
+
   $('#openLyricsOneButton')?.addEventListener('click', async () => {
     try { await saveLyricsSettingsFromForm(1); await window.hookUpdateCenter.openLyricsWindow(1); }
-    catch (error) { showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível abrir o Lyrics 1.'), type: 'error' }); }
+    catch (error) { showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o Teleprompt 1.'), type: 'error' }); }
   });
   $('#openLyricsTwoButton')?.addEventListener('click', async () => {
     try { await saveLyricsSettingsFromForm(2); await window.hookUpdateCenter.openLyricsWindow(2); }
-    catch (error) { showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível abrir o Lyrics 2.'), type: 'error' }); }
+    catch (error) { showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o Teleprompt 2.'), type: 'error' }); }
   });
   $('#saveLyricsSettingsButton1')?.addEventListener('click', async () => {
     try {
       await saveLyricsSettingsFromForm(1);
-      showModal({ title: 'Hook Lyrics', message: 'A aparência da janela 1 foi salva.', type: 'success' });
+      showModal({ title: 'Teleprompt', message: 'A aparência da janela 1 foi salva.', type: 'success' });
     } catch (error) {
-      showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
+      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
     }
   });
   $('#saveLyricsSettingsButton2')?.addEventListener('click', async () => {
     try {
       await saveLyricsSettingsFromForm(2);
-      showModal({ title: 'Hook Lyrics', message: 'A aparência da janela 2 foi salva.', type: 'success' });
+      showModal({ title: 'Teleprompt', message: 'A aparência da janela 2 foi salva.', type: 'success' });
     } catch (error) {
-      showModal({ title: 'Hook Lyrics', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
+      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível salvar a aparência.'), type: 'error' });
     }
   });
   $('#saveTechnicalNoticeSettingsButton')?.addEventListener('click', async () => {

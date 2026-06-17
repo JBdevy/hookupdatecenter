@@ -8,10 +8,12 @@ const lyricsSlot = Number(params.get('slot')) === 2 ? 2 : 1;
 let settings = {
   textColor: '#ffea00',
   clockColor: '#00ff55',
+  borderColor: '#00ff55',
   fontFamily: 'Arial'
 };
 let technicalNoticeSettings = {
   textColor: '#ffea00',
+  flashColor: '#ff0000',
   fontFamily: 'Arial'
 };
 let activeTechnicalNotice = null;
@@ -20,6 +22,8 @@ let timerRunning = false;
 let timerStartedAtMs = 0;
 let timerAccumulatedSec = 0;
 let closingLyricsWindow = false;
+let lastTechnicalNoticeKey = '';
+let technicalNoticeFlashTimer = null;
 
 function normalizeColor(value, fallback) {
   return /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? value : fallback;
@@ -31,6 +35,7 @@ function applySettings(next = {}) {
   settings = { ...settings, ...incoming };
   document.documentElement.style.setProperty('--lyrics-text-color', normalizeColor(settings.textColor, '#ffea00'));
   document.documentElement.style.setProperty('--lyrics-clock-color', normalizeColor(settings.clockColor, '#00ff55'));
+  document.documentElement.style.setProperty('--lyrics-border-color', normalizeColor(settings.borderColor || settings.clockColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-font', `${settings.fontFamily || 'Arial'}, sans-serif`);
   updateFontFit();
 }
@@ -38,12 +43,25 @@ function applySettings(next = {}) {
 function applyTechnicalNoticeSettings(next = {}) {
   technicalNoticeSettings = { ...technicalNoticeSettings, ...(next || {}) };
   document.documentElement.style.setProperty('--notice-text-color', normalizeColor(technicalNoticeSettings.textColor, '#ffea00'));
+  document.documentElement.style.setProperty('--notice-flash-color', normalizeColor(technicalNoticeSettings.flashColor, '#ff0000'));
   document.documentElement.style.setProperty('--notice-font', `${technicalNoticeSettings.fontFamily || 'Arial'}, sans-serif`);
 }
 
 function formatTechnicalNoticeText(text) {
   const clean = String(text || '').trim();
   return clean ? `⚠️ ${clean} ⚠️` : '';
+}
+
+function flashTechnicalNoticeBackground() {
+  if (!technicalNoticeEl) return;
+  technicalNoticeEl.classList.remove('notice-flash');
+  void technicalNoticeEl.offsetWidth;
+  technicalNoticeEl.classList.add('notice-flash');
+  if (technicalNoticeFlashTimer) clearTimeout(technicalNoticeFlashTimer);
+  technicalNoticeFlashTimer = setTimeout(() => {
+    technicalNoticeEl.classList.remove('notice-flash');
+    technicalNoticeFlashTimer = null;
+  }, 1150);
 }
 
 function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
@@ -55,10 +73,18 @@ function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
   if (!active) {
     technicalNoticeEl.textContent = '';
     technicalNoticeEl.classList.add('hidden');
+    document.body.classList.remove('notice-active');
+    lastTechnicalNoticeKey = '';
     return;
   }
+  const noticeKey = String(activeTechnicalNotice?.id || activeTechnicalNotice?.updatedAt || `${text}:${expiresAt}`);
   technicalNoticeEl.textContent = formatTechnicalNoticeText(text);
   technicalNoticeEl.classList.remove('hidden');
+  document.body.classList.add('notice-active');
+  if (noticeKey && noticeKey !== lastTechnicalNoticeKey) {
+    lastTechnicalNoticeKey = noticeKey;
+    flashTechnicalNoticeBackground();
+  }
 }
 
 function formatTimer(sec) {

@@ -3,10 +3,12 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { URL } = require('url')
+const { createQrSvg } = require('./qr-svg')
 
 const PROJECT_STALE_MS = 120000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
-const TECHNICAL_NOTICE_DURATION_MS = 10000
+const TECHNICAL_NOTICE_DURATION_MS = 20000
+const DIRECTOR_NOTICE_DURATION_MS = 10000
 const TECHNICAL_NOTICE_MAX_LEN = 500
 
 function parseDateMs(value) {
@@ -46,10 +48,18 @@ function getProjectId(project, index) {
 
 function getProjectName(project, index) {
   const raw = project && typeof project === 'object'
-    ? (project.name ?? project.projectName ?? project.title ?? project.label ?? project.path ?? project.projectPath)
+    ? (project.name ?? project.projectName ?? project.title ?? project.label)
     : project
   const value = String(raw ?? '').trim()
-  return value || `Projeto ${index + 1}`
+  if (value) return value
+
+  const projectPath = getProjectPath(project)
+  if (projectPath) {
+    const baseName = path.basename(projectPath).replace(/\.rpp$/i, '').trim()
+    if (baseName) return baseName
+  }
+
+  return ''
 }
 
 function getProjectPath(project) {
@@ -81,7 +91,7 @@ function normalizeProjectsFromState(state) {
     if (projectName || projectPath) {
       source = [{
         id: state?.projectId || state?.activeProjectId || projectPath || projectName,
-        name: projectName || 'Projeto sem nome',
+        name: projectName,
         path: projectPath,
       }]
     }
@@ -99,6 +109,7 @@ function normalizeProjectsFromState(state) {
     )
     return { id, name, projectName: name, projectPath, active }
   }).filter((project) => {
+    if (!project.name) return false
     const key = `${project.id}|${project.projectPath}|${project.name}`
     if (seen.has(key)) return false
     seen.add(key)
@@ -209,13 +220,35 @@ function simpleHash(str) {
   return n.toString(16).toUpperCase().padStart(8, '0')
 }
 
+function normalizeNoticeSource(value) {
+  const source = String(value || '').trim().toLowerCase()
+  if (source === 'director' || source === 'diretor') return 'director'
+  if (source === 'hooklyrics' || source === 'hook-lyrics' || source === 'lyrics') return 'hooklyrics'
+  if (source === 'recados' || source === 'recado') return 'recados'
+  return 'recados'
+}
+
+function getTechnicalNoticePriority(source) {
+  const normalized = normalizeNoticeSource(source)
+  if (normalized === 'director') return 3
+  if (normalized === 'recados') return 2
+  return 1
+}
+
+function getTechnicalNoticeDurationMs(source, raw = {}) {
+  const normalized = normalizeNoticeSource(source)
+  const requested = Math.floor(Number(raw.durationMs || raw.duration || raw.ttlMs || 0))
+  if (requested > 0) return Math.min(Math.max(requested, 1000), 60000)
+  return normalized === 'director' ? DIRECTOR_NOTICE_DURATION_MS : TECHNICAL_NOTICE_DURATION_MS
+}
+
 function normalizeTechnicalNotice(raw) {
   if (!raw || typeof raw !== 'object') return null
   const text = String(raw.text || raw.message || '').trim()
   const expiresAt = Number(raw.expiresAt || 0)
   if (!text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
-  const source = String(raw.source || 'recados').toLowerCase() === 'director' ? 'director' : 'recados'
-  const priority = source === 'director' ? 2 : Math.max(1, Math.floor(Number(raw.priority) || 1))
+  const source = normalizeNoticeSource(raw.source || 'recados')
+  const priority = Math.max(getTechnicalNoticePriority(source), Math.floor(Number(raw.priority) || 0))
   return {
     id: String(raw.id || ''),
     text,
@@ -233,6 +266,18 @@ function readActiveTechnicalNotice(noticeFile) {
   return normalizeTechnicalNotice(readJson(noticeFile, null))
 }
 
+function clearTechnicalNotice(noticeFile) {
+  writeJson(noticeFile, {
+    id: '',
+    text: '',
+    message: '',
+    source: '',
+    priority: 0,
+    cancelledAt: new Date().toISOString(),
+    expiresAt: 0,
+  })
+}
+
 function firstString(...values) {
   for (const value of values) {
     const text = String(value ?? '').trim()
@@ -242,7 +287,7 @@ function firstString(...values) {
 }
 
 function isTechnicalNoticeAuthorized(parsed, state, source) {
-  const sourceName = String(source || '').toLowerCase() === 'director' ? 'director' : 'recados'
+  const sourceName = normalizeNoticeSource(source)
   const password = String(parsed.password || parsed.pass || '').trim()
   const passwordHash = String(parsed.passwordHash || parsed.authHash || '').trim()
 
@@ -395,6 +440,59 @@ try {
   }
 }
 
+function getContentTypeByPath(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+  return {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.svg': 'image/svg+xml; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.txt': 'text/plain; charset=utf-8',
+  }[ext] || 'application/octet-stream'
+}
+
+function resolveSafeStaticFile(baseDir, urlPath) {
+  const rawPath = String(urlPath || '/')
+  let relPath = rawPath === '/' ? '/index.html' : rawPath
+  try {
+    relPath = decodeURIComponent(relPath)
+  } catch (error) {
+    return ''
+  }
+
+  relPath = relPath.replace(/^\/+/, '')
+  if (!relPath || relPath.endsWith('/')) relPath += 'index.html'
+
+  const normalized = path.normalize(relPath)
+  if (normalized.startsWith('..') || path.isAbsolute(normalized)) return ''
+
+  const fullPath = path.join(baseDir, normalized)
+  const relative = path.relative(baseDir, fullPath)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return ''
+
+  try {
+    const stat = fs.statSync(fullPath)
+    return stat.isFile() ? fullPath : ''
+  } catch (error) {
+    return ''
+  }
+}
+
+function sendText(res, statusCode, body, contentType) {
+  applyCorsHeaders(res)
+  res.writeHead(statusCode, {
+    'Content-Type': contentType || 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-store',
+  })
+  res.end(body)
+}
+
 function enqueueCommand(commandsFile, type, payload = {}) {
   const commandsDb = readJson(commandsFile, {
     bridgeVersion: 1,
@@ -480,6 +578,8 @@ function createBridgeServer(options) {
       lanUrl: `http://${ip}:${port}`,
       lanUrls: getAllLanIps().map(item => `http://${item.ip}:${port}`),
       publicUrl: `http://${publicBridgeHost}:${port}`,
+      browserUrl: `http://${ip}:${port}/`,
+      browserUrls: getAllLanIps().map(item => `http://${item.ip}:${port}/`),
       playing: projectPayload.connected && !!state.playing,
       updatedAt: state.updatedAt || null,
       stateUpdatedAt: state.updatedAt || null,
@@ -508,7 +608,21 @@ function createBridgeServer(options) {
 
     if (req.method === 'GET' && parsedUrl.pathname === '/') {
       const route = routes.get('/')
-      sendFile(res, path.join(appDir, route.file), route.contentType)
+      if (route) {
+        sendFile(res, path.join(appDir, route.file), route.contentType)
+      } else {
+        const staticFile = resolveSafeStaticFile(appDir, '/')
+        if (staticFile) sendFile(res, staticFile, getContentTypeByPath(staticFile))
+        else sendText(res, 404, 'Arquivo inicial do app não encontrado.', 'text/plain; charset=utf-8')
+      }
+      return
+    }
+
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/qr.svg' || parsedUrl.pathname === '/app-qr.svg')) {
+      const stateIp = getLanIp()
+      const targetUrl = String(parsedUrl.searchParams.get('url') || `http://${stateIp}:${port}/`).trim()
+      sendText(res, 200, createQrSvg(targetUrl), 'image/svg+xml; charset=utf-8')
       return
     }
 
@@ -577,10 +691,27 @@ function createBridgeServer(options) {
         }
         try {
           const parsed = body ? JSON.parse(body) : {}
-          const text = String(parsed.text || parsed.message || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
-          const source = String(parsed.source || '').toLowerCase() === 'director' ? 'director' : 'recados'
-          const priority = source === 'director' ? 2 : 1
+          const action = String(parsed.action || parsed.command || '').toLowerCase()
+          const source = normalizeNoticeSource(parsed.source || 'recados')
+          const priority = getTechnicalNoticePriority(source)
           const state = readJson(stateFile, fallbackState)
+
+          if (action === 'cancel' || action === 'clear' || action === 'remove') {
+            if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
+              sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
+              return
+            }
+            const activeNotice = readActiveTechnicalNotice(noticeFile)
+            if (activeNotice && activeNotice.priority > priority) {
+              sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
+              return
+            }
+            clearTechnicalNotice(noticeFile)
+            sendJson(res, 200, { ok: true, cancelled: true, notice: null, now: Date.now() })
+            return
+          }
+
+          const text = String(parsed.text || parsed.message || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
 
           if (!text) {
             sendJson(res, 400, { ok: false, error: 'Digite um recado antes de enviar.' })
@@ -598,6 +729,7 @@ function createBridgeServer(options) {
           }
 
           const now = Date.now()
+          const durationMs = getTechnicalNoticeDurationMs(source, parsed)
           const notice = {
             id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
             text,
@@ -606,8 +738,9 @@ function createBridgeServer(options) {
             priority,
             createdAt: new Date(now).toISOString(),
             updatedAt: new Date(now).toISOString(),
-            expiresAt: now + TECHNICAL_NOTICE_DURATION_MS,
-            expiresAtIso: new Date(now + TECHNICAL_NOTICE_DURATION_MS).toISOString(),
+            durationMs,
+            expiresAt: now + durationMs,
+            expiresAtIso: new Date(now + durationMs).toISOString(),
           }
           writeJson(noticeFile, notice)
           sendJson(res, 200, { ok: true, notice, now })
@@ -615,6 +748,19 @@ function createBridgeServer(options) {
           sendJson(res, 400, { ok: false, error: 'JSON inválido' })
         }
       })
+      return
+    }
+
+    if (req.method === 'DELETE' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
+      const source = normalizeNoticeSource(parsedUrl.searchParams.get('source') || 'recados')
+      const priority = getTechnicalNoticePriority(source)
+      const activeNotice = readActiveTechnicalNotice(noticeFile)
+      if (activeNotice && activeNotice.priority > priority) {
+        sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
+        return
+      }
+      clearTechnicalNotice(noticeFile)
+      sendJson(res, 200, { ok: true, cancelled: true, notice: null, now: Date.now() })
       return
     }
 
@@ -660,6 +806,14 @@ function createBridgeServer(options) {
       const route = routes.get(parsedUrl.pathname)
       sendFile(res, path.join(appDir, route.file), route.contentType)
       return
+    }
+
+    if (req.method === 'GET') {
+      const staticFile = resolveSafeStaticFile(appDir, parsedUrl.pathname)
+      if (staticFile) {
+        sendFile(res, staticFile, getContentTypeByPath(staticFile))
+        return
+      }
     }
 
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -783,4 +937,5 @@ module.exports = {
   createAliasServer,
   ensureJsonFile,
   getLanIp,
+  getAllLanIps,
 }
