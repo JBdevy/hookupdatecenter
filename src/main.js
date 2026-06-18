@@ -80,6 +80,23 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.hookdeveloper.hookcenter');
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (app.isReady()) {
+      showMainWindow();
+    } else {
+      app.whenReady().then(showMainWindow).catch(() => {});
+    }
+  });
+}
+
+function isValidWindow(win) {
+  return !!win && !win.isDestroyed();
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -104,13 +121,22 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
-  mainWindow.on('close', (event) => {
+  const win = mainWindow;
+
+  win.on('close', (event) => {
     if (!app.isQuiting) {
       event.preventDefault();
-      mainWindow.hide();
+      if (!win.isDestroyed()) win.hide();
+    }
+  });
+
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = null;
     }
   });
 }
+
 
 function createTray() {
   const iconPath = path.join(__dirname, '..', 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png');
@@ -146,7 +172,19 @@ function rebuildTrayMenu() {
 }
 
 function showMainWindow() {
-  if (!mainWindow) createWindow();
+  if (!app.isReady()) {
+    app.whenReady().then(showMainWindow).catch(() => {});
+    return;
+  }
+
+  if (!isValidWindow(mainWindow)) {
+    mainWindow = null;
+    createWindow();
+  }
+
+  if (!isValidWindow(mainWindow)) return;
+
+  if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
 }
@@ -560,7 +598,7 @@ async function checkForUpdates(manual = false) {
     store.set('updateAvailable', shouldNotify);
     rebuildTrayMenu();
 
-    if (mainWindow) {
+    if (isValidWindow(mainWindow)) {
       mainWindow.webContents.send('update-status', getAppState());
     }
 
@@ -573,7 +611,7 @@ async function checkForUpdates(manual = false) {
 
     return { ok: true, hasUpdate: shouldNotify, update, state: getAppState() };
   } catch (error) {
-    if (mainWindow) mainWindow.webContents.send('update-error', error.message);
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-error', error.message);
     return { ok: false, error: error.message, state: getAppState() };
   }
 }
@@ -603,7 +641,7 @@ async function checkHookCenterUpdates(manual = false) {
     const hasUpdate = !!(update?.version && update.downloadUrl && compareVersions(update.version, currentVersion) > 0);
     store.set('hookCenterLatest', update);
     store.set('hookCenterUpdateAvailable', hasUpdate);
-    if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
     if (hasUpdate && !manual) notifyHookCenterUpdate(update);
     if (manual) showMainWindow();
     return { ok: true, hasUpdate, update, state: getAppState() };
@@ -624,7 +662,7 @@ async function downloadAndInstallHookCenterUpdate() {
   const baseName = process.platform === 'darwin' ? `Hook-Center-${update.version}-macOS${ext}` : `Hook-Center-${update.version}-Windows${ext}`;
   const dest = path.join(app.getPath('downloads'), baseName);
   await downloadFile(update.downloadUrl, dest, (progress) => {
-    if (mainWindow) mainWindow.webContents.send('download-progress', progress);
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
   });
 
   if (process.platform === 'win32') {
@@ -673,7 +711,7 @@ async function checkBridgeAppUpdates(manual = false) {
     const hasUpdate = bridgeAppNeedsUpdate(update);
     store.set('bridgeAppLatest', update);
     store.set('bridgeAppUpdateAvailable', hasUpdate);
-    if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
     if (manual) showMainWindow();
     return { ok: true, hasUpdate, update, state: getAppState() };
   } catch (error) {
@@ -766,7 +804,7 @@ async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
   const downloadDir = path.join(app.getPath('userData'), 'downloads', 'bridge-app', update.updateId || update.version || 'latest');
   const zipPath = path.join(downloadDir, 'bridge-app.zip');
   await downloadFile(update.downloadUrl, zipPath, (progress) => {
-    if (mainWindow) mainWindow.webContents.send('download-progress', progress);
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
   });
 
   if (update.sha256) {
@@ -793,7 +831,7 @@ async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
   store.set('bridgeAppUpdateAvailable', false);
 
   await startBridgeServers();
-  if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
   return { ok: true, installedPath, update };
 }
 
@@ -804,7 +842,7 @@ async function checkAndInstallBridgeAppUpdate() {
     return await downloadAndInstallBridgeAppUpdate(result.update);
   } catch (error) {
     console.error('[Hook Center] Falha ao atualizar App QR:', error?.message || error);
-    if (mainWindow) mainWindow.webContents.send('update-error', `App QR: ${error.message}`);
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-error', `App QR: ${error.message}`);
     return { ok: false, error: error.message };
   }
 }
@@ -853,7 +891,7 @@ async function checkLicenseStatus(manual = false) {
     }
 
     rebuildTrayMenu();
-    if (mainWindow) mainWindow.webContents.send('license-status', getAppState());
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
 
     return { ok: true, active, result, state: getAppState() };
   } catch (error) {
@@ -1094,7 +1132,7 @@ async function startBridgeServers() {
     bridgeInfos = nextInfos;
     bridgeLastError = '';
     rebuildTrayMenu();
-    if (mainWindow) mainWindow.webContents.send('bridge-status', getBridgeState());
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('bridge-status', getBridgeState());
     return getBridgeState();
   } catch (error) {
     bridgeLastError = error?.message || String(error || 'Erro desconhecido ao iniciar a conexão via app.');
@@ -1104,7 +1142,7 @@ async function startBridgeServers() {
     bridgeServers = [];
     bridgeInfos = [];
     rebuildTrayMenu();
-    if (mainWindow) mainWindow.webContents.send('bridge-status', getBridgeState());
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('bridge-status', getBridgeState());
     throw error;
   }
 }
@@ -1172,7 +1210,7 @@ function saveTechnicalNoticeSettings(settings = {}) {
   for (const win of lyricsWindows.values()) {
     if (win && !win.isDestroyed()) win.webContents.send('technical-notice-settings-updated', next);
   }
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('technical-notice-settings-updated', next);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('technical-notice-settings-updated', next);
   return next;
 }
 
@@ -1208,7 +1246,7 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   store.set('lyrics', all);
   const win = lyricsWindows.get(id);
   if (win && !win.isDestroyed()) win.webContents.send('lyrics-settings-updated', { slot: id, settings: next });
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lyrics-settings-updated', getLyricsAllSettings());
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('lyrics-settings-updated', getLyricsAllSettings());
   return next;
 }
 
@@ -1499,7 +1537,7 @@ async function downloadLatestUpdate(updateOverride = null) {
     const dest = path.join(downloadDir, entry.filename);
     await downloadFile(entry.url, dest, (fileProgress) => {
       const totalProgress = Math.round(((i * 100) + fileProgress) / entries.length);
-      if (mainWindow) mainWindow.webContents.send('download-progress', totalProgress);
+      if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
     });
     output[entry.key] = dest;
   }
@@ -1517,7 +1555,7 @@ async function downloadLatestUpdate(updateOverride = null) {
     }
   });
 
-  if (mainWindow) mainWindow.webContents.send('download-progress', 100);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', 100);
   return { ok: true, files: output };
 }
 
@@ -1784,17 +1822,19 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   store.set('license', nextLicense);
   rebuildTrayMenu();
 
-  if (mainWindow) mainWindow.webContents.send('license-status', getAppState());
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
 
   return { ok: true, license: nextLicense, result, state: getAppState() };
 });
 
 app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return;
+
   app.setLoginItemSettings({ openAtLogin: true });
   store.set('autoStart', true);
   Menu.setApplicationMenu(null);
-  createWindow();
-  createTray();
+  if (!isValidWindow(mainWindow)) createWindow();
+  if (!tray) createTray();
   ensureExternalBridgeWebApp();
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
@@ -1823,6 +1863,10 @@ app.whenReady().then(async () => {
     await checkAndInstallBridgeAppUpdate();
     await checkLicenseStatus(false);
   }, CHECK_INTERVAL_MS);
+});
+
+app.on('activate', () => {
+  showMainWindow();
 });
 
 app.on('window-all-closed', (event) => {
