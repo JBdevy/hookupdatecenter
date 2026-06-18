@@ -869,6 +869,9 @@ function setPremixTrackLocalState(id, patch = {}) {
 }
 
 function openPremixModal() {
+  // PREMIX precisa ser só uma janela local no primeiro toque.
+  // Não envia comando para o Lua ao abrir, porque isso concorria com o menu
+  // dos 3 tracinhos e deixava uma camada invisível travando a tela.
   state.settingsMenuOpen = false
   state.showGearModal = false
   state.showMixerModal = false
@@ -877,23 +880,47 @@ function openPremixModal() {
   state.showTunerModal = false
   state.showPremixModal = true
   state.premixView = 'songs'
-  if (!state.premixSelectedSongId || !getPremixSongs().some((song) => String(song?.id || song?.source_number || song?.sourceNumber || '') === String(state.premixSelectedSongId))) {
-    const first = getFirstSelectablePremixSong()
-    if (first) state.premixSelectedSongId = String(first.id || first.source_number || first.sourceNumber || '')
+
+  // Garante lista com todas as músicas; o foco real no Lua só acontece
+  // quando o usuário escolhe a música.
+  try {
+    const songs = getPremixSongs()
+    const selectedStillExists = songs.some((song) => String(song?.id || song?.source_number || song?.sourceNumber || '') === String(state.premixSelectedSongId || ''))
+    if (!selectedStillExists) state.premixSelectedSongId = null
+  } catch (error) {
+    state.premixSelectedSongId = null
   }
-  armOverlayCloseGuard(650)
+
+  armOverlayCloseGuard(900)
   render()
-  if (state.premixSelectedSongId) {
-    postCommand('premix_focus_song', { id: state.premixSelectedSongId, page: getCurrentPcPageName() })
-  }
-  fastPollBridge?.(6)
 }
 
 function openPremixFromMenu(event) {
   event?.preventDefault?.()
   event?.stopPropagation?.()
+  event?.stopImmediatePropagation?.()
   openPremixModal()
   return true
+}
+
+function bindPremixMenuButton(el) {
+  if (!el) return
+  let lastRunAt = 0
+  const run = (event) => {
+    const now = Date.now()
+    if (now - lastRunAt < 500) {
+      event?.preventDefault?.()
+      event?.stopPropagation?.()
+      event?.stopImmediatePropagation?.()
+      return
+    }
+    lastRunAt = now
+    openPremixFromMenu(event)
+  }
+  // touchend abre após soltar o dedo e cancela o click sintético.
+  el.addEventListener('touchend', run, { passive: false })
+  // click cobre mouse e navegadores sem touch events.
+  el.addEventListener('click', run)
 }
 
 function closePremixModal(force = false) {
@@ -910,10 +937,17 @@ function selectPremixSong(songId) {
   if (!isPremixSelectableSong(song)) return
   state.premixSelectedSongId = id
   state.premixView = 'tracks'
-  state.premixTracks = []
+
+  // Mostra pistas imediatamente usando o mixer atual; quando o Lua responder,
+  // substitui pelos presets reais do Premix dessa música.
+  if (!Array.isArray(state.premixTracks) || !state.premixTracks.length) {
+    const fallbackTracks = Array.isArray(state.mixerTracks) ? state.mixerTracks : []
+    state.premixTracks = fallbackTracks.map((item) => normalizePremixTrackItem(item))
+  }
+
   render()
   postCommand('premix_focus_song', { id, page: getCurrentPcPageName() })
-  fastPollBridge?.(8)
+  fastPollBridge?.(10)
 }
 
 function backPremixSongList() {
@@ -1007,7 +1041,7 @@ function renderPremixModal() {
   const content = isTracks
     ? `<div class="mixerModalHeader" style="gap:8px"><button class="btn" data-action="premix-back" style="min-width:88px">LISTA</button><div class="modalTitle" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(title)}</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><button class="${bypassClass}" data-action="premix-bypass" style="width:100%;height:42px;margin-bottom:10px">${state.premixBypassEnabled ? 'BYPASS ON' : 'BYPASS OFF'}</button><div class="mixerRowsBox" style="flex:1 1 auto;min-height:0;max-height:min(62vh,470px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px">${renderPremixTrackRows()}</div>`
     : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><button class="${bypassClass}" data-action="premix-bypass" style="width:100%;height:42px;margin-bottom:10px">${state.premixBypassEnabled ? 'BYPASS ON' : 'BYPASS OFF'}</button><div class="sectionLabel mixerSectionLabel">MÚSICAS</div><div class="mixerRowsBox" style="flex:1 1 auto;min-height:0;max-height:min(62vh,470px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px">${renderPremixSongRows()}</div>`
-  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2250"><div class="modalSpacer"></div><div class="modalBox mixerModalBox premixModalBox" data-stop-modal style="display:flex;flex-direction:column;max-height:min(84vh,650px);min-height:0;overflow:hidden">${content}</div><div class="modalBottomSpace"></div></div>`
+  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto"><div class="modalSpacer"></div><div class="modalBox mixerModalBox premixModalBox" data-stop-modal style="display:flex;flex-direction:column;max-height:min(84vh,650px);min-height:0;overflow:hidden;pointer-events:auto">${content}</div><div class="modalBottomSpace"></div></div>`
 }
 
 function formatBpmDisplay(value) {
@@ -4745,19 +4779,28 @@ function renderRows(items, type) {
 
 
 function installSettingsMenuFallback() {
-  // Desativado: o fallback global em pointerdown/touchstart estava concorrendo
-  // com os cliques do menu e travando a tela ao abrir PREMIX.
+  // Desativado: o fallback global em pointerdown/touchstart estava prendendo o menu
+  // e travando a interface ao abrir PREMIX. O menu volta a usar apenas os binds
+  // locais dos botoes, igual ao MIXER.
   return true
 }
 
 function installPremixOpenFallback() {
-  // Desativado: o PREMIX agora abre pelo mesmo bind simples do MIXER.
+  // Mantido como no-op: o botão PREMIX agora abre direto pelo fluxo principal do menu.
+  // Isso evita duplo pointer/touch/click fechando o menu sem abrir a janela.
+  return true
+}
+
+function installPremixSafetyCloseFallback() {
+  // Desativado: o fechamento global em capture concorria com os cliques internos
+  // do PREMIX. O fechar fica nos botoes/overlay do fluxo principal.
   return true
 }
 
 function bindEvents() {
   installSettingsMenuFallback()
   installPremixOpenFallback()
+  installPremixSafetyCloseFallback()
   bindReliableTapAction(document.querySelector('[data-action="go-playlist"]'), 'go-playlist', openPlaylist)
   bindReliableTapAction(document.querySelector('[data-action="go-regions"]'), 'go-regions', openRegions)
   bindReliableTapAction(document.querySelector('[data-action="open-markers"]'), 'open-markers', openMarkersPanel)
@@ -4787,7 +4830,6 @@ function bindEvents() {
   document.querySelector('[data-action="toggle-select"]')?.addEventListener('click', handleSelectAction)
   document.querySelector('[data-action="copy-playlist-names"]')?.addEventListener('click', handleCopyPlaylistNames)
   bindPressAction(document.querySelector('[data-action="open-mixer"]'), 'open-mixer', () => openMixerModal('tracks'))
-  bindPressAction(document.querySelector('[data-action="open-premix"]'), 'open-premix', openPremixFromMenu)
   bindPressAction(document.querySelector('[data-action="open-bpm"]'), 'open-bpm', openBpmModal)
   bindPressAction(document.querySelector('[data-action="open-tuner"]'), 'open-tuner', openTunerModal)
   bindModalCloseAction(document.querySelector('[data-action="close-bpm"]'), 'close-bpm', closeBpmModal)
@@ -5210,7 +5252,7 @@ function render() {
   const settingsButtonActive = state.editMode || state.deleteMode || state.settingsMenuOpen
   const canCopyPlaylistNames = state.activeTab === 'playlist' && state.playlistView !== 'markers' && !!(playlist?.songs || []).length
   const settingsMenu = state.settingsMenuOpen
-    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction" data-action="open-premix">PREMIX</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
+    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
     : ''
   const rightToolsHtml = showSettingsButton
     ? (state.activeTab === 'playlist' && state.playlistView === 'markers'

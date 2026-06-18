@@ -101,6 +101,7 @@ function setView(viewName) {
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
   $$('.view').forEach((view) => view.classList.remove('active'));
   $(`#${viewName}View`).classList.add('active');
+  document.body.classList.toggle('bridge-mode', viewName === 'bridge');
 }
 
 function formatDate(value) {
@@ -209,7 +210,14 @@ function renderBridgeState(bridge) {
     runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando.' : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
     runningText.classList.toggle('ok-text', !!bridge.running);
   }
-  if ($('#bridgeLanIp')) $('#bridgeLanIp').textContent = bridge.lanIp || '--';
+  const bridgeAddressEl = $('#bridgeLanIp');
+  if (bridgeAddressEl) {
+    const port = bridge.directorPort || 47831;
+    const shortAddress = bridge.lanIp ? `${bridge.lanIp}:${port}` : '';
+    const fullAddress = bridge.directorUrl || (bridge.lanIp ? `http://${bridge.lanIp}:${port}` : '');
+    bridgeAddressEl.textContent = shortAddress || '--';
+    bridgeAddressEl.title = fullAddress || shortAddress || '';
+  }
   const qrImage = $('#browserQrImage');
   if (qrImage) {
     if (bridge.qrCodeUrl && bridge.running) {

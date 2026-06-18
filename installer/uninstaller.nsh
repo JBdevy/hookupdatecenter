@@ -62,6 +62,13 @@
   StrCmp $R8 "" 0 +2
   StrCpy $R8 "$PROFILE\..\Public"
 
+  ; Pasta externa do app QR atualizável.
+  ; O Hook Center serve os arquivos daqui e pode atualizar essa pasta pelo backend
+  ; sem reinstalar o Electron inteiro.
+  CreateDirectory "$R9\HookDeveloper\HookCenter"
+  CreateDirectory "$R9\HookDeveloper\HookCenter\qr-app"
+  ExecWait 'icacls "$R9\HookDeveloper\HookCenter" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
+
   IfFileExists "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" 0 +3
     CreateDirectory "$R9\HookDeveloper\VSCore"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" "$R9\HookDeveloper\VSCore\sys_runtime.dat"
@@ -117,6 +124,10 @@
   ReadEnvStr $0 "PUBLIC"
   StrCmp $0 "" 0 +2
   StrCpy $0 "$PROFILE\..\Public"
+
+  ; App QR externo atualizado pelo backend
+  RMDir /r "$1\HookDeveloper\HookCenter\qr-app"
+  RMDir "$1\HookDeveloper\HookCenter"
 
   ; Licenças legadas
   Delete "$0\vshook_license.json"

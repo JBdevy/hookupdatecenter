@@ -1,0 +1,11 @@
+{
+  "product": "bridge-app",
+  "version": "1.8.0-qr-sem-premix-menu",
+  "title": "App QR base",
+  "bundled": true,
+  "editableInDev": true,
+  "createdAt": "2026-06-17T23:50:00.000Z",
+  "updatedAt": "2026-06-18T01:56:09Z",
+  "notes": "Botão Premix removido do menu dos 3 tracinhos para evitar travamento. Mixer, Tuner, Recados e demais opções permanecem.",
+  "build": "qr-app-sem-premix-menu"
+}

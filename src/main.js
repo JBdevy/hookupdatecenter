@@ -12,6 +12,9 @@ const store = new Store({
     currentVersion: app.getVersion(),
     hookCenterLatest: null,
     hookCenterUpdateAvailable: false,
+    bridgeAppLatest: null,
+    bridgeAppUpdateAvailable: false,
+    bridgeAppInstalled: null,
     lastCheck: null,
     updateAvailable: false,
     latestUpdate: null,
@@ -58,6 +61,7 @@ const lyricsWindows = new Map();
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest?platform=${getPlatformKey()}`;
 const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getPlatformKey()}`;
+const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -635,6 +639,176 @@ async function downloadAndInstallHookCenterUpdate() {
   return { ok: true, action: 'dmg-opened', path: dest };
 }
 
+
+function normalizeBridgeAppUpdate(raw) {
+  if (!raw || raw.published === false) return null;
+  const downloadUrl = ensureAbsoluteUrl(raw.downloadUrl || raw.zipUrl || raw.url);
+  return {
+    product: 'bridge-app',
+    updateId: raw.updateId || raw.version || null,
+    version: raw.version || '',
+    title: raw.title || 'Atualização do app QR disponível',
+    notes: raw.notes || raw.description || '',
+    downloadUrl,
+    zipUrl: ensureAbsoluteUrl(raw.zipUrl || raw.downloadUrl || raw.url),
+    sha256: String(raw.sha256 || '').trim().toLowerCase(),
+    publishedAt: raw.publishedAt || null
+  };
+}
+
+function bridgeAppNeedsUpdate(update) {
+  if (!update?.downloadUrl) return false;
+  const installed = store.get('bridgeAppInstalled') || {};
+  if (!installed.version && !installed.updateId) return true;
+  if (update.updateId && installed.updateId && update.updateId !== installed.updateId) return true;
+  if (update.version && installed.version && compareVersions(update.version, installed.version) > 0) return true;
+  if (update.version && !installed.version) return true;
+  return false;
+}
+
+async function checkBridgeAppUpdates(manual = false) {
+  try {
+    const raw = await fetchJson(BRIDGE_APP_API_URL, { cache: 'no-store' });
+    const update = normalizeBridgeAppUpdate(raw);
+    const hasUpdate = bridgeAppNeedsUpdate(update);
+    store.set('bridgeAppLatest', update);
+    store.set('bridgeAppUpdateAvailable', hasUpdate);
+    if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+    if (manual) showMainWindow();
+    return { ok: true, hasUpdate, update, state: getAppState() };
+  } catch (error) {
+    return { ok: false, error: error.message, state: getAppState() };
+  }
+}
+
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex').toLowerCase();
+}
+
+function runProcess(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
+      if (error) {
+        const message = String(stderr || stdout || error.message || 'Erro ao executar processo').trim();
+        reject(new Error(message));
+        return;
+      }
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
+async function extractZip(zipPath, destinationDir) {
+  fs.rmSync(destinationDir, { recursive: true, force: true });
+  fs.mkdirSync(destinationDir, { recursive: true });
+
+  if (process.platform === 'win32') {
+    await runProcess('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass',
+      '-Command',
+      `Expand-Archive -LiteralPath ${JSON.stringify(zipPath)} -DestinationPath ${JSON.stringify(destinationDir)} -Force`
+    ]);
+    return;
+  }
+
+  await runProcess('/usr/bin/unzip', ['-oq', zipPath, '-d', destinationDir]);
+}
+
+function findBridgeAppRoot(extractDir) {
+  if (isBridgeWebAppDirValid(extractDir)) return extractDir;
+  const entries = fs.readdirSync(extractDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  if (entries.length === 1) {
+    const onlyDir = path.join(extractDir, entries[0].name);
+    if (isBridgeWebAppDirValid(onlyDir)) return onlyDir;
+  }
+  for (const entry of entries) {
+    const candidate = path.join(extractDir, entry.name);
+    if (isBridgeWebAppDirValid(candidate)) return candidate;
+  }
+  return '';
+}
+
+function installExtractedBridgeApp(appRoot, update) {
+  if (!isBridgeWebAppDirValid(appRoot)) throw new Error('ZIP do App QR inválido: index.html não encontrado.');
+
+  const externalDir = getExternalBridgeWebAppDir();
+  const parentDir = path.dirname(externalDir);
+  const installDir = path.join(parentDir, `qr-app-installing-${Date.now()}`);
+  const backupDir = path.join(parentDir, `qr-app-backup-${Date.now()}`);
+
+  fs.mkdirSync(parentDir, { recursive: true });
+  fs.rmSync(installDir, { recursive: true, force: true });
+  copyDirectoryRecursive(appRoot, installDir);
+  fs.writeFileSync(path.join(installDir, 'version.json'), JSON.stringify({
+    product: 'bridge-app',
+    version: update.version || '',
+    updateId: update.updateId || update.version || '',
+    title: update.title || '',
+    notes: update.notes || '',
+    sourceUrl: update.downloadUrl || '',
+    installedAt: new Date().toISOString()
+  }, null, 2), 'utf8');
+
+  fs.rmSync(backupDir, { recursive: true, force: true });
+  if (fs.existsSync(externalDir)) fs.renameSync(externalDir, backupDir);
+  fs.renameSync(installDir, externalDir);
+  fs.rmSync(backupDir, { recursive: true, force: true });
+
+  return externalDir;
+}
+
+async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
+  const checked = updateOverride ? { update: updateOverride, hasUpdate: bridgeAppNeedsUpdate(updateOverride) } : await checkBridgeAppUpdates(false);
+  const update = checked.update || store.get('bridgeAppLatest');
+  if (!update?.downloadUrl) return { ok: false, skipped: true, reason: 'bridge-app-unavailable' };
+  if (!bridgeAppNeedsUpdate(update)) return { ok: true, skipped: true, reason: 'already-current' };
+
+  const downloadDir = path.join(app.getPath('userData'), 'downloads', 'bridge-app', update.updateId || update.version || 'latest');
+  const zipPath = path.join(downloadDir, 'bridge-app.zip');
+  await downloadFile(update.downloadUrl, zipPath, (progress) => {
+    if (mainWindow) mainWindow.webContents.send('download-progress', progress);
+  });
+
+  if (update.sha256) {
+    const actualHash = sha256File(zipPath);
+    if (actualHash !== update.sha256) throw new Error('Falha na validação do App QR: SHA256 diferente do backend.');
+  }
+
+  const extractDir = path.join(downloadDir, 'extract');
+  await extractZip(zipPath, extractDir);
+  const appRoot = findBridgeAppRoot(extractDir);
+  if (!appRoot) throw new Error('ZIP do App QR inválido: index.html não encontrado.');
+  const installedPath = installExtractedBridgeApp(appRoot, update);
+
+  store.set('bridgeAppInstalled', {
+    version: update.version || '',
+    updateId: update.updateId || update.version || '',
+    title: update.title || '',
+    notes: update.notes || '',
+    downloadUrl: update.downloadUrl || '',
+    sha256: update.sha256 || '',
+    path: installedPath,
+    installedAt: new Date().toISOString()
+  });
+  store.set('bridgeAppUpdateAvailable', false);
+
+  await startBridgeServers();
+  if (mainWindow) mainWindow.webContents.send('update-status', getAppState());
+  return { ok: true, installedPath, update };
+}
+
+async function checkAndInstallBridgeAppUpdate() {
+  const result = await checkBridgeAppUpdates(false);
+  if (!result.ok || !result.hasUpdate || !result.update) return result;
+  try {
+    return await downloadAndInstallBridgeAppUpdate(result.update);
+  } catch (error) {
+    console.error('[Hook Center] Falha ao atualizar App QR:', error?.message || error);
+    if (mainWindow) mainWindow.webContents.send('update-error', `App QR: ${error.message}`);
+    return { ok: false, error: error.message };
+  }
+}
+
 async function checkLicenseStatus(manual = false) {
   const license = store.get('license') || {};
   const docParts = splitDocument(license.document || license.cpf || license.cnpj);
@@ -754,12 +928,34 @@ function getBridgeFallbackState(extra = {}) {
   };
 }
 
-function getBridgeWebAppDir() {
-  const bundledAppDir = path.join(__dirname, 'bridge-web-app');
-  const bundledIndex = path.join(bundledAppDir, 'index.html');
-  if (fs.existsSync(bundledIndex)) return bundledAppDir;
 
-  // Fallback de segurança para builds antigos/incompletos.
+function getEditableBridgeWebAppDir() {
+  // Pasta usada no desenvolvimento com npm start.
+  // Assim você edita Hook center/qr-app/ e o celular já lê essa versão,
+  // sem precisar mexer em src/bridge-web-app nem reinstalar o Hook Center.
+  return path.join(__dirname, '..', 'qr-app');
+}
+
+function getBundledBridgeWebAppDir() {
+  // Em build empacotado, qr-app/ também entra no pacote e vira a base
+  // copiada para ProgramData/Users Shared quando a pasta externa ainda não existe.
+  const editableOrBundledDir = getEditableBridgeWebAppDir();
+  if (isBridgeWebAppDirValid(editableOrBundledDir)) return editableOrBundledDir;
+  return path.join(__dirname, 'bridge-web-app');
+}
+
+function getExternalBridgeWebAppDir() {
+  if (process.platform === 'win32') {
+    const programData = process.env.PROGRAMDATA || process.env.ProgramData || 'C:\\ProgramData';
+    return path.join(programData, 'HookDeveloper', 'HookCenter', 'qr-app');
+  }
+  if (process.platform === 'darwin') {
+    return '/Users/Shared/HookDeveloper/HookCenter/qr-app';
+  }
+  return path.join(os.homedir(), '.hookdeveloper', 'hookcenter', 'qr-app');
+}
+
+function getFallbackBridgeWebAppDir() {
   const fallbackDir = app.isPackaged
     ? path.join(app.getPath('userData'), 'bridge-empty-app')
     : path.join(__dirname, 'bridge-empty-app');
@@ -769,6 +965,73 @@ function getBridgeWebAppDir() {
     fs.writeFileSync(fallbackIndex, '<!doctype html><meta charset="utf-8"><title>VS Hook</title><body>VS Hook Bridge</body>', 'utf8');
   }
   return fallbackDir;
+}
+
+function isBridgeWebAppDirValid(dir) {
+  try {
+    if (!dir) return false;
+    const indexPath = path.join(dir, 'index.html');
+    return fs.existsSync(indexPath) && fs.statSync(indexPath).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+function copyDirectoryRecursive(sourceDir, targetDir) {
+  const stat = fs.statSync(sourceDir);
+  if (!stat.isDirectory()) throw new Error('Origem do app QR não é uma pasta.');
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectoryRecursive(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+
+function ensureExternalBridgeWebApp() {
+  const externalDir = getExternalBridgeWebAppDir();
+  if (isBridgeWebAppDirValid(externalDir)) return externalDir;
+
+  const bundledDir = getBundledBridgeWebAppDir();
+  if (isBridgeWebAppDirValid(bundledDir)) {
+    try {
+      fs.rmSync(externalDir, { recursive: true, force: true });
+      fs.mkdirSync(path.dirname(externalDir), { recursive: true });
+      copyDirectoryRecursive(bundledDir, externalDir);
+      const versionFile = path.join(externalDir, 'version.json');
+      if (!fs.existsSync(versionFile)) {
+        fs.writeFileSync(versionFile, JSON.stringify({ version: app.getVersion(), bundled: true, installedAt: new Date().toISOString() }, null, 2), 'utf8');
+      }
+      return externalDir;
+    } catch (error) {
+      console.warn('[Hook Center] Não foi possível preparar App QR externo:', error?.message || error);
+    }
+    return bundledDir;
+  }
+
+  return getFallbackBridgeWebAppDir();
+}
+
+function getBridgeWebAppDir() {
+  // Durante npm start, serve diretamente Hook center/qr-app/.
+  // Isso permite testar alteração de tela/layout pelo QR sem copiar para ProgramData.
+  const editableDir = getEditableBridgeWebAppDir();
+  if (!app.isPackaged && isBridgeWebAppDirValid(editableDir)) {
+    return editableDir;
+  }
+
+  // No app instalado, usa a pasta atualizável externa.
+  return ensureExternalBridgeWebApp();
+}
+
+function getBridgeAppCacheVersion() {
+  const installed = store.get('bridgeAppInstalled') || {};
+  return encodeURIComponent(installed.updateId || installed.version || app.getVersion() || Date.now());
 }
 
 function buildBridgeServers(config) {
@@ -866,8 +1129,8 @@ function getBridgeState() {
     musiciansPort,
     directorUrl: `http://${lanIp}:${directorPort}`,
     musiciansUrl: `http://${lanIp}:${musiciansPort}`,
-    browserUrl: `http://${lanIp}:${directorPort}/?qr=1&v=112`,
-    qrCodeUrl: `http://${lanIp}:${directorPort}/qr.svg?url=${encodeURIComponent(`http://${lanIp}:${directorPort}/?qr=1&v=112`)}`,
+    browserUrl: `http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}`,
+    qrCodeUrl: `http://${lanIp}:${directorPort}/qr.svg?url=${encodeURIComponent(`http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}`)}`,
     directorUrls: allLanIps.map((item) => `http://${item.ip}:${directorPort}`),
     musiciansUrls: allLanIps.map((item) => `http://${item.ip}:${musiciansPort}`),
     infos: bridgeInfos,
@@ -1068,6 +1331,10 @@ function getAppState() {
     latestUpdate: store.get('latestUpdate'),
     hookCenterLatest: store.get('hookCenterLatest'),
     hookCenterUpdateAvailable: store.get('hookCenterUpdateAvailable'),
+    bridgeAppLatest: store.get('bridgeAppLatest'),
+    bridgeAppUpdateAvailable: store.get('bridgeAppUpdateAvailable'),
+    bridgeAppInstalled: store.get('bridgeAppInstalled'),
+    bridgeAppPath: getBridgeWebAppDir(),
     lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
     downloadedFiles: store.get('downloadedFiles'),
     installedManifest: store.get('installedManifest'),
@@ -1450,6 +1717,8 @@ ipcMain.handle('check-updates', async () => {
 });
 ipcMain.handle('check-hook-center-update', () => checkHookCenterUpdates(true));
 ipcMain.handle('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());
+ipcMain.handle('check-bridge-app-update', () => checkBridgeAppUpdates(true));
+ipcMain.handle('install-bridge-app-update', () => downloadAndInstallBridgeAppUpdate());
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
@@ -1526,6 +1795,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   createWindow();
   createTray();
+  ensureExternalBridgeWebApp();
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
@@ -1537,6 +1807,7 @@ app.whenReady().then(async () => {
 
   await checkForUpdates(false);
   await checkHookCenterUpdates(false);
+  await checkAndInstallBridgeAppUpdate();
   await checkLicenseStatus(false);
 
   bridgeWatchTimer = setInterval(() => {
@@ -1549,6 +1820,7 @@ app.whenReady().then(async () => {
     await ensureBridgeServersRunning().catch(() => {});
     await checkForUpdates(false);
     await checkHookCenterUpdates(false);
+    await checkAndInstallBridgeAppUpdate();
     await checkLicenseStatus(false);
   }, CHECK_INTERVAL_MS);
 });

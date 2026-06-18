@@ -1,0 +1,12 @@
+{
+  "appId": "com.hookdeveloper.vshook",
+  "appName": "VS Hook",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "*"
+    ]
+  }
+}

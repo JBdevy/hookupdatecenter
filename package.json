@@ -28,6 +28,7 @@
     },
     "files": [
       "src/**/*",
+      "qr-app/**/*",
       "assets/**/*",
       "package.json",
       "installer/**/*"

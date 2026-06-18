@@ -925,3 +925,130 @@ select option {
   #bridgeView .browser-access-card { grid-template-columns: 1fr; justify-items: center; text-align: center; }
   #bridgeView .qr-box { width: 128px; height: 128px; }
 }
+
+
+/* v121 - Conexão via app mostrando endereço completo com porta */
+#bridgeLanIp.bridge-ip-value {
+  font-size: clamp(20px, 3.2vw, 34px);
+  line-height: 1.12;
+  word-break: break-all;
+}
+
+/* v122 - Conexão via app sem scroll, IP menor e QR maior */
+body.bridge-mode .content {
+  overflow: hidden;
+}
+
+#bridgeView.active {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(238px, 310px);
+  grid-template-areas:
+    "hero hero"
+    "download qr"
+    "connection qr";
+  gap: 10px;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+#bridgeView .app-store-hero { grid-area: hero; }
+#bridgeView .app-download-card { grid-area: download; margin-top: 0; }
+#bridgeView .compact-connection-card { grid-area: connection; margin-top: 0; }
+#bridgeView .browser-access-card { grid-area: qr; margin-top: 0; }
+
+#bridgeView .app-store-hero,
+#bridgeView .app-download-card,
+#bridgeView .compact-connection-card,
+#bridgeView .browser-access-card {
+  min-height: 0;
+}
+
+#bridgeView .app-store-hero {
+  padding: 11px 14px;
+  margin-bottom: 0;
+}
+
+#bridgeView .app-store-hero h1 {
+  font-size: 22px;
+}
+
+#bridgeView .app-download-card,
+#bridgeView .compact-connection-card,
+#bridgeView .browser-access-card {
+  padding: 11px 13px;
+  gap: 10px;
+}
+
+#bridgeView .app-download-card {
+  grid-template-columns: 52px minmax(0,1fr) auto;
+}
+
+#bridgeView .bridge-logo {
+  width: 52px;
+  height: 52px;
+}
+
+#bridgeView .browser-access-card {
+  display: grid;
+  grid-template-columns: 1fr;
+  justify-items: center;
+  align-content: center;
+  text-align: center;
+}
+
+#bridgeView .browser-access-copy h2 {
+  font-size: 19px;
+}
+
+#bridgeView .bridge-auto-panel {
+  margin: 7px 0;
+  padding: 8px 10px;
+}
+
+#bridgeView .bridge-ip-panel {
+  margin-top: 7px;
+  padding: 8px 10px;
+}
+
+#bridgeLanIp.bridge-ip-value {
+  display: block;
+  max-width: 100%;
+  font-size: clamp(14px, 1.65vw, 20px);
+  line-height: 1.12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+
+#bridgeView .qr-box {
+  width: clamp(190px, 29vw, 240px);
+  height: clamp(190px, 29vw, 240px);
+  padding: 10px;
+  border-radius: 18px;
+}
+
+@media (max-height: 760px) {
+  #bridgeView.active {
+    gap: 8px;
+    max-height: calc(100vh - 28px);
+  }
+  #bridgeView .app-store-hero { padding: 9px 12px; }
+  #bridgeView .app-download-card,
+  #bridgeView .compact-connection-card,
+  #bridgeView .browser-access-card { padding: 9px 11px; }
+  #bridgeView .qr-box { width: clamp(176px, 27vw, 220px); height: clamp(176px, 27vw, 220px); }
+}
+
+@media (max-width: 820px) {
+  body.bridge-mode .content { overflow: auto; }
+  #bridgeView.active {
+    display: block;
+    max-height: none;
+    overflow: visible;
+  }
+  #bridgeView .app-download-card,
+  #bridgeView .compact-connection-card,
+  #bridgeView .browser-access-card { margin-top: 10px; }
+  #bridgeView .qr-box { width: 190px; height: 190px; }
+}

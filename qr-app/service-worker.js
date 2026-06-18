@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vs-hook-qr-v133-premix-all-songs';
+const CACHE_NAME = 'vs-hook-qr-v134-sem-premix-menu';
 const APP_ASSETS = [
   './',
   './index.html',

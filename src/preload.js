@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   installUpdate: () => ipcRenderer.invoke('install-update'),
   checkHookCenterUpdate: () => ipcRenderer.invoke('check-hook-center-update'),
   installHookCenterUpdate: () => ipcRenderer.invoke('install-hook-center-update'),
+  checkBridgeAppUpdate: () => ipcRenderer.invoke('check-bridge-app-update'),
+  installBridgeAppUpdate: () => ipcRenderer.invoke('install-bridge-app-update'),
   activateLicense: (payload) => ipcRenderer.invoke('activate-license', payload),
   checkLicenseStatus: () => ipcRenderer.invoke('check-license-status'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
