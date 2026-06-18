@@ -23,6 +23,79 @@ function backToVSHookProjectSelector() {
   window.location.reload()
 }
 
+
+function normalizeDirectorLogoutTarget(value) {
+  return String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+function getDirectorLogoutToken(data) {
+  if (!data || typeof data !== 'object') return ''
+  return String(data.directorLogoutToken || data.appLogoutToken || data.logoutToken || data.directorLogoutAt || data.appLogoutAt || '')
+}
+
+function wasDirectorLogoutTokenHandled(token) {
+  const value = String(token || '')
+  if (!value) return false
+  try {
+    return localStorage.getItem('vshook_last_director_logout_token') === value
+  } catch (error) {
+    return false
+  }
+}
+
+function markDirectorLogoutTokenHandled(token) {
+  const value = String(token || '')
+  if (!value) return
+  try {
+    localStorage.setItem('vshook_last_director_logout_token', value)
+  } catch (error) {}
+}
+
+function bridgeRequestsDirectorLogout(data) {
+  if (!data || typeof data !== 'object') return false
+  const target = normalizeDirectorLogoutTarget(data.appLogoutTarget || data.logoutTarget || data.target)
+  const targetedToDirector = !target || target === 'director' || target === 'diretor'
+  if (!targetedToDirector) return false
+
+  return !!(
+    data.forceDirectorLogout === true ||
+    data.directorLogoutRequested === true ||
+    data.logoutDirector === true ||
+    ((data.forceAppLogout === true || data.logoutApp === true || data.appLogoutRequested === true) && (target === 'director' || target === 'diretor'))
+  )
+}
+
+function logoutDirectorToModeSelection(data) {
+  if (window.__vshookDirectorLogoutInProgress) return true
+  const token = getDirectorLogoutToken(data) || String(Date.now())
+  if (token && wasDirectorLogoutTokenHandled(token)) return true
+  window.__vshookDirectorLogoutInProgress = true
+  markDirectorLogoutTokenHandled(token)
+
+  try { clearAccessSession() } catch (error) {}
+  try {
+    localStorage.removeItem('vshook_selected_project')
+    localStorage.removeItem('vshook_selected_mode')
+    localStorage.removeItem('vshook_access_session')
+    localStorage.removeItem('vshook_selected_project_tab_index')
+    localStorage.setItem('vshook_last_director_logout_at', new Date().toISOString())
+  } catch (error) {}
+
+  try {
+    state.authAuthenticated = false
+    state.authPassInput = ''
+    state.authError = ''
+    state.authShowPassword = false
+  } catch (error) {}
+
+  if (typeof window.vshookExitToProjectSelector === 'function') {
+    window.vshookExitToProjectSelector()
+  } else {
+    window.location.reload()
+  }
+  return true
+}
+
 function registerPwaServiceWorker() {
   if (!('serviceWorker' in navigator)) return
   window.addEventListener('load', () => {
@@ -237,8 +310,45 @@ function needsAuthGate() {
   return !!state.authEnabled && !!state.authHash && !state.authAuthenticated
 }
 
+
+function syncAccessAuthDom(options = {}) {
+  const errorEl = document.getElementById('accessAuthError')
+  if (errorEl) {
+    const message = String(state.authError || '')
+    errorEl.textContent = message
+    errorEl.style.display = message ? 'block' : 'none'
+  }
+
+  const input = document.getElementById('accessPassInput')
+  if (input && input.value !== String(state.authPassInput || '')) {
+    input.value = String(state.authPassInput || '')
+  }
+
+  if (options && options.focus && input) {
+    holdAuthBridgeRender(1400)
+    window.requestAnimationFrame(() => {
+      try { input.focus({ preventScroll: true }) } catch (error) { try { input.focus() } catch (_) {} }
+      try {
+        const len = String(input.value || '').length
+        input.setSelectionRange(len, len)
+      } catch (error) {}
+    })
+  }
+}
+
+function focusAccessPassInputSoon() {
+  holdAuthBridgeRender(1200)
+  window.setTimeout(() => {
+    const input = document.getElementById('accessPassInput')
+    if (!input) return
+    try { input.focus({ preventScroll: true }) } catch (error) { try { input.focus() } catch (_) {} }
+  }, 20)
+}
+
 function handleAccessLoginSubmit(event) {
   if (event) event.preventDefault()
+  const input = document.getElementById('accessPassInput')
+  if (input) state.authPassInput = input.value
   const pass = String(state.authPassInput || '').trim()
   const hash = buildAccessHash(pass)
 
@@ -253,7 +363,9 @@ function handleAccessLoginSubmit(event) {
 
   state.authAuthenticated = false
   state.authError = 'SENHA INVALIDA'
-  render()
+  // Não re-renderiza a tela de senha no erro. Recriar o input no Android/iOS
+  // fecha o teclado e pode fazer ele abrir/fechar a cada caractere.
+  syncAccessAuthDom({ focus: true })
 }
 
 function handleAccessInputChange() {
@@ -261,6 +373,7 @@ function handleAccessInputChange() {
   state.authPassInput = passEl ? passEl.value : state.authPassInput
   if (state.authError) {
     state.authError = ''
+    syncAccessAuthDom({ focus: false })
   }
 }
 
@@ -1355,6 +1468,27 @@ const optimisticPlaybackState = {
   expiresAtMs: 0,
 }
 const OPTIMISTIC_PLAYBACK_MIN_BAR_SEC = 0.35
+const OPTIMISTIC_PLAYBACK_MIN_GRACE_MS = 6500
+const OPTIMISTIC_PLAYBACK_END_EXTRA_MS = 5000
+const OPTIMISTIC_PLAYBACK_MAX_GRACE_MS = 6 * 60 * 60 * 1000
+
+function getOptimisticPlaybackGraceMsForDuration(durationSec) {
+  const durationMs = Math.max(0, Number(durationSec) || 0) * 1000
+  // Quando o Bridge confirma transporte tocando mas ainda não manda playingId/duração,
+  // não derruba o Play visual depois de poucos segundos. Mantém até Stop explícito
+  // ou até o tempo da música quando houver duração conhecida.
+  if (!durationMs) return OPTIMISTIC_PLAYBACK_MAX_GRACE_MS
+  return Math.max(OPTIMISTIC_PLAYBACK_MIN_GRACE_MS, Math.min(OPTIMISTIC_PLAYBACK_MAX_GRACE_MS, durationMs + OPTIMISTIC_PLAYBACK_END_EXTRA_MS))
+}
+
+function getPendingPlaybackGraceMs() {
+  if (pendingPlaybackDesiredPlaying === true && pendingPlaybackDesiredSourceId) {
+    const item = findAnyPlaybackItemById(pendingPlaybackDesiredSourceId)
+    const duration = Number(item?.durationSec) || Number(optimisticPlaybackState.durationSec) || 0
+    return getOptimisticPlaybackGraceMsForDuration(duration)
+  }
+  return PENDING_PLAYBACK_GRACE_MS
+}
 
 function clearOptimisticPlayback() {
   optimisticPlaybackState.id = null
@@ -1384,7 +1518,7 @@ function getOptimisticDurationSec(id) {
   if (Number.isFinite(itemDuration) && itemDuration > 0) return itemDuration
   const itemRemaining = Number(item?.remainingSec)
   if (Number.isFinite(itemRemaining) && itemRemaining > 0) return itemRemaining
-  return 1
+  return 0
 }
 
 function startOptimisticPlayback(id, sourceTab = null) {
@@ -1394,7 +1528,7 @@ function startOptimisticPlayback(id, sourceTab = null) {
   optimisticPlaybackState.sourceTab = sourceTab || state.activeTab || 'playlist'
   optimisticPlaybackState.startedAtMs = Date.now()
   optimisticPlaybackState.durationSec = getOptimisticDurationSec(key)
-  optimisticPlaybackState.expiresAtMs = optimisticPlaybackState.startedAtMs + PENDING_PLAYBACK_GRACE_MS
+  optimisticPlaybackState.expiresAtMs = optimisticPlaybackState.startedAtMs + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
   state.playingId = key
   rememberCurrentPlaybackSelection(key, optimisticPlaybackState.sourceTab)
   clearStoppedSelectionHold()
@@ -1623,7 +1757,7 @@ let lastBridgeRenderSignature = ''
 let lastAppHeartbeatAt = 0
 let authFocusHoldUntil = 0
 let directorLocalInputHoldUntil = 0
-const DIRECTOR_RECADO_DURATION_MS = 10000
+const DIRECTOR_RECADO_DURATION_MS = 15000
 let authGateWasVisible = false
 let appPopupHideTimer = null
 let bridgePopupFadeTimer = null
@@ -2150,6 +2284,14 @@ function closeLyricsPanel() {
   render()
 }
 
+function cancelLyricsEditAndClosePanel() {
+  const song = getCurrentLyricsSong()
+  state.lyricsEditing = false
+  state.lyricsEditingSongId = song ? String(song.id ?? song.songId ?? '') : null
+  state.lyricsDraft = song ? getItemLyricsText(song) : ''
+  closeLyricsPanel()
+}
+
 function startLyricsEdit() {
   const song = getCurrentLyricsSong()
   if (!song) return
@@ -2215,24 +2357,62 @@ function renderLyricsPanel() {
   const progressStyle = `width:${Math.round(progress * 1000) / 10}%`
   const disabledEdit = song ? '' : 'disabled'
 
-  const inlinePopupHtml = bridgePopupDisplay.mounted ? renderBridgePopupHtml('lyricsInlinePopup') : ''
+  const leftButtonHtml = state.lyricsEditing
+    ? `<button class="lyricsEditButton lyricsCancelTopButton" data-action="lyrics-cancel">Cancelar</button>`
+    : `<button class="lyricsEditButton lyricsBlueButton" data-action="lyrics-edit" ${disabledEdit}>Editar</button>`
+  const rightButtonHtml = state.lyricsEditing
+    ? `<button class="lyricsBackButton lyricsOkTopButton" data-action="lyrics-confirm">OK</button>`
+    : `<button class="lyricsBackButton lyricsBlueButton" data-action="close-lyrics-panel">&gt;&gt;</button>`
+
   return `<div class="lyricsScreen ${state.lyricsEditing ? 'lyricsScreenEditing' : ''}">
     <div class="lyricsTopBar">
-      <button class="lyricsEditButton lyricsBlueButton" data-action="lyrics-edit" ${disabledEdit}>Editar</button>
+      ${leftButtonHtml}
       <div class="lyricsNowPlaying">
         <div class="lyricsNowPlayingTitle" data-lyrics-title>${escapeHtml(title)}</div>
         <div class="lyricsProgressTrack"><div class="lyricsProgressFill" data-lyrics-progress-fill style="${progressStyle}"></div></div>
       </div>
-      <button class="lyricsBackButton lyricsBlueButton" data-action="close-lyrics-panel">&gt;&gt;</button>
+      ${rightButtonHtml}
     </div>
-    <div class="lyricsPopupSlot" aria-live="polite">${inlinePopupHtml}</div>
     <div class="lyricsBody">
       ${state.lyricsEditing
-        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="4000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 4000</div>`
+        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="4000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 4000</div><div class="lyricsEditorScrollPad" aria-hidden="true"></div>`
         : `<div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(lyricsText || 'SEM LETRA CADASTRADA')}">${lyricsTextToHtml(lyricsText || 'SEM LETRA CADASTRADA')}</div>`}
     </div>
-    ${state.lyricsEditing ? `<button class="lyricsFloatingOk" data-action="lyrics-confirm">OK</button><button class="lyricsFloatingCancel" data-action="lyrics-cancel">Cancelar</button>` : ''}
   </div>`
+}
+
+
+function updateLyricsEditorViewportVars() {
+  const root = document.documentElement
+  const vv = window.visualViewport
+  const visualHeight = Math.max(360, Math.floor(Number(vv?.height || window.innerHeight || 640)))
+  const layoutHeight = Math.max(visualHeight, Math.floor(Number(window.innerHeight || visualHeight)))
+  const offsetTop = Math.max(0, Math.floor(Number(vv?.offsetTop || 0)))
+  const rawKeyboard = Math.max(0, layoutHeight - visualHeight - offsetTop)
+  const inputFocused = document.activeElement && document.activeElement.id === 'lyricsEditorInput'
+  const keyboardPad = inputFocused ? Math.max(150, rawKeyboard + 118) : 80
+  root.style.setProperty('--lyrics-visible-height', `${visualHeight}px`)
+  root.style.setProperty('--lyrics-keyboard-pad', `${keyboardPad}px`)
+}
+
+function resizeLyricsEditorInput() {
+  const input = document.getElementById('lyricsEditorInput')
+  if (!input) return
+  updateLyricsEditorViewportVars()
+
+  // Não auto-expande o textarea.
+  // Auto height + enter fazia o navegador empurrar o editor para cima
+  // e a letra entrava por trás da barra superior.
+  input.style.height = ''
+  input.style.minHeight = ''
+}
+
+function scheduleLyricsEditorResizeAndScroll() {
+  // Atualiza apenas a área visível quando o teclado abre/fecha.
+  // O scroll fica dentro do editor de tela cheia, sem mover a tela inteira.
+  window.requestAnimationFrame(() => {
+    updateLyricsEditorViewportVars()
+  })
 }
 
 function getPlayingElapsedSec(source = null) {
@@ -2693,7 +2873,68 @@ function currentMarkers() {
   }))
 }
 
+
+function normalizeBridgePlaybackStateText(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function bridgeDataSaysPlaying(data) {
+  if (!data || typeof data !== 'object') return false
+  const stateWords = [data.playState, data.playbackState, data.transportState, data.state]
+    .map(normalizeBridgePlaybackStateText)
+  return !!(
+    data.playing === true ||
+    data.isPlaying === true ||
+    data.transportPlaying === true ||
+    data.scriptPlaying === true ||
+    stateWords.includes('playing') ||
+    stateWords.includes('play') ||
+    stateWords.includes('running')
+  )
+}
+
+function bridgeDataSaysStopped(data) {
+  if (!data || typeof data !== 'object') return false
+  if (bridgeDataSaysPlaying(data)) return false
+  const stateWords = [data.playState, data.playbackState, data.transportState]
+    .map(normalizeBridgePlaybackStateText)
+  return !!(
+    data.playing === false ||
+    data.isPlaying === false ||
+    data.transportPlaying === false ||
+    stateWords.includes('stopped') ||
+    stateWords.includes('stop') ||
+    stateWords.includes('paused') ||
+    stateWords.includes('pause')
+  )
+}
+
+function getIncomingBridgePlayingId(data) {
+  if (!data || typeof data !== 'object') return null
+  const candidates = [
+    data.playingId,
+    data.playingSongId,
+    data.currentSongId,
+    data.currentRegionId,
+    data.activeSongId,
+    data.activeRegionId,
+    data.musicId,
+    data.songId,
+    data?.currentSong?.id,
+    data?.playingSong?.id,
+    data?.activeSong?.id,
+  ]
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate !== null && String(candidate).trim() !== '') return String(candidate)
+  }
+  return null
+}
+
 function syncFromBridge(data) {
+  if (bridgeRequestsDirectorLogout(data)) {
+    logoutDirectorToModeSelection(data)
+    return
+  }
   const previousPlayingId = state.playingId != null ? String(state.playingId) : null
   const previousSelectedMarkerId = state.selectedMarkerId != null ? String(state.selectedMarkerId) : null
   state.bridgeStatus = 'online'
@@ -2780,41 +3021,85 @@ function syncFromBridge(data) {
     state.tunerModeActive = !!data.tuner.modeActive
   }
 
+  const bridgeSaysPlaying = bridgeDataSaysPlaying(data)
+  const bridgeSaysStopped = bridgeDataSaysStopped(data)
+  const bridgePlayingId = getIncomingBridgePlayingId(data)
+  const optimisticId = optimisticPlaybackState.id ? String(optimisticPlaybackState.id) : ''
+  const optimisticStillActive = optimisticId && isOptimisticPlaybackActiveFor(optimisticId)
+  const bridgeConfirmsPlaying = bridgeSaysPlaying || !!bridgePlayingId
+  const bridgeConfirmsStopped = bridgeSaysStopped || data.playingId === null
+
   let incomingPlayingId = state.playingId
-  if (data.playing === false) {
-    incomingPlayingId = null
-  } else if (typeof data.playingId === 'string' || typeof data.playingId === 'number') {
-    incomingPlayingId = String(data.playingId)
-  } else if (data.playingId === null) {
+  if (bridgeSaysPlaying || bridgePlayingId) {
+    // Quando o Bridge confirma transporte tocando, usa o ID real se ele existir;
+    // se o JSON ainda vier sem ID, mantém o ID local que o Diretor acabou de tocar.
+    incomingPlayingId = bridgePlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+  } else if (bridgeSaysStopped) {
+    // JSON parado logo depois do Play é normalmente atraso do Bridge.
+    // Enquanto o Play local/otimista estiver válido, não derruba o botão para Play.
+    if (optimisticStillActive && (pendingPlaybackDesiredPlaying === true || String(state.playingId || '') === optimisticId || String(lastPlaybackSelectionId || '') === optimisticId)) {
+      incomingPlayingId = optimisticId
+    } else {
+      incomingPlayingId = null
+    }
+  } else if (data.playingId === null && !optimisticStillActive) {
     incomingPlayingId = null
   }
 
   if (pendingPlaybackToggleAt && pendingPlaybackDesiredPlaying !== null) {
     const elapsedPlayback = Date.now() - pendingPlaybackToggleAt
-    const incomingIsPlaying = !!incomingPlayingId
-    const incomingMatchesDesired = pendingPlaybackDesiredPlaying
-      ? incomingIsPlaying
-      : !incomingIsPlaying
 
-    if (incomingMatchesDesired) {
-      state.playingId = incomingPlayingId
-      if (!incomingPlayingId || String(incomingPlayingId) === String(optimisticPlaybackState.id || '')) {
-        clearOptimisticPlayback()
+    if (pendingPlaybackDesiredPlaying === true) {
+      if (bridgeConfirmsPlaying) {
+        const confirmedId = incomingPlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+        state.playingId = confirmedId
+        if (confirmedId) {
+          // Mantém o estado otimista mesmo depois da confirmação, para o JSON atrasado
+          // não fazer o botão ir e voltar enquanto o REAPER já está tocando.
+          if (!optimisticPlaybackState.id || String(optimisticPlaybackState.id) !== String(confirmedId)) {
+            optimisticPlaybackState.id = String(confirmedId)
+            optimisticPlaybackState.sourceTab = pendingPlaybackDesiredSourceTab || lastPlaybackSelectionTab || state.activeTab || 'playlist'
+            optimisticPlaybackState.startedAtMs = optimisticPlaybackState.startedAtMs || Date.now()
+            optimisticPlaybackState.durationSec = getOptimisticDurationSec(confirmedId) || Number(optimisticPlaybackState.durationSec) || 0
+            optimisticPlaybackState.expiresAtMs = Date.now() + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
+          }
+        }
+        clearPendingPlaybackToggle()
+      } else if (elapsedPlayback < getPendingPlaybackGraceMs()) {
+        // Ainda aguardando confirmação real do Bridge. Mantém o visual em Stop.
+        state.playingId = optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+      } else {
+        state.playingId = incomingPlayingId
+        if (!incomingPlayingId) clearOptimisticPlayback()
+        clearPendingPlaybackToggle()
       }
-      clearPendingPlaybackToggle()
-    } else if (elapsedPlayback < PENDING_PLAYBACK_GRACE_MS) {
-      // Ignore stale bridge playback state briefly after a local play/stop command.
     } else {
-      state.playingId = incomingPlayingId
-      if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+      if (bridgeConfirmsStopped || !incomingPlayingId) {
+        state.playingId = null
         clearOptimisticPlayback()
+        clearPendingPlaybackToggle()
+      } else if (elapsedPlayback < getPendingPlaybackGraceMs()) {
+        // Stop foi pedido localmente; mantém visual parado até o Bridge acompanhar.
+        state.playingId = null
+        clearOptimisticPlayback()
+      } else {
+        state.playingId = incomingPlayingId
+        if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+          clearOptimisticPlayback()
+        }
+        clearPendingPlaybackToggle()
       }
-      clearPendingPlaybackToggle()
     }
   } else {
     state.playingId = incomingPlayingId
-    if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+    if (!incomingPlayingId) {
       clearOptimisticPlayback()
+    } else if (optimisticPlaybackState.id && String(incomingPlayingId) !== String(optimisticPlaybackState.id)) {
+      // O Bridge pode trocar o ID para o número real da região. Atualiza o ID otimista
+      // em vez de apagar a proteção e deixar o próximo JSON antigo derrubar o botão.
+      optimisticPlaybackState.id = String(incomingPlayingId)
+      optimisticPlaybackState.durationSec = getOptimisticDurationSec(incomingPlayingId) || Number(optimisticPlaybackState.durationSec) || 0
+      optimisticPlaybackState.expiresAtMs = Date.now() + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
     }
   }
 
@@ -3060,7 +3345,7 @@ function buildBridgeRenderSignature() {
     bridgePopupError: state.bridgePopupError,
     bridgePopupPersistent: state.bridgePopupPersistent,
     timerRunning: state.timerRunning,
-    playbackTick: (state.playingId && !state.lyricsPanelOpen) ? Math.floor(Date.now() / 200) : 0,
+    playbackTick: (getPlaybackUiActive() && !state.lyricsPanelOpen) ? Math.floor(Date.now() / 200) : 0,
     playlists: (state.playlists || []).map((playlist) => ({
       id: String(playlist.id),
       name: playlist.name,
@@ -3137,6 +3422,7 @@ async function pollBridge() {
     if (!response.ok) throw new Error('offline')
     const data = await response.json()
     syncFromBridge(data)
+    applyDirectorLocalStopIfMusicEnded()
     if (bridgeLooksOffline()) {
       state.bridgeStatus = 'offline'
       state.appActive = false
@@ -4496,13 +4782,69 @@ function clearSelection() {
 }
 
 function isPlaybackPending() {
-  return !!(pendingPlaybackToggleAt && pendingPlaybackDesiredPlaying !== null && (Date.now() - pendingPlaybackToggleAt) < PENDING_PLAYBACK_GRACE_MS)
+  return !!(pendingPlaybackToggleAt && pendingPlaybackDesiredPlaying !== null && (Date.now() - pendingPlaybackToggleAt) < getPendingPlaybackGraceMs())
 }
 
 function getPlaybackUiActive() {
   if (isPlaybackPending()) return !!pendingPlaybackDesiredPlaying
+  if (optimisticPlaybackState.id && isOptimisticPlaybackActiveFor(optimisticPlaybackState.id)) return true
   return !!state.playingId
 }
+
+
+function applyDirectorLocalStopIfMusicEnded() {
+  const playingId = state.playingId != null ? String(state.playingId) : ''
+  if (!playingId) return false
+
+  // Depois de um Play pelo Diretor, não use remainingSec antigo do Bridge para
+  // encerrar visualmente. Isso era o que fazia o botão ir para Stop e voltar
+  // para Play enquanto a música seguia tocando no REAPER.
+  if (isPlaybackPending() && pendingPlaybackDesiredPlaying === true) return false
+
+  if (optimisticPlaybackState.id && String(optimisticPlaybackState.id) === playingId && isOptimisticPlaybackActiveFor(playingId)) {
+    const duration = Math.max(0, Number(optimisticPlaybackState.durationSec) || Number(getOptimisticDurationSec(playingId)) || 0)
+    if (!duration) return false
+    const elapsed = Math.max(0, (Date.now() - Number(optimisticPlaybackState.startedAtMs || Date.now())) / 1000)
+    if (elapsed < duration + 0.35) return false
+  }
+
+  const item = findAnyPlaybackItemById(playingId)
+  const duration = Math.max(0, Number(item?.durationSec) || Number(playbackLiveState.duration) || 0)
+  const hasReliableLiveRemaining = Number.isFinite(Number(playbackLiveState.baseRemaining))
+    && Number(playbackLiveState.baseRemaining) > 0
+    && Number(playbackLiveState.anchorAtMs) > 0
+
+  if (!hasReliableLiveRemaining) return false
+
+  const elapsed = Math.max(0, (Date.now() - Number(playbackLiveState.anchorAtMs)) / 1000)
+  const remaining = Math.max(0, Number(playbackLiveState.baseRemaining) - elapsed)
+
+  if (duration > 0 && remaining > 0.18) return false
+  if (!duration && remaining > 0.05) return false
+
+  const preferredTab = lastPlaybackSelectionTab || state.activeTab || 'playlist'
+  applyStoppedSongSelection(playingId, preferredTab)
+  state.pendingStopClear = false
+  state.loopActive = false
+  state.bridgePopupVisible = false
+  state.bridgePopupText = ''
+  state.bridgePopupError = false
+  state.bridgePopupPersistent = false
+  state.appPopupVisible = false
+  state.playingId = null
+  lastDirectorLocalPlayStartAt = 0
+  clearOptimisticPlayback()
+  resetPlaybackLiveState(true)
+  pendingPlaybackToggleAt = Date.now()
+  pendingPlaybackDesiredPlaying = false
+  pendingPlaybackDesiredSourceId = null
+  pendingPlaybackDesiredSourceTab = null
+  lockSelectionSync()
+  try { render() } catch (error) {}
+  try { forceStoppedSelectionDom(playingId, preferredTab) } catch (error) {}
+  return true
+}
+
 
 function clearPendingPlaybackToggle() {
   pendingPlaybackToggleAt = 0
@@ -4700,7 +5042,27 @@ function handleLoopToggle() {
   postCommand('loop_toggle')
 }
 
+
+function isEditableSwipeTarget(target) {
+  const el = target && target.closest ? target.closest('textarea,input,[contenteditable="true"]') : null
+  return !!el
+}
+
+function shouldIgnoreDirectorSwipe(event) {
+  // Na tela de Letras editando, o swipe horizontal é usado para cancelar e voltar
+  // para a tela principal. Em outros inputs, continua bloqueado para não brigar
+  // com teclado/cursor/seleção de texto.
+  if (state.lyricsPanelOpen) return !state.lyricsEditing
+  return isEditableSwipeTarget(event?.target)
+}
+
 function handleTouchStart(e) {
+  if (shouldIgnoreDirectorSwipe(e)) {
+    touchStartX = null
+    touchStartY = null
+    touchStartAt = 0
+    return
+  }
   touchStartX = e.changedTouches?.[0]?.clientX ?? null
   touchStartY = e.changedTouches?.[0]?.clientY ?? null
   touchStartAt = Date.now()
@@ -4722,7 +5084,14 @@ function handleTouchEnd(e) {
   }
 
   if (state.lyricsPanelOpen) {
-    closeLyricsPanel()
+    if (state.lyricsEditing && (deltaX <= -108 || deltaX >= 108)) {
+      e?.preventDefault?.()
+      e?.stopPropagation?.()
+      cancelLyricsEditAndClosePanel()
+    }
+    touchStartX = null
+    touchStartY = null
+    return
   } else if (deltaX <= -108 && state.activeTab === 'playlist' && state.playlistView !== 'markers') {
     // Repertórios -> swipe para esquerda abre Markers.
     state.localMarkersMode = true
@@ -5104,7 +5473,7 @@ function bindEvents() {
     if (swipeList.dataset.directorSwipeBound === '1') return
     swipeList.dataset.directorSwipeBound = '1'
     swipeList.addEventListener('touchstart', handleTouchStart, { passive: true })
-    swipeList.addEventListener('touchend', handleTouchEnd, { passive: true })
+    swipeList.addEventListener('touchend', handleTouchEnd, { passive: false })
   })
 
   const visibleList = document.querySelector('.listBox')
@@ -5156,12 +5525,31 @@ function bindEvents() {
 
   const lyricsInput = document.getElementById('lyricsEditorInput')
   if (lyricsInput) {
-    lyricsInput.focus()
-    lyricsInput.setSelectionRange(lyricsInput.value.length, lyricsInput.value.length)
+    const lyricsScreen = document.querySelector('.lyricsScreen')
+    try { lyricsInput.focus({ preventScroll: true }) } catch (_) { lyricsInput.focus() }
+    try { lyricsInput.setSelectionRange(0, 0) } catch (_) {}
+    if (lyricsScreen) lyricsScreen.scrollTop = 0
+    requestAnimationFrame(() => {
+      resizeLyricsEditorInput()
+      if (lyricsScreen) lyricsScreen.scrollTop = 0
+    })
+    window.setTimeout(() => {
+      resizeLyricsEditorInput()
+      if (lyricsScreen) lyricsScreen.scrollTop = 0
+    }, 120)
+    lyricsInput.addEventListener('focus', () => window.setTimeout(scheduleLyricsEditorResizeAndScroll, 80))
+    lyricsInput.addEventListener('click', scheduleLyricsEditorResizeAndScroll)
+    lyricsInput.addEventListener('keyup', scheduleLyricsEditorResizeAndScroll)
+    if (window.visualViewport && !window.__vshookLyricsVisualViewportBound) {
+      window.__vshookLyricsVisualViewportBound = true
+      window.visualViewport.addEventListener('resize', scheduleLyricsEditorResizeAndScroll)
+      window.visualViewport.addEventListener('scroll', scheduleLyricsEditorResizeAndScroll)
+    }
     lyricsInput.addEventListener('input', (e) => {
       state.lyricsDraft = String(e.target.value || '').slice(0, 4000)
       const count = document.querySelector('.lyricsCharCount')
       if (count) count.textContent = `${state.lyricsDraft.length} / 4000`
+      scheduleLyricsEditorResizeAndScroll()
     })
   }
 
@@ -5292,7 +5680,7 @@ function render() {
     const previousSelectionEnd = typeof document.activeElement?.selectionEnd === 'number' ? document.activeElement.selectionEnd : null
     state.authShowPassword = false
     const offlineLabel = bridgeLooksOffline() ? '<div class="authGateOffline">REAPER OFFLINE</div>' : ''
-    const authHtml = `<div class="app authGateApp" data-theme="${escapeHtml(state.theme || 'dark')}"><div class="authGateWrap"><div class="authGateCard"><img class="authGateLogo" src="${LOADING_ICON_DATA_URL}" alt="VS Hook Diretor" /><div class="authGateTitle">VS Hook Diretor</div><div class="authGateSubtitle">ACESSO PROTEGIDO</div><form id="accessLoginForm" class="authGateForm"><input id="accessPassInput" class="authGateInput" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="SENHA" value="${escapeHtml(state.authPassInput || '')}" /><button class="authGateButton" type="submit" ${bridgeLooksOffline() ? 'disabled' : ''}>ENTRAR</button><button class="authGateBackButton" type="button" data-action="back-project-selector">VOLTAR</button>${state.authError ? `<div class="authGateError">${escapeHtml(state.authError)}</div>` : ''}${offlineLabel}</form></div></div></div>`
+    const authHtml = `<div class="app authGateApp" data-theme="${escapeHtml(state.theme || 'dark')}"><div class="authGateWrap"><div class="authGateCard"><img class="authGateLogo" src="${LOADING_ICON_DATA_URL}" alt="VS Hook Diretor" /><div class="authGateTitle">VS Hook Diretor</div><div class="authGateSubtitle">ACESSO PROTEGIDO</div><form id="accessLoginForm" class="authGateForm"><input id="accessPassInput" class="authGateInput" type="password" inputmode="text" enterkeyhint="done" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="SENHA" value="${escapeHtml(state.authPassInput || '')}" /><button class="authGateButton" type="submit" ${bridgeLooksOffline() ? 'disabled' : ''}>ENTRAR</button><button class="authGateBackButton" type="button" data-action="back-project-selector">VOLTAR</button><div id="accessAuthError" class="authGateError" style="${state.authError ? '' : 'display:none'}">${escapeHtml(state.authError || '')}</div>${offlineLabel}</form></div></div></div>`
     appEl.innerHTML = authHtml
     document.getElementById('accessLoginForm')?.addEventListener('submit', handleAccessLoginSubmit)
     document.querySelector('[data-action="back-project-selector"]')?.addEventListener('click', backToVSHookProjectSelector)
@@ -5312,6 +5700,9 @@ function render() {
     accessPassInput?.addEventListener('input', handleAccessInputChange)
     accessPassInput?.addEventListener('focus', authFocusHandler)
     accessPassInput?.addEventListener('blur', authBlurHandler)
+    accessPassInput?.addEventListener('pointerdown', focusAccessPassInputSoon, { passive: true })
+    accessPassInput?.addEventListener('touchend', focusAccessPassInputSoon, { passive: true })
+    accessPassInput?.addEventListener('click', focusAccessPassInputSoon)
 
     if (previousFocusId === 'accessPassInput') {
       const target = document.getElementById(previousFocusId)
@@ -5541,6 +5932,7 @@ function startApp() {
       if (state.showMixerModal || state.showBpmModal || state.showTunerModal || state.showGearModal || state.showTimerModal) {
         return
       }
+      applyDirectorLocalStopIfMusicEnded()
       if (!state.playingId) return
       syncDirectorPlaybackDom()
     } catch (error) {
@@ -5596,3 +5988,5 @@ function syncDirectorPlaybackDom() {
     try { keepFocused.focus({ preventScroll: true }) } catch (error) {}
   }
 }
+
+/* VSHOOK_PATCH_LYRICS_SMART_SCROLL_V138 */

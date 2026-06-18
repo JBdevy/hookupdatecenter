@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vs-hook-qr-v136-lyrics-json';
+const CACHE_NAME = 'vshook-qr-play-fixo-musicos-swipe-1781812319';
 const APP_ASSETS = [
   './',
   './index.html',

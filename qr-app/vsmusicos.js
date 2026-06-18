@@ -539,8 +539,6 @@ function renderMusicosLyricsPanel() {
   const title = song ? upperText(song.name || song.label || 'MÚSICA') : 'NENHUMA MÚSICA SELECIONADA'
   const lyricsText = song ? getItemLyricsText(song) : ''
   const progress = Math.round(getMusicosLyricsProgressRatio(song) * 1000) / 10
-  const inlinePopupHtml = bridgePopupDisplay.mounted ? renderPopup('lyricsInlinePopup') : ''
-
   return `<div class="lyricsScreen">
     <div class="lyricsTopBar">
       <div class="lyricsNowPlaying">
@@ -549,7 +547,6 @@ function renderMusicosLyricsPanel() {
       </div>
       <button class="lyricsBackButton lyricsBlueButton" data-action="close-lyrics-panel">&gt;&gt;</button>
     </div>
-    <div class="lyricsPopupSlot" aria-live="polite">${inlinePopupHtml}</div>
     <div class="lyricsBody">
       <div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(lyricsText || 'SEM LETRA CADASTRADA')}">${lyricsTextToHtml(lyricsText || 'SEM LETRA CADASTRADA')}</div>
     </div>
@@ -1447,12 +1444,17 @@ function handleMusicosSwipeEnd(event) {
   musicosSwipeStartX = null
   musicosSwipeStartY = null
   if (absX < 108 || absY > 78 || absX <= (absY * 1.7) || elapsed > 760) return
+
   if (state.lyricsPanelOpen) {
-    closeMusicosLyricsPanel()
-  } else if (deltaX >= 108) {
-    openMusicosLyricsPanel()
+    // Dentro das letras: só swipe para a esquerda volta para a tela principal.
+    if (deltaX <= -108) closeMusicosLyricsPanel()
+    return
   }
+
+  // Na tela principal: swipe para a direita abre a tela de letras.
+  if (deltaX >= 108) openMusicosLyricsPanel()
 }
+
 
 function bindMusicosFreeScroll() {
   const list = document.querySelector('.musicosListBox')

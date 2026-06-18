@@ -109,6 +109,44 @@ function setStatus(text) {
   syncEditorDom()
 }
 
+
+function syncRecadosAuthDom(options = {}) {
+  const input = document.getElementById('recadosPasswordInput')
+  if (input && input.value !== String(state.password || '')) input.value = String(state.password || '')
+  const statusEl = document.getElementById('recadosAuthStatus')
+  if (statusEl) {
+    const message = String(state.status || '')
+    statusEl.textContent = message
+    statusEl.style.display = message ? 'block' : 'none'
+  }
+  if (options && options.focus && input) {
+    window.requestAnimationFrame(() => {
+      try { input.focus({ preventScroll: true }) } catch (error) { try { input.focus() } catch (_) {} }
+      try {
+        const len = String(input.value || '').length
+        input.setSelectionRange(len, len)
+      } catch (error) {}
+    })
+  }
+}
+
+function focusRecadosPasswordInputSoon() {
+  window.setTimeout(() => {
+    const input = document.getElementById('recadosPasswordInput')
+    if (!input) return
+    try { input.focus({ preventScroll: true }) } catch (error) { try { input.focus() } catch (_) {} }
+  }, 20)
+}
+
+function handleRecadosPasswordInput() {
+  const input = document.getElementById('recadosPasswordInput')
+  if (input) state.password = input.value
+  if (state.status) {
+    state.status = ''
+    syncRecadosAuthDom({ focus: false })
+  }
+}
+
 function syncFromBridge(data) {
   const previousView = getViewName()
   state.connected = true
@@ -173,7 +211,8 @@ function tryLogin(event) {
   }
   state.authenticated = false
   state.status = 'SENHA INVALIDA'
-  render(true)
+  // Não re-renderiza a tela no erro, para não derrubar o teclado virtual.
+  syncRecadosAuthDom({ focus: true })
 }
 
 function handleTextInput() {
@@ -272,7 +311,7 @@ function renderOffline() {
 }
 
 function renderAuth() {
-  return `<div class="recadosShell"><form class="recadosCard recadosAuthCard" id="recadosLoginForm"><img class="recadosLogo" src="./vshook-icon.png" alt="VS Hook" /><h1>Recados</h1><p>Digite a senha do app Recados.</p><input id="recadosPasswordInput" class="recadosPasswordInput" type="password" autocomplete="current-password" placeholder="SENHA" value="${escapeHtml(state.password)}" />${state.status ? `<div class="recadosStatus">${escapeHtml(state.status)}</div>` : ''}<div class="recadosAuthButtons"><button class="recadosSendButton" type="submit">ENTRAR</button><button class="recadosCancelButton" type="button" data-action="back">VOLTAR</button></div></form></div>`
+  return `<div class="recadosShell recadosAuthShell"><form class="recadosCard recadosAuthCard" id="recadosLoginForm"><img class="recadosLogo" src="./vshook-icon.png" alt="VS Hook" /><h1>Recados</h1><p>Digite a senha do app Recados.</p><input id="recadosPasswordInput" class="recadosPasswordInput" type="password" inputmode="text" enterkeyhint="done" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="SENHA" value="${escapeHtml(state.password)}" /><div id="recadosAuthStatus" class="recadosStatus" style="${state.status ? '' : 'display:none'}">${escapeHtml(state.status || '')}</div><div class="recadosAuthButtons"><button class="recadosSendButton" type="submit">ENTRAR</button><button class="recadosCancelButton" type="button" data-action="back">VOLTAR</button></div></form></div>`
 }
 
 function renderEditor() {
@@ -282,6 +321,11 @@ function renderEditor() {
 
 function bindEvents() {
   document.getElementById('recadosLoginForm')?.addEventListener('submit', tryLogin)
+  const recadosPasswordInput = document.getElementById('recadosPasswordInput')
+  recadosPasswordInput?.addEventListener('input', handleRecadosPasswordInput)
+  recadosPasswordInput?.addEventListener('pointerdown', focusRecadosPasswordInputSoon, { passive: true })
+  recadosPasswordInput?.addEventListener('touchend', focusRecadosPasswordInputSoon, { passive: true })
+  recadosPasswordInput?.addEventListener('click', focusRecadosPasswordInputSoon)
   document.querySelector('[data-action="retry"]')?.addEventListener('click', pollBridge)
   document.querySelector('[data-action="back"]')?.addEventListener('click', backToModeSelector)
   document.querySelector('[data-action="send"]')?.addEventListener('click', sendRecado)

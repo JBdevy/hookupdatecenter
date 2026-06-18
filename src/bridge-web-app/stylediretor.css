@@ -5362,3 +5362,190 @@ body.boot-loading {
   width: 100%;
   margin: 0;
 }
+
+
+/* v137 - Letras sem espaço reservado de popup; popup central; edição sem botão embaixo do teclado */
+.lyricsPopupSlot{display:none!important;flex:0 0 0!important;min-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;}
+.app:has(.lyricsScreen) > .appPopup{
+  display:flex!important;
+  position:fixed!important;
+  left:50%!important;
+  top:50%!important;
+  bottom:auto!important;
+  transform:translate(-50%,-50%)!important;
+  z-index:3200!important;
+  width:min(82vw,380px)!important;
+  min-height:58px!important;
+  padding:12px 16px!important;
+  font-size:18px!important;
+  line-height:1.12!important;
+  pointer-events:none!important;
+}
+.app:has(.lyricsScreen) > .appPopupHidden{
+  opacity:0!important;
+  transform:translate(-50%,-50%) scale(.98)!important;
+}
+.lyricsScreen{overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;}
+.lyricsScreen .lyricsBody{flex:0 0 auto!important;min-height:calc(var(--app-vh,100dvh) - 94px)!important;overflow:visible!important;}
+.lyricsScreen .lyricsTextView{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 140px)!important;overflow:visible!important;padding-bottom:34px!important;}
+.lyricsScreenEditing .lyricsTopBar{position:sticky!important;top:0!important;z-index:3210!important;grid-template-columns:90px minmax(0,1fr) 64px!important;background:linear-gradient(180deg,#05070a 0%,rgba(5,7,10,.96) 100%)!important;padding-bottom:8px!important;margin-bottom:8px!important;}
+.lyricsScreenEditing .lyricsBody{min-height:calc(var(--app-vh,100dvh) - 122px)!important;}
+.lyricsScreenEditing .lyricsEditorInput{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 168px)!important;overflow:hidden!important;padding:14px 12px 42px!important;-webkit-overflow-scrolling:auto!important;}
+.lyricsOkTopButton{border-color:#22c55e!important;background:linear-gradient(180deg,#16a34a 0%,#15803d 100%)!important;color:#fff!important;font-size:16px!important;min-width:62px!important;}
+.lyricsCancelTopButton{border-color:#475569!important;background:#111827!important;color:#f8fafc!important;font-size:13px!important;min-width:86px!important;padding:0 8px!important;}
+.lyricsFloatingOk,.lyricsFloatingCancel{display:none!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsTopBar{background:linear-gradient(180deg,#f8fafc 0%,rgba(248,250,252,.96) 100%)!important;}
+@media(max-width:480px){
+  .app:has(.lyricsScreen) > .appPopup{width:min(86vw,340px)!important;min-height:52px!important;font-size:16px!important;padding:10px 13px!important;}
+  .lyricsScreenEditing .lyricsTopBar{grid-template-columns:82px minmax(0,1fr) 58px!important;gap:6px!important;}
+  .lyricsCancelTopButton{min-width:78px!important;font-size:12px!important;}
+  .lyricsOkTopButton{min-width:56px!important;font-size:15px!important;}
+}
+
+
+/* v138 - editor de letras tela cheia e scroll inteligente com teclado */
+.lyricsPopupSlot{display:none!important;flex:0 0 0!important;min-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;}
+.app:has(.lyricsScreen) > .appPopup{
+  display:flex!important;
+  position:fixed!important;
+  left:50%!important;
+  top:50%!important;
+  bottom:auto!important;
+  transform:translate(-50%,-50%)!important;
+  z-index:3400!important;
+  width:min(82vw,380px)!important;
+  min-height:58px!important;
+  padding:12px 16px!important;
+  font-size:18px!important;
+  line-height:1.12!important;
+  pointer-events:none!important;
+}
+.app:has(.lyricsScreen) > .appPopupHidden{opacity:0!important;transform:translate(-50%,-50%) scale(.98)!important;}
+.lyricsScreen{
+  height:var(--app-vh,100dvh)!important;
+  max-height:var(--app-vh,100dvh)!important;
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
+  -webkit-overflow-scrolling:touch!important;
+  overscroll-behavior:contain!important;
+  scroll-padding-bottom:calc(var(--lyrics-keyboard-pad,80px) + 40px)!important;
+}
+.lyricsScreen .lyricsBody{
+  flex:0 0 auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 94px)!important;
+  overflow:visible!important;
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+  padding:0 8px!important;
+  margin:0!important;
+}
+.lyricsScreen .lyricsTextView{
+  height:auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 140px)!important;
+  overflow:visible!important;
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+  padding:14px 10px 42px!important;
+}
+.lyricsScreenEditing{
+  padding-bottom:0!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:sticky!important;
+  top:0!important;
+  z-index:3210!important;
+  grid-template-columns:90px minmax(0,1fr) 64px!important;
+  background:linear-gradient(180deg,#05070a 0%,rgba(5,7,10,.96) 100%)!important;
+  padding-bottom:8px!important;
+  margin-bottom:8px!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 114px)!important;
+  padding:0 10px!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  display:block!important;
+  width:100%!important;
+  box-sizing:border-box!important;
+  height:auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 128px)!important;
+  overflow:hidden!important;
+  resize:none!important;
+  outline:none!important;
+  border:0!important;
+  box-shadow:none!important;
+  background:transparent!important;
+  border-radius:0!important;
+  color:#f8fafc!important;
+  font-size:21px!important;
+  line-height:1.42!important;
+  padding:14px 4px 18px!important;
+  margin:0!important;
+  -webkit-overflow-scrolling:auto!important;
+}
+.lyricsScreenEditing .lyricsEditorInput:focus{outline:none!important;border:0!important;box-shadow:none!important;}
+.lyricsEditorScrollPad{display:block!important;height:calc(var(--lyrics-keyboard-pad,80px) + 110px)!important;min-height:150px!important;flex:0 0 auto!important;}
+.lyricsCharCount{position:sticky!important;bottom:calc(var(--lyrics-keyboard-pad,80px) + 8px)!important;z-index:3200!important;margin:10px auto 0!important;width:max-content!important;background:rgba(15,23,42,.78)!important;border:1px solid rgba(148,163,184,.25)!important;border-radius:999px!important;padding:5px 10px!important;}
+.lyricsOkTopButton{border-color:#22c55e!important;background:linear-gradient(180deg,#16a34a 0%,#15803d 100%)!important;color:#fff!important;font-size:16px!important;min-width:62px!important;}
+.lyricsCancelTopButton{border-color:#475569!important;background:#111827!important;color:#f8fafc!important;font-size:13px!important;min-width:86px!important;padding:0 8px!important;}
+.lyricsFloatingOk,.lyricsFloatingCancel{display:none!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsTopBar{background:linear-gradient(180deg,#f8fafc 0%,rgba(248,250,252,.96) 100%)!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsEditorInput{color:#0f172a!important;}
+.app[data-theme="light"] .lyricsCharCount{background:rgba(255,255,255,.85)!important;color:#0f172a!important;border-color:#cbd5e1!important;}
+@media(max-width:480px){
+  .app:has(.lyricsScreen) > .appPopup{width:min(86vw,340px)!important;min-height:52px!important;font-size:16px!important;padding:10px 13px!important;}
+  .lyricsScreenEditing .lyricsTopBar{grid-template-columns:82px minmax(0,1fr) 58px!important;gap:6px!important;}
+  .lyricsCancelTopButton{min-width:78px!important;font-size:12px!important;}
+  .lyricsOkTopButton{min-width:56px!important;font-size:15px!important;}
+  .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
+}
+
+/* v122 - login estável com teclado virtual e swipe bloqueado na tela de Letras */
+.authGateApp{
+  position:fixed!important;
+  inset:0!important;
+  width:100vw!important;
+  height:var(--app-vh,100dvh)!important;
+  min-height:var(--app-vh,100dvh)!important;
+  overflow:hidden!important;
+  align-items:flex-start!important;
+  justify-content:center!important;
+  padding:calc(env(safe-area-inset-top,0px) + 14px) 14px calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  overscroll-behavior:none!important;
+  touch-action:manipulation!important;
+}
+.authGateWrap{
+  min-height:0!important;
+  height:auto!important;
+  max-height:calc(var(--app-vh,100dvh) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 24px)!important;
+  align-items:flex-start!important;
+  overflow:hidden!important;
+}
+.authGateCard{
+  justify-content:flex-start!important;
+  width:min(92vw,380px)!important;
+  max-height:100%!important;
+  overflow:hidden!important;
+  padding:16px 16px 14px!important;
+  gap:7px!important;
+}
+.authGateLogo{width:min(32vw,116px)!important;max-width:116px!important;min-width:74px!important;}
+.authGateTitle{font-size:clamp(18px,4vw,24px)!important;line-height:1.05!important;}
+.authGateSubtitle{font-size:clamp(10px,2.4vw,12px)!important;line-height:1.1!important;}
+.authGateForm{gap:8px!important;margin-top:6px!important;}
+.authGateInput{height:48px!important;font-size:18px!important;text-align:center!important;letter-spacing:.08em!important;}
+.authGateButton,.authGateBackButton{height:44px!important;min-height:44px!important;}
+.authGateError{min-height:17px!important;line-height:17px!important;text-align:center!important;}
+.lyricsScreen,.lyricsScreen *{overscroll-behavior:contain;}
+.lyricsScreenEditing .lyricsEditorInput{touch-action:pan-y!important;}
+@media(max-height:560px){
+  .authGateApp{padding-top:8px!important;}
+  .authGateCard{padding:12px 14px!important;gap:5px!important;}
+  .authGateLogo{width:72px!important;min-width:72px!important;max-width:72px!important;margin-bottom:0!important;}
+  .authGateTitle{font-size:18px!important;}
+  .authGateSubtitle{font-size:10px!important;}
+  .authGateInput{height:44px!important;}
+  .authGateButton,.authGateBackButton{height:40px!important;min-height:40px!important;}
+}

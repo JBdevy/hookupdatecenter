@@ -119,3 +119,37 @@ button, textarea, input { font: inherit; }
 .recadosAuthButtons .recadosSendButton,.recadosAuthButtons .recadosCancelButton{width:100%;min-height:56px;}
 .recadosBackWide{width:100%;margin-top:14px;}
 @media(max-width:380px){.recadosAuthButtons{gap:10px;margin-top:16px}.recadosAuthButtons .recadosSendButton,.recadosAuthButtons .recadosCancelButton{min-height:52px}}
+
+/* v122 - login Recados estável com teclado virtual */
+.recadosAuthShell{
+  position:fixed!important;
+  inset:0!important;
+  width:100vw!important;
+  height:100dvh!important;
+  min-height:100dvh!important;
+  overflow:hidden!important;
+  align-items:flex-start!important;
+  justify-content:center!important;
+  padding:calc(env(safe-area-inset-top,0px) + 14px) 14px calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  overscroll-behavior:none!important;
+}
+.recadosAuthCard{
+  width:min(92vw,420px)!important;
+  max-height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 24px)!important;
+  overflow:hidden!important;
+  padding:16px!important;
+}
+.recadosAuthCard .recadosLogo{width:78px!important;height:78px!important;margin-bottom:6px!important;}
+.recadosAuthCard h1{font-size:24px!important;margin-bottom:5px!important;}
+.recadosAuthCard p{margin-bottom:12px!important;}
+.recadosPasswordInput{font-size:18px!important;}
+#recadosAuthStatus{min-height:24px!important;line-height:24px!important;margin:0!important;}
+@media(max-height:560px){
+  .recadosAuthShell{padding-top:8px!important;}
+  .recadosAuthCard{padding:12px 14px!important;}
+  .recadosAuthCard .recadosLogo{width:62px!important;height:62px!important;}
+  .recadosAuthCard h1{font-size:22px!important;}
+  .recadosPasswordInput{height:48px!important;margin-bottom:8px!important;}
+  .recadosAuthButtons{margin-top:10px!important;}
+  .recadosAuthButtons .recadosSendButton,.recadosAuthButtons .recadosCancelButton{min-height:48px!important;}
+}

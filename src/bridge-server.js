@@ -8,7 +8,7 @@ const { createQrSvg } = require('./qr-svg')
 const PROJECT_STALE_MS = 120000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
 const TECHNICAL_NOTICE_DURATION_MS = 20000
-const DIRECTOR_NOTICE_DURATION_MS = 10000
+const DIRECTOR_NOTICE_DURATION_MS = 15000
 const TECHNICAL_NOTICE_MAX_LEN = 500
 
 function parseDateMs(value) {

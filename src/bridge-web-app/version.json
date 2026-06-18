@@ -1,11 +1,13 @@
 {
   "product": "bridge-app",
-  "version": "1.8.0-qr-lyrics-json-fix",
+  "version": "1.8.0-play-fixo-musicos-swipe",
   "title": "App QR base",
   "bundled": true,
   "editableInDev": true,
   "createdAt": "2026-06-17T23:50:00.000Z",
-  "updatedAt": "2026-06-18T15:22:29Z",
-  "notes": "Correção do armazenamento de letras: o app salva a letra no JSON local do Hook Center e o Bridge devolve essa letra no /state para Diretor e Músicos.",
-  "build": "qr-app-lyrics-json-fix"
+  "updatedAt": "2026-06-18T17:45:00Z",
+  "notes": "Corrige teclado virtual nos logins Diretor/Recados, reduz deslocamento do login Diretor, bloqueia swipe na edição de Letras e impede JSON atrasado de derrubar Play local.",
+  "build": "1781812319",
+  "cacheBust": 1781810706,
+  "label": "director keyboard login and playback json fix"
 }
