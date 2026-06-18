@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vs-hook-qr-v134-sem-premix-menu';
+const CACHE_NAME = 'vs-hook-qr-v136-lyrics-json';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -52,6 +52,7 @@ self.addEventListener('fetch', (event) => {
     '/discovery', '/discovery.json',
     '/projects', '/projects.json',
     '/state', '/state.json',
+    '/lyrics', '/lyrics.json',
     '/command', '/technical-notice', '/recados-notice',
     '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg'
   ];

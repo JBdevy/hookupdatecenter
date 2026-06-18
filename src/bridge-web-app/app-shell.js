@@ -200,7 +200,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=134-sem-premix-menu'
   document.body.appendChild(script)
 }
 

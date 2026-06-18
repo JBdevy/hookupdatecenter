@@ -515,6 +515,158 @@ function enqueueCommand(commandsFile, type, payload = {}) {
   return command
 }
 
+
+function normalizeLyricsText(value) {
+  return String(value ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\\n/g, '\n')
+    .slice(0, 4000)
+}
+
+function normalizeLyricsId(value) {
+  const text = String(value ?? '').trim()
+  return text || ''
+}
+
+function readLyricsDb(lyricsFile) {
+  const data = readJson(lyricsFile, {
+    bridgeVersion: 1,
+    updatedAt: null,
+    lyricsById: {},
+  })
+  const lyricsById = data && typeof data.lyricsById === 'object' && data.lyricsById && !Array.isArray(data.lyricsById)
+    ? data.lyricsById
+    : {}
+  return {
+    bridgeVersion: 1,
+    updatedAt: data?.updatedAt || null,
+    lyricsById,
+  }
+}
+
+function getLyricsIdCandidates(raw = {}) {
+  const payload = raw && typeof raw === 'object' ? raw : {}
+  const candidates = []
+  const directFields = [
+    'id', 'targetId', 'selectedRegionId', 'songId', 'regionId', 'playlistSongId',
+    'source_number', 'sourceNumber', 'number', 'uid', 'regionUid', 'songUid'
+  ]
+  for (const field of directFields) {
+    const value = normalizeLyricsId(payload[field])
+    if (value) candidates.push(value)
+  }
+  const aliases = Array.isArray(payload.aliases) ? payload.aliases : []
+  for (const value of aliases) {
+    const key = normalizeLyricsId(value)
+    if (key) candidates.push(key)
+  }
+  return [...new Set(candidates)]
+}
+
+function buildLyricsEntry(payload = {}) {
+  const text = normalizeLyricsText(
+    payload.lyricsText ?? payload.lyrics ?? payload.text ?? payload.value ?? ''
+  )
+  const now = new Date().toISOString()
+  return {
+    text,
+    lyrics: text,
+    lyricsText: text,
+    hasLyrics: text.trim().length > 0,
+    name: String(payload.name || payload.title || payload.songName || '').trim(),
+    updatedAt: now,
+  }
+}
+
+function saveLyricsPayload(lyricsFile, payload = {}) {
+  const ids = getLyricsIdCandidates(payload)
+  if (!ids.length) {
+    return { ok: false, error: 'Música sem ID para salvar letra.' }
+  }
+
+  const db = readLyricsDb(lyricsFile)
+  const entry = buildLyricsEntry(payload)
+  db.lyricsById = db.lyricsById && typeof db.lyricsById === 'object' ? db.lyricsById : {}
+
+  for (const id of ids) {
+    db.lyricsById[id] = entry
+  }
+
+  db.updatedAt = entry.updatedAt
+  writeJson(lyricsFile, db)
+  return { ok: true, ids, entry, updatedAt: db.updatedAt }
+}
+
+function deleteLyricsPayload(lyricsFile, payload = {}) {
+  const ids = getLyricsIdCandidates(payload)
+  if (!ids.length) return { ok: false, error: 'Música sem ID para apagar letra.' }
+  const db = readLyricsDb(lyricsFile)
+  let changed = false
+  for (const id of ids) {
+    if (Object.prototype.hasOwnProperty.call(db.lyricsById, id)) {
+      delete db.lyricsById[id]
+      changed = true
+    }
+  }
+  if (changed) {
+    db.updatedAt = new Date().toISOString()
+    writeJson(lyricsFile, db)
+  }
+  return { ok: true, ids, deleted: changed, updatedAt: db.updatedAt }
+}
+
+function pickLyricsForItem(item, lyricsById) {
+  if (!item || typeof item !== 'object' || !lyricsById || typeof lyricsById !== 'object') return null
+  const ids = getLyricsIdCandidates(item)
+  for (const id of ids) {
+    if (Object.prototype.hasOwnProperty.call(lyricsById, id)) {
+      const entry = lyricsById[id]
+      if (entry && typeof entry === 'object') return entry
+      return { text: normalizeLyricsText(entry) }
+    }
+  }
+  return null
+}
+
+function applyLyricsToItem(item, lyricsById) {
+  if (!item || typeof item !== 'object') return item
+  const out = { ...item }
+  const entry = pickLyricsForItem(out, lyricsById)
+  if (entry) {
+    const text = normalizeLyricsText(entry.lyricsText ?? entry.lyrics ?? entry.text ?? '')
+    out.lyrics = text
+    out.lyricsText = text
+    out.hasLyrics = text.trim().length > 0
+    out.lyricsUpdatedAt = entry.updatedAt || null
+  }
+  return out
+}
+
+function applyLyricsToState(state, lyricsFile) {
+  if (!state || typeof state !== 'object') return state
+  const db = readLyricsDb(lyricsFile)
+  const lyricsById = db.lyricsById || {}
+  if (!Object.keys(lyricsById).length) return state
+
+  const next = { ...state }
+  if (Array.isArray(state.regions)) {
+    next.regions = state.regions.map((item) => applyLyricsToItem(item, lyricsById))
+  }
+  if (Array.isArray(state.playlists)) {
+    next.playlists = state.playlists.map((playlist) => {
+      if (!playlist || typeof playlist !== 'object') return playlist
+      const out = { ...playlist }
+      if (Array.isArray(playlist.songs)) {
+        out.songs = playlist.songs.map((item) => applyLyricsToItem(item, lyricsById))
+      }
+      return out
+    })
+  }
+  next.lyricsUpdatedAt = db.updatedAt || null
+  return next
+}
+
 function normalizeRoutes(extraRoutes) {
   const out = new Map()
   for (const route of extraRoutes || []) {
@@ -534,6 +686,7 @@ function createBridgeServer(options) {
   const stateFile = path.join(sharedDir, 'vshook_state.json')
   const commandsFile = path.join(sharedDir, 'vshook_commands.json')
   const noticeFile = path.join(sharedDir, 'vshook_technical_notice.json')
+  const lyricsFile = path.join(sharedDir, 'vshook_song_lyrics.json')
   const routes = normalizeRoutes(options.routes)
   const fallbackState = options.fallbackState || {
     bridgeVersion: 1,
@@ -592,6 +745,11 @@ function createBridgeServer(options) {
     updatedAt: null,
     commands: [],
   })
+  ensureJsonFile(lyricsFile, {
+    bridgeVersion: 1,
+    updatedAt: null,
+    lyricsById: {},
+  })
 
   const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') {
@@ -644,7 +802,8 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
-      const state = readJson(stateFile, fallbackState)
+      const rawState = readJson(stateFile, fallbackState)
+      const state = applyLyricsToState(rawState, lyricsFile)
       const projectPayload = buildProjectPayload(state)
       sendJson(res, 200, {
         ...state,
@@ -764,6 +923,61 @@ function createBridgeServer(options) {
       return
     }
 
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/lyrics' || parsedUrl.pathname === '/lyrics.json')) {
+      const db = readLyricsDb(lyricsFile)
+      const id = normalizeLyricsId(parsedUrl.searchParams.get('id'))
+      if (id) {
+        sendJson(res, 200, {
+          ok: true,
+          id,
+          entry: db.lyricsById[id] || null,
+          lyrics: db.lyricsById[id]?.lyricsText || db.lyricsById[id]?.lyrics || db.lyricsById[id]?.text || '',
+          updatedAt: db.updatedAt || null,
+        })
+      } else {
+        sendJson(res, 200, { ok: true, ...db })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && (parsedUrl.pathname === '/lyrics' || parsedUrl.pathname === '/lyrics.json')) {
+      let body = ''
+      let tooLarge = false
+      req.on('data', (chunk) => {
+        body += chunk.toString('utf8')
+        if (body.length > 1024 * 256) {
+          tooLarge = true
+          req.pause()
+        }
+      })
+      req.on('end', () => {
+        if (tooLarge) {
+          sendJson(res, 413, { ok: false, error: 'Letra muito grande' })
+          return
+        }
+        try {
+          const parsed = body ? JSON.parse(body) : {}
+          const result = saveLyricsPayload(lyricsFile, parsed)
+          sendJson(res, result.ok ? 200 : 400, result)
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: 'JSON inválido' })
+        }
+      })
+      return
+    }
+
+    if (req.method === 'DELETE' && (parsedUrl.pathname === '/lyrics' || parsedUrl.pathname === '/lyrics.json')) {
+      const payload = {
+        id: parsedUrl.searchParams.get('id'),
+        targetId: parsedUrl.searchParams.get('targetId'),
+        songId: parsedUrl.searchParams.get('songId'),
+      }
+      const result = deleteLyricsPayload(lyricsFile, payload)
+      sendJson(res, result.ok ? 200 : 400, result)
+      return
+    }
+
     if (req.method === 'POST' && parsedUrl.pathname === '/command') {
       let body = ''
       let tooLarge = false
@@ -783,8 +997,12 @@ function createBridgeServer(options) {
           const parsed = body ? JSON.parse(body) : {}
           const type = typeof parsed.type === 'string' ? parsed.type : 'unknown'
           const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {}
+          let lyricsResult = null
+          if (type === 'update_lyrics' || type === 'save_lyrics') {
+            lyricsResult = saveLyricsPayload(lyricsFile, payload)
+          }
           const command = enqueueCommand(commandsFile, type, payload)
-          sendJson(res, 200, { ok: true, command })
+          sendJson(res, 200, { ok: true, command, lyricsSaved: lyricsResult ? !!lyricsResult.ok : undefined, lyrics: lyricsResult || undefined })
         } catch (error) {
           sendJson(res, 400, { ok: false, error: 'JSON inválido' })
         }
@@ -798,6 +1016,7 @@ function createBridgeServer(options) {
         ...info,
         stateFile,
         commandsFile,
+        lyricsFile,
       })
       return
     }

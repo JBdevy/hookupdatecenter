@@ -343,6 +343,18 @@ function getPlaybackAwareItem(item, type, isPlaying, isBlock) {
   const remaining = Number(item?.remainingSec)
   const region = findPlayingRegionById(item?.id)
   const sourceDuration = Number(region?.durationSec) || duration || 0
+
+  if (isOptimisticPlaybackActiveFor(item?.id)) {
+    const optimisticRemaining = getOptimisticRemainingSec(item?.id, sourceDuration)
+    if (Number.isFinite(optimisticRemaining)) {
+      return {
+        ...item,
+        durationSec: sourceDuration || Number(optimisticPlaybackState.durationSec) || duration || 1,
+        remainingSec: optimisticRemaining,
+      }
+    }
+  }
+
   const sourceRemaining = Number.isFinite(remaining)
     ? remaining
     : (Number.isFinite(Number(region?.remainingSec)) ? Number(region.remainingSec) : remaining)
@@ -869,6 +881,9 @@ function setPremixTrackLocalState(id, patch = {}) {
 }
 
 function openPremixModal() {
+  // PREMIX precisa ser só uma janela local no primeiro toque.
+  // Não envia comando para o Lua ao abrir, porque isso concorria com o menu
+  // dos 3 tracinhos e deixava uma camada invisível travando a tela.
   state.settingsMenuOpen = false
   state.showGearModal = false
   state.showMixerModal = false
@@ -877,23 +892,47 @@ function openPremixModal() {
   state.showTunerModal = false
   state.showPremixModal = true
   state.premixView = 'songs'
-  if (!state.premixSelectedSongId || !getPremixSongs().some((song) => String(song?.id || song?.source_number || song?.sourceNumber || '') === String(state.premixSelectedSongId))) {
-    const first = getFirstSelectablePremixSong()
-    if (first) state.premixSelectedSongId = String(first.id || first.source_number || first.sourceNumber || '')
+
+  // Garante lista com todas as músicas; o foco real no Lua só acontece
+  // quando o usuário escolhe a música.
+  try {
+    const songs = getPremixSongs()
+    const selectedStillExists = songs.some((song) => String(song?.id || song?.source_number || song?.sourceNumber || '') === String(state.premixSelectedSongId || ''))
+    if (!selectedStillExists) state.premixSelectedSongId = null
+  } catch (error) {
+    state.premixSelectedSongId = null
   }
-  armOverlayCloseGuard(650)
+
+  armOverlayCloseGuard(900)
   render()
-  if (state.premixSelectedSongId) {
-    postCommand('premix_focus_song', { id: state.premixSelectedSongId, page: getCurrentPcPageName() })
-  }
-  fastPollBridge?.(6)
 }
 
 function openPremixFromMenu(event) {
   event?.preventDefault?.()
   event?.stopPropagation?.()
+  event?.stopImmediatePropagation?.()
   openPremixModal()
   return true
+}
+
+function bindPremixMenuButton(el) {
+  if (!el) return
+  let lastRunAt = 0
+  const run = (event) => {
+    const now = Date.now()
+    if (now - lastRunAt < 500) {
+      event?.preventDefault?.()
+      event?.stopPropagation?.()
+      event?.stopImmediatePropagation?.()
+      return
+    }
+    lastRunAt = now
+    openPremixFromMenu(event)
+  }
+  // touchend abre após soltar o dedo e cancela o click sintético.
+  el.addEventListener('touchend', run, { passive: false })
+  // click cobre mouse e navegadores sem touch events.
+  el.addEventListener('click', run)
 }
 
 function closePremixModal(force = false) {
@@ -910,10 +949,17 @@ function selectPremixSong(songId) {
   if (!isPremixSelectableSong(song)) return
   state.premixSelectedSongId = id
   state.premixView = 'tracks'
-  state.premixTracks = []
+
+  // Mostra pistas imediatamente usando o mixer atual; quando o Lua responder,
+  // substitui pelos presets reais do Premix dessa música.
+  if (!Array.isArray(state.premixTracks) || !state.premixTracks.length) {
+    const fallbackTracks = Array.isArray(state.mixerTracks) ? state.mixerTracks : []
+    state.premixTracks = fallbackTracks.map((item) => normalizePremixTrackItem(item))
+  }
+
   render()
   postCommand('premix_focus_song', { id, page: getCurrentPcPageName() })
-  fastPollBridge?.(8)
+  fastPollBridge?.(10)
 }
 
 function backPremixSongList() {
@@ -1007,7 +1053,7 @@ function renderPremixModal() {
   const content = isTracks
     ? `<div class="mixerModalHeader" style="gap:8px"><button class="btn" data-action="premix-back" style="min-width:88px">LISTA</button><div class="modalTitle" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(title)}</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><button class="${bypassClass}" data-action="premix-bypass" style="width:100%;height:42px;margin-bottom:10px">${state.premixBypassEnabled ? 'BYPASS ON' : 'BYPASS OFF'}</button><div class="mixerRowsBox" style="flex:1 1 auto;min-height:0;max-height:min(62vh,470px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px">${renderPremixTrackRows()}</div>`
     : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><button class="${bypassClass}" data-action="premix-bypass" style="width:100%;height:42px;margin-bottom:10px">${state.premixBypassEnabled ? 'BYPASS ON' : 'BYPASS OFF'}</button><div class="sectionLabel mixerSectionLabel">MÚSICAS</div><div class="mixerRowsBox" style="flex:1 1 auto;min-height:0;max-height:min(62vh,470px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px">${renderPremixSongRows()}</div>`
-  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2250"><div class="modalSpacer"></div><div class="modalBox mixerModalBox premixModalBox" data-stop-modal style="display:flex;flex-direction:column;max-height:min(84vh,650px);min-height:0;overflow:hidden">${content}</div><div class="modalBottomSpace"></div></div>`
+  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto"><div class="modalSpacer"></div><div class="modalBox mixerModalBox premixModalBox" data-stop-modal style="display:flex;flex-direction:column;max-height:min(84vh,650px);min-height:0;overflow:hidden;pointer-events:auto">${content}</div><div class="modalBottomSpace"></div></div>`
 }
 
 function formatBpmDisplay(value) {
@@ -1300,7 +1346,79 @@ let pendingPlaybackDesiredSourceId = null
 let pendingPlaybackDesiredSourceTab = null
 let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
-const PENDING_PLAYBACK_GRACE_MS = 1800
+const PENDING_PLAYBACK_GRACE_MS = 6500
+const optimisticPlaybackState = {
+  id: null,
+  sourceTab: null,
+  startedAtMs: 0,
+  durationSec: 0,
+  expiresAtMs: 0,
+}
+const OPTIMISTIC_PLAYBACK_MIN_BAR_SEC = 0.35
+
+function clearOptimisticPlayback() {
+  optimisticPlaybackState.id = null
+  optimisticPlaybackState.sourceTab = null
+  optimisticPlaybackState.startedAtMs = 0
+  optimisticPlaybackState.durationSec = 0
+  optimisticPlaybackState.expiresAtMs = 0
+}
+
+function findAnyPlaybackItemById(id) {
+  const key = String(id ?? '')
+  if (!key) return null
+  const region = findPlayingRegionById(key)
+  if (region) return region
+  const playlistSong = findPlaylistSongByIdEverywhere(key)
+  if (playlistSong) return playlistSong
+  if (Array.isArray(state.regions)) {
+    const directRegion = state.regions.find((item) => String(item?.id ?? item?.songId ?? '') === key)
+    if (directRegion) return directRegion
+  }
+  return null
+}
+
+function getOptimisticDurationSec(id) {
+  const item = findAnyPlaybackItemById(id)
+  const itemDuration = Number(item?.durationSec)
+  if (Number.isFinite(itemDuration) && itemDuration > 0) return itemDuration
+  const itemRemaining = Number(item?.remainingSec)
+  if (Number.isFinite(itemRemaining) && itemRemaining > 0) return itemRemaining
+  return 1
+}
+
+function startOptimisticPlayback(id, sourceTab = null) {
+  const key = String(id ?? '')
+  if (!key) return false
+  optimisticPlaybackState.id = key
+  optimisticPlaybackState.sourceTab = sourceTab || state.activeTab || 'playlist'
+  optimisticPlaybackState.startedAtMs = Date.now()
+  optimisticPlaybackState.durationSec = getOptimisticDurationSec(key)
+  optimisticPlaybackState.expiresAtMs = optimisticPlaybackState.startedAtMs + PENDING_PLAYBACK_GRACE_MS
+  state.playingId = key
+  rememberCurrentPlaybackSelection(key, optimisticPlaybackState.sourceTab)
+  clearStoppedSelectionHold()
+  resetPlaybackLiveState(true)
+  return true
+}
+
+function isOptimisticPlaybackActiveFor(id) {
+  const key = String(id ?? '')
+  if (!key || !optimisticPlaybackState.id || optimisticPlaybackState.id !== key) return false
+  if (Date.now() > Number(optimisticPlaybackState.expiresAtMs || 0)) {
+    clearOptimisticPlayback()
+    return false
+  }
+  return true
+}
+
+function getOptimisticRemainingSec(id, fallbackDurationSec = 0) {
+  if (!isOptimisticPlaybackActiveFor(id)) return Number.NaN
+  const duration = Math.max(0, Number(fallbackDurationSec) || Number(optimisticPlaybackState.durationSec) || 0)
+  if (!duration) return Number.NaN
+  const elapsed = Math.max(OPTIMISTIC_PLAYBACK_MIN_BAR_SEC, (Date.now() - Number(optimisticPlaybackState.startedAtMs || Date.now())) / 1000)
+  return Math.max(0, duration - elapsed)
+}
 const pendingMixerToggleState = new Map()
 const PENDING_MIXER_TOGGLE_GRACE_MS = 1400
 const mixerDisplayScaleState = new Map()
@@ -2054,14 +2172,27 @@ function confirmLyricsEdit() {
   if (!song) return
   const id = String(song.id ?? song.songId ?? '')
   if (!id) return
-  const value = String(state.lyricsDraft || '').slice(0, 2000)
+  const value = String(state.lyricsDraft || '').slice(0, 4000)
 
   // Atualização otimista local para refletir imediatamente no painel.
   song.lyrics = value
   song.lyricsText = value
   song.hasLyrics = value.trim().length > 0
 
-  postCommand('update_lyrics', { id, targetId: id, selectedRegionId: id, lyricsText: value, lyrics: value })
+  const lyricsPayload = {
+    id,
+    targetId: id,
+    selectedRegionId: id,
+    songId: id,
+    uid: song.uid,
+    source_number: song.source_number ?? song.sourceNumber ?? song.number,
+    name: song.name || song.label || '',
+    lyricsText: value,
+    lyrics: value,
+    aliases: [song.uid, song.source_number, song.sourceNumber, song.number].filter((item) => item !== undefined && item !== null && String(item).trim() !== ''),
+  }
+  saveLyricsJson(lyricsPayload)
+  postCommand('update_lyrics', lyricsPayload)
   state.lyricsEditing = false
   state.lyricsEditingSongId = id
   state.lyricsDraft = value
@@ -2097,7 +2228,7 @@ function renderLyricsPanel() {
     <div class="lyricsPopupSlot" aria-live="polite">${inlinePopupHtml}</div>
     <div class="lyricsBody">
       ${state.lyricsEditing
-        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="2000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 2000</div>`
+        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="4000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 4000</div>`
         : `<div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(lyricsText || 'SEM LETRA CADASTRADA')}">${lyricsTextToHtml(lyricsText || 'SEM LETRA CADASTRADA')}</div>`}
     </div>
     ${state.lyricsEditing ? `<button class="lyricsFloatingOk" data-action="lyrics-confirm">OK</button><button class="lyricsFloatingCancel" data-action="lyrics-cancel">Cancelar</button>` : ''}
@@ -2227,6 +2358,14 @@ function postCommand(type, payload = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type, payload }),
+  }).catch(() => {})
+}
+
+function saveLyricsJson(payload = {}) {
+  return fetch(vshookBridgeUrl('/lyrics'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   }).catch(() => {})
 }
 
@@ -2659,15 +2798,24 @@ function syncFromBridge(data) {
 
     if (incomingMatchesDesired) {
       state.playingId = incomingPlayingId
+      if (!incomingPlayingId || String(incomingPlayingId) === String(optimisticPlaybackState.id || '')) {
+        clearOptimisticPlayback()
+      }
       clearPendingPlaybackToggle()
     } else if (elapsedPlayback < PENDING_PLAYBACK_GRACE_MS) {
       // Ignore stale bridge playback state briefly after a local play/stop command.
     } else {
       state.playingId = incomingPlayingId
+      if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+        clearOptimisticPlayback()
+      }
       clearPendingPlaybackToggle()
     }
   } else {
     state.playingId = incomingPlayingId
+    if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+      clearOptimisticPlayback()
+    }
   }
 
   state.activePlaylistId = typeof data.activePlaylistId === 'string' || data.activePlaylistId === null ? (data.activePlaylistId || null) : state.activePlaylistId
@@ -4510,14 +4658,14 @@ function handlePlayToggle() {
     state.bridgePopupPersistent = false
     state.appPopupVisible = false
     state.playingId = null
+    clearOptimisticPlayback()
     resetPlaybackLiveState(true)
     lockSelectionSync()
     render()
     forceStoppedSelectionDom(stoppedId, stoppedPreferredTab)
   } else {
     if (pendingPlaybackDesiredSourceId) {
-      rememberCurrentPlaybackSelection(pendingPlaybackDesiredSourceId, pendingPlaybackDesiredSourceTab)
-      clearStoppedSelectionHold()
+      startOptimisticPlayback(pendingPlaybackDesiredSourceId, pendingPlaybackDesiredSourceTab)
     }
     render()
   }
@@ -4745,19 +4893,28 @@ function renderRows(items, type) {
 
 
 function installSettingsMenuFallback() {
-  // Desativado: o fallback global em pointerdown/touchstart estava concorrendo
-  // com os cliques do menu e travando a tela ao abrir PREMIX.
+  // Desativado: o fallback global em pointerdown/touchstart estava prendendo o menu
+  // e travando a interface ao abrir PREMIX. O menu volta a usar apenas os binds
+  // locais dos botoes, igual ao MIXER.
   return true
 }
 
 function installPremixOpenFallback() {
-  // Desativado: o PREMIX agora abre pelo mesmo bind simples do MIXER.
+  // Mantido como no-op: o botão PREMIX agora abre direto pelo fluxo principal do menu.
+  // Isso evita duplo pointer/touch/click fechando o menu sem abrir a janela.
+  return true
+}
+
+function installPremixSafetyCloseFallback() {
+  // Desativado: o fechamento global em capture concorria com os cliques internos
+  // do PREMIX. O fechar fica nos botoes/overlay do fluxo principal.
   return true
 }
 
 function bindEvents() {
   installSettingsMenuFallback()
   installPremixOpenFallback()
+  installPremixSafetyCloseFallback()
   bindReliableTapAction(document.querySelector('[data-action="go-playlist"]'), 'go-playlist', openPlaylist)
   bindReliableTapAction(document.querySelector('[data-action="go-regions"]'), 'go-regions', openRegions)
   bindReliableTapAction(document.querySelector('[data-action="open-markers"]'), 'open-markers', openMarkersPanel)
@@ -4787,7 +4944,6 @@ function bindEvents() {
   document.querySelector('[data-action="toggle-select"]')?.addEventListener('click', handleSelectAction)
   document.querySelector('[data-action="copy-playlist-names"]')?.addEventListener('click', handleCopyPlaylistNames)
   bindPressAction(document.querySelector('[data-action="open-mixer"]'), 'open-mixer', () => openMixerModal('tracks'))
-  bindPressAction(document.querySelector('[data-action="open-premix"]'), 'open-premix', openPremixFromMenu)
   bindPressAction(document.querySelector('[data-action="open-bpm"]'), 'open-bpm', openBpmModal)
   bindPressAction(document.querySelector('[data-action="open-tuner"]'), 'open-tuner', openTunerModal)
   bindModalCloseAction(document.querySelector('[data-action="close-bpm"]'), 'close-bpm', closeBpmModal)
@@ -5003,9 +5159,9 @@ function bindEvents() {
     lyricsInput.focus()
     lyricsInput.setSelectionRange(lyricsInput.value.length, lyricsInput.value.length)
     lyricsInput.addEventListener('input', (e) => {
-      state.lyricsDraft = String(e.target.value || '').slice(0, 2000)
+      state.lyricsDraft = String(e.target.value || '').slice(0, 4000)
       const count = document.querySelector('.lyricsCharCount')
-      if (count) count.textContent = `${state.lyricsDraft.length} / 2000`
+      if (count) count.textContent = `${state.lyricsDraft.length} / 4000`
     })
   }
 
@@ -5210,7 +5366,7 @@ function render() {
   const settingsButtonActive = state.editMode || state.deleteMode || state.settingsMenuOpen
   const canCopyPlaylistNames = state.activeTab === 'playlist' && state.playlistView !== 'markers' && !!(playlist?.songs || []).length
   const settingsMenu = state.settingsMenuOpen
-    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction" data-action="open-premix">PREMIX</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
+    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
     : ''
   const rightToolsHtml = showSettingsButton
     ? (state.activeTab === 'playlist' && state.playlistView === 'markers'

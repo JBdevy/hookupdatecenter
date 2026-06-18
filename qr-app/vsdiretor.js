@@ -343,6 +343,18 @@ function getPlaybackAwareItem(item, type, isPlaying, isBlock) {
   const remaining = Number(item?.remainingSec)
   const region = findPlayingRegionById(item?.id)
   const sourceDuration = Number(region?.durationSec) || duration || 0
+
+  if (isOptimisticPlaybackActiveFor(item?.id)) {
+    const optimisticRemaining = getOptimisticRemainingSec(item?.id, sourceDuration)
+    if (Number.isFinite(optimisticRemaining)) {
+      return {
+        ...item,
+        durationSec: sourceDuration || Number(optimisticPlaybackState.durationSec) || duration || 1,
+        remainingSec: optimisticRemaining,
+      }
+    }
+  }
+
   const sourceRemaining = Number.isFinite(remaining)
     ? remaining
     : (Number.isFinite(Number(region?.remainingSec)) ? Number(region.remainingSec) : remaining)
@@ -1334,7 +1346,79 @@ let pendingPlaybackDesiredSourceId = null
 let pendingPlaybackDesiredSourceTab = null
 let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
-const PENDING_PLAYBACK_GRACE_MS = 1800
+const PENDING_PLAYBACK_GRACE_MS = 6500
+const optimisticPlaybackState = {
+  id: null,
+  sourceTab: null,
+  startedAtMs: 0,
+  durationSec: 0,
+  expiresAtMs: 0,
+}
+const OPTIMISTIC_PLAYBACK_MIN_BAR_SEC = 0.35
+
+function clearOptimisticPlayback() {
+  optimisticPlaybackState.id = null
+  optimisticPlaybackState.sourceTab = null
+  optimisticPlaybackState.startedAtMs = 0
+  optimisticPlaybackState.durationSec = 0
+  optimisticPlaybackState.expiresAtMs = 0
+}
+
+function findAnyPlaybackItemById(id) {
+  const key = String(id ?? '')
+  if (!key) return null
+  const region = findPlayingRegionById(key)
+  if (region) return region
+  const playlistSong = findPlaylistSongByIdEverywhere(key)
+  if (playlistSong) return playlistSong
+  if (Array.isArray(state.regions)) {
+    const directRegion = state.regions.find((item) => String(item?.id ?? item?.songId ?? '') === key)
+    if (directRegion) return directRegion
+  }
+  return null
+}
+
+function getOptimisticDurationSec(id) {
+  const item = findAnyPlaybackItemById(id)
+  const itemDuration = Number(item?.durationSec)
+  if (Number.isFinite(itemDuration) && itemDuration > 0) return itemDuration
+  const itemRemaining = Number(item?.remainingSec)
+  if (Number.isFinite(itemRemaining) && itemRemaining > 0) return itemRemaining
+  return 1
+}
+
+function startOptimisticPlayback(id, sourceTab = null) {
+  const key = String(id ?? '')
+  if (!key) return false
+  optimisticPlaybackState.id = key
+  optimisticPlaybackState.sourceTab = sourceTab || state.activeTab || 'playlist'
+  optimisticPlaybackState.startedAtMs = Date.now()
+  optimisticPlaybackState.durationSec = getOptimisticDurationSec(key)
+  optimisticPlaybackState.expiresAtMs = optimisticPlaybackState.startedAtMs + PENDING_PLAYBACK_GRACE_MS
+  state.playingId = key
+  rememberCurrentPlaybackSelection(key, optimisticPlaybackState.sourceTab)
+  clearStoppedSelectionHold()
+  resetPlaybackLiveState(true)
+  return true
+}
+
+function isOptimisticPlaybackActiveFor(id) {
+  const key = String(id ?? '')
+  if (!key || !optimisticPlaybackState.id || optimisticPlaybackState.id !== key) return false
+  if (Date.now() > Number(optimisticPlaybackState.expiresAtMs || 0)) {
+    clearOptimisticPlayback()
+    return false
+  }
+  return true
+}
+
+function getOptimisticRemainingSec(id, fallbackDurationSec = 0) {
+  if (!isOptimisticPlaybackActiveFor(id)) return Number.NaN
+  const duration = Math.max(0, Number(fallbackDurationSec) || Number(optimisticPlaybackState.durationSec) || 0)
+  if (!duration) return Number.NaN
+  const elapsed = Math.max(OPTIMISTIC_PLAYBACK_MIN_BAR_SEC, (Date.now() - Number(optimisticPlaybackState.startedAtMs || Date.now())) / 1000)
+  return Math.max(0, duration - elapsed)
+}
 const pendingMixerToggleState = new Map()
 const PENDING_MIXER_TOGGLE_GRACE_MS = 1400
 const mixerDisplayScaleState = new Map()
@@ -2088,14 +2172,27 @@ function confirmLyricsEdit() {
   if (!song) return
   const id = String(song.id ?? song.songId ?? '')
   if (!id) return
-  const value = String(state.lyricsDraft || '').slice(0, 2000)
+  const value = String(state.lyricsDraft || '').slice(0, 4000)
 
   // Atualização otimista local para refletir imediatamente no painel.
   song.lyrics = value
   song.lyricsText = value
   song.hasLyrics = value.trim().length > 0
 
-  postCommand('update_lyrics', { id, targetId: id, selectedRegionId: id, lyricsText: value, lyrics: value })
+  const lyricsPayload = {
+    id,
+    targetId: id,
+    selectedRegionId: id,
+    songId: id,
+    uid: song.uid,
+    source_number: song.source_number ?? song.sourceNumber ?? song.number,
+    name: song.name || song.label || '',
+    lyricsText: value,
+    lyrics: value,
+    aliases: [song.uid, song.source_number, song.sourceNumber, song.number].filter((item) => item !== undefined && item !== null && String(item).trim() !== ''),
+  }
+  saveLyricsJson(lyricsPayload)
+  postCommand('update_lyrics', lyricsPayload)
   state.lyricsEditing = false
   state.lyricsEditingSongId = id
   state.lyricsDraft = value
@@ -2131,7 +2228,7 @@ function renderLyricsPanel() {
     <div class="lyricsPopupSlot" aria-live="polite">${inlinePopupHtml}</div>
     <div class="lyricsBody">
       ${state.lyricsEditing
-        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="2000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 2000</div>`
+        ? `<textarea id="lyricsEditorInput" class="lyricsEditorInput" maxlength="4000" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Digite a letra da música...">${escapeHtml(lyricsText)}</textarea><div class="lyricsCharCount">${String(lyricsText || '').length} / 4000</div>`
         : `<div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(lyricsText || 'SEM LETRA CADASTRADA')}">${lyricsTextToHtml(lyricsText || 'SEM LETRA CADASTRADA')}</div>`}
     </div>
     ${state.lyricsEditing ? `<button class="lyricsFloatingOk" data-action="lyrics-confirm">OK</button><button class="lyricsFloatingCancel" data-action="lyrics-cancel">Cancelar</button>` : ''}
@@ -2261,6 +2358,14 @@ function postCommand(type, payload = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type, payload }),
+  }).catch(() => {})
+}
+
+function saveLyricsJson(payload = {}) {
+  return fetch(vshookBridgeUrl('/lyrics'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   }).catch(() => {})
 }
 
@@ -2693,15 +2798,24 @@ function syncFromBridge(data) {
 
     if (incomingMatchesDesired) {
       state.playingId = incomingPlayingId
+      if (!incomingPlayingId || String(incomingPlayingId) === String(optimisticPlaybackState.id || '')) {
+        clearOptimisticPlayback()
+      }
       clearPendingPlaybackToggle()
     } else if (elapsedPlayback < PENDING_PLAYBACK_GRACE_MS) {
       // Ignore stale bridge playback state briefly after a local play/stop command.
     } else {
       state.playingId = incomingPlayingId
+      if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+        clearOptimisticPlayback()
+      }
       clearPendingPlaybackToggle()
     }
   } else {
     state.playingId = incomingPlayingId
+    if (!incomingPlayingId || String(incomingPlayingId) !== String(optimisticPlaybackState.id || '')) {
+      clearOptimisticPlayback()
+    }
   }
 
   state.activePlaylistId = typeof data.activePlaylistId === 'string' || data.activePlaylistId === null ? (data.activePlaylistId || null) : state.activePlaylistId
@@ -4544,14 +4658,14 @@ function handlePlayToggle() {
     state.bridgePopupPersistent = false
     state.appPopupVisible = false
     state.playingId = null
+    clearOptimisticPlayback()
     resetPlaybackLiveState(true)
     lockSelectionSync()
     render()
     forceStoppedSelectionDom(stoppedId, stoppedPreferredTab)
   } else {
     if (pendingPlaybackDesiredSourceId) {
-      rememberCurrentPlaybackSelection(pendingPlaybackDesiredSourceId, pendingPlaybackDesiredSourceTab)
-      clearStoppedSelectionHold()
+      startOptimisticPlayback(pendingPlaybackDesiredSourceId, pendingPlaybackDesiredSourceTab)
     }
     render()
   }
@@ -5045,9 +5159,9 @@ function bindEvents() {
     lyricsInput.focus()
     lyricsInput.setSelectionRange(lyricsInput.value.length, lyricsInput.value.length)
     lyricsInput.addEventListener('input', (e) => {
-      state.lyricsDraft = String(e.target.value || '').slice(0, 2000)
+      state.lyricsDraft = String(e.target.value || '').slice(0, 4000)
       const count = document.querySelector('.lyricsCharCount')
-      if (count) count.textContent = `${state.lyricsDraft.length} / 2000`
+      if (count) count.textContent = `${state.lyricsDraft.length} / 4000`
     })
   }
 

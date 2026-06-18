@@ -1,11 +1,11 @@
 {
   "product": "bridge-app",
-  "version": "1.8.0-qr-premix-all-songs-fix",
+  "version": "1.8.0-qr-lyrics-json-fix",
   "title": "App QR base",
   "bundled": true,
   "editableInDev": true,
   "createdAt": "2026-06-17T23:50:00.000Z",
-  "updatedAt": "2026-06-18T01:38:52Z",
-  "notes": "Premix do Diretor lista todas as músicas do projeto, não o repertório atual.",
-  "build": "qr-app-premix-all-songs-fix"
+  "updatedAt": "2026-06-18T15:22:29Z",
+  "notes": "Correção do armazenamento de letras: o app salva a letra no JSON local do Hook Center e o Bridge devolve essa letra no /state para Diretor e Músicos.",
+  "build": "qr-app-lyrics-json-fix"
 }
