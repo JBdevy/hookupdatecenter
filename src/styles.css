@@ -187,6 +187,175 @@ h2 { font-size: 22px; }
 }
 
 
+/* Atualização sem scroll: quando o card de instalar aparece,
+   a tela principal fica compacta para caber tudo na janela. */
+body.download-compact {
+  overflow: hidden;
+}
+
+body.download-compact .app-shell {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.download-compact .sidebar {
+  width: 220px;
+  padding: 16px;
+}
+
+body.download-compact .brand {
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+body.download-compact .logo-hook {
+  width: 44px;
+  height: 44px;
+}
+
+body.download-compact nav {
+  gap: 7px;
+}
+
+body.download-compact .nav-item {
+  padding: 9px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+body.download-compact .sidebar-footer {
+  font-size: 12px;
+}
+
+body.download-compact .content {
+  padding: 14px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+body.download-compact #homeView.active {
+  height: calc(100vh - 28px);
+  overflow: hidden;
+}
+
+body.download-compact .hero-card,
+body.download-compact .card {
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+body.download-compact .hero-card {
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+body.download-compact h1 {
+  font-size: 24px;
+  margin-bottom: 4px;
+}
+
+body.download-compact h2 {
+  font-size: 17px;
+  margin-bottom: 5px;
+}
+
+body.download-compact .muted,
+body.download-compact .description {
+  line-height: 1.28;
+}
+
+body.download-compact .eyebrow {
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+body.download-compact .primary-button,
+body.download-compact .secondary-button {
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+body.download-compact .badge {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+body.download-compact .video-box {
+  height: 60px;
+  min-height: 60px;
+  margin: 6px 0 7px;
+  border-radius: 12px;
+}
+
+body.download-compact .video-play-button {
+  padding: 7px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+body.download-compact .play-icon {
+  width: 24px;
+  height: 24px;
+}
+
+body.download-compact .changelog {
+  gap: 3px;
+  margin: 7px 0 9px;
+  padding-left: 16px;
+  max-height: 44px;
+  overflow: hidden;
+}
+
+body.download-compact .actions {
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+body.download-compact .actions #downloadButton,
+body.download-compact .progress-row #installButton {
+  min-width: 190px;
+  padding: 9px 14px;
+  font-size: 12px;
+}
+
+body.download-compact #downloadCard {
+  margin-top: 10px;
+}
+
+body.download-compact .progress-shell {
+  height: 12px;
+  margin-top: 8px;
+}
+
+body.download-compact .progress-row {
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+@media (max-height: 680px) {
+  body.download-compact .content { padding: 10px; }
+  body.download-compact #homeView.active { height: calc(100vh - 20px); }
+  body.download-compact .sidebar { padding: 12px; width: 205px; }
+  body.download-compact .brand { margin-bottom: 14px; }
+  body.download-compact .nav-item { padding: 7px 9px; }
+  body.download-compact .hero-card,
+  body.download-compact .card { padding: 10px 12px; }
+  body.download-compact .hero-card { margin-bottom: 8px; }
+  body.download-compact h1 { font-size: 21px; }
+  body.download-compact h2 { font-size: 15px; }
+  body.download-compact .video-box { height: 50px; min-height: 50px; }
+  body.download-compact .changelog { max-height: 34px; margin-bottom: 7px; }
+  body.download-compact .actions { margin-top: 6px; padding: 7px; }
+  body.download-compact #downloadCard { margin-top: 8px; }
+}
+
+
 /* Scroll Hook Center */
 ::-webkit-scrollbar {
   width: 14px;

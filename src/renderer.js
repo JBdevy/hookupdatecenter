@@ -96,12 +96,19 @@ function closeVideoModal() {
   $('#videoModal').classList.add('hidden');
 }
 
+function updateDownloadCompactMode() {
+  const isHomeActive = $('#homeView')?.classList.contains('active');
+  const downloadVisible = !$('#downloadCard')?.classList.contains('hidden');
+  document.body.classList.toggle('download-compact', !!isHomeActive && !!downloadVisible);
+}
+
 
 function setView(viewName) {
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
   $$('.view').forEach((view) => view.classList.remove('active'));
   $(`#${viewName}View`).classList.add('active');
   document.body.classList.toggle('bridge-mode', viewName === 'bridge');
+  updateDownloadCompactMode();
 }
 
 function formatDate(value) {
@@ -540,6 +547,7 @@ async function init() {
   $('#downloadButton').addEventListener('click', async () => {
     try {
       $('#downloadCard').classList.remove('hidden');
+      updateDownloadCompactMode();
       $('#downloadButton').disabled = true;
       $('#downloadButton').textContent = 'Baixando...';
       $('#progressBar').style.width = '0%';
@@ -570,6 +578,7 @@ async function init() {
       if (result.ok) {
         renderState(await window.hookUpdateCenter.getState());
         $('#downloadCard').classList.add('hidden');
+        updateDownloadCompactMode();
         $('#installButton').classList.add('hidden');
         $('#progressBar').style.width = '0%';
         $('#progressText').textContent = '0%';
