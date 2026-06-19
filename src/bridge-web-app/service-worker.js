@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-qr-diretor-local-selection-auto-musicas-1781839237';
+const CACHE_NAME = 'vshook-qr-play-diretor-sem-toggle-1781875674';
 const APP_ASSETS = [
   './',
   './index.html',

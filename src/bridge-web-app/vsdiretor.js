@@ -1461,6 +1461,7 @@ let pendingPlaybackToggleAt = 0
 let pendingPlaybackDesiredPlaying = null
 let pendingPlaybackDesiredSourceId = null
 let pendingPlaybackDesiredSourceTab = null
+let lastPlayButtonCommandAt = 0
 let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
 let remoteQueuedIgnoreUntil = 0
@@ -2554,11 +2555,20 @@ function postCommand(type, payload = {}) {
   commandPayload.source = commandPayload.source || 'director'
   commandPayload.mode = commandPayload.mode || 'director'
 
-  return fetch(vshookBridgeUrl('/command'), {
+  const commandType = String(type || '')
+  const body = JSON.stringify({ type: commandType, payload: commandPayload })
+  const send = (retry = false) => fetch(vshookBridgeUrl('/command'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, payload: commandPayload }),
+    body: retry
+      ? JSON.stringify({ type: commandType, payload: { ...commandPayload, appRetry: true } })
+      : body,
   }).catch(() => {})
+
+  // Envia uma única vez. Duplicar play_start/play_stop fazia o Lua receber
+  // um segundo comando logo após o primeiro Play; em algumas rotas internas isso
+  // era interpretado como alternância e derrubava o transporte segundos depois.
+  return send(false)
 }
 
 function saveLyricsJson(payload = {}) {
@@ -3164,6 +3174,8 @@ function syncFromBridge(data) {
   // O Bridge/Lua pode informar música tocando, fila, repertório e aba ativa,
   // mas nunca deve sobrescrever selectedRegionId/selectedPlaylistSongId/selectedMarkerId
   // no Diretor. Isso evita seleção fantasma e atraso visual após Stop/Play.
+  normalizeSingleSelectionForActiveTab()
+
   if (state.pendingStopClear) {
     state.selectedMarkerId = null
   }
@@ -3969,6 +3981,31 @@ function clearDirectorSelectionForTabSwitch() {
   state.multiSelectTab = null
 }
 
+function clearSelectionForFreshSingleSelection(tabName) {
+  clearStoppedSelectionHold()
+  state.selectedMarkerId = null
+  state.multiSelectMode = false
+  state.multiSelectTab = null
+
+  if (tabName === 'playlist') {
+    state.selectedRegionId = null
+    state.selectedRegionIds = []
+  } else if (tabName === 'regions') {
+    state.selectedPlaylistSongId = null
+    state.selectedPlaylistSongIds = []
+  }
+}
+
+function normalizeSingleSelectionForActiveTab() {
+  if (state.activeTab === 'playlist') {
+    state.selectedRegionId = null
+    state.selectedRegionIds = []
+  } else if (state.activeTab === 'regions') {
+    state.selectedPlaylistSongId = null
+    state.selectedPlaylistSongIds = []
+  }
+}
+
 function setEditSingleSelection(tabName, key) {
   const safeKey = String(key)
   if (tabName === 'playlist') {
@@ -4577,14 +4614,12 @@ function selectRegion(id) {
   }
 
   if (state.playingId && String(state.playingId) !== key) {
-    // Aba MÚSICAS não cria fila manual. Clicar durante playback apenas seleciona no front.
+    // Aba MÚSICAS não cria fila manual. Clicar durante playback apenas limpa o outro modo.
+    clearSelectionForFreshSingleSelection('regions')
     state.selectedRegionId = key
     state.selectedRegionIds = []
-    state.selectedPlaylistSongId = null
-    state.selectedPlaylistSongIds = []
-    state.selectedMarkerId = null
     lockSelectionSync()
-    postCommand('select_region', { id: key })
+    postCommand('select_region', { id: key, activeTab: 'regions' })
     render()
     return
   }
@@ -4605,11 +4640,13 @@ function selectRegion(id) {
     return
   }
 
+  clearSelectionForFreshSingleSelection('regions')
+
   if (String(state.selectedRegionId || '') === key) {
     state.selectedRegionId = null
     state.selectedRegionIds = []
     lockSelectionSync()
-    postCommand('clear_selection')
+    postCommand('clear_selection', { activeTab: 'regions' })
     render()
     return
   }
@@ -4617,7 +4654,7 @@ function selectRegion(id) {
   state.selectedRegionId = key
   state.selectedRegionIds = []
   lockSelectionSync()
-  postCommand('select_region', { id: key })
+  postCommand('select_region', { id: key, activeTab: 'regions' })
   render()
 }
 
@@ -4656,14 +4693,13 @@ function selectPlaylistSong(id) {
   }
 
   if (state.playingId && String(state.playingId) !== key) {
+    clearSelectionForFreshSingleSelection('playlist')
+
     if (item && detectBlockItem(item)) {
       state.selectedPlaylistSongId = key
       state.selectedPlaylistSongIds = []
-      state.selectedRegionId = null
-      state.selectedRegionIds = []
-      state.selectedMarkerId = null
       lockSelectionSync()
-      postCommand('select_playlist_song', { id: key })
+      postCommand('select_playlist_song', { id: key, activeTab: 'playlist' })
       render()
       return
     }
@@ -4676,16 +4712,19 @@ function selectPlaylistSong(id) {
       clearQueueAndMaybeAutoplay()
     } else {
       setLocalQueuedSong(key)
-      postCommand('queue_playlist_song', { id: key })
+      postCommand('queue_playlist_song', { id: key, activeTab: 'playlist' })
       render()
     }
     return
   }
 
+  clearSelectionForFreshSingleSelection('playlist')
+
   if (String(state.selectedPlaylistSongId || '') === key) {
     state.selectedPlaylistSongId = null
+    state.selectedPlaylistSongIds = []
     lockSelectionSync()
-    postCommand('clear_selection')
+    postCommand('clear_selection', { activeTab: 'playlist' })
     render()
     return
   }
@@ -4693,7 +4732,7 @@ function selectPlaylistSong(id) {
   state.selectedPlaylistSongId = key
   state.selectedPlaylistSongIds = []
   lockSelectionSync()
-  postCommand('select_playlist_song', { id: key })
+  postCommand('select_playlist_song', { id: key, activeTab: 'playlist' })
   render()
 }
 
@@ -5003,19 +5042,14 @@ function rememberCurrentPlaybackSelection(songId, preferredTab = null) {
 }
 
 function handlePlayToggle() {
-  const selectedRegionId = state.selectedRegionId
-  const selectedPlaylistSongId = state.selectedPlaylistSongId
+  const playCommandNow = Date.now()
+  if (lastPlayButtonCommandAt && (playCommandNow - lastPlayButtonCommandAt) < 240) return
+  lastPlayButtonCommandAt = playCommandNow
+  // Play usa somente o modo da aba atual. Seleção velha de outra aba não entra.
+  normalizeSingleSelectionForActiveTab()
+  const selectedRegionId = state.activeTab === 'regions' ? state.selectedRegionId : null
+  const selectedPlaylistSongId = state.activeTab === 'playlist' ? state.selectedPlaylistSongId : null
   const uiWasPlaying = getPlaybackUiActive()
-
-  if (!uiWasPlaying) {
-    const targetId = selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : '')
-    const targetItem = targetId ? findAnyPlaybackItemById(targetId) : null
-    if (targetItem && detectBlockItem(targetItem)) {
-      showAppPopup('BLOCO SELECIONADO', 'marker', 1400)
-      render()
-      return
-    }
-  }
 
   pendingPlaybackToggleAt = Date.now()
   pendingPlaybackDesiredPlaying = !uiWasPlaying
@@ -5051,10 +5085,14 @@ function handlePlayToggle() {
     render()
   }
 
-  postCommand('play_toggle', {
+  postCommand(uiWasPlaying ? 'play_stop' : 'play_start', {
     activeTab: state.activeTab,
     selectedRegionId,
     selectedPlaylistSongId,
+    desiredPlaying: uiWasPlaying ? 'false' : 'true',
+    desiredState: uiWasPlaying ? 'stopped' : 'playing',
+    forcePlay: uiWasPlaying ? 'false' : 'true',
+    forceStop: uiWasPlaying ? 'true' : 'false',
   })
 }
 

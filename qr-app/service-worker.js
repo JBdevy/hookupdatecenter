@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-qr-diretor-auto-musicas-lua-clear-1781839683';
+const CACHE_NAME = 'vshook-diretor-no-retry-20260619-1';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,8 +16,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './vshook-icon.png',
-  './vshook-icon-512.png',
+  './vshook-diretor-play-duplo-fix-20260619',
+  './vshook-diretor-play-duplo-fix-20260619',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

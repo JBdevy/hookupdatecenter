@@ -748,7 +748,7 @@ function createBridgeServer(options) {
       const id = normalizeCommandId(payload.id || payload.selectedRegionId || payload.songId || payload.regionId)
       liveCommandOverlay.queuedSongId = id
       liveCommandOverlay.queuedSongUntil = now + 5000
-    } else if (commandType === 'play_toggle') {
+    } else if (commandType === 'play_toggle' || commandType === 'play_start' || commandType === 'play_stop') {
       // Depois de Play/Stop pelo Diretor, não deixa uma fila velha voltar no app
       // dos músicos enquanto o Lua ainda está escrevendo o próximo JSON.
       liveCommandOverlay.queuedSongId = null
@@ -800,6 +800,13 @@ function createBridgeServer(options) {
 
   ensureJsonFile(stateFile, fallbackState)
   ensureJsonFile(commandsFile, {
+    bridgeVersion: 1,
+    updatedAt: null,
+    commands: [],
+  })
+  // Comandos sao efemeros. Ao iniciar o Hook Center, limpa fila antiga para evitar
+  // primeiro Play do app executar um comando pendurado de sessao anterior.
+  writeJson(commandsFile, {
     bridgeVersion: 1,
     updatedAt: null,
     commands: [],
