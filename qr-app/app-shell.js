@@ -200,7 +200,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=136-director-lock-stop-1781810305'
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=front-imediato-diretor-musicos-aba-musicas-1781837042'
   document.body.appendChild(script)
 }
 
@@ -597,18 +597,89 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') keepScreenAwake()
 })
 
+
+function getVSHookModeSelectionFallbackProjects() {
+  const projects = []
+  const seen = new Set()
+  const addProject = (project) => {
+    if (!project || typeof project !== 'object') return
+    const directorUrl = String(project.directorUrl || '').replace(/\/+$/, '')
+    const musiciansUrl = String(project.musiciansUrl || '').replace(/\/+$/, '')
+    if (!directorUrl && !musiciansUrl) return
+    const key = `${directorUrl}|${musiciansUrl}|${project.projectTabIndex ?? ''}|${project.projectName || project.name || ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    projects.push({ ...project, directorUrl, musiciansUrl })
+  }
+
+  try {
+    if (Array.isArray(vshookDiscoveredProjects)) vshookDiscoveredProjects.forEach(addProject)
+  } catch (error) {}
+
+  try {
+    const selected = JSON.parse(localStorage.getItem('vshook_selected_project') || 'null')
+    addProject(selected)
+  } catch (error) {}
+
+  try {
+    const cached = JSON.parse(localStorage.getItem('vshook_cached_mode_projects') || '[]')
+    if (Array.isArray(cached)) cached.forEach(addProject)
+  } catch (error) {}
+
+  try {
+    const directorUrl = localStorage.getItem('vshook_director_url') || ''
+    const musiciansUrl = localStorage.getItem('vshook_musicians_url') || ''
+    if (directorUrl || musiciansUrl) {
+      addProject({
+        projectName: 'Projeto VS Hook',
+        name: 'Projeto VS Hook',
+        directorUrl,
+        musiciansUrl,
+        projectTabIndex: Number(localStorage.getItem('vshook_selected_project_tab_index') || 0) || 0,
+      })
+    }
+  } catch (error) {}
+
+  return projects
+}
+
+function prepareVSHookModeSelectionAfterReload() {
+  const projects = getVSHookModeSelectionFallbackProjects()
+  try {
+    localStorage.setItem('vshook_force_mode_selection', '1')
+    localStorage.setItem('vshook_cached_mode_projects', JSON.stringify(projects))
+  } catch (error) {}
+  return projects
+}
+
+function consumeVSHookForcedModeSelection() {
+  try {
+    if (localStorage.getItem('vshook_force_mode_selection') !== '1') return null
+    localStorage.removeItem('vshook_force_mode_selection')
+    const cached = JSON.parse(localStorage.getItem('vshook_cached_mode_projects') || '[]')
+    return Array.isArray(cached) ? cached : []
+  } catch (error) {
+    return null
+  }
+}
+
 window.vshookExitToProjectSelector = function () {
+  prepareVSHookModeSelectionAfterReload()
   try {
     localStorage.removeItem('vshook_selected_project')
     localStorage.removeItem('vshook_selected_mode')
-    localStorage.removeItem('vshook_director_url')
-    localStorage.removeItem('vshook_musicians_url')
+    localStorage.removeItem('vshook_access_session')
   } catch (error) {}
   window.location.reload()
 }
 
 window.addEventListener('load', () => {
   keepScreenAwake()
+  const forcedModeProjects = consumeVSHookForcedModeSelection()
+  if (forcedModeProjects && forcedModeProjects.length) {
+    renderModeFirst(forcedModeProjects)
+    return
+  }
   if (isBridgeBrowserMode()) startBridgeBrowserMode()
   else startDiscovery()
 })

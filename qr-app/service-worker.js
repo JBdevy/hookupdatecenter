@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-qr-play-fixo-musicos-swipe-1781812319';
+const CACHE_NAME = 'vshook-qr-diretor-auto-musicas-lua-clear-1781839683';
 const APP_ASSETS = [
   './',
   './index.html',

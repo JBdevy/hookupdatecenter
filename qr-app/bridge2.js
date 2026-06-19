@@ -79,6 +79,43 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8')
 }
 
+function normalizeCommandPage(value) {
+  const page = String(value || '').trim().toLowerCase()
+  if (page === 'regions' || page === 'musicas' || page === 'músicas') return 'regions'
+  if (page === 'playlist' || page === 'repertorios' || page === 'repertórios') return 'playlist'
+  if (page === 'markers' || page === 'parts') return 'markers'
+  return ''
+}
+
+function applyLiveCommandToState(type, payload = {}) {
+  try {
+    const current = readJson(STATE_FILE, {})
+    const next = current && typeof current === 'object' ? { ...current } : {}
+    const now = new Date().toISOString()
+    let changed = false
+    if (type === 'set_page') {
+      const page = normalizeCommandPage(payload.page || payload.currentPage || payload.targetPage)
+      if (page) { next.currentPage = page; changed = true }
+    }
+    if (type === 'clear_queue') {
+      next.queuedSongId = null
+      changed = true
+    } else if (type === 'queue_playlist_song') {
+      const id = payload.id ?? payload.selectedRegionId ?? payload.songId ?? payload.regionId ?? null
+      next.queuedSongId = id === undefined || id === null ? null : String(id)
+      changed = true
+    } else if (type === 'play_toggle') {
+      next.queuedSongId = null
+      changed = true
+    }
+    if (changed) {
+      next.updatedAt = current.updatedAt || now
+      next.bridgeOverlayUpdatedAt = now
+      writeJson(STATE_FILE, next)
+    }
+  } catch (error) {}
+}
+
 function isPrivateIPv4(ip) {
   if (!ip || typeof ip !== 'string') return false
 
@@ -192,6 +229,7 @@ function enqueueCommand(type, payload = {}) {
   commandsDb.commands = Array.isArray(commandsDb.commands) ? commandsDb.commands : []
   commandsDb.commands.push(command)
   writeJson(COMMANDS_FILE, commandsDb)
+  applyLiveCommandToState(type, payload)
   return command
 }
 

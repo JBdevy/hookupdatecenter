@@ -200,7 +200,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=136-director-lock-stop-1781810305'
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=front-imediato-diretor-musicos-aba-musicas-1781837042'
   document.body.appendChild(script)
 }
 

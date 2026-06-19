@@ -30,7 +30,14 @@ function normalizeDirectorLogoutTarget(value) {
 
 function getDirectorLogoutToken(data) {
   if (!data || typeof data !== 'object') return ''
-  return String(data.directorLogoutToken || data.appLogoutToken || data.logoutToken || data.directorLogoutAt || data.appLogoutAt || '')
+  const parts = [
+    data.directorLogoutToken,
+    data.directorLogoutAt,
+    data.appLogoutTarget,
+    data.logoutTarget,
+  ].filter((item) => item !== undefined && item !== null && String(item).trim() !== '')
+  if (parts.length) return parts.map((item) => String(item)).join('|')
+  return String(data.appLogoutToken || data.logoutToken || data.appLogoutAt || '')
 }
 
 function wasDirectorLogoutTokenHandled(token) {
@@ -74,10 +81,7 @@ function logoutDirectorToModeSelection(data) {
 
   try { clearAccessSession() } catch (error) {}
   try {
-    localStorage.removeItem('vshook_selected_project')
-    localStorage.removeItem('vshook_selected_mode')
     localStorage.removeItem('vshook_access_session')
-    localStorage.removeItem('vshook_selected_project_tab_index')
     localStorage.setItem('vshook_last_director_logout_at', new Date().toISOString())
   } catch (error) {}
 
@@ -1459,6 +1463,8 @@ let pendingPlaybackDesiredSourceId = null
 let pendingPlaybackDesiredSourceTab = null
 let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
+let remoteQueuedIgnoreUntil = 0
+const REMOTE_QUEUE_IGNORE_MS = 3600
 const PENDING_PLAYBACK_GRACE_MS = 6500
 const optimisticPlaybackState = {
   id: null,
@@ -1524,6 +1530,7 @@ function getOptimisticDurationSec(id) {
 function startOptimisticPlayback(id, sourceTab = null) {
   const key = String(id ?? '')
   if (!key) return false
+  clearVisualQueueForDirector(1800)
   optimisticPlaybackState.id = key
   optimisticPlaybackState.sourceTab = sourceTab || state.activeTab || 'playlist'
   optimisticPlaybackState.startedAtMs = Date.now()
@@ -1552,6 +1559,37 @@ function getOptimisticRemainingSec(id, fallbackDurationSec = 0) {
   if (!duration) return Number.NaN
   const elapsed = Math.max(OPTIMISTIC_PLAYBACK_MIN_BAR_SEC, (Date.now() - Number(optimisticPlaybackState.startedAtMs || Date.now())) / 1000)
   return Math.max(0, duration - elapsed)
+}
+
+function isPendingDirectorPlayStart() {
+  return !!(pendingPlaybackToggleAt && pendingPlaybackDesiredPlaying === true && (Date.now() - pendingPlaybackToggleAt) < getPendingPlaybackGraceMs())
+}
+
+function getPlaybackCommandPayloadForTarget(targetId, sourceTab = null, desiredPlaying = true) {
+  const tab = sourceTab || state.activeTab || 'playlist'
+  const key = targetId != null && String(targetId) !== '' ? String(targetId) : null
+  return {
+    activeTab: tab,
+    selectedRegionId: tab === 'regions' ? key : null,
+    selectedPlaylistSongId: tab === 'playlist' ? key : null,
+    desiredPlaying: !!desiredPlaying,
+    desiredState: desiredPlaying ? 'playing' : 'stopped',
+    forcePlay: !!desiredPlaying,
+    forceStop: !desiredPlaying,
+  }
+}
+
+function showLocalPlaybackPopupForId(id) {
+  const item = findAnyPlaybackItemById(id)
+  if (!item || detectBlockItem(item)) return false
+  const label = upperText(item.name || item.label || '')
+  if (!label) return false
+  showAppPopup(label, 'marker', 5000)
+  return true
+}
+
+function postPlaybackToggleCommand(targetId, sourceTab = null, desiredPlaying = true) {
+  return postCommand('play_toggle', getPlaybackCommandPayloadForTarget(targetId, sourceTab, desiredPlaying))
 }
 const pendingMixerToggleState = new Map()
 const PENDING_MIXER_TOGGLE_GRACE_MS = 1400
@@ -2109,6 +2147,12 @@ function clearLocalQueuedSong() {
   state.localQueuedSongAt = 0
 }
 
+function clearVisualQueueForDirector(ms = REMOTE_QUEUE_IGNORE_MS) {
+  clearLocalQueuedSong()
+  state.queuedSongId = null
+  remoteQueuedIgnoreUntil = Math.max(Number(remoteQueuedIgnoreUntil || 0), Date.now() + Math.max(400, Number(ms) || REMOTE_QUEUE_IGNORE_MS))
+}
+
 function getLocalQueuedSongIdForRows() {
   if (state.localQueuedSongId != null && String(state.localQueuedSongId) !== '') {
     const age = Date.now() - Number(state.localQueuedSongAt || 0)
@@ -2534,10 +2578,17 @@ function markDirectorLocalInput(ms = 700) {
 
 function postCommand(type, payload = {}) {
   markDirectorLocalInput(700)
+  const commandPayload = payload && typeof payload === 'object' ? { ...payload } : {}
+  commandPayload.role = commandPayload.role || 'director'
+  commandPayload.clientRole = commandPayload.clientRole || 'director'
+  commandPayload.appRole = commandPayload.appRole || 'director'
+  commandPayload.source = commandPayload.source || 'director'
+  commandPayload.mode = commandPayload.mode || 'director'
+
   return fetch(vshookBridgeUrl('/command'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, payload }),
+    body: JSON.stringify({ type, payload: commandPayload }),
   }).catch(() => {})
 }
 
@@ -3031,9 +3082,14 @@ function syncFromBridge(data) {
 
   let incomingPlayingId = state.playingId
   if (bridgeSaysPlaying || bridgePlayingId) {
-    // Quando o Bridge confirma transporte tocando, usa o ID real se ele existir;
-    // se o JSON ainda vier sem ID, mantém o ID local que o Diretor acabou de tocar.
-    incomingPlayingId = bridgePlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+    // O front do Diretor manda no visual imediatamente. Enquanto o Play local está
+    // otimista, um playingId antigo do Bridge não pode pintar a música anterior
+    // de vermelho nem mostrar barra de progresso por alguns frames.
+    if (optimisticStillActive && optimisticId && bridgePlayingId && String(bridgePlayingId) !== String(optimisticId)) {
+      incomingPlayingId = optimisticId
+    } else {
+      incomingPlayingId = bridgePlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+    }
   } else if (bridgeSaysStopped) {
     // JSON parado logo depois do Play é normalmente atraso do Bridge.
     // Enquanto o Play local/otimista estiver válido, não derruba o botão para Play.
@@ -3213,7 +3269,7 @@ function syncFromBridge(data) {
   }
 
   const incomingQueuedSongId = typeof data.queuedSongId === 'string' || typeof data.queuedSongId === 'number' ? String(data.queuedSongId) : null
-  state.queuedSongId = incomingQueuedSongId
+  state.queuedSongId = Date.now() < Number(remoteQueuedIgnoreUntil || 0) ? null : incomingQueuedSongId
   if (state.localQueuedSongId) {
     const localAge = Date.now() - Number(state.localQueuedSongAt || 0)
     if (!currentPlayingId || String(currentPlayingId) === String(state.localQueuedSongId) || localAge > 12000) {
@@ -3227,17 +3283,21 @@ function syncFromBridge(data) {
   if (state.showMixerModal || state.showMixerVolumeModal || state.showPremixModal || state.showBpmModal || state.showTunerModal) {
     return
   }
+  const previousActiveTabForSelection = state.activeTab
   if (state.localMarkersMode) {
+    if (state.activeTab !== 'playlist') clearDirectorSelectionForTabSwitch()
     state.activeTab = 'playlist'
     state.playlistView = 'markers'
   } else {
     state.playlistView = 'songs'
     if (state.pendingTabCommand) {
       if (remoteBaseTab === state.pendingTabCommand) {
+        if (state.activeTab !== remoteBaseTab) clearDirectorSelectionForTabSwitch()
         state.activeTab = remoteBaseTab
         state.pendingTabCommand = null
       }
     } else {
+      if (state.activeTab !== remoteBaseTab) clearDirectorSelectionForTabSwitch()
       state.activeTab = remoteBaseTab
     }
   }
@@ -3335,6 +3395,7 @@ function buildBridgeRenderSignature() {
     selectedMarkerId: state.selectedMarkerId,
     queuedSongId: state.queuedSongId,
     localQueuedSongId: state.localQueuedSongId,
+    remoteQueuedIgnoreActive: Date.now() < Number(remoteQueuedIgnoreUntil || 0),
     loopActive: state.loopActive,
     clearButtonSide: state.clearButtonSide,
     authEnabled: state.authEnabled,
@@ -3721,6 +3782,7 @@ function openPlaylist() {
   state.showRecadosModal = false
   state.playlistView = 'songs'
   state.activeTab = 'playlist'
+  clearDirectorSelectionForTabSwitch()
   state.pendingTabCommand = 'playlist'
   lockSelectionSync()
   postCommand('set_page', { page: 'playlist' })
@@ -3739,6 +3801,7 @@ function openRegions() {
   state.showRecadosModal = false
   state.playlistView = 'songs'
   state.activeTab = 'regions'
+  clearDirectorSelectionForTabSwitch()
   state.pendingTabCommand = 'regions'
   lockSelectionSync()
   postCommand('set_page', { page: 'regions' })
@@ -3800,6 +3863,7 @@ function handleConfirmPlaylistSwitch() {
   state.localMarkersMode = false
   state.playlistView = 'songs'
   state.activeTab = 'playlist'
+  clearDirectorSelectionForTabSwitch()
   state.pendingTabCommand = 'playlist'
   postCommand('set_page', { page: 'playlist' })
   postCommand('set_parts_visibility', { page: 'playlist', visible: '0' })
@@ -3930,6 +3994,17 @@ function clearSelectionState() {
   state.selectedPlaylistSongId = null
   state.selectedPlaylistSongIds = []
   state.selectedMarkerId = null
+}
+
+function clearDirectorSelectionForTabSwitch() {
+  clearStoppedSelectionHold()
+  state.selectedRegionId = null
+  state.selectedRegionIds = []
+  state.selectedPlaylistSongId = null
+  state.selectedPlaylistSongIds = []
+  state.selectedMarkerId = null
+  state.multiSelectMode = false
+  state.multiSelectTab = null
 }
 
 function setEditSingleSelection(tabName, key) {
@@ -4531,14 +4606,6 @@ function selectRegion(id) {
   clearStoppedSelectionHold()
   const key = String(id)
   const item = Array.isArray(state.regions) ? state.regions.find((entry) => String(entry?.id ?? '') === key) : null
-  if (item && detectBlockItem(item)) {
-    state.selectedRegionId = null
-    state.selectedRegionIds = []
-    lockSelectionSync()
-    postCommand('clear_selection')
-    render()
-    return
-  }
 
   if (state.deleteMode) return
 
@@ -4548,20 +4615,14 @@ function selectRegion(id) {
   }
 
   if (state.playingId && String(state.playingId) !== key) {
-    const localQueuedSongId = getLocalQueuedSongIdForRows()
-    lockSelectionSync()
+    // Aba MÚSICAS não cria fila manual e não mostra seleção enquanto houver música tocando.
     state.selectedRegionId = null
     state.selectedRegionIds = []
-
-    if (String(localQueuedSongId || '') === key) {
-      clearQueueAndMaybeAutoplay()
-    } else {
-      setLocalQueuedSong(key)
-      // Mantém resposta visual imediata no app. O Lua/bridge pode confirmar depois,
-      // mas a marcação amarela não depende mais do estado remoto de fila.
-      postCommand('queue_playlist_song', { id: key, selectedRegionId: key })
-      render()
-    }
+    state.selectedPlaylistSongId = null
+    state.selectedPlaylistSongIds = []
+    state.selectedMarkerId = null
+    lockSelectionSync()
+    render()
     return
   }
 
@@ -4598,7 +4659,7 @@ function selectRegion(id) {
 }
 
 function clearQueueAndMaybeAutoplay() {
-  clearLocalQueuedSong()
+  clearVisualQueueForDirector()
   lockSelectionSync()
   state.selectedPlaylistSongId = null
   postCommand('clear_queue')
@@ -4613,15 +4674,6 @@ function selectPlaylistSong(id) {
   const key = String(id)
   const playlist = activePlaylist()
   const item = Array.isArray(playlist?.songs) ? playlist.songs.find((entry) => String(entry?.id ?? entry?.songId ?? '') === key) : null
-  if (item && detectBlockItem(item)) {
-    state.selectedPlaylistSongId = null
-    state.selectedPlaylistSongIds = []
-    state.selectedMarkerId = null
-    lockSelectionSync()
-    postCommand('clear_selection')
-    render()
-    return
-  }
   state.selectedMarkerId = null
 
   if (state.deleteMode) {
@@ -4641,6 +4693,18 @@ function selectPlaylistSong(id) {
   }
 
   if (state.playingId && String(state.playingId) !== key) {
+    if (item && detectBlockItem(item)) {
+      state.selectedPlaylistSongId = key
+      state.selectedPlaylistSongIds = []
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+      state.selectedMarkerId = null
+      lockSelectionSync()
+      postCommand('select_playlist_song', { id: key })
+      render()
+      return
+    }
+
     const localQueuedSongId = getLocalQueuedSongIdForRows()
     lockSelectionSync()
     state.selectedPlaylistSongId = null
@@ -4757,13 +4821,38 @@ function handleConfirmAddExisting() {
   render()
 }
 
+function getNextAutoQueuedSongId() {
+  if (!state.autoplayEnabled || !state.playingId) return null
+  const playingKey = String(state.playingId || '')
+  const candidates = []
+  const playlist = activePlaylist()
+  if (Array.isArray(playlist?.songs) && playlist.songs.length) candidates.push(playlist.songs)
+  if (Array.isArray(state.regions) && state.regions.length) candidates.push(state.regions)
+
+  for (const list of candidates) {
+    const idx = list.findIndex((item) => String(item?.id ?? item?.songId ?? '') === playingKey)
+    if (idx < 0) continue
+    for (let i = idx + 1; i < list.length; i += 1) {
+      const item = list[i]
+      if (!item || detectBlockItem(item)) continue
+      const id = String(item.id ?? item.songId ?? '')
+      if (id && id !== playingKey) return id
+    }
+  }
+  return null
+}
+
 function getVisualQueuedSongId() {
   if (state.localQueuedSongId != null && String(state.localQueuedSongId) !== '') {
     const age = Date.now() - Number(state.localQueuedSongAt || 0)
     if (age >= 0 && age <= 12000) return String(state.localQueuedSongId)
     clearLocalQueuedSong()
   }
-  if (state.queuedSongId != null && String(state.queuedSongId) !== '') return String(state.queuedSongId)
+  if (Date.now() >= Number(remoteQueuedIgnoreUntil || 0) && state.queuedSongId != null && String(state.queuedSongId) !== '') {
+    return String(state.queuedSongId)
+  }
+  const autoQueuedId = getNextAutoQueuedSongId()
+  if (autoQueuedId) return String(autoQueuedId)
   return null
 }
 
@@ -4977,20 +5066,51 @@ function rememberCurrentPlaybackSelection(songId, preferredTab = null) {
 function handlePlayToggle() {
   const selectedRegionId = state.selectedRegionId
   const selectedPlaylistSongId = state.selectedPlaylistSongId
+
+  if (isPendingDirectorPlayStart()) {
+    const retryTargetId = pendingPlaybackDesiredSourceId || selectedRegionId || selectedPlaylistSongId || lastPlaybackSelectionId
+    const retrySourceTab = pendingPlaybackDesiredSourceTab || (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab))
+    if (retryTargetId) {
+      showLocalPlaybackPopupForId(retryTargetId)
+      postPlaybackToggleCommand(retryTargetId, retrySourceTab, true)
+      startOptimisticPlayback(retryTargetId, retrySourceTab)
+      pendingPlaybackToggleAt = Date.now()
+      pendingPlaybackDesiredPlaying = true
+      pendingPlaybackDesiredSourceId = String(retryTargetId)
+      pendingPlaybackDesiredSourceTab = retrySourceTab
+      render()
+    }
+    return
+  }
+
   const uiWasPlaying = getPlaybackUiActive()
+
+  if (!uiWasPlaying) {
+    const targetId = selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : '')
+    const targetItem = targetId ? findAnyPlaybackItemById(targetId) : null
+    if (targetItem && detectBlockItem(targetItem)) {
+      showAppPopup('BLOCO SELECIONADO', 'marker', 1400)
+      render()
+      return
+    }
+  }
+
+  const targetId = uiWasPlaying
+    ? null
+    : (selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : null))
+  const targetTab = uiWasPlaying
+    ? null
+    : (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab))
 
   pendingPlaybackToggleAt = Date.now()
   pendingPlaybackDesiredPlaying = !uiWasPlaying
-  pendingPlaybackDesiredSourceId = uiWasPlaying
-    ? null
-    : (selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : null))
-  pendingPlaybackDesiredSourceTab = uiWasPlaying
-    ? null
-    : (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab))
+  pendingPlaybackDesiredSourceId = targetId
+  pendingPlaybackDesiredSourceTab = targetTab
 
   if (uiWasPlaying) {
     const stoppedId = state.playingId || lastPlaybackSelectionId || pendingPlaybackDesiredSourceId
     const stoppedPreferredTab = lastPlaybackSelectionTab || pendingPlaybackDesiredSourceTab || state.activeTab
+    postPlaybackToggleCommand(stoppedId, stoppedPreferredTab, false)
     applyStoppedSongSelection(stoppedId, stoppedPreferredTab)
     state.pendingStopClear = false
     state.loopActive = false
@@ -5000,23 +5120,22 @@ function handlePlayToggle() {
     state.bridgePopupPersistent = false
     state.appPopupVisible = false
     state.playingId = null
+    clearVisualQueueForDirector()
     clearOptimisticPlayback()
     resetPlaybackLiveState(true)
     lockSelectionSync()
     render()
     forceStoppedSelectionDom(stoppedId, stoppedPreferredTab)
   } else {
-    if (pendingPlaybackDesiredSourceId) {
-      startOptimisticPlayback(pendingPlaybackDesiredSourceId, pendingPlaybackDesiredSourceTab)
+    if (targetId) {
+      showLocalPlaybackPopupForId(targetId)
+      postPlaybackToggleCommand(targetId, targetTab, true)
+      startOptimisticPlayback(targetId, targetTab)
+    } else {
+      postPlaybackToggleCommand(null, state.activeTab, true)
     }
     render()
   }
-
-  postCommand('play_toggle', {
-    activeTab: state.activeTab,
-    selectedRegionId,
-    selectedPlaylistSongId,
-  })
 }
 
 function handleAutoplayToggle() {
@@ -5168,13 +5287,14 @@ function getRowNumberText(items, type, index) {
 
 function renderRows(items, type) {
   if (!items.length) return type === 'marker' ? `<div class="emptyBox"></div>` : `<div class="emptyBox">Sem itens</div>`
-  const visualQueuedSongId = getLocalQueuedSongIdForRows()
+  const visualQueuedSongId = getVisualQueuedSongId()
   return items.map((item, index) => {
     const itemId = String(item.id)
     const isPlaying = type !== 'marker' && String(state.playingId || '') === itemId
     const isQueued = (type === 'song' || type === 'region') && String(visualQueuedSongId || '') === itemId
+    const suppressMusicSelectionWhilePlaying = type === 'region' && !!state.playingId
     const isSelected = type === 'region'
-      ? (isMultiSelectActiveFor('regions') ? state.selectedRegionIds.includes(itemId) : String(state.selectedRegionId || '') === itemId)
+      ? (!suppressMusicSelectionWhilePlaying && (isMultiSelectActiveFor('regions') ? state.selectedRegionIds.includes(itemId) : String(state.selectedRegionId || '') === itemId))
       : type === 'song'
       ? (isMultiSelectActiveFor('playlist') ? state.selectedPlaylistSongIds.includes(itemId) : String(state.selectedPlaylistSongId || '') === itemId)
       : String(state.selectedMarkerId || '') === itemId
@@ -5738,7 +5858,7 @@ function render() {
     : ''
 
   const content = state.activeTab === 'regions'
-    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowRegions controlsRowEqual"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(state.regions, 'region')}</div></div>`
+    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.autoplayEnabled ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(state.regions, 'region')}</div></div>`
     : `<div class="contentPanel ${state.playlistView === 'markers' ? 'markerContentPanel' : ''}"><div class="controlsStickyPanel">${state.playlistView === 'markers'
         ? `<div class="controlsRowPlaylist controlsRowEqual controlsRowMarkers"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.loopActive ? 'btnLoopActive loopBlink markerLoopButton' : 'btn markerLoopButton'}" data-action="loop">Loop</button><button class="tab btnLyricsOpen lyricsNavButton markersInlineBackButton markerBackLyricsButton" data-action="close-markers">&lt;&lt;</button></div>`
         : `<div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.autoplayEnabled ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>`}

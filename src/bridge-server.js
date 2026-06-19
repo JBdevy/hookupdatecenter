@@ -515,6 +515,20 @@ function enqueueCommand(commandsFile, type, payload = {}) {
   return command
 }
 
+function normalizeCommandPage(value) {
+  const page = String(value || '').trim().toLowerCase()
+  if (page === 'regions' || page === 'musicas' || page === 'músicas') return 'regions'
+  if (page === 'playlist' || page === 'repertorios' || page === 'repertórios') return 'playlist'
+  if (page === 'markers' || page === 'parts') return 'markers'
+  return ''
+}
+
+function normalizeCommandId(value) {
+  if (value === undefined || value === null) return null
+  const text = String(value).trim()
+  return text || null
+}
+
 
 function normalizeLyricsText(value) {
   return String(value ?? '')
@@ -709,9 +723,54 @@ function createBridgeServer(options) {
     markers: [],
   }
 
+  const liveCommandOverlay = {
+    currentPage: null,
+    currentPageUntil: 0,
+    queuedSongId: undefined,
+    queuedSongUntil: 0,
+  }
+
+  function updateLiveCommandOverlay(type, payload = {}) {
+    const now = Date.now()
+    const commandType = String(type || '')
+    if (commandType === 'set_page') {
+      const page = normalizeCommandPage(payload.page || payload.currentPage || payload.targetPage)
+      if (page) {
+        liveCommandOverlay.currentPage = page
+        liveCommandOverlay.currentPageUntil = now + 6000
+      }
+    }
+
+    if (commandType === 'clear_queue') {
+      liveCommandOverlay.queuedSongId = null
+      liveCommandOverlay.queuedSongUntil = now + 5000
+    } else if (commandType === 'queue_playlist_song') {
+      const id = normalizeCommandId(payload.id || payload.selectedRegionId || payload.songId || payload.regionId)
+      liveCommandOverlay.queuedSongId = id
+      liveCommandOverlay.queuedSongUntil = now + 5000
+    } else if (commandType === 'play_toggle') {
+      // Depois de Play/Stop pelo Diretor, não deixa uma fila velha voltar no app
+      // dos músicos enquanto o Lua ainda está escrevendo o próximo JSON.
+      liveCommandOverlay.queuedSongId = null
+      liveCommandOverlay.queuedSongUntil = now + 1800
+    }
+  }
+
+  function applyLiveCommandOverlay(state) {
+    const now = Date.now()
+    const out = { ...(state || {}) }
+    if (liveCommandOverlay.currentPage && now < Number(liveCommandOverlay.currentPageUntil || 0)) {
+      out.currentPage = liveCommandOverlay.currentPage
+    }
+    if (now < Number(liveCommandOverlay.queuedSongUntil || 0)) {
+      out.queuedSongId = liveCommandOverlay.queuedSongId === undefined ? out.queuedSongId : liveCommandOverlay.queuedSongId
+    }
+    return out
+  }
+
 
   function buildDiscoveryPayload() {
-    const state = readJson(stateFile, fallbackState)
+    const state = applyLiveCommandOverlay(readJson(stateFile, fallbackState))
     const ip = getLanIp()
     const projectPayload = buildProjectPayload(state)
 
@@ -803,7 +862,7 @@ function createBridgeServer(options) {
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
       const rawState = readJson(stateFile, fallbackState)
-      const state = applyLyricsToState(rawState, lyricsFile)
+      const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
       const projectPayload = buildProjectPayload(state)
       sendJson(res, 200, {
         ...state,
@@ -818,7 +877,7 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/projects' || parsedUrl.pathname === '/projects.json')) {
-      const state = readJson(stateFile, fallbackState)
+      const state = applyLiveCommandOverlay(readJson(stateFile, fallbackState))
       sendJson(res, 200, {
         ok: true,
         appName,
@@ -1001,6 +1060,7 @@ function createBridgeServer(options) {
           if (type === 'update_lyrics' || type === 'save_lyrics') {
             lyricsResult = saveLyricsPayload(lyricsFile, payload)
           }
+          updateLiveCommandOverlay(type, payload)
           const command = enqueueCommand(commandsFile, type, payload)
           sendJson(res, 200, { ok: true, command, lyricsSaved: lyricsResult ? !!lyricsResult.ok : undefined, lyrics: lyricsResult || undefined })
         } catch (error) {

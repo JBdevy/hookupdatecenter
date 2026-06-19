@@ -1005,10 +1005,15 @@ function updateBridgeState(data) {
     state.regionsScrollTopPx ?? 'x',
     String(state.currentPage || '')
   ].join('|'))
-
-  // App dos músicos agora fica somente em Repertórios.
-  // A tela Músicas não aparece mais no app dos músicos.
-  state.activeTab = 'playlist'
+const bridgePage = String(data.currentPage || data.page || '').toLowerCase()
+  const nextRemoteTab = (bridgePage === 'regions' || bridgePage === 'musicas' || bridgePage === 'músicas') ? 'regions' : 'playlist'
+  if (state.activeTab !== nextRemoteTab) {
+    musicosLocalSelectedTab = null
+    musicosLocalSelectedSongId = null
+    musicosLastAutoScrollPlayingId = null
+    musicosUserScrollLockedUntil = 0
+  }
+  state.activeTab = nextRemoteTab
 
   state.bridgePopupVisible = !!data.popupVisible
   state.bridgePopupText = String(data.popupText || '')
@@ -1077,7 +1082,6 @@ function shouldPauseBridgeRender() {
 }
 
 function buildRenderSignature() {
-  state.activeTab = 'playlist'
   const playlist = getCurrentPlaylist()
   const items = getDisplayItems()
   return JSON.stringify({
@@ -1380,7 +1384,7 @@ function render() {
         </div>
         <div class="musicosHeaderRow">
           <div class="tabRow">
-            <button class="activeTab musicosRepertorioButton" type="button" data-action="musicos-tab-playlist">REPERTÓRIOS</button>
+            <button class="activeTab musicosRepertorioButton" type="button" data-action="musicos-tab-playlist">${state.activeTab === 'regions' ? 'MÚSICAS' : 'REPERTÓRIOS'}</button>
             <span class="headerTotal">${escapeHtml(topTime)}</span><button class="tab markersNavButton markersNavButtonWide lyricsNavButton musicosLyricsNavButton" data-action="open-lyrics-panel">&lt;&lt;</button>
           </div>
         </div>
@@ -1486,7 +1490,7 @@ function bindMusicosLyricsSwipe() {
 }
 
 function setMusicosActiveTab(tab) {
-  const nextTab = 'playlist'
+  const nextTab = tab === 'regions' ? 'regions' : 'playlist'
   const list = document.querySelector('.musicosListBox')
   if (list) musicosManualScrollTopByTab[String(state.activeTab || 'playlist')] = list.scrollTop || 0
   state.activeTab = nextTab

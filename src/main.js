@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -138,9 +138,26 @@ function createWindow() {
 }
 
 
+function getTrayIconImage() {
+  const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
+  let image = nativeImage.createFromPath(iconPath);
+
+  if (image.isEmpty()) {
+    image = nativeImage.createFromPath(getAppIconPath());
+  }
+
+  if (process.platform === 'darwin') {
+    // No macOS, arquivo *Template.png pode virar silhueta/quadrado branco na menu bar.
+    // Usa o icone real do Hook Center, pequeno e colorido.
+    image = image.resize({ width: 18, height: 18 });
+    image.setTemplateImage(false);
+  }
+
+  return image;
+}
+
 function createTray() {
-  const iconPath = path.join(__dirname, '..', 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png');
-  tray = new Tray(iconPath);
+  tray = new Tray(getTrayIconImage());
   tray.setToolTip('Hook Center');
   rebuildTrayMenu();
 

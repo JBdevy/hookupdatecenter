@@ -595,8 +595,31 @@ function getDisplayItems() {
   return Array.isArray(playlist?.songs) ? playlist.songs : []
 }
 
+function getNextAutoQueuedSongId() {
+  if (!state.autoplayEnabled || !state.playingId) return null
+  const playingKey = String(state.playingId || '')
+  const lists = []
+  const playlist = getCurrentPlaylist()
+  if (Array.isArray(playlist?.songs) && playlist.songs.length) lists.push(playlist.songs)
+  if (Array.isArray(state.regions) && state.regions.length) lists.push(state.regions)
+
+  for (const list of lists) {
+    const idx = list.findIndex((item) => String(item?.id ?? item?.songId ?? '') === playingKey)
+    if (idx < 0) continue
+    for (let i = idx + 1; i < list.length; i += 1) {
+      const item = list[i]
+      if (!item || detectBlockItem(item)) continue
+      const id = String(item.id ?? item.songId ?? '')
+      if (id && id !== playingKey) return id
+    }
+  }
+  return null
+}
+
 function getVisualQueuedSongId() {
-  return state.queuedSongId ? String(state.queuedSongId) : null
+  if (state.queuedSongId) return String(state.queuedSongId)
+  const autoQueuedId = getNextAutoQueuedSongId()
+  return autoQueuedId ? String(autoQueuedId) : null
 }
 
 function getLiveRemainingSec(baseRemainingSec) {
@@ -961,6 +984,7 @@ function updateBridgeState(data) {
   state.currentPage = String(data.currentPage || state.currentPage || 'playlist')
   state.currentPlaylistName = String(data.currentPlaylistName || data.activePlaylistName || state.currentPlaylistName || '')
   state.autoBlocoEnabled = !!data.autoBlocoEnabled
+  state.autoplayEnabled = typeof data.autoplayEnabled === 'boolean' ? data.autoplayEnabled : !!data.autoplayEnabled
   state.activePlaylistId = data.activePlaylistId != null ? String(data.activePlaylistId) : state.activePlaylistId
   state.regions = Array.isArray(data.regions) ? data.regions : []
   state.playlists = Array.isArray(data.playlists) ? data.playlists : []
@@ -1005,10 +1029,15 @@ function updateBridgeState(data) {
     state.regionsScrollTopPx ?? 'x',
     String(state.currentPage || '')
   ].join('|'))
-
-  // App dos músicos agora fica somente em Repertórios.
-  // A tela Músicas não aparece mais no app dos músicos.
-  state.activeTab = 'playlist'
+const bridgePage = String(data.currentPage || data.page || '').toLowerCase()
+  const nextRemoteTab = (bridgePage === 'regions' || bridgePage === 'musicas' || bridgePage === 'músicas') ? 'regions' : 'playlist'
+  if (state.activeTab !== nextRemoteTab) {
+    musicosLocalSelectedTab = null
+    musicosLocalSelectedSongId = null
+    musicosLastAutoScrollPlayingId = null
+    musicosUserScrollLockedUntil = 0
+  }
+  state.activeTab = nextRemoteTab
 
   state.bridgePopupVisible = !!data.popupVisible
   state.bridgePopupText = String(data.popupText || '')
@@ -1077,7 +1106,6 @@ function shouldPauseBridgeRender() {
 }
 
 function buildRenderSignature() {
-  state.activeTab = 'playlist'
   const playlist = getCurrentPlaylist()
   const items = getDisplayItems()
   return JSON.stringify({
@@ -1380,7 +1408,7 @@ function render() {
         </div>
         <div class="musicosHeaderRow">
           <div class="tabRow">
-            <button class="activeTab musicosRepertorioButton" type="button" data-action="musicos-tab-playlist">REPERTÓRIOS</button>
+            <button class="activeTab musicosRepertorioButton" type="button" data-action="musicos-tab-playlist">${state.activeTab === 'regions' ? 'MÚSICAS' : 'REPERTÓRIOS'}</button>
             <span class="headerTotal">${escapeHtml(topTime)}</span><button class="tab markersNavButton markersNavButtonWide lyricsNavButton musicosLyricsNavButton" data-action="open-lyrics-panel">&lt;&lt;</button>
           </div>
         </div>
@@ -1486,7 +1514,7 @@ function bindMusicosLyricsSwipe() {
 }
 
 function setMusicosActiveTab(tab) {
-  const nextTab = 'playlist'
+  const nextTab = tab === 'regions' ? 'regions' : 'playlist'
   const list = document.querySelector('.musicosListBox')
   if (list) musicosManualScrollTopByTab[String(state.activeTab || 'playlist')] = list.scrollTop || 0
   state.activeTab = nextTab
