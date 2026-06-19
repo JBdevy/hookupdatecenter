@@ -24,9 +24,9 @@ function run(command, args, options = {}) {
 exports.default = async function notarizeMac(context) {
   if (context.electronPlatformName !== 'darwin') return;
 
-  const appleId = process.env.APPLE_ID;
-  const applePassword = process.env.APPLE_APP_SPECIFIC_PASSWORD;
-  const teamId = process.env.APPLE_TEAM_ID;
+  const appleId = process.env.HOOK_NOTARY_APPLE_ID || process.env.APPLE_ID;
+  const applePassword = process.env.HOOK_NOTARY_PASSWORD || process.env.APPLE_APP_SPECIFIC_PASSWORD;
+  const teamId = process.env.HOOK_NOTARY_TEAM_ID || process.env.APPLE_TEAM_ID;
 
   if (!appleId || !applePassword || !teamId) {
     throw new Error('Notarização macOS bloqueada: configure APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD e APPLE_TEAM_ID nos GitHub Secrets.');

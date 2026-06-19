@@ -50,3 +50,13 @@ O job macOS irá:
 3. notarizar e staplear o `.app` antes de gerar DMG/PKG/ZIP;
 4. notarizar e staplear o `.dmg` e o `.pkg` finais;
 5. publicar tudo no Release.
+
+## Observação importante sobre electron-builder
+
+No workflow, os secrets da Apple são mapeados para `HOOK_NOTARY_APPLE_ID`, `HOOK_NOTARY_PASSWORD` e `HOOK_NOTARY_TEAM_ID` durante `npm run build:mac`. Isso evita a notarização automática interna do `electron-builder` 24.13.3, que pode falhar antes dos scripts próprios.
+
+Fluxo correto:
+
+1. `electron-builder` assina o `.app` usando `CSC_LINK` e `CSC_KEY_PASSWORD`.
+2. `build/notarize-mac.js` notariza e aplica staple no `.app` pelo hook `afterSign`.
+3. `build/notarize-artifacts.sh` notariza e aplica staple nos artefatos finais `.dmg` e `.pkg`.
