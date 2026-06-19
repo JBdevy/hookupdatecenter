@@ -57,8 +57,14 @@
       "minimumSystemVersion": "11.0",
       "category": "public.app-category.utilities",
       "artifactName": "Hook-Center-${version}-macOS.${ext}",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "forceCodeSigning": true
     },
-    "icon": "assets/icon.png"
+    "icon": "assets/icon.png",
+    "afterSign": "build/notarize-mac.js"
   }
 }
