@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-diretor-no-retry-20260619-1';
+const CACHE_NAME = 'vshook-diretor-bloco-stop-imediato-20260619-1';
 const APP_ASSETS = [
   './',
   './index.html',

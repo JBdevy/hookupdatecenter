@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-qr-play-diretor-sem-toggle-1781875674';
+const CACHE_NAME = 'vshook-diretor-bloco-stop-imediato-20260619-1';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,8 +16,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './vshook-icon.png',
-  './vshook-icon-512.png',
+  './vshook-diretor-play-duplo-fix-20260619',
+  './vshook-diretor-play-duplo-fix-20260619',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

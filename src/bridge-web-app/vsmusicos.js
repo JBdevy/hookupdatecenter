@@ -595,8 +595,31 @@ function getDisplayItems() {
   return Array.isArray(playlist?.songs) ? playlist.songs : []
 }
 
+function getNextAutoQueuedSongId() {
+  if (!state.autoplayEnabled || !state.playingId) return null
+  const playingKey = String(state.playingId || '')
+  const lists = []
+  const playlist = getCurrentPlaylist()
+  if (Array.isArray(playlist?.songs) && playlist.songs.length) lists.push(playlist.songs)
+  if (Array.isArray(state.regions) && state.regions.length) lists.push(state.regions)
+
+  for (const list of lists) {
+    const idx = list.findIndex((item) => String(item?.id ?? item?.songId ?? '') === playingKey)
+    if (idx < 0) continue
+    for (let i = idx + 1; i < list.length; i += 1) {
+      const item = list[i]
+      if (!item || detectBlockItem(item)) continue
+      const id = String(item.id ?? item.songId ?? '')
+      if (id && id !== playingKey) return id
+    }
+  }
+  return null
+}
+
 function getVisualQueuedSongId() {
-  return state.queuedSongId ? String(state.queuedSongId) : null
+  if (state.queuedSongId) return String(state.queuedSongId)
+  const autoQueuedId = getNextAutoQueuedSongId()
+  return autoQueuedId ? String(autoQueuedId) : null
 }
 
 function getLiveRemainingSec(baseRemainingSec) {
@@ -961,6 +984,7 @@ function updateBridgeState(data) {
   state.currentPage = String(data.currentPage || state.currentPage || 'playlist')
   state.currentPlaylistName = String(data.currentPlaylistName || data.activePlaylistName || state.currentPlaylistName || '')
   state.autoBlocoEnabled = !!data.autoBlocoEnabled
+  state.autoplayEnabled = typeof data.autoplayEnabled === 'boolean' ? data.autoplayEnabled : !!data.autoplayEnabled
   state.activePlaylistId = data.activePlaylistId != null ? String(data.activePlaylistId) : state.activePlaylistId
   state.regions = Array.isArray(data.regions) ? data.regions : []
   state.playlists = Array.isArray(data.playlists) ? data.playlists : []

@@ -1462,6 +1462,9 @@ let pendingPlaybackDesiredPlaying = null
 let pendingPlaybackDesiredSourceId = null
 let pendingPlaybackDesiredSourceTab = null
 let lastPlayButtonCommandAt = 0
+let playPointerUpSyntheticClickSuppressUntil = 0
+let lastPlayPointerUpAt = 0
+let lastPlayPointerUpHandledPlayingIntent = null
 let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
 let remoteQueuedIgnoreUntil = 0
@@ -1517,6 +1520,46 @@ function findAnyPlaybackItemById(id) {
     if (directRegion) return directRegion
   }
   return null
+}
+
+function getItemStableId(item) {
+  return item == null ? '' : String(item.id ?? item.songId ?? item.source_number ?? item.sourceNumber ?? '')
+}
+
+function findFirstPlayableIdAfterBlockInList(list, blockId) {
+  const key = String(blockId ?? '')
+  if (!key || !Array.isArray(list) || !list.length) return null
+  const blockIndex = list.findIndex((item) => getItemStableId(item) === key)
+  if (blockIndex < 0) return null
+  for (let i = blockIndex + 1; i < list.length; i += 1) {
+    const item = list[i]
+    if (!item) continue
+    if (detectBlockItem(item)) break
+    const id = getItemStableId(item)
+    if (id) return id
+  }
+  return null
+}
+
+function resolvePlaybackTargetIdForBlock(targetId, sourceTab = null) {
+  const key = String(targetId ?? '')
+  if (!key) return null
+  const tab = sourceTab || state.activeTab || 'playlist'
+
+  if (tab === 'playlist') {
+    const playlist = activePlaylist()
+    const songs = Array.isArray(playlist?.songs) ? playlist.songs : []
+    const item = songs.find((entry) => getItemStableId(entry) === key)
+    if (item && detectBlockItem(item)) return findFirstPlayableIdAfterBlockInList(songs, key)
+  }
+
+  if (tab === 'regions') {
+    const regions = Array.isArray(state.regions) ? state.regions : []
+    const item = regions.find((entry) => getItemStableId(entry) === key)
+    if (item && detectBlockItem(item)) return findFirstPlayableIdAfterBlockInList(regions, key)
+  }
+
+  return key
 }
 
 function getOptimisticDurationSec(id) {
@@ -4737,11 +4780,22 @@ function selectPlaylistSong(id) {
     clearSelectionForFreshSingleSelection('playlist')
 
     if (item && detectBlockItem(item)) {
-      state.selectedPlaylistSongId = key
-      state.selectedPlaylistSongIds = []
+      const nextPlayableId = resolvePlaybackTargetIdForBlock(key, 'playlist')
+      if (!nextPlayableId || String(nextPlayableId) === key) {
+        showAppPopup('BLOCO SEM MÚSICA ABAIXO', 'error', 1400)
+        render()
+        return
+      }
+      const localQueuedSongId = getLocalQueuedSongIdForRows()
       lockSelectionSync()
-      postCommand('select_playlist_song', { id: key, activeTab: 'playlist' })
-      render()
+      state.selectedPlaylistSongId = null
+      if (String(localQueuedSongId || '') === String(nextPlayableId)) {
+        clearQueueAndMaybeAutoplay()
+      } else {
+        setLocalQueuedSong(nextPlayableId)
+        postCommand('queue_playlist_song', { id: nextPlayableId, activeTab: 'playlist' })
+        render()
+      }
       return
     }
 
@@ -5106,9 +5160,25 @@ function rememberCurrentPlaybackSelection(songId, preferredTab = null) {
   if (state.stoppedSelectionHoldId && String(state.stoppedSelectionHoldId) !== key) clearStoppedSelectionHold()
 }
 
-function handlePlayToggle() {
+function handlePlayToggle(event = null) {
   const playCommandNow = Date.now()
-  if (lastPlayButtonCommandAt && (playCommandNow - lastPlayButtonCommandAt) < 240) return
+  const eventType = String(event?.type || '')
+
+  // No mobile/webview, depois do pointerup o navegador pode soltar um click sintético.
+  // Como o Play re-renderiza o botão para Stop, esse click atrasado virava um play_stop real.
+  // Bloqueia somente esse click sintético; um segundo toque real ainda entra por pointerup.
+  if (eventType === 'click' && playCommandNow < Number(playPointerUpSyntheticClickSuppressUntil || 0)) {
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+    return
+  }
+
+  if (eventType === 'pointerup') {
+    lastPlayPointerUpAt = playCommandNow
+    playPointerUpSyntheticClickSuppressUntil = playCommandNow + 950
+  }
+
+  if (lastPlayButtonCommandAt && (playCommandNow - lastPlayButtonCommandAt) < 180) return
   lastPlayButtonCommandAt = playCommandNow
   // Play usa somente o modo da aba atual. Seleção velha de outra aba não entra.
   normalizeSingleSelectionForActiveTab()
@@ -5118,22 +5188,41 @@ function handlePlayToggle() {
 
   const uiWasPlaying = getPlaybackUiActive()
 
-  if (!uiWasPlaying) {
-    const targetId = selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : '')
-    const targetItem = targetId ? findAnyPlaybackItemById(targetId) : null
-    if (targetItem && detectBlockItem(targetItem)) {
-      showAppPopup('BLOCO SELECIONADO', 'marker', 1400)
-      render()
-      return
-    }
-  }
-
-  const targetId = uiWasPlaying
+  let targetId = uiWasPlaying
     ? null
     : (selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : null))
   const targetTab = uiWasPlaying
     ? null
     : (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab))
+
+  if (!uiWasPlaying && targetId) {
+    const originalTargetId = String(targetId)
+    const resolvedTargetId = resolvePlaybackTargetIdForBlock(targetId, targetTab)
+    if (resolvedTargetId && String(resolvedTargetId) !== originalTargetId) {
+      targetId = String(resolvedTargetId)
+      // Se o usuário apertou Play em um BLOCO, a seleção visual precisa sair do bloco
+      // imediatamente e ir para a música que realmente vai tocar, igual no Lua.
+      if (targetTab === 'playlist') {
+        state.selectedPlaylistSongId = targetId
+        state.selectedPlaylistSongIds = []
+        state.selectedRegionId = null
+        state.selectedRegionIds = []
+      } else if (targetTab === 'regions') {
+        state.selectedRegionId = targetId
+        state.selectedRegionIds = []
+        state.selectedPlaylistSongId = null
+        state.selectedPlaylistSongIds = []
+      }
+      lockSelectionSync()
+    } else {
+      const targetItem = findAnyPlaybackItemById(targetId)
+      if (targetItem && detectBlockItem(targetItem)) {
+        showAppPopup('BLOCO SEM MÚSICA ABAIXO', 'error', 1400)
+        render()
+        return
+      }
+    }
+  }
 
   pendingPlaybackToggleAt = Date.now()
   pendingPlaybackDesiredPlaying = !uiWasPlaying

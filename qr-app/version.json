@@ -1,5 +1,9 @@
 {
-  "version": "diretor-no-retry-20260619-1",
-  "updatedAt": "2026-06-19T14:45:00Z",
-  "build": "diretor-no-retry-20260619-1"
+  "version": "1.8.1-front-stop-rootfix",
+  "updatedAt": "2026-06-19T17:20:00Z",
+  "build": "1.8.1-front-stop-rootfix",
+  "notes": "Bloqueia click sintético que mandava play_stop após Play; bloco seleciona imediatamente a música de baixo.",
+  "cacheBust": "1781842200",
+  "hookCenterVersion": "1.8.1",
+  "bundledInHookCenter": true
 }

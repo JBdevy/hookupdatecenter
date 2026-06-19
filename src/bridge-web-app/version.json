@@ -1,13 +1,9 @@
 {
-  "product": "bridge-app",
-  "version": "1.8.0-play-diretor-sem-toggle",
-  "title": "App QR base",
-  "bundled": true,
-  "editableInDev": true,
-  "createdAt": "2026-06-17T23:50:00.000Z",
-  "updatedAt": "2026-06-19T13:35:00Z",
-  "notes": "Play do Diretor usa comandos absolutos play_start/play_stop, sem toggle.",
-  "build": "play-diretor-sem-toggle",
-  "cacheBust": 1781875674,
-  "label": "play-diretor-sem-toggle"
+  "version": "1.8.1-front-stop-rootfix",
+  "updatedAt": "2026-06-19T17:20:00Z",
+  "build": "1.8.1-front-stop-rootfix",
+  "notes": "Bloqueia click sintético que mandava play_stop após Play; bloco seleciona imediatamente a música de baixo.",
+  "cacheBust": "1781842200",
+  "hookCenterVersion": "1.8.1",
+  "bundledInHookCenter": true
 }

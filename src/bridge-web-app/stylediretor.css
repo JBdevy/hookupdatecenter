@@ -5502,6 +5502,116 @@ body.boot-loading {
   .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
 }
 
+
+/* v139 - correção teclado: não deixar o começo da letra subir atrás da barra superior */
+.lyricsScreenEditing{
+  scroll-padding-top:96px!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:sticky!important;
+  top:0!important;
+  z-index:3600!important;
+  flex:0 0 auto!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  position:relative!important;
+  z-index:1!important;
+  padding-top:8px!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  scroll-margin-top:104px!important;
+  transform:none!important;
+}
+.lyricsScreenEditing .lyricsEditorInput::selection{
+  background:rgba(59,130,246,.35)!important;
+}
+
+
+/* v140 - editor de letra sem salto ao apertar Enter
+   A tela inteira fica estável: topo fixo, texto rola dentro da área de edição. */
+.lyricsScreenEditing{
+  height:var(--lyrics-visible-height,var(--app-vh,100dvh))!important;
+  max-height:var(--lyrics-visible-height,var(--app-vh,100dvh))!important;
+  overflow:hidden!important;
+  display:flex!important;
+  flex-direction:column!important;
+  padding-bottom:0!important;
+  scroll-padding-top:0!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:relative!important;
+  top:auto!important;
+  z-index:3600!important;
+  flex:0 0 auto!important;
+  margin-bottom:6px!important;
+  padding-bottom:8px!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  flex:1 1 auto!important;
+  min-height:0!important;
+  height:auto!important;
+  max-height:none!important;
+  overflow:hidden!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:0 10px!important;
+  margin:0!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  display:block!important;
+  width:100%!important;
+  height:100%!important;
+  min-height:0!important;
+  max-height:none!important;
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
+  resize:none!important;
+  border:0!important;
+  border-radius:0!important;
+  outline:0!important;
+  box-shadow:none!important;
+  background:transparent!important;
+  color:#f8fafc!important;
+  padding:14px 4px calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  margin:0!important;
+  transform:none!important;
+  scroll-margin-top:0!important;
+  -webkit-overflow-scrolling:touch!important;
+  overscroll-behavior:contain!important;
+}
+.lyricsScreenEditing .lyricsEditorInput:focus{
+  outline:0!important;
+  border:0!important;
+  box-shadow:none!important;
+}
+.lyricsScreenEditing .lyricsEditorScrollPad{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
+}
+.lyricsScreenEditing .lyricsCharCount{
+  position:absolute!important;
+  right:18px!important;
+  bottom:calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  z-index:3700!important;
+  margin:0!important;
+  width:max-content!important;
+  pointer-events:none!important;
+  background:rgba(15,23,42,.82)!important;
+  border:1px solid rgba(148,163,184,.25)!important;
+  border-radius:999px!important;
+  padding:5px 10px!important;
+}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsEditorInput{color:#0f172a!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsCharCount{background:rgba(255,255,255,.86)!important;color:#0f172a!important;border-color:#cbd5e1!important;}
+@media(max-width:480px){
+  .lyricsScreenEditing .lyricsBody{padding-left:8px!important;padding-right:8px!important;}
+  .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
+}
+
 /* v122 - login estável com teclado virtual e swipe bloqueado na tela de Letras */
 .authGateApp{
   position:fixed!important;
@@ -5548,4 +5658,18 @@ body.boot-loading {
   .authGateSubtitle{font-size:10px!important;}
   .authGateInput{height:44px!important;}
   .authGateButton,.authGateBackButton{height:40px!important;min-height:40px!important;}
+}
+
+/* v142 - editor de letras sem espaço vazio exagerado e swipe de saída */
+.lyricsScreenEditing .lyricsEditorInput{
+  padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  overflow:hidden!important;
+}
+.lyricsScreenEditing .lyricsEditorScrollPad{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
 }
