@@ -64,7 +64,6 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "forceCodeSigning": true
     },
-    "icon": "assets/icon.png",
-    "afterSign": "build/notarize-mac.js"
+    "icon": "assets/icon.png"
   }
 }

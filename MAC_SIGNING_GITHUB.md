@@ -1,62 +1,25 @@
 # Assinatura e notarização macOS - Hook Center
 
-Este projeto já está preparado para assinar e notarizar o Hook Center no GitHub Actions.
+Este workflow foi ajustado para entregar artefatos adequados para clientes.
 
-## O que precisa ser assinado
+## Fluxo correto
 
-1. `Hook Center.app` por dentro, usando `Developer ID Application`.
-2. `Hook-Center-*-macOS.dmg` como artefato final.
-3. `Hook-Center-*-macOS.pkg` como artefato final, usando também `Developer ID Installer` quando o alvo `pkg` for gerado.
-4. O `.zip` do auto-update não recebe `stapler`, mas ele é gerado depois do `.app` já estar assinado e stapled.
+1. `electron-builder` gera o app universal e assina o `.app` com `Developer ID Application`.
+2. O workflow gera os arquivos finais `.dmg`, `.pkg` e `.zip`.
+3. O script `build/notarize-artifacts.sh` envia apenas os artefatos finais `.dmg` e `.pkg` para a Apple.
+4. Ao receber `Accepted`, o script aplica `stapler staple` e valida o ticket.
 
-## Secrets necessários no GitHub
+## Importante
 
-Configure em `Settings > Secrets and variables > Actions > New repository secret`:
+- Para cliente final, entregue preferencialmente o `.dmg` ou `.pkg` notarizado e stapled.
+- O `.zip` fica como artefato técnico/update, mas o fluxo de cliente deve usar `.dmg` ou `.pkg`.
+- Se a Apple ficar em `In Progress` por muito tempo, o script falha após 45 minutos para não gastar horas de GitHub Actions.
+- Se falhar por timeout, rode a tag novamente. A Apple precisa retornar `Accepted` para liberar uma versão realmente pronta para cliente.
+
+## Secrets usados
 
 - `MACOS_CERT_P12_BASE64`
 - `MACOS_CERT_PASSWORD`
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 - `APPLE_TEAM_ID`
-
-## Certificado P12
-
-No Mac, instale no Acesso às Chaves:
-
-- `Developer ID Application`
-- `Developer ID Installer`
-
-Depois exporte os certificados com as chaves privadas para um único `.p12` e converta para base64:
-
-```bash
-base64 -i HookDeveloperDeveloperID.p12 | pbcopy
-```
-
-Cole o conteúdo copiado no secret `MACOS_CERT_P12_BASE64`.
-
-## Build no GitHub
-
-O workflow dispara com tags:
-
-```bash
-git tag hook-update-1.8.1
-git push origin hook-update-1.8.1
-```
-
-O job macOS irá:
-
-1. importar o certificado via `CSC_LINK`;
-2. assinar o `.app` com hardened runtime;
-3. notarizar e staplear o `.app` antes de gerar DMG/PKG/ZIP;
-4. notarizar e staplear o `.dmg` e o `.pkg` finais;
-5. publicar tudo no Release.
-
-## Observação importante sobre electron-builder
-
-No workflow, os secrets da Apple são mapeados para `HOOK_NOTARY_APPLE_ID`, `HOOK_NOTARY_PASSWORD` e `HOOK_NOTARY_TEAM_ID` durante `npm run build:mac`. Isso evita a notarização automática interna do `electron-builder` 24.13.3, que pode falhar antes dos scripts próprios.
-
-Fluxo correto:
-
-1. `electron-builder` assina o `.app` usando `CSC_LINK` e `CSC_KEY_PASSWORD`.
-2. `build/notarize-mac.js` notariza e aplica staple no `.app` pelo hook `afterSign`.
-3. `build/notarize-artifacts.sh` notariza e aplica staple nos artefatos finais `.dmg` e `.pkg`.
