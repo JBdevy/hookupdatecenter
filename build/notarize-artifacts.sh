@@ -5,7 +5,7 @@ APPLE_ID_VALUE="${HOOK_NOTARY_APPLE_ID:-${APPLE_ID:-}}"
 APPLE_PASSWORD_VALUE="${HOOK_NOTARY_PASSWORD:-${APPLE_APP_SPECIFIC_PASSWORD:-}}"
 APPLE_TEAM_VALUE="${HOOK_NOTARY_TEAM_ID:-${APPLE_TEAM_ID:-}}"
 # Tempo máximo por arquivo. Pode aumentar no workflow com NOTARY_TIMEOUT_MINUTES.
-NOTARY_TIMEOUT_MINUTES="${NOTARY_TIMEOUT_MINUTES:-45}"
+NOTARY_TIMEOUT_MINUTES="${NOTARY_TIMEOUT_MINUTES:-90}"
 POLL_SECONDS="${NOTARY_POLL_SECONDS:-30}"
 
 if [[ -z "$APPLE_ID_VALUE" || -z "$APPLE_PASSWORD_VALUE" || -z "$APPLE_TEAM_VALUE" ]]; then
@@ -87,20 +87,15 @@ notary_submit_and_wait() {
 }
 
 shopt -s nullglob
-artifacts=(dist/*.dmg dist/*.pkg)
+artifacts=(dist/*.dmg)
 
 if [[ ${#artifacts[@]} -eq 0 ]]; then
-  echo "Nenhum DMG/PKG encontrado em dist/ para notarizar." >&2
+  echo "Nenhum DMG encontrado em dist/ para notarizar." >&2
   exit 1
 fi
 
 for file in "${artifacts[@]}"; do
   notary_submit_and_wait "$file"
-
-  if [[ "$file" == *.pkg ]]; then
-    echo "[macOS] Conferindo assinatura do PKG: $file"
-    pkgutil --check-signature "$file" || true
-  fi
 
   echo "[macOS] Conferindo Gatekeeper do artefato: $file"
   spctl -a -vvv -t open --context context:primary-signature "$file" || true

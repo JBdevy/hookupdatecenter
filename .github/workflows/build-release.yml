@@ -79,12 +79,12 @@ jobs:
           HOOK_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run build:mac
 
-      - name: Notarize final DMG and PKG for clients
+      - name: Notarize final DMG for clients
         env:
           HOOK_NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
           HOOK_NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           HOOK_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          NOTARY_TIMEOUT_MINUTES: 45
+          NOTARY_TIMEOUT_MINUTES: 90
           NOTARY_POLL_SECONDS: 30
         shell: bash
         run: bash ./build/notarize-artifacts.sh
@@ -92,13 +92,12 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hook-update-center-macos-universal
+          name: hook-update-center-macos-dmg
           path: |
             dist/*.dmg
             dist/*.dmg.blockmap
             dist/*.zip
             dist/*.zip.blockmap
-            dist/*.pkg
             dist/latest-mac.yml
           if-no-files-found: error
 
@@ -123,7 +122,6 @@ jobs:
             artifacts/**/Hook-Center-*-macOS.dmg.blockmap
             artifacts/**/Hook-Center-*-macOS.zip
             artifacts/**/Hook-Center-*-macOS.zip.blockmap
-            artifacts/**/Hook-Center-*-macOS.pkg
             artifacts/**/latest-mac.yml
           overwrite_files: true
         env:
