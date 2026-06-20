@@ -52,42 +52,10 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Validate macOS signing secrets
+      - name: Build macOS unsigned universal
         env:
-          CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        shell: bash
-        run: |
-          test -n "$CSC_LINK" || (echo "MACOS_CERT_P12_BASE64 não configurado" && exit 1)
-          test -n "$CSC_KEY_PASSWORD" || (echo "MACOS_CERT_PASSWORD não configurado" && exit 1)
-          test -n "$APPLE_ID" || (echo "APPLE_ID não configurado" && exit 1)
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD" || (echo "APPLE_APP_SPECIFIC_PASSWORD não configurado" && exit 1)
-          test -n "$APPLE_TEAM_ID" || (echo "APPLE_TEAM_ID não configurado" && exit 1)
-
-      - name: Build signed macOS universal
-        env:
-          CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          # Não exportar APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID nesta etapa.
-          # O electron-builder 24.13.3 tenta notarização automática interna quando vê essas variáveis
-          # e pode quebrar antes dos nossos scripts. Usamos nomes próprios para o afterSign.
-          HOOK_NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
-          HOOK_NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          HOOK_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run build:mac
-
-      - name: Notarize final DMG for clients
-        env:
-          HOOK_NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
-          HOOK_NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          HOOK_NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          NOTARY_TIMEOUT_MINUTES: 90
-          NOTARY_POLL_SECONDS: 30
-        shell: bash
-        run: bash ./build/notarize-artifacts.sh
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4

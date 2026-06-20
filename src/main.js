@@ -30,8 +30,12 @@ const store = new Store({
       active: false,
       devicesUsed: 0,
       maxDevices: 0,
+      devices: [],
       lastStatusAt: null
     },
+    deviceName: '',
+    deviceLoginEmail: '',
+    deviceLoginAt: null,
     autoStart: true,
     bridge: {
       scriptsDir: '',
@@ -443,6 +447,74 @@ async function getMachineId() {
   return machineId;
 }
 
+
+function getStoredDeviceName() {
+  return String(store.get('deviceName') || '').trim()
+}
+
+function saveStoredDeviceName(name) {
+  const value = String(name || '').trim().replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ')
+  if (!value) throw new Error('Escolha um nome para este dispositivo.')
+  store.set('deviceName', value)
+  return value
+}
+
+async function loginLicenseDevices(email) {
+  const license = store.get('license') || {}
+  const machineId = normalizeMachineId(license.machineId || await getMachineId())
+  const cleanEmail = normalizeEmail(email || license.email || store.get('deviceLoginEmail'))
+  if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.')
+  const result = await fetchJson(`${BACKEND_URL}/api/license/login`, {
+    method: 'POST',
+    body: JSON.stringify({ email: cleanEmail, machineId, platform: process.platform, computerName: getStoredDeviceName() })
+  })
+  const nextLicense = {
+    ...license,
+    email: result.email || cleanEmail,
+    machineId,
+    active: !!result.active,
+    devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
+    maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+    devices: Array.isArray(result.devices) ? result.devices : [],
+    message: result.message || '',
+    warning: result.warning || '',
+    reason: result.reason || '',
+    lastStatusAt: new Date().toISOString()
+  }
+  store.set('deviceLoginEmail', result.email || cleanEmail)
+  store.set('deviceLoginAt', new Date().toISOString())
+  store.set('license', nextLicense)
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
+  return { ok:true, result, state:getAppState() }
+}
+
+async function removeLicenseDevice(removeMachineId, emailOverride = '') {
+  const license = store.get('license') || {}
+  const machineId = normalizeMachineId(license.machineId || await getMachineId())
+  const cleanEmail = normalizeEmail(emailOverride || license.email || store.get('deviceLoginEmail'))
+  if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
+  const result = await fetchJson(`${BACKEND_URL}/api/license/remove-device`, {
+    method: 'POST',
+    body: JSON.stringify({ email: cleanEmail, machineId, removeMachineId, platform: process.platform, computerName: getStoredDeviceName() })
+  })
+  const nextLicense = {
+    ...license,
+    email: result.email || cleanEmail,
+    machineId,
+    active: !!result.active,
+    devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
+    maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+    devices: Array.isArray(result.devices) ? result.devices : [],
+    message: result.message || '',
+    warning: result.warning || '',
+    reason: result.reason || '',
+    lastStatusAt: new Date().toISOString()
+  }
+  store.set('license', nextLicense)
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
+  return { ok:true, result, state:getAppState() }
+}
+
 function saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload }) {
   const licensePath = getSharedLicensePath();
   const data = {
@@ -686,12 +758,12 @@ async function downloadAndInstallHookCenterUpdate() {
     spawn(dest, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
     app.isQuiting = true;
     app.quit();
-    return { ok: true, action: 'installer-started', path: dest };
+    return { ok: true, action: 'installer-started' };
   }
 
   await shell.openPath(dest);
   shell.showItemInFolder(dest);
-  return { ok: true, action: 'dmg-opened', path: dest };
+  return { ok: true, action: 'dmg-opened' };
 }
 
 
@@ -880,7 +952,7 @@ async function checkLicenseStatus(manual = false) {
   try {
     const result = await fetchJson(`${BACKEND_URL}/api/license/status`, {
       method: 'POST',
-      body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform })
+      body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform, computerName: getStoredDeviceName() })
     });
 
     const active = result.active !== false && result.ok !== false;
@@ -894,6 +966,7 @@ async function checkLicenseStatus(manual = false) {
       active,
       devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
       maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+      devices: Array.isArray(result.devices) ? result.devices : (license.devices || []),
       message: result.message || result.warning || '',
       warning: result.warning || '',
       reason: result.reason || '',
@@ -1032,6 +1105,25 @@ function isBridgeWebAppDirValid(dir) {
   }
 }
 
+function readBridgeWebAppVersion(dir) {
+  try {
+    const versionPath = path.join(dir, 'version.json');
+    if (!fs.existsSync(versionPath)) return '';
+    const raw = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+    return String(raw.updateId || raw.version || raw.build || raw.cache || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function bridgeExternalAppNeedsBundledSync(externalDir, bundledDir) {
+  if (!isBridgeWebAppDirValid(externalDir)) return true;
+  const bundledVersion = readBridgeWebAppVersion(bundledDir);
+  const externalVersion = readBridgeWebAppVersion(externalDir);
+  if (!bundledVersion) return false;
+  return bundledVersion !== externalVersion;
+}
+
 function copyDirectoryRecursive(sourceDir, targetDir) {
   const stat = fs.statSync(sourceDir);
   if (!stat.isDirectory()) throw new Error('Origem do app QR não é uma pasta.');
@@ -1050,10 +1142,9 @@ function copyDirectoryRecursive(sourceDir, targetDir) {
 
 function ensureExternalBridgeWebApp() {
   const externalDir = getExternalBridgeWebAppDir();
-  if (isBridgeWebAppDirValid(externalDir)) return externalDir;
-
   const bundledDir = getBundledBridgeWebAppDir();
-  if (isBridgeWebAppDirValid(bundledDir)) {
+
+  if (isBridgeWebAppDirValid(bundledDir) && bridgeExternalAppNeedsBundledSync(externalDir, bundledDir)) {
     try {
       fs.rmSync(externalDir, { recursive: true, force: true });
       fs.mkdirSync(path.dirname(externalDir), { recursive: true });
@@ -1062,12 +1153,23 @@ function ensureExternalBridgeWebApp() {
       if (!fs.existsSync(versionFile)) {
         fs.writeFileSync(versionFile, JSON.stringify({ version: app.getVersion(), bundled: true, installedAt: new Date().toISOString() }, null, 2), 'utf8');
       }
+      store.set('bridgeAppInstalled', {
+        version: readBridgeWebAppVersion(externalDir) || app.getVersion(),
+        updateId: readBridgeWebAppVersion(externalDir) || app.getVersion(),
+        title: 'App QR embutido no Hook Center',
+        notes: 'Sincronizado automaticamente a partir do build do Hook Center.',
+        path: externalDir,
+        installedAt: new Date().toISOString()
+      });
       return externalDir;
     } catch (error) {
       console.warn('[Hook Center] Não foi possível preparar App QR externo:', error?.message || error);
+      return bundledDir;
     }
-    return bundledDir;
   }
+
+  if (isBridgeWebAppDirValid(externalDir)) return externalDir;
+  if (isBridgeWebAppDirValid(bundledDir)) return bundledDir;
 
   return getFallbackBridgeWebAppDir();
 }
@@ -1330,6 +1432,11 @@ function getLyricsState() {
     timerRunning: Boolean(timerSource.timerRunning),
     timerStartedAt: Number(timerSource.timerStartedAt || timerSource.timerStartedAtMs || 0),
     timerAccumulatedSec: Number(timerSource.timerAccumulatedSec || 0),
+    timerMode: String(timerSource.timerMode || timerSource.timerType || 'progressive'),
+    timerType: String(timerSource.timerMode || timerSource.timerType || 'progressive'),
+    timerTargetSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
+    timerCountdownStartSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
+    timerDisplaySec: Number(timerSource.timerDisplaySec || 0),
     playing: Boolean(data.playing || bridgeState.playing || bridgeState.isPlaying),
     updatedAt: data.updatedAt || bridgeState.updatedAt || null,
     technicalNotice: getActiveTechnicalNotice(),
@@ -1394,6 +1501,8 @@ function getAppState() {
     downloadedFiles: store.get('downloadedFiles'),
     installedManifest: store.get('installedManifest'),
     license: store.get('license'),
+    deviceName: getStoredDeviceName(),
+    deviceLoginEmail: store.get('deviceLoginEmail') || (store.get('license') || {}).email || '',
     
     platform: process.platform,
     arch: process.arch,
@@ -1798,6 +1907,14 @@ ipcMain.handle('close-current-window', (event) => {
   return { ok: true };
 });
 
+
+ipcMain.handle('get-device-name', () => ({ ok: true, deviceName: getStoredDeviceName() }));
+ipcMain.handle('set-device-name', (_event, payload) => {
+  const deviceName = saveStoredDeviceName(payload?.deviceName || payload?.name || '')
+  return { ok: true, deviceName, state: getAppState() }
+});
+ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseDevices(payload?.email || ''));
+ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload?.machineId || payload?.deviceId || payload?.removeMachineId || '', payload?.email || ''));
 ipcMain.handle('activate-license', async (_event, payload) => {
   const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
   const cpf = docParts.cpf;
@@ -1805,6 +1922,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   const document = docParts.document;
   const email = normalizeEmail(payload?.email);
   const machineId = await getMachineId();
+  const computerName = getStoredDeviceName();
 
   if (document && document.length !== 11 && document.length !== 14) {
     throw new Error('Digite um CPF ou CNPJ válido.');
@@ -1815,7 +1933,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
 
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
-    body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform })
+    body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform, computerName: getStoredDeviceName() })
   });
 
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
@@ -1829,7 +1947,8 @@ ipcMain.handle('activate-license', async (_event, payload) => {
     machineId,
     active: true,
     devicesUsed: result.devicesUsed ?? result.usedDevices ?? 1,
-    maxDevices: result.maxDevices ?? 2,
+    maxDevices: result.maxDevices ?? 0,
+    devices: Array.isArray(result.devices) ? result.devices : [],
     message: result.message || result.warning || 'Licença ativada com sucesso.',
     warning: result.warning || '',
     reason: result.reason || 'active',

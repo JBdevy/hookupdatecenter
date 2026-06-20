@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-diretor-bloco-stop-imediato-20260619-1';
+const CACHE_NAME = 'vshook-director-1.8.2-auto-front-dispositivos';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,8 +16,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './vshook-diretor-play-duplo-fix-20260619',
-  './vshook-diretor-play-duplo-fix-20260619',
+  './vshook-diretor-play-single-command-block-name-20260620',
+  './vshook-diretor-play-single-command-block-name-20260620',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

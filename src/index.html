@@ -21,6 +21,7 @@
         <button class="nav-item active" data-view="home">Atualização</button>
         <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
+        <button class="nav-item" data-view="devices">Dispositivos</button>
         <button class="nav-item" data-view="bridge">Conexão via app</button>
         <button class="nav-item" data-view="lyrics">Teleprompt</button>
         <button class="nav-item" data-view="status">Status</button>
@@ -42,47 +43,60 @@
           </div>
           <button id="checkButton" class="primary-button">Conferir atualização</button>
         </div>
-
-        <div id="noUpdateCard" class="card hidden">
-          <h2>Nenhuma publicação carregada</h2>
-          <p class="muted">Clique em conferir atualização para buscar a versão mais recente disponível.</p>
-        </div>
-
-        <div id="updateCard" class="card hidden">
-          <div class="update-header">
-            <div>
-              <p class="eyebrow">Última publicação disponível</p>
-              <h2 id="updateTitle">VS Hook</h2>
+        <div class="home-update-split" id="homeUpdateSplit">
+          <div class="update-column script-update-column">
+            <div id="noUpdateCard" class="card hidden">
+              <h2>Nenhuma publicação carregada</h2>
+              <p class="muted">Clique em conferir atualização para buscar a versão mais recente disponível.</p>
             </div>
-            <span id="versionBadge" class="badge">v0.0.0</span>
+
+            <div id="updateCard" class="card hidden">
+              <div class="update-header">
+                <div>
+                  <p class="eyebrow">Última publicação disponível</p>
+                  <h2 id="updateTitle">VS Hook</h2>
+                </div>
+                <span id="versionBadge" class="badge">v0.0.0</span>
+              </div>
+
+              <div id="videoBox" class="video-box video-preview">
+                <button id="openVideoModalButton" class="video-play-button" type="button">
+                  <span class="play-icon">▶</span>
+                  <span>Assistir vídeo da atualização</span>
+                </button>
+              </div>
+
+              <p id="updateDescription" class="description"></p>
+              <ul id="changelogList" class="changelog"></ul>
+
+              <div class="actions">
+                <button id="downloadButton" class="primary-button">Baixar / Reinstalar VS Hook</button>
+                <button id="laterButton" class="secondary-button">Fechar para tray</button>
+              </div>
+            </div>
+
+            <div id="downloadCard" class="card hidden">
+              <h2>Baixando atualização</h2>
+              <p class="muted">Aguarde até o download finalizar. Em seguida, clique em instalar.</p>
+              <div class="progress-shell">
+                <div id="progressBar" class="progress-bar"></div>
+              </div>
+              <div class="progress-row">
+                <span id="progressText">0%</span>
+                <button id="installButton" class="primary-button hidden">Instalar</button>
+              </div>
+            </div>
           </div>
 
-          <div id="videoBox" class="video-box video-preview">
-            <button id="openVideoModalButton" class="video-play-button" type="button">
-              <span class="play-icon">▶</span>
-              <span>Assistir vídeo da atualização</span>
-            </button>
-          </div>
-
-          <p id="updateDescription" class="description"></p>
-
-          <ul id="changelogList" class="changelog"></ul>
-
-          <div class="actions">
-            <button id="downloadButton" class="primary-button">Baixar / Reinstalar VS Hook</button>
-            <button id="laterButton" class="secondary-button">Fechar para tray</button>
-          </div>
-        </div>
-
-        <div id="downloadCard" class="card hidden">
-          <h2>Baixando atualização</h2>
-          <p class="muted">Aguarde até o download finalizar. Em seguida, clique em instalar.</p>
-          <div class="progress-shell">
-            <div id="progressBar" class="progress-bar"></div>
-          </div>
-          <div class="progress-row">
-            <span id="progressText">0%</span>
-            <button id="installButton" class="primary-button hidden">Instalar</button>
+          <div class="update-column hookcenter-update-column">
+            <div class="card" id="hookCenterUpdateCard">
+              <p class="eyebrow">Hook Center</p>
+              <h2>Atualização do Hook Center</h2>
+              <p class="muted" id="hookCenterUpdateText">Verificando atualização do Hook Center...</p>
+              <div class="actions hidden" id="hookCenterUpdateActions">
+                <button id="hookCenterUpdateButton" class="primary-button hidden" type="button">Atualizar Hook Center</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -128,6 +142,11 @@
               E-mail usado na compra
               <input id="emailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
             </label>
+
+            <label>
+              Nome deste dispositivo
+              <input id="deviceNameInlineInput" type="text" placeholder="Ex.: Notebook palco, PC estúdio" autocomplete="off" />
+            </label>
           </div>
 
           <div class="actions">
@@ -154,6 +173,46 @@
         </div>
       </section>
 
+
+
+      <section id="devicesView" class="view">
+        <div class="hero-card compact-hero">
+          <div>
+            <p class="eyebrow">Licença VS Hook</p>
+            <h1>Dispositivos</h1>
+            <p class="muted">Entre com o e-mail usado na compra para ver e remover computadores ativados.</p>
+          </div>
+        </div>
+
+        <div class="device-layout-grid">
+          <div class="card">
+            <h2>Login da compra</h2>
+            <label>
+              E-mail usado na compra
+              <input id="devicesEmailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+            </label>
+            <label>
+              Nome deste dispositivo
+              <input id="devicesNameInput" type="text" placeholder="Ex.: Notebook palco" autocomplete="off" />
+            </label>
+            <div class="actions">
+              <button id="devicesLoginButton" class="primary-button" type="button">Entrar</button>
+              <button id="saveDeviceNameButton" class="secondary-button" type="button">Salvar nome</button>
+            </div>
+            <div id="devicesMessage" class="license-message muted"></div>
+          </div>
+
+          <div class="card">
+            <h2>Computadores ativados</h2>
+            <div class="status-grid device-status-grid">
+              <div><span>Usados</span><strong id="devicesUsedText">--</strong></div>
+              <div><span>Limite</span><strong id="devicesLimitText">--</strong></div>
+              <div><span>Este PC</span><strong id="currentDeviceStatusText">--</strong></div>
+            </div>
+            <div id="devicesList" class="devices-list"><p class="muted">Faça login para carregar os dispositivos.</p></div>
+          </div>
+        </div>
+      </section>
 
       <section id="bridgeView" class="view">
         <div class="hero-card bridge-hero app-store-hero">
@@ -336,14 +395,6 @@
           </div>
         </div>
 
-        <div class="card" id="hookCenterUpdateCard">
-          <h2>Atualização do Hook Center</h2>
-          <p class="muted" id="hookCenterUpdateText">Verificando atualização do Hook Center...</p>
-          <div class="actions">
-            <button id="hookCenterUpdateButton" class="primary-button hidden" type="button">Atualizar Hook Center</button>
-          </div>
-        </div>
-
       </section>
 
     </main>
@@ -361,6 +412,35 @@
         <button id="closeVideoModalButton" class="video-close-button" type="button">×</button>
       </div>
       <webview id="youtubeWebview" class="youtube-webview" src="about:blank" allowpopups></webview>
+    </div>
+  </div>
+
+
+  <div id="deviceNameModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal device-name-modal">
+      <div class="modal-icon info">i</div>
+      <h2>Escolha o nome para este dispositivo</h2>
+      <p>Use um nome fácil de reconhecer quando precisar remover um computador da licença.</p>
+      <input id="deviceNameModalInput" type="text" placeholder="Ex.: Notebook palco" autocomplete="off" />
+      <div id="deviceNameModalError" class="device-modal-error"></div>
+      <div class="modal-actions">
+        <button id="deviceNameModalCancel" class="secondary-button modal-button" type="button">Cancelar</button>
+        <button id="deviceNameModalSave" class="primary-button modal-button" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="deviceLoginModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal device-name-modal">
+      <div class="modal-icon info">i</div>
+      <h2>Login da compra</h2>
+      <p>Entre com o mesmo e-mail utilizado na compra para carregar seus dispositivos ativados.</p>
+      <input id="deviceLoginModalEmail" type="email" placeholder="cliente@email.com" autocomplete="off" />
+      <div id="deviceLoginModalError" class="device-modal-error"></div>
+      <div class="modal-actions">
+        <button id="deviceLoginModalLater" class="secondary-button modal-button" type="button">Depois</button>
+        <button id="deviceLoginModalEnter" class="primary-button modal-button" type="button">Entrar</button>
+      </div>
     </div>
   </div>
 

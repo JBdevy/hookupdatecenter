@@ -7,7 +7,7 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: #05070a;
+  background: #0b1118;
   color: #fff;
   font-family: Arial, sans-serif;
   height: var(--app-vh, 100dvh);
@@ -23,7 +23,7 @@ button, input {
   font: inherit;
 }
 .app {
-  background: #05070a;
+  background: #0b1118;
   min-height: var(--app-vh, 100dvh);
   height: var(--app-vh, 100dvh);
   color: #fff;
@@ -36,7 +36,7 @@ button, input {
   border-width: 2px;
   border-style: solid;
   border-radius: 10px;
-  background: linear-gradient(180deg, #0a1018 0%, #06090f 100%);
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
   min-height: calc(var(--app-vh, 100dvh) - 16px);
   height: calc(var(--app-vh, 100dvh) - 16px);
   box-sizing: border-box;
@@ -249,7 +249,11 @@ button, input {
 .selectedPink {
   background: #ec4899;
 }
-.selectedPinkText, .selectedPinkTimeText {
+.selectedBlue {
+  background: #2563eb;
+}
+.selectedPinkText, .selectedPinkTimeText,
+.selectedBlueText, .selectedBlueTimeText {
   color: #ffffff;
   font-weight: bold;
 }
@@ -330,7 +334,7 @@ button, input {
   height: 46px;
   border-radius: 8px;
   border: 1px solid #374151;
-  background: #05070a;
+  background: #0b1118;
   color: #fff;
   padding: 0 12px;
   margin-bottom: 12px;
@@ -614,6 +618,12 @@ button, input {
 
 .selectedPink.blockItem {
   background: #ec4899;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
+}
+
+.selectedBlue:not(.blockItem) {
+  background: #2563eb;
+  box-shadow: inset 0 0 0 1px rgba(147,197,253,0.32);
 }
 
 .selectedPink.blockItem .blockText,
@@ -2391,7 +2401,7 @@ body.boot-loading {
   background:
     radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
     radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
-    linear-gradient(180deg, #020406 0%, #05070a 100%);
+    linear-gradient(180deg, #020406 0%, #0b1118 100%);
   opacity: 1;
   transition: opacity .35s ease, visibility .35s ease;
   visibility: visible;
@@ -2494,7 +2504,7 @@ body.boot-loading {
   background:
     radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
     radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
-    linear-gradient(180deg, #020406 0%, #05070a 100%);
+    linear-gradient(180deg, #020406 0%, #0b1118 100%);
   opacity: 1;
   transition: opacity .35s ease, visibility .35s ease;
   visibility: visible;
@@ -2587,7 +2597,7 @@ body.boot-loading {
   border: 1px solid #334155;
   border-radius: 18px;
   padding: 22px 18px 18px;
-  background: linear-gradient(180deg, #0a1018 0%, #06090f 100%);
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
   box-shadow: 0 18px 42px rgba(0,0,0,0.45);
   gap: 10px;
 }
@@ -2604,7 +2614,7 @@ body.boot-loading {
   height: 48px;
   border-radius: 10px;
   border: 1px solid #374151;
-  background: #05070a;
+  background: #0b1118;
   color: #fff;
   padding: 0 14px;
 }
@@ -2775,7 +2785,7 @@ body.boot-loading {
   justify-content: center;
   border: 1px solid #374151;
   border-radius: 10px;
-  background: #05070a;
+  background: #0b1118;
   color: #facc15;
   font-size: 22px;
   font-weight: 900;
@@ -3297,7 +3307,7 @@ body.boot-loading {
   justify-content: center;
   border: 1px solid #475569;
   border-radius: 12px;
-  background: linear-gradient(180deg, #111827 0%, #05070a 100%);
+  background: linear-gradient(180deg, #111827 0%, #0b1118 100%);
   color: #facc15;
   font-size: 34px;
   font-weight: 900;
@@ -3691,7 +3701,7 @@ body.boot-loading {
   padding: 28px 18px;
   background:
     radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
-    #05070a;
+    #0b1118;
   color: #f8fafc;
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
@@ -3789,7 +3799,7 @@ body.boot-loading {
   padding: 28px 18px;
   background:
     radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
-    #05070a;
+    #0b1118;
   color: #f8fafc;
   font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
@@ -3925,7 +3935,7 @@ body.boot-loading {
 /* Lyrics screen */
 .btnLyricsOpen{background:linear-gradient(180deg,#1e293b 0%,#0f172a 100%);border:1px solid #38bdf8;color:#e0f2fe;font-weight:900}
 .settingsActionActive{background:#14532d!important;border-color:#22c55e!important;color:#dcfce7!important}
-.lyricsScreen{position:fixed;inset:0;z-index:1900;background:linear-gradient(180deg,#05070a 0%,#0b1220 100%);color:#f8fafc;display:flex;flex-direction:column;transform:translateX(0);animation:lyricsSlideIn .18s ease-out;overflow:hidden;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
+.lyricsScreen{position:fixed;inset:0;z-index:1900;background:linear-gradient(180deg,#0b1118 0%,#0b1220 100%);color:#f8fafc;display:flex;flex-direction:column;transform:translateX(0);animation:lyricsSlideIn .18s ease-out;overflow:hidden;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
 @keyframes lyricsSlideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
 .lyricsTopBar{flex:0 0 auto;display:grid;grid-template-columns:74px minmax(0,1fr) 58px;gap:8px;align-items:center;margin-bottom:10px}
 .lyricsEditButton,.lyricsBackButton{height:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px}
@@ -3967,7 +3977,7 @@ body.boot-loading {
   position: fixed;
   inset: 0;
   z-index: 2500;
-  background: #05070a;
+  background: #0b1118;
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -5388,7 +5398,7 @@ body.boot-loading {
 .lyricsScreen{overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;}
 .lyricsScreen .lyricsBody{flex:0 0 auto!important;min-height:calc(var(--app-vh,100dvh) - 94px)!important;overflow:visible!important;}
 .lyricsScreen .lyricsTextView{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 140px)!important;overflow:visible!important;padding-bottom:34px!important;}
-.lyricsScreenEditing .lyricsTopBar{position:sticky!important;top:0!important;z-index:3210!important;grid-template-columns:90px minmax(0,1fr) 64px!important;background:linear-gradient(180deg,#05070a 0%,rgba(5,7,10,.96) 100%)!important;padding-bottom:8px!important;margin-bottom:8px!important;}
+.lyricsScreenEditing .lyricsTopBar{position:sticky!important;top:0!important;z-index:3210!important;grid-template-columns:90px minmax(0,1fr) 64px!important;background:linear-gradient(180deg,#0b1118 0%,rgba(5,7,10,.96) 100%)!important;padding-bottom:8px!important;margin-bottom:8px!important;}
 .lyricsScreenEditing .lyricsBody{min-height:calc(var(--app-vh,100dvh) - 122px)!important;}
 .lyricsScreenEditing .lyricsEditorInput{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 168px)!important;overflow:hidden!important;padding:14px 12px 42px!important;-webkit-overflow-scrolling:auto!important;}
 .lyricsOkTopButton{border-color:#22c55e!important;background:linear-gradient(180deg,#16a34a 0%,#15803d 100%)!important;color:#fff!important;font-size:16px!important;min-width:62px!important;}
@@ -5457,7 +5467,7 @@ body.boot-loading {
   top:0!important;
   z-index:3210!important;
   grid-template-columns:90px minmax(0,1fr) 64px!important;
-  background:linear-gradient(180deg,#05070a 0%,rgba(5,7,10,.96) 100%)!important;
+  background:linear-gradient(180deg,#0b1118 0%,rgba(5,7,10,.96) 100%)!important;
   padding-bottom:8px!important;
   margin-bottom:8px!important;
 }
@@ -5673,3 +5683,16 @@ body.boot-loading {
   height:0!important;
   min-height:0!important;
 }
+
+/* v1.8.2 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
+.app:not([data-theme="light"]) { background:#0b1118 !important; }
+.app:not([data-theme="light"]) .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
+.app:not([data-theme="light"]) .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }
+.app:not([data-theme="light"]) .selectedBlue:not(.blockItem) { background:#2563eb !important; box-shadow:inset 0 0 0 1px rgba(147,197,253,.34) !important; }
+.app:not([data-theme="light"]) .selectedBlueText,
+.app:not([data-theme="light"]) .selectedBlueTimeText { color:#ffffff !important; font-weight:bold !important; }
+.app:not([data-theme="light"]) .selectedPink.blockItem { background:#ec4899 !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.30) !important; }
+.app:not([data-theme="light"]) .selectedPink.blockItem .blockText,
+.app:not([data-theme="light"]) .selectedPink.blockItem .blockTimeText,
+.app:not([data-theme="light"]) .selectedPinkText,
+.app:not([data-theme="light"]) .selectedPinkTimeText { color:#ffffff !important; font-weight:bold !important; }

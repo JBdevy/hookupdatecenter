@@ -67,6 +67,17 @@ function getProjectPath(project) {
   return String(project.path ?? project.projectPath ?? '').trim()
 }
 
+function isFakeProjectName(name) {
+  const value = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  return !value
+    || value === 'projeto 1'
+    || value === 'project 1'
+    || value === 'projeto vs hook'
+    || value === 'vs hook'
+    || value === 'demo'
+    || value === 'projeto demo'
+}
+
 function normalizeProjectsFromState(state) {
   const candidateLists = [
     state?.projects,
@@ -110,6 +121,7 @@ function normalizeProjectsFromState(state) {
     return { id, name, projectName: name, projectPath, active }
   }).filter((project) => {
     if (!project.name) return false
+    if (isFakeProjectName(project.name)) return false
     const key = `${project.id}|${project.projectPath}|${project.name}`
     if (seen.has(key)) return false
     seen.add(key)
@@ -119,12 +131,17 @@ function normalizeProjectsFromState(state) {
 
 function stateLooksConnected(state) {
   if (!state) return false
-  if (state.connected === true) return true
   if (Array.isArray(state.projects) && state.projects.length) return true
   if (Array.isArray(state.projectTabs) && state.projectTabs.length) return true
-  if (state.projectName || state.currentProjectName || state.projectPath) return true
+
+  const projectName = String(state.projectName || state.currentProjectName || '').trim()
+  const projectPath = String(state.projectPath || '').trim()
+  if (projectPath) return true
+  if (projectName && !isFakeProjectName(projectName)) return true
+
   return false
 }
+
 
 function buildProjectPayload(state) {
   const fresh = isStateFresh(state)
@@ -133,7 +150,7 @@ function buildProjectPayload(state) {
   // Não some com os projetos imediatamente quando o heartbeat atrasa.
   // O app precisa conseguir reencontrar o projeto depois de ficar aberto por muito tempo.
   const projects = looksConnected ? normalizeProjectsFromState(state) : []
-  const connected = looksConnected && (fresh || projects.length > 0)
+  const connected = looksConnected && projects.length > 0 && (fresh || projects.length > 0)
 
   const activeProject = projects.find((project) => project.active) || projects[0] || null
 
@@ -146,6 +163,52 @@ function buildProjectPayload(state) {
     projectPath: activeProject ? activeProject.projectPath : '',
     stale: !fresh,
     staleAfterMs: PROJECT_STALE_MS,
+  }
+}
+
+
+function stripProjectPathsForPublicApp(value) {
+  if (Array.isArray(value)) return value.map((item) => stripProjectPathsForPublicApp(item))
+  if (!value || typeof value !== 'object') return value
+
+  const out = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (/^(path|projectPath|filePath|fullPath|absolutePath|folder|directory)$/i.test(key)) continue
+    out[key] = stripProjectPathsForPublicApp(entry)
+  }
+  return out
+}
+
+function buildPublicProjectPayload(state) {
+  const payload = buildProjectPayload(state)
+  const projects = Array.isArray(payload.projects)
+    ? payload.projects.map((project) => stripProjectPathsForPublicApp(project))
+    : []
+  const activeProject = payload.activeProject ? stripProjectPathsForPublicApp(payload.activeProject) : null
+  return {
+    ...payload,
+    projects,
+    activeProject,
+    projectPath: '',
+  }
+}
+
+function buildPublicStatePayload(state) {
+  const publicState = stripProjectPathsForPublicApp(state || {}) || {}
+  delete publicState.projectPath
+  delete publicState.path
+  const projectPayload = buildPublicProjectPayload(state || {})
+  return {
+    ...publicState,
+    connected: projectPayload.connected,
+    stale: projectPayload.stale,
+    projects: projectPayload.projects,
+    openProjects: projectPayload.projects,
+    projectTabs: projectPayload.projects,
+    activeProject: projectPayload.activeProject,
+    projectName: projectPayload.projectName,
+    currentProjectName: projectPayload.projectName || publicState.currentProjectName || '',
+    projectPath: '',
   }
 }
 
@@ -436,7 +499,7 @@ try {
     res.end(content)
   } catch (error) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-    res.end(`Arquivo não encontrado: ${path.basename(filePath)}`)
+    res.end('Ocorreu um erro. Contate o suporte.')
   }
 }
 
@@ -870,16 +933,7 @@ function createBridgeServer(options) {
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
       const rawState = readJson(stateFile, fallbackState)
       const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
-      const projectPayload = buildProjectPayload(state)
-      sendJson(res, 200, {
-        ...state,
-        connected: projectPayload.connected,
-        stale: projectPayload.stale,
-        projects: projectPayload.projects,
-        activeProject: projectPayload.activeProject,
-        projectName: projectPayload.projectName,
-        projectPath: projectPayload.projectPath,
-      })
+      sendJson(res, 200, buildPublicStatePayload(state))
       return
     }
 
@@ -888,7 +942,7 @@ function createBridgeServer(options) {
       sendJson(res, 200, {
         ok: true,
         appName,
-        ...buildProjectPayload(state),
+        ...buildPublicProjectPayload(state),
         updatedAt: state.updatedAt || null,
       })
       return

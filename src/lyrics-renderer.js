@@ -21,6 +21,8 @@ let lastText = '';
 let timerRunning = false;
 let timerStartedAtMs = 0;
 let timerAccumulatedSec = 0;
+let timerMode = 'progressive';
+let timerTargetSec = 0;
 let closingLyricsWindow = false;
 let lastTechnicalNoticeKey = '';
 let technicalNoticeFlashTimer = null;
@@ -95,10 +97,18 @@ function formatTimer(sec) {
   return `${String(h).padStart(2, '0')} : ${String(m).padStart(2, '0')} : ${String(s).padStart(2, '0')}`;
 }
 
-function getLocalTimerSeconds() {
+function getElapsedTimerSeconds() {
   if (!timerRunning) return timerAccumulatedSec;
   const live = (Date.now() - timerStartedAtMs) / 1000;
   return timerAccumulatedSec + Math.max(0, live);
+}
+
+function getLocalTimerSeconds() {
+  const elapsed = getElapsedTimerSeconds();
+  if (timerMode === 'countdown') {
+    return Math.max(0, timerTargetSec - elapsed);
+  }
+  return elapsed;
 }
 
 function updateTimerVisual() {
@@ -143,6 +153,15 @@ async function pollState() {
     const nextAccumulated = Number(state.timerAccumulatedSec || 0);
     const nextStartedRaw = Number(state.timerStartedAt || 0);
     const nextStartedMs = nextStartedRaw > 1000000000000 ? nextStartedRaw : nextStartedRaw * 1000;
+    const nextModeRaw = String(state.timerMode || state.timerType || 'progressive').toLowerCase();
+    const nextMode = (nextModeRaw === 'countdown' || nextModeRaw === 'regressive' || nextModeRaw === 'regressivo') ? 'countdown' : 'progressive';
+    const nextTarget = Math.max(0, Math.min(359999, Number(state.timerTargetSec || state.timerCountdownStartSec || 0)));
+
+    if (nextMode !== timerMode || Math.abs(nextTarget - timerTargetSec) > 0.5) {
+      timerMode = nextMode;
+      timerTargetSec = nextTarget;
+      updateTimerVisual();
+    }
 
     if (nextRunning !== timerRunning || Math.abs(nextAccumulated - timerAccumulatedSec) > 1.5) {
       timerRunning = nextRunning;

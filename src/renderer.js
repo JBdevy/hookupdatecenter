@@ -38,7 +38,7 @@ function friendlyError(error, fallback) {
     return 'Não foi possível verificar agora.\nVerifique sua internet e tente novamente.';
   }
 
-  return message || fallback;
+  return fallback || 'Ocorreu um erro. Contate o suporte.';
 }
 
 function showModal({ title = 'Aviso', message = '', type = 'info' }) {
@@ -108,6 +108,7 @@ function setView(viewName) {
   $$('.view').forEach((view) => view.classList.remove('active'));
   $(`#${viewName}View`).classList.add('active');
   document.body.classList.toggle('bridge-mode', viewName === 'bridge');
+  document.body.classList.toggle('previous-mode', viewName === 'previous');
   updateDownloadCompactMode();
 }
 
@@ -240,6 +241,140 @@ function renderBridgeState(bridge) {
   if ($('#bridgeScriptsDir')) $('#bridgeScriptsDir').textContent = bridge.scriptsDir || '--';
 }
 
+
+function getLicenseDevices() {
+  const license = state?.license || {}
+  return Array.isArray(license.devices) ? license.devices : []
+}
+
+function renderDevices() {
+  if (!state) return
+  const license = state.license || {}
+  const devices = getLicenseDevices()
+  const email = license.email || state.deviceLoginEmail || ''
+  const deviceName = state.deviceName || ''
+  const devicesEmailInput = $('#devicesEmailInput')
+  const devicesNameInput = $('#devicesNameInput')
+  const deviceNameInlineInput = $('#deviceNameInlineInput')
+  if (devicesEmailInput && !devicesEmailInput.value) devicesEmailInput.value = email
+  if (devicesNameInput) devicesNameInput.value = deviceName
+  if (deviceNameInlineInput) deviceNameInlineInput.value = deviceName
+  if ($('#devicesUsedText')) $('#devicesUsedText').textContent = String(license.devicesUsed ?? devices.length ?? '--')
+  if ($('#devicesLimitText')) $('#devicesLimitText').textContent = String(license.maxDevices ?? '--')
+  const current = devices.find((d) => d.current)
+  if ($('#currentDeviceStatusText')) $('#currentDeviceStatusText').textContent = current ? 'Ativado' : 'Não ativado'
+  const list = $('#devicesList')
+  if (!list) return
+  if (!devices.length) {
+    list.innerHTML = '<p class="muted">Nenhum dispositivo carregado.</p>'
+    return
+  }
+  list.innerHTML = devices.map((device) => {
+    const name = escapeHtml(device.name || device.computerName || 'Dispositivo')
+    const platform = escapeHtml(device.platform || '')
+    const lastSeen = device.lastSeenAt ? formatDate(device.lastSeenAt) : '--'
+    const machineId = escapeHtml(device.machineId || device.id || '')
+    return `<div class="device-row ${device.current ? 'current-device' : ''}"><div><strong>${name}</strong><span>${platform || 'Sistema'} • ${lastSeen}${device.current ? ' • este computador' : ''}</span></div><button class="secondary-button device-remove-button" data-remove-device="${machineId}" ${device.current ? 'disabled title="Este computador"' : ''}>Remover</button></div>`
+  }).join('')
+  list.querySelectorAll('[data-remove-device]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const machineId = button.getAttribute('data-remove-device')
+      const ok = await confirmModal({ title:'Remover dispositivo', message:'Remover este computador da licença?', type:'info', okText:'Remover', cancelText:'Cancelar' })
+      if (!ok) return
+      try {
+        const result = await window.hookUpdateCenter.removeLicenseDevice({ machineId, email: $('#devicesEmailInput')?.value || email })
+        renderState(result.state || await window.hookUpdateCenter.getState())
+        $('#devicesMessage').textContent = 'Dispositivo removido.'
+      } catch (error) {
+        showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
+      }
+    })
+  })
+}
+
+function promptDeviceNameModal(initialValue = '') {
+  return new Promise((resolve) => {
+    const backdrop = $('#deviceNameModal')
+    const input = $('#deviceNameModalInput')
+    const error = $('#deviceNameModalError')
+    if (!backdrop || !input) return resolve('')
+    input.value = initialValue || state?.deviceName || ''
+    error.textContent = ''
+    backdrop.classList.remove('hidden')
+    setTimeout(() => input.focus(), 30)
+    const cleanup = (value) => {
+      backdrop.classList.add('hidden')
+      $('#deviceNameModalSave')?.removeEventListener('click', onSave)
+      $('#deviceNameModalCancel')?.removeEventListener('click', onCancel)
+      input.removeEventListener('keydown', onKey)
+      resolve(value)
+    }
+    const onSave = async () => {
+      const value = input.value.trim()
+      if (!value) { error.textContent = 'Digite um nome para este dispositivo.'; return }
+      try {
+        const result = await window.hookUpdateCenter.setDeviceName({ deviceName: value })
+        renderState(result.state || await window.hookUpdateCenter.getState())
+        cleanup(value)
+      } catch (error) {
+        error.textContent = friendlyError(error, 'Ocorreu um erro. Contate o suporte.')
+      }
+    }
+    const onCancel = () => cleanup('')
+    const onKey = (event) => { if (event.key === 'Enter') onSave(); if (event.key === 'Escape') onCancel() }
+    $('#deviceNameModalSave')?.addEventListener('click', onSave)
+    $('#deviceNameModalCancel')?.addEventListener('click', onCancel)
+    input.addEventListener('keydown', onKey)
+  })
+}
+
+async function ensureDeviceName() {
+  const current = String(state?.deviceName || '').trim()
+  if (current) return current
+  return await promptDeviceNameModal(current)
+}
+
+function promptDeviceLoginModal() {
+  return new Promise((resolve) => {
+    const backdrop = $('#deviceLoginModal')
+    const input = $('#deviceLoginModalEmail')
+    const error = $('#deviceLoginModalError')
+    if (!backdrop || !input) return resolve(false)
+    input.value = state?.deviceLoginEmail || state?.license?.email || ''
+    error.textContent = ''
+    backdrop.classList.remove('hidden')
+    setTimeout(() => input.focus(), 30)
+    const cleanup = (ok) => {
+      backdrop.classList.add('hidden')
+      $('#deviceLoginModalEnter')?.removeEventListener('click', onEnter)
+      $('#deviceLoginModalLater')?.removeEventListener('click', onLater)
+      input.removeEventListener('keydown', onKey)
+      resolve(ok)
+    }
+    const onEnter = async () => {
+      const email = input.value.trim()
+      if (!email || !email.includes('@')) { error.textContent = 'Digite o e-mail usado na compra.'; return }
+      try {
+        const result = await window.hookUpdateCenter.loginLicenseDevices({ email })
+        renderState(result.state || await window.hookUpdateCenter.getState())
+        const msg = result?.result?.message || 'Login realizado.'
+        if (result?.result?.reason === 'device_limit') {
+          setView('devices')
+          showModal({ title:'Remova 1 dispositivo', message:msg, type:'error' })
+        }
+        cleanup(true)
+      } catch (error) {
+        error.textContent = friendlyError(error, 'Ocorreu um erro. Contate o suporte.')
+      }
+    }
+    const onLater = () => cleanup(false)
+    const onKey = (event) => { if (event.key === 'Enter') onEnter(); if (event.key === 'Escape') onLater() }
+    $('#deviceLoginModalEnter')?.addEventListener('click', onEnter)
+    $('#deviceLoginModalLater')?.addEventListener('click', onLater)
+    input.addEventListener('keydown', onKey)
+  })
+}
+
 function renderState(nextState) {
   state = nextState;
   const isMac = state.platform === 'darwin';
@@ -253,16 +388,20 @@ function renderState(nextState) {
   const hc = state.hookCenterLatest || {};
   const hcText = $('#hookCenterUpdateText');
   const hcButton = $('#hookCenterUpdateButton');
+  const hcActions = $('#hookCenterUpdateActions');
   if (hcText && hcButton) {
     if (state.hookCenterUpdateAvailable) {
       hcText.textContent = `Nova versão disponível: ${hc.version || ''}. ${hc.notes || ''}`.trim();
       hcButton.classList.remove('hidden');
+      hcActions?.classList.remove('hidden');
     } else if (hc.version) {
       hcText.textContent = `Hook Center atualizado. Última versão publicada: ${hc.version}.`;
       hcButton.classList.add('hidden');
+      hcActions?.classList.add('hidden');
     } else {
       hcText.textContent = 'Nenhuma atualização do Hook Center publicada.';
       hcButton.classList.add('hidden');
+      hcActions?.classList.add('hidden');
     }
   }
 
@@ -302,6 +441,8 @@ function renderState(nextState) {
   } else if (!$('#licenseMessage').textContent) {
     $('#licenseMessage').textContent = 'Aguardando ativação.';
   }
+
+  renderDevices();
 }
 
 
@@ -314,6 +455,9 @@ async function refreshBridgeState() {
 
 async function refreshState() {
   renderState(await window.hookUpdateCenter.getState());
+  if (!(state?.deviceLoginEmail || state?.license?.email)) {
+    setTimeout(() => promptDeviceLoginModal(), 250);
+  }
 }
 
 
@@ -546,6 +690,7 @@ async function init() {
 
   $('#downloadButton').addEventListener('click', async () => {
     try {
+      if (!(await ensureDeviceName())) return;
       $('#downloadCard').classList.remove('hidden');
       updateDownloadCompactMode();
       $('#downloadButton').disabled = true;
@@ -590,6 +735,7 @@ async function init() {
   });
 
   $('#hookCenterUpdateButton')?.addEventListener('click', async () => {
+    if (!(await ensureDeviceName())) return;
     const confirmed = await confirmModal({
       title: 'Atualizar Hook Center',
       message: state?.platform === 'darwin'
@@ -617,6 +763,7 @@ async function init() {
 
   $('#activateButton').addEventListener('click', async () => {
     try {
+      if (!(await ensureDeviceName())) return;
       $('#activateButton').disabled = true;
       $('#activateButton').textContent = 'Ativando...';
       $('#licenseMessage').textContent = 'Verificando dados...';
@@ -670,6 +817,37 @@ async function init() {
       $('#licenseCheckButton').disabled = false;
       $('#licenseCheckButton').textContent = 'Verificar licença';
     }
+  });
+
+
+  $('#saveDeviceNameButton')?.addEventListener('click', async () => {
+    try {
+      const value = $('#devicesNameInput')?.value || $('#deviceNameInlineInput')?.value || ''
+      const result = await window.hookUpdateCenter.setDeviceName({ deviceName: value })
+      renderState(result.state || await window.hookUpdateCenter.getState())
+      $('#devicesMessage').textContent = 'Nome do dispositivo salvo.'
+    } catch (error) {
+      showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
+    }
+  });
+
+  $('#devicesLoginButton')?.addEventListener('click', async () => {
+    try {
+      await ensureDeviceName()
+      const result = await window.hookUpdateCenter.loginLicenseDevices({ email: $('#devicesEmailInput')?.value || $('#emailInput')?.value || '' })
+      renderState(result.state || await window.hookUpdateCenter.getState())
+      const msg = result?.result?.message || 'Login realizado.'
+      $('#devicesMessage').textContent = msg
+      if (result?.result?.reason === 'device_limit') showModal({ title:'Remova 1 dispositivo', message:msg, type:'error' })
+    } catch (error) {
+      showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
+    }
+  });
+
+  $('#deviceNameInlineInput')?.addEventListener('change', async () => {
+    const value = $('#deviceNameInlineInput')?.value || ''
+    if (!value.trim()) return
+    try { renderState((await window.hookUpdateCenter.setDeviceName({ deviceName: value })).state || await window.hookUpdateCenter.getState()) } catch (_) {}
   });
 
   window.hookUpdateCenter.onUpdateStatus(renderState);

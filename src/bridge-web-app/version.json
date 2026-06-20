@@ -1,9 +1,10 @@
 {
-  "version": "1.8.1-front-stop-rootfix",
-  "updatedAt": "2026-06-19T17:20:00Z",
-  "build": "1.8.1-front-stop-rootfix",
-  "notes": "Bloqueia click sintético que mandava play_stop após Play; bloco seleciona imediatamente a música de baixo.",
-  "cacheBust": "1781842200",
-  "hookCenterVersion": "1.8.1",
-  "bundledInHookCenter": true
+  "version": "1.8.2-auto-front-dispositivos",
+  "title": "QR App Hook Center - Play Repertórios corrigido",
+  "notes": "Play do Diretor envia alvo absoluto da linha; corrige índice da aba Repertórios no primeiro acesso; mantém seleção azul/rosa e sem projeto fake.",
+  "generatedAt": "2026-06-20T07:20:00Z",
+  "updateId": "1.8.2-play-repertorios-index-fix",
+  "build": "play-repertorios-index-fix",
+  "label": "1.8.2 play repertorios indice corrigido",
+  "updatedAt": "2026-06-20T07:20:00Z"
 }

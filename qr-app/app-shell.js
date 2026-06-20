@@ -19,6 +19,26 @@ function vshookEscape(value) {
     .replace(/'/g, '&#39;')
 }
 
+
+function isVSHookFakeProjectName(value) {
+  const name = String(value || '').trim().toLowerCase()
+  if (!name) return true
+  const compact = name.replace(/\s+/g, ' ')
+  return compact === 'projeto 1'
+    || compact === 'project 1'
+    || compact === 'projeto vs hook'
+    || compact === 'vs hook'
+    || compact === 'demo'
+    || compact === 'projeto demo'
+}
+
+function isVSHookRealProject(project) {
+  if (!project || typeof project !== 'object') return false
+  const name = project.projectName || project.name || project.title || project.label || ''
+  if (isVSHookFakeProjectName(name)) return false
+  return true
+}
+
 function setShell(html) {
   appRoot.innerHTML = `<div class="vshook-shell"><div class="vshook-shell-card">${html}</div></div>`
 }
@@ -66,13 +86,13 @@ function renderNoProjects() {
 }
 
 function getDefaultMusicianProject(projects) {
-  const list = Array.isArray(projects) ? projects.filter(Boolean) : []
+  const list = Array.isArray(projects) ? projects.filter(isVSHookRealProject) : []
   if (!list.length) return null
   return list.find((project) => project.active) || list[0]
 }
 
 function renderModeFirst(projects) {
-  vshookDiscoveredProjects = Array.isArray(projects) ? projects.slice() : []
+  vshookDiscoveredProjects = Array.isArray(projects) ? projects.filter(isVSHookRealProject) : []
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
@@ -124,7 +144,7 @@ async function refreshProjectSelector() {
 }
 
 function renderProjects(projects, options = {}) {
-  const list = Array.isArray(projects) ? projects : []
+  const list = Array.isArray(projects) ? projects.filter(isVSHookRealProject) : []
   vshookDiscoveredProjects = list.slice()
   const loading = options && options.loading
   const status = options && options.status
@@ -200,7 +220,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=front-imediato-diretor-musicos-aba-musicas-1781837042'
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=selecao-cores-borda-tema-1781928600'
   document.body.appendChild(script)
 }
 
@@ -398,6 +418,7 @@ function normalizeProjectEntry(rawProject, fallbackIndex, baseInfo, ip) {
   ).trim()
 
   if (!projectName) return null
+  if (isVSHookFakeProjectName(projectName)) return null
 
   return {
     projectName,
@@ -603,6 +624,7 @@ function getVSHookModeSelectionFallbackProjects() {
   const seen = new Set()
   const addProject = (project) => {
     if (!project || typeof project !== 'object') return
+    if (!isVSHookRealProject(project)) return
     const directorUrl = String(project.directorUrl || '').replace(/\/+$/, '')
     const musiciansUrl = String(project.musiciansUrl || '').replace(/\/+$/, '')
     if (!directorUrl && !musiciansUrl) return
@@ -626,19 +648,8 @@ function getVSHookModeSelectionFallbackProjects() {
     if (Array.isArray(cached)) cached.forEach(addProject)
   } catch (error) {}
 
-  try {
-    const directorUrl = localStorage.getItem('vshook_director_url') || ''
-    const musiciansUrl = localStorage.getItem('vshook_musicians_url') || ''
-    if (directorUrl || musiciansUrl) {
-      addProject({
-        projectName: 'Projeto VS Hook',
-        name: 'Projeto VS Hook',
-        directorUrl,
-        musiciansUrl,
-        projectTabIndex: Number(localStorage.getItem('vshook_selected_project_tab_index') || 0) || 0,
-      })
-    }
-  } catch (error) {}
+  // Não cria mais projeto fake usando apenas URLs antigas do localStorage.
+  // Se não veio projeto real do Hook Center/Lua, a lista fica vazia.
 
   return projects
 }

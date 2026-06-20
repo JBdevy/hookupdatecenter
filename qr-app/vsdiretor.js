@@ -146,6 +146,10 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;')
 }
 
+function escapeHtmlPreserveSpaces(value) {
+  return escapeHtml(value).replace(/ {2,}/g, (match) => '&nbsp;'.repeat(match.length))
+}
+
 function safeCssEscape(value) {
   const raw = String(value ?? '')
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(raw)
@@ -492,11 +496,21 @@ function getRowProgressRatio(item, isPlaying, isBlock) {
 }
 
 function getTimerElapsedSec() {
+  const max = 99 * 3600 + 59 * 60 + 59
   const base = Math.max(0, Number(state.timerAccumulatedSec) || 0)
-  if (!state.timerRunning) return Math.min(base, 99 * 3600 + 59 * 60 + 59)
-  const startedAt = Number(state.timerStartedAt) || 0
-  const live = startedAt > 0 ? Math.floor((Date.now() - startedAt) / 1000) : 0
-  return Math.min(base + Math.max(0, live), 99 * 3600 + 59 * 60 + 59)
+  let elapsed = base
+  if (state.timerRunning) {
+    const startedAt = Number(state.timerStartedAt) || 0
+    const live = startedAt > 0 ? Math.floor((Date.now() - startedAt) / 1000) : 0
+    elapsed = base + Math.max(0, live)
+  }
+  elapsed = Math.min(elapsed, max)
+  const mode = String(state.timerMode || state.timerType || 'progressive').toLowerCase()
+  if (mode === 'countdown' || mode === 'regressive' || mode === 'regressivo') {
+    const target = Math.max(0, Math.min(max, Number(state.timerTargetSec || state.timerCountdownStartSec || 0)))
+    return Math.max(0, target - elapsed)
+  }
+  return elapsed
 }
 
 function formatChronoTime(totalSeconds) {
@@ -574,16 +588,25 @@ function getBlockFallbackSuffix(item) {
 
 function extractBlockSuffix(rawLabel, fallbackSuffix = '01') {
   let text = upperText(rawLabel).trim()
-  text = text.replace(/^[=\-\s]+/, '').replace(/[=\-\s]+$/, '')
+  text = text.replace(/^[=:\-\s]+/, '').replace(/[=:\-\s]+$/, '')
   const match = text.match(/^BLOCO(?:\s+(.*?))?$/i) || text.match(/BLOCO\s+(.+)/i)
   let suffix = (match && match[1] ? match[1] : '').trim()
   if (!suffix) suffix = fallbackSuffix
   return upperText(suffix)
 }
 
+function isFormattedAppBlockName(rawLabel) {
+  const text = String(rawLabel ?? '').trim()
+  if (!text) return false
+  return /^[=:]+\s*BLOCO\s+.+\s*[=:]+$/i.test(text) || /^BLOCO\s+.+/i.test(text)
+}
+
 function formatAppBlockLabel(item) {
-  const suffix = extractBlockSuffix(item?.name || item?.label || '', getBlockFallbackSuffix(item))
-  return `==== BLOCO ${suffix} ====`
+  const raw = String(item?.name || item?.label || '').trim()
+  if (raw && !isFormattedAppBlockName(raw)) return upperText(raw)
+  const suffix = extractBlockSuffix(raw, getBlockFallbackSuffix(item))
+  const pad = ':'.repeat(40)
+  return `${pad} BLOCO ${suffix} ${pad}`
 }
 
 function isHashChildItem(item) {
@@ -1310,7 +1333,7 @@ function renderTunerModal() {
         const isBlock = detectBlockItem(item)
         const id = escapeHtml(String(item?.id || ''))
         const name = isBlock
-          ? escapeHtml(formatAppBlockLabel(item))
+          ? escapeHtmlPreserveSpaces(formatAppBlockLabel(item))
           : escapeHtml(upperText(item?.name || 'ITEM'))
 
         if (isBlock) {
@@ -1411,6 +1434,8 @@ const state = {
   timerRunning: false,
   timerStartedAt: 0,
   timerAccumulatedSec: 0,
+  timerMode: 'progressive',
+  timerTargetSec: 0,
   timerModalMode: 'start',
   regionsScrollRatio: 0,
   playlistScrollRatio: 0,
@@ -1457,6 +1482,8 @@ let pendingLoopToggleAt = 0
 let pendingLoopToggleFromState = null
 let pendingNoticeToggleAt = 0
 let pendingNoticeToggleValue = null
+let pendingAutoplayVisualValue = null
+let pendingAutoplayVisualUntil = 0
 let pendingPlaybackToggleAt = 0
 let pendingPlaybackDesiredPlaying = null
 let pendingPlaybackDesiredSourceId = null
@@ -1612,7 +1639,7 @@ function isPendingDirectorPlayStart() {
 function getPlaybackCommandPayloadForTarget(targetId, sourceTab = null, desiredPlaying = true) {
   const tab = sourceTab || state.activeTab || 'playlist'
   const key = targetId != null && String(targetId) !== '' ? String(targetId) : null
-  return {
+  const payload = {
     activeTab: tab,
     selectedRegionId: tab === 'regions' ? key : null,
     selectedPlaylistSongId: tab === 'playlist' ? key : null,
@@ -1621,6 +1648,36 @@ function getPlaybackCommandPayloadForTarget(targetId, sourceTab = null, desiredP
     forcePlay: !!desiredPlaying,
     forceStop: !desiredPlaying,
   }
+
+  // Envia o alvo absoluto da linha para o Lua. Na aba Repertórios o ID visual
+  // pode bater com a música, mas o índice real da playlist tem blocos no meio.
+  // Mandar index/start/end/uid elimina ambiguidade no primeiro acesso do app.
+  let item = null
+  if (key) {
+    if (tab === 'playlist' && typeof findPlaylistSongByIdEverywhere === 'function') {
+      item = findPlaylistSongByIdEverywhere(key)
+    }
+    if (!item && typeof findAnyPlaybackItemById === 'function') {
+      item = findAnyPlaybackItemById(key)
+    }
+  }
+
+  if (item && typeof item === 'object') {
+    const itemIndex = Number(item.index)
+    const itemStart = Number(item.startPos ?? item.start_pos)
+    const itemEnd = Number(item.endPos ?? item.end_pos)
+    if (Number.isFinite(itemIndex)) payload.selectedPlaylistIndex = itemIndex
+    if (item.uid != null) payload.selectedPlaylistUid = String(item.uid)
+    if (Number.isFinite(itemStart)) payload.selectedStartPos = itemStart
+    if (Number.isFinite(itemEnd)) payload.selectedEndPos = itemEnd
+    if (item.source_number != null) payload.selectedSourceNumber = String(item.source_number)
+    if (item.sourceNumber != null) payload.selectedSourceNumber = String(item.sourceNumber)
+    if (item.id != null && tab === 'playlist') payload.selectedPlaylistSongId = String(item.id)
+    if (item.id != null && tab === 'regions') payload.selectedRegionId = String(item.id)
+    if (state.activePlaylistId != null) payload.activePlaylistId = String(state.activePlaylistId)
+  }
+
+  return payload
 }
 
 function showLocalPlaybackPopupForId(id) {
@@ -2825,6 +2882,24 @@ function bindReliableTapAction(el, actionKey, handler) {
   })
 }
 
+function bindPlayTapAction(el, handler) {
+  if (!el || typeof handler !== 'function') return
+
+  // Play/Stop: UM botão, UM caminho, UM comando.
+  // Não usa pointerup, touchend nem bindReliableTapAction aqui.
+  // Usar onclick sobrescreve qualquer bind anterior no mesmo elemento quando bindEvents
+  // roda novamente sem recriar o DOM, evitando dois listeners acumulados.
+  el.onpointerup = null
+  el.ontouchend = null
+  el.onclick = (event) => {
+    if (event?.button != null && event.button !== 0) return
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+    markDirectorLocalInput(900)
+    handler(event)
+  }
+}
+
 function bindModalCloseAction(el, actionKey, handler) {
   if (!el || typeof handler !== 'function') return
 
@@ -3267,10 +3342,26 @@ function syncFromBridge(data) {
   const nextMarkerId = state.selectedMarkerId != null ? String(state.selectedMarkerId) : null
   lastProximityPopupMarkerId = null
 
-  state.autoplayEnabled = typeof data.autoplayEnabled === 'boolean' ? data.autoplayEnabled : state.autoplayEnabled
+  if (typeof data.autoplayEnabled === 'boolean') {
+    if (pendingAutoplayVisualValue !== null && Date.now() < Number(pendingAutoplayVisualUntil || 0)) {
+      if (data.autoplayEnabled === pendingAutoplayVisualValue) {
+        state.autoplayEnabled = data.autoplayEnabled
+        pendingAutoplayVisualValue = null
+        pendingAutoplayVisualUntil = 0
+      } else {
+        state.autoplayEnabled = !!pendingAutoplayVisualValue
+      }
+    } else {
+      pendingAutoplayVisualValue = null
+      pendingAutoplayVisualUntil = 0
+      state.autoplayEnabled = data.autoplayEnabled
+    }
+  }
   state.timerRunning = typeof data.timerRunning === 'boolean' ? data.timerRunning : state.timerRunning
   state.timerStartedAt = Number.isFinite(Number(data.timerStartedAt)) ? Number(data.timerStartedAt) : state.timerStartedAt
   state.timerAccumulatedSec = Number.isFinite(Number(data.timerAccumulatedSec)) ? Number(data.timerAccumulatedSec) : state.timerAccumulatedSec
+  state.timerMode = typeof data.timerMode === 'string' || typeof data.timerType === 'string' ? String(data.timerMode || data.timerType || 'progressive') : state.timerMode
+  state.timerTargetSec = Number.isFinite(Number(data.timerTargetSec ?? data.timerCountdownStartSec)) ? Number(data.timerTargetSec ?? data.timerCountdownStartSec) : state.timerTargetSec
   state.authEnabled = typeof data.authEnabled === 'boolean' ? data.authEnabled : state.authEnabled
   state.authHash = typeof data.authHash === 'string' ? data.authHash : state.authHash
   syncAuthStateFromBridge()
@@ -3439,7 +3530,7 @@ function buildBridgeRenderSignature() {
     playingId: state.playingId,
     playbackUiActive: getPlaybackUiActive(),
     pendingPlaybackDesiredPlaying,
-    autoplayEnabled: state.autoplayEnabled,
+    autoplayEnabled: getAutoplayVisualEnabled(),
     autoBlocoEnabled: state.autoBlocoEnabled,
     noticeEnabled: true,
     rgbMode: state.rgbMode,
@@ -3756,11 +3847,17 @@ function closeGearModal() {
   render()
 }
 
-const RGB_FIXED_HUES = [96, 210, 330]
+const RGB_FIXED_HUES = [0, 96, 210, 270, 45, 330, 186, 24, 0]
 const RGB_MODE_SEQUENCE = [
-  { mode: 'fixed', fixedIndex: 0, label: 'FIXO VERDE' },
-  { mode: 'fixed', fixedIndex: 1, label: 'FIXO AZUL' },
-  { mode: 'fixed', fixedIndex: 2, label: 'FIXO ROSA' },
+  { mode: 'fixed', fixedIndex: 0, label: 'FIXO VERMELHO' },
+  { mode: 'fixed', fixedIndex: 1, label: 'FIXO VERDE' },
+  { mode: 'fixed', fixedIndex: 2, label: 'FIXO AZUL' },
+  { mode: 'fixed', fixedIndex: 3, label: 'FIXO ROXO' },
+  { mode: 'fixed', fixedIndex: 4, label: 'FIXO AMARELO' },
+  { mode: 'fixed', fixedIndex: 5, label: 'FIXO ROSA' },
+  { mode: 'fixed', fixedIndex: 6, label: 'FIXO CIANO' },
+  { mode: 'fixed', fixedIndex: 7, label: 'FIXO LARANJA' },
+  { mode: 'fixed', fixedIndex: 8, label: 'FIXO BRANCO' },
   { mode: 'auto', fixedIndex: 0, label: 'AUTOMÁTICO' },
   { mode: 'off', fixedIndex: 0, label: 'DESLIGADO' },
 ]
@@ -3786,13 +3883,25 @@ function normalizeRgbModeState() {
 function getRgbModeIndex() {
   normalizeRgbModeState()
   const idx = RGB_MODE_SEQUENCE.findIndex((item) => item.mode === state.rgbMode && (item.mode !== 'fixed' || item.fixedIndex === state.rgbFixedIndex))
-  return idx >= 0 ? idx : 3
+  return idx >= 0 ? idx : 9
 }
 
 function getRgbModeLabel() {
   normalizeRgbModeState()
-  const current = RGB_MODE_SEQUENCE[getRgbModeIndex()] || RGB_MODE_SEQUENCE[3]
+  const current = RGB_MODE_SEQUENCE[getRgbModeIndex()] || RGB_MODE_SEQUENCE[9]
   return current.label
+}
+
+function getBorderColorCss() {
+  normalizeRgbModeState()
+  if (state.rgbMode === 'fixed' && Number(state.rgbFixedIndex) === 8) return '#f8fafc'
+  return `hsl(${state.borderHue}, 100%, 55%)`
+}
+
+function getBorderGlowCss() {
+  normalizeRgbModeState()
+  if (state.rgbMode === 'fixed' && Number(state.rgbFixedIndex) === 8) return 'rgba(248,250,252,0.35)'
+  return `hsla(${state.borderHue}, 100%, 55%, 0.35)`
 }
 
 function cycleRgbMode() {
@@ -4742,12 +4851,34 @@ function selectRegion(id) {
   render()
 }
 
+
+function getAutoplayVisualEnabled() {
+  if (pendingAutoplayVisualValue !== null && Date.now() < Number(pendingAutoplayVisualUntil || 0)) {
+    return !!pendingAutoplayVisualValue
+  }
+  pendingAutoplayVisualValue = null
+  pendingAutoplayVisualUntil = 0
+  return !!state.autoplayEnabled
+}
+
+function setAutoplayVisualEnabled(value, ttlMs = 2500) {
+  const enabled = !!value
+  pendingAutoplayVisualValue = enabled
+  pendingAutoplayVisualUntil = Date.now() + Math.max(300, Number(ttlMs) || 2500)
+  state.autoplayEnabled = enabled
+  if (!enabled) {
+    clearVisualQueueForDirector()
+  }
+  return enabled
+}
+
 function clearQueueAndMaybeAutoplay() {
   clearVisualQueueForDirector()
   lockSelectionSync()
   state.selectedPlaylistSongId = null
   postCommand('clear_queue')
-  if (state.autoplayEnabled) {
+  if (getAutoplayVisualEnabled()) {
+    setAutoplayVisualEnabled(false)
     postCommand('autoplay_toggle')
   }
   render()
@@ -4919,7 +5050,7 @@ function handleConfirmAddExisting() {
 }
 
 function getNextAutoQueuedSongId() {
-  if (!state.autoplayEnabled || !state.playingId) return null
+  if (!getAutoplayVisualEnabled() || !state.playingId) return null
   const playingKey = String(state.playingId || '')
   const candidates = []
   const playlist = activePlaylist()
@@ -5126,16 +5257,17 @@ function forceStoppedSelectionDom(songId, preferredTab = null) {
   rows.forEach((row) => {
     row.classList.remove('playing')
     row.classList.remove('selectedPink')
+    row.classList.remove('selectedBlue')
     const rowKey = row.getAttribute(attrName)
     if (rowKey != null && String(rowKey) === key) target = row
   })
   if (target) {
     target.classList.remove('queuedYellow')
-    target.classList.add('selectedPink')
+    target.classList.add(target.classList.contains('blockItem') ? 'selectedPink' : 'selectedBlue')
     target.querySelectorAll('.playingText,.playingTimeText,.queuedYellowText,.queuedYellowTimeText').forEach((el) => {
       el.classList.remove('playingText', 'playingTimeText', 'queuedYellowText', 'queuedYellowTimeText')
-      if (el.classList.contains('rowLabelText')) el.classList.add('selectedPinkText')
-      if (el.closest('.rightCol')) el.classList.add('selectedPinkTimeText')
+      if (el.classList.contains('rowLabelText')) el.classList.add(target.classList.contains('blockItem') ? 'selectedPinkText' : 'selectedBlueText')
+      if (el.closest('.rightCol')) el.classList.add(target.classList.contains('blockItem') ? 'selectedPinkTimeText' : 'selectedBlueTimeText')
     })
   }
   const playBtn = document.querySelector('[data-action="play"]')
@@ -5162,22 +5294,9 @@ function rememberCurrentPlaybackSelection(songId, preferredTab = null) {
 
 function handlePlayToggle(event = null) {
   const playCommandNow = Date.now()
-  const eventType = String(event?.type || '')
 
-  // No mobile/webview, depois do pointerup o navegador pode soltar um click sintético.
-  // Como o Play re-renderiza o botão para Stop, esse click atrasado virava um play_stop real.
-  // Bloqueia somente esse click sintético; um segundo toque real ainda entra por pointerup.
-  if (eventType === 'click' && playCommandNow < Number(playPointerUpSyntheticClickSuppressUntil || 0)) {
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-    return
-  }
-
-  if (eventType === 'pointerup') {
-    lastPlayPointerUpAt = playCommandNow
-    playPointerUpSyntheticClickSuppressUntil = playCommandNow + 950
-  }
-
+  // Guarda apenas contra duplo clique real muito rápido.
+  // O Play/Stop não recebe mais pointerup/touchend; somente o onclick do botão chama esta função.
   if (lastPlayButtonCommandAt && (playCommandNow - lastPlayButtonCommandAt) < 180) return
   lastPlayButtonCommandAt = playCommandNow
   // Play usa somente o modo da aba atual. Seleção velha de outra aba não entra.
@@ -5261,7 +5380,10 @@ function handlePlayToggle(event = null) {
 }
 
 function handleAutoplayToggle() {
-  postCommand('autoplay_toggle')
+  const nextEnabled = !getAutoplayVisualEnabled()
+  setAutoplayVisualEnabled(nextEnabled)
+  postCommand('autoplay_toggle', { desiredAutoplay: nextEnabled, desiredState: nextEnabled ? 'on' : 'off' })
+  render()
 }
 
 function handleAutoBlocoToggle() {
@@ -5414,9 +5536,9 @@ function renderRows(items, type) {
     const itemId = String(item.id)
     const isPlaying = type !== 'marker' && String(state.playingId || '') === itemId
     const isQueued = (type === 'song' || type === 'region') && String(visualQueuedSongId || '') === itemId
-    const suppressMusicSelectionWhilePlaying = type === 'region' && !!state.playingId
+    const isBlock = detectBlockItem(item)
     const isSelected = type === 'region'
-      ? (!suppressMusicSelectionWhilePlaying && (isMultiSelectActiveFor('regions') ? state.selectedRegionIds.includes(itemId) : String(state.selectedRegionId || '') === itemId))
+      ? (isMultiSelectActiveFor('regions') ? state.selectedRegionIds.includes(itemId) : String(state.selectedRegionId || '') === itemId)
       : type === 'song'
       ? (isMultiSelectActiveFor('playlist') ? state.selectedPlaylistSongIds.includes(itemId) : String(state.selectedPlaylistSongId || '') === itemId)
       : String(state.selectedMarkerId || '') === itemId
@@ -5429,13 +5551,12 @@ function renderRows(items, type) {
       if (String(state.markerGoFlashId || '') === itemId) classes.push('markerGoConfirmed')
       if (isMarkerBlinking(item)) classes.push('markerBlink')
     } else if (isSelected) {
-      classes.push('selectedPink')
+      classes.push(isBlock ? 'selectedPink' : 'selectedBlue')
     }
     if (isPlaying) classes.push('playing')
 
     const attr = type === 'region' ? `data-region-id="${itemId}"` : type === 'song' ? `data-song-id="${itemId}"` : `data-marker-id="${itemId}"`
     const label = formatRowLabel(item, type)
-    const isBlock = detectBlockItem(item)
     const isHashChild = isHashChildItem(item)
     const isHashParent = isHashParentItem(item)
     const inheritedItemTextColor = getAppItemTextColor(item, isBlock)
@@ -5459,7 +5580,7 @@ function renderRows(items, type) {
       : type === 'marker' && isSelected
       ? 'markerSelectedText'
       : isSelected
-      ? 'selectedPinkText'
+      ? (isBlock ? 'selectedPinkText' : 'selectedBlueText')
       : isBlock
       ? 'blockText'
       : 'text'
@@ -5471,7 +5592,7 @@ function renderRows(items, type) {
       : type === 'marker' && isSelected
       ? 'markerSelectedTimeText'
       : isSelected
-      ? 'selectedPinkTimeText'
+      ? (isBlock ? 'selectedPinkTimeText' : 'selectedBlueTimeText')
       : isBlock
       ? 'blockTimeText'
       : 'timeText'
@@ -5490,7 +5611,7 @@ function renderRows(items, type) {
     const labelStyle = itemTextColor && !isPlaying && !isQueued && !isSelected ? ` style="color:${escapeHtml(itemTextColor)}"` : ''
     const rowLabelClass = [textClass, 'rowLabelText', type === 'marker' ? 'markerRowLabel' : (type === 'song' ? 'songRowLabel' : 'regionRowLabel')].filter(Boolean).join(' ')
     const displayLabel = formatHashFamilyLabel(item, label)
-    const labelHtml = `<span class="${rowLabelClass}"${labelStyle}>${escapeHtml(displayLabel)}</span>`
+    const labelHtml = `<span class="${rowLabelClass}"${labelStyle}>${isBlock ? escapeHtmlPreserveSpaces(displayLabel) : escapeHtml(displayLabel)}</span>`
     const progressRatio = getRowProgressRatio(playbackItem, isPlaying, isBlock)
     const progressBarHtml = progressRatio > 0
       ? `<div class="progressBar ${hasNumberCol ? 'progressBarWithNumber' : ''}" style="${hasNumberCol ? `left:42px;width:calc((100% - 42px) * ${progressRatio.toFixed(4)});min-width:10px;` : `left:0;width:${Math.round(progressRatio * 1000) / 10}%;min-width:10px;`}"></div>`
@@ -5626,7 +5747,7 @@ function bindEvents() {
   document.querySelector('[data-action="delete-confirm"]')?.addEventListener('click', handleDeleteConfirm)
   document.querySelector('[data-action="delete-cancel"]')?.addEventListener('click', handleDeleteCancel)
   document.querySelector('[data-action="marker-cancel"]')?.addEventListener('click', handleMarkerCancel)
-  bindReliableTapAction(document.querySelector('[data-action="play"]'), 'play', handlePlayToggle)
+  bindPlayTapAction(document.querySelector('[data-action="play"]'), handlePlayToggle)
   document.querySelector('[data-action="all"]')?.addEventListener('click', handleSelectAll)
   document.querySelector('[data-action="add-list"]')?.addEventListener('click', handleOpenCreatePlaylist)
   document.querySelector('[data-action="add-exist"]')?.addEventListener('click', handleOpenAddExisting)
@@ -5964,8 +6085,8 @@ function render() {
   if (!app) return
   const playlist = activePlaylist()
   const markers = currentMarkers()
-  const hue = `hsl(${state.borderHue}, 100%, 55%)`
-  const glow = `hsla(${state.borderHue}, 100%, 55%, 0.35)`
+  const hue = getBorderColorCss()
+  const glow = getBorderGlowCss()
   const topTitle = state.activeTab === 'playlist' ? upperText(playlist?.name || 'SEM REPERTÓRIO') : 'ESCOLHA SUAS MUSICAS'
   const timerText = formatChronoTime(getTimerElapsedSec())
   const topTitleHtml = state.activeTab === 'playlist' ? `<button class="playlistTitleButton" data-action="open-playlist-switch"><span class="playlistTitleContent">${buildTitleTicker(topTitle)}</span><span class="playlistTitleArrow">▾</span></button>` : `<span class="regionsTopLabel">MÚSICAS</span>`
@@ -5980,10 +6101,10 @@ function render() {
     : ''
 
   const content = state.activeTab === 'regions'
-    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.autoplayEnabled ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(state.regions, 'region')}</div></div>`
+    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(state.regions, 'region')}</div></div>`
     : `<div class="contentPanel ${state.playlistView === 'markers' ? 'markerContentPanel' : ''}"><div class="controlsStickyPanel">${state.playlistView === 'markers'
         ? `<div class="controlsRowPlaylist controlsRowEqual controlsRowMarkers"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.loopActive ? 'btnLoopActive loopBlink markerLoopButton' : 'btn markerLoopButton'}" data-action="loop">Loop</button><button class="tab btnLyricsOpen lyricsNavButton markersInlineBackButton markerBackLyricsButton" data-action="close-markers">&lt;&lt;</button></div>`
-        : `<div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.autoplayEnabled ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>`}
+        : `<div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>`}
        ${state.playlistView === 'markers' ? '' : `${renderNowPlayingBanner()}`}</div>
        <div class="listBox ${state.playlistView === 'markers' ? 'markerListBox' : ''}" id="playlistListBox">${state.playlistView === 'markers' ? renderRows(markers, 'marker') : renderRows(playlist?.songs || [], 'song')}</div>${markerFooterHtml}</div>`
 
@@ -6096,8 +6217,8 @@ function updateBorderEffect() {
   if (state.rgbMode === 'fixed') {
     state.borderHue = RGB_FIXED_HUES[state.rgbFixedIndex] ?? 96
   }
-  const hue = `hsl(${state.borderHue}, 100%, 55%)`
-  const glow = `hsla(${state.borderHue}, 100%, 55%, 0.35)`
+  const hue = getBorderColorCss()
+  const glow = getBorderGlowCss()
   container.style.borderColor = hue
   container.style.boxShadow = `0 0 0 1px ${hue}, 0 0 14px ${glow}, inset 0 0 10px rgba(255,255,255,0.03)`
 }

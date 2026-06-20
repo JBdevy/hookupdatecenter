@@ -31,11 +31,17 @@ let bridgePollInFlight = false
 let bridgePollSeq = 0
 let lastAppliedBridgePollSeq = 0
 const playbackLiveState = { id: null, remaining: null }
-const RGB_FIXED_HUES = [96, 210, 330]
+const RGB_FIXED_HUES = [0, 96, 210, 270, 45, 330, 186, 24, 0]
 const RGB_MODE_SEQUENCE = [
-  { mode: 'fixed', fixedIndex: 0, label: 'FIXO VERDE' },
-  { mode: 'fixed', fixedIndex: 1, label: 'FIXO AZUL' },
-  { mode: 'fixed', fixedIndex: 2, label: 'FIXO ROSA' },
+  { mode: 'fixed', fixedIndex: 0, label: 'FIXO VERMELHO' },
+  { mode: 'fixed', fixedIndex: 1, label: 'FIXO VERDE' },
+  { mode: 'fixed', fixedIndex: 2, label: 'FIXO AZUL' },
+  { mode: 'fixed', fixedIndex: 3, label: 'FIXO ROXO' },
+  { mode: 'fixed', fixedIndex: 4, label: 'FIXO AMARELO' },
+  { mode: 'fixed', fixedIndex: 5, label: 'FIXO ROSA' },
+  { mode: 'fixed', fixedIndex: 6, label: 'FIXO CIANO' },
+  { mode: 'fixed', fixedIndex: 7, label: 'FIXO LARANJA' },
+  { mode: 'fixed', fixedIndex: 8, label: 'FIXO BRANCO' },
   { mode: 'auto', fixedIndex: 0, label: 'AUTOMÁTICO' },
   { mode: 'off', fixedIndex: 0, label: 'DESLIGADO' },
 ]
@@ -72,6 +78,8 @@ const state = {
   timerRunning: false,
   timerStartedAt: 0,
   timerAccumulatedSec: 0,
+  timerMode: 'progressive',
+  timerTargetSec: 0,
   playlistScrollRatio: null,
   regionsScrollRatio: null,
   playlistScrollOffsetRows: null,
@@ -157,11 +165,20 @@ function buildTitleTicker(text) {
 }
 
 function getChronoElapsedSeconds() {
+  const max = 99 * 3600 + 59 * 60 + 59
   const base = Math.max(0, Math.floor(Number(state.timerAccumulatedSec) || 0))
-  if (!state.timerRunning) return base
-  const startedAt = Number(state.timerStartedAt) || 0
-  if (!startedAt) return base
-  return Math.max(0, base + Math.floor((Date.now() - startedAt) / 1000))
+  let elapsed = base
+  if (state.timerRunning) {
+    const startedAt = Number(state.timerStartedAt) || 0
+    if (startedAt) elapsed = base + Math.floor((Date.now() - startedAt) / 1000)
+  }
+  elapsed = Math.max(0, Math.min(max, elapsed))
+  const mode = String(state.timerMode || state.timerType || 'progressive').toLowerCase()
+  if (mode === 'countdown' || mode === 'regressive' || mode === 'regressivo') {
+    const target = Math.max(0, Math.min(max, Number(state.timerTargetSec || state.timerCountdownStartSec || 0)))
+    return Math.max(0, target - elapsed)
+  }
+  return elapsed
 }
 
 function formatChronoTime(totalSeconds) {
@@ -736,9 +753,9 @@ function renderRows(items, type) {
     const isPlaying = !isBlock && String(state.playingId || '') === itemId
     const isQueued = !isBlock && String(visualQueuedSongId || '') === itemId
     const isLocalSelected = String(musicosLocalSelectedTab || '') === String(type || '') && String(musicosLocalSelectedSongId || '') === itemId
-    const isSelected = isLocalSelected || (type === 'regions'
+    const isSelected = !isBlock && (isLocalSelected || (type === 'regions'
       ? (state.selectedRegionIds?.includes(itemId) || String(state.selectedRegionId || '') === itemId)
-      : (state.selectedPlaylistSongIds?.includes(itemId) || String(state.selectedPlaylistSongId || '') === itemId))
+      : (state.selectedPlaylistSongIds?.includes(itemId) || String(state.selectedPlaylistSongId || '') === itemId)))
 
     const classes = ['item', 'numberedItem']
     if (isQueued) classes.push('queuedYellow')
@@ -901,22 +918,34 @@ function normalizeRgbMode() {
     state.rgbMode = 'off'
     state.rgbFixedIndex = 0
     state.borderHue = 0
-    return RGB_MODE_SEQUENCE.find((item) => item.mode === 'off') || RGB_MODE_SEQUENCE[4]
+    return RGB_MODE_SEQUENCE.find((item) => item.mode === 'off') || RGB_MODE_SEQUENCE[10]
   }
 
   state.rgbMode = 'auto'
   state.rgbFixedIndex = 0
-  return RGB_MODE_SEQUENCE.find((item) => item.mode === 'auto') || RGB_MODE_SEQUENCE[3]
+  return RGB_MODE_SEQUENCE.find((item) => item.mode === 'auto') || RGB_MODE_SEQUENCE[9]
 }
 
 function getRgbModeIndex() {
   const current = normalizeRgbMode()
   const index = RGB_MODE_SEQUENCE.findIndex((item) => item.mode === current.mode && item.fixedIndex === current.fixedIndex)
-  return index >= 0 ? index : 3
+  return index >= 0 ? index : 9
 }
 
 function getRgbModeLabel() {
   return normalizeRgbMode().label
+}
+
+function getBorderColorCss() {
+  normalizeRgbMode()
+  if (state.rgbMode === 'fixed' && Number(state.rgbFixedIndex) === 8) return '#f8fafc'
+  return `hsl(${state.borderHue}, 100%, 55%)`
+}
+
+function getBorderGlowCss() {
+  normalizeRgbMode()
+  if (state.rgbMode === 'fixed' && Number(state.rgbFixedIndex) === 8) return 'rgba(248,250,252,0.35)'
+  return `hsla(${state.borderHue}, 100%, 55%, 0.35)`
 }
 
 function applyRgbMode(next) {
@@ -929,7 +958,7 @@ function applyRgbMode(next) {
 
 function cycleRgbMode() {
   const currentIndex = getRgbModeIndex()
-  const next = RGB_MODE_SEQUENCE[(currentIndex + 1) % RGB_MODE_SEQUENCE.length] || RGB_MODE_SEQUENCE[3]
+  const next = RGB_MODE_SEQUENCE[(currentIndex + 1) % RGB_MODE_SEQUENCE.length] || RGB_MODE_SEQUENCE[9]
   applyRgbMode(next)
   lastRenderSignature = ''
   render()
@@ -1013,6 +1042,8 @@ function updateBridgeState(data) {
   state.timerRunning = !!data.timerRunning
   state.timerStartedAt = Number(data.timerStartedAt) || 0
   state.timerAccumulatedSec = Number(data.timerAccumulatedSec) || 0
+  state.timerMode = typeof data.timerMode === 'string' || typeof data.timerType === 'string' ? String(data.timerMode || data.timerType || 'progressive') : state.timerMode
+  state.timerTargetSec = Number.isFinite(Number(data.timerTargetSec ?? data.timerCountdownStartSec)) ? Number(data.timerTargetSec ?? data.timerCountdownStartSec) : state.timerTargetSec
   const scrollInfo = (data && typeof data.scroll === 'object' && data.scroll) ? data.scroll : null
   state.playlistScrollRatio = Number.isFinite(Number(scrollInfo?.playlist ?? data.playlistScrollRatio)) ? Number(scrollInfo?.playlist ?? data.playlistScrollRatio) : null
   state.regionsScrollRatio = Number.isFinite(Number(scrollInfo?.regions ?? data.regionsScrollRatio)) ? Number(scrollInfo?.regions ?? data.regionsScrollRatio) : null
@@ -1377,9 +1408,11 @@ function render() {
     ? formatTotalTime((playlist?.songs || []).reduce((sum, item) => sum + (Number(item?.durationSec) || 0), 0))
     : formatTotalTime((state.regions || []).reduce((sum, item) => sum + (Number(item?.durationSec) || 0), 0))
 
+  const borderColor = getBorderColorCss()
+  const borderGlow = getBorderGlowCss()
   const borderStyle = state.rgbMode === 'off'
     ? `border-color:rgba(71,85,105,0.55);box-shadow:0 0 0 1px rgba(71,85,105,0.35), inset 0 0 10px rgba(255,255,255,0.03);`
-    : `border-color:hsl(${state.borderHue}, 100%, 55%);box-shadow:0 0 0 1px hsl(${state.borderHue}, 100%, 55%), 0 0 14px hsla(${state.borderHue}, 100%, 55%, 0.35), inset 0 0 10px rgba(255,255,255,0.03);`
+    : `border-color:${borderColor};box-shadow:0 0 0 1px ${borderColor}, 0 0 14px ${borderGlow}, inset 0 0 10px rgba(255,255,255,0.03);`
 
   const popupHtml = renderPopup()
   const gearModal = renderGearModal()
@@ -1578,8 +1611,8 @@ function updateBorderEffect() {
   if (state.rgbMode === 'fixed') {
     state.borderHue = RGB_FIXED_HUES[state.rgbFixedIndex] ?? 96
   }
-  const hue = `hsl(${state.borderHue}, 100%, 55%)`
-  const glow = `hsla(${state.borderHue}, 100%, 55%, 0.35)`
+  const hue = getBorderColorCss()
+  const glow = getBorderGlowCss()
   container.style.borderColor = hue
   container.style.boxShadow = `0 0 0 1px ${hue}, 0 0 14px ${glow}, inset 0 0 10px rgba(255,255,255,0.03)`
 }
