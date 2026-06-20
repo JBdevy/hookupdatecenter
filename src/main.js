@@ -64,7 +64,7 @@ const lyricsWindows = new Map();
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL = `${BACKEND_URL}/api/latest?platform=${getPlatformKey()}`;
-const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getPlatformKey()}`;
+const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getHookCenterPlatformKey()}`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
@@ -708,7 +708,13 @@ async function checkForUpdates(manual = false) {
 
 function normalizeHookCenterUpdate(raw) {
   if (!raw || raw.published === false) return null;
-  const downloadUrl = ensureAbsoluteUrl(raw.downloadUrl || (getPlatformKey() === 'macos' ? raw.macosUrl : raw.windowsUrl));
+  const platformKey = getHookCenterPlatformKey();
+  const platformUrls = {
+    windows: raw.windowsUrl || raw.windowsInstallerUrl || raw.exeUrl,
+    macos: raw.macosUrl || raw.macosInstallerUrl || raw.macUrl || raw.dmgUrl,
+    'macos-legacy': raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url || raw.macosLegacyInstallerUrl
+  };
+  const downloadUrl = ensureAbsoluteUrl(raw.downloadUrl || platformUrls[platformKey] || '');
   return {
     product: 'hook-center',
     updateId: raw.updateId || raw.version || null,
@@ -718,6 +724,7 @@ function normalizeHookCenterUpdate(raw) {
     downloadUrl,
     windowsUrl: ensureAbsoluteUrl(raw.windowsUrl),
     macosUrl: ensureAbsoluteUrl(raw.macosUrl),
+    macosLegacyUrl: ensureAbsoluteUrl(raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url),
     publishedAt: raw.publishedAt || null
   };
 }
@@ -748,7 +755,9 @@ async function downloadAndInstallHookCenterUpdate() {
   }
 
   const ext = process.platform === 'darwin' ? '.dmg' : '.exe';
-  const baseName = process.platform === 'darwin' ? `Hook-Center-${update.version}-macOS${ext}` : `Hook-Center-${update.version}-Windows${ext}`;
+  const baseName = process.platform === 'darwin'
+    ? (getHookCenterPlatformKey() === 'macos-legacy' ? `Hook-Center-Legacy-${update.version}-macOS10${ext}` : `Hook-Center-${update.version}-macOS${ext}`)
+    : `Hook-Center-${update.version}-Windows${ext}`;
   const dest = path.join(app.getPath('downloads'), baseName);
   await downloadFile(update.downloadUrl, dest, (progress) => {
     if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
@@ -1505,6 +1514,9 @@ function getAppState() {
     deviceLoginEmail: store.get('deviceLoginEmail') || (store.get('license') || {}).email || '',
     
     platform: process.platform,
+    platformKey: getPlatformKey(),
+    hookCenterPlatformKey: getHookCenterPlatformKey(),
+    legacyHookCenter: isHookCenterLegacyBuild(),
     arch: process.arch,
     machineIdPath: getSharedMachineIdPath(),
     licensePath: getSharedLicensePath(),
@@ -1523,6 +1535,15 @@ function ensureAbsoluteUrl(url) {
 
 function getPlatformKey() {
   return process.platform === 'darwin' ? 'macos' : 'windows';
+}
+
+function isHookCenterLegacyBuild() {
+  return process.platform === 'darwin' && /legacy/i.test(app.getName() || '');
+}
+
+function getHookCenterPlatformKey() {
+  if (isHookCenterLegacyBuild()) return 'macos-legacy';
+  return getPlatformKey();
 }
 
 function getPlatformFiles(update) {

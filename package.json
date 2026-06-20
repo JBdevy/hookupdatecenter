@@ -10,7 +10,8 @@
     "start": "electron .",
     "build": "electron-builder --publish never",
     "build:win": "electron-builder --win nsis --publish never",
-    "build:mac": "electron-builder --mac dmg zip --universal --publish never"
+    "build:mac": "electron-builder --mac dmg zip --universal --publish never",
+    "build:mac:legacy": "electron-builder --config electron-builder.legacy.json --mac dmg zip --x64 --publish never"
   },
   "dependencies": {
     "electron-store": "8.2.0"

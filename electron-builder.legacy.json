@@ -1,0 +1,30 @@
+{
+  "appId": "com.hookdeveloper.hookcenter.legacy",
+  "productName": "Hook Center Legacy",
+  "asar": true,
+  "directories": {
+    "output": "dist-legacy"
+  },
+  "files": [
+    "src/**/*",
+    "qr-app/**/*",
+    "assets/**/*",
+    "package.json",
+    "installer/**/*"
+  ],
+  "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "minimumSystemVersion": "10.13.0",
+    "category": "public.app-category.utilities",
+    "artifactName": "Hook-Center-Legacy-${version}-macOS10.${ext}",
+    "icon": "assets/icon.icns",
+    "hardenedRuntime": false,
+    "gatekeeperAssess": false,
+    "forceCodeSigning": false,
+    "identity": null
+  },
+  "icon": "assets/icon.png"
+}
