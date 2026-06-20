@@ -381,7 +381,7 @@ function renderState(nextState) {
   const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
   $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = state.currentVersion || '--';
+  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.8.2';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
   $('#updateStatus').textContent = state.latestUpdate ? 'Última publicação carregada' : 'Aguardando publicação';
 
