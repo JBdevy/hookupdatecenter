@@ -1,25 +1,36 @@
-# Assinatura e notarização macOS - Hook Center
+# macOS signing / notarization
 
-Este workflow foi ajustado para entregar artefatos adequados para clientes.
+Os builds macOS agora estão preparados para assinatura.
 
-## Fluxo correto
+## Certificado
+Use um certificado **Developer ID Application** via uma das formas abaixo:
 
-1. `electron-builder` gera o app universal e assina o `.app` com `Developer ID Application`.
-2. O workflow gera os arquivos finais `.dmg`, `.pkg` e `.zip`.
-3. O script `build/notarize-artifacts.sh` envia apenas os artefatos finais `.dmg` e `.pkg` para a Apple.
-4. Ao receber `Accepted`, o script aplica `stapler staple` e valida o ticket.
+### GitHub Actions / CI
+Defina os secrets:
 
-## Importante
+- `CSC_LINK`: certificado `.p12` em base64 ou link seguro
+- `CSC_KEY_PASSWORD`: senha do `.p12`
+- `APPLE_ID`: Apple ID
+- `APPLE_APP_SPECIFIC_PASSWORD`: senha específica do app
+- `APPLE_TEAM_ID`: Team ID da conta Apple
 
-- Para cliente final, entregue preferencialmente o `.dmg` ou `.pkg` notarizado e stapled.
-- O `.zip` fica como artefato técnico/update, mas o fluxo de cliente deve usar `.dmg` ou `.pkg`.
-- Se a Apple ficar em `In Progress` por muito tempo, o script falha após 45 minutos para não gastar horas de GitHub Actions.
-- Se falhar por timeout, rode a tag novamente. A Apple precisa retornar `Accepted` para liberar uma versão realmente pronta para cliente.
+### Mac local
+Instale o certificado no Keychain e rode:
 
-## Secrets usados
+```bash
+npm install
+npm run build:mac
+```
 
-- `MACOS_CERT_P12_BASE64`
-- `MACOS_CERT_PASSWORD`
-- `APPLE_ID`
-- `APPLE_APP_SPECIFIC_PASSWORD`
-- `APPLE_TEAM_ID`
+A notarização só roda quando `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` e `APPLE_TEAM_ID` estiverem definidos.
+Sem essas variáveis, o app será apenas assinado.
+
+## Legacy macOS 10.13+
+```bash
+npm run build:mac:legacy
+```
+
+## Build sem assinatura
+```bash
+npm run build:mac:unsigned
+```

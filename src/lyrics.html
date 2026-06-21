@@ -10,8 +10,15 @@
   <div class="lyrics-drag-zone" aria-hidden="true"></div>
   <button id="closeLyricsButton" class="close-button" type="button" title="Fechar">×</button>
   <main class="lyrics-stage">
-    <div id="lyricsTimer" class="lyrics-timer">00 : 00 : 00</div>
+    <div id="lyricsOverlay" class="lyrics-overlay">
+      <div id="lyricsTimer" class="lyrics-timer">00 : 00 : 00</div>
+      <div id="lyricsSongName" class="lyrics-song-name"></div>
+    </div>
     <div id="lyricsText" class="lyrics-text"></div>
+    <div id="lyricsMediaLayer" class="lyrics-media hidden">
+      <img id="lyricsImage" class="lyrics-image hidden" alt="Teleprompt" />
+      <video id="lyricsVideo" class="lyrics-video hidden" muted playsinline preload="auto"></video>
+    </div>
   </main>
   <div id="technicalNotice" class="technical-notice hidden" aria-live="polite"></div>
   <script src="lyrics-renderer.js"></script>

@@ -5,6 +5,7 @@ const os = require('os');
 const crypto = require('crypto');
 const Store = require('electron-store');
 const { spawn, execFile, execFileSync } = require('child_process');
+const { pathToFileURL } = require('url');
 const { createBridgeServer, getLanIp, getAllLanIps, ensureJsonFile } = require('./bridge-server');
 
 const store = new Store({
@@ -1308,10 +1309,29 @@ function getBridgeState() {
 function getLyricsDefaults() {
   return {
     textColor: '#ffea00',
+    textBoxColor: '#ffea00',
     clockColor: '#00ff55',
     borderColor: '#00ff55',
+    rgbBorderEnabled: false,
+    rgbWindowBorderEnabled: false,
+    rgbClockBorderEnabled: false,
+    rgbTextBoxBorderEnabled: false,
     fontFamily: 'Arial',
-    clockEnabled: true
+    textScale: 1,
+    borderEnabled: true,
+    windowBorderEnabled: true,
+    clockBorderEnabled: true,
+    textBoxEnabled: true,
+    clockEnabled: true,
+    songNameEnabled: false,
+    songNameColor: '#00ff55',
+    songNameFontFamily: 'Arial',
+    songNameScale: 1,
+    songNamePosition: 'top',
+    clockPosition: 'top',
+    clockScale: 1,
+    mediaScale: 1,
+    clearMode: false
   };
 }
 
@@ -1319,7 +1339,11 @@ function getTechnicalNoticeDefaults() {
   return {
     textColor: '#ffea00',
     flashColor: '#ff0000',
-    fontFamily: 'Arial'
+    fontFamily: 'Arial',
+    window1Enabled: true,
+    window2Enabled: true,
+    emojiEnabled: true,
+    emoji: '⚠️'
   };
 }
 
@@ -1334,6 +1358,13 @@ function saveTechnicalNoticeSettings(settings = {}) {
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
   if (typeof settings.flashColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.flashColor)) next.flashColor = settings.flashColor;
   if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
+  if (typeof settings.window1Enabled === 'boolean') next.window1Enabled = settings.window1Enabled;
+  if (typeof settings.window2Enabled === 'boolean') next.window2Enabled = settings.window2Enabled;
+  if (typeof settings.emojiEnabled === 'boolean') next.emojiEnabled = settings.emojiEnabled;
+  if (typeof settings.emoji === 'string') {
+    const cleanEmoji = settings.emoji.trim().replace(/[\r\n\t]+/g, '').slice(0, 8);
+    next.emoji = cleanEmoji || '⚠️';
+  }
   store.set('technicalNoticeSettings', next);
   for (const win of lyricsWindows.values()) {
     if (win && !win.isDestroyed()) win.webContents.send('technical-notice-settings-updated', next);
@@ -1360,6 +1391,20 @@ function getLyricsSettings(slot = 1) {
   return getLyricsAllSettings()[id];
 }
 
+
+function normalizeLyricsScreenPosition(value, fallback = 'top') {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'bottom' || v === 'below' || v === 'baixo' || v === 'down') return 'bottom';
+  if (v === 'top' || v === 'above' || v === 'cima' || v === 'up') return 'top';
+  return fallback;
+}
+
+function clampLyricsScale(value, fallback = 1, max = 1.25) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0.35, Math.min(max, n));
+}
+
 function saveLyricsSettings(settings = {}, slot = 1) {
   const id = normalizeLyricsSlot(slot || settings.slot);
   const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact'];
@@ -1367,9 +1412,28 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   const next = { ...all[id] };
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
   if (typeof settings.clockColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.clockColor)) next.clockColor = settings.clockColor;
+  if (typeof settings.textBoxColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textBoxColor)) next.textBoxColor = settings.textBoxColor;
   if (typeof settings.borderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.borderColor)) next.borderColor = settings.borderColor;
   if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
+  if (settings.textScale !== undefined) next.textScale = clampLyricsScale(settings.textScale, next.textScale || 1);
+  if (typeof settings.rgbBorderEnabled === 'boolean') next.rgbBorderEnabled = settings.rgbBorderEnabled;
+  if (typeof settings.rgbWindowBorderEnabled === 'boolean') next.rgbWindowBorderEnabled = settings.rgbWindowBorderEnabled;
+  if (typeof settings.rgbClockBorderEnabled === 'boolean') next.rgbClockBorderEnabled = settings.rgbClockBorderEnabled;
+  if (typeof settings.rgbTextBoxBorderEnabled === 'boolean') next.rgbTextBoxBorderEnabled = settings.rgbTextBoxBorderEnabled;
+  if (typeof settings.borderEnabled === 'boolean') next.borderEnabled = settings.borderEnabled;
+  if (typeof settings.windowBorderEnabled === 'boolean') next.windowBorderEnabled = settings.windowBorderEnabled;
+  if (typeof settings.clockBorderEnabled === 'boolean') next.clockBorderEnabled = settings.clockBorderEnabled;
+  if (typeof settings.textBoxEnabled === 'boolean') next.textBoxEnabled = settings.textBoxEnabled;
   if (typeof settings.clockEnabled === 'boolean') next.clockEnabled = settings.clockEnabled;
+  if (typeof settings.songNameEnabled === 'boolean') next.songNameEnabled = settings.songNameEnabled;
+  if (typeof settings.songNameColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.songNameColor)) next.songNameColor = settings.songNameColor;
+  if (allowedFonts.includes(settings.songNameFontFamily)) next.songNameFontFamily = settings.songNameFontFamily;
+  if (settings.songNameScale !== undefined) next.songNameScale = clampLyricsScale(settings.songNameScale, next.songNameScale || 1, 3);
+  if (settings.songNamePosition !== undefined) next.songNamePosition = normalizeLyricsScreenPosition(settings.songNamePosition, next.songNamePosition || 'top');
+  if (settings.clockPosition === 'top' || settings.clockPosition === 'bottom') next.clockPosition = settings.clockPosition;
+  if (settings.clockScale !== undefined) next.clockScale = clampLyricsScale(settings.clockScale, next.clockScale || 1, 2.5);
+  if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1);
+  if (typeof settings.clearMode === 'boolean') next.clearMode = settings.clearMode;
   all[id] = next;
   store.set('lyrics', all);
   const win = lyricsWindows.get(id);
@@ -1378,10 +1442,40 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   return next;
 }
 
-function getLyricsStatePath() {
+function getBridgeScriptsDirCandidates(config) {
+  const values = [
+    process.env.VSHOOK_SCRIPTS_DIR,
+    config?.scriptsDir,
+    getDefaultReaperScriptsDir(),
+    resolveBridgeScriptsDir(config)
+  ].filter(Boolean);
+  const seen = new Set();
+  return values.map((value) => {
+    try { return path.resolve(value); } catch (_) { return ''; }
+  }).filter((value) => {
+    if (!value || seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function getLyricsStatePath(slot = 1) {
+  const id = normalizeLyricsSlot(slot);
   const config = bridgeConfig || readBridgeConfig();
   const sharedDir = resolveBridgeScriptsDir(config);
-  return path.join(sharedDir, 'vshook_lyrics_state.json');
+  const fileName = `vshook_lyrics_state_${id}.json`;
+  const candidates = getBridgeScriptsDirCandidates(config);
+  for (const dir of candidates) {
+    const slotPath = path.join(dir, fileName);
+    if (fs.existsSync(slotPath)) return slotPath;
+  }
+  if (id === 1) {
+    for (const dir of candidates) {
+      const legacyPath = path.join(dir, 'vshook_lyrics_state.json');
+      if (fs.existsSync(legacyPath)) return legacyPath;
+    }
+  }
+  return path.join(sharedDir, fileName);
 }
 
 function getBridgeStatePath() {
@@ -1404,7 +1498,12 @@ function readJsonFileSafe(filePath, fallback = {}) {
 function getTechnicalNoticeStatePath() {
   const config = bridgeConfig || readBridgeConfig();
   const sharedDir = resolveBridgeScriptsDir(config);
-  return path.join(sharedDir, 'vshook_technical_notice.json');
+  const fileName = 'vshook_technical_notice.json';
+  for (const dir of getBridgeScriptsDirCandidates(config)) {
+    const noticePath = path.join(dir, fileName);
+    if (fs.existsSync(noticePath)) return noticePath;
+  }
+  return path.join(sharedDir, fileName);
 }
 
 function getActiveTechnicalNotice() {
@@ -1430,14 +1529,68 @@ function getActiveTechnicalNotice() {
   };
 }
 
-function getLyricsState() {
-  const data = readJsonFileSafe(getLyricsStatePath(), {});
+function normalizeLyricsMediaType(value) {
+  const type = String(value || '').trim().toLowerCase();
+  if (type === 'image' || type === 'img' || type === 'picture') return 'image';
+  if (type === 'video' || type === 'movie') return 'video';
+  if (type === 'empty' || type === 'none') return 'empty';
+  return 'text';
+}
+
+function getFileUrlSafe(filePath) {
+  const value = String(filePath || '').trim();
+  if (!value) return '';
+  if (/^(file|https?):\/\//i.test(value)) return value;
+  try {
+    return pathToFileURL(path.resolve(value)).toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+function getLyricsState(slot = 1) {
+  const id = normalizeLyricsSlot(slot);
+  const data = readJsonFileSafe(getLyricsStatePath(id), {});
   const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
   const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
+  const mediaType = normalizeLyricsMediaType(data.telepromptType || data.mediaType || data.type);
+  const mediaPath = String(data.mediaPath || data.path || '');
+  const mediaUrl = getFileUrlSafe(data.mediaUrl || mediaPath);
+  const textValue = (mediaType === 'image' || mediaType === 'video') ? '' : String(data.text || data.lyrics || data.lyricsText || '');
+  const songValue = String(
+    data.song || data.songName || data.currentSong || data.currentSongName || data.musicName || data.playingSongName ||
+    bridgeState.songName || bridgeState.currentSongName || bridgeState.musicName || bridgeState.playingSongName || ''
+  );
+  const media = {
+    type: mediaType,
+    path: mediaPath,
+    url: mediaUrl,
+    ext: String(data.mediaExt || ''),
+    currentTime: Math.max(0, Number(data.mediaCurrentTime || data.videoCurrentTime || 0)),
+    offset: Math.max(0, Number(data.mediaOffset || 0)),
+    playrate: Number(data.mediaPlayrate || data.playrate || 1) || 1,
+    itemGuid: String(data.itemGuid || ''),
+    itemStart: Number(data.itemStart || 0),
+    itemEnd: Number(data.itemEnd || 0),
+    itemLength: Number(data.itemLength || 0)
+  };
   return {
-    text: String(data.text || data.lyrics || ''),
-    song: String(data.song || data.currentSong || ''),
+    slot: id,
+    text: textValue,
+    song: songValue,
     part: String(data.part || data.currentPart || ''),
+    telepromptType: mediaType,
+    mediaType,
+    mediaPath,
+    mediaUrl,
+    mediaCurrentTime: media.currentTime,
+    mediaOffset: media.offset,
+    mediaPlayrate: media.playrate,
+    media,
+    itemGuid: media.itemGuid,
+    itemStart: media.itemStart,
+    itemEnd: media.itemEnd,
+    itemLength: media.itemLength,
     timerRunning: Boolean(timerSource.timerRunning),
     timerStartedAt: Number(timerSource.timerStartedAt || timerSource.timerStartedAtMs || 0),
     timerAccumulatedSec: Number(timerSource.timerAccumulatedSec || 0),
@@ -1457,9 +1610,9 @@ function createLyricsWindow(slot = 1) {
   const id = Number(slot) === 2 ? 2 : 1;
   const existing = lyricsWindows.get(id);
   if (existing && !existing.isDestroyed()) {
-    existing.show();
-    existing.focus();
-    return { ok: true, alreadyOpen: true, slot: id };
+    lyricsWindows.delete(id);
+    existing.close();
+    return { ok: true, slot: id, opened: false, closed: true };
   }
 
   const win = new BrowserWindow({
@@ -1467,24 +1620,46 @@ function createLyricsWindow(slot = 1) {
     height: 560,
     minWidth: 640,
     minHeight: 360,
-    backgroundColor: '#000000',
+    backgroundColor: '#00000000',
     title: 'Teleprompt',
     icon: getAppIconPath(),
     frame: false,
+    thickFrame: false,
+    transparent: true,
+    roundedCorners: false,
+    focusable: true,
+    movable: true,
+    resizable: true,
+    useContentSize: true,
+    hasShadow: false,
+    acceptFirstMouse: true,
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webSecurity: false
     }
   });
 
   lyricsWindows.set(id, win);
+  try { win.setIgnoreMouseEvents(false); } catch (_) {}
   win.loadFile(path.join(__dirname, 'lyrics.html'), { query: { slot: String(id) } });
-  win.once('ready-to-show', () => win.show());
-  win.on('closed', () => lyricsWindows.delete(id));
-  return { ok: true, slot: id };
+  win.once('ready-to-show', () => {
+    try { win.setIgnoreMouseEvents(false); } catch (_) {}
+    win.show();
+    try { win.focus(); } catch (_) {}
+    broadcastLyricsWindowsState();
+  });
+  win.on('enter-full-screen', () => { win.__vshookFullScreen = true; });
+  win.on('leave-full-screen', () => { win.__vshookFullScreen = false; });
+  win.on('closed', () => {
+    lyricsWindows.delete(id);
+    setImmediate(() => broadcastLyricsWindowsState());
+  });
+  broadcastLyricsWindowsState();
+  return { ok: true, slot: id, opened: true, closed: false, lyricsWindows: getLyricsWindowsState() };
 }
 
 function getLyricsWindowsState() {
@@ -1492,6 +1667,45 @@ function getLyricsWindowsState() {
     oneOpen: !!(lyricsWindows.get(1) && !lyricsWindows.get(1).isDestroyed()),
     twoOpen: !!(lyricsWindows.get(2) && !lyricsWindows.get(2).isDestroyed())
   };
+}
+
+function broadcastLyricsWindowsState() {
+  const windowsState = getLyricsWindowsState();
+  if (isValidWindow(mainWindow)) {
+    try { mainWindow.webContents.send('lyrics-windows-state-updated', windowsState); } catch (_) {}
+  }
+  return windowsState;
+}
+
+function toggleLyricsWindowFullscreen(win) {
+  if (!win || win.isDestroyed()) return { ok: false };
+
+  const isReallyFullScreen = (() => {
+    try { return win.isFullScreen(); } catch (_) { return false; }
+  })();
+  const isFullScreen = isReallyFullScreen || win.__vshookFullScreen === true;
+
+  if (isFullScreen) {
+    win.__vshookFullScreen = false;
+    try { win.setFullScreen(false); } catch (_) {}
+    try { if (win.setSimpleFullScreen) win.setSimpleFullScreen(false); } catch (_) {}
+
+    const restoreBounds = win.__vshookBeforeFullScreenBounds || null;
+    if (restoreBounds && Number.isFinite(Number(restoreBounds.width)) && Number.isFinite(Number(restoreBounds.height))) {
+      setTimeout(() => {
+        if (!win || win.isDestroyed()) return;
+        try { win.setBounds(restoreBounds, false); } catch (_) {}
+        try { win.focus(); } catch (_) {}
+      }, 160);
+    }
+
+    return { ok: true, fullScreen: false };
+  }
+
+  try { win.__vshookBeforeFullScreenBounds = win.getBounds(); } catch (_) { win.__vshookBeforeFullScreenBounds = null; }
+  win.__vshookFullScreen = true;
+  try { win.setFullScreen(true); } catch (_) {}
+  return { ok: true, fullScreen: true };
 }
 
 function getAppState() {
@@ -1521,7 +1735,7 @@ function getAppState() {
     machineIdPath: getSharedMachineIdPath(),
     licensePath: getSharedLicensePath(),
     bridge: getBridgeState(),
-    lyrics: getLyricsSettings(),
+    lyrics: getLyricsAllSettings(),
     technicalNoticeSettings: getTechnicalNoticeSettings(),
     lyricsWindows: getLyricsWindowsState()
   };
@@ -1918,14 +2132,45 @@ ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot))
 ipcMain.handle('close-lyrics-window', (_event, slot) => {
   const id = Number(slot) === 2 ? 2 : 1;
   const win = lyricsWindows.get(id);
-  if (win && !win.isDestroyed()) win.close();
-  return { ok: true, slot: id };
+  if (win && !win.isDestroyed()) {
+    lyricsWindows.delete(id);
+    try { win.close(); } catch (_) {}
+  }
+  return { ok: true, slot: id, lyricsWindows: broadcastLyricsWindowsState() };
 });
-ipcMain.handle('get-lyrics-state', () => getLyricsState());
+ipcMain.handle('get-lyrics-state', (_event, slot) => getLyricsState(slot));
 ipcMain.handle('close-current-window', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (win) win.close();
-  return { ok: true };
+  if (win && !win.isDestroyed()) {
+    for (const [slot, lyricsWin] of lyricsWindows.entries()) {
+      if (lyricsWin === win) {
+        lyricsWindows.delete(slot);
+        break;
+      }
+    }
+    try { win.close(); } catch (_) {}
+  }
+  return { ok: true, lyricsWindows: broadcastLyricsWindowsState() };
+});
+
+ipcMain.handle('toggle-current-window-fullscreen', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return toggleLyricsWindowFullscreen(win);
+});
+
+ipcMain.handle('get-current-window-bounds', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return { ok: false };
+  return { ok: true, bounds: win.getBounds() };
+});
+
+ipcMain.on('move-current-window', (event, payload = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  const x = Math.round(Number(payload.x));
+  const y = Math.round(Number(payload.y));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  try { win.setPosition(x, y, false); } catch (_) {}
 });
 
 

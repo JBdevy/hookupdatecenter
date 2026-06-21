@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="app-shell">
+    <button id="sidebarToggleButton" class="sidebar-toggle-button" type="button" aria-label="Abrir menu" title="Menu">☰</button>
     <aside class="sidebar">
       <div class="brand">
         <img src="../assets/logo.png" class="logo-hook" alt="Hook Center" />
@@ -278,9 +279,11 @@
         </div>
 
         <div class="card lyrics-window-card technical-notice-settings-card">
-          <h2>Avisos técnicos</h2>
-          <p class="muted">Ajuste a aparência dos recados que aparecem sobre as duas telas do Teleprompt.</p>
-          <div class="lyrics-settings-grid">
+          <div class="technical-notice-header">
+            <h2>Avisos técnicos</h2>
+            <p class="muted">Ajuste recados, destino e emoji.</p>
+          </div>
+          <div class="lyrics-settings-grid technical-notice-grid">
             <label>
               Cor do aviso
               <input id="technicalNoticeTextColor" type="color" value="#ffea00" />
@@ -301,6 +304,27 @@
                 <option value="Impact">Impact</option>
               </select>
             </label>
+            <label class="settings-check">
+              <input id="technicalNoticeWindow1Enabled" type="checkbox" checked />
+              Janela 1
+            </label>
+            <label class="settings-check">
+              <input id="technicalNoticeWindow2Enabled" type="checkbox" checked />
+              Janela 2
+            </label>
+            <label class="settings-check">
+              <input id="technicalNoticeEmojiEnabled" type="checkbox" checked />
+              Emoji
+            </label>
+            <label class="emoji-picker-label">
+              Emoji do recado
+              <input id="technicalNoticeEmoji" type="hidden" value="⚠️" />
+              <button id="technicalNoticeEmojiPickerButton" class="emoji-picker-button" type="button" aria-expanded="false">
+                <span id="technicalNoticeEmojiPreview">⚠️</span>
+                <span>Escolher emoji</span>
+              </button>
+              <div id="technicalNoticeEmojiPicker" class="emoji-picker-popover hidden" role="listbox" aria-label="Escolher emoji do recado"></div>
+            </label>
           </div>
           <div class="actions lyrics-actions">
             <button id="saveTechnicalNoticeSettingsButton" class="primary-button" type="button">Aplicar avisos técnicos</button>
@@ -309,32 +333,149 @@
 
         <div class="lyrics-window-grid">
           <div class="card lyrics-window-card">
-            <h2>Janela 1</h2>
-            <div class="lyrics-settings-grid">
-              <label>
-                Cor da letra
-                <input id="lyricsTextColor1" type="color" value="#ffea00" />
-              </label>
-              <label>
-                Cor do relógio
-                <input id="lyricsClockColor1" type="color" value="#00ff55" />
-              </label>
-              <label>
-                Cor da borda
-                <input id="lyricsBorderColor1" type="color" value="#00ff55" />
-              </label>
-              <label>
-                Fonte da letra
-                <select id="lyricsFontFamily1">
-                <option value="Arial">Arial</option>
-                <option value="Segoe UI">Segoe UI</option>
-                <option value="Verdana">Verdana</option>
-                <option value="Tahoma">Tahoma</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Trebuchet MS">Trebuchet MS</option>
-                <option value="Impact">Impact</option>
-                </select>
-              </label>
+            <div class="lyrics-window-header">
+              <div>
+                <h2>Janela 1</h2>
+                <p class="muted">Configurações em tempo real.</p>
+              </div>
+              <button id="lyricsClearModeButton1" class="secondary-button clear-mode-button" type="button" aria-pressed="false">Modo Clear</button>
+            </div>
+            <div class="lyrics-window-groups">
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Cores</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Cor da letra
+                    <input id="lyricsTextColor1" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor contorno letra
+                    <input id="lyricsTextBoxColor1" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor do relógio
+                    <input id="lyricsClockColor1" type="color" value="#00ff55" />
+                  </label>
+                  <label>
+                    Cor da borda
+                    <input id="lyricsBorderColor1" type="color" value="#00ff55" />
+                  </label>
+                  <label>
+                    Cor do nome da música
+                    <input id="lyricsSongNameColor1" type="color" value="#00ff55" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Escalas</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Escala da letra
+                    <input id="lyricsTextScale1" type="range" min="50" max="125" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala do relógio
+                    <input id="lyricsClockScale1" type="range" min="50" max="250" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala do nome da música
+                    <input id="lyricsSongNameScale1" type="range" min="50" max="300" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala da mídia
+                    <input id="lyricsMediaScale1" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Fontes</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Fonte da letra
+                    <select id="lyricsFontFamily1">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
+                    Fonte do nome da música
+                    <select id="lyricsSongNameFontFamily1">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Mostrar</h3>
+                <div class="lyrics-group-grid lyrics-group-grid-checks">
+                  <label class="settings-check">
+                    <input id="lyricsWindowBorderEnabled1" type="checkbox" checked />
+                    Mostrar borda da janela
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbWindowBorderEnabled1" type="checkbox" />
+                    RGB borda da janela
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbClockBorderEnabled1" type="checkbox" />
+                    RGB borda do relógio
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbTextBoxBorderEnabled1" type="checkbox" />
+                    RGB borda da letra
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsClockBorderEnabled1" type="checkbox" checked />
+                    Mostrar borda do relógio
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsTextBoxEnabled1" type="checkbox" checked />
+                    Mostrar borda da letra
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsClockEnabled1" type="checkbox" checked />
+                    Mostrar cronômetro
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsSongNameEnabled1" type="checkbox" />
+                    Mostrar nome da música
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Posição</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Posição do relógio
+                    <select id="lyricsClockPosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da música
+                    <select id="lyricsSongNamePosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
             </div>
             <div class="actions lyrics-actions">
               <button id="saveLyricsSettingsButton1" class="primary-button" type="button">Aplicar janela 1</button>
@@ -342,32 +483,149 @@
           </div>
 
           <div class="card lyrics-window-card">
-            <h2>Janela 2</h2>
-            <div class="lyrics-settings-grid">
-              <label>
-                Cor da letra
-                <input id="lyricsTextColor2" type="color" value="#ffea00" />
-              </label>
-              <label>
-                Cor do relógio
-                <input id="lyricsClockColor2" type="color" value="#00ff55" />
-              </label>
-              <label>
-                Cor da borda
-                <input id="lyricsBorderColor2" type="color" value="#00ff55" />
-              </label>
-              <label>
-                Fonte da letra
-                <select id="lyricsFontFamily2">
-                <option value="Arial">Arial</option>
-                <option value="Segoe UI">Segoe UI</option>
-                <option value="Verdana">Verdana</option>
-                <option value="Tahoma">Tahoma</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Trebuchet MS">Trebuchet MS</option>
-                <option value="Impact">Impact</option>
-                </select>
-              </label>
+            <div class="lyrics-window-header">
+              <div>
+                <h2>Janela 2</h2>
+                <p class="muted">Configurações em tempo real.</p>
+              </div>
+              <button id="lyricsClearModeButton2" class="secondary-button clear-mode-button" type="button" aria-pressed="false">Modo Clear</button>
+            </div>
+            <div class="lyrics-window-groups">
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Cores</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Cor da letra
+                    <input id="lyricsTextColor2" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor contorno letra
+                    <input id="lyricsTextBoxColor2" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor do relógio
+                    <input id="lyricsClockColor2" type="color" value="#00ff55" />
+                  </label>
+                  <label>
+                    Cor da borda
+                    <input id="lyricsBorderColor2" type="color" value="#00ff55" />
+                  </label>
+                  <label>
+                    Cor do nome da música
+                    <input id="lyricsSongNameColor2" type="color" value="#00ff55" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Escalas</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Escala da letra
+                    <input id="lyricsTextScale2" type="range" min="50" max="125" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala do relógio
+                    <input id="lyricsClockScale2" type="range" min="50" max="250" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala do nome da música
+                    <input id="lyricsSongNameScale2" type="range" min="50" max="300" step="5" value="100" />
+                  </label>
+                  <label>
+                    Escala da mídia
+                    <input id="lyricsMediaScale2" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Fontes</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Fonte da letra
+                    <select id="lyricsFontFamily2">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
+                    Fonte do nome da música
+                    <select id="lyricsSongNameFontFamily2">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Mostrar</h3>
+                <div class="lyrics-group-grid lyrics-group-grid-checks">
+                  <label class="settings-check">
+                    <input id="lyricsWindowBorderEnabled2" type="checkbox" checked />
+                    Mostrar borda da janela
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbWindowBorderEnabled2" type="checkbox" />
+                    RGB borda da janela
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbClockBorderEnabled2" type="checkbox" />
+                    RGB borda do relógio
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsRgbTextBoxBorderEnabled2" type="checkbox" />
+                    RGB borda da letra
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsClockBorderEnabled2" type="checkbox" checked />
+                    Mostrar borda do relógio
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsTextBoxEnabled2" type="checkbox" checked />
+                    Mostrar borda da letra
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsClockEnabled2" type="checkbox" checked />
+                    Mostrar cronômetro
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsSongNameEnabled2" type="checkbox" />
+                    Mostrar nome da música
+                  </label>
+                </div>
+              </section>
+
+              <section class="lyrics-group">
+                <h3 class="lyrics-group-title">Posição</h3>
+                <div class="lyrics-group-grid">
+                  <label>
+                    Posição do relógio
+                    <select id="lyricsClockPosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da música
+                    <select id="lyricsSongNamePosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
             </div>
             <div class="actions lyrics-actions">
               <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Aplicar janela 2</button>
@@ -382,7 +640,7 @@
           <div class="status-grid">
             <div>
               <span>Versão da Central</span>
-              <strong id="currentVersion">v1.8.2</strong>
+              <strong id="currentVersion">v1.9.0</strong>
             </div>
             <div>
               <span>Última verificação</span>

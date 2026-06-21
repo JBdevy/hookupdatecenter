@@ -109,6 +109,7 @@ function setView(viewName) {
   $(`#${viewName}View`).classList.add('active');
   document.body.classList.toggle('bridge-mode', viewName === 'bridge');
   document.body.classList.toggle('previous-mode', viewName === 'previous');
+  document.body.classList.toggle('lyrics-mode', viewName === 'lyrics');
   updateDownloadCompactMode();
 }
 
@@ -153,18 +154,76 @@ function escapeHtml(value) {
 
 
 
+
+function normalizeLyricsScreenPosition(value, fallback = 'top') {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'bottom' || v === 'below' || v === 'baixo' || v === 'down') return 'bottom';
+  if (v === 'top' || v === 'above' || v === 'cima' || v === 'up') return 'top';
+  return fallback;
+}
+
 function applyLyricsSettingsToForm(settings = {}) {
-  const all = settings[1] || settings[2] ? settings : { 1: settings, 2: settings };
-  [1, 2].forEach((slot) => {
-    const data = all[slot] || {};
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
+  const isSlotMap = hasOwn(settings, 1) || hasOwn(settings, '1') || hasOwn(settings, 2) || hasOwn(settings, '2');
+  const all = isSlotMap ? settings : { 1: settings, 2: settings };
+  const slots = isSlotMap ? [1, 2].filter((slot) => hasOwn(all, slot) || hasOwn(all, String(slot))) : [1, 2];
+  slots.forEach((slot) => {
+    const data = all[slot] || all[String(slot)] || {};
+    if (!data || typeof data !== 'object') return;
     const textColor = $(`#lyricsTextColor${slot}`);
     const clockColor = $(`#lyricsClockColor${slot}`);
+    const textBoxColor = $(`#lyricsTextBoxColor${slot}`);
     const borderColor = $(`#lyricsBorderColor${slot}`);
+    const rgbBorderEnabled = $(`#lyricsRgbBorderEnabled${slot}`);
+    const rgbWindowBorderEnabled = $(`#lyricsRgbWindowBorderEnabled${slot}`);
+    const rgbClockBorderEnabled = $(`#lyricsRgbClockBorderEnabled${slot}`);
+    const rgbTextBoxBorderEnabled = $(`#lyricsRgbTextBoxBorderEnabled${slot}`);
     const fontFamily = $(`#lyricsFontFamily${slot}`);
+    const textScale = $(`#lyricsTextScale${slot}`);
+    const borderEnabled = $(`#lyricsBorderEnabled${slot}`);
+    const windowBorderEnabled = $(`#lyricsWindowBorderEnabled${slot}`);
+    const clockBorderEnabled = $(`#lyricsClockBorderEnabled${slot}`);
+    const textBoxEnabled = $(`#lyricsTextBoxEnabled${slot}`);
+    const clockEnabled = $(`#lyricsClockEnabled${slot}`);
+    const songNameEnabled = $(`#lyricsSongNameEnabled${slot}`);
+    const songNameColor = $(`#lyricsSongNameColor${slot}`);
+    const songNameFontFamily = $(`#lyricsSongNameFontFamily${slot}`);
+    const songNameScale = $(`#lyricsSongNameScale${slot}`);
+    const songNamePosition = $(`#lyricsSongNamePosition${slot}`);
+    const clockPosition = $(`#lyricsClockPosition${slot}`);
+    const clockScale = $(`#lyricsClockScale${slot}`);
+    const mediaScale = $(`#lyricsMediaScale${slot}`);
+    const clearModeButton = $(`#lyricsClearModeButton${slot}`);
     if (textColor) textColor.value = data.textColor || '#ffea00';
     if (clockColor) clockColor.value = data.clockColor || '#00ff55';
+    if (textBoxColor) textBoxColor.value = data.textBoxColor || data.textColor || '#ffea00';
     if (borderColor) borderColor.value = data.borderColor || data.clockColor || '#00ff55';
+    const legacyRgb = data.rgbBorderEnabled === true;
+    if (rgbBorderEnabled) rgbBorderEnabled.checked = legacyRgb;
+    if (rgbWindowBorderEnabled) rgbWindowBorderEnabled.checked = (data.rgbWindowBorderEnabled ?? legacyRgb) === true;
+    if (rgbClockBorderEnabled) rgbClockBorderEnabled.checked = data.rgbClockBorderEnabled === true;
+    if (rgbTextBoxBorderEnabled) rgbTextBoxBorderEnabled.checked = data.rgbTextBoxBorderEnabled === true;
     if (fontFamily) fontFamily.value = data.fontFamily || 'Arial';
+    if (textScale) textScale.value = String(Math.round((Number(data.textScale || 1) || 1) * 100));
+    if (borderEnabled) borderEnabled.checked = data.borderEnabled !== false;
+    if (windowBorderEnabled) windowBorderEnabled.checked = data.windowBorderEnabled ?? data.borderEnabled ?? true;
+    if (clockBorderEnabled) clockBorderEnabled.checked = data.clockBorderEnabled ?? data.borderEnabled ?? true;
+    if (textBoxEnabled) textBoxEnabled.checked = data.textBoxEnabled ?? true;
+    if (clockEnabled) clockEnabled.checked = data.clockEnabled !== false;
+    if (songNameEnabled) songNameEnabled.checked = data.songNameEnabled === true;
+    if (songNameColor) songNameColor.value = data.songNameColor || data.clockColor || '#00ff55';
+    if (songNameFontFamily) songNameFontFamily.value = data.songNameFontFamily || data.fontFamily || 'Arial';
+    if (songNameScale) songNameScale.value = String(Math.round((Number(data.songNameScale || 1) || 1) * 100));
+    if (songNamePosition) songNamePosition.value = normalizeLyricsScreenPosition(data.songNamePosition, 'top');
+    if (clockPosition) clockPosition.value = data.clockPosition === 'bottom' ? 'bottom' : 'top';
+    if (clockScale) clockScale.value = String(Math.round((Number(data.clockScale || 1) || 1) * 100));
+    if (mediaScale) mediaScale.value = String(Math.round((Number(data.mediaScale || 1) || 1) * 100));
+    if (clearModeButton) {
+      const active = data.clearMode === true;
+      clearModeButton.classList.toggle('active', active);
+      clearModeButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+      clearModeButton.textContent = active ? 'Modo Clear ON' : 'Modo Clear';
+    }
   });
 }
 
@@ -172,9 +231,22 @@ function applyTechnicalNoticeSettingsToForm(settings = {}) {
   const textColor = $('#technicalNoticeTextColor');
   const flashColor = $('#technicalNoticeFlashColor');
   const fontFamily = $('#technicalNoticeFontFamily');
+  const window1Enabled = $('#technicalNoticeWindow1Enabled');
+  const window2Enabled = $('#technicalNoticeWindow2Enabled');
+  const emojiEnabled = $('#technicalNoticeEmojiEnabled');
+  const emojiInput = $('#technicalNoticeEmoji');
+  const emojiPreview = $('#technicalNoticeEmojiPreview');
+  const emojiButton = $('#technicalNoticeEmojiPickerButton');
+  const emoji = String(settings.emoji || '⚠️').trim().replace(/[\r\n\t]+/g, '').slice(0, 8) || '⚠️';
   if (textColor) textColor.value = settings.textColor || '#ffea00';
   if (flashColor) flashColor.value = settings.flashColor || '#ff0000';
   if (fontFamily) fontFamily.value = settings.fontFamily || 'Arial';
+  if (window1Enabled) window1Enabled.checked = settings.window1Enabled !== false;
+  if (window2Enabled) window2Enabled.checked = settings.window2Enabled !== false;
+  if (emojiEnabled) emojiEnabled.checked = settings.emojiEnabled !== false;
+  if (emojiInput) emojiInput.value = emoji;
+  if (emojiPreview) emojiPreview.textContent = emoji;
+  if (emojiButton) emojiButton.setAttribute('aria-label', `Emoji do recado: ${emoji}`);
 }
 
 async function refreshLyricsSettings() {
@@ -192,10 +264,31 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     slot: id,
     textColor: $(`#lyricsTextColor${id}`)?.value || '#ffea00',
     clockColor: $(`#lyricsClockColor${id}`)?.value || '#00ff55',
+    textBoxColor: $(`#lyricsTextBoxColor${id}`)?.value || $(`#lyricsTextColor${id}`)?.value || '#ffea00',
     borderColor: $(`#lyricsBorderColor${id}`)?.value || $(`#lyricsClockColor${id}`)?.value || '#00ff55',
-    fontFamily: $(`#lyricsFontFamily${id}`)?.value || 'Arial'
+    rgbBorderEnabled: $(`#lyricsRgbWindowBorderEnabled${id}`)?.checked === true,
+    rgbWindowBorderEnabled: $(`#lyricsRgbWindowBorderEnabled${id}`)?.checked === true,
+    rgbClockBorderEnabled: $(`#lyricsRgbClockBorderEnabled${id}`)?.checked === true,
+    rgbTextBoxBorderEnabled: $(`#lyricsRgbTextBoxBorderEnabled${id}`)?.checked === true,
+    fontFamily: $(`#lyricsFontFamily${id}`)?.value || 'Arial',
+    textScale: Math.max(0.5, Math.min(1.25, (Number($(`#lyricsTextScale${id}`)?.value || 100) / 100))),
+    borderEnabled: $(`#lyricsWindowBorderEnabled${id}`)?.checked !== false,
+    windowBorderEnabled: $(`#lyricsWindowBorderEnabled${id}`)?.checked !== false,
+    clockBorderEnabled: $(`#lyricsClockBorderEnabled${id}`)?.checked !== false,
+    textBoxEnabled: $(`#lyricsTextBoxEnabled${id}`)?.checked !== false,
+    clockEnabled: $(`#lyricsClockEnabled${id}`)?.checked !== false,
+    songNameEnabled: $(`#lyricsSongNameEnabled${id}`)?.checked === true,
+    songNameColor: $(`#lyricsSongNameColor${id}`)?.value || $(`#lyricsClockColor${id}`)?.value || '#00ff55',
+    songNameFontFamily: $(`#lyricsSongNameFontFamily${id}`)?.value || $(`#lyricsFontFamily${id}`)?.value || 'Arial',
+    songNameScale: Math.max(0.5, Math.min(3, (Number($(`#lyricsSongNameScale${id}`)?.value || 100) / 100))),
+    songNamePosition: normalizeLyricsScreenPosition($(`#lyricsSongNamePosition${id}`)?.value, 'top'),
+    clockPosition: $(`#lyricsClockPosition${id}`)?.value === 'bottom' ? 'bottom' : 'top',
+    clockScale: Math.max(0.5, Math.min(2.5, (Number($(`#lyricsClockScale${id}`)?.value || 100) / 100))),
+    mediaScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsMediaScale${id}`)?.value || 100) / 100))),
+    clearMode: $(`#lyricsClearModeButton${id}`)?.getAttribute('aria-pressed') === 'true'
   };
   const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
+  // Atualiza apenas o slot salvo; nunca reaplica defaults na outra janela.
   applyLyricsSettingsToForm({ [id]: saved });
   return saved;
 }
@@ -204,11 +297,159 @@ async function saveTechnicalNoticeSettingsFromForm() {
   const payload = {
     textColor: $('#technicalNoticeTextColor')?.value || '#ffea00',
     flashColor: $('#technicalNoticeFlashColor')?.value || '#ff0000',
-    fontFamily: $('#technicalNoticeFontFamily')?.value || 'Arial'
+    fontFamily: $('#technicalNoticeFontFamily')?.value || 'Arial',
+    window1Enabled: $('#technicalNoticeWindow1Enabled')?.checked !== false,
+    window2Enabled: $('#technicalNoticeWindow2Enabled')?.checked !== false,
+    emojiEnabled: $('#technicalNoticeEmojiEnabled')?.checked !== false,
+    emoji: ($('#technicalNoticeEmoji')?.value || '⚠️').trim().slice(0, 8) || '⚠️'
   };
   const saved = await window.hookUpdateCenter.saveTechnicalNoticeSettings(payload);
   applyTechnicalNoticeSettingsToForm(saved);
   return saved;
+}
+
+
+const lyricsAutoApplyTimers = { 1: null, 2: null, technical: null };
+async function autoSaveLyricsSettings(slot) {
+  const id = Number(slot) === 2 ? 2 : 1;
+  clearTimeout(lyricsAutoApplyTimers[id]);
+  lyricsAutoApplyTimers[id] = setTimeout(async () => {
+    try {
+      await saveLyricsSettingsFromForm(id);
+    } catch (error) {
+      console.warn('Auto-save Teleprompt settings failed', error);
+    }
+  }, 80);
+}
+
+async function autoSaveTechnicalNoticeSettings() {
+  clearTimeout(lyricsAutoApplyTimers.technical);
+  lyricsAutoApplyTimers.technical = setTimeout(async () => {
+    try {
+      await saveTechnicalNoticeSettingsFromForm();
+    } catch (error) {
+      console.warn('Auto-save technical notice settings failed', error);
+    }
+  }, 100);
+}
+
+
+function setupTechnicalNoticeEmojiPicker() {
+  const button = $('#technicalNoticeEmojiPickerButton');
+  const popover = $('#technicalNoticeEmojiPicker');
+  const input = $('#technicalNoticeEmoji');
+  const preview = $('#technicalNoticeEmojiPreview');
+  if (!button || !popover || !input || popover.dataset.ready === '1') return;
+
+  const emojis = [
+    '⚠️', '✅', '❌', '🔔', '📢', '🎵', '🎶', '🔥',
+    '⭐', '✨', '💡', '🙏', '🙌', '👀', '⏰', '🚨',
+    '🎤', '🎧', '🎹', '🥁', '🎸', '🎺', '📌', '➡️',
+    '⬅️', '⬆️', '⬇️', '🟢', '🟡', '🔴', '🔵', '🟣'
+  ];
+
+  popover.innerHTML = emojis.map((emoji) => (
+    `<button class="emoji-option" type="button" data-emoji="${emoji}" role="option">${emoji}</button>`
+  )).join('');
+
+  const closePicker = () => {
+    popover.classList.add('hidden');
+    button.setAttribute('aria-expanded', 'false');
+  };
+
+  const openPicker = () => {
+    popover.classList.remove('hidden');
+    button.setAttribute('aria-expanded', 'true');
+  };
+
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (popover.classList.contains('hidden')) openPicker();
+    else closePicker();
+  });
+
+  popover.querySelectorAll('.emoji-option').forEach((option) => {
+    option.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const emoji = option.dataset.emoji || '⚠️';
+      input.value = emoji;
+      if (preview) preview.textContent = emoji;
+      closePicker();
+      autoSaveTechnicalNoticeSettings();
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (popover.classList.contains('hidden')) return;
+    if (popover.contains(event.target) || button.contains(event.target)) return;
+    closePicker();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closePicker();
+  });
+
+  popover.dataset.ready = '1';
+}
+
+function setupLyricsAutoApply() {
+  setupTechnicalNoticeEmojiPicker();
+  [1, 2].forEach((slot) => {
+    const ids = [
+      `lyricsTextColor${slot}`,
+      `lyricsClockColor${slot}`,
+      `lyricsTextBoxColor${slot}`,
+      `lyricsBorderColor${slot}`, 
+      `lyricsRgbWindowBorderEnabled${slot}`,
+      `lyricsRgbClockBorderEnabled${slot}`,
+      `lyricsRgbTextBoxBorderEnabled${slot}`,
+      `lyricsFontFamily${slot}`,
+      `lyricsTextScale${slot}`,
+      `lyricsBorderEnabled${slot}`,
+      `lyricsWindowBorderEnabled${slot}`,
+      `lyricsClockBorderEnabled${slot}`,
+      `lyricsTextBoxEnabled${slot}`,
+      `lyricsClockEnabled${slot}`,
+      `lyricsSongNameEnabled${slot}`,
+      `lyricsSongNameColor${slot}`,
+      `lyricsSongNameFontFamily${slot}`,
+      `lyricsSongNameScale${slot}`,
+      `lyricsSongNamePosition${slot}`,
+      `lyricsClockPosition${slot}`,
+      `lyricsClockScale${slot}`,
+      `lyricsMediaScale${slot}`,
+      `lyricsClearModeButton${slot}`
+    ];
+    ids.forEach((id) => {
+      const el = $(`#${id}`);
+      if (!el || el.dataset.autoApplyLyrics === '1') return;
+      el.dataset.autoApplyLyrics = '1';
+      if (el.classList && el.classList.contains('clear-mode-button')) {
+        el.addEventListener('click', () => {
+          const active = el.getAttribute('aria-pressed') === 'true';
+          el.setAttribute('aria-pressed', active ? 'false' : 'true');
+          el.classList.toggle('active', !active);
+          el.textContent = !active ? 'Modo Clear ON' : 'Modo Clear';
+          autoSaveLyricsSettings(slot);
+        });
+        return;
+      }
+      const eventName = el.type === 'range' || el.type === 'color' ? 'input' : 'change';
+      el.addEventListener(eventName, () => autoSaveLyricsSettings(slot));
+      if (eventName !== 'change') el.addEventListener('change', () => autoSaveLyricsSettings(slot));
+    });
+  });
+
+  ['technicalNoticeTextColor', 'technicalNoticeFlashColor', 'technicalNoticeFontFamily', 'technicalNoticeWindow1Enabled', 'technicalNoticeWindow2Enabled', 'technicalNoticeEmojiEnabled'].forEach((id) => {
+    const el = $(`#${id}`);
+    if (!el || el.dataset.autoApplyNotice === '1') return;
+    el.dataset.autoApplyNotice = '1';
+    const eventName = (el.type === 'color' || el.type === 'text') ? 'input' : 'change';
+    el.addEventListener(eventName, autoSaveTechnicalNoticeSettings);
+    if (eventName !== 'change') el.addEventListener('change', autoSaveTechnicalNoticeSettings);
+  });
 }
 
 function renderBridgeState(bridge) {
@@ -375,13 +616,31 @@ function promptDeviceLoginModal() {
   })
 }
 
+
+function updateLyricsWindowButtons() {
+  const windows = state?.lyricsWindows || {};
+  const oneOpen = !!windows.oneOpen;
+  const twoOpen = !!windows.twoOpen;
+  const oneButton = $('#openLyricsOneButton');
+  const twoButton = $('#openLyricsTwoButton');
+  if (oneButton) {
+    oneButton.textContent = oneOpen ? 'Fechar Teleprompt 1' : 'Abrir Teleprompt 1';
+    oneButton.classList.toggle('danger-button', oneOpen);
+  }
+  if (twoButton) {
+    twoButton.textContent = twoOpen ? 'Fechar Teleprompt 2' : 'Abrir Teleprompt 2';
+    twoButton.classList.toggle('danger-button', twoOpen);
+  }
+}
+
 function renderState(nextState) {
   state = nextState;
+  updateLyricsWindowButtons();
   const isMac = state.platform === 'darwin';
   const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
   $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.8.2';
+  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.0';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
   $('#updateStatus').textContent = state.latestUpdate ? 'Última publicação carregada' : 'Aguardando publicação';
 
@@ -566,7 +825,45 @@ async function loadPreviousUpdates() {
   }
 }
 
+
+function setupSidebarToggle() {
+  const shell = document.querySelector('.app-shell');
+  const toggle = document.getElementById('sidebarToggleButton');
+  const sidebar = document.querySelector('.sidebar');
+  if (!shell || !toggle || !sidebar) return;
+
+  const setOpen = (open) => {
+    shell.classList.toggle('sidebar-open', !!open);
+    document.body.classList.toggle('sidebar-open', !!open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.setAttribute('title', open ? 'Fechar menu' : 'Abrir menu');
+  };
+
+  setOpen(false);
+
+  toggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(!shell.classList.contains('sidebar-open'));
+  });
+
+  sidebar.querySelectorAll('.nav-item').forEach((button) => {
+    button.addEventListener('click', () => setOpen(false));
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setOpen(false);
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!shell.classList.contains('sidebar-open')) return;
+    if (sidebar.contains(event.target) || toggle.contains(event.target)) return;
+    setOpen(false);
+  });
+}
+
 async function init() {
+  setupSidebarToggle();
   await refreshState();
 
   $('#modalOkButton').addEventListener('click', () => {
@@ -635,12 +932,22 @@ async function init() {
   });
 
   $('#openLyricsOneButton')?.addEventListener('click', async () => {
-    try { await saveLyricsSettingsFromForm(1); await window.hookUpdateCenter.openLyricsWindow(1); }
-    catch (error) { showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o Teleprompt 1.'), type: 'error' }); }
+    try {
+      await saveLyricsSettingsFromForm(1);
+      await window.hookUpdateCenter.openLyricsWindow(1);
+      renderState(await window.hookUpdateCenter.getState());
+    } catch (error) {
+      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível alternar o Teleprompt 1.'), type: 'error' });
+    }
   });
   $('#openLyricsTwoButton')?.addEventListener('click', async () => {
-    try { await saveLyricsSettingsFromForm(2); await window.hookUpdateCenter.openLyricsWindow(2); }
-    catch (error) { showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o Teleprompt 2.'), type: 'error' }); }
+    try {
+      await saveLyricsSettingsFromForm(2);
+      await window.hookUpdateCenter.openLyricsWindow(2);
+      renderState(await window.hookUpdateCenter.getState());
+    } catch (error) {
+      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível alternar o Teleprompt 2.'), type: 'error' });
+    }
   });
   $('#saveLyricsSettingsButton1')?.addEventListener('click', async () => {
     try {
@@ -666,8 +973,13 @@ async function init() {
       showModal({ title: 'Avisos técnicos', message: friendlyError(error, 'Não foi possível salvar a aparência dos avisos técnicos.'), type: 'error' });
     }
   });
+  setupLyricsAutoApply();
   window.hookUpdateCenter.onLyricsSettingsUpdated?.(applyLyricsSettingsToForm);
   window.hookUpdateCenter.onTechnicalNoticeSettingsUpdated?.(applyTechnicalNoticeSettingsToForm);
+  window.hookUpdateCenter.onLyricsWindowsStateUpdated?.((windows) => {
+    state = { ...(state || {}), lyricsWindows: windows || {} };
+    updateLyricsWindowButtons();
+  });
 
   $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
   $('#closeVideoModalButton')?.addEventListener('click', closeVideoModal);

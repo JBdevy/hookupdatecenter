@@ -21,10 +21,12 @@
     "category": "public.app-category.utilities",
     "artifactName": "Hook-Center-Legacy-${version}-macOS10.${ext}",
     "icon": "assets/icon.icns",
-    "hardenedRuntime": false,
+    "hardenedRuntime": true,
     "gatekeeperAssess": false,
-    "forceCodeSigning": false,
-    "identity": null
+    "forceCodeSigning": true,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist"
   },
-  "icon": "assets/icon.png"
+  "icon": "assets/icon.png",
+  "afterSign": "build/notarize.js"
 }

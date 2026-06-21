@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-director-1.8.2-auto-front-dispositivos';
+const CACHE_NAME = 'vshook-director-1.9.0-auto-front-dispositivos';
 const APP_ASSETS = [
   './',
   './index.html',

@@ -5677,7 +5677,7 @@ body.boot-loading {
   min-height:0!important;
 }
 
-/* v1.8.2 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
+/* v1.9.0 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
 .app:not([data-theme="light"]) { background:#0b1118 !important; }
 .app:not([data-theme="light"]) .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
 .app:not([data-theme="light"]) .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }

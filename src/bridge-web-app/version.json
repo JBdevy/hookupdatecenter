@@ -1,10 +1,10 @@
 {
-  "version": "1.8.2-auto-front-dispositivos",
+  "version": "1.9.0-auto-front-dispositivos",
   "title": "QR App Hook Center - Play Repertórios corrigido",
   "notes": "Play do Diretor envia alvo absoluto da linha; corrige índice da aba Repertórios no primeiro acesso; mantém seleção azul/rosa e sem projeto fake.",
   "generatedAt": "2026-06-20T07:20:00Z",
-  "updateId": "1.8.2-play-repertorios-index-fix",
+  "updateId": "1.9.0-play-repertorios-index-fix",
   "build": "play-repertorios-index-fix",
-  "label": "1.8.2 play repertorios indice corrigido",
+  "label": "1.9.0 play repertorios indice corrigido",
   "updatedAt": "2026-06-20T07:20:00Z"
 }

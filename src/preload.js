@@ -26,13 +26,17 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   saveTechnicalNoticeSettings: (payload) => ipcRenderer.invoke('save-technical-notice-settings', payload),
   openLyricsWindow: (slot) => ipcRenderer.invoke('open-lyrics-window', slot),
   closeLyricsWindow: (slot) => ipcRenderer.invoke('close-lyrics-window', slot),
-  getLyricsState: () => ipcRenderer.invoke('get-lyrics-state'),
+  getLyricsState: (slot) => ipcRenderer.invoke('get-lyrics-state', slot),
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
+  toggleCurrentWindowFullscreen: () => ipcRenderer.invoke('toggle-current-window-fullscreen'),
+  getCurrentWindowBounds: () => ipcRenderer.invoke('get-current-window-bounds'),
+  moveCurrentWindow: (payload) => ipcRenderer.send('move-current-window', payload),
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data)),
   onLicenseStatus: (callback) => ipcRenderer.on('license-status', (_event, data) => callback(data)),
   onBridgeStatus: (callback) => ipcRenderer.on('bridge-status', (_event, data) => callback(data)),
   onUpdateError: (callback) => ipcRenderer.on('update-error', (_event, message) => callback(message)),
   onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (_event, progress) => callback(progress)),
   onLyricsSettingsUpdated: (callback) => ipcRenderer.on('lyrics-settings-updated', (_event, data) => callback(data)),
-  onTechnicalNoticeSettingsUpdated: (callback) => ipcRenderer.on('technical-notice-settings-updated', (_event, data) => callback(data))
+  onTechnicalNoticeSettingsUpdated: (callback) => ipcRenderer.on('technical-notice-settings-updated', (_event, data) => callback(data)),
+  onLyricsWindowsStateUpdated: (callback) => ipcRenderer.on('lyrics-windows-state-updated', (_event, data) => callback(data))
 });
