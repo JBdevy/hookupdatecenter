@@ -1,4 +1,5 @@
 const timerEl = document.getElementById('lyricsTimer');
+const overlayEl = document.getElementById('lyricsOverlay');
 const songNameEl = document.getElementById('lyricsSongName');
 const textEl = document.getElementById('lyricsText');
 const mediaLayerEl = document.getElementById('lyricsMediaLayer');
@@ -176,6 +177,7 @@ function applySettings(next = {}) {
   document.body.classList.toggle('song-below-clock', false);
   document.body.classList.toggle('clock-bottom', clockPosition === 'bottom');
   document.body.classList.toggle('clock-top', clockPosition !== 'bottom');
+  forceClockAboveTechnicalNotice(document.body.classList.contains('notice-active'));
   updateFontFit();
 }
 
@@ -216,6 +218,28 @@ function flashTechnicalNoticeBackground() {
   }, 1150);
 }
 
+
+function forceClockAboveTechnicalNotice(active) {
+  const shouldShowClock = active === true && settings.clearMode !== true && settings.clockEnabled !== false;
+  try {
+    document.body.classList.toggle('notice-clock-visible', shouldShowClock);
+    if (shouldShowClock && overlayEl && overlayEl.parentElement !== document.body) {
+      document.body.appendChild(overlayEl);
+    }
+    if (shouldShowClock && timerEl) {
+      timerEl.style.display = 'block';
+      timerEl.style.visibility = 'visible';
+      timerEl.style.opacity = '1';
+      timerEl.style.zIndex = '2147483647';
+    } else if (timerEl) {
+      timerEl.style.removeProperty('display');
+      timerEl.style.removeProperty('visibility');
+      timerEl.style.removeProperty('opacity');
+      timerEl.style.removeProperty('z-index');
+    }
+  } catch (_) {}
+}
+
 function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
   activeTechnicalNotice = notice && typeof notice === 'object' ? notice : null;
   const text = String(activeTechnicalNotice?.text || activeTechnicalNotice?.message || '').trim();
@@ -226,6 +250,7 @@ function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
     technicalNoticeEl.textContent = '';
     technicalNoticeEl.classList.add('hidden');
     document.body.classList.remove('notice-active');
+    forceClockAboveTechnicalNotice(false);
     lastTechnicalNoticeKey = '';
     return;
   }
@@ -233,6 +258,7 @@ function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
   technicalNoticeEl.textContent = formatTechnicalNoticeText(text);
   technicalNoticeEl.classList.remove('hidden');
   document.body.classList.add('notice-active');
+  forceClockAboveTechnicalNotice(true);
   if (noticeKey && noticeKey !== lastTechnicalNoticeKey) {
     lastTechnicalNoticeKey = noticeKey;
     flashTechnicalNoticeBackground();

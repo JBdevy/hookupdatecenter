@@ -1417,7 +1417,7 @@ body.rgb-window-border-enabled:not(.border-hidden):not(.clear-mode) .lyrics-stag
 
 /* RGB do relógio. */
 body.rgb-clock-border-enabled:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer {
-  position: relative !important;
+  position: fixed !important;
   border-color: transparent !important;
   box-shadow: none !important;
   overflow: visible !important;
@@ -1481,4 +1481,135 @@ body.text-box-hidden .lyrics-text::after {
 .lyrics-text,
 .lyrics-text::after {
   border-radius: 10px !important;
+}
+
+
+/* v32: corrige RGB do relógio sem deslocar e mantém relógio visível durante recados.
+   O RGB do relógio agora usa a própria borda do relógio, sem trocar o posicionamento. */
+body.rgb-clock-border-enabled:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer {
+  position: fixed !important;
+  left: 50% !important;
+  top: var(--lyrics-edge-offset) !important;
+  bottom: auto !important;
+  transform: translateX(-50%) scale(var(--lyrics-clock-scale)) !important;
+  transform-origin: top center !important;
+  z-index: 2147483644 !important;
+  border-color: #ff004c !important;
+  box-shadow: 0 0 18px rgba(255,0,76,.38), inset 0 0 16px rgba(255,0,76,.22) !important;
+  animation: vshookRgbBorderShift 4.2s linear infinite !important;
+  overflow: hidden !important;
+}
+
+body.rgb-clock-border-enabled:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
+}
+
+body.rgb-clock-border-enabled.clock-bottom:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer {
+  top: auto !important;
+  bottom: var(--lyrics-edge-offset) !important;
+  transform-origin: bottom center !important;
+}
+
+body.notice-active:not(.clock-hidden):not(.clear-mode) .lyrics-overlay,
+body.notice-active:not(.clock-hidden):not(.clear-mode) .lyrics-timer {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+body.notice-active:not(.clock-hidden):not(.clear-mode) .lyrics-timer {
+  position: fixed !important;
+  left: 50% !important;
+  top: var(--lyrics-edge-offset) !important;
+  bottom: auto !important;
+  transform: translateX(-50%) scale(var(--lyrics-clock-scale)) !important;
+  transform-origin: top center !important;
+  z-index: 2147483644 !important;
+}
+
+body.notice-active.clock-bottom:not(.clock-hidden):not(.clear-mode) .lyrics-timer {
+  top: auto !important;
+  bottom: var(--lyrics-edge-offset) !important;
+  transform-origin: bottom center !important;
+}
+
+body.notice-active .technical-notice {
+  z-index: 2147483600 !important;
+}
+
+
+/* v33: recado nunca pode esconder o relógio.
+   O JS move o overlay do relógio para o topo do body durante o recado;
+   estas regras forçam camada, visibilidade e posição sem alterar escala/posição escolhida. */
+body.notice-active.notice-clock-visible:not(.clear-mode):not(.clock-hidden) .lyrics-overlay {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: fixed !important;
+  inset: 0 !important;
+  transform: none !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+}
+
+body.notice-active.notice-clock-visible:not(.clear-mode):not(.clock-hidden) .lyrics-timer {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: fixed !important;
+  left: 50% !important;
+  top: var(--lyrics-edge-offset) !important;
+  bottom: auto !important;
+  transform: translateX(-50%) scale(var(--lyrics-clock-scale)) !important;
+  transform-origin: top center !important;
+  z-index: 2147483647 !important;
+  pointer-events: none !important;
+  background: rgba(0,0,0,.82) !important;
+}
+
+body.notice-active.notice-clock-visible.clock-bottom:not(.clear-mode):not(.clock-hidden) .lyrics-timer {
+  top: auto !important;
+  bottom: var(--lyrics-edge-offset) !important;
+  transform-origin: bottom center !important;
+}
+
+body.notice-active.notice-clock-visible:not(.clear-mode):not(.clock-hidden) .technical-notice {
+  z-index: 2147483600 !important;
+}
+
+body.notice-active.notice-clock-visible:not(.clear-mode):not(.clock-hidden) .lyrics-timer::after {
+  z-index: 2147483647 !important;
+}
+
+/* v34: corrige RGB do relógio travado no rosa.
+   A borda real do relógio fica transparente e o contorno RGB fica em um pseudo-elemento.
+   Assim nenhum border-color fixo com !important consegue travar a animação em #ff004c. */
+body.rgb-clock-border-enabled:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  animation: none !important;
+}
+
+body.rgb-clock-border-enabled:not(.clock-border-hidden):not(.clear-mode) .lyrics-timer::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  inset: -3px !important;
+  border: 3px solid #ff004c !important;
+  border-radius: 10px !important;
+  pointer-events: none !important;
+  z-index: 2147483647 !important;
+  box-sizing: border-box !important;
+  animation: vshookRgbHueSpinReal 3.6s linear infinite !important;
+}
+
+body.clear-mode .lyrics-timer::after,
+body.clock-border-hidden .lyrics-timer::after,
+body:not(.rgb-clock-border-enabled) .lyrics-timer::after {
+  content: none !important;
+  display: none !important;
+  animation: none !important;
 }
