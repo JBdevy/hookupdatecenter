@@ -41,6 +41,7 @@
             <p class="eyebrow">VS Hook</p>
             <h1>Central de atualizações</h1>
             <p class="muted">Verifique novidades, baixe atualizações e reinstale o VS Hook quando precisar.</p>
+            <p class="installed-version-line hero-installed-version">Versão do VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
           </div>
           <button id="checkButton" class="primary-button">Conferir atualização</button>
         </div>
@@ -59,6 +60,7 @@
                 </div>
                 <span id="versionBadge" class="badge">v0.0.0</span>
               </div>
+              <p class="installed-version-line">Versão do VS Hook instalada: <strong id="installedVsHookVersion">--</strong></p>
 
               <div id="videoBox" class="video-box video-preview">
                 <button id="openVideoModalButton" class="video-play-button" type="button">
@@ -70,26 +72,32 @@
               <p id="updateDescription" class="description"></p>
               <ul id="changelogList" class="changelog"></ul>
 
-              <div class="actions">
+              <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar / Reinstalar VS Hook</button>
+                <button id="installButton" class="primary-button hidden" type="button">Instalar</button>
                 <button id="laterButton" class="secondary-button">Fechar para tray</button>
               </div>
-            </div>
-
-            <div id="downloadCard" class="card hidden">
-              <h2>Baixando atualização</h2>
-              <p class="muted">Aguarde até o download finalizar. Em seguida, clique em instalar.</p>
-              <div class="progress-shell">
-                <div id="progressBar" class="progress-bar"></div>
-              </div>
-              <div class="progress-row">
-                <span id="progressText">0%</span>
-                <button id="installButton" class="primary-button hidden">Instalar</button>
+              <div id="homeProgressArea" class="inline-progress-area hidden">
+                <div class="progress-shell">
+                  <div id="progressBar" class="progress-bar"></div>
+                </div>
+                <div class="progress-row">
+                  <span id="progressText">0%</span>
+                </div>
               </div>
             </div>
           </div>
 
           <div class="update-column hookcenter-update-column">
+            <div class="card hidden" id="hookCenterLearnCard">
+              <p class="eyebrow">Hook Center</p>
+              <h2>Quero aprender tudo sobre o Hook Center</h2>
+              <p class="muted">Veja o material completo de uso da central.</p>
+              <div class="actions" id="hookCenterLearnActions">
+                <button id="hookCenterLearnButton" class="primary-button" type="button">Assistir agora</button>
+              </div>
+            </div>
+
             <div class="card" id="hookCenterUpdateCard">
               <p class="eyebrow">Hook Center</p>
               <h2>Atualização do Hook Center</h2>
@@ -390,7 +398,7 @@
               </section>
 
               <section class="lyrics-group">
-                <h3 class="lyrics-group-title">Fontes</h3>
+                <h3 class="lyrics-group-title">Fontes e posição</h3>
                 <div class="lyrics-group-grid">
                   <label>
                     Fonte da letra
@@ -414,6 +422,20 @@
                       <option value="Georgia">Georgia</option>
                       <option value="Trebuchet MS">Trebuchet MS</option>
                       <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do relógio
+                    <select id="lyricsClockPosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da música
+                    <select id="lyricsSongNamePosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
                     </select>
                   </label>
                 </div>
@@ -457,25 +479,6 @@
                 </div>
               </section>
 
-              <section class="lyrics-group">
-                <h3 class="lyrics-group-title">Posição</h3>
-                <div class="lyrics-group-grid">
-                  <label>
-                    Posição do relógio
-                    <select id="lyricsClockPosition1">
-                      <option value="top">Em cima</option>
-                      <option value="bottom">Em baixo</option>
-                    </select>
-                  </label>
-                  <label>
-                    Posição do nome da música
-                    <select id="lyricsSongNamePosition1">
-                      <option value="top">Em cima</option>
-                      <option value="bottom">Em baixo</option>
-                    </select>
-                  </label>
-                </div>
-              </section>
             </div>
             <div class="actions lyrics-actions">
               <button id="saveLyricsSettingsButton1" class="primary-button" type="button">Aplicar janela 1</button>
@@ -540,7 +543,7 @@
               </section>
 
               <section class="lyrics-group">
-                <h3 class="lyrics-group-title">Fontes</h3>
+                <h3 class="lyrics-group-title">Fontes e posição</h3>
                 <div class="lyrics-group-grid">
                   <label>
                     Fonte da letra
@@ -564,6 +567,20 @@
                       <option value="Georgia">Georgia</option>
                       <option value="Trebuchet MS">Trebuchet MS</option>
                       <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do relógio
+                    <select id="lyricsClockPosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da música
+                    <select id="lyricsSongNamePosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
                     </select>
                   </label>
                 </div>
@@ -607,25 +624,6 @@
                 </div>
               </section>
 
-              <section class="lyrics-group">
-                <h3 class="lyrics-group-title">Posição</h3>
-                <div class="lyrics-group-grid">
-                  <label>
-                    Posição do relógio
-                    <select id="lyricsClockPosition2">
-                      <option value="top">Em cima</option>
-                      <option value="bottom">Em baixo</option>
-                    </select>
-                  </label>
-                  <label>
-                    Posição do nome da música
-                    <select id="lyricsSongNamePosition2">
-                      <option value="top">Em cima</option>
-                      <option value="bottom">Em baixo</option>
-                    </select>
-                  </label>
-                </div>
-              </section>
             </div>
             <div class="actions lyrics-actions">
               <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Aplicar janela 2</button>
@@ -640,7 +638,15 @@
           <div class="status-grid">
             <div>
               <span>Versão da Central</span>
-              <strong id="currentVersion">v1.9.0</strong>
+              <strong id="currentVersion">v1.9.5</strong>
+            </div>
+            <div>
+              <span>Código ID</span>
+              <strong id="machineIdCode">--</strong>
+            </div>
+            <div>
+              <span>Versão do VS Hook instalada</span>
+              <strong id="statusInstalledVsHookVersion">--</strong>
             </div>
             <div>
               <span>Última verificação</span>
@@ -649,6 +655,36 @@
             <div>
               <span>Status</span>
               <strong id="updateStatus">--</strong>
+            </div>
+          </div>
+        </div>
+
+        <div id="statusNoUpdateInstallCard" class="card status-update-install-card">
+          <p class="eyebrow">VS Hook</p>
+          <h2>Atualização do VS Hook</h2>
+          <p class="muted">Quando houver uma atualização para este computador, ela aparecerá aqui para baixar e instalar.</p>
+        </div>
+
+        <div id="statusUpdateInstallCard" class="card status-update-install-card hidden">
+          <div class="update-header">
+            <div>
+              <p class="eyebrow">VS Hook</p>
+              <h2 id="statusUpdateTitle">Atualização disponível</h2>
+            </div>
+            <span id="statusVersionBadge" class="badge">VS Hook</span>
+          </div>
+          <p class="installed-version-line">Versão do VS Hook instalada: <strong id="statusUpdateInstalledVersion">--</strong></p>
+          <p id="statusUpdateDescription" class="description"></p>
+          <div class="actions">
+            <button id="statusDownloadButton" class="primary-button" type="button">Baixar atualização</button>
+            <button id="statusInstallButton" class="secondary-button hidden" type="button">Instalar</button>
+          </div>
+          <div id="statusProgressCard" class="status-progress-area hidden">
+            <div class="progress-shell">
+              <div id="statusProgressBar" class="progress-bar"></div>
+            </div>
+            <div class="progress-row">
+              <span id="statusProgressText">0%</span>
             </div>
           </div>
         </div>
@@ -698,6 +734,19 @@
       <div class="modal-actions">
         <button id="deviceLoginModalLater" class="secondary-button modal-button" type="button">Depois</button>
         <button id="deviceLoginModalEnter" class="primary-button modal-button" type="button">Entrar</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="supportQrModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal support-qr-modal">
+      <div class="modal-icon info">i</div>
+      <h2>Suporte</h2>
+      <p>Escaneie para acessar o suporte</p>
+      <div id="supportQrCode" class="support-qr-code" aria-label="QR Code do suporte"></div>
+      <div class="modal-actions">
+        <button id="supportQrCloseButton" class="primary-button modal-button" type="button">OK</button>
       </div>
     </div>
   </div>

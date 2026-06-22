@@ -2745,3 +2745,313 @@ body.sidebar-open .sidebar-toggle-button {
 #lyricsView input[id^="lyricsRgbTextBoxBorderEnabled"]:checked {
   accent-color: #8dff1f;
 }
+
+/* v1.9.5 - card de aprendizado e instalação pelo Status */
+.hero-installed-version {
+  margin-top: 10px;
+}
+
+#hookCenterLearnCard {
+  display: block;
+}
+
+#hookCenterLearnCard.hidden {
+  display: block !important;
+}
+
+#hookCenterLearnButton:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.status-update-install-card {
+  margin-top: 16px;
+}
+
+.status-update-install-card .actions {
+  margin-top: 14px;
+}
+
+.status-progress-area {
+  margin-top: 14px;
+}
+
+#statusView .installed-version-line {
+  margin-top: 8px;
+}
+
+/* v1.9.5 ajuste comercial: progresso dentro do próprio card, sem card extra */
+#downloadCard {
+  display: none !important;
+}
+
+#homeView #updateCard {
+  padding: 12px 14px 12px !important;
+  border-radius: 18px !important;
+}
+
+#homeView #updateCard .update-header {
+  margin-bottom: 2px !important;
+}
+
+#homeView #updateCard .installed-version-line {
+  margin: 2px 0 6px !important;
+  font-size: 12px !important;
+}
+
+#homeView #updateCard h2 {
+  font-size: 18px !important;
+  margin-bottom: 3px !important;
+}
+
+#homeView #updateCard .eyebrow {
+  margin-bottom: 3px !important;
+}
+
+#homeView #updateCard .badge {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+}
+
+#homeView #updateCard .video-box {
+  margin: 6px 0 6px !important;
+}
+
+#homeView #updateCard .video-play-button {
+  min-height: 44px !important;
+  padding: 8px 14px !important;
+  border-radius: 14px !important;
+}
+
+#homeView #updateCard .play-icon {
+  width: 28px !important;
+  height: 28px !important;
+}
+
+#homeView #updateCard .description {
+  margin: 4px 0 0 !important;
+  max-height: 34px !important;
+  overflow: hidden !important;
+  line-height: 1.28 !important;
+  font-size: 12px !important;
+}
+
+#homeView #updateCard .changelog {
+  margin: 6px 0 8px !important;
+  padding: 8px 10px 8px 16px !important;
+  border-radius: 14px !important;
+  max-height: 82px !important;
+  overflow: auto !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+#homeView #updateCard .changelog li {
+  margin: 1px 0 !important;
+}
+
+#homeView #updateCard .actions,
+#homeView #updateCard .update-actions-inline {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-top: 8px !important;
+  padding: 8px !important;
+  border-radius: 14px !important;
+  flex-wrap: wrap !important;
+}
+
+#homeView #downloadButton {
+  flex: 1 1 220px !important;
+  min-width: 210px !important;
+}
+
+#homeView #installButton {
+  flex: 0 0 auto !important;
+  min-width: 118px !important;
+  background: linear-gradient(135deg, #8dff1f, #6ecb12) !important;
+  color: #071006 !important;
+  box-shadow: 0 0 20px rgba(141,255,31,.16) !important;
+}
+
+#homeView #laterButton {
+  flex: 0 0 auto !important;
+}
+
+.inline-progress-area,
+.status-progress-area {
+  margin-top: 8px !important;
+}
+
+.inline-progress-area .progress-shell,
+.status-progress-area .progress-shell {
+  height: 8px !important;
+  border-radius: 999px !important;
+}
+
+.inline-progress-area .progress-row,
+.status-progress-area .progress-row {
+  margin-top: 4px !important;
+  font-size: 12px !important;
+}
+
+#hookCenterLearnCard {
+  display: block !important;
+  padding: 14px 16px !important;
+  border-radius: 18px !important;
+}
+
+#hookCenterLearnCard.hidden {
+  display: block !important;
+}
+
+#hookCenterLearnCard h2 {
+  font-size: 18px !important;
+  line-height: 1.1 !important;
+  margin-bottom: 6px !important;
+}
+
+#hookCenterLearnCard .muted {
+  margin: 0 0 10px !important;
+  line-height: 1.25 !important;
+  font-size: 12px !important;
+}
+
+#hookCenterLearnCard .actions {
+  margin-top: 8px !important;
+  padding: 6px !important;
+  display: block !important;
+  background: transparent !important;
+}
+
+#hookCenterLearnButton {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  min-height: 42px !important;
+  border-radius: 12px !important;
+}
+
+#hookCenterLearnButton:disabled {
+  opacity: .45 !important;
+  cursor: default !important;
+}
+
+#homeView #hookCenterUpdateCard {
+  padding: 14px 16px !important;
+  border-radius: 18px !important;
+  position: sticky !important;
+  top: 80px !important;
+}
+
+#homeView #hookCenterUpdateCard h2 {
+  font-size: 18px !important;
+  margin-bottom: 4px !important;
+}
+
+#homeView .hookcenter-update-column {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+}
+
+#statusUpdateInstallCard .actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
+}
+
+#statusDownloadButton {
+  flex: 1 1 220px !important;
+}
+
+#statusInstallButton {
+  flex: 0 0 auto !important;
+  min-width: 118px !important;
+  background: linear-gradient(135deg, #8dff1f, #6ecb12) !important;
+  color: #071006 !important;
+}
+
+
+/* Ajuste comercial: usa melhor a altura da aba Atualização, sem área morta embaixo */
+#homeView.active {
+  min-height: calc(100vh - 48px) !important;
+}
+
+#homeView .home-update-split {
+  align-items: stretch !important;
+  min-height: 0 !important;
+}
+
+#homeView .update-column {
+  height: 100% !important;
+}
+
+#homeView #updateCard {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#homeView #updateCard .changelog {
+  flex: 1 1 auto !important;
+  max-height: none !important;
+  min-height: 120px !important;
+}
+
+#homeView #updateCard .actions {
+  margin-top: auto !important;
+}
+
+#homeView .hookcenter-update-column {
+  height: 100% !important;
+}
+
+#homeView #hookCenterLearnCard,
+#homeView #hookCenterUpdateCard {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+}
+
+#homeView #hookCenterLearnCard {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#hookCenterLearnCard .actions {
+  margin-top: auto !important;
+}
+
+#homeView #hookCenterUpdateCard {
+  position: static !important;
+  top: auto !important;
+}
+
+
+.support-qr-modal {
+  width: min(440px, 92vw);
+}
+
+.support-qr-modal p {
+  margin-bottom: 14px;
+}
+
+.support-qr-code {
+  width: 236px;
+  height: 236px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 18px;
+  padding: 12px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(0,0,0,.32), 0 0 24px rgba(207,55,255,.18);
+}
+
+.support-qr-code svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+

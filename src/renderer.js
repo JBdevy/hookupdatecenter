@@ -16,6 +16,37 @@ function friendlyError(error, fallback) {
   const message = cleanErrorMessage(error);
   const lower = message.toLowerCase();
 
+  const technicalPatterns = [
+    'osascript',
+    'administrator privileges',
+    'with administrator',
+    'eacces',
+    'eperm',
+    'permission denied',
+    'operation not permitted',
+    'command failed',
+    'execfilesync',
+    'child_process',
+    'sys_runtime',
+    'vscore',
+    'hookdeveloper',
+    'application support',
+    'programdata',
+    '.dat',
+    'base64 -d',
+    'base64 -D',
+    'cancelled',
+    'canceled',
+    'cancelado',
+    'user canceled',
+    'user cancelled',
+    '-128'
+  ];
+
+  if (technicalPatterns.some((item) => lower.includes(item))) {
+    return fallback || 'Não foi possível concluir a operação. Tente novamente.';
+  }
+
   if (lower.includes('cpf não encontrado') || lower.includes('cpf nao encontrado')) {
     return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.';
   }
@@ -26,11 +57,15 @@ function friendlyError(error, fallback) {
     }
   }
 
+  if (lower.includes('compra ativa') || lower.includes('dados informados')) {
+    return 'Não encontramos uma compra ativa para os dados informados.\nVerifique o CPF/CNPJ e o e-mail usados na compra.';
+  }
+
   if (lower.includes('cancelamento da assinatura') || lower.includes('assinatura está atrasada') || lower.includes('assinatura esta atrasada') || lower.includes('licença será removido') || lower.includes('licenca sera removido') || lower.includes('terceiros') || lower.includes('compartilhamento')) {
     return message;
   }
 
-  if (lower.includes('já possui') || lower.includes('limite') || lower.includes('computadores')) {
+  if (lower.includes('já possui') || lower.includes('ja possui') || lower.includes('limite') || lower.includes('computadores') || lower.includes('remova 1 dispositivo')) {
     return message;
   }
 
@@ -38,7 +73,7 @@ function friendlyError(error, fallback) {
     return 'Não foi possível verificar agora.\nVerifique sua internet e tente novamente.';
   }
 
-  return fallback || 'Ocorreu um erro. Contate o suporte.';
+  return fallback || 'Não foi possível concluir a operação. Tente novamente.';
 }
 
 function showModal({ title = 'Aviso', message = '', type = 'info' }) {
@@ -96,10 +131,110 @@ function closeVideoModal() {
   $('#videoModal').classList.add('hidden');
 }
 
+function showSupportQrModal({ qrSvg = '', url = '' } = {}) {
+  const modal = $('#supportQrModal');
+  const qr = $('#supportQrCode');
+  if (!modal || !qr) return;
+  qr.innerHTML = qrSvg || '';
+  if (!qrSvg && url) {
+    qr.textContent = url;
+  }
+  modal.classList.remove('hidden');
+  $('#supportQrCloseButton')?.focus();
+}
+
+function closeSupportQrModal() {
+  $('#supportQrModal')?.classList.add('hidden');
+  const qr = $('#supportQrCode');
+  if (qr) qr.innerHTML = '';
+}
+
 function updateDownloadCompactMode() {
   const isHomeActive = $('#homeView')?.classList.contains('active');
-  const downloadVisible = !$('#downloadCard')?.classList.contains('hidden');
-  document.body.classList.toggle('download-compact', !!isHomeActive && !!downloadVisible);
+  const progressVisible = !$('#homeProgressArea')?.classList.contains('hidden');
+  document.body.classList.toggle('download-compact', !!isHomeActive && !!progressVisible);
+}
+
+function setProgressVisible(visible) {
+  $('#homeProgressArea')?.classList.toggle('hidden', !visible);
+  $('#statusProgressCard')?.classList.toggle('hidden', !visible);
+  updateDownloadCompactMode();
+}
+
+function resetVsHookProgress() {
+  ['#progressBar', '#statusProgressBar'].forEach((selector) => {
+    const el = $(selector);
+    if (el) el.style.width = '0%';
+  });
+  ['#progressText', '#statusProgressText'].forEach((selector) => {
+    const el = $(selector);
+    if (el) el.textContent = '0%';
+  });
+  $('#installButton')?.classList.add('hidden');
+  $('#statusInstallButton')?.classList.add('hidden');
+}
+
+function updateVsHookProgress(progress) {
+  const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+  ['#progressBar', '#statusProgressBar'].forEach((selector) => {
+    const el = $(selector);
+    if (el) el.style.width = `${safeProgress}%`;
+  });
+  ['#progressText', '#statusProgressText'].forEach((selector) => {
+    const el = $(selector);
+    if (el) el.textContent = `${safeProgress}%`;
+  });
+  if (safeProgress >= 100) {
+    $('#installButton')?.classList.remove('hidden');
+    $('#statusInstallButton')?.classList.remove('hidden');
+  }
+}
+
+async function startVsHookDownload(updateOverride = null) {
+  try {
+    if (!(await ensureDeviceName())) return;
+    setProgressVisible(true);
+    resetVsHookProgress();
+    const buttons = [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean);
+    buttons.forEach((button) => {
+      button.disabled = true;
+      button.dataset.originalText = button.textContent;
+      button.textContent = 'Baixando...';
+    });
+    await window.hookUpdateCenter.downloadUpdate(updateOverride ? { update: updateOverride } : undefined);
+  } catch (error) {
+    showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar a atualização.'), type: 'error' });
+  } finally {
+    [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean).forEach((button) => {
+      button.disabled = false;
+      button.textContent = button.dataset.originalText || 'Baixar atualização';
+      delete button.dataset.originalText;
+    });
+  }
+}
+
+async function installVsHookDownloadedUpdate() {
+  const confirmed = await confirmModal({
+    title: 'Instalar VS Hook',
+    message: 'Feche o REAPER antes de continuar. O Hook Center vai instalar o VS Hook e os arquivos necessários.',
+    type: 'info',
+    okText: 'Instalar',
+    cancelText: 'Cancelar'
+  });
+
+  if (!confirmed) return;
+
+  try {
+    const result = await window.hookUpdateCenter.installUpdate();
+    if (result.ok) {
+      renderState(await window.hookUpdateCenter.getState());
+      setProgressVisible(false);
+      resetVsHookProgress();
+      showModal({ title: 'Instalação concluída', message: `${result.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
+    }
+  } catch (error) {
+    showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar a atualização.'), type: 'error' });
+  }
 }
 
 
@@ -515,19 +650,31 @@ function renderDevices() {
     const platform = escapeHtml(device.platform || '')
     const lastSeen = device.lastSeenAt ? formatDate(device.lastSeenAt) : '--'
     const machineId = escapeHtml(device.machineId || device.id || '')
-    return `<div class="device-row ${device.current ? 'current-device' : ''}"><div><strong>${name}</strong><span>${platform || 'Sistema'} • ${lastSeen}${device.current ? ' • este computador' : ''}</span></div><button class="secondary-button device-remove-button" data-remove-device="${machineId}" ${device.current ? 'disabled title="Este computador"' : ''}>Remover</button></div>`
+    return `<div class="device-row ${device.current ? 'current-device' : ''}"><div><strong>${name}</strong><span>${platform || 'Sistema'} • ${lastSeen}${device.current ? ' • este computador' : ''}</span></div><button class="secondary-button device-remove-button" data-remove-device="${machineId}">Remover</button></div>`
   }).join('')
   list.querySelectorAll('[data-remove-device]').forEach((button) => {
     button.addEventListener('click', async () => {
       const machineId = button.getAttribute('data-remove-device')
-      const ok = await confirmModal({ title:'Remover dispositivo', message:'Remover este computador da licença?', type:'info', okText:'Remover', cancelText:'Cancelar' })
+      const isCurrentDevice = button.closest('.device-row')?.classList.contains('current-device')
+      const ok = await confirmModal({
+        title: isCurrentDevice ? 'Remover este computador' : 'Remover dispositivo',
+        message: isCurrentDevice
+          ? 'Este computador será removido da licença agora. Para usar o VS Hook novamente nele, será necessário ativar de novo.'
+          : 'Remover este computador da licença?',
+        type:'info',
+        okText:'Remover',
+        cancelText:'Cancelar'
+      })
       if (!ok) return
       try {
         const result = await window.hookUpdateCenter.removeLicenseDevice({ machineId, email: $('#devicesEmailInput')?.value || email })
         renderState(result.state || await window.hookUpdateCenter.getState())
-        $('#devicesMessage').textContent = 'Dispositivo removido.'
+        $('#devicesMessage').textContent = isCurrentDevice ? 'Este computador foi removido da licença.' : 'Dispositivo removido.'
+        if (isCurrentDevice) {
+          showModal({ title:'Computador removido', message:'Este computador foi removido da licença. Para usar o VS Hook novamente nele, faça uma nova ativação.', type:'info' })
+        }
       } catch (error) {
-        showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
+        showModal({ title:'Dispositivos', message:friendlyError(error, 'Não foi possível remover o dispositivo. Tente novamente.'), type:'error' })
       }
     })
   })
@@ -633,6 +780,19 @@ function updateLyricsWindowButtons() {
   }
 }
 
+function isTestClientUpdate(update) {
+  if (!update) return false;
+  const source = String(update.source || update.origin || '').toLowerCase();
+  return Boolean(
+    update.testClient ||
+    update.isTestClient ||
+    update.clientTest ||
+    update.test_client ||
+    source === 'test-client' ||
+    source === 'cliente-teste'
+  );
+}
+
 function renderState(nextState) {
   state = nextState;
   updateLyricsWindowButtons();
@@ -640,14 +800,35 @@ function renderState(nextState) {
   const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
   $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.0';
+  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.5';
+  const installedVersionLabel = state.installedVsHookVersion ? `v${String(state.installedVsHookVersion).replace(/^v/i, '')}` : '--';
+  const installedVersionEl = $('#installedVsHookVersion');
+  if (installedVersionEl) installedVersionEl.textContent = installedVersionLabel;
+  const homeInstalledVersionAlwaysEl = $('#homeInstalledVsHookVersionAlways');
+  if (homeInstalledVersionAlwaysEl) homeInstalledVersionAlwaysEl.textContent = installedVersionLabel;
+  const statusInstalledVersionEl = $('#statusInstalledVsHookVersion');
+  if (statusInstalledVersionEl) statusInstalledVersionEl.textContent = installedVersionLabel;
+  const statusUpdateInstalledVersionEl = $('#statusUpdateInstalledVersion');
+  if (statusUpdateInstalledVersionEl) statusUpdateInstalledVersionEl.textContent = installedVersionLabel;
+  const machineIdCodeEl = $('#machineIdCode');
+  if (machineIdCodeEl) machineIdCodeEl.textContent = state.machineId || state.license?.machineId || '--';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
-  $('#updateStatus').textContent = state.latestUpdate ? 'Última publicação carregada' : 'Aguardando publicação';
+  const statusTestUpdate = isTestClientUpdate(state.latestUpdate) ? state.latestUpdate : null;
+  $('#updateStatus').textContent = statusTestUpdate ? 'Atualização de cliente teste disponível' : 'Sem atualização de cliente teste';
 
   const hc = state.hookCenterLatest || {};
   const hcText = $('#hookCenterUpdateText');
   const hcButton = $('#hookCenterUpdateButton');
   const hcActions = $('#hookCenterUpdateActions');
+  const hcLearnCard = $('#hookCenterLearnCard');
+  const hcLearnButton = $('#hookCenterLearnButton');
+  const hasTutorial = !!(hc.tutorialUrl || hc.learnUrl || hc.videoUrl);
+  if (hcLearnCard) hcLearnCard.classList.remove('hidden');
+  if (hcLearnButton) {
+    hcLearnButton.disabled = !hasTutorial;
+    hcLearnButton.textContent = 'Assistir agora';
+    hcLearnButton.removeAttribute('title');
+  }
   if (hcText && hcButton) {
     if (state.hookCenterUpdateAvailable) {
       hcText.textContent = `Nova versão disponível: ${hc.version || ''}. ${hc.notes || ''}`.trim();
@@ -665,22 +846,57 @@ function renderState(nextState) {
   }
 
   const hasLatest = !!state.latestUpdate;
+  const hasStatusTestUpdate = !!statusTestUpdate;
   $('#noUpdateCard').classList.toggle('hidden', hasLatest);
   $('#updateCard').classList.toggle('hidden', !hasLatest);
+  $('#statusNoUpdateInstallCard')?.classList.toggle('hidden', hasStatusTestUpdate);
+  $('#statusUpdateInstallCard')?.classList.toggle('hidden', !hasStatusTestUpdate);
 
   if (hasLatest) {
     const update = state.latestUpdate;
-    $('#updateTitle').textContent = update.title || `VS Hook ${update.version || ''}`;
-    $('#versionBadge').textContent = update.version ? `v${update.version}` : 'VS Hook';
+    const displayTitle = update.title || `VS Hook ${update.version || ''}`;
+    const displayVersion = update.version ? `v${update.version}` : 'VS Hook';
+    $('#updateTitle').textContent = displayTitle;
+    $('#versionBadge').textContent = displayVersion;
     $('#updateDescription').textContent = update.description || '';
 
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
     $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
-    $('#videoModalTitle').textContent = update.title || `VS Hook ${update.version || ''}`;
+    $('#videoModalTitle').textContent = displayTitle;
 
     const changelog = Array.isArray(update.changelog) ? update.changelog : [];
     $('#changelogList').innerHTML = changelog.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+  }
+
+  if (hasStatusTestUpdate) {
+    const update = statusTestUpdate;
+    const displayTitle = update.title || `VS Hook ${update.version || ''}`;
+    const displayVersion = update.version ? `v${update.version}` : 'VS Hook';
+    const statusTitle = $('#statusUpdateTitle');
+    if (statusTitle) statusTitle.textContent = displayTitle;
+    const statusBadge = $('#statusVersionBadge');
+    if (statusBadge) statusBadge.textContent = displayVersion;
+    const statusDescription = $('#statusUpdateDescription');
+    if (statusDescription) statusDescription.textContent = update.description || '';
+    const statusDownloadButton = $('#statusDownloadButton');
+    if (statusDownloadButton) {
+      statusDownloadButton.disabled = !hasInstallableFiles(update);
+      statusDownloadButton.textContent = 'Baixar atualização teste';
+    }
+  } else {
+    const statusTitle = $('#statusUpdateTitle');
+    if (statusTitle) statusTitle.textContent = 'Atualização disponível';
+    const statusBadge = $('#statusVersionBadge');
+    if (statusBadge) statusBadge.textContent = 'VS Hook';
+    const statusDescription = $('#statusUpdateDescription');
+    if (statusDescription) statusDescription.textContent = '';
+    const statusDownloadButton = $('#statusDownloadButton');
+    if (statusDownloadButton) {
+      statusDownloadButton.disabled = true;
+      statusDownloadButton.textContent = 'Baixar atualização';
+    }
+    $('#statusInstallButton')?.classList.add('hidden');
   }
 
   renderBridgeState(state.bridge);
@@ -785,13 +1001,11 @@ function renderPreviousUpdates(updates) {
       }
 
       try {
-        $('#downloadCard').classList.remove('hidden');
         setView('home');
+        setProgressVisible(true);
+        resetVsHookProgress();
         button.disabled = true;
         button.textContent = 'Baixando...';
-        $('#progressBar').style.width = '0%';
-        $('#progressText').textContent = '0%';
-        $('#installButton').classList.add('hidden');
         await window.hookUpdateCenter.downloadUpdate({ update });
       } catch (error) {
         showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar esta versão.'), type: 'error' });
@@ -880,9 +1094,12 @@ async function init() {
   });
   $('#modalCancelButton').addEventListener('click', hideModal);
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
+  $('#supportQrModal')?.addEventListener('click', (event) => { if (event.target.id === 'supportQrModal') closeSupportQrModal(); });
+  $('#supportQrCloseButton')?.addEventListener('click', closeSupportQrModal);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
+      if (!$('#supportQrModal')?.classList.contains('hidden')) closeSupportQrModal();
+      else if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
       else hideModal();
     }
   });
@@ -900,7 +1117,8 @@ async function init() {
 
   const openSupport = async () => {
     try {
-      await window.hookUpdateCenter.openSupport();
+      const result = await window.hookUpdateCenter.openSupport();
+      showSupportQrModal(result || {});
     } catch (error) {
       showModal({
         title: 'Suporte',
@@ -1000,49 +1218,25 @@ async function init() {
     window.close();
   });
 
-  $('#downloadButton').addEventListener('click', async () => {
-    try {
-      if (!(await ensureDeviceName())) return;
-      $('#downloadCard').classList.remove('hidden');
-      updateDownloadCompactMode();
-      $('#downloadButton').disabled = true;
-      $('#downloadButton').textContent = 'Baixando...';
-      $('#progressBar').style.width = '0%';
-      $('#progressText').textContent = '0%';
-      $('#installButton').classList.add('hidden');
-      await window.hookUpdateCenter.downloadUpdate();
-    } catch (error) {
-      showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar a atualização.'), type: 'error' });
-    } finally {
-      $('#downloadButton').disabled = false;
-      $('#downloadButton').textContent = 'Baixar / Reinstalar VS Hook';
+  $('#downloadButton').addEventListener('click', () => startVsHookDownload());
+  $('#statusDownloadButton')?.addEventListener('click', () => {
+    const testUpdate = isTestClientUpdate(state?.latestUpdate) ? state.latestUpdate : null;
+    if (!testUpdate) {
+      showModal({ title:'Cliente teste', message:'Nenhuma atualização teste disponível para este computador.', type:'info' });
+      return;
     }
+    startVsHookDownload(testUpdate);
   });
+  $('#installButton').addEventListener('click', installVsHookDownloadedUpdate);
+  $('#statusInstallButton')?.addEventListener('click', installVsHookDownloadedUpdate);
 
-  $('#installButton').addEventListener('click', async () => {
-    const confirmed = await confirmModal({
-      title: 'Instalar VS Hook',
-      message: 'Feche o REAPER antes de continuar. O Hook Center vai instalar o VS Hook e os arquivos necessários.',
-      type: 'info',
-      okText: 'Instalar',
-      cancelText: 'Cancelar'
-    });
-
-    if (!confirmed) return;
-
+  $('#hookCenterLearnButton')?.addEventListener('click', async () => {
+    const url = state?.hookCenterLatest?.tutorialUrl || state?.hookCenterLatest?.learnUrl || state?.hookCenterLatest?.videoUrl || '';
+    if (!url) return;
     try {
-      const result = await window.hookUpdateCenter.installUpdate();
-      if (result.ok) {
-        renderState(await window.hookUpdateCenter.getState());
-        $('#downloadCard').classList.add('hidden');
-        updateDownloadCompactMode();
-        $('#installButton').classList.add('hidden');
-        $('#progressBar').style.width = '0%';
-        $('#progressText').textContent = '0%';
-        showModal({ title: 'Instalação concluída', message: `${result.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
-      }
+      await window.hookUpdateCenter.openExternal(url);
     } catch (error) {
-      showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar a atualização.'), type: 'error' });
+      showModal({ title: 'Hook Center', message: friendlyError(error, 'Não foi possível abrir o vídeo.'), type: 'error' });
     }
   });
 
@@ -1092,11 +1286,19 @@ async function init() {
         showModal({ title: 'Aviso da assinatura', message: msg, type: 'info' });
       }
     } catch (error) {
-      const msg = friendlyError(error, 'Erro ao ativar licença.');
-      $('#licenseMessage').textContent = msg;
-      const lowerMsg = msg.toLowerCase();
-      const title = (lowerMsg.includes('terceiros') || lowerMsg.includes('compartilhamento')) ? 'Alerta de licença' : 'Licença não encontrada';
-      showModal({ title, message: msg, type: 'error' });
+      const currentState = await window.hookUpdateCenter.getState().catch(() => null);
+      if (currentState?.license?.active) {
+        renderState(currentState);
+        const activeMsg = 'Licença já está ativa neste computador.';
+        $('#licenseMessage').textContent = activeMsg;
+        showModal({ title: 'Licença ativa', message: activeMsg, type: 'success' });
+      } else {
+        const msg = friendlyError(error, 'Não foi possível concluir a ativação. Tente novamente.');
+        $('#licenseMessage').textContent = msg;
+        const lowerMsg = msg.toLowerCase();
+        const title = (lowerMsg.includes('terceiros') || lowerMsg.includes('compartilhamento')) ? 'Alerta de licença' : ((lowerMsg.includes('não foi possível concluir') || lowerMsg.includes('nao foi possivel concluir')) ? 'Não foi possível concluir' : 'Licença não encontrada');
+        showModal({ title, message: msg, type: 'error' });
+      }
     } finally {
       $('#activateButton').disabled = false;
       $('#activateButton').textContent = 'Ativar licença';
@@ -1124,7 +1326,7 @@ async function init() {
     } catch (error) {
       const msg = friendlyError(error, 'Não foi possível verificar a licença.');
       $('#licenseMessage').textContent = msg;
-      showModal({ title: 'Licença não encontrada', message: msg, type: 'error' });
+      showModal({ title: 'Não foi possível concluir', message: msg, type: 'error' });
     } finally {
       $('#licenseCheckButton').disabled = false;
       $('#licenseCheckButton').textContent = 'Verificar licença';
@@ -1166,9 +1368,7 @@ async function init() {
   window.hookUpdateCenter.onLicenseStatus(renderState);
   window.hookUpdateCenter.onUpdateError((message) => showModal({ title: 'Erro ao verificar atualização', message: friendlyError(message, 'Não foi possível verificar atualizações.'), type: 'error' }));
   window.hookUpdateCenter.onDownloadProgress((progress) => {
-    $('#progressBar').style.width = `${progress}%`;
-    $('#progressText').textContent = `${progress}%`;
-    if (progress >= 100) $('#installButton').classList.remove('hidden');
+    updateVsHookProgress(progress);
   });
 }
 
