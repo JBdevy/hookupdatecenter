@@ -800,7 +800,7 @@ function renderState(nextState) {
   const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
   $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.5';
+  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.7';
   const installedVersionLabel = state.installedVsHookVersion ? `v${String(state.installedVsHookVersion).replace(/^v/i, '')}` : '--';
   const installedVersionEl = $('#installedVsHookVersion');
   if (installedVersionEl) installedVersionEl.textContent = installedVersionLabel;
@@ -858,7 +858,8 @@ function renderState(nextState) {
     const displayVersion = update.version ? `v${update.version}` : 'VS Hook';
     $('#updateTitle').textContent = displayTitle;
     $('#versionBadge').textContent = displayVersion;
-    $('#updateDescription').textContent = update.description || '';
+    const homeDescription = $('#updateDescription');
+    if (homeDescription) homeDescription.textContent = '';
 
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
