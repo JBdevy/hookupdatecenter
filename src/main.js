@@ -783,7 +783,8 @@ function normalizeUpdate(raw) {
         lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(windows.hookLyricsLua, windows.hookLyricsLuaUrl, windows.lyricsLua, windows.lyricsLuaUrl, windows.hookLyrics, windows.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDll: pickFirst(windows.vshookDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
-        jsApiDll: pickFirst(windows.jsApiDll, windows.jsApiDllUrl, windows.reaperJsApiDll, windows.reaperJsApiDllUrl, windows.jsapi, windows.jsapiUrl, windows.reaper_js_ReaScriptAPI64, windows.reaper_js_ReaScriptAPI64_url)
+        jsApiDll: pickFirst(windows.jsApiDll, windows.jsApiDllUrl, windows.reaperJsApiDll, windows.reaperJsApiDllUrl, windows.jsapi, windows.jsapiUrl, windows.reaper_js_ReaScriptAPI64, windows.reaper_js_ReaScriptAPI64_url),
+        logoPng: pickFirst(windows.logoPng, windows.logoPngUrl, windows.loadingLogo, windows.loadingLogoUrl, windows.logohookPng, windows.logohookPngUrl, windows.logo, windows.logoUrl, source.logoPng, source.logoPngUrl)
       },
       macos: {
         lua: pickFirst(macos.lua, macos.luaUrl, macos.vsHookLua, macos.vsHookLuaUrl, macos.script, macos.scriptUrl, source.lua, source.luaUrl),
@@ -791,7 +792,8 @@ function normalizeUpdate(raw) {
         vshookDylib: pickFirst(macos.vshookDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
         jsApiDylib: pickFirst(macos.jsApiDylib, macos.jsApiDylibUrl, macos.reaperJsApiDylib, macos.reaperJsApiDylibUrl, macos.jsapi, macos.jsapiUrl, macos.universalJsApiDylib, macos.universalJsApiDylibUrl),
         jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.armJsApiDylib, macos.armJsApiDylibUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
-        jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.intelJsApiDylib, macos.intelJsApiDylibUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url)
+        jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.intelJsApiDylib, macos.intelJsApiDylibUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url),
+        logoPng: pickFirst(macos.logoPng, macos.logoPngUrl, macos.loadingLogo, macos.loadingLogoUrl, macos.logohookPng, macos.logohookPngUrl, macos.logo, macos.logoUrl, source.logoPng, source.logoPngUrl)
       }
     }
   };
@@ -1981,7 +1983,8 @@ function buildPayloadEntries(files) {
     return [
       { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
       { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
-      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
+      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' },
+      { key: 'logoPng', url: ensureAbsoluteUrl(files.logoPng || files.loadingLogo || files.logo), filename: 'logohook.png' }
     ].filter((entry) => !!entry.url);
   }
 
@@ -1996,7 +1999,8 @@ function buildPayloadEntries(files) {
     return [
       { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
       { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
-      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
+      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' },
+      { key: 'logoPng', url: ensureAbsoluteUrl(files.logoPng || files.loadingLogo || files.logo), filename: 'logohook.png' }
     ].filter((entry) => !!entry.url);
   }
 
@@ -2153,9 +2157,15 @@ function getWindowsReaperUserPluginsDir() {
 
 function installWindowsPayload(files) {
   const luaFileName = 'VS Hook.lua';
+  const logoFileName = 'logohook.png';
 
   copyFileEnsured(files.lua, path.join(getWindowsPublicVsHookDir(), luaFileName));
   copyFileWithWindowsAdminFallback(files.lua, path.join(getWindowsLegacyVsHookDir(), luaFileName));
+
+  if (files.logoPng) {
+    copyFileEnsured(files.logoPng, path.join(getWindowsPublicVsHookDir(), logoFileName));
+    copyFileWithWindowsAdminFallback(files.logoPng, path.join(getWindowsLegacyVsHookDir(), logoFileName));
+  }
 
   try { fs.rmSync(path.join(getWindowsPublicVsHookDir(), 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
   try { fs.rmSync(path.join(getWindowsLegacyVsHookDir(), 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
@@ -2167,6 +2177,7 @@ function installWindowsPayload(files) {
 function installMacPayload(files) {
   const commands = [];
   const luaSource = files.lua;
+  const logoSource = files.logoPng;
   const vshookSource = files.vshookDylib;
   const jsApiSource = files.jsApiDylib;
 
@@ -2177,10 +2188,11 @@ function installMacPayload(files) {
   commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
 
   if (luaSource) commands.push(`cp -f ${shellQuote(luaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook.lua"`);
+  if (logoSource) commands.push(`cp -f ${shellQuote(logoSource)} "$GLOBAL_SCRIPT_DIR/logohook.png"`);
   commands.push('rm -f "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/logohook.png" 2>/dev/null || true');
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -2192,11 +2204,12 @@ function installMacPayload(files) {
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
   if (luaSource) commands.push(`  cp -f ${shellQuote(luaSource)} "$USER_SCRIPT_DIR/VS Hook.lua"`);
+  if (logoSource) commands.push(`  cp -f ${shellQuote(logoSource)} "$USER_SCRIPT_DIR/logohook.png"`);
   commands.push('  rm -f "$USER_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
   commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/logohook.png" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
 
