@@ -1,6 +1,6 @@
 {
   "name": "hook-center",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Hook Center - atualizador, licença e conexão via app do VS Hook",
   "main": "src/main.js",
   "author": "Hook Developer",

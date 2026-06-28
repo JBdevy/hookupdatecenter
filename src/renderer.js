@@ -819,11 +819,11 @@ function isTestClientUpdate(update) {
 
 
 function formatHookCenterDisplayVersion(version) {
-  const raw = String(version || '2.0.0').replace(/^v/i, '').trim();
+  const raw = String(version || '2.1.0').replace(/^v/i, '').trim();
   const numeric = raw
     .replace(/[^0-9.].*$/g, '')
     .replace(/\.0$/g, '');
-  const base = numeric || raw || '2.0';
+  const base = numeric || raw || '2.1';
   return `v${base} C`;
 }
 
