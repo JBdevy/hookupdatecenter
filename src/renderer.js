@@ -207,7 +207,7 @@ async function startVsHookDownload(updateOverride = null) {
   } finally {
     [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean).forEach((button) => {
       button.disabled = false;
-      button.textContent = button.dataset.originalText || 'Baixar atualização';
+      button.textContent = button.dataset.originalText || 'Baixar';
       delete button.dataset.originalText;
     });
   }
@@ -372,6 +372,7 @@ function applyTechnicalNoticeSettingsToForm(settings = {}) {
   const emojiInput = $('#technicalNoticeEmoji');
   const emojiPreview = $('#technicalNoticeEmojiPreview');
   const emojiButton = $('#technicalNoticeEmojiPickerButton');
+  const recadosPassword = $('#technicalNoticeRecadosPassword');
   const emoji = String(settings.emoji || '⚠️').trim().replace(/[\r\n\t]+/g, '').slice(0, 8) || '⚠️';
   if (textColor) textColor.value = settings.textColor || '#ffea00';
   if (flashColor) flashColor.value = settings.flashColor || '#ff0000';
@@ -382,6 +383,7 @@ function applyTechnicalNoticeSettingsToForm(settings = {}) {
   if (emojiInput) emojiInput.value = emoji;
   if (emojiPreview) emojiPreview.textContent = emoji;
   if (emojiButton) emojiButton.setAttribute('aria-label', `Emoji do recado: ${emoji}`);
+  if (recadosPassword) recadosPassword.value = String(settings.recadosPassword || '');
 }
 
 async function refreshLyricsSettings() {
@@ -436,12 +438,34 @@ async function saveTechnicalNoticeSettingsFromForm() {
     window1Enabled: $('#technicalNoticeWindow1Enabled')?.checked !== false,
     window2Enabled: $('#technicalNoticeWindow2Enabled')?.checked !== false,
     emojiEnabled: $('#technicalNoticeEmojiEnabled')?.checked !== false,
-    emoji: ($('#technicalNoticeEmoji')?.value || '⚠️').trim().slice(0, 8) || '⚠️'
+    emoji: ($('#technicalNoticeEmoji')?.value || '⚠️').trim().slice(0, 8) || '⚠️',
+    recadosPassword: ($('#technicalNoticeRecadosPassword')?.value || '').trim()
   };
   const saved = await window.hookUpdateCenter.saveTechnicalNoticeSettings(payload);
   applyTechnicalNoticeSettingsToForm(saved);
   return saved;
 }
+
+async function saveAllTelepromptSettingsFromForm() {
+  await saveLyricsSettingsFromForm(1);
+  await saveLyricsSettingsFromForm(2);
+  await saveTechnicalNoticeSettingsFromForm();
+}
+
+async function exportTelepromptBackupFromForm() {
+  await saveAllTelepromptSettingsFromForm();
+  return window.hookUpdateCenter.exportLyricsBackup();
+}
+
+async function importTelepromptBackupToForm() {
+  const result = await window.hookUpdateCenter.importLyricsBackup();
+  if (result?.ok) {
+    if (result.lyrics) applyLyricsSettingsToForm(result.lyrics);
+    if (result.technicalNoticeSettings) applyTechnicalNoticeSettingsToForm(result.technicalNoticeSettings);
+  }
+  return result;
+}
+
 
 
 const lyricsAutoApplyTimers = { 1: null, 2: null, technical: null };
@@ -577,7 +601,7 @@ function setupLyricsAutoApply() {
     });
   });
 
-  ['technicalNoticeTextColor', 'technicalNoticeFlashColor', 'technicalNoticeFontFamily', 'technicalNoticeWindow1Enabled', 'technicalNoticeWindow2Enabled', 'technicalNoticeEmojiEnabled'].forEach((id) => {
+  ['technicalNoticeTextColor', 'technicalNoticeFlashColor', 'technicalNoticeFontFamily', 'technicalNoticeWindow1Enabled', 'technicalNoticeWindow2Enabled', 'technicalNoticeEmojiEnabled', 'technicalNoticeRecadosPassword'].forEach((id) => {
     const el = $(`#${id}`);
     if (!el || el.dataset.autoApplyNotice === '1') return;
     el.dataset.autoApplyNotice = '1';
@@ -793,6 +817,16 @@ function isTestClientUpdate(update) {
   );
 }
 
+
+function formatHookCenterDisplayVersion(version) {
+  const raw = String(version || '2.0.0').replace(/^v/i, '').trim();
+  const numeric = raw
+    .replace(/[^0-9.].*$/g, '')
+    .replace(/\.0$/g, '');
+  const base = numeric || raw || '2.0';
+  return `v${base} C`;
+}
+
 function renderState(nextState) {
   state = nextState;
   updateLyricsWindowButtons();
@@ -800,7 +834,7 @@ function renderState(nextState) {
   const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
 
   $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = state.currentVersion ? `v${String(state.currentVersion).replace(/^v/i, '')}` : 'v1.9.7';
+  $('#currentVersion').textContent = formatHookCenterDisplayVersion(state.currentVersion);
   const installedVersionLabel = state.installedVsHookVersion ? `v${String(state.installedVsHookVersion).replace(/^v/i, '')}` : '--';
   const installedVersionEl = $('#installedVsHookVersion');
   if (installedVersionEl) installedVersionEl.textContent = installedVersionLabel;
@@ -883,7 +917,7 @@ function renderState(nextState) {
     const statusDownloadButton = $('#statusDownloadButton');
     if (statusDownloadButton) {
       statusDownloadButton.disabled = !hasInstallableFiles(update);
-      statusDownloadButton.textContent = 'Baixar atualização teste';
+      statusDownloadButton.textContent = 'Baixar';
     }
   } else {
     const statusTitle = $('#statusUpdateTitle');
@@ -895,7 +929,7 @@ function renderState(nextState) {
     const statusDownloadButton = $('#statusDownloadButton');
     if (statusDownloadButton) {
       statusDownloadButton.disabled = true;
-      statusDownloadButton.textContent = 'Baixar atualização';
+      statusDownloadButton.textContent = 'Baixar';
     }
     $('#statusInstallButton')?.classList.add('hidden');
   }
@@ -1043,39 +1077,12 @@ async function loadPreviousUpdates() {
 
 function setupSidebarToggle() {
   const shell = document.querySelector('.app-shell');
-  const toggle = document.getElementById('sidebarToggleButton');
   const sidebar = document.querySelector('.sidebar');
-  if (!shell || !toggle || !sidebar) return;
-
-  const setOpen = (open) => {
-    shell.classList.toggle('sidebar-open', !!open);
-    document.body.classList.toggle('sidebar-open', !!open);
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    toggle.setAttribute('title', open ? 'Fechar menu' : 'Abrir menu');
-  };
-
-  setOpen(false);
-
-  toggle.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setOpen(!shell.classList.contains('sidebar-open'));
-  });
-
-  sidebar.querySelectorAll('.nav-item').forEach((button) => {
-    button.addEventListener('click', () => setOpen(false));
-  });
-
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') setOpen(false);
-  });
-
-  document.addEventListener('click', (event) => {
-    if (!shell.classList.contains('sidebar-open')) return;
-    if (sidebar.contains(event.target) || toggle.contains(event.target)) return;
-    setOpen(false);
-  });
+  if (shell) shell.classList.remove('sidebar-open');
+  document.body.classList.remove('sidebar-open');
+  if (sidebar) sidebar.removeAttribute('aria-hidden');
 }
+
 
 async function init() {
   setupSidebarToggle();
@@ -1192,6 +1199,24 @@ async function init() {
       showModal({ title: 'Avisos técnicos', message: friendlyError(error, 'Não foi possível salvar a aparência dos avisos técnicos.'), type: 'error' });
     }
   });
+  $('#exportLyricsBackupButton')?.addEventListener('click', async () => {
+    try {
+      const result = await exportTelepromptBackupFromForm();
+      if (result?.cancelled) return;
+      showModal({ title: 'Backup do Teleprompt', message: 'Backup exportado com as configurações das duas janelas.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Backup do Teleprompt', message: friendlyError(error, 'Não foi possível exportar o backup do Teleprompt.'), type: 'error' });
+    }
+  });
+  $('#importLyricsBackupButton')?.addEventListener('click', async () => {
+    try {
+      const result = await importTelepromptBackupToForm();
+      if (result?.cancelled) return;
+      showModal({ title: 'Backup do Teleprompt', message: 'Backup importado para as duas janelas do Teleprompt.', type: 'success' });
+    } catch (error) {
+      showModal({ title: 'Backup do Teleprompt', message: friendlyError(error, 'Não foi possível importar o backup do Teleprompt.'), type: 'error' });
+    }
+  });
   setupLyricsAutoApply();
   window.hookUpdateCenter.onLyricsSettingsUpdated?.(applyLyricsSettingsToForm);
   window.hookUpdateCenter.onTechnicalNoticeSettingsUpdated?.(applyTechnicalNoticeSettingsToForm);
@@ -1206,13 +1231,27 @@ async function init() {
     if (event.target.id === 'videoModal') closeVideoModal();
   });
 
-  $('#checkButton').addEventListener('click', async () => {
-    $('#checkButton').disabled = true;
-    $('#checkButton').textContent = 'Verificando...';
-    const result = await window.hookUpdateCenter.checkUpdates();
-    renderState(result.state || await window.hookUpdateCenter.getState());
-    $('#checkButton').disabled = false;
-    $('#checkButton').textContent = 'Conferir atualização';
+  async function runManualUpdateCheck(button, idleText) {
+    if (!button) return;
+    try {
+      button.disabled = true;
+      button.textContent = 'Verificando...';
+      const result = await window.hookUpdateCenter.checkUpdates();
+      renderState(result.state || await window.hookUpdateCenter.getState());
+    } catch (error) {
+      showModal({ title: 'Atualização', message: friendlyError(error, 'Não foi possível verificar atualização.'), type: 'error' });
+    } finally {
+      button.disabled = false;
+      button.textContent = idleText;
+    }
+  }
+
+  $('#checkButton')?.addEventListener('click', () => {
+    runManualUpdateCheck($('#checkButton'), 'Conferir atualização');
+  });
+
+  $('#statusCheckUpdateButton')?.addEventListener('click', () => {
+    runManualUpdateCheck($('#statusCheckUpdateButton'), 'Verificar atualização');
   });
 
   $('#laterButton').addEventListener('click', () => {
@@ -1237,7 +1276,7 @@ async function init() {
     try {
       await window.hookUpdateCenter.openExternal(url);
     } catch (error) {
-      showModal({ title: 'Hook Center', message: friendlyError(error, 'Não foi possível abrir o vídeo.'), type: 'error' });
+      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o vídeo.'), type: 'error' });
     }
   });
 

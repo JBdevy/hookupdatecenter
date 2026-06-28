@@ -85,6 +85,29 @@ function clampScale(value, fallback = 1, max = 1.25) {
   return Math.max(0.35, Math.min(max, n));
 }
 
+function normalizeMediaScale(value, fallback = 1) {
+  const n = Number(value);
+  const base = Number.isFinite(n) ? n : fallback;
+  return Math.max(0.5, Math.min(1, base));
+}
+
+function applyMediaScaleToElements(value = settings.mediaScale) {
+  const safeMediaScale = normalizeMediaScale(value, 1);
+  const transformValue = `translateZ(0) scale(${safeMediaScale})`;
+
+  document.documentElement.style.setProperty('--lyrics-media-scale', String(safeMediaScale));
+  if (mediaLayerEl) mediaLayerEl.style.setProperty('--lyrics-media-scale', String(safeMediaScale));
+
+  [imageEl, videoEl].forEach((el) => {
+    if (!el) return;
+    el.style.setProperty('transform', transformValue, 'important');
+    el.style.setProperty('transform-origin', 'center center', 'important');
+    el.style.setProperty('will-change', 'transform', 'important');
+  });
+
+  return safeMediaScale;
+}
+
 function clockLetterSpacingFromScale(scale) {
   const n = Number(scale);
   const safe = Number.isFinite(n) ? n : 1;
@@ -148,11 +171,11 @@ function applySettings(next = {}) {
   const safeTextScale = clampScale(settings.textScale, 1, 1.25);
   const safeSongScale = clampScale(settings.songNameScale, 1, 3);
   const safeClockScale = clampScale(settings.clockScale, 1, 2.5);
-  const safeMediaScale = clampScale(settings.mediaScale, 1, 1.25);
+  const safeMediaScale = normalizeMediaScale(settings.mediaScale, 1);
   document.documentElement.style.setProperty('--lyrics-text-scale', String(safeTextScale));
   document.documentElement.style.setProperty('--lyrics-song-scale', String(safeSongScale));
   applyClockScaleToFit(safeClockScale);
-  document.documentElement.style.setProperty('--lyrics-media-scale', String(safeMediaScale));
+  applyMediaScaleToElements(safeMediaScale);
   const clearMode = settings.clearMode === true;
   const windowBorderEnabled = clearMode ? false : (settings.windowBorderEnabled ?? settings.borderEnabled ?? true);
   const clockBorderEnabled = clearMode ? false : (settings.clockBorderEnabled ?? settings.borderEnabled ?? true);
@@ -431,6 +454,7 @@ function showImageMode(media) {
   mediaLayerEl?.classList.remove('hidden');
   videoEl?.classList.add('hidden');
   imageEl?.classList.remove('hidden');
+  applyMediaScaleToElements(settings.mediaScale);
   if (imageEl && imageEl.getAttribute('src') !== src) imageEl.setAttribute('src', src);
   if (lastText !== '') {
     lastText = '';
@@ -456,6 +480,7 @@ function showVideoMode(media, playing) {
   mediaLayerEl?.classList.remove('hidden');
   imageEl?.classList.add('hidden');
   videoEl.classList.remove('hidden');
+  applyMediaScaleToElements(settings.mediaScale);
   videoEl.muted = true;
   videoEl.playsInline = true;
   videoEl.loop = false;
@@ -718,6 +743,7 @@ async function init() {
   window.addEventListener('resize', () => {
     updateFontFit();
     applyClockScaleToFit(settings.clockScale);
+    applyMediaScaleToElements(settings.mediaScale);
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {

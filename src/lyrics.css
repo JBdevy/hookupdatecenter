@@ -1006,9 +1006,9 @@ body::after,
 }
 
 
-/* v24 definitivo: sem cantos arredondados e mídia 100% tela */
+/* v24 definitivo: sem cantos arredondados. A escala da midia agora vem do painel Teleprompt. */
 :root {
-  --lyrics-media-scale: 1 !important;
+  --lyrics-media-scale: 1;
 }
 
 html,
@@ -1612,4 +1612,21 @@ body:not(.rgb-clock-border-enabled) .lyrics-timer::after {
   content: none !important;
   display: none !important;
   animation: none !important;
+}
+
+/* v48: escala de mídia definitiva.
+   Regras antigas de tela cheia usam transform:none !important; este bloco precisa ficar no final.
+   100% permanece o limite da janela; abaixo de 100% reduz imagem/vídeo. */
+:root {
+  --lyrics-media-scale: 1;
+}
+.lyrics-image,
+.lyrics-video,
+body.media-active .lyrics-image,
+body.media-active .lyrics-video,
+body.clear-mode .lyrics-image,
+body.clear-mode .lyrics-video {
+  transform: translateZ(0) scale(var(--lyrics-media-scale, 1)) !important;
+  transform-origin: center center !important;
+  will-change: transform !important;
 }

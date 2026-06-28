@@ -106,7 +106,7 @@ function applyLiveCommandToState(type, payload = {}) {
     if (type === 'clear_queue') {
       next.queuedSongId = null
       changed = true
-    } else if (type === 'queue_playlist_song') {
+    } else if (type === 'queue_playlist_song' || type === 'queue_region_song') {
       const id = payload.id ?? payload.selectedRegionId ?? payload.songId ?? payload.regionId ?? null
       next.queuedSongId = id === undefined || id === null ? null : String(id)
       changed = true

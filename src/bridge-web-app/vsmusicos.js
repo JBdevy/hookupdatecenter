@@ -24,7 +24,7 @@ function backToVSHookProjectSelector() {
 
 
 const APP_LOADING_MIN_MS = 1200
-const POLL_INTERVAL_MS = 250
+const POLL_INTERVAL_MS = 200
 const POPUP_FADE_MS = 220
 const BRIDGE_OFFLINE_GRACE_MS = 6000
 let bridgePollInFlight = false
@@ -78,8 +78,6 @@ const state = {
   timerRunning: false,
   timerStartedAt: 0,
   timerAccumulatedSec: 0,
-  timerMode: 'progressive',
-  timerTargetSec: 0,
   playlistScrollRatio: null,
   regionsScrollRatio: null,
   playlistScrollOffsetRows: null,
@@ -139,7 +137,9 @@ function formatTime(totalSeconds) {
 }
 
 function formatTotalTime(totalSeconds) {
-  const safe = Math.max(0, Math.floor(Number(totalSeconds) || 0))
+  // Corrige o +1s visual no total vindo da conversao REAPER/bridge.
+  const raw = Number(totalSeconds) || 0
+  const safe = Math.max(0, Math.floor(raw > 1 ? raw - 1 : raw))
   const h = Math.floor(safe / 3600)
   const m = Math.floor((safe % 3600) / 60)
   const s = safe % 60
@@ -165,20 +165,11 @@ function buildTitleTicker(text) {
 }
 
 function getChronoElapsedSeconds() {
-  const max = 99 * 3600 + 59 * 60 + 59
   const base = Math.max(0, Math.floor(Number(state.timerAccumulatedSec) || 0))
-  let elapsed = base
-  if (state.timerRunning) {
-    const startedAt = Number(state.timerStartedAt) || 0
-    if (startedAt) elapsed = base + Math.floor((Date.now() - startedAt) / 1000)
-  }
-  elapsed = Math.max(0, Math.min(max, elapsed))
-  const mode = String(state.timerMode || state.timerType || 'progressive').toLowerCase()
-  if (mode === 'countdown' || mode === 'regressive' || mode === 'regressivo') {
-    const target = Math.max(0, Math.min(max, Number(state.timerTargetSec || state.timerCountdownStartSec || 0)))
-    return Math.max(0, target - elapsed)
-  }
-  return elapsed
+  if (!state.timerRunning) return base
+  const startedAt = Number(state.timerStartedAt) || 0
+  if (!startedAt) return base
+  return Math.max(0, base + Math.floor((Date.now() - startedAt) / 1000))
 }
 
 function formatChronoTime(totalSeconds) {
@@ -417,9 +408,21 @@ function extractBlockSuffix(rawLabel, fallbackSuffix = '01') {
   return upperText(suffix)
 }
 
+function isFormattedAppBlockName(rawLabel) {
+  const text = String(rawLabel ?? '').trim()
+  if (!text) return false
+  return /^[=:\-]+\s*BLOCO\s+.+\s*[=:\-]+$/i.test(text) || /^BLOCO\s+.+/i.test(text)
+}
+
 function formatAppBlockLabel(item) {
-  const suffix = extractBlockSuffix(item?.name || item?.label || '', getBlockFallbackSuffix(item))
-  return `==== BLOCO ${suffix} ====`
+  const rawCandidate = String(item?.blockDisplayName || item?.blockName || item?.name || item?.label || '').trim()
+  const customCandidate = String(item?.blockCustomName || '').trim()
+  const raw = customCandidate || rawCandidate
+  if (customCandidate || item?.isBlockCustomName === true || (raw && !isFormattedAppBlockName(raw))) {
+    return upperText(raw)
+  }
+  const suffix = extractBlockSuffix(raw, getBlockFallbackSuffix(item))
+  return `BLOCO ${suffix}`
 }
 
 function isHashChildItem(item) {
@@ -430,9 +433,54 @@ function isHashParentItem(item) {
   return !!(item && (item.isHashParent || item.familyRole === 'parent' || item.itemType === 'hash_parent' || item.type === 'hash_parent'))
 }
 
+function vshookRootFamilyItems(items) {
+  return (Array.isArray(items) ? items : []).filter((item) => !isHashChildItem(item))
+}
+
+function vshookSumRootDuration(items) {
+  return vshookRootFamilyItems(items).reduce((sum, item) => {
+    if (detectBlockItem(item)) return sum
+    return sum + (Number(item?.durationSec) || 0)
+  }, 0)
+}
+
+function getAppBridgeBlockColor(item) {
+  if (!item) return ''
+  const candidates = [
+    item.blockColorHex,
+    item.block_color_hex,
+    item.bridgeBlockColorHex,
+    item.luaBlockColorHex,
+    item.outlineColorHex,
+    item.rowColorHex,
+    item.blockColor?.hex,
+    item.blockColor,
+    item.block_color,
+    item.colorHex,
+    item.color_hex,
+    item.finalTextColorHex,
+    item.textColorHex,
+    item.inheritedBlockColorHex,
+  ]
+  for (const value of candidates) {
+    if (value && typeof value === 'object') {
+      const nested = value.hex || value.colorHex || value.color || value.value || ''
+      const nestedColor = String(nested || '').trim()
+      if (/^#[0-9a-f]{3,8}$/i.test(nestedColor)) return nestedColor
+      if (/^[0-9a-f]{6}$/i.test(nestedColor)) return `#${nestedColor}`
+      continue
+    }
+    const color = String(value || '').trim()
+    if (!color) continue
+    if (/^#[0-9a-f]{3,8}$/i.test(color)) return color
+    if (/^[0-9a-f]{6}$/i.test(color)) return `#${color}`
+  }
+  return ''
+}
+
 function getAppItemTextColor(item, isBlock = false) {
   if (!item) return ''
-  if (isBlock) return item.blockColorHex || item.blockColor?.hex || item.textColorHex || item.finalTextColorHex || ''
+  if (isBlock) return getAppBridgeBlockColor(item) || item.blockColorHex || item.blockColor?.hex || item.textColorHex || item.finalTextColorHex || ''
 
   const normalizeColor = (value) => {
     const color = String(value || '').trim()
@@ -499,31 +547,15 @@ function getMusicosLocalSelectedSong() {
 }
 
 function setMusicosLocalSelection(tab, itemId) {
-  const id = String(itemId || '')
-  if (!id) return false
-  musicosLocalSelectedTab = tab === 'regions' ? 'regions' : 'playlist'
-  musicosLocalSelectedSongId = id
-  musicosUserScrollLockedUntil = Date.now() + 6000
-  lastFocusedSelectionKey = buildSelectionFocusKey()
-  render()
-  syncMusicosLyricsPanelDom()
-  return true
+  // App dos Músicos agora é somente monitor: clique não cria seleção.
+  return false
 }
 
 function getMusicosCurrentLyricsSong() {
+  // Sem seleção no app dos Músicos: a letra monitorada é somente da música tocando.
   if (state.playingId) {
     const playing = findMusicosSongById(state.playingId)
     if (playing) return playing
-  }
-  const localSelected = getMusicosLocalSelectedSong()
-  if (localSelected) return localSelected
-  if (state.selectedPlaylistSongId) {
-    const selected = findMusicosSongById(state.selectedPlaylistSongId)
-    if (selected) return selected
-  }
-  if (state.selectedRegionId) {
-    const selected = findMusicosSongById(state.selectedRegionId)
-    if (selected) return selected
   }
   return null
 }
@@ -607,7 +639,7 @@ function getCurrentPlaylist() {
 }
 
 function getDisplayItems() {
-  if (state.activeTab === 'regions') return Array.isArray(state.regions) ? state.regions : []
+  if (state.activeTab === 'regions') return vshookRootFamilyItems(state.regions)
   const playlist = getCurrentPlaylist()
   return Array.isArray(playlist?.songs) ? playlist.songs : []
 }
@@ -625,7 +657,7 @@ function getNextAutoQueuedSongId() {
     if (idx < 0) continue
     for (let i = idx + 1; i < list.length; i += 1) {
       const item = list[i]
-      if (!item || detectBlockItem(item)) continue
+      if (!item || detectBlockItem(item) || isHashChildItem(item)) continue
       const id = String(item.id ?? item.songId ?? '')
       if (id && id !== playingKey) return id
     }
@@ -634,9 +666,15 @@ function getNextAutoQueuedSongId() {
 }
 
 function getVisualQueuedSongId() {
-  if (state.queuedSongId) return String(state.queuedSongId)
+  const isQueuedIdAllowed = (id) => {
+    const key = String(id ?? '')
+    if (!key) return false
+    const song = findMusicosSongById ? findMusicosSongById(key) : null
+    return !(song && isHashChildItem(song))
+  }
+  if (state.queuedSongId && isQueuedIdAllowed(state.queuedSongId)) return String(state.queuedSongId)
   const autoQueuedId = getNextAutoQueuedSongId()
-  return autoQueuedId ? String(autoQueuedId) : null
+  return autoQueuedId && isQueuedIdAllowed(autoQueuedId) ? String(autoQueuedId) : null
 }
 
 function getLiveRemainingSec(baseRemainingSec) {
@@ -709,9 +747,10 @@ function getPlaybackAwareItem(item, isPlaying, isBlock) {
   const remaining = Number(item?.remainingSec)
   const region = (state.regions || []).find((entry) => String(entry?.id || '') === String(item?.id || ''))
   const sourceDuration = Number(region?.durationSec) || duration || 0
+  const regionRemaining = Number(region?.remainingSec)
   const sourceRemaining = Number.isFinite(remaining)
     ? remaining
-    : (Number.isFinite(Number(region?.remainingSec)) ? Number(region.remainingSec) : remaining)
+    : (Number.isFinite(regionRemaining) ? regionRemaining : (sourceDuration > 0 ? sourceDuration : remaining))
   return {
     ...item,
     durationSec: sourceDuration,
@@ -744,6 +783,7 @@ function renderRows(items, type) {
   return items.map((item, index) => {
     const itemId = String(item?.id ?? '')
     const isBlock = detectBlockItem(item)
+    const blockOutlineStyle = isBlock ? ` style="--block-outline-color:${escapeHtml(getBlockOutlineColorCss(item))};--block-outline-glow:${escapeHtml(getBlockOutlineGlowCss(item))};"` : ''
     const isHashChild = isHashChildItem(item)
     const isHashParent = isHashParentItem(item)
     const inheritedItemTextColor = getAppItemTextColor(item, isBlock)
@@ -751,16 +791,15 @@ function renderRows(items, type) {
       ? '#ffffff'
       : (inheritedItemTextColor && String(inheritedItemTextColor).trim() !== '' ? inheritedItemTextColor : '#ffffff')
     const isPlaying = !isBlock && String(state.playingId || '') === itemId
-    const isQueued = !isBlock && String(visualQueuedSongId || '') === itemId
-    const isLocalSelected = String(musicosLocalSelectedTab || '') === String(type || '') && String(musicosLocalSelectedSongId || '') === itemId
-    const isSelected = !isBlock && (isLocalSelected || (type === 'regions'
-      ? (state.selectedRegionIds?.includes(itemId) || String(state.selectedRegionId || '') === itemId)
-      : (state.selectedPlaylistSongIds?.includes(itemId) || String(state.selectedPlaylistSongId || '') === itemId)))
+    const isQueued = !isBlock && !isHashChild && String(visualQueuedSongId || '') === itemId
+    const isLiveExecuted = !isPlaying && !isQueued && !isBlock && !!(item?.isLiveExecuted || item?.liveExecuted || item?.alreadyPlayed || item?.played || item?.executed)
+    const isSelected = false
 
     const classes = ['item', 'numberedItem']
     if (isQueued) classes.push('queuedYellow')
     else if (isSelected) classes.push('selectedPink')
     if (isPlaying) classes.push('playing')
+    if (isLiveExecuted) classes.push('liveExecuted')
     if (isBlock) classes.push('blockItem')
     if (isHashChild) classes.push('hashChildItem')
     if (isHashParent) classes.push('hashParentItem')
@@ -774,6 +813,8 @@ function renderRows(items, type) {
       ? 'queuedYellowText'
       : isSelected
       ? 'selectedPinkText'
+      : isLiveExecuted
+      ? 'liveExecutedText'
       : isBlock
       ? 'blockText'
       : 'text'
@@ -784,21 +825,27 @@ function renderRows(items, type) {
       ? 'queuedYellowTimeText'
       : isSelected
       ? 'selectedPinkTimeText'
+      : isLiveExecuted
+      ? 'liveExecutedTimeText'
       : isBlock
       ? 'blockTimeText'
       : 'timeText'
 
     const time = isBlock ? '' : formatTime(isPlaying ? (playbackItem?.remainingSec ?? playbackItem?.durationSec) : playbackItem?.durationSec)
-    const progressBarHtml = progressRatio > 0
-      ? `<div class="progressBar progressBarWithNumber" style="left:42px;width:calc((100% - 42px) * ${progressRatio.toFixed(4)});min-width:10px;"></div>`
+    const safeProgressRatio = Math.max(0, Math.min(1, Number(progressRatio) || 0))
+    const visualProgressRatio = isPlaying ? Math.max(0.002, safeProgressRatio) : safeProgressRatio
+    const progressWidthCss = `calc(${(visualProgressRatio * 100).toFixed(3)}% - ${(42 * visualProgressRatio).toFixed(3)}px)`
+    const progressBarHtml = isPlaying
+      ? `<div class="progressBar progressBarWithNumber" data-row-progress-bar="1" style="left:42px;width:${progressWidthCss};min-width:10px;"></div>`
       : ''
+    const playingAttr = isPlaying ? ' data-playing-row="1"' : ''
     const numberCol = `<div class="numberCol ${getRowNumberText(items, index) === '--' ? 'numberColEmpty' : ''}"><span>${escapeHtml(getRowNumberText(items, index))}</span></div>`
     const rightColHtml = time
       ? `<div class="rightCol"><span class="${timeClass}">${escapeHtml(time)}</span></div>`
       : `<div class="rightCol rightColEmpty"></div>`
 
     const labelStyle = itemTextColor && !isPlaying && !isQueued && !isSelected ? ` style="color:${escapeHtml(itemTextColor)}"` : ''
-    return `<div class="${classes.join(' ')}" data-item-id="${escapeHtml(itemId)}" data-item-type="${escapeHtml(type)}">${progressBarHtml}${numberCol}<div class="leftCol"><span class="rowLabelText ${textClass}"${labelStyle}>${escapeHtml(label)}</span></div>${rightColHtml}</div>`
+    return `<div class="${classes.join(' ')}" data-item-id="${escapeHtml(itemId)}" data-item-type="${escapeHtml(type)}"${playingAttr}${blockOutlineStyle}>${progressBarHtml}${numberCol}<div class="leftCol"><span class="rowLabelText ${textClass}"${labelStyle}>${escapeHtml(label)}</span></div>${rightColHtml}</div>`
   }).join('')
 }
 
@@ -948,6 +995,16 @@ function getBorderGlowCss() {
   return `hsla(${state.borderHue}, 100%, 55%, 0.35)`
 }
 
+function getBlockOutlineColorCss(item = null) {
+  return getAppBridgeBlockColor(item) || 'var(--app-border-color)'
+}
+
+function getBlockOutlineGlowCss(item = null) {
+  const color = getAppBridgeBlockColor(item)
+  if (color) return color
+  return 'var(--app-border-glow)'
+}
+
 function applyRgbMode(next) {
   if (!next) return
   state.rgbMode = next.mode
@@ -1006,6 +1063,49 @@ function ensureNoticeAlwaysEnabled() {
   state.noticeEnabled = true
 }
 
+
+function flattenBridgeHashChildrenFromSongList(songs) {
+  const out = []
+  const seen = new Set()
+  const push = (item) => {
+    if (!item || typeof item !== 'object') return
+    const key = String(item.id ?? item.source_number ?? item.sourceNumber ?? `${out.length}`)
+    const role = String(item.familyRole || item.itemType || item.type || '')
+    const dedupeKey = `${key}|${role}|${String(item.parentId || item.parentSourceNumber || '')}`
+    if (seen.has(dedupeKey)) return
+    seen.add(dedupeKey)
+    out.push(item)
+  }
+  for (const song of Array.isArray(songs) ? songs : []) {
+    push(song)
+    const children = Array.isArray(song?.hashChildren) ? song.hashChildren
+      : Array.isArray(song?.children) ? song.children
+      : Array.isArray(song?.visibleChildren) ? song.visibleChildren
+      : []
+    for (const child of children) {
+      push({
+        ...child,
+        isHashChild: true,
+        isFamilyItem: true,
+        familyRole: child?.familyRole || 'child',
+        itemType: child?.itemType || 'hash_child',
+        type: child?.type || 'hash_child',
+        parentId: child?.parentId ?? song?.id,
+        parentSourceNumber: child?.parentSourceNumber ?? song?.source_number ?? song?.sourceNumber,
+        familyGroupId: child?.familyGroupId ?? song?.familyGroupId,
+      })
+    }
+  }
+  return out
+}
+
+function normalizeBridgePlaylistsWithHashChildren(playlists) {
+  return (Array.isArray(playlists) ? playlists : []).map((playlist) => ({
+    ...playlist,
+    songs: flattenBridgeHashChildrenFromSongList(playlist?.songs || []),
+  }))
+}
+
 function updateBridgeState(data) {
   state.bridgeStatus = data && data.connected ? 'online' : 'offline'
   state.lastBridgeUpdatedAtMs = Date.now()
@@ -1016,7 +1116,7 @@ function updateBridgeState(data) {
   state.autoplayEnabled = typeof data.autoplayEnabled === 'boolean' ? data.autoplayEnabled : !!data.autoplayEnabled
   state.activePlaylistId = data.activePlaylistId != null ? String(data.activePlaylistId) : state.activePlaylistId
   state.regions = Array.isArray(data.regions) ? data.regions : []
-  state.playlists = Array.isArray(data.playlists) ? data.playlists : []
+  state.playlists = normalizeBridgePlaylistsWithHashChildren(Array.isArray(data.playlists) ? data.playlists : [])
   state.projectTabs = Array.isArray(data.projectTabs) ? data.projectTabs : (Array.isArray(data.projects) ? data.projects : state.projectTabs)
   state.activeProjectTabIndex = Number.isFinite(Number(data.activeProjectTabIndex)) ? Number(data.activeProjectTabIndex) : state.activeProjectTabIndex
   if (state.selectedProjectTabIndex === null) state.selectedProjectTabIndex = state.activeProjectTabIndex
@@ -1042,8 +1142,6 @@ function updateBridgeState(data) {
   state.timerRunning = !!data.timerRunning
   state.timerStartedAt = Number(data.timerStartedAt) || 0
   state.timerAccumulatedSec = Number(data.timerAccumulatedSec) || 0
-  state.timerMode = typeof data.timerMode === 'string' || typeof data.timerType === 'string' ? String(data.timerMode || data.timerType || 'progressive') : state.timerMode
-  state.timerTargetSec = Number.isFinite(Number(data.timerTargetSec ?? data.timerCountdownStartSec)) ? Number(data.timerTargetSec ?? data.timerCountdownStartSec) : state.timerTargetSec
   const scrollInfo = (data && typeof data.scroll === 'object' && data.scroll) ? data.scroll : null
   state.playlistScrollRatio = Number.isFinite(Number(scrollInfo?.playlist ?? data.playlistScrollRatio)) ? Number(scrollInfo?.playlist ?? data.playlistScrollRatio) : null
   state.regionsScrollRatio = Number.isFinite(Number(scrollInfo?.regions ?? data.regionsScrollRatio)) ? Number(scrollInfo?.regions ?? data.regionsScrollRatio) : null
@@ -1103,6 +1201,8 @@ async function pollBridge() {
   if (bridgePollInFlight) return
   bridgePollInFlight = true
   const requestSeq = ++bridgePollSeq
+  const previousSignature = buildRenderSignature()
+  let bridgeOk = false
   try {
     const response = await fetch(vshookBridgeUrl('/state'), { cache: 'no-store' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -1110,25 +1210,32 @@ async function pollBridge() {
     if (requestSeq >= lastAppliedBridgePollSeq) {
       lastAppliedBridgePollSeq = requestSeq
       updateBridgeState(data)
+      bridgeOk = true
       if (appLoadingVisible) hideBootLoader()
-      if (state.lyricsPanelOpen) {
-        syncBridgePopupDom()
-        syncMusicosLyricsPanelDom()
-      } else {
-        render()
-        syncPlaybackDom()
-      }
     }
   } catch (error) {
     if (bridgeLooksOffline()) {
       state.bridgeStatus = 'offline'
-      if (state.lyricsPanelOpen) {
-        syncBridgePopupDom()
-        syncMusicosLyricsPanelDom()
-      } else render()
     }
   } finally {
     bridgePollInFlight = false
+  }
+
+  if (state.lyricsPanelOpen) {
+    syncBridgePopupDom()
+    syncMusicosLyricsPanelDom()
+    return
+  }
+
+  const nextSignature = buildRenderSignature()
+  const shouldRenderNow = appLoadingVisible || nextSignature !== lastRenderSignature || nextSignature !== previousSignature
+  if (shouldRenderNow) {
+    render()
+    syncPlaybackDom()
+    updateBorderEffect()
+  } else {
+    syncChronoDom()
+    syncPlaybackDom()
   }
 }
 
@@ -1316,7 +1423,7 @@ function getMusicosQueuedItem() {
   const queuedId = getVisualQueuedSongId ? getVisualQueuedSongId() : (state.queuedSongId ? String(state.queuedSongId) : '')
   if (!queuedId) return null
   const song = findMusicosSongById(queuedId)
-  if (!song || detectBlockItem(song)) return null
+  if (!song || detectBlockItem(song) || isHashChildItem(song)) return null
   return song
 }
 
@@ -1405,8 +1512,8 @@ function render() {
     ? upperText(playlist?.name || state.currentPlaylistName || 'SEM REPERTÓRIO')
     : 'MÚSICAS'
   const topTime = state.activeTab === 'playlist'
-    ? formatTotalTime((playlist?.songs || []).reduce((sum, item) => sum + (Number(item?.durationSec) || 0), 0))
-    : formatTotalTime((state.regions || []).reduce((sum, item) => sum + (Number(item?.durationSec) || 0), 0))
+    ? formatTotalTime(vshookSumRootDuration(playlist?.songs || []))
+    : formatTotalTime(vshookSumRootDuration(state.regions))
 
   const borderColor = getBorderColorCss()
   const borderGlow = getBorderGlowCss()
@@ -1426,7 +1533,7 @@ function render() {
   // Evita capturar o scrollTop 0 criado pela reconstrução do DOM como se fosse rolagem do usuario.
   musicosIgnoreScrollCaptureUntil = Date.now() + 700
 
-  app.innerHTML = `<div class="app" data-theme="${escapeHtml(state.theme)}"><style>.musicosHeaderRow{width:100%!important;max-width:100%!important;display:block!important}.musicosHeaderRow .tabRow{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:center!important;gap:8px!important;width:100%!important;max-width:100%!important;box-sizing:border-box!important;justify-self:stretch!important;justify-content:stretch!important}.musicosHeaderRow .tabRow>.tab,.musicosHeaderRow .tabRow>.activeTab{width:100%!important;min-width:0!important;height:40px!important;min-height:40px!important;padding:0 8px!important;font-size:13px!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;display:flex!important;align-items:center!important;justify-content:center!important;letter-spacing:.01em!important;box-sizing:border-box!important}.musicosHeaderRow .headerTotal{grid-column:2!important;width:100%!important;min-width:0!important;font-size:13px!important;white-space:nowrap!important;margin:0!important;text-align:center!important;justify-self:stretch!important;align-self:center!important;overflow:hidden!important;text-overflow:clip!important;box-sizing:border-box!important}.musicosHeaderSpacer{display:none!important}.musicosLyricsNavButton{grid-column:3!important;justify-self:stretch!important;margin:0!important;margin-left:0!important;width:100%!important;min-width:0!important;max-width:none!important;flex:none!important;transform:none!important;height:40px!important;min-height:40px!important;font-size:20px!important;border-radius:11px!important;padding-left:0!important;padding-right:0!important;box-sizing:border-box!important}.musicosSectionLabel,.sectionLabel{display:none!important}.musicosContentPanel{padding-top:0!important}@media(max-width:380px){.musicosHeaderRow .tabRow{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.musicosHeaderRow .tabRow>.tab,.musicosHeaderRow .tabRow>.activeTab{height:38px!important;min-height:38px!important;font-size:12px!important;padding:0 6px!important}.musicosHeaderRow .headerTotal{font-size:12px!important}.musicosLyricsNavButton{height:38px!important;min-height:38px!important}}</style>
+  app.innerHTML = `<div class="app" data-theme="${escapeHtml(state.theme)}" style="--app-border-color:${escapeHtml(borderColor)};--app-border-glow:${escapeHtml(borderGlow)};"><style>.musicosHeaderRow{width:100%!important;max-width:100%!important;display:block!important}.musicosHeaderRow .tabRow{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:center!important;gap:8px!important;width:100%!important;max-width:100%!important;box-sizing:border-box!important;justify-self:stretch!important;justify-content:stretch!important}.musicosHeaderRow .tabRow>.tab,.musicosHeaderRow .tabRow>.activeTab{width:100%!important;min-width:0!important;height:40px!important;min-height:40px!important;padding:0 8px!important;font-size:13px!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;display:flex!important;align-items:center!important;justify-content:center!important;letter-spacing:.01em!important;box-sizing:border-box!important}.musicosHeaderRow .headerTotal{grid-column:2!important;width:100%!important;min-width:0!important;font-size:13px!important;white-space:nowrap!important;margin:0!important;text-align:center!important;justify-self:stretch!important;align-self:center!important;overflow:hidden!important;text-overflow:clip!important;box-sizing:border-box!important}.musicosHeaderSpacer{display:none!important}.musicosLyricsNavButton{grid-column:3!important;justify-self:stretch!important;margin:0!important;margin-left:0!important;width:100%!important;min-width:0!important;max-width:none!important;flex:none!important;transform:none!important;height:40px!important;min-height:40px!important;font-size:20px!important;border-radius:11px!important;padding-left:0!important;padding-right:0!important;box-sizing:border-box!important}.musicosSectionLabel,.sectionLabel{display:none!important}.musicosContentPanel{padding-top:0!important}@media(max-width:380px){.musicosHeaderRow .tabRow{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.musicosHeaderRow .tabRow>.tab,.musicosHeaderRow .tabRow>.activeTab{height:38px!important;min-height:38px!important;font-size:12px!important;padding:0 6px!important}.musicosHeaderRow .headerTotal{font-size:12px!important}.musicosLyricsNavButton{height:38px!important;min-height:38px!important}}.hashChildItem,.hashParentItem,.rowLabelText,.songRowLabel,.regionRowLabel{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}</style>
     ${popupHtml}
     <div class="container" style="${borderStyle}">
       <div class="musicosStickyPanel">
@@ -1446,7 +1553,7 @@ function render() {
           </div>
         </div>
       </div>
-      <div class="musicosContentPanel musicosContentWithFooter" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto;padding-bottom:0;">
+      <div class="musicosContentPanel musicosContentNoFooter" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto;padding-bottom:0;">
         ${nowPlayingHtml}
         <div class="listBox musicosListBox" style="flex:1 1 auto;min-height:0;padding-bottom:8px;scroll-padding-bottom:12px;">${renderRows(items, state.activeTab)}</div>
       </div>
@@ -1563,19 +1670,7 @@ function bindEvents() {
   document.querySelector('[data-action="open-lyrics-panel"]')?.addEventListener('click', openMusicosLyricsPanel)
   document.querySelector('[data-action="close-lyrics-panel"]')?.addEventListener('click', closeMusicosLyricsPanel)
   document.querySelector('[data-action="musicos-tab-playlist"]')?.addEventListener('click', () => setMusicosActiveTab('playlist'))
-  document.querySelectorAll('.musicosListBox [data-item-id]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const itemId = el.getAttribute('data-item-id') || ''
-      const itemType = el.getAttribute('data-item-type') || state.activeTab
-      const source = itemType === 'regions' ? state.regions : getDisplayItems()
-      const item = (source || []).find((candidate) => String(candidate?.id ?? '') === String(itemId))
-      if (!item || detectBlockItem(item)) return
-      // Enquanto uma musica estiver em reproducao, o app dos musicos nao permite trocar selecao.
-      // A lista continua livre para rolar, mas o clique nao muda a musica selecionada.
-      if (state.playingId != null && String(state.playingId) !== '') return
-      setMusicosLocalSelection(itemType, itemId)
-    })
-  })
+  // Sem seleção no app dos Músicos: a lista é apenas monitorável/rolável.
   document.querySelector('[data-action="open-gear"]')?.addEventListener('click', (event) => {
     event.preventDefault()
     event.stopPropagation()
@@ -1603,9 +1698,14 @@ function bindEvents() {
 function updateBorderEffect() {
   const container = document.querySelector('.container')
   if (!container) return
+  const appRoot = document.querySelector('#app > .app')
   if (state.rgbMode === 'off') {
     container.style.borderColor = 'rgba(71,85,105,0.55)'
     container.style.boxShadow = '0 0 0 1px rgba(71,85,105,0.35), inset 0 0 10px rgba(255,255,255,0.03)'
+    if (appRoot) {
+      appRoot.style.setProperty('--app-border-color', 'rgba(71,85,105,0.85)')
+      appRoot.style.setProperty('--app-border-glow', 'rgba(71,85,105,0.35)')
+    }
     return
   }
   if (state.rgbMode === 'fixed') {
@@ -1613,6 +1713,10 @@ function updateBorderEffect() {
   }
   const hue = getBorderColorCss()
   const glow = getBorderGlowCss()
+  if (appRoot) {
+    appRoot.style.setProperty('--app-border-color', hue)
+    appRoot.style.setProperty('--app-border-glow', glow)
+  }
   container.style.borderColor = hue
   container.style.boxShadow = `0 0 0 1px ${hue}, 0 0 14px ${glow}, inset 0 0 10px rgba(255,255,255,0.03)`
 }
@@ -1634,17 +1738,17 @@ function startApp() {
       state.borderHue = (state.borderHue + 6) % 360
       updateBorderEffect()
     }
-  }, 120)
+  }, 180)
   bridgeTimer = setInterval(pollBridge, POLL_INTERVAL_MS)
   playbackRenderTimer = setInterval(() => {
     try {
       syncChronoDom()
-      if (state.playingId) syncPlaybackDom()
+      syncPlaybackDom()
       syncMusicosLyricsPanelDom()
     } catch (error) {
       console.error('playback render error', error)
     }
-  }, 500)
+  }, 250)
   window.setTimeout(() => {
     if (appLoadingVisible) hideBootLoader(true)
   }, 4500)
@@ -1662,6 +1766,56 @@ function syncChronoDom() {
   document.querySelectorAll('[data-chrono-display]').forEach((node) => {
     if (node.textContent !== chronoText) node.textContent = chronoText
   })
+}
+
+
+function syncMusicosPlayingRowProgressDom() {
+  const currentId = state.playingId != null ? String(state.playingId) : ''
+  if (!currentId) return false
+
+  const sourceItem = getCurrentPlayingItem() || findMusicosSongById(currentId)
+  if (!sourceItem || detectBlockItem(sourceItem)) return false
+
+  const playbackItem = getPlaybackAwareItem(sourceItem, true, false)
+  const ratio = Math.max(0, Math.min(1, Number(getRowProgressRatio(playbackItem, true, false)) || 0))
+  const visualRatio = Math.max(0.002, ratio)
+  const timeValue = playbackItem?.remainingSec ?? playbackItem?.durationSec
+  const timeText = formatTime(timeValue)
+  let touched = false
+
+  document.querySelectorAll('.musicosListBox [data-item-id]').forEach((row) => {
+    const rowId = String(row.getAttribute('data-item-id') || '')
+    if (rowId !== currentId) {
+      row.classList.remove('playing')
+      row.removeAttribute('data-playing-row')
+      const oldBar = row.querySelector('[data-row-progress-bar]')
+      if (oldBar) oldBar.remove()
+      return
+    }
+    if (row.classList.contains('blockItem')) return
+
+    row.classList.add('playing')
+    row.setAttribute('data-playing-row', '1')
+
+    let bar = row.querySelector('[data-row-progress-bar]')
+    if (!bar) {
+      bar = document.createElement('div')
+      bar.className = 'progressBar progressBarWithNumber'
+      bar.setAttribute('data-row-progress-bar', '1')
+      bar.style.left = '42px'
+      bar.style.minWidth = '10px'
+      row.insertBefore(bar, row.firstChild)
+    }
+    bar.style.width = `calc(${(visualRatio * 100).toFixed(3)}% - ${(42 * visualRatio).toFixed(3)}px)`
+
+    const timeNode = row.querySelector('.rightCol span')
+    if (timeNode && timeText && timeNode.textContent !== timeText) {
+      timeNode.textContent = timeText
+    }
+    touched = true
+  })
+
+  return touched
 }
 
 function syncPlaybackDom() {
@@ -1691,7 +1845,10 @@ function syncPlaybackDom() {
   // Enquanto existe musica tocando, o Lua nao pode mexer na lista dos musicos.
   // A lista fica livre para rolar e selecionar outras musicas; so a barra superior
   // de progresso e atualizada.
-  if (state.playingId) return
+  if (state.playingId) {
+    syncMusicosPlayingRowProgressDom()
+    return
+  }
 
   // Deixa a navegacao da lista livre: durante gesto/inercia do usuario,
   // atualiza a barra superior, mas nao recria as linhas nem puxa o scroll.

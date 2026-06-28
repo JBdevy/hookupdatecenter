@@ -316,7 +316,7 @@ function renderAuth() {
 
 function renderEditor() {
   const sub = state.projectName ? `<div id="recadosProject" class="recadosProject">${escapeHtml(state.projectName)}</div>` : `<div id="recadosProject" class="recadosProject"></div>`
-  return `<div class="recadosApp"><div class="recadosTop"><button class="recadosSendButton" data-action="send" ${state.sending ? 'disabled' : ''}>${state.sending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="recadosCancelButton" data-action="cancel">CANCELAR</button></div>${sub}<textarea id="recadosTextInput" class="recadosTextInput" maxlength="500" placeholder="Digite o recado técnico...">${escapeHtml(state.draft)}</textarea><div id="recadosStatus" class="recadosStatus">${escapeHtml(getStatusText())}</div><button class="recadosExitButton" data-action="exit">SAIR</button></div>`
+  return `<div class="recadosApp"><div class="recadosTop"><button class="recadosSendButton" data-action="send" ${state.sending ? 'disabled' : ''}>${state.sending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="recadosCancelButton" data-action="cancel">RETIRAR</button></div>${sub}<textarea id="recadosTextInput" class="recadosTextInput" maxlength="500" placeholder="Digite o recado técnico...">${escapeHtml(state.draft)}</textarea><div id="recadosStatus" class="recadosStatus">${escapeHtml(getStatusText())}</div><button class="recadosExitButton" data-action="exit">SAIR</button></div>`
 }
 
 function bindEvents() {

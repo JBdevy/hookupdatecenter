@@ -5696,3 +5696,408 @@ body.boot-loading {
 .app:not([data-theme="light"]) .selectedPink.blockItem .blockTimeText,
 .app:not([data-theme="light"]) .selectedPinkText,
 .app:not([data-theme="light"]) .selectedPinkTimeText { color:#ffffff !important; font-weight:bold !important; }
+
+/* v1.9.9 - Diretor: tocando sempre vence seleção/fila visual */
+.app .item.playing,
+.app:not([data-theme="light"]) .item.playing,
+.app[data-theme="light"] .item.playing {
+  background: #b91c1c !important;
+  border-color: #ef4444 !important;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36) !important;
+}
+.app .item.playing.selectedBlue,
+.app .item.playing.selectedPink,
+.app .item.playing.queuedYellow {
+  background: #b91c1c !important;
+}
+.app .item.playing .rowLabelText,
+.app .item.playing .timeText,
+.app .item.playing .playingText,
+.app .item.playing .playingTimeText {
+  color: #ffffff !important;
+  font-weight: 900 !important;
+}
+
+/* v1.9.21 - Premix Diretor: lista, letreiro, global reset e slider responsivo */
+.premixSongListHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.premixSongListHeader .sectionLabel{margin:0!important;flex:1 1 auto}.premixSongListHeader .premixPlayButton{flex:0 0 118px;height:42px;border-radius:12px;font-weight:900}.premixSongListBox{border:none!important;background:transparent!important;padding:2px 2px 10px!important}.premixSongCard{position:relative;display:grid;grid-template-columns:8px minmax(0,1fr);align-items:center;gap:10px;min-height:64px;margin:0 0 10px;padding:10px 12px 10px 0;border:1px solid rgba(148,163,184,.28);border-radius:14px;background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.98));box-shadow:0 10px 24px rgba(0,0,0,.22);overflow:hidden;touch-action:manipulation}.premixSongCardSelected{border-color:#38bdf8!important;box-shadow:0 0 0 1px rgba(56,189,248,.34),0 12px 28px rgba(14,165,233,.18)!important}.premixSongAccent{width:8px;align-self:stretch;border-radius:999px;background:var(--premix-row-color,#8b5cf6);box-shadow:0 0 16px var(--premix-row-color,#8b5cf6)}.premixSongMain{min-width:0;display:flex;flex-direction:column;gap:7px}.premixSongTitle{min-width:0;color:var(--premix-row-color,#f8fafc);font-weight:900;font-size:15px;letter-spacing:.02em}.premixSongTitle .marqueeViewport{width:100%;max-width:100%;display:block}.premixSongMeta{display:flex;align-items:center;gap:8px;min-height:24px}.premixSongDuration{height:24px;min-width:54px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;font-weight:900;font-size:12px}.premixTopControlsGlobal{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important}.premixTopControlsGlobal .premixGlobalResetBtn{height:42px;border-radius:12px;background:#facc15!important;border-color:#fde047!important;color:#111827!important;font-weight:900!important}.premixHeaderTitle .marqueeViewport,.mixerRowName .marqueeViewport,.mixerRowGroupName .marqueeViewport,.mixerVolumeTitle .marqueeViewport{width:100%;max-width:100%;display:block}.mixerRowName,.mixerRowGroupName{min-width:0}.mixerNameMarquee .marqueeTrack,.mixerGroupMarquee .marqueeTrack,.premixTitleMarquee .marqueeTrack,.premixSongMarquee .marqueeTrack{animation-duration:12s!important}.premixVolumeModalBoxFull .mixerVolumeSlider{touch-action:pan-x!important;will-change:transform}.app[data-theme="light"] .premixSongCard{background:linear-gradient(180deg,#ffffff,#f8fafc);border-color:#cbd5e1;box-shadow:0 8px 18px rgba(15,23,42,.12)}.app[data-theme="light"] .premixSongDuration{background:#f1f5f9;color:#0f172a;border-color:#cbd5e1}
+
+
+
+/* v1.9.22 - Premix: nomes visíveis, letreiro forçado e música tocando clara */
+.premixSongListBox{padding-bottom:0!important;scroll-padding-bottom:8px!important;border-bottom:none!important;margin-bottom:0!important;}
+.premixSongCard{grid-template-columns:8px minmax(0,1fr)!important;padding-right:22px!important;}
+.premixSongMain,.premixSongTitle,.mixerRowMain,.mixerRowName,.mixerRowGroupName{min-width:0!important;max-width:100%!important;overflow:hidden!important;}
+.premixSongTitle{color:#f8fafc!important;text-shadow:0 1px 2px rgba(0,0,0,.35)!important;}
+.premixSongTitle .marqueeViewport,.premixHeaderTitle .marqueeViewport,.mixerRowName .marqueeViewport,.mixerRowGroupName .marqueeViewport,.mixerVolumeTitle .marqueeViewport{display:block!important;width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden!important;}
+.premixSongTitle .marqueeStatic,.premixSongTitle .marqueeTrack,.premixSongTitle .marqueeSegment{color:#f8fafc!important;}
+.mixerRowName .marqueeStatic,.mixerRowName .marqueeTrack,.mixerRowName .marqueeSegment{color:#f8fafc!important;}
+.mixerRowGroupName .marqueeStatic,.mixerRowGroupName .marqueeTrack,.mixerRowGroupName .marqueeSegment{color:#cbd5e1!important;}
+.premixSongPlayingBar{position:absolute;right:5px;top:8px;bottom:8px;width:5px;border-radius:999px;background:rgba(255,255,255,.35);box-shadow:0 0 8px rgba(255,255,255,.14);}
+.premixSongCardPlaying{border-color:#22c55e!important;background:linear-gradient(180deg,rgba(20,83,45,.96),rgba(6,78,59,.94))!important;box-shadow:0 0 0 1px rgba(34,197,94,.45),0 12px 30px rgba(34,197,94,.18)!important;}
+.premixSongCardPlaying .premixSongPlayingBar{width:8px;background:#22c55e!important;box-shadow:0 0 18px rgba(34,197,94,.85),0 0 4px rgba(255,255,255,.85)!important;}
+.premixSongCardPlaying .premixSongAccent{background:#22c55e!important;box-shadow:0 0 16px rgba(34,197,94,.8)!important;}
+.premixSongCardPlaying .premixSongTitle,.premixSongCardPlaying .premixSongTitle .marqueeStatic,.premixSongCardPlaying .premixSongTitle .marqueeTrack,.premixSongCardPlaying .premixSongTitle .marqueeSegment{color:#fff!important;}
+.app[data-theme="light"] .premixSongTitle,.app[data-theme="light"] .premixSongTitle .marqueeStatic,.app[data-theme="light"] .premixSongTitle .marqueeTrack,.app[data-theme="light"] .premixSongTitle .marqueeSegment{color:#0f172a!important;text-shadow:none!important;}
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeStatic,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeTrack,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeSegment{color:#fff!important;}
+
+
+/* v1.9.23 - Correção real do letreiro Premix/Mixer: reserva altura e fallback visível */
+.marqueeViewport[data-marquee]{
+  display:block!important;
+  position:relative!important;
+  width:100%!important;
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  white-space:nowrap!important;
+  line-height:1.25!important;
+  min-height:1.25em!important;
+}
+.marqueeViewport[data-marquee] .marqueeStatic{
+  display:block!important;
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  white-space:nowrap!important;
+  text-overflow:ellipsis!important;
+  line-height:1.25!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeStatic{
+  display:block!important;
+  visibility:hidden!important;
+  opacity:0!important;
+  pointer-events:none!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeTrack{
+  display:inline-flex!important;
+  position:absolute!important;
+  left:0!important;
+  top:0!important;
+  align-items:center!important;
+  min-width:max-content!important;
+  max-width:none!important;
+  width:max-content!important;
+  white-space:nowrap!important;
+  overflow:visible!important;
+  line-height:1.25!important;
+  animation:vshookMarqueeScroll var(--marquee-duration,12s) linear infinite!important;
+  z-index:2!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeSegment,
+.marqueeViewport[data-marquee].is-marquee .marqueeSpacer{
+  display:inline-block!important;
+  flex:0 0 auto!important;
+  white-space:nowrap!important;
+  color:inherit!important;
+}
+.premixSongTitle,
+.premixHeaderTitle,
+.mixerRowName,
+.mixerRowGroupName,
+.mixerVolumeTitle,
+.mixerRowMain{
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+}
+.premixSongTitle .marqueeViewport,
+.premixHeaderTitle .marqueeViewport,
+.mixerRowName .marqueeViewport,
+.mixerRowGroupName .marqueeViewport,
+.mixerVolumeTitle .marqueeViewport{
+  color:inherit!important;
+}
+.premixSongTitle .marqueeTrack,
+.premixSongTitle .marqueeSegment,
+.premixHeaderTitle .marqueeTrack,
+.premixHeaderTitle .marqueeSegment,
+.mixerRowName .marqueeTrack,
+.mixerRowName .marqueeSegment,
+.mixerVolumeTitle .marqueeTrack,
+.mixerVolumeTitle .marqueeSegment{
+  color:#f8fafc!important;
+  text-shadow:0 1px 2px rgba(0,0,0,.35)!important;
+}
+.mixerRowGroupName .marqueeTrack,
+.mixerRowGroupName .marqueeSegment{
+  color:#cbd5e1!important;
+}
+.app[data-theme="light"] .premixSongTitle .marqueeStatic,
+.app[data-theme="light"] .premixSongTitle .marqueeTrack,
+.app[data-theme="light"] .premixSongTitle .marqueeSegment,
+.app[data-theme="light"] .mixerRowName .marqueeStatic,
+.app[data-theme="light"] .mixerRowName .marqueeTrack,
+.app[data-theme="light"] .mixerRowName .marqueeSegment,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeStatic,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeTrack,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeSegment{
+  color:#0f172a!important;
+  text-shadow:none!important;
+}
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeStatic,
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeTrack,
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeSegment{
+  color:#fff!important;
+  text-shadow:0 1px 2px rgba(0,0,0,.35)!important;
+}
+
+
+/* v1.9.24 - Letreiro só quando precisa + destaque dos blocos em Repertórios */
+.marqueeViewport[data-marquee].is-marquee .marqueeTrack{
+  top:0!important;
+  left:0!important;
+  transform:none;
+  animation:vshookMarqueeScroll var(--marquee-duration,12s) linear infinite!important;
+}
+@keyframes vshookMarqueeScroll{
+  0%,8%{transform:translate3d(0,0,0)}
+  92%,100%{transform:translate3d(calc(-50% - 18px),0,0)}
+}
+.marqueeViewport[data-marquee]:not(.is-marquee) .marqueeTrack{
+  display:none!important;
+}
+.marqueeViewport[data-marquee]:not(.is-marquee) .marqueeStatic{
+  visibility:visible!important;
+  opacity:1!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+.app .item.blockItem[data-song-id]{
+  position:relative!important;
+  border:1px solid var(--app-border-color,#facc15)!important;
+  border-radius:10px!important;
+  background:linear-gradient(180deg,rgba(15,23,42,.76),rgba(2,6,23,.86))!important;
+  box-shadow:0 0 0 1px var(--app-border-color,#facc15),0 0 14px var(--app-border-glow,rgba(250,204,21,.32)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
+  margin-top:4px!important;
+  margin-bottom:4px!important;
+}
+.app .item.blockItem[data-song-id]::before{
+  content:"";
+  position:absolute;
+  left:4px;
+  top:5px;
+  bottom:5px;
+  width:4px;
+  border-radius:999px;
+  background:var(--app-border-color,#facc15);
+  box-shadow:0 0 12px var(--app-border-glow,rgba(250,204,21,.45));
+  pointer-events:none;
+}
+.app .item.blockItem[data-song-id] .blockText,
+.app .item.blockItem[data-song-id] .blockTimeText,
+.app .item.blockItem[data-song-id] .rowLabelText{
+  color:#f8fafc!important;
+  font-weight:900!important;
+}
+.app .item.blockItem[data-song-id].selectedPink,
+.app .item.blockItem[data-song-id].selectedBlue,
+.app .item.blockItem[data-song-id].queuedYellow,
+.app .item.blockItem[data-song-id].playing{
+  border-color:var(--app-border-color,#facc15)!important;
+  box-shadow:0 0 0 2px var(--app-border-color,#facc15),0 0 18px var(--app-border-glow,rgba(250,204,21,.45))!important;
+}
+.app[data-theme="light"] .item.blockItem[data-song-id]{
+  background:linear-gradient(180deg,#ffffff,#f8fafc)!important;
+  color:#0f172a!important;
+}
+.app[data-theme="light"] .item.blockItem[data-song-id] .blockText,
+.app[data-theme="light"] .item.blockItem[data-song-id] .blockTimeText,
+.app[data-theme="light"] .item.blockItem[data-song-id] .rowLabelText{
+  color:#0f172a!important;
+}
+
+/* v1.9.25 - blocos com contorno da borda atual no Diretor/Músico */
+.app .item.blockItem {
+  border-color: var(--block-outline-color, var(--app-border-color, rgba(250,204,21,.75))) !important;
+  box-shadow: inset 0 0 0 2px var(--block-outline-color, var(--app-border-color, rgba(250,204,21,.75))), 0 0 14px var(--block-outline-glow, var(--app-border-glow, rgba(250,204,21,.22))) !important;
+  background: rgba(15, 23, 42, 0.72) !important;
+}
+.app .item.blockItem .rowLabelText,
+.app .item.blockItem .blockText,
+.app .item.blockItem .blockTimeText {
+  color: var(--block-outline-color, var(--app-border-color, #facc15)) !important;
+  font-weight: 900 !important;
+}
+.app[data-theme="light"] .item.blockItem {
+  background: rgba(255,255,255,.86) !important;
+}
+
+
+/* v1.9.26 - sem rodape app musicos + versão tela inicial + bloco cinza quando borda off */
+.vshook-app-version{
+  margin-top:18px;
+  color:#94a3b8;
+  font-size:14px;
+  line-height:1.35;
+  font-weight:800;
+  letter-spacing:.02em;
+  text-align:center;
+}
+.musicosContentWithFooter,.musicosContentNoFooter{
+  padding-bottom:0!important;
+  margin-bottom:0!important;
+}
+.musicosFixedFooter,.footer_disabled_tempBar,.fixedFooter,.vshookFixedFooter{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
+  max-height:0!important;
+  flex:0 0 0!important;
+  padding:0!important;
+  margin:0!important;
+  overflow:hidden!important;
+}
+.musicosListBox{
+  padding-bottom:max(8px, env(safe-area-inset-bottom, 0px))!important;
+  scroll-padding-bottom:12px!important;
+}
+.app .item.blockItem{
+  border:1px solid var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72)))!important;
+  box-shadow:inset 0 0 0 2px var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72))),0 0 14px var(--block-outline-glow, var(--app-border-glow, rgba(148,163,184,.22)))!important;
+}
+.app .item.blockItem::before{
+  background:var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72)))!important;
+  box-shadow:0 0 12px var(--block-outline-glow, var(--app-border-glow, rgba(148,163,184,.22)))!important;
+}
+
+
+/* v1.9.27 - remove rodape/area vazia da lista de musicas do Premix */
+.premixModalBoxFull:has(.premixSongListBox){
+  justify-content:flex-start!important;
+}
+.premixSongListBox{
+  flex:0 1 auto!important;
+  height:auto!important;
+  min-height:0!important;
+  max-height:calc(var(--app-vh, 100dvh) - 150px)!important;
+  padding-bottom:0!important;
+  margin-bottom:0!important;
+  border-bottom:none!important;
+  box-shadow:none!important;
+  background:transparent!important;
+}
+.premixSongListBox::after{
+  content:none!important;
+  display:none!important;
+  height:0!important;
+}
+.premixSongListBox .premixSongCard:last-child{
+  margin-bottom:0!important;
+}
+
+
+/* VSHOOK_PATCH_DIRECTOR_MARKERS_LONGPRESS_20260626 */
+.item,.item *,.rowLabelText,.songRowLabel,.regionRowLabel,.markerRowLabel{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+.vshookNoTextSelect,.vshookNoTextSelect *{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+.markerPanelSlideIn{animation:lyricsSlideIn .18s ease-out!important;}
+
+/* VSHOOK_NO_TEXT_SELECT_SELECTSTART_PATCH */
+.item,.item *,.rowLabelText,.songRowLabel,.regionRowLabel,.markerRowLabel{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+
+/* VS Hook - Live executada via bridge */
+.item.liveExecuted{
+  background:rgba(127,29,29,.58)!important;
+  border-color:rgba(248,113,113,.46)!important;
+  box-shadow:inset 0 0 0 1px rgba(248,113,113,.22)!important;
+}
+.liveExecutedText,.liveExecutedTimeText{
+  color:#fecaca!important;
+  text-decoration:line-through!important;
+  text-decoration-thickness:2px!important;
+  text-decoration-color:rgba(254,202,202,.82)!important;
+}
+
+
+/* VS Hook 20260627 - bloco usa sempre a cor vinda do Lua/Bridge */
+.app .item.blockItem,
+.app .item.blockItem[data-song-id],
+.app .item.blockItem[data-region-id],
+.app .item.blockItem[data-item-id]{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 1px var(--block-outline-color, rgba(148,163,184,.72)),0 0 14px var(--block-outline-glow, rgba(148,163,184,.22)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
+}
+.app .item.blockItem::before,
+.app .item.blockItem[data-song-id]::before,
+.app .item.blockItem[data-region-id]::before,
+.app .item.blockItem[data-item-id]::before{
+  background:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 12px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem.selectedPink,
+.app .item.blockItem.selectedBlue,
+.app .item.blockItem.queuedYellow,
+.app .item.blockItem.playing,
+.app .item.blockItem[data-song-id].selectedPink,
+.app .item.blockItem[data-song-id].selectedBlue,
+.app .item.blockItem[data-song-id].queuedYellow,
+.app .item.blockItem[data-song-id].playing,
+.app .item.blockItem[data-region-id].selectedPink,
+.app .item.blockItem[data-region-id].selectedBlue,
+.app .item.blockItem[data-region-id].queuedYellow,
+.app .item.blockItem[data-region-id].playing,
+.app .item.blockItem[data-item-id].selectedPink,
+.app .item.blockItem[data-item-id].selectedBlue,
+.app .item.blockItem[data-item-id].queuedYellow,
+.app .item.blockItem[data-item-id].playing{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 2px var(--block-outline-color, rgba(148,163,184,.72)),0 0 18px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem .rowLabelText,
+.app .item.blockItem .blockText,
+.app .item.blockItem .blockTimeText,
+.app .item.blockItem .marqueeStatic,
+.app .item.blockItem .marqueeTrack,
+.app .item.blockItem .marqueeSegment,
+.app .item.blockItem[data-song-id] .rowLabelText,
+.app .item.blockItem[data-song-id] .blockText,
+.app .item.blockItem[data-song-id] .blockTimeText,
+.app .item.blockItem[data-song-id] .marqueeStatic,
+.app .item.blockItem[data-song-id] .marqueeTrack,
+.app .item.blockItem[data-song-id] .marqueeSegment,
+.app .item.blockItem[data-region-id] .rowLabelText,
+.app .item.blockItem[data-region-id] .blockText,
+.app .item.blockItem[data-region-id] .blockTimeText,
+.app .item.blockItem[data-region-id] .marqueeStatic,
+.app .item.blockItem[data-region-id] .marqueeTrack,
+.app .item.blockItem[data-region-id] .marqueeSegment,
+.app .item.blockItem[data-item-id] .rowLabelText,
+.app .item.blockItem[data-item-id] .blockText,
+.app .item.blockItem[data-item-id] .blockTimeText,
+.app .item.blockItem[data-item-id] .marqueeStatic,
+.app .item.blockItem[data-item-id] .marqueeTrack,
+.app .item.blockItem[data-item-id] .marqueeSegment{
+  color:var(--block-outline-color, #facc15)!important;
+  text-shadow:none!important;
+  font-weight:900!important;
+}
+.app[data-theme="light"] .item.blockItem .rowLabelText,
+.app[data-theme="light"] .item.blockItem .blockText,
+.app[data-theme="light"] .item.blockItem .blockTimeText,
+.app[data-theme="light"] .item.blockItem .marqueeStatic,
+.app[data-theme="light"] .item.blockItem .marqueeTrack,
+.app[data-theme="light"] .item.blockItem .marqueeSegment{
+  color:var(--block-outline-color, #d97706)!important;
+}
+
+/* VSHOOK_PATCH_DIRECTOR_MARKERS_PARTS_ANIMATION_20260627 */
+.markerContentPanel.markerPanelSlideIn,
+.markerListBox.markerPanelSlideIn{
+  animation:lyricsSlideIn .18s ease-out!important;
+  will-change:transform;
+}
+.markerRowLabel{
+  letter-spacing:.02em;
+}

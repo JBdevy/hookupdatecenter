@@ -71,7 +71,7 @@ const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${get
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
-const CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
 
 const LICENSE_PRODUCT = 'VSLIVE';
@@ -686,12 +686,27 @@ function removeLocalLicense() {
   return licenseDir;
 }
 
-async function persistActiveLocalLicenseFromStore(extraPayload = null) {
+async function persistActiveLocalLicenseFromStore(extraPayload = null, options = {}) {
   const license = store.get('license') || {};
   if (!license.active) return false;
   const machineId = normalizeMachineId(license.machineId || await getMachineId());
   const email = normalizeEmail(license.email || store.get('deviceLoginEmail'));
   if (!machineId || !email) return false;
+
+  const protectedLicenseAlreadySaved = protectedLicenseShardsExist();
+  const forceWrite = !!options.forceWrite;
+
+  // macOS: não peça senha administrativa só por abrir o Hook Center ou por checagem automática.
+  // A licença protegida só é gravada na ativação, ou em ação manual/forçada quando ainda não existir.
+  if (process.platform === 'darwin' && protectedLicenseAlreadySaved && !forceWrite) {
+    store.set('license', { ...license, machineId, email, active: true });
+    return true;
+  }
+  if (process.platform === 'darwin' && extraPayload?.source === 'startup-migration' && !forceWrite) {
+    store.set('license', { ...license, machineId, email, active: true });
+    return protectedLicenseAlreadySaved;
+  }
+
   const docParts = splitDocument(license.document || license.cpf || license.cnpj);
   const licenseKey = generateExpectedLicense(machineId);
   try {
@@ -825,6 +840,72 @@ function normalizeUpdatesList(raw) {
     .filter((update) => update && (update.version || update.updateId || hasInstallableFiles(update)) && updateMatchesCurrentPlatform(update));
 }
 
+function normalizeUpdateIdentityValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function collectUpdateFileUrlsForCurrentPlatform(update) {
+  const files = getPlatformFiles(update) || {};
+  return buildPayloadEntries(files)
+    .map((entry) => normalizeUpdateIdentityValue(entry.url))
+    .filter(Boolean)
+    .sort();
+}
+
+function isSameCurrentUpdate(historyUpdate, currentUpdate) {
+  if (!historyUpdate || !currentUpdate) return false;
+
+  const historyPlatformId = normalizeUpdateIdentityValue(getPlatformUpdateId(historyUpdate));
+  const currentPlatformId = normalizeUpdateIdentityValue(getPlatformUpdateId(currentUpdate));
+  if (historyPlatformId && currentPlatformId && historyPlatformId === currentPlatformId) return true;
+
+  const historyUpdateId = normalizeUpdateIdentityValue(historyUpdate.updateId);
+  const currentUpdateId = normalizeUpdateIdentityValue(currentUpdate.updateId);
+  if (historyUpdateId && currentUpdateId && historyUpdateId === currentUpdateId) return true;
+
+  const historyVersion = normalizeUpdateIdentityValue(historyUpdate.version);
+  const currentVersion = normalizeUpdateIdentityValue(currentUpdate.version);
+  if (historyVersion && currentVersion && historyVersion === currentVersion) return true;
+
+  const historyUrls = collectUpdateFileUrlsForCurrentPlatform(historyUpdate);
+  const currentUrls = collectUpdateFileUrlsForCurrentPlatform(currentUpdate);
+  if (historyUrls.length > 0 && currentUrls.length > 0 && historyUrls.join('|') === currentUrls.join('|')) return true;
+
+  return false;
+}
+
+async function getCurrentPublishedUpdateForHistory() {
+  try {
+    const raw = await fetchJson(await getLatestUpdateApiUrl(), { cache: 'no-store' });
+    const update = normalizeUpdate(raw);
+    if (update && updateMatchesCurrentPlatform(update)) return update;
+  } catch (_) {}
+
+  const cached = normalizeUpdate(store.get('latestUpdate'));
+  if (cached && updateMatchesCurrentPlatform(cached)) return cached;
+
+  return null;
+}
+
+function filterPreviousUpdates(updates, currentUpdate) {
+  const seen = new Set();
+  return (updates || []).filter((update) => {
+    if (!update) return false;
+    if (currentUpdate && isSameCurrentUpdate(update, currentUpdate)) return false;
+
+    const identity = [
+      normalizeUpdateIdentityValue(getPlatformUpdateId(update)),
+      normalizeUpdateIdentityValue(update.updateId),
+      normalizeUpdateIdentityValue(update.version),
+      collectUpdateFileUrlsForCurrentPlatform(update).join('|')
+    ].filter(Boolean).join('::');
+
+    if (identity && seen.has(identity)) return false;
+    if (identity) seen.add(identity);
+    return true;
+  });
+}
+
 async function getPreviousUpdates() {
   const endpoints = [
     UPDATES_HISTORY_API_URL,
@@ -834,11 +915,13 @@ async function getPreviousUpdates() {
   ];
 
   let lastError = null;
+  const currentUpdate = await getCurrentPublishedUpdateForHistory();
 
   for (const url of endpoints) {
     try {
       const raw = await fetchJson(url, { cache: 'no-store' });
-      return { ok: true, updates: normalizeUpdatesList(raw) };
+      const updates = filterPreviousUpdates(normalizeUpdatesList(raw), currentUpdate);
+      return { ok: true, updates };
     } catch (error) {
       lastError = error;
     }
@@ -1165,20 +1248,23 @@ async function checkLicenseStatus(manual = false) {
     store.set('license', nextLicense);
 
     if (active) {
-      const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
-      try {
-    try {
-    saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload: result });
-  } catch (_) {
-    if (!protectedLicenseShardsExist()) {
-      throw new Error('Não foi possível concluir a ativação. Tente novamente.');
-    }
-  }
-  } catch (_) {
-    throw new Error('Não foi possível concluir a ativação. Tente novamente.');
-  }
+      const licenseAlreadySaved = protectedLicenseShardsExist();
+      const shouldPersistProtectedLicense = process.platform !== 'darwin' || (manual && !licenseAlreadySaved);
+
+      if (shouldPersistProtectedLicense) {
+        const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
+        try {
+          saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload: result });
+        } catch (_) {
+          if (manual && !protectedLicenseShardsExist()) {
+            throw new Error('Não foi possível concluir a ativação. Tente novamente.');
+          }
+        }
+      }
     } else {
-      removeLocalLicense();
+      if (manual || process.platform !== 'darwin') {
+        removeLocalLicense();
+      }
       notifyLicense(result.message || 'Este computador foi desvinculado da licença do VS Hook.');
     }
 
@@ -1405,6 +1491,7 @@ function buildBridgeServers(config) {
       publicBridgeHost: getLanIp(),
       appDir: bridgeWebAppDir,
       sharedDir,
+      getTechnicalNoticeSettings,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
         clearButtonSide: 'right',
@@ -1422,6 +1509,7 @@ function buildBridgeServers(config) {
       publicBridgeHost: getLanIp(),
       appDir: bridgeWebAppDir,
       sharedDir,
+      getTechnicalNoticeSettings,
       fallbackState: getBridgeFallbackState(),
       routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
     })
@@ -1527,6 +1615,21 @@ function getLyricsDefaults() {
   };
 }
 
+function simpleNoticeHash(str) {
+  let h1 = 0x45D9;
+  let h2 = 0x2710;
+  const text = String(str || '');
+  for (let i = 0; i < text.length; i += 1) {
+    const b = text.charCodeAt(i) & 0xff;
+    h1 = (h1 ^ (b * (i + 1) + 17)) & 0xffffff;
+    h2 = (h2 + ((b + i) * 131)) & 0xffffff;
+    h1 = (h1 * 33 + h2) & 0xffffff;
+    h2 = (h2 * 17 + h1) & 0xffffff;
+  }
+  const n = (((h1 << 12) >>> 0) + h2) >>> 0;
+  return n.toString(16).toUpperCase().padStart(8, '0');
+}
+
 function getTechnicalNoticeDefaults() {
   return {
     textColor: '#ffea00',
@@ -1535,7 +1638,12 @@ function getTechnicalNoticeDefaults() {
     window1Enabled: true,
     window2Enabled: true,
     emojiEnabled: true,
-    emoji: '⚠️'
+    emoji: '⚠️',
+    recadosPassword: '',
+    recadosAuthEnabled: false,
+    recadosAuthHash: '',
+    technicalNoticeAuthEnabled: false,
+    technicalNoticeAuthHash: ''
   };
 }
 
@@ -1624,7 +1732,7 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (settings.songNamePosition !== undefined) next.songNamePosition = normalizeLyricsScreenPosition(settings.songNamePosition, next.songNamePosition || 'top');
   if (settings.clockPosition === 'top' || settings.clockPosition === 'bottom') next.clockPosition = settings.clockPosition;
   if (settings.clockScale !== undefined) next.clockScale = clampLyricsScale(settings.clockScale, next.clockScale || 1, 2.5);
-  if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1);
+  if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1, 1);
   if (typeof settings.clearMode === 'boolean') next.clearMode = settings.clearMode;
   all[id] = next;
   store.set('lyrics', all);
@@ -1633,6 +1741,131 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('lyrics-settings-updated', getLyricsAllSettings());
   return next;
 }
+
+function getTelepromptBackupPayload() {
+  return {
+    type: 'vshook-teleprompt-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    appVersion: app.getVersion(),
+    lyrics: getLyricsAllSettings(),
+    technicalNoticeSettings: getTechnicalNoticeSettings()
+  };
+}
+
+function getBackupDialogWindow() {
+  return isValidWindow(mainWindow) ? mainWindow : undefined;
+}
+
+function sanitizeBackupDeviceName(name) {
+  const fallback = os.hostname() || 'Dispositivo';
+  const raw = String(name || fallback || 'Dispositivo').trim();
+  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const compact = normalized.replace(/[^a-zA-Z0-9_-]+/g, '');
+  return compact || 'Dispositivo';
+}
+
+function getBackupDefaultFileName() {
+  const deviceName = sanitizeBackupDeviceName(getStoredDeviceName() || os.hostname());
+  return `${deviceName}backupteleprompt.json`;
+}
+
+function getBackupDefaultPath() {
+  const fileName = getBackupDefaultFileName();
+  try {
+    const documentsDir = app && app.getPath ? app.getPath('documents') : '';
+    if (documentsDir) return path.join(documentsDir, fileName);
+  } catch (_) {}
+  return fileName;
+}
+
+async function exportLyricsBackup() {
+  const options = {
+    title: 'Exportar backup do Teleprompt',
+    defaultPath: getBackupDefaultPath(),
+    filters: [
+      { name: 'Backup do Teleprompt', extensions: ['json'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ]
+  };
+  const owner = getBackupDialogWindow();
+  const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+
+  const payload = getTelepromptBackupPayload();
+  fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
+  return { ok: true, filePath: result.filePath, payload };
+}
+
+function pickImportedSlotSettings(source = {}, slot = 1) {
+  if (!source || typeof source !== 'object') return null;
+  const id = normalizeLyricsSlot(slot);
+  return source[id] || source[String(id)] || source[`window${id}`] || (id === 1 ? source.one : source.two) || null;
+}
+
+function sourceLooksLikeSingleLyricsSettings(source = {}) {
+  if (!source || typeof source !== 'object') return false;
+  return ['textColor', 'clockColor', 'fontFamily', 'textScale', 'songNameEnabled', 'clearMode'].some((key) => Object.prototype.hasOwnProperty.call(source, key));
+}
+
+async function importLyricsBackup() {
+  const options = {
+    title: 'Importar backup do Teleprompt',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Backup do Teleprompt', extensions: ['json'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ]
+  };
+  const owner = getBackupDialogWindow();
+  const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) return { ok: false, cancelled: true };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(result.filePaths[0], 'utf8'));
+  } catch (_) {
+    throw new Error('Arquivo de backup inválido. Selecione um JSON exportado pelo Teleprompt.');
+  }
+
+  const lyricsSource = parsed.lyrics || parsed.lyricsSettings || parsed.teleprompt || parsed.windows || parsed;
+  const technicalSource = parsed.technicalNoticeSettings || parsed.technicalNotice || parsed.notices || null;
+  let importedAny = false;
+
+  if (sourceLooksLikeSingleLyricsSettings(lyricsSource)) {
+    saveLyricsSettings(lyricsSource, 1);
+    saveLyricsSettings(lyricsSource, 2);
+    importedAny = true;
+  } else {
+    const slot1 = pickImportedSlotSettings(lyricsSource, 1);
+    const slot2 = pickImportedSlotSettings(lyricsSource, 2);
+    if (slot1 && typeof slot1 === 'object') {
+      saveLyricsSettings(slot1, 1);
+      importedAny = true;
+    }
+    if (slot2 && typeof slot2 === 'object') {
+      saveLyricsSettings(slot2, 2);
+      importedAny = true;
+    }
+  }
+
+  if (technicalSource && typeof technicalSource === 'object') {
+    saveTechnicalNoticeSettings(technicalSource);
+    importedAny = true;
+  }
+
+  if (!importedAny) {
+    throw new Error('Esse arquivo não possui configurações válidas do Teleprompt.');
+  }
+
+  return {
+    ok: true,
+    filePath: result.filePaths[0],
+    lyrics: getLyricsAllSettings(),
+    technicalNoticeSettings: getTechnicalNoticeSettings()
+  };
+}
+
 
 function getBridgeScriptsDirCandidates(config) {
   const values = [
@@ -1983,8 +2216,7 @@ function buildPayloadEntries(files) {
     return [
       { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
       { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
-      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' },
-      { key: 'logoPng', url: ensureAbsoluteUrl(files.logoPng || files.loadingLogo || files.logo), filename: 'logohook.png' }
+      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
     ].filter((entry) => !!entry.url);
   }
 
@@ -1999,8 +2231,7 @@ function buildPayloadEntries(files) {
     return [
       { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
       { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
-      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' },
-      { key: 'logoPng', url: ensureAbsoluteUrl(files.logoPng || files.loadingLogo || files.logo), filename: 'logohook.png' }
+      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
     ].filter((entry) => !!entry.url);
   }
 
@@ -2117,39 +2348,6 @@ function getWindowsPublicVsHookDir() {
   return path.join(publicDir, 'VS Hook APP');
 }
 
-function getWindowsLegacyVsHookDir() {
-  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-  return path.join(programFiles, 'VS Hook APP');
-}
-
-function copyFileWithWindowsAdminFallback(source, destination) {
-  if (!source || !fs.existsSync(source)) return;
-
-  try {
-    copyFileEnsured(source, destination);
-    return;
-  } catch (error) {
-    if (process.platform !== 'win32') throw error;
-  }
-
-  const script = [
-    `$source = ${JSON.stringify(source)}`,
-    `$destination = ${JSON.stringify(destination)}`,
-    '$directory = Split-Path -Parent $destination',
-    'New-Item -ItemType Directory -Force -Path $directory | Out-Null',
-    'Copy-Item -LiteralPath $source -Destination $destination -Force'
-  ].join('; ');
-
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const command = `Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}' -Verb RunAs -Wait`;
-
-  execFileSync('powershell.exe', [
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-Command', command
-  ], { stdio: 'ignore', windowsHide: true });
-}
-
 function getWindowsReaperUserPluginsDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   return path.join(appData, 'REAPER', 'UserPlugins');
@@ -2157,18 +2355,11 @@ function getWindowsReaperUserPluginsDir() {
 
 function installWindowsPayload(files) {
   const luaFileName = 'VS Hook.lua';
-  const logoFileName = 'logohook.png';
+  const publicVsHookDir = getWindowsPublicVsHookDir();
 
-  copyFileEnsured(files.lua, path.join(getWindowsPublicVsHookDir(), luaFileName));
-  copyFileWithWindowsAdminFallback(files.lua, path.join(getWindowsLegacyVsHookDir(), luaFileName));
-
-  if (files.logoPng) {
-    copyFileEnsured(files.logoPng, path.join(getWindowsPublicVsHookDir(), logoFileName));
-    copyFileWithWindowsAdminFallback(files.logoPng, path.join(getWindowsLegacyVsHookDir(), logoFileName));
-  }
-
-  try { fs.rmSync(path.join(getWindowsPublicVsHookDir(), 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
-  try { fs.rmSync(path.join(getWindowsLegacyVsHookDir(), 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
+  // Windows: instala o script apenas na pasta pública.
+  copyFileEnsured(files.lua, path.join(publicVsHookDir, luaFileName));
+  try { fs.rmSync(path.join(publicVsHookDir, 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
 
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
   copyFileEnsured(files.jsApiDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_js_ReaScriptAPI64.dll'));
@@ -2177,7 +2368,6 @@ function installWindowsPayload(files) {
 function installMacPayload(files) {
   const commands = [];
   const luaSource = files.lua;
-  const logoSource = files.logoPng;
   const vshookSource = files.vshookDylib;
   const jsApiSource = files.jsApiDylib;
 
@@ -2188,11 +2378,10 @@ function installMacPayload(files) {
   commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
 
   if (luaSource) commands.push(`cp -f ${shellQuote(luaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook.lua"`);
-  if (logoSource) commands.push(`cp -f ${shellQuote(logoSource)} "$GLOBAL_SCRIPT_DIR/logohook.png"`);
   commands.push('rm -f "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/logohook.png" 2>/dev/null || true');
+  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -2204,12 +2393,11 @@ function installMacPayload(files) {
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
   if (luaSource) commands.push(`  cp -f ${shellQuote(luaSource)} "$USER_SCRIPT_DIR/VS Hook.lua"`);
-  if (logoSource) commands.push(`  cp -f ${shellQuote(logoSource)} "$USER_SCRIPT_DIR/logohook.png"`);
   commands.push('  rm -f "$USER_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
   commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/logohook.png" 2>/dev/null || true');
+  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
 
@@ -2323,6 +2511,8 @@ ipcMain.handle('get-lyrics-settings', (_event, slot) => slot ? getLyricsSettings
 ipcMain.handle('save-lyrics-settings', (_event, payload) => saveLyricsSettings(payload || {}, payload?.slot));
 ipcMain.handle('get-technical-notice-settings', () => getTechnicalNoticeSettings());
 ipcMain.handle('save-technical-notice-settings', (_event, payload) => saveTechnicalNoticeSettings(payload || {}));
+ipcMain.handle('export-lyrics-backup', () => exportLyricsBackup());
+ipcMain.handle('import-lyrics-backup', () => importLyricsBackup());
 ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot));
 ipcMain.handle('close-lyrics-window', (_event, slot) => {
   const id = Number(slot) === 2 ? 2 : 1;

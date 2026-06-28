@@ -1,10 +1,13 @@
 {
-  "version": "1.9.0-auto-front-dispositivos",
-  "title": "QR App Hook Center - Play Repertórios corrigido",
-  "notes": "Play do Diretor envia alvo absoluto da linha; corrige índice da aba Repertórios no primeiro acesso; mantém seleção azul/rosa e sem projeto fake.",
-  "generatedAt": "2026-06-20T07:20:00Z",
-  "updateId": "1.9.0-play-repertorios-index-fix",
-  "build": "play-repertorios-index-fix",
-  "label": "1.9.0 play repertorios indice corrigido",
-  "updatedAt": "2026-06-20T07:20:00Z"
+  "version": "2.0.37",
+  "title": "VS Hook Mobile 2.0.37 - Stop imediato no primeiro toque",
+  "updatedAt": "2026-06-27T00:00:00.000Z",
+  "build": "2.0.37",
+  "notes": "Corrige o primeiro Stop após recarregar a página disparando Stop no pointerdown/touchstart e mantendo Play sem duplicação.",
+  "cacheBust": "2.0.37-stop-immediate-fix",
+  "label": "2.0.37 stop immediate fix",
+  "updateId": "2.0.37-stop-immediate-fix",
+  "generatedAt": "2026-06-27T00:00:00Z",
+  "cacheVersion": "2.0.37",
+  "note": "Stop inicial imediato no app Diretor."
 }

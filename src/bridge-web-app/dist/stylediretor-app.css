@@ -1,0 +1,5955 @@
+* { box-sizing: border-box; }
+#app {
+  height: var(--app-vh, 100dvh);
+  min-height: var(--app-vh, 100dvh);
+  overflow: hidden;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0b1118;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  height: var(--app-vh, 100dvh);
+  min-height: var(--app-vh, 100dvh);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  min-height: var(--app-vh, 100dvh);
+  height: var(--app-vh, 100dvh);
+}
+button, input {
+  font: inherit;
+}
+.app {
+  background: #0b1118;
+  min-height: var(--app-vh, 100dvh);
+  height: var(--app-vh, 100dvh);
+  color: #fff;
+  padding: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.container {
+  padding: 10px;
+  border-width: 2px;
+  border-style: solid;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  min-height: calc(var(--app-vh, 100dvh) - 16px);
+  height: calc(var(--app-vh, 100dvh) - 16px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.topStatusRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.topStatusLeft,
+.topStatusLeftPlaylist {
+  color: #f8fafc;
+  font-weight: bold;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topStatusLeftPlaylist {
+  text-align: left;
+  justify-self: start;
+  width: 100%;
+  display: flex;
+}
+.topStatusCenter {
+  color: #facc15;
+  font-weight: bold;
+  font-size: 15px;
+  white-space: nowrap;
+}
+.topRightSpacer {
+  width: 42px;
+  height: 34px;
+}
+.bridgeOnline {
+  color: #22c55e;
+  font-weight: bold;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.bridgeOffline {
+  color: #ef4444;
+  font-weight: bold;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.menuButton, .menuButtonActive {
+  width: 42px;
+  height: 34px;
+  border-radius: 8px;
+  font-weight: bold;
+  font-size: 18px;
+  line-height: 1;
+}
+.menuButton {
+  border: 1px solid #4b5563;
+  background: #2a3240;
+  color: #fff;
+}
+.menuButtonActive {
+  border: 1px solid #ec4899;
+  background: #7e1f53;
+  color: #fff;
+}
+.headerRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tabRow {
+  display: flex;
+  gap: 8px;
+}
+.middleInfo {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+.middleInfoText {
+  color: #cbd5e1;
+  font-weight: bold;
+  font-size: 15px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+.rightInfo {
+  min-width: 42px;
+}
+.tab, .activeTab {
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-weight: bold;
+}
+.tab {
+  background: #1f2937;
+  color: #d1d5db;
+  border: 1px solid #364152;
+}
+.activeTab {
+  background: #0f5132;
+  color: #fff;
+  border: 1px solid #2dd4bf;
+}
+.controlsRowRegions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.controlsRowPlaylist {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.btn, .btnDisabled, .btnAutoplayActive {
+  height: 36px;
+  border-radius: 7px;
+  font-weight: bold;
+}
+.btn {
+  border: 1px solid #4b5563;
+  background: #2a3240;
+  color: #fff;
+}
+.btnDisabled {
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #64748b;
+  cursor: not-allowed;
+}
+.btnAutoplayActive {
+  border: 1px solid #facc15;
+  background: #ca8a04;
+  color: #111827;
+}
+.sectionLabel {
+  color: #d1d5db;
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 6px;
+  padding-left: 2px;
+}
+.listBox {
+  border: 1px solid #364152;
+  border-radius: 8px;
+  min-height: 320px;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: linear-gradient(90deg, rgba(255,255,255,0.01) 0%, rgba(255,255,255,0.02) 100%);
+}
+.item {
+  position: relative;
+  padding: 8px 12px;
+  border-bottom: 1px solid #18212c;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  min-height: 38px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.progressBar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  opacity: 1;
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.28), 0 0 10px rgba(34, 197, 94, 0.22);
+}
+.leftCol {
+  text-align: left;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+.rightCol {
+  text-align: right;
+  min-width: 72px;
+  position: relative;
+  z-index: 1;
+}
+.text {
+  color: #00ff7f;
+  font-weight: bold;
+}
+.playingText, .playingTimeText {
+  color: #ffffff;
+  font-weight: bold;
+}
+.timeText {
+  color: #cbd5e1;
+  font-weight: bold;
+}
+.selectedMarker {
+  background: #243447;
+}
+.selectedPink {
+  background: #ec4899;
+}
+.selectedBlue {
+  background: #2563eb;
+}
+.selectedPinkText, .selectedPinkTimeText,
+.selectedBlueText, .selectedBlueTimeText {
+  color: #ffffff;
+  font-weight: bold;
+}
+.queuedYellow {
+  background: #e9c74a;
+}
+.queuedYellowText, .queuedYellowTimeText {
+  color: #111827;
+  font-weight: bold;
+}
+.playing {
+  background: #b91c1c;
+}
+.swipeHint {
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+}
+.floatingClearButton {
+  position: fixed;
+  bottom: 20px;
+  min-width: 72px;
+  width: auto;
+  padding: 0 14px;
+  height: 56px;
+  border-radius: 50%;
+  background: #ec4899;
+  color: #fff;
+  font-size: 18px;
+  border: none;
+  box-shadow: 0 0 14px rgba(236,72,153,0.45);
+  transition: left 0.28s ease;
+  z-index: 1200;
+}
+.emptyBox {
+  padding: 16px;
+  color: #94a3b8;
+  font-weight: bold;
+}
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 14px;
+  box-sizing: border-box;
+  z-index: 999;
+}
+.modalSpacer {
+  flex: 0 0 6vh;
+}
+.modalBottomSpace {
+  flex: 1;
+}
+.modalBox {
+  width: 100%;
+  max-width: 380px;
+  background: #111827;
+  border: 1px solid #364152;
+  border-radius: 10px;
+  padding: 16px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1000;
+  box-shadow: 0 18px 42px rgba(0,0,0,0.45);
+}
+.modalTitle {
+  font-size: 18px;
+  font-weight: bold;
+  margin-bottom: 12px;
+}
+.modalInput {
+  width: 100%;
+  height: 46px;
+  border-radius: 8px;
+  border: 1px solid #374151;
+  background: #0b1118;
+  color: #fff;
+  padding: 0 12px;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1001;
+}
+.playlistSelectList {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  position: relative;
+  z-index: 1001;
+}
+.playlistOption, .playlistOptionActive {
+  min-height: 44px;
+  border-radius: 8px;
+  font-weight: bold;
+  text-align: left;
+  padding: 10px 12px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+  z-index: 1001;
+}
+.playlistOption {
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #fff;
+}
+.playlistOptionActive {
+  border: 1px solid #ec4899;
+  background: #7e1f53;
+  color: #fff;
+}
+.playlistOptionText {
+  display: block;
+  width: 100%;
+  pointer-events: none;
+}
+.modalButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  position: relative;
+  z-index: 1001;
+}
+.modalCancelBtn {
+  height: 38px;
+  min-width: 96px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: none;
+  background: #374151;
+  color: #fff;
+  font-weight: bold;
+}
+.modalOkBtnWide {
+  height: 38px;
+  min-width: 122px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: none;
+  background: #22c55e;
+  color: #000;
+  font-weight: bold;
+}
+
+.btnPlayActive {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #22c55e;
+  background: #15803d;
+  color: #fff;
+  font-weight: bold;
+}
+
+.btnStopActive {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #ef4444;
+  background: #991b1b;
+  color: #fff;
+  font-weight: bold;
+}
+
+.btnLoopActive {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #facc15;
+  background: #ca8a04;
+  color: #111827;
+  font-weight: bold;
+}
+
+@media (max-width: 480px) {
+  .app {
+    padding: 6px;
+  }
+
+  .container {
+    padding: 8px;
+    min-height: calc(var(--app-vh, 100dvh) - 12px);
+    height: calc(var(--app-vh, 100dvh) - 12px);
+  }
+
+  .topStatusRow,
+  .headerRow {
+    gap: 6px;
+  }
+
+  .topStatusLeft,
+  .topStatusLeftPlaylist,
+  .topStatusCenter,
+  .middleInfoText {
+    font-size: 13px;
+  }
+
+  .tab,
+  .activeTab,
+  .btn,
+  .btnDisabled,
+  .btnAutoplayActive,
+  .btnPlayActive,
+  .btnStopActive,
+  .btnLoopActive {
+    font-size: 13px;
+  }
+
+  .item {
+    padding: 8px 10px;
+    min-height: 36px;
+  }
+
+  .listBox {
+    min-height: 260px;
+  }
+}
+
+
+.markerSelectedActive {
+  background: #15803d;
+  border: 2px solid #facc15;
+}
+
+.markerSelectedText,
+.markerSelectedTimeText {
+  color: #fff8c5;
+  font-weight: bold;
+}
+
+@keyframes markerBlinkPulse {
+  0% { opacity: 1; box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.65), 0 0 0 rgba(250, 204, 21, 0); }
+  50% { opacity: 0.45; box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 1), 0 0 14px rgba(250, 204, 21, 0.55); }
+  100% { opacity: 1; box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.65), 0 0 0 rgba(250, 204, 21, 0); }
+}
+
+.markerBlink {
+  animation: markerBlinkPulse 0.55s linear infinite;
+}
+
+
+.settingsWrap {
+  position: relative;
+}
+
+.settingsMenu {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  min-width: 128px;
+  background: #111827;
+  border: 1px solid #364152;
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 14px 28px rgba(0,0,0,0.45);
+  z-index: 1400;
+}
+
+.settingsAction {
+  width: 100%;
+  min-height: 40px;
+  border-radius: 8px;
+  border: 1px solid #475569;
+  background: #1f2937;
+  color: #fff;
+  font-weight: bold;
+}
+
+.blockItem {
+  background: rgba(250, 204, 21, 0.06);
+}
+
+.blockText,
+.blockTimeText {
+  color: #facc15;
+  font-weight: bold;
+}
+
+.draggingSelected {
+  opacity: 0.72;
+}
+
+.dragTarget {
+  box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.95);
+}
+
+.floatingDeleteButton,
+.floatingCancelButton {
+  position: fixed;
+  bottom: 20px;
+  min-width: 74px;
+  height: 56px;
+  border-radius: 999px;
+  border: none;
+  font-weight: bold;
+  box-shadow: 0 0 14px rgba(0,0,0,0.35);
+  z-index: 1200;
+  padding: 0 16px;
+}
+
+.floatingDeleteButton {
+  left: 20px;
+  background: #dc2626;
+  color: #fff;
+}
+
+.floatingCancelButton {
+  left: 20px;
+  background: #f59e0b;
+  color: #111827;
+}
+
+
+.editableItem {
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.editHandle {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #d1d5db;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  align-self: center;
+  justify-self: center;
+  cursor: grab;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.editHandle:active {
+  cursor: grabbing;
+}
+
+.editableItem .leftCol {
+  min-width: 0;
+}
+
+.listBox {
+  -webkit-overflow-scrolling: touch;
+}
+
+.draggingSelected {
+  opacity: 0.82;
+}
+
+.dragTarget {
+  box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.95);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+
+.selectedPink.blockItem {
+  background: #ec4899;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
+}
+
+.selectedBlue:not(.blockItem) {
+  background: #2563eb;
+  box-shadow: inset 0 0 0 1px rgba(147,197,253,0.32);
+}
+
+.selectedPink.blockItem .blockText,
+.selectedPink.blockItem .blockTimeText {
+  color: #ffffff;
+}
+
+.editHandle {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #475569;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 18px;
+  touch-action: none;
+}
+
+.editableItem {
+  touch-action: none;
+}
+
+.editHandle:active {
+  background: #1f2937;
+}
+
+
+.settingsMenu {
+  display: grid;
+  gap: 8px;
+}
+
+.settingsAction:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.editHandle {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dragTarget {
+  box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.95), 0 0 0 1px rgba(34, 197, 94, 0.45);
+}
+
+
+.floatingConfirmButton,
+.floatingDangerButton {
+  position: fixed;
+  bottom: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  font-size: 26px;
+  font-weight: bold;
+  box-shadow: 0 0 14px rgba(0,0,0,0.35);
+  z-index: 1200;
+}
+
+.floatingConfirmButton {
+  background: #22c55e;
+  color: #052e16;
+}
+
+.floatingDangerButton {
+  background: #ef4444;
+  color: #fff;
+}
+
+.floatingConfirmRight {
+  right: 20px;
+}
+
+.floatingDangerLeft {
+  left: 20px;
+}
+
+
+.editableItem {
+  cursor: grab;
+  touch-action: none;
+}
+
+.editableItem:active {
+  cursor: grabbing;
+}
+
+.editHandle {
+  pointer-events: none;
+}
+
+
+/* v25 drag stabilization */
+.editableItem {
+  position: relative;
+}
+
+.editableItem .leftCol,
+.editableItem .rightCol,
+.editableItem .text,
+.editableItem .timeText,
+.editableItem .blockText,
+.editableItem .blockTimeText,
+.editableItem .selectedPinkText,
+.editableItem .selectedPinkTimeText {
+  pointer-events: none;
+}
+
+.draggingSelected {
+  box-shadow: inset 0 0 0 2px rgba(236, 72, 153, 0.55);
+}
+
+.dragTarget {
+  transition: box-shadow 0.06s linear, background 0.06s linear;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+
+/* v27 drag stability and centered handle */
+.editHandle {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+  border: 1px solid #475569 !important;
+  border-radius: 8px !important;
+  background: #111827 !important;
+  color: #f8fafc !important;
+  place-self: center !important;
+}
+
+.editHandleBars {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  width: 14px;
+  height: 14px;
+}
+
+.editHandleBars i {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.editableItem {
+  align-items: center !important;
+}
+
+.dragTarget {
+  box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.95), 0 0 0 1px rgba(34, 197, 94, 0.35) !important;
+  background: rgba(34, 197, 94, 0.12) !important;
+}
+
+
+.playlistTitleButton {
+  width: 100%;
+  min-height: 42px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #374151;
+  background: rgba(15, 23, 42, 0.9);
+  color: #f8fafc;
+  font-weight: bold;
+  font-size: 15px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.playlistTitleArrow {
+  color: #facc15;
+  font-size: 14px;
+  flex: 0 0 auto;
+}
+
+.floatingConfirmButton,
+.floatingDangerButton,
+.floatingClearButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.03em;
+}
+
+.floatingConfirmButton,
+.floatingDangerButton {
+  min-width: 72px;
+  width: auto;
+  padding: 0 14px;
+  font-size: 16px;
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    min-height: 40px;
+    font-size: 13px;
+    padding: 7px 10px;
+  }
+}
+
+.marqueeViewport {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.marqueeStatic {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.marqueeMeasure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.marqueeTrack {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+  white-space: nowrap;
+  width: max-content;
+  will-change: transform;
+}
+
+.marqueeViewport.is-marquee .marqueeStatic {
+  visibility: hidden;
+}
+
+.marqueeViewport.is-marquee .marqueeTrack {
+  display: inline-flex;
+  animation: marqueeScroll 10s linear infinite;
+}
+
+.marqueeSegment {
+  flex: 0 0 auto;
+}
+
+.marqueeSpacer {
+  flex: 0 0 auto;
+}
+
+@keyframes marqueeScroll {
+  from { transform: translate3d(0, -50%, 0); }
+  to { transform: translate3d(calc(-50% + 10px), -50%, 0); }
+}
+
+.playlistTitleText,
+.playlistOptionText {
+  font-weight: bold;
+}
+
+.rowMarquee .marqueeTrack {
+  animation-duration: 10s;
+}
+
+.playlistTitleMarquee,
+.playlistOptionMarquee {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+
+/* v34 layout adjustments */
+.leftCol {
+  overflow: hidden;
+}
+
+.numberedItem {
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding-left: 0;
+}
+
+.editableItem.numberedItem {
+  grid-template-columns: 28px 32px minmax(0, 1fr) auto;
+  padding-left: 0;
+}
+
+.numberCol {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-weight: bold;
+  font-size: 12px;
+  background: rgba(2, 6, 23, 0.72);
+  border-right: 1px solid rgba(71, 85, 105, 0.35);
+  margin: -8px 0;
+  padding: 8px 0;
+}
+
+.numberColEmpty {
+  color: #64748b;
+}
+
+.numberCol span {
+  line-height: 1;
+}
+
+.blockItem .numberCol {
+  color: #64748b;
+}
+
+.rowMarquee {
+  display: block;
+  width: 100%;
+}
+
+.leftCol {
+  min-width: 0;
+}
+
+.playlistOptionMarquee {
+  width: 100%;
+}
+
+
+.rowLabelText {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+
+/* v37 top controls and marquee stability */
+.topStatusRow {
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.topStatusCenter {
+  align-self: end;
+  padding-bottom: 2px;
+}
+
+.topStatusLeftPlaylist {
+  align-items: stretch;
+}
+
+.playlistTitleButton {
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 9px;
+}
+
+.rightInfo {
+  min-width: 42px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settingsStack {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.gearMenuButton {
+  font-size: 16px;
+}
+
+.menuBars {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 14px;
+  height: 14px;
+}
+
+.menuBars i {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.playlistTitleMarquee,
+.playlistOptionMarquee {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.playlistTitleText,
+.playlistOptionText {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .topStatusRow {
+    margin-bottom: 8px;
+  }
+
+  .playlistTitleButton {
+    min-height: 34px;
+    padding: 5px 9px;
+  }
+}
+
+
+/* v38 top/layout/gear updates */
+.topStatusRow {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.topStatusRightSpacer {
+  width: 40px;
+  height: 34px;
+}
+
+.playlistTitleButton {
+  min-height: 32px;
+  max-width: 280px;
+  padding: 4px 9px;
+  border-radius: 9px;
+}
+
+.headerRow {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+}
+
+.tabRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.headerTotal {
+  color: #d39b18;
+  font-weight: bold;
+  font-size: 14px;
+  white-space: nowrap;
+  align-self: center;
+  margin-left: 4px;
+}
+
+.middleInfoText {
+  font-size: 13px;
+}
+
+.rightInfo {
+  min-width: 44px;
+}
+
+.settingsStack {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.menuButton,
+.menuButtonActive {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.menuBars {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 16px;
+  height: 16px;
+}
+
+.menuBars i {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.compactPlaylistSelectList {
+  gap: 6px;
+  max-height: 260px;
+}
+
+.compactPlaylistOption,
+.compactPlaylistOption.playlistOptionActive,
+.compactPlaylistOption.playlistOption {
+  min-height: 52px;
+  padding: 8px 10px;
+}
+
+.playlistSwitchBox {
+  max-width: 340px;
+}
+
+.playlistOptionText {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.playlistOptionMarquee .marqueeStatic,
+.playlistOptionMarquee .marqueeTrack {
+  font-size: 14px;
+}
+
+.rowMarquee {
+  display: block;
+  width: 100%;
+}
+
+.rowMarquee .marqueeStatic,
+.rowMarquee .marqueeTrack {
+  font-weight: inherit;
+}
+
+.rowMarquee .marqueeTrack {
+  animation-duration: 11s;
+}
+
+.settingsModalBox {
+  max-width: 340px;
+}
+
+.bridgeStatusCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #334155;
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.bridgeStatusLabel {
+  color: #cbd5e1;
+  font-weight: bold;
+}
+
+.settingsSectionTitle {
+  color: #cbd5e1;
+  font-weight: bold;
+  margin: 10px 0 8px;
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settingsToggleBtn {
+  min-height: 40px;
+  border-radius: 8px;
+  border: 1px solid #364152;
+  background: #1f2937;
+  color: #fff;
+  font-weight: bold;
+}
+
+.settingsGrid:last-of-type {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    max-width: 230px;
+    min-height: 30px;
+    padding: 4px 8px;
+  }
+
+  .headerTotal {
+    font-size: 13px;
+  }
+
+  .playlistSwitchBox,
+  .settingsModalBox {
+    max-width: 320px;
+  }
+}
+
+
+/* v39 fixes */
+.topStatusRow {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.topRightTools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.topRightSpacer {
+  width: 90px;
+  height: 34px;
+}
+
+.headerRow {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.rightInfo {
+  display: none;
+}
+
+.playlistTitleButton {
+  max-width: 240px;
+}
+
+.playlistSwitchBox {
+  max-width: 350px;
+}
+
+.playlistSwitchButtons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.playlistSwitchButtons .modalCancelBtn,
+.playlistSwitchButtons .modalOkBtnWide {
+  min-width: 0;
+  width: 100%;
+}
+
+.settingsGridSingle {
+  grid-template-columns: 1fr;
+}
+
+.settingsGridTheme {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.settingsToggleWide {
+  width: 100%;
+}
+
+.marqueeViewport {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.marqueeMeasure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.marqueeStatic {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.marqueeTrack {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  width: max-content;
+  align-items: center;
+}
+
+.marqueeViewport.is-marquee {
+  position: relative;
+}
+
+.marqueeViewport.is-marquee .marqueeStatic {
+  visibility: hidden;
+}
+
+.marqueeViewport.is-marquee .marqueeTrack {
+  display: inline-flex;
+  animation: marqueeScroll 11s linear infinite;
+}
+
+@keyframes marqueeScroll {
+  from { transform: translate3d(0, -50%, 0); }
+  to { transform: translate3d(calc(-50% + 12px), -50%, 0); }
+}
+
+.rowMarquee .marqueeStatic,
+.rowMarquee .marqueeTrack,
+.playlistTitleMarquee .marqueeStatic,
+.playlistTitleMarquee .marqueeTrack,
+.playlistOptionMarquee .marqueeStatic,
+.playlistOptionMarquee .marqueeTrack {
+  font-weight: inherit;
+}
+
+.menuBars {
+  width: 16px;
+  height: 16px;
+  gap: 2px;
+}
+
+.menuBars i {
+  width: 14px;
+  height: 2px;
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    max-width: 210px;
+  }
+
+  .topRightTools {
+    gap: 5px;
+  }
+
+  .playlistSwitchBox,
+  .settingsModalBox {
+    max-width: 312px;
+  }
+}
+
+
+/* v44 restore top layout and list alignment */
+.topStatusRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.topStatusLeftPlaylist, .topStatusLeft {
+  min-width: 0;
+}
+.playlistTitleButton {
+  width: 100%;
+  max-width: 280px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+.topRightTools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.topRightTools .menuButton,
+.topRightTools .menuButtonActive,
+.topRightTools .gearMenuButton {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+}
+.headerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 0;
+  margin-bottom: 8px;
+}
+.tabRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+.headerTotal {
+  display: inline-block;
+  color: #facc15;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1;
+  margin-left: 2px;
+  transform: translateY(2px);
+}
+.middleInfo { display:none; }
+.middleInfoText { display:none; }
+
+.listBox .item,
+.listBox .numberedItem {
+  align-items: center;
+}
+.numberedItem {
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 0;
+  padding-left: 0;
+}
+.editableItem.numberedItem {
+  grid-template-columns: 42px 34px minmax(0, 1fr) auto;
+}
+.numberCol {
+  justify-content: center;
+  align-items: center;
+  margin: -8px 0;
+  padding: 8px 0;
+  background: rgba(2, 6, 23, 0.78);
+}
+.leftCol {
+  min-width: 0;
+  text-align: left !important;
+  justify-self: stretch;
+  align-self: center;
+  padding-left: 12px;
+  overflow: hidden;
+}
+.blockItem .leftCol {
+  padding-left: 12px;
+}
+.rightCol {
+  min-width: 82px;
+  text-align: right !important;
+  justify-self: end;
+  align-self: center;
+  padding-right: 12px;
+}
+.rowLabelText,
+.marqueeViewport,
+.marqueeStatic {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.marqueeViewport {
+  position: relative;
+  overflow: hidden;
+}
+.rowMarquee .marqueeTrack {
+  animation-duration: 11s;
+}
+.blockItem .numberCol {
+  background: rgba(2, 6, 23, 0.78);
+}
+.blockText,
+.blockTimeText {
+  color: #facc15;
+}
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    max-width: 230px;
+  }
+  .headerTotal {
+    font-size: 14px;
+  }
+}
+
+
+.settingsToggleBtnActive {
+  border: 1px solid #22c55e;
+  background: #15803d;
+  color: #fff;
+  font-weight: bold;
+}
+
+.app[data-theme="light"] {
+  background: #eef2f7;
+  color: #0f172a;
+}
+
+.app[data-theme="light"] .container {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+}
+
+.app[data-theme="light"] .topStatusLeft,
+.app[data-theme="light"] .topStatusLeftPlaylist,
+.app[data-theme="light"] .middleInfoText,
+.app[data-theme="light"] .bridgeStatusLabel,
+.app[data-theme="light"] .settingsSectionTitle,
+.app[data-theme="light"] .sectionLabel,
+.app[data-theme="light"] .playlistTitleText,
+.app[data-theme="light"] .regionsTopLabel {
+  color: #0f172a;
+}
+
+.app[data-theme="light"] .headerTotal,
+.app[data-theme="light"] .topStatusCenter {
+  color: #ca8a04;
+}
+
+.app[data-theme="light"] .tab {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.app[data-theme="light"] .activeTab {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.app[data-theme="light"] .btn,
+.app[data-theme="light"] .menuButton,
+.app[data-theme="light"] .settingsToggleBtn,
+.app[data-theme="light"] .modalCancelBtn {
+  background: #e5e7eb;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.app[data-theme="light"] .btnDisabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+  border-color: #dbe4ee;
+}
+
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .bridgeStatusCard,
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .playlistOption {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #dbe4ee;
+}
+
+.app[data-theme="light"] .item {
+  border-bottom-color: #e5e7eb;
+}
+
+.app[data-theme="light"] .text,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .blockText,
+.app[data-theme="light"] .blockTimeText,
+.app[data-theme="light"] .playlistOptionText,
+.app[data-theme="light"] .modalTitle {
+  color: #0f172a;
+}
+
+.app[data-theme="light"] .modalInput {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.app[data-theme="light"] .selectedMarker {
+  background: #dbeafe;
+}
+
+.app[data-theme="light"] .playingText,
+.app[data-theme="light"] .playingTimeText,
+.app[data-theme="light"] .queuedYellowText,
+.app[data-theme="light"] .queuedYellowTimeText,
+.app[data-theme="light"] .selectedPinkText,
+.app[data-theme="light"] .selectedPinkTimeText {
+  color: #111827;
+}
+
+.app[data-theme="light"] .settingsToggleBtnActive {
+  border-color: #22c55e;
+  background: #15803d;
+  color: #fff;
+}
+
+
+/* v2 ajustes do tema claro */
+.app[data-theme="light"] .playlistTitleButton,
+.app[data-theme="light"] .playlistTitleButton .playlistTitleText,
+.app[data-theme="light"] .playlistTitleButton .marqueeStatic,
+.app[data-theme="light"] .playlistTitleButton .marqueeTrack,
+.app[data-theme="light"] .playlistTitleButton .marqueeSegment,
+.app[data-theme="light"] .playlistTitleArrow {
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .text {
+  color: #111827;
+}
+
+.app[data-theme="light"] .blockText,
+.app[data-theme="light"] .blockTimeText {
+  color: #facc15;
+}
+
+.app[data-theme="light"] .selectedMarker .text,
+.app[data-theme="light"] .selectedMarker .timeText,
+.app[data-theme="light"] .selectedMarker .blockText,
+.app[data-theme="light"] .selectedMarker .blockTimeText {
+  color: #facc15;
+}
+
+
+/* v3 marker and label color fixes */
+[data-marker-id] .text,
+[data-marker-id] .timeText,
+[data-marker-id] .marqueeStatic.text,
+[data-marker-id] .marqueeTrack.text,
+[data-marker-id] .marqueeSegment {
+  color: #facc15;
+}
+
+[data-marker-id].selectedMarker,
+[data-marker-id].selectedPink,
+.markerSelectedActive {
+  background: #facc15;
+}
+
+[data-marker-id].selectedMarker .text,
+[data-marker-id].selectedMarker .timeText,
+[data-marker-id].selectedMarker .marqueeStatic,
+[data-marker-id].selectedMarker .marqueeTrack,
+[data-marker-id].selectedMarker .marqueeSegment,
+[data-marker-id].selectedPink .text,
+[data-marker-id].selectedPink .timeText,
+[data-marker-id].selectedPink .marqueeStatic,
+[data-marker-id].selectedPink .marqueeTrack,
+[data-marker-id].selectedPink .marqueeSegment,
+.markerSelectedActive .markerSelectedText,
+.markerSelectedActive .markerSelectedTimeText {
+  color: #111827;
+}
+
+.app[data-theme="light"] [data-marker-id] .text,
+.app[data-theme="light"] [data-marker-id] .timeText,
+.app[data-theme="light"] [data-marker-id] .marqueeStatic.text,
+.app[data-theme="light"] [data-marker-id] .marqueeTrack.text,
+.app[data-theme="light"] [data-marker-id] .marqueeSegment,
+.app[data-theme="light"] [data-marker-id] .marqueeStatic,
+.app[data-theme="light"] [data-marker-id] .marqueeTrack {
+  color: #111827;
+}
+
+.app[data-theme="light"] [data-marker-id].selectedMarker,
+.app[data-theme="light"] [data-marker-id].selectedPink,
+.app[data-theme="light"] .markerSelectedActive {
+  background: #facc15;
+}
+
+.app[data-theme="light"] [data-marker-id].selectedMarker .text,
+.app[data-theme="light"] [data-marker-id].selectedMarker .timeText,
+.app[data-theme="light"] [data-marker-id].selectedMarker .marqueeStatic,
+.app[data-theme="light"] [data-marker-id].selectedMarker .marqueeTrack,
+.app[data-theme="light"] [data-marker-id].selectedMarker .marqueeSegment,
+.app[data-theme="light"] [data-marker-id].selectedPink .text,
+.app[data-theme="light"] [data-marker-id].selectedPink .timeText,
+.app[data-theme="light"] [data-marker-id].selectedPink .marqueeStatic,
+.app[data-theme="light"] [data-marker-id].selectedPink .marqueeTrack,
+.app[data-theme="light"] [data-marker-id].selectedPink .marqueeSegment,
+.app[data-theme="light"] .markerSelectedActive .markerSelectedText,
+.app[data-theme="light"] .markerSelectedActive .markerSelectedTimeText {
+  color: #111827;
+}
+
+
+.rightColEmpty {
+  min-width: 72px;
+}
+
+
+/* ajuste: blocos com o mesmo fundo das músicas */
+.blockItem {
+  background: transparent;
+}
+.blockItem .numberCol {
+  background: rgba(2, 6, 23, 0.72);
+  color: #94a3b8;
+}
+.app[data-theme="light"] .blockItem {
+  background: transparent;
+}
+.app[data-theme="light"] .blockItem .numberCol {
+  background: #eef2f7;
+  color: #94a3b8;
+}
+
+
+.modalDeleteBtn {
+  background: #991b1b;
+  color: #fff;
+}
+
+
+/* v45 tema claro corrigido */
+.app[data-theme="light"] .controlsStickyPanel {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%) !important;
+}
+
+.app[data-theme="light"] .sectionLabel,
+.app[data-theme="light"] .sectionLabelSticky {
+  color: #0f172a !important;
+}
+
+.app[data-theme="light"] .numberCol {
+  background: #ffffff !important;
+  color: #ffffff !important;
+  border-right: 1px solid #dbe4ee !important;
+}
+
+.app[data-theme="light"] .numberCol span {
+  color: #ffffff !important;
+}
+
+.app[data-theme="light"] .blockItem .numberCol {
+  background: #ffffff !important;
+  color: #ffffff !important;
+}
+
+.app[data-theme="light"] .blockItem .numberCol span {
+  color: #ffffff !important;
+}
+
+/* mantém boa leitura quando a linha estiver selecionada/tocando */
+.app[data-theme="light"] .playing .numberCol,
+.app[data-theme="light"] .selectedPink .numberCol,
+.app[data-theme="light"] .queuedYellow .numberCol,
+.app[data-theme="light"] .markerSelectedActive .numberCol {
+  color: #ffffff !important;
+}
+
+.app[data-theme="light"] .playing .numberCol span,
+.app[data-theme="light"] .selectedPink .numberCol span,
+.app[data-theme="light"] .queuedYellow .numberCol span,
+.app[data-theme="light"] .markerSelectedActive .numberCol span {
+  color: #ffffff !important;
+}
+
+
+/* v46 correção final do tema claro */
+.app[data-theme="light"] .numberCol,
+.app[data-theme="light"] .numberCol span {
+  background: #ffffff !important;
+  color: #111827 !important;
+  border-right: 1px solid #dbe4ee !important;
+}
+
+.app[data-theme="light"] .blockItem .numberCol,
+.app[data-theme="light"] .blockItem .numberCol span {
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] .numberColEmpty,
+.app[data-theme="light"] .numberColEmpty span {
+  color: #64748b !important;
+}
+
+.app[data-theme="light"] .controlsStickyPanel {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%) !important;
+}
+
+
+/* v47 cores dos botões */
+.btnAddList {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #22c55e;
+  background: #15803d;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.btnAddExist {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #60a5fa;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.btnCreateBlock {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #c084fc;
+  background: #7c3aed;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.settingsActionEdit {
+  border-color: #22c55e;
+  background: #15803d;
+  color: #ffffff;
+}
+
+.settingsActionRename {
+  border-color: #60a5fa;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.settingsActionCopy {
+  border-color: #facc15;
+  background: #eab308;
+  color: #111827;
+}
+
+.settingsActionDelete {
+  border-color: #ef4444;
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .btnAddList {
+  border-color: #22c55e;
+  background: #15803d;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .btnAddExist {
+  border-color: #60a5fa;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .btnCreateBlock {
+  border-color: #c084fc;
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .settingsActionEdit {
+  border-color: #22c55e;
+  background: #15803d;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .settingsActionRename {
+  border-color: #60a5fa;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.app[data-theme="light"] .settingsActionCopy {
+  border-color: #facc15;
+  background: #eab308;
+  color: #111827;
+}
+
+.app[data-theme="light"] .settingsActionDelete {
+  border-color: #ef4444;
+  background: #dc2626;
+  color: #ffffff;
+}
+
+
+/* v48 bloco verde no tema claro e caixa alta visual do app */
+.app[data-theme="light"] .blockText,
+.app[data-theme="light"] .blockTimeText,
+.app[data-theme="light"] .blockItem .marqueeStatic,
+.app[data-theme="light"] .blockItem .marqueeTrack,
+.app[data-theme="light"] .blockItem .marqueeSegment {
+  color: #16a34a !important;
+}
+
+.app[data-theme="light"] .selectedPink.blockItem .blockText,
+.app[data-theme="light"] .selectedPink.blockItem .blockTimeText,
+.app[data-theme="light"] .selectedPink.blockItem .marqueeStatic,
+.app[data-theme="light"] .selectedPink.blockItem .marqueeTrack,
+.app[data-theme="light"] .selectedPink.blockItem .marqueeSegment {
+  color: #ffffff !important;
+}
+
+
+/* v49 quebra inteligente de linha e textos do topo */
+.rowLabelText {
+  display: -webkit-box !important;
+  display: box;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  line-height: 1.12;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.songRowLabel,
+.regionRowLabel,
+.markerRowLabel {
+  max-width: 100%;
+}
+
+.item,
+.numberedItem {
+  min-height: 44px;
+  height: auto;
+}
+
+.leftCol {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.rightCol,
+.rightColEmpty {
+  align-self: center;
+}
+
+.marqueeViewport.rowMarquee,
+.rowMarquee .marqueeStatic,
+.rowMarquee .marqueeTrack {
+  white-space: normal !important;
+}
+
+.headerTotalSpacer {
+  flex: 1 1 auto;
+  min-width: 6px !important;
+}
+
+.markersNavButtonWide {
+  min-width: 88px;
+  margin-left: -6px;
+}
+
+.topRightTools .menuButton,
+.topRightTools .menuButtonActive,
+.topRightTools .gearMenuButton {
+  width: 42px;
+  height: 42px;
+}
+
+.playlistTitleButton {
+  overflow: hidden;
+}
+
+.playlistTitleMarquee {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.playlistTitleMarquee .marqueeStatic,
+.playlistTitleMarquee .marqueeTrack,
+.playlistTitleMarquee .marqueeSegment {
+  white-space: nowrap !important;
+}
+
+@media (max-width: 480px) {
+  .rowLabelText {
+    -webkit-line-clamp: 3;
+    line-height: 1.1;
+  }
+  .markersNavButtonWide {
+    margin-left: -8px;
+    min-width: 82px;
+  }
+}
+
+
+/* v50 topo compacto, letreiro do repertório, quebra de linha inteligente */
+.headerTotal::before {
+  content: "";
+}
+
+.playlistTitleButton {
+  max-width: min(62vw, 420px) !important;
+  overflow: hidden !important;
+}
+
+.topStatusLeftPlaylist,
+.topStatusLeft {
+  min-width: 0;
+}
+
+.playlistTitleMarquee {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: 100%;
+}
+
+.playlistTitleMarquee .marqueeStatic,
+.playlistTitleMarquee .marqueeTrack,
+.playlistTitleMarquee .marqueeSegment,
+.playlistTitleText {
+  white-space: nowrap !important;
+  display: block;
+  width: max-content;
+}
+
+.playlistTitleButton .marqueeViewport {
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.rowLabelText {
+  display: -webkit-box !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  line-height: 1.12;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.songRowLabel,
+.regionRowLabel,
+.markerRowLabel {
+  max-width: 100%;
+}
+
+.item,
+.numberedItem {
+  min-height: 44px !important;
+  height: auto !important;
+}
+
+.leftCol {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.rightCol,
+.rightColEmpty {
+  align-self: center;
+}
+
+.markersNavButtonWide {
+  min-width: 84px !important;
+  margin-left: -8px !important;
+}
+
+.headerTotalSpacer {
+  flex: 1 1 auto;
+  min-width: 4px !important;
+}
+
+.settingsGridSingle {
+  grid-template-columns: 1fr !important;
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    max-width: min(58vw, 320px) !important;
+  }
+  .rowLabelText {
+    -webkit-line-clamp: 3;
+    line-height: 1.1;
+  }
+  .markersNavButtonWide {
+    min-width: 78px !important;
+    margin-left: -10px !important;
+  }
+}
+
+
+/* v51 correção do letreiro do repertório + recados */
+.playlistTitleButton {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleContent {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  display: block;
+}
+
+.playlistTitleButton .playlistTitleMarquee {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleButton .marqueeViewport {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleButton .marqueeStatic,
+.playlistTitleButton .marqueeTrack,
+.playlistTitleButton .marqueeSegment,
+.playlistTitleButton .playlistTitleText {
+  white-space: nowrap !important;
+}
+
+.settingsSectionTitle {
+  text-transform: uppercase;
+}
+
+
+/* v52 correção real do letreiro do repertório */
+.topStatusRow {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+}
+
+.topStatusLeftPlaylist {
+  min-width: 0 !important;
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.playlistTitleButton {
+  width: 100% !important;
+  max-width: min(52vw, 340px) !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleContent {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  overflow: hidden !important;
+  display: block !important;
+}
+
+.playlistTitleArrow {
+  flex: 0 0 auto !important;
+  margin-left: auto !important;
+}
+
+.playlistTitleButton .playlistTitleMarquee,
+.playlistTitleButton .marqueeViewport {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleButton .marqueeStatic,
+.playlistTitleButton .marqueeTrack,
+.playlistTitleButton .marqueeSegment,
+.playlistTitleButton .playlistTitleText {
+  white-space: nowrap !important;
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    max-width: min(50vw, 260px) !important;
+  }
+}
+
+
+/* v53 fallback visível do título do repertório */
+.playlistTitleButton .marqueeViewport {
+  display: block !important;
+}
+
+.playlistTitleButton .marqueeStatic {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+
+/* v54 força letreiro do repertório e corrige botões do modal */
+.playlistTitleButton {
+  min-width: 0 !important;
+}
+
+.playlistTitleContent {
+  min-width: 0 !important;
+}
+
+.playlistTitleButton .playlistTitleMarquee.marqueeViewport.is-marquee .marqueeTrack {
+  animation-duration: 9s !important;
+}
+
+.playlistSwitchButtons {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  align-items: stretch !important;
+}
+
+.playlistSwitchButtons .modalCancelBtn,
+.playlistSwitchButtons .modalOkBtnWide {
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 44px !important;
+  padding: 0 10px !important;
+  font-size: 14px !important;
+  white-space: nowrap !important;
+}
+
+.playlistSwitchButtons [data-action="confirm-playlist-switch"] {
+  grid-column: 1 / -1 !important;
+}
+
+@media (max-width: 480px) {
+  .playlistSwitchButtons .modalCancelBtn,
+  .playlistSwitchButtons .modalOkBtnWide {
+    font-size: 13px !important;
+  }
+}
+
+
+/* v55 letreiro próprio do repertório no topo */
+.playlistTitleButton {
+  overflow: hidden !important;
+}
+
+.playlistTitleContent {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.titleTicker {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+}
+
+.titleTickerStatic .titleTickerText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titleTickerAnimated {
+  min-height: 1.2em;
+}
+
+.titleTickerTrack {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  width: max-content;
+  animation: titleTickerScroll 9s linear infinite;
+  will-change: transform;
+}
+
+.titleTickerSegment,
+.titleTickerGap,
+.titleTickerText {
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: 1.2;
+}
+
+.titleTickerGap {
+  flex: 0 0 auto;
+}
+
+@keyframes titleTickerScroll {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(calc(-50% + 12px), 0, 0); }
+}
+
+
+/* v56 letreiro próprio dentro da janela de repertórios */
+.compactPlaylistOption {
+  overflow: hidden !important;
+}
+
+.playlistOptionTicker {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+}
+
+.playlistOptionTickerStatic .playlistOptionTickerText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playlistOptionTickerAnimated {
+  min-height: 1.2em;
+}
+
+.playlistOptionTickerTrack {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  width: max-content;
+  animation: playlistOptionTickerScroll 9s linear infinite;
+  will-change: transform;
+}
+
+.playlistOptionTickerSegment,
+.playlistOptionTickerGap,
+.playlistOptionTickerText {
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: 1.2;
+}
+
+.playlistOptionTickerGap {
+  flex: 0 0 auto;
+}
+
+@keyframes playlistOptionTickerScroll {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(calc(-50% + 12px), 0, 0); }
+}
+
+
+/* v59 boot loading screen */
+body.boot-loading {
+  overflow: hidden !important;
+}
+
+.appBootLoader {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
+    radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
+    linear-gradient(180deg, #020406 0%, #0b1118 100%);
+  opacity: 1;
+  transition: opacity .35s ease, visibility .35s ease;
+  visibility: visible;
+}
+
+.appBootLoaderHidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.appBootLoaderInner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: min(72vw, 320px);
+  text-align: center;
+}
+
+.appBootLoaderIcon {
+  width: min(48vw, 180px);
+  max-width: 240px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 0 18px rgba(163,230,53,.22)) drop-shadow(0 0 30px rgba(217,70,239,.16));
+  animation: bootIconFloat 1.8s ease-in-out infinite, bootIconPulse 1.25s ease-in-out infinite;
+}
+
+.appBootLoaderGlow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(52vw, 210px);
+  height: min(52vw, 210px);
+  border-radius: 999px;
+  transform: translate(-50%, -58%);
+  background:
+    radial-gradient(circle, rgba(163,230,53,.24) 0%, rgba(34,197,94,.16) 28%, rgba(217,70,239,.12) 52%, rgba(0,0,0,0) 72%);
+  filter: blur(14px);
+  animation: bootGlowPulse 1.5s ease-in-out infinite;
+  z-index: 1;
+}
+
+.appBootLoaderText {
+  position: relative;
+  z-index: 2;
+  color: #f8fafc;
+  font-weight: 900;
+  letter-spacing: .12em;
+  font-size: clamp(20px, 4.2vw, 30px);
+}
+
+.appBootLoaderSubtext {
+  position: relative;
+  z-index: 2;
+  color: #cbd5e1;
+  font-weight: 700;
+  letter-spacing: .18em;
+  font-size: clamp(11px, 2.6vw, 14px);
+  opacity: .86;
+}
+
+@keyframes bootIconFloat {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes bootIconPulse {
+  0% { opacity: .92; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.03); }
+  100% { opacity: .92; transform: scale(1); }
+}
+
+@keyframes bootGlowPulse {
+  0% { opacity: .65; transform: translate(-50%, -58%) scale(.96); }
+  50% { opacity: 1; transform: translate(-50%, -58%) scale(1.06); }
+  100% { opacity: .65; transform: translate(-50%, -58%) scale(.96); }
+}
+
+
+/* v60 boot + auth gate */
+body.boot-loading {
+  overflow: hidden !important;
+}
+
+.appBootLoader {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
+    radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
+    linear-gradient(180deg, #020406 0%, #0b1118 100%);
+  opacity: 1;
+  transition: opacity .35s ease, visibility .35s ease;
+  visibility: visible;
+}
+
+.appBootLoaderHidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.appBootLoaderInner,
+.authGateCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.appBootLoaderInner {
+  gap: 12px;
+  width: min(72vw, 320px);
+}
+
+.appBootLoaderIcon,
+.authGateLogo {
+  width: min(48vw, 180px);
+  max-width: 240px;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 0 18px rgba(163,230,53,.22)) drop-shadow(0 0 30px rgba(217,70,239,.16));
+  animation: bootIconFloat 1.8s ease-in-out infinite, bootIconPulse 1.25s ease-in-out infinite;
+}
+
+.appBootLoaderGlow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(52vw, 210px);
+  height: min(52vw, 210px);
+  border-radius: 999px;
+  transform: translate(-50%, -58%);
+  background:
+    radial-gradient(circle, rgba(163,230,53,.24) 0%, rgba(34,197,94,.16) 28%, rgba(217,70,239,.12) 52%, rgba(0,0,0,0) 72%);
+  filter: blur(14px);
+  animation: bootGlowPulse 1.5s ease-in-out infinite;
+  z-index: 1;
+}
+
+.appBootLoaderText,
+.authGateTitle {
+  color: #f8fafc;
+  font-weight: 900;
+  letter-spacing: .08em;
+  font-size: clamp(20px, 4.2vw, 30px);
+}
+
+.appBootLoaderSubtext,
+.authGateSubtitle {
+  color: #cbd5e1;
+  font-weight: 700;
+  letter-spacing: .18em;
+  font-size: clamp(11px, 2.6vw, 14px);
+  opacity: .86;
+}
+
+.authGateApp {
+  min-height: var(--app-vh, 100dvh);
+  height: var(--app-vh, 100dvh);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.authGateWrap {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.authGateCard {
+  width: min(92vw, 380px);
+  border: 1px solid #334155;
+  border-radius: 18px;
+  padding: 22px 18px 18px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  box-shadow: 0 18px 42px rgba(0,0,0,0.45);
+  gap: 10px;
+}
+
+.authGateForm {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.authGateInput {
+  width: 100%;
+  height: 48px;
+  border-radius: 10px;
+  border: 1px solid #374151;
+  background: #0b1118;
+  color: #fff;
+  padding: 0 14px;
+}
+
+
+.authGatePassWrap {
+  position: relative;
+  width: 100%;
+}
+
+.authGateInputWithToggle {
+  padding-right: 52px;
+}
+
+.authGatePassToggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.authGatePassToggle:hover {
+  background: rgba(148, 163, 184, 0.1);
+  color: #e2e8f0;
+}
+
+.authGatePassToggle:active {
+  transform: translateY(-50%) scale(0.96);
+}
+
+.authGatePassToggle:focus-visible {
+  outline: 2px solid rgba(34, 197, 94, 0.9);
+  outline-offset: 2px;
+}
+
+.authGatePassToggle svg {
+  width: 19px;
+  height: 19px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app[data-theme="light"] .authGatePassToggle {
+  color: #64748b;
+}
+
+.app[data-theme="light"] .authGatePassToggle:hover {
+  background: rgba(100, 116, 139, 0.1);
+  color: #0f172a;
+}
+
+.authGateButton {
+  width: 100%;
+  height: 46px;
+  border: none;
+  border-radius: 10px;
+  background: #22c55e;
+  color: #052e16;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.authGateError {
+  color: #fca5a5;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+@keyframes bootIconFloat {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes bootIconPulse {
+  0% { opacity: .92; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.03); }
+  100% { opacity: .92; transform: scale(1); }
+}
+
+@keyframes bootGlowPulse {
+  0% { opacity: .65; transform: translate(-50%, -58%) scale(.96); }
+  50% { opacity: 1; transform: translate(-50%, -58%) scale(1.06); }
+  100% { opacity: .65; transform: translate(-50%, -58%) scale(.96); }
+}
+
+.app[data-theme="light"] .authGateCard {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+  border-color: #dbe4ee;
+}
+.app[data-theme="light"] .authGateTitle,
+.app[data-theme="light"] .authGateSubtitle {
+  color: #0f172a;
+}
+.app[data-theme="light"] .authGateInput {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+
+/* v63 access button */
+.accessStyleBtn {
+  border: 1px solid #f59e0b !important;
+  background: #ea8a1a !important;
+  color: #111827 !important;
+  font-weight: 900 !important;
+}
+
+
+/* v66 progresso + cronômetro */
+.topStatusRow {
+  grid-template-columns: minmax(0, 1fr) auto auto !important;
+  align-items: center !important;
+}
+
+.playlistTitleButton {
+  max-width: min(42vw, 250px) !important;
+}
+
+.topTimerButton {
+  min-width: 96px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid #475569;
+  background: #111827;
+  color: #facc15;
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.topTimerButtonRunning {
+  border-color: #22c55e;
+  background: #052e16;
+  color: #86efac;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.28), 0 0 16px rgba(34, 197, 94, 0.14);
+}
+
+.timerModalBox {
+  max-width: 330px;
+}
+
+.timerModalPreview {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  background: #0b1118;
+  color: #facc15;
+  font-size: 22px;
+  font-weight: 900;
+  margin-bottom: 14px;
+}
+
+.progressBar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  opacity: 0.42;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.95) 0%, rgba(168, 85, 247, 0.92) 100%);
+  pointer-events: none;
+  border-radius: 0;
+}
+
+.progressBarWithNumber {
+  left: 42px;
+}
+
+.item,
+.numberedItem {
+  position: relative;
+  overflow: hidden;
+}
+
+.item .leftCol,
+.item .rightCol,
+.item .numberCol {
+  position: relative;
+  z-index: 1;
+}
+
+.app[data-theme="light"] .progressBar {
+  opacity: 0.28;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.65) 0%, rgba(168, 85, 247, 0.62) 100%);
+}
+
+.app[data-theme="light"] .topTimerButton {
+  background: #e5e7eb;
+  color: #b45309;
+  border-color: #cbd5e1;
+}
+
+.app[data-theme="light"] .topTimerButtonRunning {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.app[data-theme="light"] .timerModalPreview {
+  background: #ffffff;
+  color: #b45309;
+  border-color: #cbd5e1;
+}
+
+@media (max-width: 480px) {
+  .topStatusRow {
+    grid-template-columns: minmax(0, 1fr) auto auto !important;
+    gap: 6px !important;
+  }
+
+  .playlistTitleButton {
+    max-width: min(38vw, 210px) !important;
+  }
+
+  .topTimerButton {
+    min-width: 88px;
+    height: 32px;
+    font-size: 13px;
+    padding: 0 8px;
+  }
+
+  .timerModalPreview {
+    font-size: 20px;
+    height: 50px;
+  }
+}
+
+/* ajuste final: cronometro sempre verde */
+.topTimerButton,
+.topTimerButtonRunning,
+.topTimerButton[data-action="open-timer"],
+.topTimerButton.topTimerButtonRunning[data-action="open-timer"] {
+  color: #22c55e !important;
+  border-color: #22c55e !important;
+}
+
+.topTimerButton {
+  background: #111827 !important;
+}
+
+.topTimerButtonRunning {
+  background: #052e16 !important;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.28), 0 0 16px rgba(34, 197, 94, 0.14) !important;
+}
+
+.timerModalPreview,
+.timerModalPreview[data-chrono-display] {
+  color: #22c55e !important;
+  border-color: #22c55e !important;
+}
+
+.app[data-theme="light"] .topTimerButton,
+.app[data-theme="light"] .topTimerButtonRunning,
+.app[data-theme="light"] .topTimerButton[data-action="open-timer"],
+.app[data-theme="light"] .topTimerButton.topTimerButtonRunning[data-action="open-timer"] {
+  color: #16a34a !important;
+  border-color: #16a34a !important;
+}
+
+.app[data-theme="light"] .topTimerButton {
+  background: #e5e7eb !important;
+}
+
+.app[data-theme="light"] .topTimerButtonRunning {
+  background: #dcfce7 !important;
+}
+
+.app[data-theme="light"] .timerModalPreview,
+.app[data-theme="light"] .timerModalPreview[data-chrono-display] {
+  color: #16a34a !important;
+  border-color: #16a34a !important;
+}
+
+
+.authGatePassToggle {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.authGatePassToggle svg {
+  pointer-events: none;
+}
+
+
+
+/* ajuste corrigido: cronômetro no lugar certo, botões no topo e playlist melhor aproveitada */
+.topStatusRow {
+  grid-template-columns: minmax(0, 1fr) auto auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.topStatusLeftPlaylist {
+  min-width: 0 !important;
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.topRightTools {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex: 0 0 auto !important;
+}
+
+.playlistTitleButton {
+  width: 100% !important;
+  max-width: min(46vw, 290px) !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.playlistTitleContent {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+  overflow: hidden !important;
+}
+
+.titleTicker,
+.playlistTitleMarquee,
+.playlistTitleButton .marqueeViewport {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.titleTickerStatic .titleTickerText,
+.playlistTitleButton .marqueeStatic {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.titleTickerAnimated,
+.playlistTitleButton .marqueeViewport.is-marquee {
+  width: 100% !important;
+}
+
+.titleTickerTrack,
+.playlistTitleButton .marqueeTrack {
+  width: max-content !important;
+}
+
+@media (max-width: 480px) {
+  .topStatusRow {
+    grid-template-columns: minmax(0, 1fr) auto auto !important;
+    gap: 6px !important;
+  }
+
+  .topRightTools {
+    gap: 4px !important;
+  }
+
+  .playlistTitleButton {
+    max-width: min(43vw, 235px) !important;
+  }
+}
+
+
+/* ajuste fino: aproveitar melhor a área interna do botão da playlist */
+.playlistTitleButton {
+  padding-left: 8px !important;
+  padding-right: 7px !important;
+  gap: 5px !important;
+}
+
+.playlistTitleContent {
+  padding-right: 0 !important;
+}
+
+.playlistTitleArrow {
+  margin-left: 4px !important;
+}
+
+.titleTickerStatic .titleTickerText {
+  padding-right: 0 !important;
+  letter-spacing: 0 !important;
+}
+
+@media (max-width: 480px) {
+  .playlistTitleButton {
+    padding-left: 7px !important;
+    padding-right: 6px !important;
+    gap: 4px !important;
+  }
+
+  .playlistTitleArrow {
+    margin-left: 3px !important;
+  }
+}
+
+
+/* mixer mobile modal */
+.mixerOverlay {
+  z-index: 1600;
+}
+
+.mixerModalBox {
+  max-width: 420px;
+  padding: 14px;
+}
+
+.mixerModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mixerCloseBtn {
+  min-width: 90px;
+}
+
+.mixerViewTabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mixerSwipePanel {
+  min-height: 340px;
+}
+
+.mixerSectionLabel {
+  margin-bottom: 8px;
+}
+
+.mixerRowsBox {
+  display: grid;
+  gap: 8px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.mixerRow {
+  display: grid;
+  grid-template-columns: 5px 42px minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 52px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.92);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
+}
+
+.mixerRowColor {
+  background: var(--mixer-color, #334155);
+}
+
+.mixerRowIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  color: var(--mixer-color, #facc15);
+  background: rgba(2, 6, 23, 0.9);
+  border-right: 1px solid rgba(71, 85, 105, 0.35);
+  font-size: 13px;
+}
+
+.mixerRowMain {
+  min-width: 0;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.mixerRowName {
+  color: #ffffff;
+  font-weight: bold;
+  line-height: 1.1;
+  word-break: break-word;
+}
+
+.mixerRowGroupName {
+  color: var(--mixer-color, #94a3b8);
+  font-size: 12px;
+  font-weight: bold;
+  line-height: 1.1;
+}
+
+.mixerSwipeHint {
+  margin-top: 10px;
+}
+
+.app[data-theme="light"] .mixerRow {
+  background: #ffffff;
+  border-color: #dbe4ee;
+}
+
+.app[data-theme="light"] .mixerRowIndex {
+  background: #f8fafc;
+}
+
+.app[data-theme="light"] .mixerRowName {
+  color: #0f172a;
+}
+
+
+/* mixer controls v2 */
+.mixerRowsBox {
+  display: grid;
+  gap: 8px;
+}
+
+.mixerRow {
+  grid-template-columns: 6px 28px minmax(0, 1fr) 52px 14px 28px 28px;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.mixerRowDb {
+  color: #facc15;
+  font-weight: bold;
+  font-size: 12px;
+  text-align: right;
+}
+
+.mixerMeter {
+  width: 12px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #020617;
+  position: relative;
+  overflow: hidden;
+}
+
+.mixerMeterFill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  min-height: 4px;
+  background: linear-gradient(180deg, #22c55e 0%, #facc15 70%, #ef4444 100%);
+}
+
+.mixerMiniBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #475569;
+  background: #374151;
+  color: #fff;
+  font-weight: 900;
+  padding: 0;
+}
+
+.mixerMiniBtnActive.mixerMiniMute {
+  background: #dc2626;
+  border-color: #ef4444;
+}
+
+.mixerMiniBtnActive.mixerMiniSolo {
+  background: #ca8a04;
+  border-color: #facc15;
+  color: #111827;
+}
+
+.mixerVolumeModalBox {
+  max-width: 340px;
+}
+
+.mixerVolumeTitle {
+  color: var(--mixer-color, #fff);
+  font-weight: 900;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.mixerVolumeMeterWrap {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.mixerVolumeMeterWrap .mixerMeter {
+  width: 18px;
+  height: 96px;
+}
+
+.mixerVolumeDb {
+  color: #facc15;
+  font-weight: bold;
+}
+
+.mixerVolumeSlider {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.app[data-theme="light"] .mixerMiniBtn {
+  background: #cbd5e1;
+  color: #0f172a;
+}
+
+
+/* vshook patch: mixer mobile stability */
+.mixerRowsBox {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding-right: 0;
+}
+
+.mixerRow {
+  grid-template-columns: 6px 24px minmax(0, 1fr) 40px 12px 24px 24px;
+  gap: 4px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.mixerRowMain {
+  padding: 8px 6px 8px 8px;
+}
+
+.mixerRowDb {
+  font-size: 11px;
+  min-width: 0;
+}
+
+.mixerMeter {
+  width: 10px;
+}
+
+.mixerMiniBtn {
+  width: 24px;
+  height: 24px;
+}
+
+
+/* bpm mobile modal */
+.settingsActionBpm {
+  background: #3b2f0b;
+  border-color: #facc15;
+  color: #fde68a;
+}
+
+.bpmOverlay {
+  z-index: 1650;
+}
+
+.bpmModalBox {
+  max-width: 340px;
+}
+
+.bpmValueDisplay {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #475569;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #111827 0%, #0b1118 100%);
+  color: #facc15;
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+.bpmMetaText {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.bpmControls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.bpmAdjustBtn,
+.bpmResetBtn {
+  min-height: 46px;
+  border-radius: 10px;
+  border: 1px solid #475569;
+  font-weight: 900;
+}
+
+.bpmControlsSimple .bpmAdjustBtn {
+  min-width: 0;
+}
+
+.bpmAdjustBtn {
+  background: #15803d;
+  border-color: #22c55e;
+  color: #ffffff;
+  font-size: 28px;
+}
+
+.bpmResetBtn {
+  background: #3b2f0b;
+  border-color: #facc15;
+  color: #fde68a;
+  font-size: 14px;
+}
+
+.app[data-theme="light"] .settingsActionBpm {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.app[data-theme="light"] .bpmValueDisplay {
+  background: #ffffff;
+  color: #a16207;
+}
+
+
+/* vshook patch: master tab and bottom popup */
+.mixerViewTabsTriple {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.appPopup {
+  top: auto;
+  bottom: 22px;
+}
+
+.appPopupHidden {
+  transform: translateX(-50%) translateY(10px);
+}
+
+
+/* vshook fix: mixer touch reliability */
+.mixerRow,
+.mixerRowMain,
+.mixerRowColor,
+.mixerRowIndex,
+.mixerRowDb,
+.mixerMeter,
+.mixerMiniBtn,
+.mixerVolumeSlider,
+.bpmAdjustBtn {
+  pointer-events: auto;
+}
+
+.mixerRow,
+.mixerMiniBtn,
+.bpmAdjustBtn {
+  cursor: pointer;
+}
+
+.mixerMiniBtn,
+.bpmAdjustBtn,
+.mixerVolumeSlider {
+  touch-action: manipulation;
+}
+
+.mixerMiniBtn {
+  position: relative;
+  z-index: 2;
+}
+
+
+/* vshook round2 fixes: mixer popup in front, safer spacing, better touch targets */
+.mixerVolumeOverlay {
+  z-index: 1720;
+}
+
+.mixerVolumeModalBox {
+  position: relative;
+  z-index: 1721;
+}
+
+.mixerRowsBox {
+  padding-right: 10px;
+}
+
+.mixerRow {
+  grid-template-columns: 6px 24px minmax(0, 1fr) 44px 10px 30px 30px;
+  gap: 6px;
+  padding-right: 8px;
+  box-sizing: border-box;
+}
+
+.mixerRowMain {
+  padding: 8px 4px 8px 8px;
+}
+
+.mixerRowDb {
+  min-width: 44px;
+  padding-right: 2px;
+}
+
+.mixerMeter {
+  width: 10px;
+  justify-self: center;
+}
+
+.mixerMiniBtn {
+  width: 30px;
+  height: 28px;
+  justify-self: center;
+}
+
+@media (max-width: 480px) {
+  .mixerRowsBox {
+    padding-right: 12px;
+  }
+
+  .mixerRow {
+    grid-template-columns: 6px 22px minmax(0, 1fr) 40px 10px 28px 28px;
+    gap: 5px;
+    padding-right: 10px;
+  }
+
+  .mixerMiniBtn {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+
+.settingsActionTuner {
+  background: #102a20;
+  border-color: #34d399;
+  color: #a7f3d0;
+}
+
+.tunerOverlay {
+  z-index: 1670;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+  background: rgba(0,0,0,0.45);
+}
+
+.tunerDrawer {
+  width: clamp(260px, 52vw, 430px);
+  height: var(--app-vh, 100dvh);
+  background: #111827;
+  border-left: 1px solid #364152;
+  box-shadow: -18px 0 42px rgba(0,0,0,0.45);
+  padding: 16px 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.tunerDrawerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tunerDrawerSub {
+  color: #94a3b8;
+  font-weight: bold;
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.tunerDrawerActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tunerResetBtn {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid #facc15;
+  background: #3b2f0b;
+  color: #fde68a;
+  font-weight: 900;
+}
+
+.tunerRowsBox {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #364152;
+  border-radius: 10px;
+  background: #0b1220;
+}
+
+.tunerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #18212c;
+}
+
+.tunerRow:last-child {
+  border-bottom: none;
+}
+
+.tunerRowName {
+  font-weight: 900;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tunerRowBlock .tunerRowName {
+  color: #facc15;
+}
+
+.tunerRowControls {
+  display: grid;
+  grid-template-columns: 42px minmax(64px, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.tunerAdjustBtn {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid #475569;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.tunerValueBox {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #020617;
+  color: #facc15;
+  font-weight: 900;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app[data-theme="light"] .settingsActionTuner {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.app[data-theme="light"] .tunerDrawer {
+  background: #ffffff;
+  border-left-color: #dbe4ee;
+}
+
+.app[data-theme="light"] .tunerRowsBox {
+  background: #f8fafc;
+  border-color: #dbe4ee;
+}
+
+.app[data-theme="light"] .tunerRowName {
+  color: #0f172a;
+}
+
+@media (max-width: 480px) {
+  .tunerDrawer {
+    width: calc(50vw + 26px);
+    min-width: 260px;
+    padding: 14px 12px 18px;
+  }
+
+  .tunerRowControls {
+    grid-template-columns: 38px minmax(58px, 1fr) 38px;
+    gap: 6px;
+  }
+
+  .tunerAdjustBtn,
+  .tunerValueBox {
+    height: 38px;
+  }
+}
+
+
+/* v99 final fixes: director green progress + visible number column in light theme */
+.progressBar {
+  opacity: 1 !important;
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%) !important;
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.28), 0 0 10px rgba(34, 197, 94, 0.22) !important;
+}
+.app[data-theme="light"] .progressBar {
+  opacity: 1 !important;
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%) !important;
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.18), 0 0 8px rgba(34, 197, 94, 0.16) !important;
+}
+.app[data-theme="light"] .numberCol,
+.app[data-theme="light"] .numberCol span {
+  background: #ffffff !important;
+  color: #111827 !important;
+  border-right: 1px solid #dbe4ee !important;
+}
+.app[data-theme="light"] .numberColEmpty,
+.app[data-theme="light"] .numberColEmpty span {
+  color: #64748b !important;
+}
+.app[data-theme="light"] .blockItem .numberCol,
+.app[data-theme="light"] .blockItem .numberCol span {
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .playing .numberCol,
+.app[data-theme="light"] .playing .numberCol span {
+  background: #b91c1c !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .selectedPink .numberCol,
+.app[data-theme="light"] .selectedPink .numberCol span,
+.app[data-theme="light"] .markerSelectedActive .numberCol,
+.app[data-theme="light"] .markerSelectedActive .numberCol span {
+  background: #ec4899 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .queuedYellow .numberCol,
+.app[data-theme="light"] .queuedYellow .numberCol span {
+  background: #e9c74a !important;
+  color: #111827 !important;
+}
+
+
+/* vdir single-screen footer */
+.contentPanelBreathing {
+  padding-bottom: 0 !important;
+}
+
+.listBoxBreathing {
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 0 !important;
+}
+
+.contentPanel {
+  padding-bottom: 0 !important;
+}
+.listBox {
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 0 !important;
+}
+
+
+/* Tela inicial comercial do app VS Hook */
+.vshook-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 18px;
+  background:
+    radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
+    #0b1118;
+  color: #f8fafc;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.vshook-shell-card {
+  width: min(480px, 100%);
+  background: rgba(13, 17, 24, 0.94);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 28px;
+  padding: 30px 24px;
+  text-align: center;
+  box-shadow: 0 24px 90px rgba(0,0,0,0.42);
+}
+
+.vshook-shell-logo {
+  width: 74px;
+  height: 74px;
+  border-radius: 20px;
+  margin-bottom: 18px;
+}
+
+.vshook-shell-title {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.03em;
+}
+
+.vshook-shell-subtitle {
+  margin: 12px 0 24px;
+  color: #aab2c0;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.vshook-project-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.vshook-project-button,
+.vshook-mode-button,
+.vshook-secondary-button {
+  width: 100%;
+  border: 0;
+  border-radius: 18px;
+  padding: 16px 18px;
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.vshook-project-button,
+.vshook-mode-button {
+  background: linear-gradient(135deg, #f7c948, #f59e0b);
+  color: #111827;
+}
+
+.vshook-secondary-button {
+  margin-top: 14px;
+  background: rgba(255,255,255,0.08);
+  color: #f8fafc;
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+.vshook-shell-status {
+  color: #aab2c0;
+  font-size: 15px;
+  line-height: 1.45;
+  margin: 18px 0 0;
+}
+
+.vshook-mode-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.vshook-back-button {
+  margin-top: 14px;
+  background: transparent;
+  color: #aab2c0;
+  border: 0;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+
+/* Tela inicial VS Hook Android */
+.vshook-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 18px;
+  background:
+    radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
+    #0b1118;
+  color: #f8fafc;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.vshook-shell-card {
+  width: min(480px, 100%);
+  background: rgba(13, 17, 24, 0.94);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 28px;
+  padding: 30px 24px;
+  text-align: center;
+  box-shadow: 0 24px 90px rgba(0,0,0,0.42);
+}
+
+.vshook-shell-logo {
+  width: 74px;
+  height: 74px;
+  border-radius: 20px;
+  margin-bottom: 18px;
+}
+
+.vshook-shell-title {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.03em;
+}
+
+.vshook-shell-subtitle {
+  margin: 12px 0 22px;
+  color: #aab2c0;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.vshook-ip-input {
+  width: 100%;
+  margin: 2px 0 14px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.07);
+  color: #f8fafc;
+  font-size: 18px;
+  text-align: center;
+  outline: none;
+}
+
+.vshook-ip-input:focus {
+  border-color: #f7c948;
+}
+
+.vshook-project-button,
+.vshook-mode-button,
+.vshook-secondary-button {
+  width: 100%;
+  border: 0;
+  border-radius: 18px;
+  padding: 16px 18px;
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.vshook-project-button,
+.vshook-mode-button {
+  background: linear-gradient(135deg, #f7c948, #f59e0b);
+  color: #111827;
+}
+
+.vshook-shell-status {
+  color: #aab2c0;
+  font-size: 15px;
+  line-height: 1.45;
+  margin: 18px 0 0;
+}
+
+.vshook-error {
+  color: #ff7676;
+  font-size: 14px;
+  line-height: 1.4;
+  margin: 0 0 14px;
+}
+
+.vshook-mode-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.vshook-back-button {
+  margin-top: 14px;
+  background: transparent;
+  color: #aab2c0;
+  border: 0;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+/* Botão Sair da engrenagem */
+.modalButtons [data-action="exit-to-projects"] {
+  background: rgba(255,255,255,0.08);
+  color: #f8fafc;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+/* VS Hook Android: botões de retorno para busca de projetos */
+.vshookExitButton {
+  background: #7f1d1d !important;
+  border-color: #ef4444 !important;
+  color: #ffffff !important;
+}
+.authGateBackButton {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid #475569;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  font-weight: 900;
+  letter-spacing: .04em;
+  margin-top: 10px;
+}
+.authGateBackButton:active,
+.vshookExitButton:active {
+  transform: translateY(1px);
+}
+.app[data-theme="light"] .authGateBackButton {
+  background: #e5e7eb;
+  color: #111827;
+  border-color: #cbd5e1;
+}
+
+/* Lyrics screen */
+.btnLyricsOpen{background:linear-gradient(180deg,#1e293b 0%,#0f172a 100%);border:1px solid #38bdf8;color:#e0f2fe;font-weight:900}
+.settingsActionActive{background:#14532d!important;border-color:#22c55e!important;color:#dcfce7!important}
+.lyricsScreen{position:fixed;inset:0;z-index:1900;background:linear-gradient(180deg,#0b1118 0%,#0b1220 100%);color:#f8fafc;display:flex;flex-direction:column;transform:translateX(0);animation:lyricsSlideIn .18s ease-out;overflow:hidden;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
+@keyframes lyricsSlideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+.lyricsTopBar{flex:0 0 auto;display:grid;grid-template-columns:74px minmax(0,1fr) 58px;gap:8px;align-items:center;margin-bottom:10px}
+.lyricsEditButton,.lyricsBackButton{height:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px}
+.lyricsEditButton:disabled{opacity:.45}
+.lyricsBackButton{border-color:#38bdf8;color:#e0f2fe;font-size:20px}
+.lyricsNowPlaying{min-width:0;border:1px solid rgba(255,255,255,.10);border-radius:10px;padding:7px 9px;background:rgba(15,23,42,.92)}
+.lyricsNowPlayingTitle{font-weight:900;font-size:13px;color:#f97316;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px;letter-spacing:.02em}
+.lyricsProgressTrack{height:5px;border-radius:999px;background:#1f2937;overflow:hidden}
+.lyricsProgressFill{height:100%;border-radius:999px;background:linear-gradient(90deg,#22c55e,#16a34a);min-width:0}
+.lyricsBody{flex:1 1 auto;min-height:0;border:1px solid rgba(255,255,255,.10);border-radius:12px;background:rgba(2,6,23,.88);overflow:hidden;position:relative}
+.lyricsTextView{height:100%;overflow:auto;padding:18px 16px 90px;font-size:20px;line-height:1.58;font-weight:800;white-space:normal;color:#f8fafc;-webkit-overflow-scrolling:touch}
+.lyricsEditorInput{width:100%;height:100%;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#f8fafc;padding:18px 16px 92px;font-size:19px;line-height:1.5;font-weight:700;font-family:inherit;-webkit-overflow-scrolling:touch}
+.lyricsEditorInput::placeholder{color:#64748b}
+.lyricsCharCount{position:absolute;right:14px;bottom:12px;color:#94a3b8;font-size:12px;font-weight:900;background:rgba(2,6,23,.78);padding:4px 8px;border-radius:999px}
+.lyricsFloatingOk{position:fixed;right:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:1910;height:52px;min-width:82px;border-radius:999px;border:1px solid #22c55e;background:#16a34a;color:#fff;font-weight:900;font-size:17px;box-shadow:0 12px 28px rgba(0,0,0,.42)}
+.lyricsFloatingCancel{position:fixed;left:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:1910;height:46px;min-width:94px;border-radius:999px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px;box-shadow:0 12px 28px rgba(0,0,0,.36)}
+.app[data-theme="light"] .lyricsScreen{background:linear-gradient(180deg,#f8fafc 0%,#e2e8f0 100%);color:#0f172a}
+.app[data-theme="light"] .lyricsBody,.app[data-theme="light"] .lyricsNowPlaying{background:rgba(255,255,255,.95);border-color:#cbd5e1}
+.app[data-theme="light"] .lyricsTextView,.app[data-theme="light"] .lyricsEditorInput{color:#0f172a}
+@media (max-width:480px){.lyricsTopBar{grid-template-columns:68px minmax(0,1fr) 54px;gap:6px}.lyricsTextView{font-size:19px;padding:16px 14px 92px}.lyricsEditorInput{font-size:18px;padding:16px 14px 92px}.lyricsEditButton,.lyricsBackButton{height:40px}}
+
+
+/* Lyrics navigation/buttons */
+.lyricsNavButton,
+.lyricsBlueButton {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(180deg, #0284c7 0%, #075985 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(56,189,248,.34), 0 0 12px rgba(14,165,233,.22) !important;
+}
+
+.lyricsNavButton:disabled,
+.lyricsBlueButton:disabled {
+  opacity: .45;
+  filter: grayscale(.25);
+}
+
+.lyricsScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  background: #0b1118;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)) 10px;
+  box-sizing: border-box;
+}
+
+.lyricsTopBar {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.lyricsNowPlaying {
+  min-width: 0;
+  border: 1px solid rgba(56,189,248,.32);
+  background: rgba(15,23,42,.92);
+  border-radius: 10px;
+  padding: 7px 9px;
+}
+
+.lyricsNowPlayingTitle {
+  font-size: 14px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #f8fafc;
+  margin-bottom: 6px;
+}
+
+.lyricsProgressTrack {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(15,23,42,.95);
+  border: 1px solid rgba(148,163,184,.28);
+  overflow: hidden;
+}
+
+.lyricsProgressFill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  transition: width .16s linear;
+}
+
+.lyricsEditButton,
+.lyricsBackButton {
+  min-width: 74px;
+  height: 38px;
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.lyricsBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(56,189,248,.24);
+  background: rgba(2,6,23,.92);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.lyricsTextView {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  white-space: normal;
+  line-height: 1.45;
+  font-size: 18px;
+  font-weight: 700;
+  color: #f8fafc;
+  padding: 4px 2px 80px 2px;
+  box-sizing: border-box;
+}
+
+.lyricsEditorInput {
+  width: 100%;
+  height: calc(100% - 28px);
+  resize: none;
+  border: 1px solid rgba(56,189,248,.36);
+  background: #020617;
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+  font-size: 17px;
+  line-height: 1.35;
+  outline: none;
+}
+
+.lyricsCharCount {
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: right;
+  margin-top: 6px;
+}
+
+.lyricsFloatingOk {
+  position: fixed;
+  right: 20px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 2600;
+  min-width: 78px;
+  height: 46px;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  background: #16a34a;
+  color: #fff;
+  font-weight: 900;
+}
+
+.lyricsFloatingCancel {
+  position: fixed;
+  left: 20px;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 2600;
+  min-width: 96px;
+  height: 46px;
+  border-radius: 999px;
+  border: 1px solid #64748b;
+  background: #334155;
+  color: #fff;
+  font-weight: 900;
+}
+
+
+/* Ajustes v47: posição do botão Lyrics */
+.controlsRowPlaylistFour .btnLyricsOpen {
+  min-width: 68px;
+  height: 38px;
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.musicosHeaderRow .tabRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.musicosHeaderSpacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.musicosLyricsNavButton {
+  margin-left: auto !important;
+  flex: 0 0 auto;
+  min-width: 76px;
+}
+
+/* v73: rodapé fixo para markers e popups sem cobrir a lista */
+.markerFooterContainer .listBox {
+  min-height: 0 !important;
+  padding-bottom: 160px !important;
+  scroll-padding-bottom: 160px !important;
+}
+.vshookMarkerFooter {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+  z-index: 2990;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.vshookMarkerFooter .floatingCancelButton {
+  position: static !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  width: min(62vw, 280px) !important;
+  min-width: 190px !important;
+  pointer-events: auto;
+}
+.app:has(.vshookMarkerFooter) .appPopup {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+}
+@media (max-width: 480px) {
+  .markerFooterContainer .listBox {
+    padding-bottom: 150px !important;
+    scroll-padding-bottom: 150px !important;
+  }
+  .vshookMarkerFooter {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 98px);
+  }
+}
+
+/* v73: reserva de rodapé também na tela principal do diretor */
+.contentPanel .listBox {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 118px) !important;
+  scroll-padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 118px) !important;
+}
+.markerFooterContainer .listBox {
+  padding-bottom: 160px !important;
+  scroll-padding-bottom: 160px !important;
+}
+
+/* v84: markers list fixed area + real footer */
+.markerGoConfirmed{background:#16a34a!important;border-color:#22c55e!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.38),0 0 16px rgba(34,197,94,.28)!important}
+.markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}
+.markerContentPanel{display:flex;flex-direction:column;min-height:0}
+.markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}
+.vshookFixedFooter{flex:0 0 132px;min-height:132px;margin-top:8px;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px);border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}
+.vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto}
+.footerButtonPlaceholder{height:54px}
+.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 18px)!important;z-index:3010}
+@media(max-width:480px){.vshookFixedFooter{flex-basis:124px;min-height:124px}.vshookFixedFooter .floatingCancelButton{height:52px!important}}
+
+
+/* v88 - footer realmente alto: popup embaixo e Cancelar livre em cima */
+.vshookFixedFooter{
+  flex:0 0 220px !important;
+  min-height:220px !important;
+  padding-top:16px !important;
+  align-items:flex-start !important;
+}
+.vshookFixedFooter .floatingCancelButton{
+  position:static !important;
+  z-index:2 !important;
+}
+.app:has(.vshookFixedFooter) .appPopup{
+  bottom:calc(env(safe-area-inset-bottom,0px) + 16px) !important;
+  min-height:58px !important;
+  padding:10px 16px !important;
+  font-size:18px !important;
+  width:min(78vw,360px) !important;
+  line-height:1.08 !important;
+}
+.musicosFixedFooter{
+  flex:0 0 220px !important;
+  min-height:220px !important;
+  padding-top:16px !important;
+  align-items:flex-start !important;
+}
+.app:has(.musicosFixedFooter) .appPopup{
+  bottom:calc(env(safe-area-inset-bottom,0px) + 16px) !important;
+  min-height:58px !important;
+  padding:10px 16px !important;
+  font-size:18px !important;
+  width:min(78vw,360px) !important;
+  line-height:1.08 !important;
+}
+@media(max-width:480px){
+  .vshookFixedFooter,.musicosFixedFooter{flex-basis:210px !important;min-height:210px !important;}
+  .app:has(.vshookFixedFooter) .appPopup,
+  .app:has(.musicosFixedFooter) .appPopup{
+    min-height:54px !important;
+    padding:9px 14px !important;
+    font-size:17px !important;
+    width:min(76vw,330px) !important;
+  }
+}
+
+
+/* v91: espaço reservado para popup na tela de letras */
+.lyricsPopupSlot{
+  flex:0 0 58px;
+  min-height:58px;
+  margin:0 0 8px 0;
+  pointer-events:none;
+}
+.app:has(.lyricsScreen) .appPopup{
+  top:calc(env(safe-area-inset-top,0px) + 58px)!important;
+  bottom:auto!important;
+  left:50%!important;
+  transform:translateX(-50%)!important;
+  z-index:3200!important;
+  width:min(76vw,340px)!important;
+  min-height:42px!important;
+  padding:8px 14px!important;
+  border-radius:10px!important;
+  font-size:16px!important;
+  line-height:1.12!important;
+  box-shadow:0 10px 26px rgba(0,0,0,.36)!important;
+}
+.app:has(.lyricsScreen) .appPopupHidden{
+  opacity:0!important;
+  transform:translateX(-50%) translateY(-6px)!important;
+}
+@media(max-width:480px){
+  .lyricsPopupSlot{flex-basis:52px;min-height:52px;margin-bottom:7px;}
+  .app:has(.lyricsScreen) .appPopup{
+    top:calc(env(safe-area-inset-top,0px) + 54px)!important;
+    width:min(78vw,310px)!important;
+    min-height:38px!important;
+    padding:7px 12px!important;
+    font-size:15px!important;
+  }
+}
+
+/* v92 ajuste final: diretor com rodape menor e musicos sem rodape */
+.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;}
+.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important;}
+@media(max-width:480px){.vshookFixedFooter{flex-basis:148px!important;min-height:148px!important}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important;min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}
+
+
+/* v97: popup da tela de letras mais baixo e estável */
+.lyricsPopupSlot{
+  flex:0 0 72px!important;
+  min-height:72px!important;
+  margin:6px 0 10px 0!important;
+}
+.app:has(.lyricsScreen) .appPopup{
+  top:calc(env(safe-area-inset-top,0px) + 82px)!important;
+  bottom:auto!important;
+  z-index:3200!important;
+}
+@media(max-width:480px){
+  .lyricsPopupSlot{flex-basis:68px!important;min-height:68px!important;margin-top:6px!important;margin-bottom:8px!important;}
+  .app:has(.lyricsScreen) .appPopup{top:calc(env(safe-area-inset-top,0px) + 76px)!important;}
+}
+
+/* v98: popup do Diretor dentro do espaco reservado da tela de letras */
+.lyricsPopupSlot{display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:4px 10px;min-height:58px;}
+.lyricsPopupSlot .appPopup,.lyricsPopupSlot .lyricsInlinePopup{position:static!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;transform:none!important;width:100%!important;max-width:420px!important;min-height:42px!important;padding:8px 12px!important;margin:0 auto!important;font-size:15px!important;line-height:1.05!important;border-radius:10px!important;z-index:auto!important;}
+@media(max-width:480px){.lyricsPopupSlot{min-height:56px;padding:4px 8px}.lyricsPopupSlot .appPopup,.lyricsPopupSlot .lyricsInlinePopup{min-height:40px!important;font-size:14px!important;padding:7px 10px!important}}
+
+
+/* v99: letras sem rolagem horizontal e popup inline correto no Diretor */
+.lyricsBody,
+.lyricsTextView,
+.lyricsEditorInput{
+  max-width:100%!important;
+  min-width:0!important;
+  overflow-x:hidden!important;
+}
+.lyricsTextView{
+  white-space:pre-wrap!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+  hyphens:auto!important;
+  touch-action:pan-y!important;
+}
+.lyricsEditorInput{
+  white-space:pre-wrap!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+  overflow-x:hidden!important;
+}
+.lyricsPopupSlot{
+  flex:0 0 62px!important;
+  min-height:62px!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  box-sizing:border-box!important;
+  padding:6px 10px!important;
+  margin:6px 0 8px 0!important;
+  pointer-events:none!important;
+}
+.lyricsPopupSlot .appPopup,
+.lyricsPopupSlot .lyricsInlinePopup{
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  position:static!important;
+  left:auto!important;
+  right:auto!important;
+  top:auto!important;
+  bottom:auto!important;
+  transform:none!important;
+  width:min(86vw,420px)!important;
+  max-width:420px!important;
+  min-height:42px!important;
+  padding:8px 12px!important;
+  margin:0 auto!important;
+  font-size:15px!important;
+  line-height:1.08!important;
+  border-radius:10px!important;
+  z-index:auto!important;
+  pointer-events:none!important;
+}
+.app:has(.lyricsScreen) > .appPopup{display:none!important;}
+@media(max-width:480px){
+  .lyricsPopupSlot{flex-basis:58px!important;min-height:58px!important;padding:5px 8px!important;margin-top:5px!important;margin-bottom:7px!important;}
+  .lyricsPopupSlot .appPopup,
+  .lyricsPopupSlot .lyricsInlinePopup{width:min(88vw,330px)!important;min-height:40px!important;font-size:14px!important;padding:7px 10px!important;}
+}
+
+
+/* v100: popup de letras centralizado e sem corte; nao altera o campo da letra */
+.lyricsScreen .lyricsPopupSlot{
+  width:100%!important;
+  max-width:100%!important;
+  overflow:visible!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  box-sizing:border-box!important;
+  padding-left:12px!important;
+  padding-right:12px!important;
+}
+.lyricsScreen .lyricsPopupSlot > .appPopup,
+.lyricsScreen .lyricsPopupSlot > .lyricsInlinePopup{
+  position:relative!important;
+  inset:auto!important;
+  left:auto!important;
+  right:auto!important;
+  top:auto!important;
+  bottom:auto!important;
+  transform:none!important;
+  box-sizing:border-box!important;
+  width:min(82vw,360px)!important;
+  max-width:calc(100vw - 40px)!important;
+  margin-left:auto!important;
+  margin-right:auto!important;
+  text-align:center!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+}
+.lyricsScreen .lyricsPopupSlot > .appPopupHidden,
+.lyricsScreen .lyricsPopupSlot > .lyricsInlinePopup.appPopupHidden{
+  transform:none!important;
+}
+.app:has(.lyricsScreen) > .appPopup{display:none!important;}
+
+
+/* Recados técnicos - Diretor */
+.settingsActionRecados {
+  border-color: rgba(250,204,21,.55) !important;
+  background: linear-gradient(180deg, rgba(250,204,21,.24), rgba(113,63,18,.42)) !important;
+  color: #fef3c7 !important;
+}
+.recadosModalBox {
+  width: min(94vw, 520px);
+  min-height: min(78vh, 620px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.recadosTopButtons {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(104px, .34fr) minmax(92px, .28fr);
+  gap: 10px;
+}
+.recadosSendBtn {
+  min-height: 54px;
+  font-size: 18px;
+  font-weight: 900;
+}
+.recadosCancelBtn,
+.recadosCloseBtn {
+  min-height: 54px;
+  font-weight: 900;
+}
+.recadosCloseBtn {
+  background: rgba(15,23,42,.92) !important;
+  border-color: rgba(148,163,184,.52) !important;
+  color: #e5e7eb !important;
+}
+.recadosTextarea {
+  width: 100%;
+  flex: 1;
+  min-height: 260px;
+  resize: none;
+  border: 1px solid rgba(250,204,21,.32);
+  border-radius: 14px;
+  background: rgba(2,6,23,.92);
+  color: #fff;
+  padding: 14px;
+  font-size: 18px;
+  line-height: 1.35;
+  outline: none;
+}
+.recadosTextarea:focus {
+  border-color: rgba(250,204,21,.72);
+  box-shadow: 0 0 0 3px rgba(250,204,21,.14);
+}
+.recadosStatus {
+  min-height: 24px;
+  color: #facc15;
+  text-align: center;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+@media(max-width:480px){
+  .recadosModalBox{width:96vw;min-height:76vh;padding:12px!important;}
+  .recadosTopButtons{grid-template-columns:1fr 1fr;}
+  .recadosSendBtn{grid-column:1 / -1;}
+  .recadosTextarea{min-height:300px;font-size:17px;}
+}
+
+/* v1.8.3 Diretor: controles superiores padronizados */
+.controlsStickyPanel .controlsRowRegions,
+.controlsStickyPanel .controlsRowPlaylist {
+  display: grid !important;
+  gap: 6px !important;
+  margin-bottom: 8px !important;
+  align-items: stretch !important;
+}
+
+.controlsStickyPanel .controlsRowRegions {
+  grid-template-columns: minmax(0, 1fr) 64px !important;
+}
+
+.controlsStickyPanel .controlsRowPlaylist {
+  grid-template-columns: minmax(0, 1fr) 74px 64px !important;
+}
+
+.controlsStickyPanel .controlsRowPlaylist.controlsRowPlaylistFour {
+  grid-template-columns: minmax(0, 1fr) 74px 64px !important;
+}
+
+.controlsStickyPanel .controlsRowRegions > button,
+.controlsStickyPanel .controlsRowPlaylist > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  padding: 0 8px !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+}
+
+.controlsStickyPanel .controlsRowPlaylist > .btnLyricsOpen,
+.controlsStickyPanel .controlsRowRegions > .btnLyricsOpen {
+  font-size: 18px !important;
+  letter-spacing: 0 !important;
+}
+
+.controlsStickyPanel .controlsRowPlaylist > [data-action="autoplay"] {
+  font-size: 13px !important;
+  letter-spacing: .02em !important;
+}
+
+@media (max-width: 380px) {
+  .controlsStickyPanel .controlsRowPlaylist {
+    grid-template-columns: minmax(0, 1fr) 66px 58px !important;
+  }
+  .controlsStickyPanel .controlsRowPlaylist.controlsRowPlaylistFour {
+    grid-template-columns: minmax(0, 1fr) 66px 58px !important;
+  }
+  .controlsStickyPanel .controlsRowRegions {
+    grid-template-columns: minmax(0, 1fr) 58px !important;
+  }
+}
+
+
+/* v1.8.4 Diretor: Play/Stop, AUTO, << e >> alinhados e no mesmo padrão */
+.controlsStickyPanel .controlsRowEqual {
+  display: grid !important;
+  gap: 8px !important;
+  margin-bottom: 8px !important;
+  align-items: stretch !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+.controlsStickyPanel .controlsRowRegions {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+.controlsStickyPanel .controlsRowMarkers {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+.controlsStickyPanel .controlsRowEqual > button,
+.controlsStickyPanel .controlsRowEqual > .markersNavButtonInline {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  padding: 0 6px !important;
+  border-radius: 12px !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  font-weight: 900 !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+}
+.controlsStickyPanel .controlsRowEqual > [data-action="play"] {
+  font-size: 15px !important;
+}
+.controlsStickyPanel .controlsRowEqual > [data-action="autoplay"] {
+  font-size: 14px !important;
+  letter-spacing: .02em !important;
+}
+.controlsStickyPanel .controlsRowEqual > .btnLyricsOpen,
+.controlsStickyPanel .controlsRowEqual > .markersNavButtonInline {
+  font-size: 20px !important;
+  letter-spacing: 0 !important;
+}
+.markersNavButtonInline {
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%) !important;
+  border: 1px solid #475569 !important;
+  color: #e5e7eb !important;
+}
+.headerNavFloating,
+.headerNavFloatingSingle {
+  display: none !important;
+}
+@media (max-width: 380px) {
+  .controlsStickyPanel .controlsRowEqual {
+    gap: 6px !important;
+  }
+  .controlsStickyPanel .controlsRowEqual > button,
+  .controlsStickyPanel .controlsRowEqual > .markersNavButtonInline {
+    height: 44px !important;
+    min-height: 44px !important;
+    font-size: 13px !important;
+  }
+  .controlsStickyPanel .controlsRowEqual > .btnLyricsOpen,
+  .controlsStickyPanel .controlsRowEqual > .markersNavButtonInline {
+    font-size: 18px !important;
+  }
+}
+
+
+.liveQueueStatusPanel {
+  width: 100%;
+  margin: 0 0 8px 0;
+  padding: 7px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(249, 115, 22, 0.42);
+  background: linear-gradient(180deg, rgba(24, 12, 6, 0.96), rgba(10, 16, 24, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.10), 0 0 12px rgba(249, 115, 22, 0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.liveQueueStatusRow {
+  min-height: 21px;
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+.liveQueueStatusPrefix {
+  color: #f97316;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.liveQueueStatusText {
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.liveQueueStatusQueued .liveQueueStatusPrefix { color: #facc15; }
+.liveQueueStatusQueued .liveQueueStatusText { color: #fde68a; }
+.app[data-theme="light"] .liveQueueStatusPanel {
+  background: linear-gradient(180deg, #fff7ed, #f8fafc);
+  border-color: rgba(249, 115, 22, 0.38);
+}
+.app[data-theme="light"] .liveQueueStatusText { color: #0f172a; }
+.app[data-theme="light"] .liveQueueStatusQueued .liveQueueStatusText { color: #92400e; }
+@media (max-width: 430px) {
+  .liveQueueStatusPanel { padding: 6px 8px; gap: 3px; margin-bottom: 7px; }
+  .liveQueueStatusRow { grid-template-columns: 95px minmax(0, 1fr); min-height: 20px; gap: 6px; }
+  .liveQueueStatusPrefix { font-size: 9px; }
+  .liveQueueStatusText { font-size: 12px; }
+}
+
+/* Busca manual de IP quando o Wi-Fi muda e a descoberta automática não encontra o Bridge */
+.vshook-manual-ip-box {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,0.10);
+}
+
+.vshook-manual-ip-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 50px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.07);
+  color: #f8fafc;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+}
+
+.vshook-manual-ip-input:focus {
+  border-color: #f7c948;
+  box-shadow: 0 0 0 3px rgba(247,201,72,0.14);
+}
+
+.vshook-manual-ip-input::placeholder {
+  color: rgba(226,232,240,0.58);
+}
+
+/* QR Diretor: layout mais compacto dos controles principais */
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: minmax(106px, 132px) 78px 62px !important;
+  justify-content: start !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+.controlsStickyPanel .controlsRowRegions {
+  grid-template-columns: minmax(106px, 132px) 62px !important;
+  justify-content: start !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+.controlsStickyPanel .controlsRowMarkers {
+  grid-template-columns: minmax(104px, 128px) 76px 94px !important;
+  justify-content: start !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="play"],
+.controlsStickyPanel .controlsRowRegions > [data-action="play"],
+.controlsStickyPanel .controlsRowMarkers > [data-action="play"] {
+  max-width: 132px !important;
+}
+.markersNavButtonHeader {
+  flex: 0 0 auto !important;
+  width: 58px !important;
+  min-width: 58px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 !important;
+  border-radius: 10px !important;
+  font-size: 18px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%) !important;
+  border: 1px solid #475569 !important;
+  color: #e5e7eb !important;
+}
+.tabRow .headerTotal {
+  flex: 0 0 auto !important;
+}
+.btnBackBetter,
+.markersInlineBackButton.btnBackBetter {
+  height: 46px !important;
+  min-height: 46px !important;
+  padding: 0 14px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(56, 189, 248, .85) !important;
+  background: linear-gradient(180deg, #075985 0%, #0f172a 100%) !important;
+  color: #e0f2fe !important;
+  font-size: 13px !important;
+  font-weight: 900 !important;
+  letter-spacing: .04em !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: inset 0 0 0 1px rgba(224, 242, 254, .08), 0 8px 18px rgba(8, 47, 73, .26) !important;
+}
+.btnBackBetter:active {
+  transform: translateY(1px) !important;
+  filter: brightness(.92) !important;
+}
+@media (max-width: 380px) {
+  .controlsStickyPanel .controlsRowDirectorMain {
+    grid-template-columns: minmax(98px, 120px) 70px 56px !important;
+    gap: 6px !important;
+  }
+  .controlsStickyPanel .controlsRowRegions {
+    grid-template-columns: minmax(98px, 120px) 56px !important;
+    gap: 6px !important;
+  }
+  .controlsStickyPanel .controlsRowMarkers {
+    grid-template-columns: minmax(96px, 116px) 68px 86px !important;
+    gap: 6px !important;
+  }
+  .markersNavButtonHeader {
+    width: 52px !important;
+    min-width: 52px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    font-size: 17px !important;
+  }
+  .btnBackBetter,
+  .markersInlineBackButton.btnBackBetter {
+    font-size: 12px !important;
+    padding: 0 10px !important;
+  }
+}
+
+/* QR Diretor: navegação de letras/parts no lado direito do tempo total */
+.tabRow .headerNavButtons {
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 7px !important;
+  margin-left: 2px !important;
+}
+.tabRow .markersNavButtonHeader,
+.tabRow .lyricsNavButtonHeader {
+  flex: 0 0 70px !important;
+  width: 70px !important;
+  min-width: 70px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 !important;
+  border-radius: 11px !important;
+  font-size: 19px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.tabRow .lyricsNavButtonHeader {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(180deg, #0284c7 0%, #075985 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(56,189,248,.30), 0 0 12px rgba(14,165,233,.20) !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: minmax(118px, 142px) 112px !important;
+  justify-content: start !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay"] {
+  min-width: 112px !important;
+}
+.controlsStickyPanel .controlsRowRegions {
+  grid-template-columns: minmax(118px, 142px) !important;
+  justify-content: start !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+@media (max-width: 380px) {
+  .tabRow .headerNavButtons {
+    gap: 5px !important;
+  }
+  .tabRow .markersNavButtonHeader,
+  .tabRow .lyricsNavButtonHeader {
+    flex-basis: 64px !important;
+    width: 64px !important;
+    min-width: 64px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    font-size: 18px !important;
+  }
+  .controlsStickyPanel .controlsRowDirectorMain {
+    grid-template-columns: minmax(106px, 128px) 104px !important;
+    gap: 7px !important;
+  }
+  .controlsStickyPanel .controlsRowRegions {
+    grid-template-columns: minmax(106px, 128px) !important;
+    gap: 7px !important;
+  }
+}
+
+/* QR Diretor: modal Projetos com visual próprio, sem fundo branco */
+.projectTabsModalBox {
+  max-width: min(92vw, 390px) !important;
+  background: linear-gradient(180deg, #111827 0%, #070b12 100%) !important;
+  border: 1px solid rgba(148, 163, 184, .35) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, .58), inset 0 0 0 1px rgba(255,255,255,.04) !important;
+}
+.projectTabsModalBox .modalTitle {
+  color: #f8fafc !important;
+  letter-spacing: .04em !important;
+}
+.projectTabsList {
+  display: grid !important;
+  gap: 9px !important;
+  margin: 0 0 14px 0 !important;
+  max-height: min(52vh, 320px) !important;
+  overflow-y: auto !important;
+  padding-right: 2px !important;
+}
+.projectTabOption,
+.projectTabOptionActive {
+  width: 100% !important;
+  min-height: 50px !important;
+  padding: 10px 12px !important;
+  border-radius: 12px !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  text-align: left !important;
+  font-weight: 900 !important;
+}
+.projectTabOption {
+  background: linear-gradient(180deg, #1f2937 0%, #111827 100%) !important;
+  border: 1px solid rgba(71, 85, 105, .95) !important;
+  color: #f8fafc !important;
+}
+.projectTabOptionActive {
+  background: linear-gradient(90deg, #0f766e 0%, #064e3b 100%) !important;
+  border: 1px solid rgba(45, 212, 191, .95) !important;
+  color: #ecfeff !important;
+  box-shadow: inset 0 0 0 1px rgba(204, 251, 241, .14), 0 0 16px rgba(20,184,166,.18) !important;
+}
+.projectTabOptionText {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+}
+.projectTabCurrentBadge {
+  flex: 0 0 auto !important;
+  padding: 5px 8px !important;
+  border-radius: 999px !important;
+  background: rgba(250, 204, 21, .18) !important;
+  border: 1px solid rgba(250, 204, 21, .46) !important;
+  color: #fde68a !important;
+  font-size: 10px !important;
+  font-weight: 900 !important;
+  letter-spacing: .05em !important;
+}
+.projectTabsModalBox .modalCancelBtn {
+  background: #1f2937 !important;
+  color: #e5e7eb !important;
+  border: 1px solid #475569 !important;
+}
+.projectTabsModalBox .projectTabsOkBtn,
+.projectTabsModalBox .modalOkBtnWide {
+  background: linear-gradient(180deg, #16a34a 0%, #15803d 100%) !important;
+  color: #fff !important;
+  border: 1px solid #22c55e !important;
+}
+.app[data-theme="light"] .projectTabsModalBox,
+.app[data-theme="light"] .projectTabsModalBox .modalTitle,
+.app[data-theme="light"] .projectTabOption,
+.app[data-theme="light"] .projectTabOptionActive,
+.app[data-theme="light"] .projectTabOptionText {
+  color: #f8fafc !important;
+}
+.app[data-theme="light"] .projectTabsModalBox {
+  background: linear-gradient(180deg, #111827 0%, #070b12 100%) !important;
+  border-color: rgba(148, 163, 184, .35) !important;
+}
+
+/* QR Diretor v109: mantém >> e << visíveis no lado direito sem estourar a tela */
+.headerRow {
+  position: relative !important;
+  display: block !important;
+  grid-template-columns: none !important;
+  gap: 0 !important;
+  margin-bottom: 8px !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+.tabRow {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding-right: 142px !important;
+  gap: 6px !important;
+  overflow: visible !important;
+}
+.tabRow > .tab,
+.tabRow > .activeTab {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 12px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+.tabRow > [data-action="go-playlist"] {
+  flex-basis: 118px !important;
+}
+.tabRow > [data-action="go-regions"] {
+  flex-basis: 94px !important;
+}
+.tabRow .headerTotal {
+  margin-left: auto !important;
+  margin-right: 8px !important;
+  font-size: 14px !important;
+  flex: 0 0 auto !important;
+}
+.tabRow .headerTotalSpacer {
+  display: none !important;
+}
+.tabRow .headerNavButtons {
+  position: absolute !important;
+  right: 0 !important;
+  top: 0 !important;
+  width: 134px !important;
+  height: 38px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 6px !important;
+  margin: 0 !important;
+  z-index: 8 !important;
+}
+.tabRow .markersNavButtonHeader,
+.tabRow .lyricsNavButtonHeader {
+  flex: 0 0 64px !important;
+  width: 64px !important;
+  min-width: 64px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  font-size: 18px !important;
+  border-radius: 11px !important;
+}
+@media (max-width: 380px) {
+  .tabRow {
+    padding-right: 128px !important;
+    gap: 5px !important;
+  }
+  .tabRow > .tab,
+  .tabRow > .activeTab {
+    height: 36px !important;
+    min-height: 36px !important;
+    padding: 0 10px !important;
+    font-size: 13px !important;
+  }
+  .tabRow > [data-action="go-playlist"] {
+    flex-basis: 110px !important;
+  }
+  .tabRow > [data-action="go-regions"] {
+    flex-basis: 84px !important;
+  }
+  .tabRow .headerTotal {
+    font-size: 13px !important;
+    margin-right: 6px !important;
+  }
+  .tabRow .headerNavButtons {
+    width: 122px !important;
+    height: 36px !important;
+    gap: 5px !important;
+  }
+  .tabRow .markersNavButtonHeader,
+  .tabRow .lyricsNavButtonHeader {
+    flex-basis: 58px !important;
+    width: 58px !important;
+    min-width: 58px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    font-size: 17px !important;
+  }
+}
+
+/* QR Diretor v109: modal Projetos sem overflow lateral */
+.projectTabsModalBox {
+  width: min(90vw, 390px) !important;
+  max-width: min(90vw, 390px) !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+}
+.projectTabsList {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+  padding-right: 0 !important;
+}
+.projectTabOption,
+.projectTabOptionActive {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  padding: 10px 10px !important;
+}
+.projectTabOptionText {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+.projectTabCurrentBadge {
+  flex: 0 0 auto !important;
+  max-width: 56px !important;
+  padding: 5px 7px !important;
+  font-size: 9px !important;
+}
+
+
+/* QR Diretor v110: << volta para a linha Play/AUTO; >> fica sozinho no topo e mais largo */
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(112px, 1fr) !important;
+  gap: 8px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  justify-content: stretch !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > * {
+  width: 100% !important;
+  max-width: none !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  font-size: 18px !important;
+  border-radius: 12px !important;
+}
+.lyricsNavButtonInline {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(180deg, #0284c7 0%, #075985 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(56,189,248,.30), 0 0 12px rgba(14,165,233,.20) !important;
+}
+.tabRow { padding-right: 86px !important; }
+.tabRow .headerNavButtons { width: 82px !important; }
+.tabRow .markersNavButtonHeader {
+  flex: 0 0 82px !important;
+  width: 82px !important;
+  min-width: 82px !important;
+}
+.tabRow .lyricsNavButtonHeader { display: none !important; }
+@media (max-width: 380px) {
+  .controlsStickyPanel .controlsRowDirectorMain {
+    grid-template-columns: minmax(96px, 1fr) minmax(96px, 1fr) minmax(96px, 1fr) !important;
+    gap: 7px !important;
+  }
+  .controlsStickyPanel .controlsRowDirectorMain > * {
+    height: 44px !important;
+    min-height: 44px !important;
+    font-size: 17px !important;
+  }
+  .tabRow { padding-right: 78px !important; }
+  .tabRow .headerNavButtons { width: 74px !important; }
+  .tabRow .markersNavButtonHeader {
+    flex-basis: 74px !important;
+    width: 74px !important;
+    min-width: 74px !important;
+  }
+}
+
+
+/* Ajustes QR Hook Center - navegação/projetos/config */
+.vshook-back-button {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 20px;
+  border-radius: 16px;
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  background: linear-gradient(180deg, rgba(250, 204, 21, 0.18), rgba(180, 83, 9, 0.20));
+  color: #fde68a;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.settingsBottomButtons {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  margin-top: 28px !important;
+}
+.settingsBottomButtons > * {
+  width: 100% !important;
+  min-height: 46px !important;
+  border-radius: 12px !important;
+  font-weight: 900 !important;
+}
+.settingsCloseButton {
+  border: 1px solid #475569 !important;
+  background: #111827 !important;
+  color: #f8fafc !important;
+}
+
+/* v112 QR ajustes diretor: markers amarelo, tamanhos padronizados e sem rótulo entre status/lista */
+.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}
+.controlsStickyPanel .controlsRowMarkers>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important;padding:0 10px!important}
+.markerLoopButton,.markersInlineBackButton{height:46px!important;min-height:46px!important}
+.markerOpenYellowButton,.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}
+.tabRow .headerNavButtons{width:92px!important}.tabRow .markersNavButtonHeader{flex:0 0 92px!important;width:92px!important;min-width:92px!important}.tabRow{padding-right:96px!important}
+.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}
+@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}
+
+
+/* v113 QR: Diretor markers padrão final, botão >> amarelo e sem rótulos entre status/lista */
+.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;align-items:stretch!important;justify-content:stretch!important;}
+.controlsStickyPanel .controlsRowMarkers > button,.controlsStickyPanel .controlsRowMarkers > .btn,.controlsStickyPanel .controlsRowMarkers > .btnLoopActive,.controlsStickyPanel .controlsRowMarkers > .btnPlayActive,.controlsStickyPanel .controlsRowMarkers > .btnStopActive,.controlsStickyPanel .controlsRowMarkers > .markersInlineBackButton{width:100%!important;max-width:none!important;min-width:0!important;height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important;display:flex!important;align-items:center!important;justify-content:center!important;}
+.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader.markerOpenYellowButton,.markerOpenYellowButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important;}
+.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky,.sectionLabelSticky{display:none!important;}
+@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers > button,.controlsStickyPanel .controlsRowMarkers > .btn,.controlsStickyPanel .controlsRowMarkers > .btnLoopActive,.controlsStickyPanel .controlsRowMarkers > .btnPlayActive,.controlsStickyPanel .controlsRowMarkers > .btnStopActive,.controlsStickyPanel .controlsRowMarkers > .markersInlineBackButton{height:44px!important;min-height:44px!important;font-size:17px!important}}
+
+/* v118: corrige scroll do Diretor após clique imediato. */
+.listBox,
+.item,
+.item.numberedItem,
+[data-song-id],
+[data-region-id],
+[data-marker-id] {
+  touch-action: pan-y !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+[data-action] {
+  touch-action: manipulation;
+}
+
+
+/* v121 - ajustes finos Diretor: Play padronizado e contorno da aba Músicas */
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 8px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  justify-content: stretch !important;
+}
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {
+  height: 46px !important;
+  min-height: 46px !important;
+  max-height: 46px !important;
+  padding: 0 10px !important;
+  border-radius: 12px !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+}
+.regionsTopLabel {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 42px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  padding: 8px 12px !important;
+  border-radius: 10px !important;
+  border: 1px solid #374151 !important;
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: #f8fafc !important;
+  font-weight: 900 !important;
+  box-sizing: border-box !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.app[data-theme="light"] .regionsTopLabel {
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+@media(max-width:380px){
+  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    font-size: 17px !important;
+  }
+}
+
+
+/* v122 - Diretor: Play da aba Músicas no mesmo padrão/largura visual da aba Repertórios */
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;
+  gap:8px!important;
+  width:100%!important;
+  max-width:100%!important;
+  justify-content:stretch!important;
+}
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual>*{
+  width:100%!important;
+  max-width:none!important;
+  height:46px!important;
+  min-height:46px!important;
+  max-height:46px!important;
+  padding:0 10px!important;
+  border-radius:12px!important;
+  font-size:18px!important;
+  line-height:1!important;
+  box-sizing:border-box!important;
+}
+.regionsTopLabel{
+  display:flex!important;
+  align-items:center!important;
+  min-height:42px!important;
+  width:100%!important;
+  min-width:0!important;
+  padding:8px 12px!important;
+  border-radius:10px!important;
+  border:1px solid #374151!important;
+  background:rgba(15,23,42,.9)!important;
+  color:#f8fafc!important;
+  font-weight:900!important;
+  box-sizing:border-box!important;
+  white-space:nowrap!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+
+
+/* v123 - Diretor: Play da aba Músicas ajustado para casar visualmente com Play da aba Repertórios */
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;
+  gap:8px!important;
+  width:100%!important;
+  max-width:100%!important;
+  justify-content:stretch!important;
+  justify-items:stretch!important;
+  align-items:stretch!important;
+}
+.controlsStickyPanel .controlsRowRegions.controlsRowEqual > [data-action="play"]{
+  grid-column:1!important;
+  width:calc(100% - 6px)!important;
+  min-width:0!important;
+  max-width:none!important;
+  justify-self:start!important;
+  height:46px!important;
+  min-height:46px!important;
+  max-height:46px!important;
+  padding:0 10px!important;
+  border-radius:12px!important;
+  font-size:18px!important;
+  line-height:1!important;
+  box-sizing:border-box!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+}
+@media(max-width:380px){
+  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > [data-action="play"]{
+    height:44px!important;
+    min-height:44px!important;
+    max-height:44px!important;
+    font-size:17px!important;
+    width:calc(100% - 5px)!important;
+  }
+}
+
+
+/* v124 - ajuste real: Play da aba Músicas do Diretor com texto e caixa no mesmo padrão da aba Repertórios */
+.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  justify-items: stretch !important;
+  align-items: stretch !important;
+}
+.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"] {
+  grid-column: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  justify-self: stretch !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  max-height: 46px !important;
+  padding: 0 6px !important;
+  border-radius: 12px !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  font-weight: 900 !important;
+  letter-spacing: 0 !important;
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+@media(max-width:380px){
+  .app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"] {
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    font-size: 15px !important;
+  }
+}
+
+
+/* v137 - Letras sem espaço reservado de popup; popup central; edição sem botão embaixo do teclado */
+.lyricsPopupSlot{display:none!important;flex:0 0 0!important;min-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;}
+.app:has(.lyricsScreen) > .appPopup{
+  display:flex!important;
+  position:fixed!important;
+  left:50%!important;
+  top:50%!important;
+  bottom:auto!important;
+  transform:translate(-50%,-50%)!important;
+  z-index:3200!important;
+  width:min(82vw,380px)!important;
+  min-height:58px!important;
+  padding:12px 16px!important;
+  font-size:18px!important;
+  line-height:1.12!important;
+  pointer-events:none!important;
+}
+.app:has(.lyricsScreen) > .appPopupHidden{
+  opacity:0!important;
+  transform:translate(-50%,-50%) scale(.98)!important;
+}
+.lyricsScreen{overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;}
+.lyricsScreen .lyricsBody{flex:0 0 auto!important;min-height:calc(var(--app-vh,100dvh) - 94px)!important;overflow:visible!important;}
+.lyricsScreen .lyricsTextView{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 140px)!important;overflow:visible!important;padding-bottom:34px!important;}
+.lyricsScreenEditing .lyricsTopBar{position:sticky!important;top:0!important;z-index:3210!important;grid-template-columns:90px minmax(0,1fr) 64px!important;background:linear-gradient(180deg,#0b1118 0%,rgba(5,7,10,.96) 100%)!important;padding-bottom:8px!important;margin-bottom:8px!important;}
+.lyricsScreenEditing .lyricsBody{min-height:calc(var(--app-vh,100dvh) - 122px)!important;}
+.lyricsScreenEditing .lyricsEditorInput{height:auto!important;min-height:calc(var(--app-vh,100dvh) - 168px)!important;overflow:hidden!important;padding:14px 12px 42px!important;-webkit-overflow-scrolling:auto!important;}
+.lyricsOkTopButton{border-color:#22c55e!important;background:linear-gradient(180deg,#16a34a 0%,#15803d 100%)!important;color:#fff!important;font-size:16px!important;min-width:62px!important;}
+.lyricsCancelTopButton{border-color:#475569!important;background:#111827!important;color:#f8fafc!important;font-size:13px!important;min-width:86px!important;padding:0 8px!important;}
+.lyricsFloatingOk,.lyricsFloatingCancel{display:none!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsTopBar{background:linear-gradient(180deg,#f8fafc 0%,rgba(248,250,252,.96) 100%)!important;}
+@media(max-width:480px){
+  .app:has(.lyricsScreen) > .appPopup{width:min(86vw,340px)!important;min-height:52px!important;font-size:16px!important;padding:10px 13px!important;}
+  .lyricsScreenEditing .lyricsTopBar{grid-template-columns:82px minmax(0,1fr) 58px!important;gap:6px!important;}
+  .lyricsCancelTopButton{min-width:78px!important;font-size:12px!important;}
+  .lyricsOkTopButton{min-width:56px!important;font-size:15px!important;}
+}
+
+
+/* v138 - editor de letras tela cheia e scroll inteligente com teclado */
+.lyricsPopupSlot{display:none!important;flex:0 0 0!important;min-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;}
+.app:has(.lyricsScreen) > .appPopup{
+  display:flex!important;
+  position:fixed!important;
+  left:50%!important;
+  top:50%!important;
+  bottom:auto!important;
+  transform:translate(-50%,-50%)!important;
+  z-index:3400!important;
+  width:min(82vw,380px)!important;
+  min-height:58px!important;
+  padding:12px 16px!important;
+  font-size:18px!important;
+  line-height:1.12!important;
+  pointer-events:none!important;
+}
+.app:has(.lyricsScreen) > .appPopupHidden{opacity:0!important;transform:translate(-50%,-50%) scale(.98)!important;}
+.lyricsScreen{
+  height:var(--app-vh,100dvh)!important;
+  max-height:var(--app-vh,100dvh)!important;
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
+  -webkit-overflow-scrolling:touch!important;
+  overscroll-behavior:contain!important;
+  scroll-padding-bottom:calc(var(--lyrics-keyboard-pad,80px) + 40px)!important;
+}
+.lyricsScreen .lyricsBody{
+  flex:0 0 auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 94px)!important;
+  overflow:visible!important;
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+  padding:0 8px!important;
+  margin:0!important;
+}
+.lyricsScreen .lyricsTextView{
+  height:auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 140px)!important;
+  overflow:visible!important;
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+  padding:14px 10px 42px!important;
+}
+.lyricsScreenEditing{
+  padding-bottom:0!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:sticky!important;
+  top:0!important;
+  z-index:3210!important;
+  grid-template-columns:90px minmax(0,1fr) 64px!important;
+  background:linear-gradient(180deg,#0b1118 0%,rgba(5,7,10,.96) 100%)!important;
+  padding-bottom:8px!important;
+  margin-bottom:8px!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 114px)!important;
+  padding:0 10px!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  display:block!important;
+  width:100%!important;
+  box-sizing:border-box!important;
+  height:auto!important;
+  min-height:calc(var(--lyrics-visible-height,var(--app-vh,100dvh)) - 128px)!important;
+  overflow:hidden!important;
+  resize:none!important;
+  outline:none!important;
+  border:0!important;
+  box-shadow:none!important;
+  background:transparent!important;
+  border-radius:0!important;
+  color:#f8fafc!important;
+  font-size:21px!important;
+  line-height:1.42!important;
+  padding:14px 4px 18px!important;
+  margin:0!important;
+  -webkit-overflow-scrolling:auto!important;
+}
+.lyricsScreenEditing .lyricsEditorInput:focus{outline:none!important;border:0!important;box-shadow:none!important;}
+.lyricsEditorScrollPad{display:block!important;height:calc(var(--lyrics-keyboard-pad,80px) + 110px)!important;min-height:150px!important;flex:0 0 auto!important;}
+.lyricsCharCount{position:sticky!important;bottom:calc(var(--lyrics-keyboard-pad,80px) + 8px)!important;z-index:3200!important;margin:10px auto 0!important;width:max-content!important;background:rgba(15,23,42,.78)!important;border:1px solid rgba(148,163,184,.25)!important;border-radius:999px!important;padding:5px 10px!important;}
+.lyricsOkTopButton{border-color:#22c55e!important;background:linear-gradient(180deg,#16a34a 0%,#15803d 100%)!important;color:#fff!important;font-size:16px!important;min-width:62px!important;}
+.lyricsCancelTopButton{border-color:#475569!important;background:#111827!important;color:#f8fafc!important;font-size:13px!important;min-width:86px!important;padding:0 8px!important;}
+.lyricsFloatingOk,.lyricsFloatingCancel{display:none!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsTopBar{background:linear-gradient(180deg,#f8fafc 0%,rgba(248,250,252,.96) 100%)!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsEditorInput{color:#0f172a!important;}
+.app[data-theme="light"] .lyricsCharCount{background:rgba(255,255,255,.85)!important;color:#0f172a!important;border-color:#cbd5e1!important;}
+@media(max-width:480px){
+  .app:has(.lyricsScreen) > .appPopup{width:min(86vw,340px)!important;min-height:52px!important;font-size:16px!important;padding:10px 13px!important;}
+  .lyricsScreenEditing .lyricsTopBar{grid-template-columns:82px minmax(0,1fr) 58px!important;gap:6px!important;}
+  .lyricsCancelTopButton{min-width:78px!important;font-size:12px!important;}
+  .lyricsOkTopButton{min-width:56px!important;font-size:15px!important;}
+  .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
+}
+
+
+/* v139 - correção teclado: não deixar o começo da letra subir atrás da barra superior */
+.lyricsScreenEditing{
+  scroll-padding-top:96px!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:sticky!important;
+  top:0!important;
+  z-index:3600!important;
+  flex:0 0 auto!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  position:relative!important;
+  z-index:1!important;
+  padding-top:8px!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  scroll-margin-top:104px!important;
+  transform:none!important;
+}
+.lyricsScreenEditing .lyricsEditorInput::selection{
+  background:rgba(59,130,246,.35)!important;
+}
+
+
+/* v140 - editor de letra sem salto ao apertar Enter
+   A tela inteira fica estável: topo fixo, texto rola dentro da área de edição. */
+.lyricsScreenEditing{
+  height:var(--lyrics-visible-height,var(--app-vh,100dvh))!important;
+  max-height:var(--lyrics-visible-height,var(--app-vh,100dvh))!important;
+  overflow:hidden!important;
+  display:flex!important;
+  flex-direction:column!important;
+  padding-bottom:0!important;
+  scroll-padding-top:0!important;
+}
+.lyricsScreenEditing .lyricsTopBar{
+  position:relative!important;
+  top:auto!important;
+  z-index:3600!important;
+  flex:0 0 auto!important;
+  margin-bottom:6px!important;
+  padding-bottom:8px!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  flex:1 1 auto!important;
+  min-height:0!important;
+  height:auto!important;
+  max-height:none!important;
+  overflow:hidden!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:0 10px!important;
+  margin:0!important;
+}
+.lyricsScreenEditing .lyricsEditorInput{
+  display:block!important;
+  width:100%!important;
+  height:100%!important;
+  min-height:0!important;
+  max-height:none!important;
+  overflow-y:auto!important;
+  overflow-x:hidden!important;
+  resize:none!important;
+  border:0!important;
+  border-radius:0!important;
+  outline:0!important;
+  box-shadow:none!important;
+  background:transparent!important;
+  color:#f8fafc!important;
+  padding:14px 4px calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  margin:0!important;
+  transform:none!important;
+  scroll-margin-top:0!important;
+  -webkit-overflow-scrolling:touch!important;
+  overscroll-behavior:contain!important;
+}
+.lyricsScreenEditing .lyricsEditorInput:focus{
+  outline:0!important;
+  border:0!important;
+  box-shadow:none!important;
+}
+.lyricsScreenEditing .lyricsEditorScrollPad{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
+}
+.lyricsScreenEditing .lyricsCharCount{
+  position:absolute!important;
+  right:18px!important;
+  bottom:calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  z-index:3700!important;
+  margin:0!important;
+  width:max-content!important;
+  pointer-events:none!important;
+  background:rgba(15,23,42,.82)!important;
+  border:1px solid rgba(148,163,184,.25)!important;
+  border-radius:999px!important;
+  padding:5px 10px!important;
+}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsEditorInput{color:#0f172a!important;}
+.app[data-theme="light"] .lyricsScreenEditing .lyricsCharCount{background:rgba(255,255,255,.86)!important;color:#0f172a!important;border-color:#cbd5e1!important;}
+@media(max-width:480px){
+  .lyricsScreenEditing .lyricsBody{padding-left:8px!important;padding-right:8px!important;}
+  .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
+}
+
+/* v122 - login estável com teclado virtual e swipe bloqueado na tela de Letras */
+.authGateApp{
+  position:fixed!important;
+  inset:0!important;
+  width:100vw!important;
+  height:var(--app-vh,100dvh)!important;
+  min-height:var(--app-vh,100dvh)!important;
+  overflow:hidden!important;
+  align-items:flex-start!important;
+  justify-content:center!important;
+  padding:calc(env(safe-area-inset-top,0px) + 14px) 14px calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  overscroll-behavior:none!important;
+  touch-action:manipulation!important;
+}
+.authGateWrap{
+  min-height:0!important;
+  height:auto!important;
+  max-height:calc(var(--app-vh,100dvh) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 24px)!important;
+  align-items:flex-start!important;
+  overflow:hidden!important;
+}
+.authGateCard{
+  justify-content:flex-start!important;
+  width:min(92vw,380px)!important;
+  max-height:100%!important;
+  overflow:hidden!important;
+  padding:16px 16px 14px!important;
+  gap:7px!important;
+}
+.authGateLogo{width:min(32vw,116px)!important;max-width:116px!important;min-width:74px!important;}
+.authGateTitle{font-size:clamp(18px,4vw,24px)!important;line-height:1.05!important;}
+.authGateSubtitle{font-size:clamp(10px,2.4vw,12px)!important;line-height:1.1!important;}
+.authGateForm{gap:8px!important;margin-top:6px!important;}
+.authGateInput{height:48px!important;font-size:18px!important;text-align:center!important;letter-spacing:.08em!important;}
+.authGateButton,.authGateBackButton{height:44px!important;min-height:44px!important;}
+.authGateError{min-height:17px!important;line-height:17px!important;text-align:center!important;}
+.lyricsScreen,.lyricsScreen *{overscroll-behavior:contain;}
+.lyricsScreenEditing .lyricsEditorInput{touch-action:pan-y!important;}
+@media(max-height:560px){
+  .authGateApp{padding-top:8px!important;}
+  .authGateCard{padding:12px 14px!important;gap:5px!important;}
+  .authGateLogo{width:72px!important;min-width:72px!important;max-width:72px!important;margin-bottom:0!important;}
+  .authGateTitle{font-size:18px!important;}
+  .authGateSubtitle{font-size:10px!important;}
+  .authGateInput{height:44px!important;}
+  .authGateButton,.authGateBackButton{height:40px!important;min-height:40px!important;}
+}
+
+/* v142 - editor de letras sem espaço vazio exagerado e swipe de saída */
+.lyricsScreenEditing .lyricsEditorInput{
+  padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+}
+.lyricsScreenEditing .lyricsBody{
+  overflow:hidden!important;
+}
+.lyricsScreenEditing .lyricsEditorScrollPad{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
+}
+
+/* v1.9.0 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
+.app:not([data-theme="light"]) { background:#0b1118 !important; }
+.app:not([data-theme="light"]) .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
+.app:not([data-theme="light"]) .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }
+.app:not([data-theme="light"]) .selectedBlue:not(.blockItem) { background:#2563eb !important; box-shadow:inset 0 0 0 1px rgba(147,197,253,.34) !important; }
+.app:not([data-theme="light"]) .selectedBlueText,
+.app:not([data-theme="light"]) .selectedBlueTimeText { color:#ffffff !important; font-weight:bold !important; }
+.app:not([data-theme="light"]) .selectedPink.blockItem { background:#ec4899 !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.30) !important; }
+.app:not([data-theme="light"]) .selectedPink.blockItem .blockText,
+.app:not([data-theme="light"]) .selectedPink.blockItem .blockTimeText,
+.app:not([data-theme="light"]) .selectedPinkText,
+.app:not([data-theme="light"]) .selectedPinkTimeText { color:#ffffff !important; font-weight:bold !important; }
+
+/* v1.9.9 - Diretor: tocando sempre vence seleção/fila visual */
+.app .item.playing,
+.app:not([data-theme="light"]) .item.playing,
+.app[data-theme="light"] .item.playing {
+  background: #b91c1c !important;
+  border-color: #ef4444 !important;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36) !important;
+}
+.app .item.playing.selectedBlue,
+.app .item.playing.selectedPink,
+.app .item.playing.queuedYellow {
+  background: #b91c1c !important;
+}
+.app .item.playing .rowLabelText,
+.app .item.playing .timeText,
+.app .item.playing .playingText,
+.app .item.playing .playingTimeText {
+  color: #ffffff !important;
+  font-weight: 900 !important;
+}
+
+/* v1.9.21 - Premix Diretor: lista, letreiro, global reset e slider responsivo */
+.premixSongListHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.premixSongListHeader .sectionLabel{margin:0!important;flex:1 1 auto}.premixSongListHeader .premixPlayButton{flex:0 0 118px;height:42px;border-radius:12px;font-weight:900}.premixSongListBox{border:none!important;background:transparent!important;padding:2px 2px 10px!important}.premixSongCard{position:relative;display:grid;grid-template-columns:8px minmax(0,1fr);align-items:center;gap:10px;min-height:64px;margin:0 0 10px;padding:10px 12px 10px 0;border:1px solid rgba(148,163,184,.28);border-radius:14px;background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.98));box-shadow:0 10px 24px rgba(0,0,0,.22);overflow:hidden;touch-action:manipulation}.premixSongCardSelected{border-color:#38bdf8!important;box-shadow:0 0 0 1px rgba(56,189,248,.34),0 12px 28px rgba(14,165,233,.18)!important}.premixSongAccent{width:8px;align-self:stretch;border-radius:999px;background:var(--premix-row-color,#8b5cf6);box-shadow:0 0 16px var(--premix-row-color,#8b5cf6)}.premixSongMain{min-width:0;display:flex;flex-direction:column;gap:7px}.premixSongTitle{min-width:0;color:var(--premix-row-color,#f8fafc);font-weight:900;font-size:15px;letter-spacing:.02em}.premixSongTitle .marqueeViewport{width:100%;max-width:100%;display:block}.premixSongMeta{display:flex;align-items:center;gap:8px;min-height:24px}.premixSongDuration{height:24px;min-width:54px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid #334155;background:#0f172a;color:#cbd5e1;font-weight:900;font-size:12px}.premixTopControlsGlobal{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important}.premixTopControlsGlobal .premixGlobalResetBtn{height:42px;border-radius:12px;background:#facc15!important;border-color:#fde047!important;color:#111827!important;font-weight:900!important}.premixHeaderTitle .marqueeViewport,.mixerRowName .marqueeViewport,.mixerRowGroupName .marqueeViewport,.mixerVolumeTitle .marqueeViewport{width:100%;max-width:100%;display:block}.mixerRowName,.mixerRowGroupName{min-width:0}.mixerNameMarquee .marqueeTrack,.mixerGroupMarquee .marqueeTrack,.premixTitleMarquee .marqueeTrack,.premixSongMarquee .marqueeTrack{animation-duration:12s!important}.premixVolumeModalBoxFull .mixerVolumeSlider{touch-action:pan-x!important;will-change:transform}.app[data-theme="light"] .premixSongCard{background:linear-gradient(180deg,#ffffff,#f8fafc);border-color:#cbd5e1;box-shadow:0 8px 18px rgba(15,23,42,.12)}.app[data-theme="light"] .premixSongDuration{background:#f1f5f9;color:#0f172a;border-color:#cbd5e1}
+
+
+
+/* v1.9.22 - Premix: nomes visíveis, letreiro forçado e música tocando clara */
+.premixSongListBox{padding-bottom:0!important;scroll-padding-bottom:8px!important;border-bottom:none!important;margin-bottom:0!important;}
+.premixSongCard{grid-template-columns:8px minmax(0,1fr)!important;padding-right:22px!important;}
+.premixSongMain,.premixSongTitle,.mixerRowMain,.mixerRowName,.mixerRowGroupName{min-width:0!important;max-width:100%!important;overflow:hidden!important;}
+.premixSongTitle{color:#f8fafc!important;text-shadow:0 1px 2px rgba(0,0,0,.35)!important;}
+.premixSongTitle .marqueeViewport,.premixHeaderTitle .marqueeViewport,.mixerRowName .marqueeViewport,.mixerRowGroupName .marqueeViewport,.mixerVolumeTitle .marqueeViewport{display:block!important;width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden!important;}
+.premixSongTitle .marqueeStatic,.premixSongTitle .marqueeTrack,.premixSongTitle .marqueeSegment{color:#f8fafc!important;}
+.mixerRowName .marqueeStatic,.mixerRowName .marqueeTrack,.mixerRowName .marqueeSegment{color:#f8fafc!important;}
+.mixerRowGroupName .marqueeStatic,.mixerRowGroupName .marqueeTrack,.mixerRowGroupName .marqueeSegment{color:#cbd5e1!important;}
+.premixSongPlayingBar{position:absolute;right:5px;top:8px;bottom:8px;width:5px;border-radius:999px;background:rgba(255,255,255,.35);box-shadow:0 0 8px rgba(255,255,255,.14);}
+.premixSongCardPlaying{border-color:#22c55e!important;background:linear-gradient(180deg,rgba(20,83,45,.96),rgba(6,78,59,.94))!important;box-shadow:0 0 0 1px rgba(34,197,94,.45),0 12px 30px rgba(34,197,94,.18)!important;}
+.premixSongCardPlaying .premixSongPlayingBar{width:8px;background:#22c55e!important;box-shadow:0 0 18px rgba(34,197,94,.85),0 0 4px rgba(255,255,255,.85)!important;}
+.premixSongCardPlaying .premixSongAccent{background:#22c55e!important;box-shadow:0 0 16px rgba(34,197,94,.8)!important;}
+.premixSongCardPlaying .premixSongTitle,.premixSongCardPlaying .premixSongTitle .marqueeStatic,.premixSongCardPlaying .premixSongTitle .marqueeTrack,.premixSongCardPlaying .premixSongTitle .marqueeSegment{color:#fff!important;}
+.app[data-theme="light"] .premixSongTitle,.app[data-theme="light"] .premixSongTitle .marqueeStatic,.app[data-theme="light"] .premixSongTitle .marqueeTrack,.app[data-theme="light"] .premixSongTitle .marqueeSegment{color:#0f172a!important;text-shadow:none!important;}
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeStatic,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeTrack,.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeSegment{color:#fff!important;}
+
+
+/* v1.9.23 - Correção real do letreiro Premix/Mixer: reserva altura e fallback visível */
+.marqueeViewport[data-marquee]{
+  display:block!important;
+  position:relative!important;
+  width:100%!important;
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  white-space:nowrap!important;
+  line-height:1.25!important;
+  min-height:1.25em!important;
+}
+.marqueeViewport[data-marquee] .marqueeStatic{
+  display:block!important;
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  white-space:nowrap!important;
+  text-overflow:ellipsis!important;
+  line-height:1.25!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeStatic{
+  display:block!important;
+  visibility:hidden!important;
+  opacity:0!important;
+  pointer-events:none!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeTrack{
+  display:inline-flex!important;
+  position:absolute!important;
+  left:0!important;
+  top:0!important;
+  align-items:center!important;
+  min-width:max-content!important;
+  max-width:none!important;
+  width:max-content!important;
+  white-space:nowrap!important;
+  overflow:visible!important;
+  line-height:1.25!important;
+  animation:vshookMarqueeScroll var(--marquee-duration,12s) linear infinite!important;
+  z-index:2!important;
+}
+.marqueeViewport[data-marquee].is-marquee .marqueeSegment,
+.marqueeViewport[data-marquee].is-marquee .marqueeSpacer{
+  display:inline-block!important;
+  flex:0 0 auto!important;
+  white-space:nowrap!important;
+  color:inherit!important;
+}
+.premixSongTitle,
+.premixHeaderTitle,
+.mixerRowName,
+.mixerRowGroupName,
+.mixerVolumeTitle,
+.mixerRowMain{
+  min-width:0!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+}
+.premixSongTitle .marqueeViewport,
+.premixHeaderTitle .marqueeViewport,
+.mixerRowName .marqueeViewport,
+.mixerRowGroupName .marqueeViewport,
+.mixerVolumeTitle .marqueeViewport{
+  color:inherit!important;
+}
+.premixSongTitle .marqueeTrack,
+.premixSongTitle .marqueeSegment,
+.premixHeaderTitle .marqueeTrack,
+.premixHeaderTitle .marqueeSegment,
+.mixerRowName .marqueeTrack,
+.mixerRowName .marqueeSegment,
+.mixerVolumeTitle .marqueeTrack,
+.mixerVolumeTitle .marqueeSegment{
+  color:#f8fafc!important;
+  text-shadow:0 1px 2px rgba(0,0,0,.35)!important;
+}
+.mixerRowGroupName .marqueeTrack,
+.mixerRowGroupName .marqueeSegment{
+  color:#cbd5e1!important;
+}
+.app[data-theme="light"] .premixSongTitle .marqueeStatic,
+.app[data-theme="light"] .premixSongTitle .marqueeTrack,
+.app[data-theme="light"] .premixSongTitle .marqueeSegment,
+.app[data-theme="light"] .mixerRowName .marqueeStatic,
+.app[data-theme="light"] .mixerRowName .marqueeTrack,
+.app[data-theme="light"] .mixerRowName .marqueeSegment,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeStatic,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeTrack,
+.app[data-theme="light"] .mixerVolumeTitle .marqueeSegment{
+  color:#0f172a!important;
+  text-shadow:none!important;
+}
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeStatic,
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeTrack,
+.app[data-theme="light"] .premixSongCardPlaying .premixSongTitle .marqueeSegment{
+  color:#fff!important;
+  text-shadow:0 1px 2px rgba(0,0,0,.35)!important;
+}
+
+
+/* v1.9.24 - Letreiro só quando precisa + destaque dos blocos em Repertórios */
+.marqueeViewport[data-marquee].is-marquee .marqueeTrack{
+  top:0!important;
+  left:0!important;
+  transform:none;
+  animation:vshookMarqueeScroll var(--marquee-duration,12s) linear infinite!important;
+}
+@keyframes vshookMarqueeScroll{
+  0%,8%{transform:translate3d(0,0,0)}
+  92%,100%{transform:translate3d(calc(-50% - 18px),0,0)}
+}
+.marqueeViewport[data-marquee]:not(.is-marquee) .marqueeTrack{
+  display:none!important;
+}
+.marqueeViewport[data-marquee]:not(.is-marquee) .marqueeStatic{
+  visibility:visible!important;
+  opacity:1!important;
+  max-width:100%!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis!important;
+}
+.app .item.blockItem[data-song-id]{
+  position:relative!important;
+  border:1px solid var(--app-border-color,#facc15)!important;
+  border-radius:10px!important;
+  background:linear-gradient(180deg,rgba(15,23,42,.76),rgba(2,6,23,.86))!important;
+  box-shadow:0 0 0 1px var(--app-border-color,#facc15),0 0 14px var(--app-border-glow,rgba(250,204,21,.32)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
+  margin-top:4px!important;
+  margin-bottom:4px!important;
+}
+.app .item.blockItem[data-song-id]::before{
+  content:"";
+  position:absolute;
+  left:4px;
+  top:5px;
+  bottom:5px;
+  width:4px;
+  border-radius:999px;
+  background:var(--app-border-color,#facc15);
+  box-shadow:0 0 12px var(--app-border-glow,rgba(250,204,21,.45));
+  pointer-events:none;
+}
+.app .item.blockItem[data-song-id] .blockText,
+.app .item.blockItem[data-song-id] .blockTimeText,
+.app .item.blockItem[data-song-id] .rowLabelText{
+  color:#f8fafc!important;
+  font-weight:900!important;
+}
+.app .item.blockItem[data-song-id].selectedPink,
+.app .item.blockItem[data-song-id].selectedBlue,
+.app .item.blockItem[data-song-id].queuedYellow,
+.app .item.blockItem[data-song-id].playing{
+  border-color:var(--app-border-color,#facc15)!important;
+  box-shadow:0 0 0 2px var(--app-border-color,#facc15),0 0 18px var(--app-border-glow,rgba(250,204,21,.45))!important;
+}
+.app[data-theme="light"] .item.blockItem[data-song-id]{
+  background:linear-gradient(180deg,#ffffff,#f8fafc)!important;
+  color:#0f172a!important;
+}
+.app[data-theme="light"] .item.blockItem[data-song-id] .blockText,
+.app[data-theme="light"] .item.blockItem[data-song-id] .blockTimeText,
+.app[data-theme="light"] .item.blockItem[data-song-id] .rowLabelText{
+  color:#0f172a!important;
+}
+
+/* v1.9.25 - blocos com contorno da borda atual no Diretor/Músico */
+.app .item.blockItem {
+  border-color: var(--block-outline-color, var(--app-border-color, rgba(250,204,21,.75))) !important;
+  box-shadow: inset 0 0 0 2px var(--block-outline-color, var(--app-border-color, rgba(250,204,21,.75))), 0 0 14px var(--block-outline-glow, var(--app-border-glow, rgba(250,204,21,.22))) !important;
+  background: rgba(15, 23, 42, 0.72) !important;
+}
+.app .item.blockItem .rowLabelText,
+.app .item.blockItem .blockText,
+.app .item.blockItem .blockTimeText {
+  color: var(--block-outline-color, var(--app-border-color, #facc15)) !important;
+  font-weight: 900 !important;
+}
+.app[data-theme="light"] .item.blockItem {
+  background: rgba(255,255,255,.86) !important;
+}
+
+
+/* v1.9.26 - sem rodape app musicos + versão tela inicial + bloco cinza quando borda off */
+.vshook-app-version{
+  margin-top:18px;
+  color:#94a3b8;
+  font-size:14px;
+  line-height:1.35;
+  font-weight:800;
+  letter-spacing:.02em;
+  text-align:center;
+}
+.musicosContentWithFooter,.musicosContentNoFooter{
+  padding-bottom:0!important;
+  margin-bottom:0!important;
+}
+.musicosFixedFooter,.footer_disabled_tempBar,.fixedFooter,.vshookFixedFooter{
+  display:none!important;
+  height:0!important;
+  min-height:0!important;
+  max-height:0!important;
+  flex:0 0 0!important;
+  padding:0!important;
+  margin:0!important;
+  overflow:hidden!important;
+}
+.musicosListBox{
+  padding-bottom:max(8px, env(safe-area-inset-bottom, 0px))!important;
+  scroll-padding-bottom:12px!important;
+}
+.app .item.blockItem{
+  border:1px solid var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72)))!important;
+  box-shadow:inset 0 0 0 2px var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72))),0 0 14px var(--block-outline-glow, var(--app-border-glow, rgba(148,163,184,.22)))!important;
+}
+.app .item.blockItem::before{
+  background:var(--block-outline-color, var(--app-border-color, rgba(148,163,184,.72)))!important;
+  box-shadow:0 0 12px var(--block-outline-glow, var(--app-border-glow, rgba(148,163,184,.22)))!important;
+}

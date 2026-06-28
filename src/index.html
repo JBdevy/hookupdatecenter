@@ -8,7 +8,6 @@
 </head>
 <body>
   <div class="app-shell">
-    <button id="sidebarToggleButton" class="sidebar-toggle-button" type="button" aria-label="Abrir menu" title="Menu">☰</button>
     <aside class="sidebar">
       <div class="brand">
         <img src="../assets/logo.png" class="logo-hook" alt="Hook Center" />
@@ -40,7 +39,7 @@
           <div>
             <p class="eyebrow">VS Hook</p>
             <h1>Central de atualizações</h1>
-            <p class="muted">Verifique novidades, baixe atualizações e reinstale o VS Hook quando precisar.</p>
+            <p class="muted">Verifique novidades e baixe atualizações do VS Hook quando precisar.</p>
             <p class="installed-version-line hero-installed-version">Versão do VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
           </div>
           <button id="checkButton" class="primary-button">Conferir atualização</button>
@@ -73,7 +72,7 @@
               <ul id="changelogList" class="changelog"></ul>
 
               <div class="actions update-actions-inline">
-                <button id="downloadButton" class="primary-button">Baixar / Reinstalar VS Hook</button>
+                <button id="downloadButton" class="primary-button">Baixar</button>
                 <button id="installButton" class="primary-button hidden" type="button">Instalar</button>
                 <button id="laterButton" class="secondary-button">Fechar para tray</button>
               </div>
@@ -91,8 +90,8 @@
           <div class="update-column hookcenter-update-column">
             <div class="card hidden" id="hookCenterLearnCard">
               <p class="eyebrow">Hook Center</p>
-              <h2>Quero aprender tudo sobre o Hook Center</h2>
-              <p class="muted">Veja o material completo de uso da central.</p>
+              <h2>Quero aprender tudo sobre o Teleprompt</h2>
+              <p class="muted">Veja o material completo de uso do Teleprompt.</p>
               <div class="actions" id="hookCenterLearnActions">
                 <button id="hookCenterLearnButton" class="primary-button" type="button">Assistir agora</button>
               </div>
@@ -283,6 +282,8 @@
           <div class="actions">
             <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Teleprompt 1</button>
             <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Teleprompt 2</button>
+            <button id="importLyricsBackupButton" class="secondary-button" type="button">Import Backup</button>
+            <button id="exportLyricsBackupButton" class="secondary-button" type="button">Export Backup</button>
           </div>
         </div>
 
@@ -332,6 +333,10 @@
                 <span>Escolher emoji</span>
               </button>
               <div id="technicalNoticeEmojiPicker" class="emoji-picker-popover hidden" role="listbox" aria-label="Escolher emoji do recado"></div>
+            </label>
+            <label>
+              Senha do app Recados
+              <input id="technicalNoticeRecadosPassword" type="password" placeholder="Opcional" autocomplete="new-password" />
             </label>
           </div>
           <div class="actions lyrics-actions">
@@ -638,7 +643,7 @@
           <div class="status-grid">
             <div>
               <span>Versão da Central</span>
-              <strong id="currentVersion">v1.9.7</strong>
+              <strong id="currentVersion">v2.0 C</strong>
             </div>
             <div>
               <span>Código ID</span>
@@ -656,6 +661,9 @@
               <span>Status</span>
               <strong id="updateStatus">--</strong>
             </div>
+          </div>
+          <div class="actions status-actions">
+            <button id="statusCheckUpdateButton" class="primary-button" type="button">Verificar atualização</button>
           </div>
         </div>
 
@@ -676,7 +684,7 @@
           <p class="installed-version-line">Versão do VS Hook instalada: <strong id="statusUpdateInstalledVersion">--</strong></p>
           <p id="statusUpdateDescription" class="description"></p>
           <div class="actions">
-            <button id="statusDownloadButton" class="primary-button" type="button">Baixar atualização</button>
+            <button id="statusDownloadButton" class="primary-button" type="button">Baixar</button>
             <button id="statusInstallButton" class="secondary-button hidden" type="button">Instalar</button>
           </div>
           <div id="statusProgressCard" class="status-progress-area hidden">

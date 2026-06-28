@@ -1,0 +1,11 @@
+{
+  "name": "VS Hook Recados",
+  "short_name": "Recados",
+  "start_url": "./recados.html",
+  "display": "standalone",
+  "background_color": "#05070a",
+  "theme_color": "#05070a",
+  "icons": [
+    { "src": "./vshook-icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

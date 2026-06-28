@@ -5,7 +5,7 @@ const path = require('path')
 const { URL } = require('url')
 const { createQrSvg } = require('./qr-svg')
 
-const PROJECT_STALE_MS = 120000
+const PROJECT_STALE_MS = 8000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
 const TECHNICAL_NOTICE_DURATION_MS = 20000
 const DIRECTOR_NOTICE_DURATION_MS = 15000
@@ -241,14 +241,26 @@ function ensureJsonFile(filePath, fallbackObject) {
 }
 
 const lastGoodJsonByFile = new Map()
+const readJsonShortCacheByFile = new Map()
+const READ_JSON_CACHE_TTL_MS = 60
 
 function readJson(filePath, fallback) {
+  const now = Date.now()
+  const shortCached = readJsonShortCacheByFile.get(filePath)
+  if (shortCached && (now - shortCached.readAt) <= READ_JSON_CACHE_TTL_MS) {
+    return shortCached.value
+  }
+
   try {
     const raw = fs.readFileSync(filePath, 'utf8')
     const parsed = JSON.parse(raw)
     lastGoodJsonByFile.set(filePath, {
       value: parsed,
-      readAt: Date.now(),
+      readAt: now,
+    })
+    readJsonShortCacheByFile.set(filePath, {
+      value: parsed,
+      readAt: now,
     })
     return parsed
   } catch (error) {
@@ -263,6 +275,10 @@ function readJson(filePath, fallback) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8')
+  readJsonShortCacheByFile.set(filePath, {
+    value,
+    readAt: Date.now(),
+  })
 }
 
 function simpleHash(str) {
@@ -556,7 +572,27 @@ function sendText(res, statusCode, body, contentType) {
   res.end(body)
 }
 
+const lastDirectorPlaybackCommandBySignature = new Map()
+
+function shouldDropDuplicateDirectorPlaybackCommand(type, payload = {}) {
+  const commandType = String(type || '')
+  if (!['play_start', 'play_stop', 'play_toggle', 'director_play_button', 'play_button'].includes(commandType)) return false
+  const source = String(payload.role || payload.clientRole || payload.appRole || payload.source || payload.mode || '').toLowerCase()
+  if (source && !source.includes('director') && !source.includes('diretor')) return false
+  const target = String(payload.selectedPlaylistSongId || payload.selectedRegionId || payload.songId || payload.targetId || payload.id || '')
+  const desired = String(payload.desiredState || payload.desiredPlaying || payload.forcePlay || payload.forceStop || '')
+  const signature = `${commandType}:${desired}:${payload.activeTab || payload.page || ''}:${target}`
+  const now = Date.now()
+  const last = Number(lastDirectorPlaybackCommandBySignature.get(signature) || 0)
+  lastDirectorPlaybackCommandBySignature.set(signature, now)
+  return last > 0 && (now - last) < 900
+}
+
 function enqueueCommand(commandsFile, type, payload = {}) {
+  if (shouldDropDuplicateDirectorPlaybackCommand(type, payload)) {
+    return { id: `dedup-${Date.now()}`, type, payload, deduped: true, createdAt: new Date().toISOString() }
+  }
+
   const commandsDb = readJson(commandsFile, {
     bridgeVersion: 1,
     updatedAt: null,
@@ -765,6 +801,38 @@ function createBridgeServer(options) {
   const noticeFile = path.join(sharedDir, 'vshook_technical_notice.json')
   const lyricsFile = path.join(sharedDir, 'vshook_song_lyrics.json')
   const routes = normalizeRoutes(options.routes)
+  const getHookCenterTechnicalNoticeSettings = typeof options.getTechnicalNoticeSettings === 'function' ? options.getTechnicalNoticeSettings : null
+
+  function getHookCenterRecadosAuthState() {
+    if (!getHookCenterTechnicalNoticeSettings) return {}
+    try {
+      const settings = getHookCenterTechnicalNoticeSettings() || {}
+      const password = String(settings.recadosPassword || '').trim()
+      const hash = String(settings.recadosAuthHash || settings.technicalNoticeAuthHash || '').trim()
+      const enabled = settings.recadosAuthEnabled === true || settings.technicalNoticeAuthEnabled === true || !!password || !!hash
+      return {
+        recadosAuthEnabled: enabled,
+        technicalNoticeAuthEnabled: enabled,
+        recadosAuthHash: hash || (password ? simpleHash(password) : ''),
+        technicalNoticeAuthHash: hash || (password ? simpleHash(password) : ''),
+      }
+    } catch (_) {
+      return {}
+    }
+  }
+
+  function mergeHookCenterRecadosAuth(state) {
+    const auth = getHookCenterRecadosAuthState()
+    if (!auth || !auth.recadosAuthEnabled) return state || {}
+    return {
+      ...(state || {}),
+      recadosAuthEnabled: true,
+      technicalNoticeAuthEnabled: true,
+      recadosAuthHash: auth.recadosAuthHash || '',
+      technicalNoticeAuthHash: auth.technicalNoticeAuthHash || auth.recadosAuthHash || '',
+    }
+  }
+
   const fallbackState = options.fallbackState || {
     bridgeVersion: 1,
     connected: false,
@@ -807,7 +875,7 @@ function createBridgeServer(options) {
     if (commandType === 'clear_queue') {
       liveCommandOverlay.queuedSongId = null
       liveCommandOverlay.queuedSongUntil = now + 5000
-    } else if (commandType === 'queue_playlist_song') {
+    } else if (commandType === 'queue_playlist_song' || commandType === 'queue_region_song') {
       const id = normalizeCommandId(payload.id || payload.selectedRegionId || payload.songId || payload.regionId)
       liveCommandOverlay.queuedSongId = id
       liveCommandOverlay.queuedSongUntil = now + 5000
@@ -931,14 +999,14 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
-      const rawState = readJson(stateFile, fallbackState)
+      const rawState = mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState))
       const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
       sendJson(res, 200, buildPublicStatePayload(state))
       return
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/projects' || parsedUrl.pathname === '/projects.json')) {
-      const state = applyLiveCommandOverlay(readJson(stateFile, fallbackState))
+      const state = applyLiveCommandOverlay(mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState)))
       sendJson(res, 200, {
         ok: true,
         appName,
@@ -973,7 +1041,7 @@ function createBridgeServer(options) {
           const action = String(parsed.action || parsed.command || '').toLowerCase()
           const source = normalizeNoticeSource(parsed.source || 'recados')
           const priority = getTechnicalNoticePriority(source)
-          const state = readJson(stateFile, fallbackState)
+          const state = mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState))
 
           if (action === 'cancel' || action === 'clear' || action === 'remove') {
             if (!isTechnicalNoticeAuthorized(parsed, state, source)) {

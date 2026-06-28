@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-director-1.9.0-auto-front-dispositivos';
+const CACHE_NAME = 'vshook-mobile-store-2-0-33-marker-cancel-footer';
 const APP_ASSETS = [
   './',
   './index.html',

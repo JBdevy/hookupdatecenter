@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   saveLyricsSettings: (payload) => ipcRenderer.invoke('save-lyrics-settings', payload),
   getTechnicalNoticeSettings: () => ipcRenderer.invoke('get-technical-notice-settings'),
   saveTechnicalNoticeSettings: (payload) => ipcRenderer.invoke('save-technical-notice-settings', payload),
+  exportLyricsBackup: () => ipcRenderer.invoke('export-lyrics-backup'),
+  importLyricsBackup: () => ipcRenderer.invoke('import-lyrics-backup'),
   openLyricsWindow: (slot) => ipcRenderer.invoke('open-lyrics-window', slot),
   closeLyricsWindow: (slot) => ipcRenderer.invoke('close-lyrics-window', slot),
   getLyricsState: (slot) => ipcRenderer.invoke('get-lyrics-state', slot),
