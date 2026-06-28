@@ -984,7 +984,7 @@ function hasInstallableFiles(update) {
     const jsApi = state?.arch === 'arm64'
       ? (files.jsApiArmDylib || files.jsApiDylib)
       : (files.jsApiIntelDylib || files.jsApiDylib);
-    return !!(files.lua || files.logoPng || files.loadingLogo || files.logo || files.hookLyricsLua || files.lyricsLua || files.vshookDylib || jsApi);
+    return !!(files.proLua || files.basicLua || files.lua || files.logoPng || files.loadingLogo || files.logo || files.hookLyricsLua || files.lyricsLua || files.vshookDylib || jsApi);
   }
 
   return Object.values(files || {}).some(Boolean);

@@ -2212,9 +2212,13 @@ function entriesChangedSinceLastInstall(update, entries) {
 }
 
 function buildPayloadEntries(files) {
+  const proLuaUrl = ensureAbsoluteUrl(files.proLua || files.lua);
+  const basicLuaUrl = ensureAbsoluteUrl(files.basicLua);
+
   if (process.platform === 'win32') {
     return [
-      { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
+      { key: 'proLua', url: proLuaUrl, filename: 'VS Hook Pro.lua' },
+      { key: 'basicLua', url: basicLuaUrl, filename: 'VS Hook Basic.lua' },
       { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
       { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
     ].filter((entry) => !!entry.url);
@@ -2224,12 +2228,13 @@ function buildPayloadEntries(files) {
     const isAppleSilicon = process.arch === 'arm64';
     const jsApiUrl = ensureAbsoluteUrl(
       isAppleSilicon
-        ? (files.jsApiArmDylib || files.jsApiDylib)
-        : (files.jsApiIntelDylib || files.jsApiDylib)
+        ? (files.armJsApiDylib || files.jsApiArmDylib || files.jsApiDylib)
+        : (files.intelJsApiDylib || files.jsApiIntelDylib || files.jsApiDylib)
     );
 
     return [
-      { key: 'lua', url: ensureAbsoluteUrl(files.lua), filename: 'VS Hook.lua' },
+      { key: 'proLua', url: proLuaUrl, filename: 'VS Hook Pro.lua' },
+      { key: 'basicLua', url: basicLuaUrl, filename: 'VS Hook Basic.lua' },
       { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
       { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
     ].filter((entry) => !!entry.url);
@@ -2354,11 +2359,12 @@ function getWindowsReaperUserPluginsDir() {
 }
 
 function installWindowsPayload(files) {
-  const luaFileName = 'VS Hook.lua';
   const publicVsHookDir = getWindowsPublicVsHookDir();
 
-  // Windows: instala o script apenas na pasta pública.
-  copyFileEnsured(files.lua, path.join(publicVsHookDir, luaFileName));
+  // Windows: instala os scripts Pro e Basic apenas na pasta pública.
+  copyFileEnsured(files.proLua || files.lua, path.join(publicVsHookDir, 'VS Hook Pro.lua'));
+  copyFileEnsured(files.basicLua, path.join(publicVsHookDir, 'VS Hook Basic.lua'));
+  try { fs.rmSync(path.join(publicVsHookDir, 'VS Hook.lua'), { force: true }); } catch (_) {}
   try { fs.rmSync(path.join(publicVsHookDir, 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
 
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
@@ -2367,7 +2373,8 @@ function installWindowsPayload(files) {
 
 function installMacPayload(files) {
   const commands = [];
-  const luaSource = files.lua;
+  const proLuaSource = files.proLua || files.lua;
+  const basicLuaSource = files.basicLua;
   const vshookSource = files.vshookDylib;
   const jsApiSource = files.jsApiDylib;
 
@@ -2377,11 +2384,12 @@ function installMacPayload(files) {
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
 
-  if (luaSource) commands.push(`cp -f ${shellQuote(luaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook.lua"`);
-  commands.push('rm -f "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
+  if (proLuaSource) commands.push(`cp -f ${shellQuote(proLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua"`);
+  if (basicLuaSource) commands.push(`cp -f ${shellQuote(basicLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua"`);
+  commands.push('rm -f "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua" 2>/dev/null || true');
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -2392,12 +2400,13 @@ function installMacPayload(files) {
   commands.push('  USER_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
-  if (luaSource) commands.push(`  cp -f ${shellQuote(luaSource)} "$USER_SCRIPT_DIR/VS Hook.lua"`);
-  commands.push('  rm -f "$USER_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
+  if (proLuaSource) commands.push(`  cp -f ${shellQuote(proLuaSource)} "$USER_SCRIPT_DIR/VS Hook Pro.lua"`);
+  if (basicLuaSource) commands.push(`  cp -f ${shellQuote(basicLuaSource)} "$USER_SCRIPT_DIR/VS Hook Basic.lua"`);
+  commands.push('  rm -f "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
   commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook.lua" 2>/dev/null || true');
+  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook Pro.lua" "$USER_SCRIPT_DIR/VS Hook Basic.lua" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
 
