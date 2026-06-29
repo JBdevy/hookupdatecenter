@@ -226,12 +226,23 @@ function compareVersions(a, b) {
   return 0;
 }
 
-async function getLatestUpdateApiUrl() {
+async function getLatestUpdateApiUrl(options = {}) {
   const params = new URLSearchParams({ platform: getPlatformKey() });
-  try {
-    const machineId = await getMachineId();
-    if (machineId) params.set('machineId', machineId);
-  } catch (_) {}
+
+  // Por padrão a aba Atualização consulta SOMENTE a publicação oficial.
+  // Atualização direcionada de cliente teste só entra quando for consulta de Status.
+  if (options.includeTestClient === true) {
+    try {
+      const machineId = await getMachineId();
+      if (machineId) params.set('machineId', machineId);
+    } catch (_) {}
+    params.set('includeTest', '1');
+    params.set('scope', 'status');
+  } else {
+    params.set('includeTest', '0');
+    params.set('scope', 'official');
+  }
+
   return `${UPDATE_API_URL_BASE}?${params.toString()}`;
 }
 
@@ -747,6 +758,43 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJsonForUpdate(url, options = {}) {
+  const attempts = Number(options.attempts || 3);
+  const delayMs = Number(options.delayMs || 700);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetchJson(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1) {
+        // Acorda backend/health sem transformar instabilidade temporária em erro de atualização.
+        fetchJson(`${BACKEND_URL}/api/health`, { cache: 'no-store' }).catch(() => null);
+      }
+      if (attempt < attempts) await sleep(delayMs * attempt);
+    }
+  }
+
+  const err = new Error(lastError?.message || 'Backend temporariamente indisponível');
+  err.cause = lastError;
+  throw err;
+}
+
+async function fetchJsonForUpdateSoft(url, options = {}) {
+  try {
+    return await fetchJsonForUpdate(url, options);
+  } catch (error) {
+    console.warn('[Hook Center] Verificação de atualização ignorada:', error?.message || error);
+    return null;
+  }
+}
+
 function pickFirst(...values) {
   return values.find((value) => String(value || '').trim()) || '';
 }
@@ -879,11 +927,9 @@ function isSameCurrentUpdate(historyUpdate, currentUpdate) {
 }
 
 async function getCurrentPublishedUpdateForHistory() {
-  try {
-    const raw = await fetchJson(await getLatestUpdateApiUrl(), { cache: 'no-store' });
-    const update = normalizeUpdate(raw);
-    if (update && updateMatchesCurrentPlatform(update)) return update;
-  } catch (_) {}
+  const raw = await fetchJsonForUpdateSoft(await getLatestUpdateApiUrl({ includeTestClient: false }), { cache: 'no-store' });
+  const update = normalizeUpdate(raw);
+  if (update && updateMatchesCurrentPlatform(update)) return update;
 
   const cached = normalizeUpdate(store.get('latestUpdate'));
   if (cached && updateMatchesCurrentPlatform(cached)) return cached;
@@ -938,35 +984,48 @@ async function getPreviousUpdates() {
   };
 }
 
+
+async function checkTestClientUpdate() {
+  const raw = await fetchJsonForUpdateSoft(await getLatestUpdateApiUrl({ includeTestClient: true }), { cache: 'no-store' });
+  const update = normalizeUpdate(raw);
+  const testUpdate = update && updateMatchesCurrentPlatform(update) && (update.testClient || update.isTestClient)
+    ? update
+    : null;
+  store.set('testClientUpdate', testUpdate);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
+  return { ok: true, update: testUpdate, state: getAppState() };
+}
+
 async function checkForUpdates(manual = false) {
   const now = new Date().toISOString();
   store.set('lastCheck', now);
 
-  try {
-    const raw = await fetchJson(await getLatestUpdateApiUrl(), { cache: 'no-store' });
-    const update = normalizeUpdate(raw);
+  const raw = await fetchJsonForUpdateSoft(await getLatestUpdateApiUrl({ includeTestClient: false }), { cache: 'no-store' });
+  const fetchedUpdate = normalizeUpdate(raw);
+  const cachedUpdate = normalizeUpdate(store.get('latestUpdate'));
+  const update = fetchedUpdate || cachedUpdate || null;
 
-    const shouldNotify = hasPendingInstallableUpdate(update);
+  const shouldNotify = hasPendingInstallableUpdate(update);
 
+  if (fetchedUpdate || !store.get('latestUpdate')) {
     store.set('latestUpdate', update);
-    store.set('updateAvailable', shouldNotify);
-    rebuildTrayMenu();
-
-    if (isValidWindow(mainWindow)) {
-      mainWindow.webContents.send('update-status', getAppState());
-    }
-
-    if (shouldNotify && !manual) {
-      notifyPendingUpdate(true);
-    }
-
-    if (manual) showMainWindow();
-
-    return { ok: true, hasUpdate: shouldNotify, update, state: getAppState() };
-  } catch (error) {
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-error', error.message);
-    return { ok: false, error: error.message, state: getAppState() };
   }
+  store.set('updateAvailable', shouldNotify);
+  rebuildTrayMenu();
+
+  await checkTestClientUpdate();
+
+  if (isValidWindow(mainWindow)) {
+    mainWindow.webContents.send('update-status', getAppState());
+  }
+
+  if (shouldNotify && !manual) {
+    notifyPendingUpdate(true);
+  }
+
+  if (manual) showMainWindow();
+
+  return { ok: true, hasUpdate: shouldNotify, update, offline: !fetchedUpdate, state: getAppState() };
 }
 
 
@@ -997,20 +1056,18 @@ function normalizeHookCenterUpdate(raw) {
 }
 
 async function checkHookCenterUpdates(manual = false) {
-  try {
-    const raw = await fetchJson(HOOK_CENTER_API_URL, { cache: 'no-store' });
-    const update = normalizeHookCenterUpdate(raw);
-    const currentVersion = app.getVersion();
-    const hasUpdate = !!(update?.version && update.downloadUrl && compareVersions(update.version, currentVersion) > 0);
-    store.set('hookCenterLatest', update);
-    store.set('hookCenterUpdateAvailable', hasUpdate);
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
-    if (hasUpdate && !manual) notifyHookCenterUpdate(update);
-    if (manual) showMainWindow();
-    return { ok: true, hasUpdate, update, state: getAppState() };
-  } catch (error) {
-    return { ok: false, error: error.message, state: getAppState() };
-  }
+  const raw = await fetchJsonForUpdateSoft(HOOK_CENTER_API_URL, { cache: 'no-store' });
+  const fetchedUpdate = normalizeHookCenterUpdate(raw);
+  const cachedUpdate = store.get('hookCenterLatest') || null;
+  const update = fetchedUpdate || cachedUpdate || null;
+  const currentVersion = app.getVersion();
+  const hasUpdate = !!(update?.version && update.downloadUrl && compareVersions(update.version, currentVersion) > 0);
+  if (fetchedUpdate || !store.get('hookCenterLatest')) store.set('hookCenterLatest', update);
+  store.set('hookCenterUpdateAvailable', hasUpdate);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
+  if (hasUpdate && !manual) notifyHookCenterUpdate(update);
+  if (manual) showMainWindow();
+  return { ok: true, hasUpdate, update, offline: !fetchedUpdate, state: getAppState() };
 }
 
 async function downloadAndInstallHookCenterUpdate() {
@@ -1070,18 +1127,16 @@ function bridgeAppNeedsUpdate(update) {
 }
 
 async function checkBridgeAppUpdates(manual = false) {
-  try {
-    const raw = await fetchJson(BRIDGE_APP_API_URL, { cache: 'no-store' });
-    const update = normalizeBridgeAppUpdate(raw);
-    const hasUpdate = bridgeAppNeedsUpdate(update);
-    store.set('bridgeAppLatest', update);
-    store.set('bridgeAppUpdateAvailable', hasUpdate);
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
-    if (manual) showMainWindow();
-    return { ok: true, hasUpdate, update, state: getAppState() };
-  } catch (error) {
-    return { ok: false, error: error.message, state: getAppState() };
-  }
+  const raw = await fetchJsonForUpdateSoft(BRIDGE_APP_API_URL, { cache: 'no-store' });
+  const fetchedUpdate = normalizeBridgeAppUpdate(raw);
+  const cachedUpdate = store.get('bridgeAppLatest') || null;
+  const update = fetchedUpdate || cachedUpdate || null;
+  const hasUpdate = bridgeAppNeedsUpdate(update);
+  if (fetchedUpdate || !store.get('bridgeAppLatest')) store.set('bridgeAppLatest', update);
+  store.set('bridgeAppUpdateAvailable', hasUpdate);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
+  if (manual) showMainWindow();
+  return { ok: true, hasUpdate, update, offline: !fetchedUpdate, state: getAppState() };
 }
 
 function sha256File(filePath) {
@@ -2143,6 +2198,7 @@ function getAppState() {
     lastCheck: store.get('lastCheck'),
     updateAvailable: store.get('updateAvailable'),
     latestUpdate: store.get('latestUpdate'),
+    testClientUpdate: store.get('testClientUpdate'),
     hookCenterLatest: store.get('hookCenterLatest'),
     hookCenterUpdateAvailable: store.get('hookCenterUpdateAvailable'),
     bridgeAppLatest: store.get('bridgeAppLatest'),
@@ -2508,7 +2564,7 @@ ipcMain.handle('restart-bridge', () => startBridgeServers());
 ipcMain.handle('check-updates', async () => {
   const result = await checkForUpdates(true);
   await checkHookCenterUpdates(true);
-  return { ...result, state: getAppState() };
+  return { ...result, ok: true, state: getAppState() };
 });
 ipcMain.handle('check-hook-center-update', () => checkHookCenterUpdates(true));
 ipcMain.handle('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());

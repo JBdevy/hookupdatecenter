@@ -847,7 +847,7 @@ function renderState(nextState) {
   const machineIdCodeEl = $('#machineIdCode');
   if (machineIdCodeEl) machineIdCodeEl.textContent = state.machineId || state.license?.machineId || '--';
   $('#lastCheck').textContent = formatDate(state.lastCheck);
-  const statusTestUpdate = isTestClientUpdate(state.latestUpdate) ? state.latestUpdate : null;
+  const statusTestUpdate = isTestClientUpdate(state.testClientUpdate) ? state.testClientUpdate : null;
   $('#updateStatus').textContent = statusTestUpdate ? 'Atualização de cliente teste disponível' : 'Sem atualização de cliente teste';
 
   const hc = state.hookCenterLatest || {};
@@ -1239,7 +1239,8 @@ async function init() {
       const result = await window.hookUpdateCenter.checkUpdates();
       renderState(result.state || await window.hookUpdateCenter.getState());
     } catch (error) {
-      showModal({ title: 'Atualização', message: friendlyError(error, 'Não foi possível verificar atualização.'), type: 'error' });
+      console.warn('[Hook Center] Verificação manual ignorada:', error?.message || error);
+      renderState(await window.hookUpdateCenter.getState());
     } finally {
       button.disabled = false;
       button.textContent = idleText;
@@ -1260,7 +1261,7 @@ async function init() {
 
   $('#downloadButton').addEventListener('click', () => startVsHookDownload());
   $('#statusDownloadButton')?.addEventListener('click', () => {
-    const testUpdate = isTestClientUpdate(state?.latestUpdate) ? state.latestUpdate : null;
+    const testUpdate = isTestClientUpdate(state?.testClientUpdate) ? state.testClientUpdate : null;
     if (!testUpdate) {
       showModal({ title:'Cliente teste', message:'Nenhuma atualização teste disponível para este computador.', type:'info' });
       return;
@@ -1406,7 +1407,8 @@ async function init() {
 
   window.hookUpdateCenter.onUpdateStatus(renderState);
   window.hookUpdateCenter.onLicenseStatus(renderState);
-  window.hookUpdateCenter.onUpdateError((message) => showModal({ title: 'Erro ao verificar atualização', message: friendlyError(message, 'Não foi possível verificar atualizações.'), type: 'error' }));
+  // A verificação de atualização não deve abrir popup de erro. Instabilidade de rede/backend fica silenciosa.
+  window.hookUpdateCenter.onUpdateError((message) => console.warn('[Hook Center] update-error ignorado:', message));
   window.hookUpdateCenter.onDownloadProgress((progress) => {
     updateVsHookProgress(progress);
   });
