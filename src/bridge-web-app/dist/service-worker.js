@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-store-1-9-28-musicos-blocos-diretor';
+const CACHE_NAME = 'vshook-mobile-2-0-39-native-fila';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,8 +16,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './vshook-diretor-play-single-command-block-name-20260620',
-  './vshook-diretor-play-single-command-block-name-20260620',
+  './vshook-icon.png',
+  './vshook-icon-512.png',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

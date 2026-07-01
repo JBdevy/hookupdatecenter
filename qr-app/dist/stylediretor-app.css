@@ -5677,7 +5677,7 @@ body.boot-loading {
   min-height:0!important;
 }
 
-/* v1.9.0 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
+/* v1.8.2 - seleção visual: músicas azul, blocos rosa, somente tema escuro */
 .app:not([data-theme="light"]) { background:#0b1118 !important; }
 .app:not([data-theme="light"]) .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
 .app:not([data-theme="light"]) .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }
@@ -5977,4 +5977,144 @@ body.boot-loading {
 }
 .premixSongListBox .premixSongCard:last-child{
   margin-bottom:0!important;
+}
+
+
+/* VSHOOK_PATCH_DIRECTOR_MARKERS_LONGPRESS_20260626 */
+.item,.item *,.rowLabelText,.songRowLabel,.regionRowLabel,.markerRowLabel{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+.vshookNoTextSelect,.vshookNoTextSelect *{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+.markerPanelSlideIn{animation:lyricsSlideIn .18s ease-out!important;}
+
+/* VSHOOK_NO_TEXT_SELECT_SELECTSTART_PATCH */
+.item,.item *,.rowLabelText,.songRowLabel,.regionRowLabel,.markerRowLabel{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+
+/* VS Hook - Live executada via bridge */
+.item.liveExecuted{
+  background:rgba(127,29,29,.58)!important;
+  border-color:rgba(248,113,113,.46)!important;
+  box-shadow:inset 0 0 0 1px rgba(248,113,113,.22)!important;
+}
+.liveExecutedText,.liveExecutedTimeText{
+  color:#fecaca!important;
+  text-decoration:line-through!important;
+  text-decoration-thickness:2px!important;
+  text-decoration-color:rgba(254,202,202,.82)!important;
+}
+
+
+/* VS Hook 20260627 - bloco usa sempre a cor vinda do Lua/Bridge */
+.app .item.blockItem,
+.app .item.blockItem[data-song-id],
+.app .item.blockItem[data-region-id],
+.app .item.blockItem[data-item-id]{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 1px var(--block-outline-color, rgba(148,163,184,.72)),0 0 14px var(--block-outline-glow, rgba(148,163,184,.22)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
+}
+.app .item.blockItem::before,
+.app .item.blockItem[data-song-id]::before,
+.app .item.blockItem[data-region-id]::before,
+.app .item.blockItem[data-item-id]::before{
+  background:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 12px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem.selectedPink,
+.app .item.blockItem.selectedBlue,
+.app .item.blockItem.queuedYellow,
+.app .item.blockItem.playing,
+.app .item.blockItem[data-song-id].selectedPink,
+.app .item.blockItem[data-song-id].selectedBlue,
+.app .item.blockItem[data-song-id].queuedYellow,
+.app .item.blockItem[data-song-id].playing,
+.app .item.blockItem[data-region-id].selectedPink,
+.app .item.blockItem[data-region-id].selectedBlue,
+.app .item.blockItem[data-region-id].queuedYellow,
+.app .item.blockItem[data-region-id].playing,
+.app .item.blockItem[data-item-id].selectedPink,
+.app .item.blockItem[data-item-id].selectedBlue,
+.app .item.blockItem[data-item-id].queuedYellow,
+.app .item.blockItem[data-item-id].playing{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 2px var(--block-outline-color, rgba(148,163,184,.72)),0 0 18px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem .rowLabelText,
+.app .item.blockItem .blockText,
+.app .item.blockItem .blockTimeText,
+.app .item.blockItem .marqueeStatic,
+.app .item.blockItem .marqueeTrack,
+.app .item.blockItem .marqueeSegment,
+.app .item.blockItem[data-song-id] .rowLabelText,
+.app .item.blockItem[data-song-id] .blockText,
+.app .item.blockItem[data-song-id] .blockTimeText,
+.app .item.blockItem[data-song-id] .marqueeStatic,
+.app .item.blockItem[data-song-id] .marqueeTrack,
+.app .item.blockItem[data-song-id] .marqueeSegment,
+.app .item.blockItem[data-region-id] .rowLabelText,
+.app .item.blockItem[data-region-id] .blockText,
+.app .item.blockItem[data-region-id] .blockTimeText,
+.app .item.blockItem[data-region-id] .marqueeStatic,
+.app .item.blockItem[data-region-id] .marqueeTrack,
+.app .item.blockItem[data-region-id] .marqueeSegment,
+.app .item.blockItem[data-item-id] .rowLabelText,
+.app .item.blockItem[data-item-id] .blockText,
+.app .item.blockItem[data-item-id] .blockTimeText,
+.app .item.blockItem[data-item-id] .marqueeStatic,
+.app .item.blockItem[data-item-id] .marqueeTrack,
+.app .item.blockItem[data-item-id] .marqueeSegment{
+  color:var(--block-outline-color, #facc15)!important;
+  text-shadow:none!important;
+  font-weight:900!important;
+}
+.app[data-theme="light"] .item.blockItem .rowLabelText,
+.app[data-theme="light"] .item.blockItem .blockText,
+.app[data-theme="light"] .item.blockItem .blockTimeText,
+.app[data-theme="light"] .item.blockItem .marqueeStatic,
+.app[data-theme="light"] .item.blockItem .marqueeTrack,
+.app[data-theme="light"] .item.blockItem .marqueeSegment{
+  color:var(--block-outline-color, #d97706)!important;
+}
+
+
+/* VS_HOOK_FIX14_MIXER_PREMIX_COMPACT */
+.mixerModalBoxFull .mixerViewTabsTriple{flex:0 0 auto!important;gap:6px!important;padding:4px 0 8px!important}
+.mixerModalBoxFull .mixerViewTabsTriple button,.mixerModalBoxFull .mixerViewTabs button{height:38px!important;min-height:38px!important;max-height:38px!important;padding:0 10px!important;font-size:12px!important;border-radius:10px!important}
+.mixerModalBoxFull .mixerRowsBox,.premixModalBoxFull .mixerRowsBox{align-content:flex-start!important;justify-content:flex-start!important}
+.mixerModalBoxFull .mixerRow,.premixModalBoxFull .mixerRow{flex:0 0 auto!important;min-height:52px!important;max-height:66px!important}
+.mixerModalBoxFull .sectionLabel,.premixModalBoxFull .sectionLabel{flex:0 0 auto!important;min-height:24px!important;margin:4px 0 6px!important}
+.premixInlineSlider{width:126px!important;min-width:104px!important;touch-action:pan-x!important}
+
+
+/* VS_HOOK_FIX_CLICK_RESPONSIVENESS_2026_07
+   Popups são apenas aviso visual; não podem cobrir botões nem roubar toque. */
+.appPopup,
+.appPopupHidden,
+.lyricsInlinePopup {
+  pointer-events: none !important;
+}
+button,
+[role="button"],
+[data-action],
+[data-region-id],
+[data-song-id],
+[data-marker-id],
+.mixerRow,
+.premixSongCard {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.listBox,
+.lyricsScreen,
+.mixerRowsBox {
+  -webkit-overflow-scrolling: touch;
 }

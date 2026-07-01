@@ -1,0 +1,158 @@
+name: VS Hook Mobile - iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version name, exemplo: 1.8.2'
+        required: true
+        default: '1.8.2'
+      build_number:
+        description: 'Build number inteiro, aumente a cada envio para App Store'
+        required: true
+        default: '19'
+  push:
+    tags:
+      - 'ios-v*'
+      - 'mobile-v*'
+
+jobs:
+  ios-ipa:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependências
+        run: npm install
+
+      - name: Preparar app web
+        run: npm run build
+
+      - name: Sincronizar iOS
+        run: |
+          if [ ! -d ios ]; then
+            npx cap add ios
+          fi
+          npx cap sync ios
+          python3 scripts/apply-native-icons.py ios
+
+      - name: Importar certificado iOS
+        env:
+          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$IOS_CERT_P12_BASE64" ] || [ -z "$IOS_CERT_PASSWORD" ]; then
+            echo "Faltam IOS_CERT_P12_BASE64 ou IOS_CERT_PASSWORD"
+            exit 1
+          fi
+          CERT_PATH="$RUNNER_TEMP/ios_distribution.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          printf '%s' "$IOS_CERT_P12_BASE64" | tr -d '\r\n\t ' | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "temp-pass" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "temp-pass" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$IOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "temp-pass" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Instalar provisioning profile
+        env:
+          IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$IOS_PROVISION_PROFILE_BASE64" ]; then
+            echo "Falta IOS_PROVISION_PROFILE_BASE64"
+            exit 1
+          fi
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_PATH="$RUNNER_TEMP/vshook.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/vshook-profile.plist"
+
+          printf '%s' "$IOS_PROVISION_PROFILE_BASE64" | tr -d '\r\n\t ' | base64 --decode > "$PROFILE_PATH"
+
+          if [ ! -s "$PROFILE_PATH" ]; then
+            echo "O arquivo mobileprovision decodificado ficou vazio. Confira o secret IOS_PROVISION_PROFILE_BASE64."
+            exit 1
+          fi
+
+          /usr/bin/security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+
+          if [ ! -s "$PROFILE_PLIST" ]; then
+            echo "O IOS_PROVISION_PROFILE_BASE64 não parece ser um .mobileprovision App Store válido."
+            echo "Gere novamente o Base64 a partir do arquivo .mobileprovision, não do .cer nem do .p12."
+            file "$PROFILE_PATH" || true
+            exit 1
+          fi
+
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "Provisioning profile instalado: $PROFILE_NAME ($PROFILE_UUID)"
+
+      - name: Definir versão iOS
+        env:
+          VERSION_NAME: ${{ github.event.inputs.version_name || '1.8.2' }}
+          BUILD_NUMBER: ${{ github.event.inputs.build_number || '19' }}
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION_NAME" ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ios/App/App/Info.plist
+
+      - name: Configurar assinatura iOS no projeto
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          if [ -z "$IOS_TEAM_ID" ]; then
+            echo "Falta IOS_TEAM_ID"
+            exit 1
+          fi
+          python3 scripts/configure-ios-signing.py
+
+      - name: Arquivar app iOS
+        run: |
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination generic/platform=iOS \
+            -archivePath "$PWD/build/VS-Hook.xcarchive" \
+            archive
+
+      - name: Gerar IPA
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>$IOS_TEAM_ID</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.hookdeveloper.vshook</key>
+              <string>$PROFILE_NAME</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$PWD/build/VS-Hook.xcarchive" \
+            -exportPath "$PWD/build/export" \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Enviar IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VS-Hook-iOS-IPA
+          path: build/export/*.ipa

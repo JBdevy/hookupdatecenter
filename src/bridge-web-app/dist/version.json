@@ -1,11 +1,13 @@
 {
-  "version": "2.0.0",
-  "title": "VS Hook Mobile 2.0 - Premix no Diretor",
-  "notes": "App dos músicos com lista/blocos alinhados ao Diretor, nome sem RGB e contorno RGB suave.",
-  "generatedAt": "2026-06-24T00:00:00Z",
-  "updateId": "2.0-app-musicos-blocos-diretor",
-  "build": "2.0-musicos-blocos-igual-diretor",
-  "label": "2.0 app musicos blocos iguais diretor",
-  "updatedAt": "2026-06-24T00:00:00Z",
-  "cacheBust": "1782279658"
+  "version": "2.0.39",
+  "title": "VS Hook Mobile 2.0.39 - Fila nativa extensão",
+  "updatedAt": "2026-07-01T00:00:00.000Z",
+  "build": "2.0.39",
+  "notes": "Diretor passa a comandar fila de espera, Auto, AT/BL e Loop diretamente pela extensão; músicos recebem também a música em fila.",
+  "cacheBust": "2.0.39-native-fila",
+  "label": "2.0.39 fila nativa",
+  "updateId": "2.0.39-native-fila",
+  "generatedAt": "2026-07-01T00:00:00Z",
+  "cacheVersion": "2.0.39",
+  "note": "Fila/Auto/AT-BL/Loop controlados pela extensão."
 }

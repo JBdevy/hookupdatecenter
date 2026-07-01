@@ -103,6 +103,10 @@ const state = {
   showProjectTabsModal: false,
   selectedProjectTabIndex: null,
   lyricsPanelOpen: false,
+  tp1LyricsText: '',
+  tp1SongName: '',
+  tp1MediaType: 'text',
+  tp1UpdatedAt: null,
 }
 
 let borderTimer = null
@@ -537,12 +541,21 @@ function getItemLyricsText(item) {
 function findMusicosSongById(id) {
   const key = String(id || '')
   if (!key) return null
+  const matchesKey = (item) => {
+    if (!item) return false
+    return String(item?.id ?? '') === key ||
+      String(item?.songId ?? '') === key ||
+      String(item?.playlistEntryId ?? '') === key ||
+      String(item?.source_number ?? '') === key ||
+      String(item?.sourceNumber ?? '') === key ||
+      String(item?.number ?? '') === key
+  }
 
-  const region = Array.isArray(state.regions) ? state.regions.find((item) => String(item?.id ?? item?.songId ?? '') === key) : null
+  const region = Array.isArray(state.regions) ? state.regions.find(matchesKey) : null
   if (region && !detectBlockItem(region)) return region
 
   for (const playlist of Array.isArray(state.playlists) ? state.playlists : []) {
-    const found = Array.isArray(playlist?.songs) ? playlist.songs.find((item) => String(item?.id ?? item?.songId ?? '') === key) : null
+    const found = Array.isArray(playlist?.songs) ? playlist.songs.find(matchesKey) : null
     if (found && !detectBlockItem(found)) return found
   }
 
@@ -565,23 +578,28 @@ function setMusicosLocalSelection(tab, itemId) {
 }
 
 function getMusicosCurrentLyricsSong() {
-  // Sem seleção no app dos Músicos: a letra monitorada é somente da música tocando.
-  if (state.playingId) {
-    const playing = findMusicosSongById(state.playingId)
-    if (playing) return playing
-  }
-  return null
+  // App dos Músicos agora é monitor do TP1: só mostra nome/letra vindos do Teleprompt 1.
+  // Não usa mais letra armazenada por música e não usa imagem/vídeo.
+  const mediaType = String(state.tp1MediaType || 'text').toLowerCase()
+  const allowText = !mediaType || mediaType === 'text' || mediaType === 'lyrics' || mediaType === 'empty' || mediaType === 'empty_item' || mediaType === 'emptyitem' || mediaType === 'text/plain'
+  const title = String(state.tp1SongName || '').trim()
+  const text = allowText ? String(state.tp1LyricsText || '').trim() : ''
+  if (!title && !text) return null
+  return { name: title || 'TELEPROMPT 1', lyricsText: text }
 }
 
 function getMusicosLyricsProgressRatio(song) {
-  if (!song || detectBlockItem(song)) return 0
-  const playbackItem = getPlaybackAwareItem(song, true, false)
-  return getRowProgressRatio(playbackItem, true, false)
+  if (state.playingId) {
+    const playing = findMusicosSongById(state.playingId)
+    if (playing && !detectBlockItem(playing)) {
+      const playbackItem = getPlaybackAwareItem(playing, true, false)
+      return getRowProgressRatio(playbackItem, true, false)
+    }
+  }
+  return 0
 }
 
 function openMusicosLyricsPanel() {
-  const song = getMusicosCurrentLyricsSong()
-  if (song && detectBlockItem(song)) return
   if (state.lyricsPanelOpen) {
     syncMusicosLyricsPanelDom()
     return
@@ -598,10 +616,11 @@ function closeMusicosLyricsPanel() {
 function renderMusicosLyricsPanel() {
   if (!state.lyricsPanelOpen) return ''
   const song = getMusicosCurrentLyricsSong()
-  const title = song ? upperText(song.name || song.label || 'MÚSICA') : 'NENHUMA MÚSICA SELECIONADA'
-  const lyricsText = song ? getItemLyricsText(song) : ''
+  const title = song ? upperText(song.name || 'TELEPROMPT 1') : 'TELEPROMPT 1'
+  const lyricsText = song ? String(song.lyricsText || '') : ''
+  const textToShow = lyricsText || 'SEM CONTEÚDO NO TP1'
   const progress = Math.round(getMusicosLyricsProgressRatio(song) * 1000) / 10
-  return `<div class="lyricsScreen">
+  return `<div class="lyricsScreen telepromptOnlyScreen">
     <div class="lyricsTopBar">
       <div class="lyricsNowPlaying">
         <div class="lyricsNowPlayingTitle" data-lyrics-title>${escapeHtml(title)}</div>
@@ -610,7 +629,7 @@ function renderMusicosLyricsPanel() {
       <button class="lyricsBackButton lyricsBlueButton" data-action="close-lyrics-panel">&gt;&gt;</button>
     </div>
     <div class="lyricsBody">
-      <div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(lyricsText || 'SEM LETRA CADASTRADA')}">${lyricsTextToHtml(lyricsText || 'SEM LETRA CADASTRADA')}</div>
+      <div class="lyricsTextView" data-lyrics-text-view data-lyrics-source="${escapeHtml(textToShow)}">${lyricsTextToHtml(textToShow)}</div>
     </div>
   </div>`
 }
@@ -623,22 +642,20 @@ function syncMusicosLyricsPanelDom() {
   if (fill) fill.style.width = `${Math.round(getMusicosLyricsProgressRatio(song) * 1000) / 10}%`
 
   const titleNode = document.querySelector('[data-lyrics-title]')
-  const title = song ? upperText(song.name || song.label || 'MÚSICA') : 'NENHUMA MÚSICA SELECIONADA'
+  const title = song ? upperText(song.name || 'TELEPROMPT 1') : 'TELEPROMPT 1'
   if (titleNode && titleNode.textContent !== title) {
     titleNode.textContent = title
   }
 
   const textNode = document.querySelector('[data-lyrics-text-view]')
   if (textNode) {
-    const lyricsText = song ? getItemLyricsText(song) : ''
-    const nextSource = song ? (lyricsText || 'SEM LETRA CADASTRADA') : 'NENHUMA MÚSICA SELECIONADA'
+    const nextSource = song && String(song.lyricsText || '').trim() ? String(song.lyricsText || '') : 'SEM CONTEÚDO NO TP1'
     if (textNode.getAttribute('data-lyrics-source') !== nextSource) {
       textNode.setAttribute('data-lyrics-source', nextSource)
       textNode.innerHTML = lyricsTextToHtml(nextSource)
     }
   }
 }
-
 
 function getCurrentPlaylist() {
   const playlists = Array.isArray(state.playlists) ? state.playlists : []
@@ -1151,10 +1168,15 @@ function updateBridgeState(data) {
     musicosLocalSelectedSongId = null
   }
   resetPlaybackLiveState()
-  state.queuedSongId = data.queuedSongId != null ? String(data.queuedSongId) : null
+  state.queuedSongId = data.queuedSongId != null ? String(data.queuedSongId) : (data.queuedPlaylistSongId != null ? String(data.queuedPlaylistSongId) : null)
   state.timerRunning = !!data.timerRunning
   state.timerStartedAt = Number(data.timerStartedAt) || 0
   state.timerAccumulatedSec = Number(data.timerAccumulatedSec) || 0
+  state.tp1MediaType = String(data.tp1MediaType || data.telepromptTp1MediaType || 'text').toLowerCase()
+  const tp1AllowsText = !state.tp1MediaType || state.tp1MediaType === 'text' || state.tp1MediaType === 'lyrics' || state.tp1MediaType === 'empty' || state.tp1MediaType === 'empty_item' || state.tp1MediaType === 'emptyitem' || state.tp1MediaType === 'text/plain'
+  state.tp1LyricsText = tp1AllowsText ? String(data.tp1LyricsText || data.tp1Lyrics || data.telepromptTp1Lyrics || '') : ''
+  state.tp1SongName = String(data.tp1SongName || data.telepromptTp1SongName || data.tp1Song || '')
+  state.tp1UpdatedAt = data.tp1UpdatedAt || null
   const scrollInfo = (data && typeof data.scroll === 'object' && data.scroll) ? data.scroll : null
   state.playlistScrollRatio = Number.isFinite(Number(scrollInfo?.playlist ?? data.playlistScrollRatio)) ? Number(scrollInfo?.playlist ?? data.playlistScrollRatio) : null
   state.regionsScrollRatio = Number.isFinite(Number(scrollInfo?.regions ?? data.regionsScrollRatio)) ? Number(scrollInfo?.regions ?? data.regionsScrollRatio) : null
@@ -1265,6 +1287,9 @@ function buildRenderSignature() {
     rgbFixedIndex: state.rgbFixedIndex,
     bridgeStatus: state.bridgeStatus,
     lyricsPanelOpen: state.lyricsPanelOpen,
+    tp1LyricsText: state.tp1LyricsText,
+    tp1SongName: state.tp1SongName,
+    tp1UpdatedAt: state.tp1UpdatedAt,
     activeTab: state.activeTab,
     musicosLocalSelectedTab,
     musicosLocalSelectedSongId,
@@ -1562,7 +1587,7 @@ function render() {
         <div class="musicosHeaderRow">
           <div class="tabRow">
             <button class="activeTab musicosRepertorioButton" type="button" data-action="musicos-tab-playlist">${state.activeTab === 'regions' ? 'MÚSICAS' : 'REPERTÓRIOS'}</button>
-            <span class="headerTotal">${escapeHtml(topTime)}</span><button class="tab markersNavButton markersNavButtonWide lyricsNavButton musicosLyricsNavButton" data-action="open-lyrics-panel">&lt;&lt;</button>
+            <span class="headerTotal">${escapeHtml(topTime)}</span><button class="tab markersNavButton markersNavButtonWide lyricsNavButton musicosLyricsNavButton" data-action="open-lyrics-panel">TP1</button>
           </div>
         </div>
       </div>
@@ -1876,3 +1901,396 @@ function syncPlaybackDom() {
     scheduleMarqueeBehavior()
   }
 }
+
+
+/* VS_HOOK_MUSICOS_FIX8_TP1_ONLY */
+(function(){
+  if (window.__VSHOOK_MUSICOS_FIX8_TP1_ONLY__) return;
+  window.__VSHOOK_MUSICOS_FIX8_TP1_ONLY__ = true;
+  getMusicosCurrentLyricsSong = function() {
+    const mediaType = String(state.tp1MediaType || 'text').toLowerCase();
+    const allowText = !mediaType || mediaType === 'text' || mediaType === 'lyrics' || mediaType === 'empty' || mediaType === 'empty_item' || mediaType === 'emptyitem' || mediaType === 'text/plain';
+    const title = String(state.tp1SongName || '').trim();
+    const text = allowText ? String(state.tp1LyricsText || '').trim() : '';
+    if (!title && !text) return null;
+    return { name: title || 'TELEPROMPT 1', lyricsText: text };
+  };
+  const previousUpdateBridgeStateFix8 = typeof updateBridgeState === 'function' ? updateBridgeState : null;
+  if (previousUpdateBridgeStateFix8) {
+    updateBridgeState = function(data) {
+      previousUpdateBridgeStateFix8(data);
+      state.tp1MediaType = String(data?.tp1MediaType || data?.telepromptTp1MediaType || state.tp1MediaType || 'text').toLowerCase();
+      const allowText = !state.tp1MediaType || state.tp1MediaType === 'text' || state.tp1MediaType === 'lyrics' || state.tp1MediaType === 'empty' || state.tp1MediaType === 'empty_item' || state.tp1MediaType === 'emptyitem' || state.tp1MediaType === 'text/plain';
+      state.tp1LyricsText = allowText ? String(data?.tp1LyricsText || data?.tp1Lyrics || data?.telepromptTp1Lyrics || '') : '';
+      state.tp1SongName = String(data?.tp1SongName || data?.telepromptTp1SongName || data?.tp1Song || '');
+    };
+  }
+})();
+
+
+/* VS_HOOK_MUSICOS_FIX9_TP1_VISUAL_ONLY: sem armazenamento; mostra só nome/letra textual do TP1. */
+(function(){
+  if (window.__VSHOOK_MUSICOS_FIX9_TP1_VISUAL_ONLY__) return;
+  window.__VSHOOK_MUSICOS_FIX9_TP1_VISUAL_ONLY__ = true;
+
+  function mediaAllowsTextFix9(type) {
+    const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g, '_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain';
+  }
+
+  const previousSyncFromBridgeMusicosFix9 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (previousSyncFromBridgeMusicosFix9) {
+    syncFromBridge = function(data) {
+      previousSyncFromBridgeMusicosFix9(data);
+      const mediaType = String(data?.tp1MediaType || data?.telepromptTp1MediaType || state.tp1MediaType || 'text').toLowerCase();
+      state.tp1MediaType = mediaType;
+      state.tp1SongName = String(data?.tp1SongName || data?.telepromptTp1SongName || data?.tp1Song || state.tp1SongName || '');
+      state.tp1LyricsText = mediaAllowsTextFix9(mediaType) ? String(data?.tp1LyricsText || data?.tp1Lyrics || data?.telepromptTp1Lyrics || '') : '';
+    };
+  }
+
+  getCurrentLyricsSong = function() {
+    const mediaType = String(state.tp1MediaType || 'text').toLowerCase();
+    const title = String(state.tp1SongName || '').trim();
+    const text = mediaAllowsTextFix9(mediaType) ? String(state.tp1LyricsText || '').trim() : '';
+    return { name: title || 'TELEPROMPT 1', lyricsText: text };
+  };
+
+  if (typeof renderMusicosLyricsPanel === 'function') {
+    const previousRenderMusicosLyricsPanelFix9 = renderMusicosLyricsPanel;
+    renderMusicosLyricsPanel = function() {
+      const html = previousRenderMusicosLyricsPanelFix9();
+      return html
+        .replace(/SEM LETRA CADASTRADA/g, 'SEM CONTEÚDO NO TP1')
+        .replace(/LETRAS/g, 'TELEPROMPT 1');
+    };
+  }
+})();
+
+
+/* VS_HOOK_NATIVE_FIX10_MUSICOS: TP1 color/font config and compact return button. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX10_MUSICOS__) return;
+  window.__VSHOOK_NATIVE_FIX10_MUSICOS__ = true;
+  const TP_COLOR_KEY = 'vshook_musicos_tp_text_color';
+  const TP_FONT_KEY = 'vshook_musicos_tp_font_family';
+  const TP_COLORS = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+  function lsGet(key, fallback){ try { return localStorage.getItem(key) || fallback; } catch(e){ return fallback; } }
+  function lsSet(key, value){ try { localStorage.setItem(key, String(value || '')); } catch(e){} }
+  function getColor(){ return lsGet(TP_COLOR_KEY, '#f8fafc'); }
+  function getFont(){ return lsGet(TP_FONT_KEY, TP_FONTS[0]); }
+  function setColor(value){ lsSet(TP_COLOR_KEY, value); render?.(); }
+  function setFont(value){ lsSet(TP_FONT_KEY, value); render?.(); }
+
+  function mediaAllowsTextFix10(mediaType) {
+    const t = String(mediaType || 'text').toLowerCase().replace(/[- ]/g, '_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain';
+  }
+  getMusicosCurrentLyricsSong = function() {
+    const mediaType = String(state.tp1MediaType || 'text').toLowerCase();
+    const title = String(state.tp1SongName || '').trim();
+    const text = mediaAllowsTextFix10(mediaType) ? String(state.tp1LyricsText || '').trim() : '';
+    return { name: title || 'TELEPROMPT 1', lyricsText: text };
+  };
+  renderMusicosLyricsPanel = function() {
+    if (!state.lyricsPanelOpen) return '';
+    const song = getMusicosCurrentLyricsSong();
+    const title = upperText(song.name || 'TELEPROMPT 1');
+    const lyricsText = String(song.lyricsText || '').trim();
+    const textToShow = lyricsText || 'SEM CONTEÚDO NO TP1';
+    const progress = Math.round(getMusicosLyricsProgressRatio(song) * 1000) / 10;
+    return `<div class="lyricsScreen telepromptOnlyScreen" style="--tp-text-color:${escapeHtml(getColor())};--tp-font:${escapeHtml(getFont())}">
+      <div class="lyricsTopBar">
+        <div class="lyricsNowPlaying lyricsNowPlayingWideFix10">
+          <div class="lyricsNowPlayingTitle" data-lyrics-title>${escapeHtml(title)}</div>
+          <div class="lyricsProgressTrack"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${progress}%"></div></div>
+        </div>
+        <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonCompactFix10" data-action="close-lyrics-panel">&gt;&gt;</button>
+      </div>
+      <div class="lyricsBody">
+        <div class="lyricsTextView tpLyricsTextFix10" data-lyrics-text-view data-lyrics-source="${escapeHtml(textToShow)}">${lyricsTextToHtml(textToShow)}</div>
+      </div>
+    </div>`;
+  };
+  if (typeof renderGearModal === 'function') {
+    const previousRenderGearModal = renderGearModal;
+    renderGearModal = function() {
+      let html = previousRenderGearModal();
+      if (!html || html.includes('TP1 LETRA')) return html;
+      const colorButtons = TP_COLORS.map(c => `<button class="settingsToggleBtn ${getColor() === c ? 'settingsToggleBtnActive' : ''}" data-action="tp-color" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+      const fontButtons = TP_FONTS.map((f,i) => `<button class="settingsToggleBtn ${getFont() === f ? 'settingsToggleBtnActive' : ''}" data-action="tp-font" data-font="${escapeHtml(f)}" style="font-family:${escapeHtml(f)}">${TP_FONT_LABELS[i]}</button>`).join('');
+      const block = `<div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix10">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix10">${fontButtons}</div>`;
+      return html.replace('<div class="modalButtons settingsBottomButtons">', block + '<div class="modalButtons settingsBottomButtons">');
+    };
+  }
+  if (typeof bindEvents === 'function') {
+    const previousBindEvents = bindEvents;
+    bindEvents = function() {
+      previousBindEvents();
+      document.querySelectorAll('[data-action="tp-color"]').forEach(el => el.addEventListener('click', () => setColor(el.getAttribute('data-color') || '#f8fafc')));
+      document.querySelectorAll('[data-action="tp-font"]').forEach(el => el.addEventListener('click', () => setFont(el.getAttribute('data-font') || TP_FONTS[0])));
+    };
+  }
+  function installStyle(){
+    if (document.getElementById('vshook-native-fix10-musicos-style')) return;
+    const style=document.createElement('style');
+    style.id='vshook-native-fix10-musicos-style';
+    style.textContent=`.lyricsBackButtonCompactFix10{width:54px!important;min-width:54px!important;max-width:54px!important;padding-left:0!important;padding-right:0!important;flex:0 0 54px!important}.lyricsNowPlayingWideFix10{min-width:0!important;flex:1 1 auto!important}.tpLyricsTextFix10{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important;font-size:clamp(22px,5.6vw,38px)!important;line-height:1.28!important;text-align:center!important;white-space:pre-wrap!important}.settingsGridTpFix10{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important}.settingsGridFontFix10{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}.settingsGridTpFix10 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important}`;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installStyle); else installStyle();
+})();
+
+
+/* VS_HOOK_NATIVE_FIX11_MUSICOS: TP1 layout/config igual Diretor. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX11_MUSICOS__) return;
+  window.__VSHOOK_NATIVE_FIX11_MUSICOS__ = true;
+  const TP_COLOR_KEY = 'vshook_musicos_tp_text_color';
+  const TP_FONT_KEY = 'vshook_musicos_tp_font_family';
+  const TP_COLORS = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+  const getLS = (k, f) => { try { return localStorage.getItem(k) || f; } catch(e) { return f; } };
+  const setLS = (k, v) => { try { localStorage.setItem(k, String(v || '')); } catch(e) {} };
+  const getColor = () => getLS(TP_COLOR_KEY, '#f8fafc');
+  const getFont = () => getLS(TP_FONT_KEY, TP_FONTS[0]);
+  const setColor = (v) => { setLS(TP_COLOR_KEY, v || '#f8fafc'); render?.(); };
+  const setFont = (v) => { setLS(TP_FONT_KEY, v || TP_FONTS[0]); render?.(); };
+  function installStyle(){
+    if (document.getElementById('vshook-native-fix11-musicos-style')) return;
+    const s = document.createElement('style');
+    s.id = 'vshook-native-fix11-musicos-style';
+    s.textContent = `.lyricsTopBarTpFix10,.lyricsTopBarTpFix11{display:flex!important;align-items:center!important;gap:8px!important;width:100%!important;box-sizing:border-box!important}.lyricsNowPlayingWideFix10,.lyricsNowPlayingWideFix11{flex:1 1 auto!important;width:auto!important;max-width:none!important;min-width:0!important;overflow:hidden!important}.lyricsBackButtonCompactFix10,.lyricsBackButtonCompactFix11{width:68px!important;min-width:68px!important;max-width:68px!important;flex:0 0 68px!important;padding-left:0!important;padding-right:0!important;font-size:22px!important}.tpLyricsTextFix10,.tpLyricsTextFix11{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important}.settingsGridTpFix11{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important}.settingsGridFontFix11{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}.settingsGridTpFix11 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important}`;
+    document.head.appendChild(s);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installStyle); else installStyle();
+  function inject(){
+    try {
+      const box = document.querySelector('.settingsModalBox');
+      if (!box || box.querySelector('[data-fix11-tp-settings="1"]') || box.querySelector('[data-fix12-tp-settings="1"]')) return;
+      const wrap = document.createElement('div');
+      wrap.setAttribute('data-fix11-tp-settings','1');
+      const colorButtons = TP_COLORS.map(c => `<button class="settingsToggleBtn ${getColor() === c ? 'settingsToggleBtnActive' : ''}" data-action="tp-color-fix11" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+      const fontButtons = TP_FONTS.map((f,i) => `<button class="settingsToggleBtn ${getFont() === f ? 'settingsToggleBtnActive' : ''}" data-action="tp-font-fix11" data-font="${f}" style="font-family:${f}">${TP_FONT_LABELS[i]}</button>`).join('');
+      wrap.innerHTML = `<div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix11">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix11">${fontButtons}</div>`;
+      const bottom = box.querySelector('.settingsBottomButtons');
+      box.insertBefore(wrap, bottom || null);
+      wrap.querySelectorAll('[data-action="tp-color-fix11"]').forEach(el => el.addEventListener('click', () => setColor(el.getAttribute('data-color') || '#f8fafc')));
+      wrap.querySelectorAll('[data-action="tp-font-fix11"]').forEach(el => el.addEventListener('click', () => setFont(el.getAttribute('data-font') || TP_FONTS[0])));
+    } catch(e) {}
+  }
+  if (typeof bindEvents === 'function') {
+    const prev = bindEvents;
+    bindEvents = function(){ prev(); inject(); };
+  }
+  if (typeof renderLyricsPanel === 'function') {
+    const prevRender = renderLyricsPanel;
+    renderLyricsPanel = function(){
+      const html = prevRender();
+      if (!html) return html;
+      return html
+        .replace(/lyricsTopBarTpFix10/g, 'lyricsTopBarTpFix10 lyricsTopBarTpFix11')
+        .replace(/lyricsNowPlayingWideFix10/g, 'lyricsNowPlayingWideFix10 lyricsNowPlayingWideFix11')
+        .replace(/lyricsBackButtonCompactFix10/g, 'lyricsBackButtonCompactFix10 lyricsBackButtonCompactFix11')
+        .replace(/tpLyricsTextFix10/g, 'tpLyricsTextFix10 tpLyricsTextFix11')
+        .replace(/--tp-text-color:[^;]+;/, `--tp-text-color:${getColor()};`)
+        .replace(/--tp-font:[^;]+;/, `--tp-font:${getFont()};`);
+    };
+  }
+})();
+
+
+/* VS_HOOK_NATIVE_FIX12_MUSICOS: TP1 only, single config, larger title/progress area. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX12_MUSICOS__) return;
+  window.__VSHOOK_NATIVE_FIX12_MUSICOS__ = true;
+  const TP_COLOR_KEY = 'vshook_musicos_tp_text_color';
+  const TP_FONT_KEY = 'vshook_musicos_tp_font_family';
+  const TP_COLORS = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+  const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const up = (v) => (typeof upperText === 'function' ? upperText(v) : String(v || '').toUpperCase());
+  const lsGet = (k, f) => { try { return localStorage.getItem(k) || f; } catch(e) { return f; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, String(v || '')); } catch(e) {} };
+  const getColor = () => lsGet(TP_COLOR_KEY, '#f8fafc');
+  const getFont = () => lsGet(TP_FONT_KEY, TP_FONTS[0]);
+  const setColor = (v) => { lsSet(TP_COLOR_KEY, v || '#f8fafc'); render?.(); };
+  const setFont = (v) => { lsSet(TP_FONT_KEY, v || TP_FONTS[0]); render?.(); };
+  function mediaAllowsText(type){ const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g,'_'); return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain'; }
+  function tpTitle(){ return String(state.tp1SongName || state.telepromptTp1SongName || state.tp1Song || state.currentSongName || state.playingSongName || 'TELEPROMPT 1').trim() || 'TELEPROMPT 1'; }
+  function tpText(){ const media = state.tp1MediaType || state.telepromptTp1MediaType || 'text'; return mediaAllowsText(media) ? String(state.tp1LyricsText || state.tp1Lyrics || state.telepromptTp1Lyrics || state.telepromptTp1Text || '').trim() : ''; }
+
+  if (typeof syncFromBridge === 'function' && !window.__VSHOOK_NATIVE_FIX12_MUSICOS_SYNC_WRAPPED__) {
+    window.__VSHOOK_NATIVE_FIX12_MUSICOS_SYNC_WRAPPED__ = true;
+    const prev = syncFromBridge;
+    syncFromBridge = function(data){
+      prev(data);
+      const media = String(data?.tp1MediaType || data?.telepromptTp1MediaType || state.tp1MediaType || 'text');
+      state.tp1MediaType = media;
+      state.tp1SongName = String(data?.tp1SongName || data?.telepromptTp1SongName || data?.tp1Song || state.tp1SongName || '');
+      state.tp1LyricsText = mediaAllowsText(media) ? String(data?.tp1LyricsText || data?.tp1Lyrics || data?.telepromptTp1Lyrics || data?.telepromptTp1Text || state.tp1LyricsText || '') : '';
+    };
+  }
+  getCurrentLyricsSong = function(){ return { name: tpTitle(), lyricsText: tpText() }; };
+  getMusicosCurrentLyricsSong = getCurrentLyricsSong;
+
+  renderMusicosLyricsPanel = function(){
+    if (!state.lyricsPanelOpen) return '';
+    const title = up(tpTitle());
+    const text = tpText() || 'SEM CONTEÚDO NO TP1';
+    const progress = (() => { try { const d = Number(state.playbackDurationSec || state.currentSongDurationSec || 0); const r = Number(state.playbackRemainingSec || state.currentSongRemainingSec); if (d > 0 && Number.isFinite(r)) return Math.max(0, Math.min(100, ((d-r)/d)*100)); } catch(e){} return 0; })();
+    return `<div class="lyricsScreen telepromptOnlyScreen musicosTp1OnlyScreen" style="--tp-text-color:${esc(getColor())};--tp-font:${esc(getFont())}">
+      <div class="lyricsTopBar lyricsTopBarTpFix12">
+        <div class="lyricsNowPlaying lyricsNowPlayingTpFix12">
+          <div class="lyricsNowPlayingTitle lyricsNowPlayingTitleFix12" data-lyrics-title>${esc(title)}</div>
+          <div class="lyricsProgressTrack lyricsProgressTrackFix12"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${Math.round(progress*10)/10}%"></div></div>
+        </div>
+        <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonFix12" data-action="close-lyrics-panel">&gt;&gt;</button>
+      </div>
+      <div class="lyricsBody lyricsBodyTpFix12">
+        <div class="lyricsTextView tpLyricsTextFix12" data-lyrics-text-view data-lyrics-source="${esc(text)}">${typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(text) : esc(text)}</div>
+      </div>
+    </div>`;
+  };
+  renderLyricsPanel = renderMusicosLyricsPanel;
+
+  function tpSettingsBlock(){
+    const colorButtons = TP_COLORS.map(c => `<button class="settingsToggleBtn ${getColor() === c ? 'settingsToggleBtnActive' : ''}" data-action="tp-color-fix12" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+    const fontButtons = TP_FONTS.map((f,i) => `<button class="settingsToggleBtn ${getFont() === f ? 'settingsToggleBtnActive' : ''}" data-action="tp-font-fix12" data-font="${esc(f)}" style="font-family:${esc(f)}">${TP_FONT_LABELS[i]}</button>`).join('');
+    return `<div data-fix12-tp-settings="1"><div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix12">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix12">${fontButtons}</div></div>`;
+  }
+  renderGearModal = function(){
+    if (!state.showGearModal) return '';
+    return `<div class="modalOverlay" data-close-gear>
+      <div class="modalSpacer"></div>
+      <div class="modalBox settingsModalBox" data-stop-modal>
+        <div class="modalTitle">CONFIGURAÇÕES</div>
+        <div class="bridgeStatusCard"><span class="bridgeStatusLabel">CONEXÃO</span><span class="bridgeOnline">NATIVE ON</span></div>
+        <div class="settingsSectionTitle">BORDA RGB</div>
+        <div class="settingsGrid settingsGridSingle"><button class="settingsToggleBtn settingsToggleWide" data-action="cycle-rgb-mode">RGB: ${esc(getRgbModeLabel?.() || '')}</button></div>
+        <div class="settingsSectionTitle">TEMA</div>
+        <div class="settingsGrid settingsGridTheme"><button class="${state.theme === 'dark' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-dark">ESCURO</button><button class="${state.theme === 'light' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-light">CLARO</button></div>
+        ${tpSettingsBlock()}
+        <div class="modalButtons settingsBottomButtons"><button class="modalCancelBtn vshookExitButton" data-action="back-project-selector">SAIR</button><button class="modalOkBtnWide settingsCloseButton" data-action="close-gear">FECHAR</button></div>
+      </div>
+      <div class="modalBottomSpace"></div>
+    </div>`;
+  };
+  if (typeof bindEvents === 'function') {
+    const prevBind = bindEvents;
+    bindEvents = function(){
+      prevBind();
+      document.querySelectorAll('[data-action="tp-color-fix12"]').forEach(el => el.addEventListener('click', () => setColor(el.getAttribute('data-color') || '#f8fafc')));
+      document.querySelectorAll('[data-action="tp-font-fix12"]').forEach(el => el.addEventListener('click', () => setFont(el.getAttribute('data-font') || TP_FONTS[0])));
+    };
+  }
+  function installStyle(){
+    if (document.getElementById('vshook-native-fix12-musicos-style')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix12-musicos-style';
+    style.textContent = `.lyricsTopBarTpFix12{display:flex!important;align-items:center!important;gap:10px!important;width:100%!important;box-sizing:border-box!important;padding:10px 10px 8px!important;min-height:74px!important}.lyricsNowPlayingTpFix12{flex:1 1 auto!important;min-width:0!important;width:auto!important;max-width:none!important;display:flex!important;flex-direction:column!important;gap:7px!important;overflow:hidden!important}.lyricsNowPlayingTitleFix12{display:block!important;min-width:0!important;max-width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;font-size:clamp(15px,4.2vw,24px)!important;font-weight:1000!important;line-height:1.05!important}.lyricsProgressTrackFix12{width:100%!important;min-width:0!important;flex:0 0 8px!important;height:8px!important}.lyricsBackButtonFix12{width:82px!important;min-width:82px!important;max-width:82px!important;flex:0 0 82px!important;padding-left:0!important;padding-right:0!important;font-size:23px!important;font-weight:1000!important;display:flex!important;align-items:center!important;justify-content:center!important}.tpLyricsTextFix12{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important;font-size:clamp(22px,5.8vw,40px)!important;line-height:1.26!important;text-align:center!important;white-space:pre-wrap!important}.settingsGridTpFix12{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important}.settingsGridTpFix12 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important}.settingsGridFontFix12{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}`;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installStyle); else installStyle();
+})();
+
+
+/* VS_HOOK_FIX39_MUSICOS_BASIC_TIMER_QUEUE */
+(function(){
+  if (window.__VSHOOK_FIX39_MUSICOS_BASIC_TIMER_QUEUE__) return;
+  window.__VSHOOK_FIX39_MUSICOS_BASIC_TIMER_QUEUE__ = true;
+  const oldSync = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (!oldSync) return;
+  let lastTimerSeq = 0;
+  syncFromBridge = function(data){
+    oldSync(data);
+    if (!data) return;
+    const q = data.queuedSongId ?? data.queuedPlaylistSongId ?? data.queuedRegionNumber ?? null;
+    if (q != null && String(q) !== '') state.queuedSongId = String(q);
+    const seq = Number(data.timerTriggerSeq || 0);
+    if (seq && seq !== lastTimerSeq) {
+      lastTimerSeq = seq;
+      state.timerRunning = !!data.timerRunning;
+      state.timerStartedAt = Number(data.timerStartedAt || data.timerStartedAtMs || Date.now()) || Date.now();
+      state.timerAccumulatedSec = Number(data.timerAccumulatedSec || 0) || 0;
+      try { if (typeof render === 'function') render(); } catch(e) {}
+    }
+  };
+})();
+
+/* VS_HOOK_FIX51_MUSICOS_TIMER_LUA_DIRECT */
+(function(){
+  if (window.__VSHOOK_FIX51_MUSICOS_TIMER_LUA_DIRECT__) return;
+  window.__VSHOOK_FIX51_MUSICOS_TIMER_LUA_DIRECT__ = true;
+  let lastTimerSignature51 = '';
+  const oldSync51 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (!oldSync51) return;
+  syncFromBridge = function(data){
+    oldSync51(data);
+    if (!data) return;
+    const hasTimer = Object.prototype.hasOwnProperty.call(data, 'timerRunning') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerStartedAt') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerStartedAtMs') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerTriggerSeq');
+    if (!hasTimer) return;
+    const started = Number(data.timerStartedAt || data.timerStartedAtMs || 0) || 0;
+    const accum = Number(data.timerAccumulatedSec || data.timerDisplaySec || 0) || 0;
+    const mode = String(data.timerMode || data.timerType || state.timerMode || 'progressive');
+    const target = Number(data.timerTargetSec || state.timerTargetSec || 0) || 0;
+    const running = !!data.timerRunning;
+    const seq = Number(data.timerTriggerSeq || 0) || 0;
+    const sig = [running ? 1 : 0, Math.floor(started), Math.floor(accum), mode, Math.floor(target), seq].join('|');
+    if (sig === lastTimerSignature51) return;
+    lastTimerSignature51 = sig;
+    state.timerRunning = running;
+    state.timerStartedAt = started || Date.now();
+    state.timerAccumulatedSec = accum;
+    state.timerMode = mode;
+    state.timerTargetSec = target;
+    state.timerTriggerSeq = seq;
+    try { render?.(); } catch(e) {}
+  };
+})();
+
+
+/* VS_HOOK_FIX55_MUSICOS_TIMER_LIGHT */
+(function(){
+  if (window.__VSHOOK_FIX55_MUSICOS_TIMER_LIGHT__) return;
+  window.__VSHOOK_FIX55_MUSICOS_TIMER_LIGHT__ = true;
+  let lastSig = '';
+  const oldSync = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (!oldSync) return;
+  syncFromBridge = function(data){
+    oldSync(data);
+    if (!data) return;
+    const hasTimer = Object.prototype.hasOwnProperty.call(data, 'timerRunning') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerStartedAt') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerStartedAtMs') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerTriggerSeq') ||
+      Object.prototype.hasOwnProperty.call(data, 'timerDisplaySec');
+    if (!hasTimer) return;
+    const running = !!data.timerRunning;
+    const started = Number(data.timerStartedAt || data.timerStartedAtMs || 0) || (running ? Date.now() : 0);
+    const accum = Number(data.timerAccumulatedSec || data.timerDisplaySec || 0) || 0;
+    const mode = String(data.timerMode || data.timerType || state.timerMode || 'progressive');
+    const target = Number(data.timerTargetSec || state.timerTargetSec || 0) || 0;
+    const seq = Number(data.timerTriggerSeq || 0) || 0;
+    const sig = [running ? 1 : 0, Math.floor(started), Math.floor(accum), mode, Math.floor(target), seq].join('|');
+    if (sig === lastSig) return;
+    lastSig = sig;
+    state.timerRunning = running;
+    state.timerStartedAt = started;
+    state.timerStartedAtMs = started;
+    state.timerAccumulatedSec = accum;
+    state.timerDisplaySec = accum;
+    state.timerMode = mode;
+    state.timerTargetSec = target;
+    state.timerTriggerSeq = seq;
+    try { if (typeof refreshChronoRenderLoop === 'function') refreshChronoRenderLoop(); } catch(e) {}
+    try { if (typeof render === 'function') render(); } catch(e) {}
+  };
+})();

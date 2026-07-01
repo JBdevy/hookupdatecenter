@@ -24,32 +24,20 @@
   IfFileExists "$R9\HookDeveloper\VSCore\sys_runtime.dat" 0 +2
     CopyFiles /SILENT "$R9\HookDeveloper\VSCore\sys_runtime.dat" "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat"
 
-  IfFileExists "$R8\VS Hook APP\VS Hook Pro.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Pro.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Pro.lua"
-  IfFileExists "$R8\VS Hook APP\VS Hook Basic.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Basic.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Basic.lua"
-  IfFileExists "$R8\VS Hook APP\VS Hook.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua"
-  IfFileExists "$R8\VS Hook APP\Hook Lyrics.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua"
+  IfFileExists "$R8\VS Hook APP\VS Hook Beta.lua" 0 +2
+    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Beta.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua"
+  IfFileExists "$R8\VS Hook APP\VS Hook Estable.lua" 0 +2
+    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Estable.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua"
 
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Pro.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Pro.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Pro.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Basic.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Basic.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Basic.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Estable.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Estable.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Estable.lua"
 
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook Pro.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook Pro.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Pro.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook Basic.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook Basic.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Basic.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua"
-  IfFileExists "$APPDATA\REAPER\Scripts\Hook Lyrics.lua" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\Hook Lyrics.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook Beta.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook Beta.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Beta.lua"
+  IfFileExists "$APPDATA\REAPER\Scripts\VS Hook Estable.lua" 0 +2
+    CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook Estable.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Estable.lua"
 
   IfFileExists "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" 0 +2
     CopyFiles /SILENT "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll"
@@ -81,48 +69,47 @@
   CreateDirectory "$R9\HookDeveloper\HookCenter\qr-app"
   ExecWait 'icacls "$R9\HookDeveloper\HookCenter" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
 
+  ; Limpa nomes antigos para não deixar lixo da nomes antigos.
+  Delete "$R8\VS Hook APP\VS Hook Pro.lua"
+  Delete "$R8\VS Hook APP\VS Hook Basic.lua"
+  Delete "$R8\VS Hook APP\VS Hook.lua"
+  Delete "$R8\VS Hook APP\Hook Lyrics.lua"
+  Delete "$R8\VS Hook APP\Hook lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Pro.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Basic.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook Pro.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook Basic.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook.lua"
+  Delete "$APPDATA\REAPER\Scripts\Hook Lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\Hook lyrics.lua"
+
   IfFileExists "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" 0 +3
     CreateDirectory "$R9\HookDeveloper\VSCore"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" "$R9\HookDeveloper\VSCore\sys_runtime.dat"
 
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Pro.lua" 0 +3
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua" 0 +3
     CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Pro.lua" "$R8\VS Hook APP\VS Hook Pro.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Basic.lua" 0 +3
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua" "$R8\VS Hook APP\VS Hook Beta.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua" 0 +3
     CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Basic.lua" "$R8\VS Hook APP\VS Hook Basic.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua" 0 +3
-    CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook.lua" "$R8\VS Hook APP\VS Hook.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua" 0 +3
-    CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\Hook Lyrics.lua" "$R8\VS Hook APP\Hook Lyrics.lua"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua" "$R8\VS Hook APP\VS Hook Estable.lua"
 
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Pro.lua" 0 +3
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua" 0 +3
     CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Pro.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Pro.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Basic.lua" 0 +3
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Estable.lua" 0 +3
     CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Basic.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Basic.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua" 0 +3
-    CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua" 0 +3
-    CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\Hook Lyrics.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Estable.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Estable.lua"
 
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Pro.lua" 0 +3
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Beta.lua" 0 +3
     CreateDirectory "$APPDATA\REAPER\Scripts"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Pro.lua" "$APPDATA\REAPER\Scripts\VS Hook Pro.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Basic.lua" 0 +3
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Beta.lua" "$APPDATA\REAPER\Scripts\VS Hook Beta.lua"
+  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Estable.lua" 0 +3
     CreateDirectory "$APPDATA\REAPER\Scripts"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Basic.lua" "$APPDATA\REAPER\Scripts\VS Hook Basic.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua" 0 +3
-    CreateDirectory "$APPDATA\REAPER\Scripts"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook.lua" "$APPDATA\REAPER\Scripts\VS Hook.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua" 0 +3
-    CreateDirectory "$APPDATA\REAPER\Scripts"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\Hook Lyrics.lua" "$APPDATA\REAPER\Scripts\Hook Lyrics.lua"
+    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Estable.lua" "$APPDATA\REAPER\Scripts\VS Hook Estable.lua"
 
   IfFileExists "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll" 0 +3
     CreateDirectory "$APPDATA\REAPER\UserPlugins"
@@ -164,16 +151,22 @@
   Delete "$PROFILE\.vshook_license.json"
 
   ; Scripts instalados pelo Hook Update Center
+  Delete "$0\VS Hook APP\VS Hook Beta.lua"
+  Delete "$0\VS Hook APP\VS Hook Estable.lua"
   Delete "$0\VS Hook APP\VS Hook Pro.lua"
   Delete "$0\VS Hook APP\VS Hook Basic.lua"
   Delete "$0\VS Hook APP\VS Hook.lua"
   Delete "$0\VS Hook APP\Hook Lyrics.lua"
   Delete "$0\VS Hook APP\Hook lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Estable.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Pro.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Basic.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook Lyrics.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook APP\Hook lyrics.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook Beta.lua"
+  Delete "$APPDATA\REAPER\Scripts\VS Hook Estable.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook Pro.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook Basic.lua"
   Delete "$APPDATA\REAPER\Scripts\VS Hook.lua"

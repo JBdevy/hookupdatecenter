@@ -224,7 +224,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=2-0-app-blocos-rodape-1781928600'
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=2-0-app-premix-lista-sem-rodape-1781928700'
   document.body.appendChild(script)
 }
 

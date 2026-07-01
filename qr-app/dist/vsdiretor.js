@@ -1,3 +1,233 @@
+
+function flattenBridgeHashChildrenFromSongList(songs) {
+  const out = []
+  // FIX23: não deduplicar músicas/filhos pelo id. O repertório pode ter a mesma música
+  // repetida ou filhos com identidade parecida; dedupe aqui mudava a ordem visual no Diretor.
+  const push = (item) => {
+    if (!item || typeof item !== 'object') return
+    out.push(item)
+  }
+  for (const song of Array.isArray(songs) ? songs : []) {
+    push(song)
+    const children = Array.isArray(song?.hashChildren) ? song.hashChildren
+      : Array.isArray(song?.children) ? song.children
+      : Array.isArray(song?.visibleChildren) ? song.visibleChildren
+      : []
+    for (const child of children) {
+      push({
+        ...child,
+        isHashChild: true,
+        isFamilyItem: true,
+        familyRole: child?.familyRole || 'child',
+        itemType: child?.itemType || 'hash_child',
+        type: child?.type || 'hash_child',
+        parentId: child?.parentId ?? song?.id,
+        parentSourceNumber: child?.parentSourceNumber ?? song?.source_number ?? song?.sourceNumber,
+        familyGroupId: child?.familyGroupId ?? song?.familyGroupId,
+      })
+    }
+  }
+  return out
+}
+
+function normalizeBridgePlaylistsWithHashChildren(playlists) {
+  return (Array.isArray(playlists) ? playlists : []).map((playlist) => {
+    const songs = flattenBridgeHashChildrenFromSongList(playlist?.songs || [])
+      .map((song, index) => ({
+        ...song,
+        playlistOrder: Number.isFinite(Number(song?.playlistOrder)) ? Number(song.playlistOrder) : index + 1,
+        order: Number.isFinite(Number(song?.order)) ? Number(song.order) : index + 1,
+      }))
+    return { ...playlist, songs }
+  })
+}
+
+
+
+// Front local dos filhos R/P no Diretor.
+// O bridge continua sendo a fonte oficial, mas o front usa cache local para abrir/fechar a gaveta imediatamente.
+function vshookHashClean(value) {
+  const text = String(value ?? '').trim()
+  return text || ''
+}
+
+function vshookHashChildScope(type, playlistId) {
+  if (type === 'song') return `playlist:${vshookHashClean(playlistId || state.activePlaylistId || '')}`
+  if (type === 'region') return 'regions'
+  return String(type || 'list')
+}
+
+function vshookHashFamilyIdentity(item) {
+  if (!item || typeof item !== 'object') return ''
+  return vshookHashClean(item.familyGroupId)
+    || vshookHashClean(item.parentId)
+    || vshookHashClean(item.parentSourceNumber)
+    || vshookHashClean(item.source_number)
+    || vshookHashClean(item.sourceNumber)
+    || vshookHashClean(item.id)
+    || vshookHashClean(item.songId)
+}
+
+function vshookHashParentIdentity(item) {
+  if (!item || typeof item !== 'object') return ''
+  return vshookHashClean(item.familyGroupId)
+    || vshookHashClean(item.id)
+    || vshookHashClean(item.songId)
+    || vshookHashClean(item.source_number)
+    || vshookHashClean(item.sourceNumber)
+}
+
+function vshookHashKeyForItem(item, type, playlistId) {
+  const identity = isHashChildItem(item) ? vshookHashFamilyIdentity(item) : vshookHashParentIdentity(item)
+  if (!identity) return ''
+  return `${vshookHashChildScope(type, playlistId)}|${identity}`
+}
+
+function vshookHashKeyFromElement(el, type) {
+  if (!el) return ''
+  const playlistId = state.activePlaylistId || ''
+  const scope = vshookHashChildScope(type === 'song' ? 'song' : 'region', playlistId)
+  const id = type === 'region' ? el.getAttribute('data-region-id') : el.getAttribute('data-song-id')
+  const identity = vshookHashClean(el.getAttribute('data-family-group-id'))
+    || vshookHashClean(el.getAttribute('data-parent-id'))
+    || vshookHashClean(id)
+  return identity ? `${scope}|${identity}` : ''
+}
+
+function vshookEnsureHashFrontState() {
+  state.hashChildLocalOpenByKey = state.hashChildLocalOpenByKey || {}
+  state.hashChildCacheByParentKey = state.hashChildCacheByParentKey || {}
+  state.hashChildOpeningUntilByKey = state.hashChildOpeningUntilByKey || {}
+  state.hashChildClosingUntilByKey = state.hashChildClosingUntilByKey || {}
+}
+
+function vshookCacheHashChildrenFromItems(items, type, playlistId) {
+  vshookEnsureHashFrontState()
+  const incoming = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!isHashChildItem(item)) continue
+    const key = vshookHashKeyForItem(item, type, playlistId)
+    if (!key) continue
+    if (!incoming.has(key)) incoming.set(key, [])
+    incoming.get(key).push({ ...item })
+  }
+  incoming.forEach((children, key) => {
+    if (children.length) state.hashChildCacheByParentKey[key] = children
+  })
+}
+
+function vshookCacheHashChildrenFromBridgeState() {
+  vshookEnsureHashFrontState()
+  vshookCacheHashChildrenFromItems(state.regions || [], 'region', '')
+  for (const playlist of Array.isArray(state.playlists) ? state.playlists : []) {
+    vshookCacheHashChildrenFromItems(playlist?.songs || [], 'song', playlist?.id)
+  }
+}
+
+function vshookBuildHashChildMap(items, type, playlistId) {
+  const map = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!isHashChildItem(item)) continue
+    const key = vshookHashKeyForItem(item, type, playlistId)
+    if (!key) continue
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(item)
+  }
+  return map
+}
+
+function vshookGetHashVisibleChildren(key, bridgeChildMap) {
+  vshookEnsureHashFrontState()
+  const fromBridge = bridgeChildMap && bridgeChildMap.get(key)
+  if (Array.isArray(fromBridge) && fromBridge.length) return fromBridge
+  const fromCache = state.hashChildCacheByParentKey[key]
+  return Array.isArray(fromCache) ? fromCache : []
+}
+
+function vshookIsHashDrawerClosing(key) {
+  vshookEnsureHashFrontState()
+  return !!(key && Date.now() < Number(state.hashChildClosingUntilByKey[key] || 0))
+}
+
+function vshookShouldShowHashChildren(key, bridgeChildMap) {
+  vshookEnsureHashFrontState()
+  if (!key) return false
+  if (vshookIsHashDrawerClosing(key)) return true
+  if (Object.prototype.hasOwnProperty.call(state.hashChildLocalOpenByKey, key)) {
+    return state.hashChildLocalOpenByKey[key] === true
+  }
+  const fromBridge = bridgeChildMap && bridgeChildMap.get(key)
+  return Array.isArray(fromBridge) && fromBridge.length > 0
+}
+
+function vshookGetDisplayItemsWithFrontHashChildren(items, type, playlistId) {
+  vshookEnsureHashFrontState()
+  const source = Array.isArray(items) ? items : []
+  const childMap = vshookBuildHashChildMap(source, type, playlistId)
+  const out = []
+  const seenChildren = new Set()
+
+  for (const item of source) {
+    if (isHashChildItem(item)) continue
+    out.push(item)
+    if (!isHashParentItem(item)) continue
+    const key = vshookHashKeyForItem(item, type, playlistId)
+    if (!key || !vshookShouldShowHashChildren(key, childMap)) continue
+    const children = vshookGetHashVisibleChildren(key, childMap)
+    for (const child of children) {
+      const childId = String(child?.id ?? child?.songId ?? child?.source_number ?? child?.sourceNumber ?? '')
+      const dedupe = `${key}|${childId || out.length}`
+      if (seenChildren.has(dedupe)) continue
+      seenChildren.add(dedupe)
+      out.push(child)
+    }
+  }
+  return out
+}
+
+function vshookToggleHashChildrenFront(el, type) {
+  vshookEnsureHashFrontState()
+  const key = vshookHashKeyFromElement(el, type)
+  if (!key) return false
+  const currentItems = type === 'region'
+    ? (Array.isArray(state.regions) ? state.regions : [])
+    : (Array.isArray(activePlaylist()?.songs) ? activePlaylist().songs : [])
+  const childMap = vshookBuildHashChildMap(currentItems, type === 'region' ? 'region' : 'song', state.activePlaylistId || '')
+  const currentlyOpen = vshookShouldShowHashChildren(key, childMap)
+  const nextOpen = !currentlyOpen
+  const now = Date.now()
+  if (nextOpen) {
+    state.hashChildLocalOpenByKey[key] = true
+    state.hashChildOpeningUntilByKey[key] = now + 260
+    state.hashChildClosingUntilByKey[key] = 0
+    render()
+  } else {
+    state.hashChildLocalOpenByKey[key] = false
+    state.hashChildClosingUntilByKey[key] = now + 220
+    state.hashChildOpeningUntilByKey[key] = 0
+    render()
+    window.setTimeout(() => {
+      if (Date.now() >= Number(state.hashChildClosingUntilByKey?.[key] || 0)) {
+        if (state.hashChildClosingUntilByKey) state.hashChildClosingUntilByKey[key] = 0
+        render()
+      }
+    }, 230)
+  }
+  return true
+}
+
+function vshookHashChildAnimationClasses(item, type) {
+  if (!isHashChildItem(item)) return ''
+  vshookEnsureHashFrontState()
+  const key = vshookHashKeyForItem(item, type, state.activePlaylistId || '')
+  if (!key) return ''
+  const now = Date.now()
+  const classes = []
+  if (now < Number(state.hashChildOpeningUntilByKey[key] || 0)) classes.push('hashChildExpandIn')
+  if (now < Number(state.hashChildClosingUntilByKey[key] || 0)) classes.push('hashChildCollapseOut')
+  return classes.join(' ')
+}
+
 function getVSHookBridgeBaseUrl() {
   try {
     const mode = localStorage.getItem('vshook_selected_mode') || 'director'
@@ -118,7 +348,9 @@ function formatTime(totalSeconds) {
 }
 
 function formatTotalTime(totalSeconds) {
-  const safe = Math.max(0, Math.floor(Number(totalSeconds) || 0))
+  // Corrige o +1s visual no total vindo da conversao REAPER/bridge.
+  const raw = Number(totalSeconds) || 0
+  const safe = Math.max(0, Math.floor(raw > 1 ? raw - 1 : raw))
   const h = Math.floor(safe / 3600)
   const m = Math.floor((safe % 3600) / 60)
   const s = safe % 60
@@ -127,11 +359,44 @@ function formatTotalTime(totalSeconds) {
 
 
 
-const BRIDGE_OFFLINE_GRACE_MS = 6000
+const BRIDGE_OFFLINE_GRACE_MS = 4500
 let bridgePollInFlight = false
 let bridgePollSeq = 0
 let lastAppliedBridgePollSeq = 0
 const playbackLiveState = { id: null, remaining: null }
+const DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS = 1800
+
+function parseBridgeStateUpdatedMs(data) {
+  if (!data || typeof data !== 'object') return 0
+  const candidates = [
+    data.heartbeatAt,
+    data.lastHeartbeatAt,
+    data.updatedAt,
+    data.stateUpdatedAt,
+    data.serverUpdatedAt,
+  ]
+  for (const value of candidates) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (value != null && String(value).trim() !== '') {
+      const parsed = Date.parse(String(value))
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return 0
+}
+
+function getOptimisticPlaybackAgeMs() {
+  const started = Number(optimisticPlaybackState?.startedAtMs || 0)
+  return started > 0 ? Math.max(0, Date.now() - started) : Number.POSITIVE_INFINITY
+}
+
+function shouldHoldDirectorFrontPlayingId(bridgePlayingId) {
+  const optimisticId = optimisticPlaybackState?.id ? String(optimisticPlaybackState.id) : ''
+  if (!optimisticId || !isOptimisticPlaybackActiveFor?.(optimisticId)) return false
+  if (!bridgePlayingId || String(bridgePlayingId) === optimisticId) return true
+  return getOptimisticPlaybackAgeMs() < DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS
+}
+
 
 function upperText(value) {
   return String(value ?? '').toLocaleUpperCase('pt-BR')
@@ -313,6 +578,8 @@ function syncAuthStateFromBridge() {
 }
 
 function bridgeLooksOffline() {
+  // Native Bridge ativo não deve aparecer como OFF só porque o payload veio sem updatedAt legado.
+  if (state.nativeBridgeConnected === true) return false
   const updatedAtMs = Number(state.lastBridgeUpdatedAtMs) || 0
   if (!updatedAtMs) return state.bridgeStatus !== 'online'
   return (Date.now() - updatedAtMs) > BRIDGE_OFFLINE_GRACE_MS
@@ -464,8 +731,42 @@ function stabilizeLiveRemaining(itemId, remainingSec, durationSec) {
   return playbackLiveState.remaining
 }
 
+function getBridgePlaybackSyncForItem(item) {
+  if (!item || typeof item !== 'object') return null
+  const playingId = state.playingId != null ? String(state.playingId) : ''
+  const itemId = String(item?.id ?? item?.songId ?? item?.source_number ?? item?.sourceNumber ?? '')
+  if (!playingId || !itemId || itemId !== playingId) return null
+
+  // Se o Play acabou de sair do front, não aceite remainingSec antigo/zerado
+  // do Bridge. Isso era o que fazia a barra abrir cheia e o tempo em 00:00
+  // antes do sync real chegar.
+  if (isOptimisticPlaybackActiveFor(itemId)) {
+    const optimisticStarted = Number(optimisticPlaybackState.startedAtMs) || 0
+    const bridgeSyncAt = Number(state.playbackSyncedAtMs) || 0
+    if (!bridgeSyncAt || bridgeSyncAt < optimisticStarted) return null
+  }
+
+  const duration = Math.max(0, Number(state.playbackDurationSec) || Number(item?.durationSec) || 0)
+  const remainingRaw = Number(state.playbackRemainingSec)
+  if (!duration || !Number.isFinite(remainingRaw)) return null
+
+  const anchorMs = Number(state.playbackSyncedAtMs) || Number(state.lastBridgeUpdatedAtMs) || Date.now()
+  const elapsedSinceBridge = Math.max(0, (Date.now() - anchorMs) / 1000)
+  const remaining = Math.max(0, Math.min(duration, remainingRaw - elapsedSinceBridge))
+  return { durationSec: duration, remainingSec: remaining }
+}
+
 function getPlaybackAwareItem(item, type, isPlaying, isBlock) {
   if (!item || !isPlaying || isBlock || type === 'marker') return item
+  const bridgeSync = getBridgePlaybackSyncForItem(item)
+  if (bridgeSync) {
+    return {
+      ...item,
+      durationSec: bridgeSync.durationSec,
+      remainingSec: bridgeSync.remainingSec,
+    }
+  }
+
   const duration = Number(item?.durationSec) || 0
   const remaining = Number(item?.remainingSec)
   const region = findPlayingRegionById(item?.id)
@@ -502,11 +803,21 @@ function getRowProgressRatio(item, isPlaying, isBlock) {
 }
 
 function getTimerElapsedSec() {
+  const max = 99 * 3600 + 59 * 60 + 59
+  const remoteDisplay = Number(state.timerDisplaySec)
+  if (Number.isFinite(remoteDisplay) && (state.timerMode === 'countdown' || !state.timerRunning)) {
+    return Math.max(0, Math.min(max, Math.floor(remoteDisplay)))
+  }
   const base = Math.max(0, Number(state.timerAccumulatedSec) || 0)
-  if (!state.timerRunning) return Math.min(base, 99 * 3600 + 59 * 60 + 59)
+  if (!state.timerRunning) return Math.min(base, max)
   const startedAt = Number(state.timerStartedAt) || 0
   const live = startedAt > 0 ? Math.floor((Date.now() - startedAt) / 1000) : 0
-  return Math.min(base + Math.max(0, live), 99 * 3600 + 59 * 60 + 59)
+  const elapsed = Math.min(base + Math.max(0, live), max)
+  if (state.timerMode === 'countdown') {
+    const target = Math.max(0, Math.min(max, Number(state.timerTargetSec) || 0))
+    return Math.max(0, target - elapsed)
+  }
+  return elapsed
 }
 
 function formatChronoTime(totalSeconds) {
@@ -538,9 +849,111 @@ function closeTimerModal() {
 }
 
 function confirmTimerModal() {
+  if (state.timerMode === 'countdown') {
+    state.timerTargetSec = readTimerTargetSecondsFromModal()
+  }
+  const wasRunning = !!state.timerRunning
+  const nowMs = Date.now()
+  state.timerLocalOwnerUntil = nowMs + 3600000
+  postCommand('timer_set_mode', {
+    timerMode: state.timerMode,
+    mode: state.timerMode,
+    timerTargetSec: state.timerTargetSec || 0,
+    targetSec: state.timerTargetSec || 0,
+    seconds: state.timerTargetSec || 0,
+  })
+  // FIX6: atualização local imediata. O Lua confirma depois pelo Native Bridge,
+  // mas o cronômetro do app não fica parado esperando o próximo state.
+  if (wasRunning) {
+    state.timerAccumulatedSec = getTimerElapsedSec()
+    state.timerDisplaySec = state.timerAccumulatedSec
+    state.timerRunning = false
+    state.timerStartedAt = 0
+    state.timerStartedAtMs = 0
+  } else {
+    state.timerRunning = true
+    state.timerStartedAt = nowMs
+    state.timerStartedAtMs = nowMs
+    state.timerDisplaySec = state.timerMode === 'countdown' ? (state.timerTargetSec || 0) : (state.timerAccumulatedSec || 0)
+  }
   state.showTimerModal = false
+  refreshChronoRenderLoop()
   render()
   postCommand('timer_toggle')
+}
+
+
+function setTimerModeFromApp(mode) {
+  const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive'
+  if (state.timerMode === 'countdown') {
+    state.timerTargetSec = readTimerTargetSecondsFromModal()
+  }
+  state.timerMode = next
+  postCommand('timer_set_mode', {
+    timerMode: next,
+    mode: next,
+    timerTargetSec: state.timerTargetSec || 0,
+    targetSec: state.timerTargetSec || 0,
+    seconds: state.timerTargetSec || 0,
+  })
+  render()
+}
+
+
+
+function getTimerTargetPartsFromSeconds(totalSeconds) {
+  const safe = Math.max(0, Math.min(99 * 3600 + 59 * 60 + 59, Math.floor(Number(totalSeconds) || 0)))
+  return {
+    h: Math.floor(safe / 3600),
+    m: Math.floor((safe % 3600) / 60),
+    s: safe % 60,
+  }
+}
+
+function clampTimerPart(value, max) {
+  const n = Math.floor(Number(value) || 0)
+  return Math.max(0, Math.min(max, n))
+}
+
+function readTimerTargetSecondsFromModal() {
+  const h = clampTimerPart(document.querySelector('[data-timer-part="h"]')?.value, 99)
+  const m = clampTimerPart(document.querySelector('[data-timer-part="m"]')?.value, 59)
+  const sec = clampTimerPart(document.querySelector('[data-timer-part="s"]')?.value, 59)
+  return Math.max(0, Math.min(99 * 3600 + 59 * 60 + 59, h * 3600 + m * 60 + sec))
+}
+
+function syncTimerTargetPreviewFromInputs() {
+  if (state.timerMode !== 'countdown') return
+  const target = readTimerTargetSecondsFromModal()
+  state.timerTargetSec = target
+  const preview = document.querySelector('.timerModalPreview')
+  if (preview) preview.textContent = formatChronoTime(target)
+}
+
+function handleLiveToggleFromMenu() {
+  state.settingsMenuOpen = false
+  if (state.liveModeEnabled) {
+    state.showLiveOffConfirmModal = true
+    render()
+    return
+  }
+  state.liveModeEnabled = true
+  postCommand('live_set', { enabled: true, live: true })
+  showAppPopup('LIVE LIGADO', 'success', 1200)
+  render()
+}
+
+function confirmLiveOffFromMenu() {
+  state.showLiveOffConfirmModal = false
+  state.liveModeEnabled = false
+  postCommand('live_set', { enabled: false, live: false })
+  showAppPopup('LIVE DESLIGADO', 'marker', 1400)
+  render()
+}
+
+function cancelLiveOffFromMenu() {
+  state.showLiveOffConfirmModal = false
+  render()
 }
 
 function refreshChronoRenderLoop() {
@@ -616,9 +1029,92 @@ function isHashParentItem(item) {
   return !!(item && (item.isHashParent || item.familyRole === 'parent' || item.itemType === 'hash_parent' || item.type === 'hash_parent'))
 }
 
+function vshookRootFamilyItems(items) {
+  return (Array.isArray(items) ? items : []).filter((item) => !isHashChildItem(item))
+}
+
+function vshookSumRootDuration(items) {
+  return vshookRootFamilyItems(items).reduce((sum, item) => {
+    if (detectBlockItem(item)) return sum
+    return sum + (Number(item?.durationSec) || 0)
+  }, 0)
+}
+
+function vshookIsInternalMarker(item) {
+  const raw = String(item?.rawName ?? item?.name ?? item?.label ?? '').trim()
+  return raw === '$' || raw === '*1' || raw === '*2' || /^\*\d+$/.test(raw)
+}
+
+function getHashFamilyKeyForAppItem(item) {
+  if (!item) return ''
+  const raw = String(
+    item.familyGroupId
+    ?? item.family_group_id
+    ?? item.familyKey
+    ?? item.family_key
+    ?? item.parentFamilyGroupId
+    ?? item.parent_family_group_id
+    ?? ''
+  ).trim()
+  if (raw) return raw
+  const number = item.parentSourceNumber ?? item.parent_source_number ?? item.parent_region_number ?? item.source_number ?? item.sourceNumber ?? item.number ?? ''
+  const start = item.parentStartPos ?? item.parent_start_pos ?? item.parent_region_start_pos ?? item.start_pos ?? item.startPos ?? ''
+  if (String(number).trim() || String(start).trim()) return `${String(number).trim()}|${String(start).trim()}`
+  return ''
+}
+
+function areAppItemsSameHashFamily(a, b) {
+  const ka = getHashFamilyKeyForAppItem(a)
+  const kb = getHashFamilyKeyForAppItem(b)
+  return !!ka && !!kb && ka === kb
+}
+
+function shouldIgnoreHashChildClickDuringPlayback(item, id) {
+  const key = String(id ?? item?.id ?? item?.songId ?? '')
+  if (!key) return false
+  if (!isHashChildItem(item)) return false
+  // Regra nova: filho não entra mais em fila de espera em nenhuma situação.
+  // Durante playback, o toque no filho é ignorado sem seleção, sem amarelo e sem popup.
+  return !!state.playingId
+}
+
+function getAppBridgeBlockColor(item) {
+  if (!item) return ''
+  const candidates = [
+    item.blockColorHex,
+    item.block_color_hex,
+    item.bridgeBlockColorHex,
+    item.luaBlockColorHex,
+    item.outlineColorHex,
+    item.rowColorHex,
+    item.blockColor?.hex,
+    item.blockColor,
+    item.block_color,
+    item.colorHex,
+    item.color_hex,
+    item.finalTextColorHex,
+    item.textColorHex,
+    item.inheritedBlockColorHex,
+  ]
+  for (const value of candidates) {
+    if (value && typeof value === 'object') {
+      const nested = value.hex || value.colorHex || value.color || value.value || ''
+      const nestedColor = String(nested || '').trim()
+      if (/^#[0-9a-f]{3,8}$/i.test(nestedColor)) return nestedColor
+      if (/^[0-9a-f]{6}$/i.test(nestedColor)) return `#${nestedColor}`
+      continue
+    }
+    const color = String(value || '').trim()
+    if (!color) continue
+    if (/^#[0-9a-f]{3,8}$/i.test(color)) return color
+    if (/^[0-9a-f]{6}$/i.test(color)) return `#${color}`
+  }
+  return ''
+}
+
 function getAppItemTextColor(item, isBlock = false) {
   if (!item) return ''
-  if (isBlock) return item.blockColorHex || item.blockColor?.hex || item.textColorHex || item.finalTextColorHex || ''
+  if (isBlock) return getAppBridgeBlockColor(item) || item.blockColorHex || item.blockColor?.hex || item.textColorHex || item.finalTextColorHex || ''
 
   const normalizeColor = (value) => {
     const color = String(value || '').trim()
@@ -726,6 +1222,15 @@ function isMixerDisplayLikelyRatioScale(value, ratioHint = Number.NaN) {
   return true
 }
 
+const MIXER_FADER_MIN_DB = -90
+const MIXER_FADER_MAX_DB = 12
+const MIXER_FADER_ZERO_RATIO = 0.76
+const MIXER_FADER_NEGATIVE_CURVE = 1.35
+
+function getMixerZeroDbRatio() {
+  return MIXER_FADER_ZERO_RATIO
+}
+
 function estimateMixerDisplayValueFromRatio(ratio, fallback = 0, displayScale = '') {
   const safeRatio = normalizeMixerRatio(ratio, Number.NaN)
   if (!Number.isFinite(safeRatio)) return Number.isFinite(Number(fallback)) ? Number(fallback) : 0
@@ -739,10 +1244,22 @@ function estimateMixerDisplayValueFromRatio(ratio, fallback = 0, displayScale = 
   }
 
   if (safeRatio <= 0) return Number.NEGATIVE_INFINITY
-  if (safeRatio >= 0.5) {
-    return Math.min(12, ((safeRatio - 0.5) / 0.5) * 12)
+
+  const minDb = MIXER_FADER_MIN_DB
+  const maxDb = MIXER_FADER_MAX_DB
+  const zeroRatio = Math.max(0.55, Math.min(0.90, MIXER_FADER_ZERO_RATIO))
+  const curve = Math.max(0.20, MIXER_FADER_NEGATIVE_CURVE)
+  let db = 0
+
+  if (safeRatio <= zeroRatio) {
+    const t = Math.pow(safeRatio / Math.max(0.000001, zeroRatio), 1 / curve)
+    db = minDb + (t * (0 - minDb))
+  } else {
+    db = ((safeRatio - zeroRatio) / Math.max(0.000001, 1 - zeroRatio)) * maxDb
   }
-  return -139 + ((safeRatio / 0.5) * 139)
+
+  if (Math.abs(db) < 0.05) db = 0
+  return Math.max(minDb, Math.min(maxDb, db))
 }
 
 function formatMixerDbLabel(value, ratioHint = Number.NaN, displayScale = '') {
@@ -895,7 +1412,7 @@ function handleMixerVolumeReset(event, view, id) {
   const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks')
   const currentItem = findMixerItem(normalizedView, id)
   const displayScale = currentItem?.displayScale || getRememberedMixerDisplayScale(normalizedView, id, currentItem?.db, currentItem?.volumeRatio)
-  const zeroDbRatio = 0.5
+  const zeroDbRatio = getMixerZeroDbRatio()
 
   beginMixerVolumeInteraction()
   setMixerItemLocalState(normalizedView, id, {
@@ -1011,27 +1528,77 @@ function getPremixOnLabel() {
   return isPremixGlobalMode() ? 'GLOBAL' : 'PREMIX'
 }
 
-function canEditCurrentPremix(showMessage = true) {
-  if (getPremixOnState()) return true
-  if (showMessage) showAppPopup(`${getPremixOnLabel()} PRECISA ESTAR ON`, 'error', 1600)
-  return false
+function isUsablePlaybackId(value) {
+  if (value === undefined || value === null) return false
+  const key = String(value).trim()
+  if (!key) return false
+  if (key === 'true' || key === 'false' || key === 'undefined' || key === 'null') return false
+  return true
 }
 
 function getCurrentPremixPlayingId() {
+  const candidates = []
   if (isPlaybackPending && isPlaybackPending() && pendingPlaybackDesiredPlaying === true) {
-    return String(pendingPlaybackDesiredSourceId || state.playingId || '')
+    candidates.push(pendingPlaybackDesiredSourceId)
   }
-  return String(state.playingId || '')
+  if (optimisticPlaybackState?.id && isOptimisticPlaybackActiveFor?.(optimisticPlaybackState.id)) {
+    candidates.push(optimisticPlaybackState.id)
+  }
+  candidates.push(state.playingId)
+  if (typeof lastPlaybackSelectionId !== 'undefined' && getPlaybackUiActive?.()) candidates.push(lastPlaybackSelectionId)
+
+  for (const candidate of candidates) {
+    if (isUsablePlaybackId(candidate)) return String(candidate)
+  }
+  return ''
 }
 
-function canOpenPremixSong(songId) {
+function isPremixSongActuallyPlaying(songId = state.premixSelectedSongId) {
+  if (isPremixGlobalMode()) return true
+  const target = String(songId || '')
+  if (!target) return false
+
+  if (isPlaybackPending?.() && pendingPlaybackDesiredPlaying === true && String(pendingPlaybackDesiredSourceId || '') === target) return true
+  if (optimisticPlaybackState?.id && String(optimisticPlaybackState.id) === target && isOptimisticPlaybackActiveFor?.(target)) return true
+
+  const playing = getCurrentPremixPlayingId()
+  const playbackActive = typeof getPlaybackUiActive === 'function' ? getPlaybackUiActive() : !!playing
+  if (playbackActive && playing && String(playing) === target) return true
+
+  // Fallback do Bridge: depois do Play pelo Premix, o JSON pode confirmar que está
+  // tocando antes de normalizar o playingId. Se o Lua já marcou selectedPlaying,
+  // libera o ON/OFF da própria música selecionada.
+  if (String(state.premixSelectedSongId || '') === target && state.premixSelectedPlaying === true) return true
+  if (String(state.premixSelectedSongId || '') === target && state.premixSelectedCanEdit === true) return true
+
+  return false
+}
+
+function getPremixSongOpenBlockMessage(songId) {
   const target = String(songId || '')
   const playing = getCurrentPremixPlayingId()
-  if (playing && target && playing !== target) {
-    showAppPopup('PARE A MÚSICA ATUAL PRIMEIRO', 'error', 1800)
+  const playbackActive = typeof getPlaybackUiActive === 'function' ? getPlaybackUiActive() : !!playing
+  if (playbackActive && isUsablePlaybackId(playing) && target && String(playing) !== target) return 'PARE A MÚSICA ATUAL PRIMEIRO'
+  return 'DÊ PLAY NA MÚSICA PRIMEIRO'
+}
+
+function canEditCurrentPremix(showMessage = true) {
+  if (!isPremixGlobalMode() && !isPremixSongActuallyPlaying(state.premixSelectedSongId)) {
+    if (showMessage) showAppPopup(getPremixSongOpenBlockMessage(state.premixSelectedSongId), 'error', 1700)
     return false
   }
+
+  // Igual ao Lua: o Premix individual NAO precisa estar ON para editar pistas.
+  // O ON/OFF só define se o preset será aplicado no Play, não bloqueia M/S/F/fader.
   return true
+}
+
+function canOpenPremixSong(songId, showMessage = true) {
+  const target = String(songId || '')
+  if (!target) return false
+  if (isPremixSongActuallyPlaying(target)) return true
+  if (showMessage) showAppPopup(getPremixSongOpenBlockMessage(target), 'error', 1700)
+  return false
 }
 
 function normalizePremixTrackItem(item, view = 'tracks') {
@@ -1209,19 +1776,34 @@ function selectPremixSong(songId) {
   if (!id) return
   const song = getPremixSongs().find((entry) => String(entry?.id || entry?.source_number || entry?.sourceNumber || '') === id)
   if (!isPremixSelectableSong(song)) return
-  if (!canOpenPremixSong(id)) return
+
+  // Se já existe outra música tocando, o Diretor não entra na tela de pistas
+  // dessa música. Se não estiver tocando nada, pode abrir e só bloqueia ao
+  // tentar mexer nas pistas, igual ficou definido.
+  const currentPremixPlayingId = getCurrentPremixPlayingId()
+  const playbackActiveForPremix = typeof getPlaybackUiActive === 'function' ? getPlaybackUiActive() : !!currentPremixPlayingId
+  if (playbackActiveForPremix && currentPremixPlayingId && String(currentPremixPlayingId) !== id) {
+    showAppPopup('PARE A MÚSICA ATUAL PRIMEIRO', 'error', 1700)
+    return
+  }
 
   state.premixIsGlobal = false
   state.premixSelectedSongId = id
   state.selectedRegionId = id
   state.selectedRegionIds = [id]
-  state.premixView = 'tracks'
-  state.premixTrackView = 'tracks'
+  state.selectedPlaylistSongId = null
+  state.selectedPlaylistSongIds = []
   state.premixSelectedTrackId = null
   state.showPremixVolumeModal = false
 
   const enabled = song?.premixEnabled ?? song?.preMixEnabled ?? song?.onOff
   if (enabled !== undefined) state.premixSelectedEnabled = !!enabled
+
+  // Igual ao Lua: escolher a música dentro do Premix só seleciona/posiciona
+  // e já abre a tela de pistas. A exigência de Play acontece apenas quando
+  // o usuário tenta mexer em M/S/F/fader.
+  state.premixView = 'tracks'
+  state.premixTrackView = 'tracks'
 
   const fallbackTracks = Array.isArray(state.mixerTracks) ? state.mixerTracks : []
   const fallbackGroups = Array.isArray(state.mixerGroups) ? state.mixerGroups : []
@@ -1274,6 +1856,8 @@ function handlePremixOnOffToggle(event) {
   const songId = String(state.premixSelectedSongId || '')
   if (!songId) return
 
+  // ON/OFF do Premix nao deve bloquear pelo estado de playback no app.
+  // O Lua continua sendo a fonte de verdade; aqui evitamos falso aviso de "pare a musica".
   const nextEnabled = !state.premixSelectedEnabled
   state.premixSelectedEnabled = nextEnabled
   state.premixSongs = (Array.isArray(state.premixSongs) ? state.premixSongs : []).map((song) => {
@@ -1291,7 +1875,7 @@ function resetPremixGlobalLocalVolumes() {
     const displayScale = item?.displayScale || getRememberedMixerDisplayScale('premix', item?.id || item?.guid || '', item?.db, item?.volumeRatio)
     return {
       ...item,
-      volumeRatio: 0.5,
+      volumeRatio: getMixerZeroDbRatio(),
       db: displayScale === 'linear' ? 1 : 0,
       displayScale,
     }
@@ -1312,6 +1896,9 @@ function handlePremixGlobalReset(event) {
   fastPollBridge?.(8)
 }
 
+// PREMIX_DIRECTOR_CONTROLLER_ONLY_20260627:
+// O app Diretor não possui preset próprio. Ele só envia comandos unitários
+// para o Lua, e o Lua é quem salva/aplica o mesmo preset usado na janela Premix.
 function handlePremixTrackToggle(event, action, trackId, view = state.premixTrackView) {
   event?.preventDefault?.()
   event?.stopPropagation?.()
@@ -1391,13 +1978,13 @@ function handlePremixVolumeReset(event, view, trackId) {
   const displayScale = item?.displayScale || getRememberedMixerDisplayScale('premix', id, item?.db, item?.volumeRatio)
   beginMixerVolumeInteraction()
   setPremixTrackLocalState(id, {
-    volumeRatio: 0.5,
+    volumeRatio: getMixerZeroDbRatio(),
     db: displayScale === 'linear' ? 1 : 0,
     displayScale,
   }, normalizedView)
   try { syncMixerVolumeModalUi('premix', id) } catch (error) {}
   extendMixerVolumeInteraction(420)
-  handlePremixVolumeInput(view, trackId, 0.5)
+  handlePremixVolumeInput(view, trackId, getMixerZeroDbRatio())
   fastPollBridge?.(4)
   render()
 }
@@ -1413,8 +2000,20 @@ function handlePremixPlaySelected(event) {
   const uiWasPlaying = getPlaybackUiActive()
   if (uiWasPlaying) {
     const stoppedId = state.playingId || songId || lastPlaybackSelectionId || pendingPlaybackDesiredSourceId
-    postPlaybackToggleCommand(stoppedId, 'regions', false)
-    applyStoppedSongSelection(stoppedId, 'regions')
+    const stopSelectionTarget = getDirectorStopSelectionTarget(stoppedId, 'regions')
+    const hasRealStopSelectionTarget = !!(stopSelectionTarget && stopSelectionTarget.id && stopSelectionTarget.source && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(stoppedId || ''))
+    postPlaybackToggleCommand(stoppedId, 'regions', false, hasRealStopSelectionTarget ? { stopSelectionTargetId: stopSelectionTarget.id, stopSelectionTargetTab: stopSelectionTarget.tab, stopSelectionTargetSource: stopSelectionTarget.source } : null)
+    if (hasRealStopSelectionTarget) {
+      applyStoppedSongSelection(stopSelectionTarget.id, stopSelectionTarget.tab)
+    } else {
+      clearStoppedSelectionHold()
+      clearDirectorLocalSelectionHold()
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+      state.selectionLockUntil = 0
+    }
     state.pendingStopClear = false
     state.loopActive = false
     state.bridgePopupVisible = false
@@ -1431,7 +2030,9 @@ function handlePremixPlaySelected(event) {
     resetPlaybackLiveState(true)
     lockSelectionSync()
     render()
-    forceStoppedSelectionDom(stoppedId, 'regions')
+    if (stopSelectionTarget && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(stoppedId || '')) {
+      forceStoppedSelectionDom(stopSelectionTarget.id, stopSelectionTarget.tab)
+    }
     return
   }
 
@@ -1439,6 +2040,11 @@ function handlePremixPlaySelected(event) {
   state.selectedRegionIds = [songId]
   state.selectedPlaylistSongId = null
   state.selectedPlaylistSongIds = []
+  state.premixIsGlobal = false
+  state.premixView = 'tracks'
+  state.premixTrackView = 'tracks'
+  state.premixSelectedTrackId = null
+  state.showPremixVolumeModal = false
   pendingPlaybackToggleAt = Date.now()
   pendingPlaybackDesiredPlaying = true
   pendingPlaybackDesiredSourceId = songId
@@ -1491,9 +2097,8 @@ function renderPremixTrackRows() {
     const phaseClass = item?.phase ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn'
     const groupLabel = item?.groupName || item?.groupLabel || item?.group || item?.folderName || ''
     const groupName = view === 'tracks' && groupLabel ? `<div class="mixerRowGroupName">${buildMarqueeText(groupLabel, '', 'rowMarquee mixerGroupMarquee')}</div>` : ''
-    const disabledAttr = canEdit ? '' : ' disabled aria-disabled="true"'
     const disabledClass = canEdit ? '' : ' premixMixerRowDisabled'
-    return `<div class="mixerRow premixMixerRow${disabledClass}" style="--mixer-color:${color}" data-action="open-premix-volume" data-premix-view="${view}" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">${escapeHtml(indexText || '')}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div>${groupName}</div><div class="mixerRowDb">${db}</div>${buildMixerMeterHtml(item?.peakRatio ?? 0)}<button class="${muteClass}" data-action="premix-mute" data-premix-view="${view}" data-premix-track-id="${id}"${disabledAttr}>M</button><button class="${soloClass}" data-action="premix-solo" data-premix-view="${view}" data-premix-track-id="${id}"${disabledAttr}>S</button><button class="${phaseClass}" data-action="premix-phase" data-premix-view="${view}" data-premix-track-id="${id}"${disabledAttr}>F</button></div>`
+    return `<div class="mixerRow premixMixerRow${disabledClass}" style="--mixer-color:${color}" data-action="open-premix-volume" data-premix-view="${view}" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">${escapeHtml(indexText || '')}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div>${groupName}</div><div class="mixerRowDb">${db}</div>${buildMixerMeterHtml(item?.peakRatio ?? 0)}<button class="${muteClass}" data-action="premix-mute" data-premix-view="${view}" data-premix-track-id="${id}" aria-disabled="${canEdit ? 'false' : 'true'}">M</button><button class="${soloClass}" data-action="premix-solo" data-premix-view="${view}" data-premix-track-id="${id}" aria-disabled="${canEdit ? 'false' : 'true'}">S</button><button class="${phaseClass}" data-action="premix-phase" data-premix-view="${view}" data-premix-track-id="${id}" aria-disabled="${canEdit ? 'false' : 'true'}">F</button></div>`
   }).join('')
 }
 
@@ -1515,11 +2120,13 @@ function renderPremixModal() {
   const selectedSong = getPremixSongs().find((song) => String(song?.id || song?.source_number || song?.sourceNumber || '') === String(state.premixSelectedSongId || ''))
   const title = isGlobal ? 'GLOBAL' : (isTracks && selectedSong ? upperText(selectedSong.name || 'PREMIX') : 'PREMIX')
   const premixOn = getPremixOnState()
+  const selectedPremixPlaying = isGlobal || isPremixSongActuallyPlaying(state.premixSelectedSongId)
   const onOffClass = premixOn ? 'btnPlayActive' : 'btnDisabled'
+  const onOffDisabledAttr = ''
   const isTrackView = state.premixTrackView !== 'groups'
   const tracksTitle = isTrackView ? 'PISTAS' : 'GRUPOS'
   const onLabel = getPremixOnLabel()
-  const lockMessage = !premixOn ? `<div class="premixLockMessage">LIGUE ${onLabel} ON PARA MIXAR</div>` : ''
+  const lockMessage = ''
   const playButton = (!isGlobal && isTracks) ? `<button class="${getPlayButtonClass()} premixPlayButton" data-action="premix-play">${getPlayButtonLabel()}</button>` : ''
   const hasPremixListSelection = !!(!isGlobal && !isTracks && state.premixSelectedSongId)
   const listPlayButton = (!isGlobal && !isTracks) ? `<button class="${hasPremixListSelection ? getPlayButtonClass() : 'btnDisabled'} premixPlayButton" data-action="premix-play" ${hasPremixListSelection ? '' : 'disabled'}>${getPlayButtonLabel()}</button>` : ''
@@ -1528,8 +2135,248 @@ function renderPremixModal() {
   const closeOrBack = (!isGlobal && isTracks) ? `<button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button>` : `<button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button>`
   const titleHtml = buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee')
   const content = isTracks
-    ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px">${backButton}<div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div>${closeOrBack}</div><div class="premixTopControls ${isGlobal ? 'premixTopControlsGlobal' : ''}"><button class="${onOffClass}" data-action="premix-onoff">${onLabel} ${premixOn ? 'ON' : 'OFF'}</button>${globalResetButton}${playButton}</div>${lockMessage}<div class="mixerViewTabs"><button class="${isTrackView ? 'btnPlayActive' : 'btn'}" data-action="premix-view-tracks">PISTAS</button><button class="${!isTrackView ? 'btnPlayActive' : 'btn'}" data-action="premix-view-groups">GRUPOS</button></div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">${tracksTitle}</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+    ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px">${backButton}<div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div>${closeOrBack}</div><div class="premixTopControls ${isGlobal ? 'premixTopControlsGlobal' : ''}"><button class="${onOffClass}" data-action="premix-onoff"${onOffDisabledAttr}>${onLabel} ${premixOn ? 'ON' : 'OFF'}</button>${globalResetButton}${playButton}</div>${lockMessage}<div class="mixerViewTabs"><button class="${isTrackView ? 'btnPlayActive' : 'btn'}" data-action="premix-view-tracks">PISTAS</button><button class="${!isTrackView ? 'btnPlayActive' : 'btn'}" data-action="premix-view-groups">GRUPOS</button></div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">${tracksTitle}</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
     : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div>${listPlayButton}</div><div class="mixerRowsBox premixSongListBox" style="flex:0 1 auto;min-height:0;max-height:calc(var(--app-vh,100dvh) - 150px);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`
+  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`
+}
+
+
+/* VSHOOK_DIRECTOR_PREMIX_ITEM_MODE_22
+   Nova lógica: Premix do Diretor controla itens/takes pelo mesmo caminho do Lua.
+   Sem Global, sem ON/OFF, sem grupos e sem preset. */
+const VSHOOK_DIRECTOR_PREMIX_ITEM_MODE_22 = true
+
+function vshookPremixItemSongId(song) {
+  return String(song?.id ?? song?.source_number ?? song?.sourceNumber ?? song?.number ?? '')
+}
+
+function vshookPremixIsHashParent(song) {
+  return !!(song && (song.isHashParent || song.familyRole === 'parent' || song.itemType === 'hash_parent' || song.type === 'hash_parent'))
+}
+
+function vshookPremixIsHashChild(song) {
+  return !!(song && (song.isHashChild || song.familyRole === 'child' || song.itemType === 'hash_child' || song.type === 'hash_child'))
+}
+
+function getPremixSongs() {
+  const source = Array.isArray(state.premixSongs) && state.premixSongs.length ? state.premixSongs : state.regions
+  if (!Array.isArray(source)) return []
+  return source.filter((song) => {
+    if (!song || detectBlockItem(song)) return false
+    if (song.isPlayable === false) return false
+    if (vshookPremixIsHashParent(song)) return false
+    return vshookPremixItemSongId(song) !== ''
+  })
+}
+
+function isPremixSelectableSong(song) {
+  if (!song || detectBlockItem(song)) return false
+  if (song.isPlayable === false) return false
+  if (vshookPremixIsHashParent(song)) return false
+  return vshookPremixItemSongId(song) !== ''
+}
+
+function isPremixGlobalMode() { return false }
+function getPremixEntityId() { return String(state.premixSelectedSongId || '') }
+function getPremixOnState() { return true }
+function getPremixOnLabel() { return 'ITEM' }
+function canEditCurrentPremix(showMessage = true) { return !!String(state.premixSelectedSongId || '') }
+function canOpenPremixSong(songId, showMessage = true) { return !!String(songId || '') }
+
+function normalizePremixTrackItem(item, view = 'tracks') {
+  const src = item && typeof item === 'object' ? item : {}
+  const id = String(src.id ?? src.guid ?? src.itemGuid ?? '')
+  const ratio = normalizeMixerRatio(src.volumeRatio ?? src.ratio ?? src.volume_ratio, 0.5)
+  const dbValue = src.db ?? src.dbValue ?? 0
+  return {
+    ...src,
+    id,
+    guid: String(src.guid ?? id),
+    name: src.name || src.label || src.trackName || src.itemName || src.takeName || 'ITEM',
+    volumeRatio: ratio,
+    db: dbValue,
+    displayScale: src.displayScale || 'db',
+    mute: !!(src.mute ?? src.muted),
+    fxEnabled: !!(src.fxEnabled ?? src.fxOn ?? src.fxActive),
+    hasFx: !!(src.hasFx ?? src.fxCount > 0 ?? false),
+    fxCount: Number(src.fxCount || 0) || 0,
+    premixView: 'tracks',
+  }
+}
+
+function getPremixItemsForView(view = 'tracks') {
+  return (Array.isArray(state.premixTracks) ? state.premixTracks : []).filter(Boolean).map((item) => normalizePremixTrackItem(item, 'tracks'))
+}
+
+function getPremixTracks() { return getPremixItemsForView('tracks') }
+
+function findPremixTrack(id, view = 'tracks') {
+  const wanted = String(id || '')
+  if (!wanted) return null
+  return getPremixItemsForView('tracks').find((entry) => String(entry?.id || entry?.guid || '') === wanted) || null
+}
+
+function setPremixTrackLocalState(id, patch = {}, view = 'tracks') {
+  const wanted = String(id || '')
+  if (!wanted) return
+  state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((item) => {
+    const key = String(item?.id || item?.guid || '')
+    return key === wanted ? { ...item, ...patch } : item
+  })
+}
+
+function openPremixModal() {
+  state.settingsMenuOpen = false
+  state.showGearModal = false
+  state.showMixerModal = false
+  state.showMixerVolumeModal = false
+  state.showPremixVolumeModal = false
+  state.showBpmModal = false
+  state.showTunerModal = false
+  state.showPremixModal = true
+  state.premixIsGlobal = false
+  state.premixView = 'songs'
+  state.premixTrackView = 'tracks'
+  state.premixSelectedTrackId = null
+  armOverlayCloseGuard(900)
+  render()
+  postCommand('premix_item_open', { requestFull: '1', page: getCurrentPcPageName() })
+  fastPollBridge?.(10)
+}
+
+function openPremixFromMenu(event) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  event?.stopImmediatePropagation?.()
+  openPremixModal()
+  return true
+}
+
+function openPremixGlobalModal(event) {
+  // Global foi removido da nova lógica do Premix.
+  return openPremixFromMenu(event)
+}
+
+function selectPremixSong(songId) {
+  const id = String(songId || '')
+  if (!id) return
+  const song = getPremixSongs().find((entry) => vshookPremixItemSongId(entry) === id)
+  if (!isPremixSelectableSong(song)) return
+  state.premixIsGlobal = false
+  state.premixSelectedSongId = id
+  state.selectedRegionId = id
+  state.selectedRegionIds = [id]
+  state.selectedPlaylistSongId = null
+  state.selectedPlaylistSongIds = []
+  state.premixSelectedTrackId = null
+  state.showPremixVolumeModal = false
+  state.premixView = 'tracks'
+  state.premixTrackView = 'tracks'
+  state.premixTracks = []
+  state.premixGroups = []
+  render()
+  postCommand('premix_item_focus_song', { id, songId: id, selectedRegionId: id, page: getCurrentPcPageName() })
+  fastPollBridge?.(12)
+}
+
+function backPremixSongList() {
+  state.premixView = 'songs'
+  state.showPremixVolumeModal = false
+  state.premixSelectedTrackId = null
+  render()
+  postCommand('premix_item_open', { requestFull: '1', page: getCurrentPcPageName() })
+}
+
+function setPremixTrackView(view) { state.premixTrackView = 'tracks' }
+function handlePremixOnOffToggle(event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+function handlePremixGlobalReset(event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+
+function handlePremixTrackToggle(event, action, trackId, view = 'tracks') {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  const id = String(trackId || '')
+  const songId = getPremixEntityId()
+  if (!id || !songId) return
+  const item = findPremixTrack(id, 'tracks')
+  const normalizedAction = (action === 'phase' || action === 'fx') ? 'fx' : 'mute'
+  if (item) {
+    if (normalizedAction === 'mute') setPremixTrackLocalState(id, { mute: !item.mute }, 'tracks')
+    if (normalizedAction === 'fx') setPremixTrackLocalState(id, { fxEnabled: !item.fxEnabled }, 'tracks')
+  }
+  render()
+  const command = normalizedAction === 'fx' ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute'
+  postCommand(command, { id: songId, songId, selectedRegionId: songId, targetId: id, itemId: id, trackId: id, page: getCurrentPcPageName() })
+  fastPollBridge?.(6)
+}
+
+function handlePremixVolumeInput(view, trackId, value) {
+  const id = String(trackId || '')
+  const songId = getPremixEntityId()
+  if (!id || !songId) return
+  const ratio = normalizeMixerRatio(value, 0.5)
+  setPremixTrackLocalState(id, { volumeRatio: ratio }, 'tracks')
+  extendMixerVolumeInteraction(320)
+  postCommand('premix_item_set_volume', { id: songId, songId, selectedRegionId: songId, targetId: id, itemId: id, trackId: id, ratio, page: getCurrentPcPageName() })
+}
+
+function handlePremixVolumeReset(event, view, trackId) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  handlePremixVolumeInput('tracks', trackId, getMixerZeroDbRatio())
+  render()
+}
+
+function openPremixVolumeModal(view, id) { return false }
+function closePremixVolumeModal(force = false) { state.showPremixVolumeModal = false; state.premixSelectedTrackId = null; render() }
+function renderPremixVolumeModal() { return '' }
+function handlePremixRowOpenFromElement(el, event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+
+function renderPremixSongRows() {
+  const songs = getPremixSongs()
+  if (!songs.length) return '<div class="emptyBox">SEM MÚSICAS</div>'
+  return songs.map((song) => {
+    const id = vshookPremixItemSongId(song)
+    const selected = id && String(state.premixSelectedSongId || '') === id
+    const playing = id && String(getCurrentPremixPlayingId() || '') === id
+    const title = song?.name || song?.label || song?.title || song?.displayName || song?.sourceName || song?.source_name || song?.regionName || song?.songName || `MÚSICA ${id || ''}`
+    const name = buildMarqueeText(title, 'premixSongTitleText', 'rowMarquee premixSongMarquee')
+    const duration = song?.durationSec ? `<span class="premixSongDuration">${escapeHtml(formatTime(song.durationSec))}</span>` : ''
+    const color = getAppItemTextColor(song)
+    const style = color ? ` style="--premix-row-color:${escapeHtml(color)}"` : ''
+    const childBadge = vshookPremixIsHashChild(song) ? '<span class="premixSongStatus premixSongStatusOn">FILHO</span>' : ''
+    return `<div class="premixSongCard ${selected ? 'premixSongCardSelected selectedRow' : ''} ${playing ? 'premixSongCardPlaying' : ''}"${style} data-action="premix-song" data-premix-song-id="${escapeHtml(id)}"><div class="premixSongAccent"></div><div class="premixSongMain"><div class="premixSongTitle">${name}</div><div class="premixSongMeta">${childBadge}${duration}</div></div><div class="premixSongPlayingBar" aria-hidden="true"></div></div>`
+  }).join('')
+}
+
+function renderPremixTrackRows() {
+  const tracks = getPremixItemsForView('tracks')
+  if (!tracks.length) return '<div class="emptyBox">SEM ITENS NESSA MÚSICA</div>'
+  return tracks.map((item, index) => {
+    const idRaw = String(item?.id || item?.guid || '')
+    const id = escapeHtml(idRaw)
+    const indexText = String(item?.index ?? (index + 1)).padStart(2, '0')
+    const rawName = item?.name || item?.label || item?.trackName || item?.itemName || item?.takeName || `ITEM ${indexText}`
+    const name = buildMarqueeText(rawName, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee')
+    const ratio = normalizeMixerRatio(item?.volumeRatio, 0.5)
+    const db = escapeHtml(formatMixerDbLabel(item?.db ?? 0, item?.volumeRatio, item?.displayScale))
+    const muteClass = item?.mute ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniMute' : 'mixerMiniBtn'
+    const hasFx = !!(item?.hasFx || Number(item?.fxCount || 0) > 0)
+    const fxClass = !hasFx ? 'mixerMiniBtn btnDisabled' : (item?.fxEnabled ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn')
+    const drawerStyle = item?.isDrawer || item?.is_drawer ? ' style="background:rgba(250,204,21,.92);color:#111827;border-color:#facc15"' : ''
+    return `<div class="mixerRow premixMixerRow"${drawerStyle} data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">${escapeHtml(indexText)}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div></div><div class="mixerRowDb">${db}</div><button class="${muteClass}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${id}">M</button><button class="${fxClass}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${id}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button><input class="premixInlineSlider" type="range" min="0" max="1" step="0.01" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${id}" /></div>`
+  }).join('')
+}
+
+function renderPremixModal() {
+  if (!state.showPremixModal) return ''
+  const isTracks = state.premixView === 'tracks'
+  const selectedSong = getPremixSongs().find((song) => vshookPremixItemSongId(song) === String(state.premixSelectedSongId || ''))
+  const title = isTracks && selectedSong ? upperText(selectedSong.name || selectedSong.label || 'PREMIX') : 'PREMIX'
+  const titleHtml = buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee')
+  const closeOrBack = isTracks ? `<button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button>` : `<button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button>`
+  const content = isTracks
+    ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px"><div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div>${closeOrBack}</div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">ITENS</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+    : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div>${closeOrBack}</div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div></div><div class="mixerRowsBox premixSongListBox" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`
   return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`
 }
 
@@ -1700,6 +2547,8 @@ const state = {
   selectedPlaylistSongIds: [],
   selectedMarkerId: null,
   markerGoFlashId: null,
+  markerGoFlashStartedAtMs: 0,
+  markerGoFlashForceUntil: 0,
   multiSelectMode: false,
   multiSelectTab: null,
   playingId: null,
@@ -1710,6 +2559,8 @@ const state = {
   localMarkersMode: false,
   pendingTabCommand: null,
   bridgeStatus: 'offline',
+  nativeBridgeConnected: false,
+  bridgeMode: '',
   selectionLockUntil: 0,
   showCreatePlaylistModal: false,
   showAddExistingModal: false,
@@ -1721,6 +2572,7 @@ const state = {
   queuedSongId: null,
   localQueuedSongId: null,
   localQueuedSongAt: 0,
+  localQueuedSongTab: null,
   loopActive: false,
   borderHue: 0,
   rgbMode: 'auto',
@@ -1758,6 +2610,8 @@ const state = {
   bridgePopupError: false,
   bridgePopupPersistent: false,
   noticeEnabled: true,
+  liveModeEnabled: false,
+  showLiveOffConfirmModal: false,
   authEnabled: false,
   authHash: '',
   authAuthenticated: false,
@@ -1767,14 +2621,31 @@ const state = {
   authShowPassword: false,
   appActive: false,
   lastBridgeUpdatedAtMs: 0,
+  playbackDurationSec: 0,
+  playbackRemainingSec: null,
+  playbackElapsedSec: null,
+  playbackStartPos: null,
+  playbackEndPos: null,
+  playbackSyncedAtMs: 0,
   showTimerModal: false,
   timerRunning: false,
   timerStartedAt: 0,
   timerAccumulatedSec: 0,
   timerModalMode: 'start',
+  timerMode: 'progressive',
+  timerTargetSec: 0,
+  timerDisplaySec: 0,
+  timerLocalOwnerUntil: 0,
+  transportProtectionEnabled: false,
+  lastProtectedPlayTapAt: 0,
   regionsScrollRatio: 0,
   playlistScrollRatio: 0,
   markersScrollRatio: 0,
+  markersPanelAnimateUntil: 0,
+  hashChildLocalOpenByKey: {},
+  hashChildCacheByParentKey: {},
+  hashChildOpeningUntilByKey: {},
+  hashChildClosingUntilByKey: {},
   showMixerModal: false,
   showMixerVolumeModal: false,
   mixerView: 'tracks',
@@ -1790,6 +2661,8 @@ const state = {
   premixSelectedSongId: null,
   premixSelectedTrackId: null,
   premixSelectedEnabled: false,
+  premixSelectedPlaying: false,
+  premixSelectedCanEdit: false,
   premixGlobalEnabled: false,
   premixIsGlobal: false,
   premixSongs: [],
@@ -1840,7 +2713,7 @@ let lastPlaybackSelectionId = null
 let lastPlaybackSelectionTab = null
 let remoteQueuedIgnoreUntil = 0
 const REMOTE_QUEUE_IGNORE_MS = 3600
-const PENDING_PLAYBACK_GRACE_MS = 6500
+const PENDING_PLAYBACK_GRACE_MS = 1600
 const optimisticPlaybackState = {
   id: null,
   sourceTab: null,
@@ -1849,9 +2722,63 @@ const optimisticPlaybackState = {
   expiresAtMs: 0,
 }
 const OPTIMISTIC_PLAYBACK_MIN_BAR_SEC = 0.35
-const OPTIMISTIC_PLAYBACK_MIN_GRACE_MS = 6500
-const OPTIMISTIC_PLAYBACK_END_EXTRA_MS = 5000
-const OPTIMISTIC_PLAYBACK_MAX_GRACE_MS = 6 * 60 * 60 * 1000
+const OPTIMISTIC_PLAYBACK_MIN_GRACE_MS = 900
+const OPTIMISTIC_PLAYBACK_END_EXTRA_MS = 500
+const OPTIMISTIC_PLAYBACK_MAX_GRACE_MS = 1800
+
+// DIRECTOR_VISUAL_SELECTION_SOURCE_OF_TRUTH_PATCH
+// Seleção feita no front do Diretor tem prioridade temporária sobre selectedId antigo do Bridge.
+// Resolve o retorno visual para a música que já parou, sem alterar Play/Stop real.
+const DIRECTOR_LOCAL_SELECTION_HOLD_MS = 9000
+const DIRECTOR_STOPPED_SELECTION_BLACKLIST_MS = 16000
+let directorLocalSelectionHoldId = null
+let directorLocalSelectionHoldTab = null
+let directorLocalSelectionHoldUntil = 0
+let directorRecentlyStoppedSelectionBlockId = null
+let directorRecentlyStoppedSelectionBlockUntil = 0
+
+function setDirectorLocalSelectionHold(id, tab, ms = DIRECTOR_LOCAL_SELECTION_HOLD_MS) {
+  const key = String(id ?? '')
+  if (!key) return
+  directorLocalSelectionHoldId = key
+  directorLocalSelectionHoldTab = tab || state.activeTab || 'playlist'
+  directorLocalSelectionHoldUntil = Date.now() + Math.max(500, Number(ms) || DIRECTOR_LOCAL_SELECTION_HOLD_MS)
+  state.selectionLockUntil = Math.max(Number(state.selectionLockUntil || 0), directorLocalSelectionHoldUntil)
+}
+
+function clearDirectorLocalSelectionHold() {
+  directorLocalSelectionHoldId = null
+  directorLocalSelectionHoldTab = null
+  directorLocalSelectionHoldUntil = 0
+}
+
+function getActiveDirectorLocalSelectionHold() {
+  const key = String(directorLocalSelectionHoldId || '')
+  if (!key) return null
+  if (Date.now() >= Number(directorLocalSelectionHoldUntil || 0)) {
+    clearDirectorLocalSelectionHold()
+    return null
+  }
+  return { id: key, tab: directorLocalSelectionHoldTab || state.activeTab || 'playlist' }
+}
+
+function markDirectorRecentlyStoppedSelectionBlocked(id) {
+  const key = String(id ?? '')
+  if (!key) return
+  directorRecentlyStoppedSelectionBlockId = key
+  directorRecentlyStoppedSelectionBlockUntil = Date.now() + DIRECTOR_STOPPED_SELECTION_BLACKLIST_MS
+}
+
+function isDirectorStoppedSelectionBlocked(id) {
+  const key = String(id ?? '')
+  if (!key || !directorRecentlyStoppedSelectionBlockId) return false
+  if (Date.now() >= Number(directorRecentlyStoppedSelectionBlockUntil || 0)) {
+    directorRecentlyStoppedSelectionBlockId = null
+    directorRecentlyStoppedSelectionBlockUntil = 0
+    return false
+  }
+  return key === String(directorRecentlyStoppedSelectionBlockId)
+}
 
 function getOptimisticPlaybackGraceMsForDuration(durationSec) {
   const durationMs = Math.max(0, Number(durationSec) || 0) * 1000
@@ -1863,11 +2790,8 @@ function getOptimisticPlaybackGraceMsForDuration(durationSec) {
 }
 
 function getPendingPlaybackGraceMs() {
-  if (pendingPlaybackDesiredPlaying === true && pendingPlaybackDesiredSourceId) {
-    const item = findAnyPlaybackItemById(pendingPlaybackDesiredSourceId)
-    const duration = Number(item?.durationSec) || Number(optimisticPlaybackState.durationSec) || 0
-    return getOptimisticPlaybackGraceMsForDuration(duration)
-  }
+  // O comando Play/Stop continua sendo enviado uma única vez.
+  // Este tempo é só a tolerância visual do front antes de aceitar o Bridge como fonte real.
   return PENDING_PLAYBACK_GRACE_MS
 }
 
@@ -1877,6 +2801,13 @@ function clearOptimisticPlayback() {
   optimisticPlaybackState.startedAtMs = 0
   optimisticPlaybackState.durationSec = 0
   optimisticPlaybackState.expiresAtMs = 0
+}
+
+function clearDirectorPlaybackClockIfStopped() {
+  if (state.playingId != null && String(state.playingId) !== '') return
+  state.playbackRemainingSec = null
+  state.playbackElapsedSec = null
+  state.playbackSyncedAtMs = 0
 }
 
 function findAnyPlaybackItemById(id) {
@@ -1919,7 +2850,7 @@ function resolvePlaybackTargetIdForBlock(targetId, sourceTab = null) {
 
   if (tab === 'playlist') {
     const playlist = activePlaylist()
-    const songs = Array.isArray(playlist?.songs) ? playlist.songs : []
+    const songs = vshookRootFamilyItems(Array.isArray(playlist?.songs) ? playlist.songs : [])
     const item = songs.find((entry) => getItemStableId(entry) === key)
     if (item && detectBlockItem(item)) return findFirstPlayableIdAfterBlockInList(songs, key)
   }
@@ -1952,8 +2883,24 @@ function startOptimisticPlayback(id, sourceTab = null) {
   optimisticPlaybackState.durationSec = getOptimisticDurationSec(key)
   optimisticPlaybackState.expiresAtMs = optimisticPlaybackState.startedAtMs + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
   state.playingId = key
+
+  // Front primeiro: ao dar Play pelo Diretor, a barra/tempo começam pelo cache local
+  // da própria música. O Bridge entra depois apenas para corrigir e manter sync.
+  const frontDuration = Math.max(0, Number(optimisticPlaybackState.durationSec) || Number(getOptimisticDurationSec(key)) || 0)
+  if (frontDuration > 0) {
+    state.playbackDurationSec = frontDuration
+    state.playbackRemainingSec = frontDuration
+    state.playbackElapsedSec = 0
+    state.playbackSyncedAtMs = optimisticPlaybackState.startedAtMs
+  } else {
+    state.playbackRemainingSec = null
+    state.playbackElapsedSec = null
+    state.playbackSyncedAtMs = 0
+  }
+
   rememberCurrentPlaybackSelection(key, optimisticPlaybackState.sourceTab)
   clearStoppedSelectionHold()
+  lockSelectionSync(DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS + 900)
   resetPlaybackLiveState(true)
   return true
 }
@@ -2029,12 +2976,69 @@ function showLocalPlaybackPopupForId(id) {
   if (!item || detectBlockItem(item)) return false
   const label = upperText(item.name || item.label || '')
   if (!label) return false
-  showAppPopup(label, 'marker', 5000)
+  showAppPopup(label, 'marker', DIRECTOR_PLAYBACK_NAME_POPUP_MS || 1800)
   return true
 }
 
-function postPlaybackToggleCommand(targetId, sourceTab = null, desiredPlaying = true) {
-  return postCommand(desiredPlaying ? 'play_start' : 'play_stop', getPlaybackCommandPayloadForTarget(targetId, sourceTab, desiredPlaying))
+let directorStopRetryTimer = null
+
+function postPlaybackToggleCommand(targetId, sourceTab = null, desiredPlaying = true, extraPayload = null) {
+  const payload = getPlaybackCommandPayloadForTarget(targetId, sourceTab, desiredPlaying)
+  if (extraPayload && typeof extraPayload === 'object') Object.assign(payload, extraPayload)
+
+  // Stop vindo do Diretor: o Lua precisa receber como seleção principal a música
+  // que deve ficar azul depois do Stop, não a música que estava tocando.
+  // Antes o app mandava selectedPlaylistSongId/selectedRegionId com o ID da música parada
+  // e apenas stopSelectionTargetId com o próximo alvo. Como campos extras antigos podem
+  // não ser lidos por algumas versões do Lua, o azul ficava preso na música parada.
+  if (!desiredPlaying && extraPayload && extraPayload.stopSelectionTargetId != null && String(extraPayload.stopSelectionTargetId) !== '' && String(extraPayload.stopSelectionTargetSource || '') !== 'stopped') {
+    const stopTargetId = String(extraPayload.stopSelectionTargetId)
+    const stopTargetTab = extraPayload.stopSelectionTargetTab || getPreferredStoppedSelectionTab(stopTargetId, sourceTab || state.activeTab || payload.activeTab || 'playlist')
+    const stopTargetItem = findSongByIdEverywhere(stopTargetId) || findAnyPlaybackItemById(stopTargetId)
+
+    payload.activeTab = stopTargetTab || payload.activeTab || sourceTab || state.activeTab || 'playlist'
+    payload.selectedRegionId = payload.activeTab === 'regions' ? stopTargetId : null
+    payload.selectedPlaylistSongId = payload.activeTab === 'playlist' ? stopTargetId : null
+    payload.targetId = stopTargetId
+    payload.songId = stopTargetId
+    payload.nextSelectionId = stopTargetId
+    payload.queuedSelectionId = stopTargetId
+
+    if (stopTargetItem && typeof stopTargetItem === 'object') {
+      const itemIndex = Number(stopTargetItem.index)
+      const itemStart = Number(stopTargetItem.startPos ?? stopTargetItem.start_pos)
+      const itemEnd = Number(stopTargetItem.endPos ?? stopTargetItem.end_pos)
+      if (Number.isFinite(itemIndex)) payload.stopSelectionPlaylistIndex = itemIndex
+      if (Number.isFinite(itemStart)) payload.stopSelectionStartPos = itemStart
+      if (Number.isFinite(itemEnd)) payload.stopSelectionEndPos = itemEnd
+    }
+  }
+
+  payload.noSeek = true
+  payload.preserveCursor = true
+  payload.transportOnly = true
+  payload.activeTab = payload.activeTab || sourceTab || state.activeTab || 'playlist'
+  // Play do Diretor não pode reselecionar/reposicionar a música.
+  // A seleção já posiciona o cursor; o botão Play só dá transporte no ponto atual.
+  const commandName = desiredPlaying ? 'director_play_no_seek' : 'director_stop_no_seek'
+  const sent = postCommand(commandName, payload)
+
+  // v2.0.36: após recarregar a página, o primeiro Stop podia ser perdido pelo
+  // ciclo inicial do front/Bridge. Stop é idempotente, então fazemos um retry
+  // curto apenas para Stop. Play continua sem duplicação.
+  if (!desiredPlaying) {
+    if (directorStopRetryTimer) clearTimeout(directorStopRetryTimer)
+    const retryPayload = { ...payload, appRetry: true, retryReason: 'first_stop_after_reload_guard' }
+    directorStopRetryTimer = setTimeout(() => {
+      directorStopRetryTimer = null
+      const stillLooksActive = !!(state.playingId || getPlaybackUiActive?.() || pendingPlaybackDesiredPlaying === false)
+      if (!stillLooksActive) return
+      retryPayload.clientCommandId = makeDirectorClientCommandId(commandName, retryPayload)
+      postCommand(commandName, retryPayload)
+    }, 180)
+  }
+
+  return sent
 }
 const pendingMixerToggleState = new Map()
 const PENDING_MIXER_TOGGLE_GRACE_MS = 1400
@@ -2245,6 +3249,73 @@ let authGateWasVisible = false
 let appPopupHideTimer = null
 let bridgePopupFadeTimer = null
 const bridgePopupDisplay = { mounted: false, text: '', error: false, persistent: false, fading: false }
+
+// v2.0.36 - popup do nome da música no Play não pode ficar preso na tela.
+// O Lua/Bridge pode continuar mandando popupVisible por alguns ciclos; o front
+// reconhece quando o texto é o nome da música em execução e encerra localmente.
+const DIRECTOR_PLAYBACK_NAME_POPUP_MS = 1800
+let bridgePlaybackNamePopupKey = ''
+let bridgePlaybackNamePopupExpireAtMs = 0
+let bridgePlaybackNamePopupHideTimer = null
+
+function normalizeDirectorPopupText(value) {
+  return upperText(String(value || '')).replace(/\s+/g, ' ').trim()
+}
+
+function getDirectorPlaybackPopupCandidateIds() {
+  return [
+    state.playingId,
+    optimisticPlaybackState && optimisticPlaybackState.id,
+    pendingPlaybackDesiredSourceId,
+    lastPlaybackSelectionId,
+  ].filter((value) => value != null && String(value) !== '').map((value) => String(value))
+}
+
+function isDirectorPlaybackNamePopupText(text) {
+  const key = normalizeDirectorPopupText(text)
+  if (!key) return false
+  const ids = getDirectorPlaybackPopupCandidateIds()
+  for (const id of ids) {
+    const item = findAnyPlaybackItemById(id)
+    const label = normalizeDirectorPopupText(item?.name || item?.label || '')
+    if (label && label === key) return true
+  }
+  return false
+}
+
+function hideExpiredDirectorPlaybackNamePopup(expectedKey = '') {
+  const key = expectedKey || bridgePlaybackNamePopupKey
+  if (!key) return
+  if (Date.now() < Number(bridgePlaybackNamePopupExpireAtMs || 0)) return
+  if (normalizeDirectorPopupText(bridgePopupDisplay.text) !== key) return
+  bridgePopupDisplay.mounted = false
+  bridgePopupDisplay.text = ''
+  bridgePopupDisplay.error = false
+  bridgePopupDisplay.persistent = false
+  bridgePopupDisplay.fading = false
+  state.bridgePopupVisible = false
+  state.bridgePopupText = ''
+  state.bridgePopupError = false
+  state.bridgePopupPersistent = false
+  bridgePlaybackNamePopupKey = ''
+  bridgePlaybackNamePopupExpireAtMs = 0
+  bridgePlaybackNamePopupHideTimer = null
+  try { render() } catch (error) {}
+  try { syncBridgePopupDom() } catch (error) {}
+}
+
+function markDirectorPlaybackNamePopup(text) {
+  const key = normalizeDirectorPopupText(text)
+  if (!key) return false
+  const now = Date.now()
+  if (bridgePlaybackNamePopupKey !== key || now > Number(bridgePlaybackNamePopupExpireAtMs || 0) + 600) {
+    bridgePlaybackNamePopupKey = key
+    bridgePlaybackNamePopupExpireAtMs = now + DIRECTOR_PLAYBACK_NAME_POPUP_MS
+  }
+  if (bridgePlaybackNamePopupHideTimer) clearTimeout(bridgePlaybackNamePopupHideTimer)
+  bridgePlaybackNamePopupHideTimer = setTimeout(() => hideExpiredDirectorPlaybackNamePopup(key), Math.max(60, bridgePlaybackNamePopupExpireAtMs - now + 40))
+  return now < bridgePlaybackNamePopupExpireAtMs
+}
 let wakeLockHandle = null
 let wakeLockEnabled = true
 let lastProximityPopupMarkerId = null
@@ -2466,7 +3537,7 @@ async function copyTextToClipboard(text) {
 
 function buildCurrentPlaylistCopyText() {
   const playlist = activePlaylist()
-  const songs = Array.isArray(playlist?.songs) ? playlist.songs : []
+  const songs = vshookRootFamilyItems(Array.isArray(playlist?.songs) ? playlist.songs : [])
   if (!playlist || !songs.length) return ''
 
   const totalSec = songs.reduce((sum, song) => sum + (Number(song?.durationSec) || 0), 0)
@@ -2505,7 +3576,7 @@ function findSongNameById(songId, source = null) {
   const data = source || state
   const playlists = Array.isArray(data.playlists) ? data.playlists : []
   for (const playlist of playlists) {
-    const songs = Array.isArray(playlist?.songs) ? playlist.songs : []
+    const songs = vshookRootFamilyItems(Array.isArray(playlist?.songs) ? playlist.songs : [])
     const match = songs.find((song) => String(song?.id) === key)
     if (match?.name) return String(match.name)
   }
@@ -2577,19 +3648,21 @@ function getQueuedSongLabel() {
   const queuedId = getVisualQueuedSongId ? getVisualQueuedSongId() : (state.queuedSongId != null ? String(state.queuedSongId) : '')
   if (!queuedId) return ''
   const song = findSongByIdEverywhere(queuedId)
-  if (!song || detectBlockItem(song)) return ''
+  if (!song || detectBlockItem(song) || isHashChildItem(song)) return ''
   return upperText(song.name || song.label || '')
 }
 
-function setLocalQueuedSong(id) {
+function setLocalQueuedSong(id, tab = null) {
   const key = String(id || '')
   state.localQueuedSongId = key || null
   state.localQueuedSongAt = key ? Date.now() : 0
+  state.localQueuedSongTab = key ? (tab || state.activeTab || null) : null
 }
 
 function clearLocalQueuedSong() {
   state.localQueuedSongId = null
   state.localQueuedSongAt = 0
+  state.localQueuedSongTab = null
 }
 
 function clearVisualQueueForDirector(ms = REMOTE_QUEUE_IGNORE_MS) {
@@ -3021,6 +4094,49 @@ function markDirectorLocalInput(ms = 700) {
   directorLocalInputHoldUntil = Math.max(Number(directorLocalInputHoldUntil || 0), Date.now() + holdMs)
 }
 
+function installDirectorInputRenderGuard() {
+  if (window.__vshookDirectorInputRenderGuard === '1') return
+  window.__vshookDirectorInputRenderGuard = '1'
+  const selector = 'button,[data-action],[data-region-id],[data-song-id],[data-marker-id],input,textarea,select,.mixerRow,.premixSongCard,.modalBox,.settingsMenu'
+  const guard = (event) => {
+    try {
+      if (event?.target?.closest?.(selector)) markDirectorLocalInput(1250)
+    } catch (error) {}
+  }
+  document.addEventListener('pointerdown', guard, true)
+  document.addEventListener('touchstart', guard, { capture: true, passive: true })
+}
+
+
+const outgoingDirectorCommandDedupe = new Map()
+
+function getOutgoingCommandTargetKey(payload = {}) {
+  return String(
+    payload.selectedPlaylistSongId ||
+    payload.selectedRegionId ||
+    payload.songId ||
+    payload.targetId ||
+    payload.id ||
+    payload.familyGroupId ||
+    ''
+  )
+}
+
+function shouldBlockOutgoingDuplicateCommand(type, payload = {}) {
+  const commandType = String(type || '')
+  if (!['play_start', 'play_stop', 'play_toggle', 'director_play_button', 'play_button'].includes(commandType)) return false
+  const desired = String(payload.desiredState || payload.desiredPlaying || payload.forcePlay || payload.forceStop || '')
+  const key = `${commandType}:${desired}:${payload.activeTab || payload.page || ''}:${getOutgoingCommandTargetKey(payload)}`
+  const now = Date.now()
+  const last = Number(outgoingDirectorCommandDedupe.get(key) || 0)
+  outgoingDirectorCommandDedupe.set(key, now)
+  return last > 0 && (now - last) < 900
+}
+
+function makeDirectorClientCommandId(type, payload = {}) {
+  return `${Date.now()}-${String(type || 'cmd')}-${getOutgoingCommandTargetKey(payload) || 'none'}-${Math.random().toString(16).slice(2, 8)}`
+}
+
 function postCommand(type, payload = {}) {
   markDirectorLocalInput(700)
   const commandPayload = payload && typeof payload === 'object' ? { ...payload } : {}
@@ -3031,6 +4147,11 @@ function postCommand(type, payload = {}) {
   commandPayload.mode = commandPayload.mode || 'director'
 
   const commandType = String(type || '')
+  if (shouldBlockOutgoingDuplicateCommand(commandType, commandPayload)) {
+    return Promise.resolve(null)
+  }
+  commandPayload.clientCommandId = commandPayload.clientCommandId || makeDirectorClientCommandId(commandType, commandPayload)
+
   const body = JSON.stringify({ type: commandType, payload: commandPayload })
   const send = (retry = false) => fetch(vshookBridgeUrl('/command'), {
     method: 'POST',
@@ -3065,38 +4186,99 @@ function isDuplicatePress(actionKey, windowMs = 320) {
   return last > 0 && (now - last) < windowMs
 }
 
-function bindPressAction(el, actionKey, handler) {
-  if (!el || typeof handler !== 'function') return
 
-  let lastPointerHandledAt = 0
+const DIRECTOR_TRANSPORT_PROTECTION_KEY = 'vshook_director_transport_protection_enabled'
+function isDirectorTransportProtectionEnabled() {
+  try {
+    const saved = localStorage.getItem(DIRECTOR_TRANSPORT_PROTECTION_KEY)
+    if (saved === '1') return true
+    if (saved === '0') return false
+  } catch (error) {}
+  return state.transportProtectionEnabled === true
+}
+function setDirectorTransportProtectionEnabled(enabled, notify = true) {
+  const value = !!enabled
+  state.transportProtectionEnabled = value
+  try { localStorage.setItem(DIRECTOR_TRANSPORT_PROTECTION_KEY, value ? '1' : '0') } catch (error) {}
+  if (notify) {
+    postCommand('transport_protection_set', { enabled: value ? '1' : '0', desiredState: value ? 'on' : 'off' })
+  }
+  render()
+}
+function toggleDirectorTransportProtection(event = null) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  setDirectorTransportProtectionEnabled(!isDirectorTransportProtectionEnabled(), true)
+}
+function getDirectorProtectionSettingsHtml() {
+  const active = isDirectorTransportProtectionEnabled()
+  return `<div class="settingsSectionTitle">PROTECTION</div><div class="settingsGrid settingsGridSingle"><button class="settingsToggleBtn settingsToggleWide ${active ? 'settingsToggleBtnActive' : ''}" data-action="toggle-protection">PLAY/STOP DUPLO TOQUE: ${active ? 'ON' : 'OFF'}</button></div>`
+}
+
+const directorTapDedupeState = new Map()
+
+function getDirectorTapPoint(event) {
+  const touch = event?.changedTouches?.[0] || event?.touches?.[0]
+  if (touch) return { x: Number(touch.clientX) || 0, y: Number(touch.clientY) || 0 }
+  return { x: Number(event?.clientX) || 0, y: Number(event?.clientY) || 0 }
+}
+
+function bindDirectorTapAction(el, actionKey, handler, options = {}) {
+  if (!el || typeof handler !== 'function') return
+  const key = String(actionKey || Math.random())
+  const holdMs = Math.max(850, Number(options.holdMs) || 1050)
+  const moveLimit = Math.max(8, Number(options.moveLimit) || 16)
+  let startX = null
+  let startY = null
+
+  const rememberStart = (event) => {
+    const point = getDirectorTapPoint(event)
+    startX = point.x
+    startY = point.y
+    markDirectorLocalInput(holdMs)
+  }
+
+  const movedTooMuch = (event) => {
+    if (startX == null || startY == null) return false
+    const point = getDirectorTapPoint(event)
+    return Math.abs(point.x - startX) > moveLimit || Math.abs(point.y - startY) > moveLimit
+  }
 
   const run = (event, source) => {
-    if (event?.type === 'pointerup' && event.pointerType === 'mouse' && event.button !== 0) return
-    if (event?.type === 'click' && (Date.now() - lastPointerHandledAt) < 420) {
+    if (options.hashGuard && Number(el.__hashLongPressJustFiredUntil || 0) > Date.now()) {
       event?.preventDefault?.()
       event?.stopPropagation?.()
+      event?.stopImmediatePropagation?.()
       return
     }
-
+    if (event?.button != null && event.button !== 0) return
+    if ((source === 'pointerup' || source === 'touchend') && movedTooMuch(event)) return
+    const now = Date.now()
+    const last = Number(directorTapDedupeState.get(key) || 0)
+    if (last > 0 && now - last < 320) {
+      event?.preventDefault?.()
+      event?.stopPropagation?.()
+      event?.stopImmediatePropagation?.()
+      return
+    }
+    directorTapDedupeState.set(key, now)
     event?.preventDefault?.()
     event?.stopPropagation?.()
-
-    // Usa uma chave global unica por botao/acao, sem separar por pointerup/click.
-    // Isso evita o bug de executar duas vezes quando o pointerup renderiza a tela
-    // e o click sintetico chega logo depois em outro elemento re-renderizado.
-    const dedupeKey = String(actionKey || event?.type || 'generic')
-    if (isDuplicatePress(dedupeKey, 360)) return
-
-    if (event?.type === 'pointerup') {
-      lastPointerHandledAt = Date.now()
-    }
-
+    markDirectorLocalInput(holdMs)
     handler(event)
   }
 
-  el.addEventListener('pointerup', (event) => run(event, 'pointerup'))
+  el.addEventListener('pointerdown', rememberStart, { passive: true })
+  el.addEventListener('touchstart', rememberStart, { passive: true })
+  el.addEventListener('pointerup', (event) => run(event, 'pointerup'), { passive: false })
+  el.addEventListener('touchend', (event) => run(event, 'touchend'), { passive: false })
   el.addEventListener('click', (event) => run(event, 'click'))
 }
+
+function bindPressAction(el, actionKey, handler) {
+  bindDirectorTapAction(el, actionKey, handler, { holdMs: 1100 })
+}
+
 
 const tunerTapSyntheticClickState = new Map()
 
@@ -3128,142 +4310,25 @@ function bindTunerRapidTapAction(el, actionKey, handler) {
 }
 
 function bindImmediateTapAction(el, actionKey, handler) {
-  if (!el || typeof handler !== 'function') return
-
-  const shouldBlockUnifiedTap = (windowMs = 420) => {
-    const key = String(actionKey || '')
-    const now = Date.now()
-    const last = Number(unifiedTapState.get(key) || 0)
-    if (last > 0 && (now - last) < windowMs) return true
-    unifiedTapState.set(key, now)
-    return false
-  }
-
-  const invoke = (event, source) => {
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-    if (shouldBlockUnifiedTap(source === 'click' ? 520 : 420)) return
-    handler(event)
-  }
-
-  el.addEventListener('pointerdown', (event) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return
-    invoke(event, 'pointerdown')
-  }, { passive: false })
-
-  el.addEventListener('click', (event) => {
-    invoke(event, 'click')
-  })
+  bindDirectorTapAction(el, actionKey, handler, { holdMs: 900 })
 }
+
 
 
 function bindReliableTapAction(el, actionKey, handler) {
-  if (!el || typeof handler !== 'function') return
-
-  let downX = 0
-  let downY = 0
-  let downAt = 0
-  let pointerHandledAt = 0
-  let hadPointerDown = false
-  let movedAsScroll = false
-
-  const run = (event, source) => {
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-    const key = String(actionKey || '')
-    const now = Date.now()
-    const last = Number(unifiedTapState.get(key) || 0)
-    if (last > 0 && (now - last) < 240) return
-    unifiedTapState.set(key, now)
-    markDirectorLocalInput(820)
-    if (source === 'pointerup') pointerHandledAt = now
-    handler(event)
-  }
-
-  el.addEventListener('pointerdown', (event) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return
-    downX = Number(event.clientX) || 0
-    downY = Number(event.clientY) || 0
-    downAt = Date.now()
-    hadPointerDown = true
-    movedAsScroll = false
-
-    // Trava o re-render do bridge no início do toque, mas NÃO executa o comando aqui.
-    // Executar no pointerdown bloqueava o pan-y e fazia a lista parar de rolar.
-    markDirectorLocalInput(900)
-  }, { passive: true })
-
-  el.addEventListener('pointermove', (event) => {
-    if (!hadPointerDown) return
-    const dx = Math.abs((Number(event.clientX) || 0) - downX)
-    const dy = Math.abs((Number(event.clientY) || 0) - downY)
-    if (dy > 12 || dx > 28) movedAsScroll = true
-  }, { passive: true })
-
-  el.addEventListener('pointercancel', () => {
-    hadPointerDown = false
-    movedAsScroll = true
-  }, { passive: true })
-
-  el.addEventListener('pointerup', (event) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return
-    const dx = Math.abs((Number(event.clientX) || 0) - downX)
-    const dy = Math.abs((Number(event.clientY) || 0) - downY)
-    const elapsed = Date.now() - Number(downAt || 0)
-    const isScroll = movedAsScroll || dx > 28 || dy > 18 || elapsed > 1200
-    hadPointerDown = false
-    if (isScroll) return
-    run(event, 'pointerup')
-  }, { passive: false })
-
-  el.addEventListener('click', (event) => {
-    if ((Date.now() - pointerHandledAt) < 520) {
-      event?.preventDefault?.()
-      event?.stopPropagation?.()
-      return
-    }
-    run(event, 'click')
-  })
+  bindDirectorTapAction(el, actionKey, handler, { holdMs: 1050, hashGuard: true })
 }
+
 
 function bindPlayTapAction(el, handler) {
-  if (!el || typeof handler !== 'function') return
-
-  // Play/Stop: UM botão, UM caminho, UM comando.
-  // Não usa pointerup, touchend nem bindReliableTapAction aqui.
-  // Usar onclick sobrescreve qualquer bind anterior no mesmo elemento quando bindEvents
-  // roda novamente sem recriar o DOM, evitando dois listeners acumulados.
-  el.onpointerup = null
-  el.ontouchend = null
-  el.onclick = (event) => {
-    if (event?.button != null && event.button !== 0) return
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-    markDirectorLocalInput(900)
-    handler(event)
-  }
+  bindDirectorTapAction(el, 'play', handler, { holdMs: 1200 })
 }
+
 
 function bindModalCloseAction(el, actionKey, handler) {
-  if (!el || typeof handler !== 'function') return
-
-  const swallow = (event) => {
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-  }
-
-  const run = (event, source) => {
-    if (event?.type === 'pointerup' && event.pointerType === 'mouse' && event.button !== 0) return
-    swallow(event)
-    const dedupeKey = String(actionKey || 'modal-close')
-    if (isDuplicatePress(dedupeKey, source === 'click' ? 420 : 260)) return
-    handler(event)
-  }
-
-  el.addEventListener('pointerdown', swallow, { passive: false })
-  el.addEventListener('pointerup', (event) => run(event, 'pointerup'), { passive: false })
-  el.addEventListener('click', (event) => run(event, 'click'))
+  bindDirectorTapAction(el, actionKey, handler, { holdMs: 900, moveLimit: 24 })
 }
+
 
 function getCurrentPcPageName() {
   return state.activeTab === 'regions' ? 'regions' : 'playlist'
@@ -3339,8 +4404,8 @@ function applyBridgeScrollToVisibleList() {
   return
 }
 
-function lockSelectionSync() {
-  state.selectionLockUntil = Date.now() + 1600
+function lockSelectionSync(ms = 1600) {
+  state.selectionLockUntil = Date.now() + Math.max(300, Number(ms) || 1600)
 }
 
 function isMultiSelectActiveFor(tabName) {
@@ -3354,7 +4419,8 @@ function isLocalSelectionControlActive() {
     state.dragActive ||
     state.dragPending ||
     isMultiSelectActiveFor('regions') ||
-    isMultiSelectActiveFor('playlist')
+    isMultiSelectActiveFor('playlist') ||
+    getActiveDirectorLocalSelectionHold()
   )
 }
 
@@ -3370,6 +4436,71 @@ function activePlaylist() {
   return state.playlists.find((p) => String(p.id) === String(state.activePlaylistId)) || state.playlists[0]
 }
 
+function directorMarkerNameIsPartsMarker(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return false
+  if (raw.startsWith('$')) return true
+  // Multi Loops: no Lua os markers válidos começam com *1 ou *2.
+  return /^\*\s*[12]/.test(raw)
+}
+
+function cleanDirectorPartsMarkerLabel(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return 'Part'
+  let cleaned = raw
+  if (cleaned.startsWith('$')) {
+    cleaned = cleaned.replace(/^\$+\s*/, '')
+  } else {
+    cleaned = cleaned.replace(/^\*\s*[12]\s*[-:|.]?\s*/, '')
+  }
+  cleaned = cleaned.trim()
+  if (cleaned) return cleaned
+  if (/^\*\s*1/.test(raw)) return 'Loop 1'
+  if (/^\*\s*2/.test(raw)) return 'Loop 2'
+  return 'Part'
+}
+
+function normalizeDirectorPartsMarker(marker, sourceSongId, fallbackIndex = 0) {
+  if (!marker || typeof marker !== 'object') return null
+  const rawLabel = String(marker.label ?? marker.name ?? marker.rawName ?? marker.title ?? marker.displayName ?? 'Marker')
+  const rawName = String(marker.rawName ?? marker.name ?? marker.label ?? rawLabel)
+  if (!directorMarkerNameIsPartsMarker(rawName) && !directorMarkerNameIsPartsMarker(rawLabel)) return null
+
+  const label = cleanDirectorPartsMarkerLabel(rawName || rawLabel)
+  const timeSec = Math.max(0, Number(marker.timeSec ?? marker.time ?? marker.positionSec ?? marker.relativeSec ?? 0) || 0)
+  const originalIndex = marker.originalIndex ?? marker.original_index ?? marker.index ?? fallbackIndex
+  const rawId = marker.id != null ? String(marker.id) : ''
+  const id = rawId && !/^m\d+$/i.test(rawId)
+    ? rawId
+    : `playlist-marker-${sourceSongId}-m${originalIndex || fallbackIndex || Math.round(timeSec * 1000)}`
+  const markerType = String(marker.markerType || marker.type || '').trim()
+    || (String(rawName || rawLabel).trim().startsWith('$') ? 'part' : 'multiloop')
+
+  return {
+    id,
+    label,
+    name: label,
+    timeSec,
+    songId: String(sourceSongId || marker.songId || marker.regionId || marker.parentSongId || ''),
+    rawName,
+    markerType,
+    originalIndex,
+  }
+}
+
+function collectDirectorPartsMarkersFromSourceItem(sourceItem, sourceSongId) {
+  const out = []
+  const candidates = []
+  if (Array.isArray(sourceItem?.markers)) candidates.push(...sourceItem.markers)
+  if (Array.isArray(sourceItem?.parts)) candidates.push(...sourceItem.parts)
+  if (Array.isArray(sourceItem?.partMarkers)) candidates.push(...sourceItem.partMarkers)
+  candidates.forEach((marker, index) => {
+    const normalized = normalizeDirectorPartsMarker(marker, sourceSongId, index + 1)
+    if (normalized) out.push(normalized)
+  })
+  return out
+}
+
 function currentMarkers() {
   let sourceSongId = null
 
@@ -3377,23 +4508,55 @@ function currentMarkers() {
     sourceSongId = String(state.playingId)
   } else if (state.selectedPlaylistSongId) {
     sourceSongId = String(state.selectedPlaylistSongId)
+  } else if (state.selectedRegionId) {
+    sourceSongId = String(state.selectedRegionId)
   } else {
     return []
   }
 
-  const bridgeMarkers = Array.isArray(state.markers) ? state.markers : []
+  const sourceItem = findSongByIdEverywhere(sourceSongId)
+  const sourceName = String(sourceItem?.name ?? sourceItem?.label ?? sourceItem?.rawName ?? '').trim()
+  if (isHashParentItem(sourceItem) || sourceName.startsWith('--')) return []
 
-  const filtered = bridgeMarkers.filter((marker) => {
-    const markerSongId = String(marker.songId ?? marker.regionId ?? '')
-    return markerSongId === sourceSongId
+  const sourceStart = Number(sourceItem?.startPos ?? sourceItem?.start_pos ?? 0)
+  const sourceEnd = Number(sourceItem?.endPos ?? sourceItem?.end_pos ?? 0)
+  const sourceParentId = String(sourceItem?.parentSourceNumber ?? sourceItem?.parentId ?? sourceItem?.familyParentSongId ?? '')
+  const sourceIsChild = isHashChildItem(sourceItem)
+  const bridgeMarkers = Array.isArray(state.markers) ? state.markers : []
+  const merged = []
+  const seen = new Set()
+  const pushMarker = (marker, index, forcedRelativeSec = null) => {
+    const markerForNormalize = forcedRelativeSec == null ? marker : { ...marker, timeSec: forcedRelativeSec }
+    const normalized = normalizeDirectorPartsMarker(markerForNormalize, sourceSongId, index)
+    if (!normalized) return
+    const key = `${normalized.id}|${normalized.timeSec}|${normalized.rawName}`
+    if (seen.has(key)) return
+    seen.add(key)
+    merged.push(normalized)
+  }
+
+  bridgeMarkers.forEach((marker, index) => {
+    const markerSongId = String(marker.songId ?? marker.regionId ?? marker.parentSongId ?? '')
+    if (markerSongId === sourceSongId) {
+      pushMarker(marker, index + 1)
+      return
+    }
+
+    // Fallback para música-filho: se uma versão antiga do Lua ainda associar o marker ao pai,
+    // usa a posição absoluta para jogar a Part dentro do filho correto.
+    if (sourceIsChild && sourceParentId && markerSongId === sourceParentId) {
+      const absPos = Number(marker.absoluteSec ?? marker.pos ?? marker.startPos)
+      if (Number.isFinite(absPos) && Number.isFinite(sourceStart) && Number.isFinite(sourceEnd)
+        && absPos >= sourceStart - 0.000001 && absPos <= sourceEnd + 0.000001) {
+        pushMarker(marker, index + 1, Math.max(0, Math.round(absPos - sourceStart)))
+      }
+    }
   })
 
-  return filtered.map((marker) => ({
-    id: String(marker.id),
-    label: marker.label || marker.name || 'Marker',
-    timeSec: marker.timeSec || 0,
-    songId: sourceSongId,
-  }))
+  collectDirectorPartsMarkersFromSourceItem(sourceItem, sourceSongId).forEach((marker, index) => pushMarker(marker, index + 1))
+
+  merged.sort((a, b) => (Number(a.timeSec) || 0) - (Number(b.timeSec) || 0))
+  return merged
 }
 
 
@@ -3414,6 +4577,21 @@ function bridgeDataSaysPlaying(data) {
     stateWords.includes('play') ||
     stateWords.includes('running')
   )
+}
+
+function getPreferredDirectorChildPlayingId(incomingId) {
+  const incomingKey = incomingId != null ? String(incomingId) : ''
+  const optimisticKey = optimisticPlaybackState?.id != null ? String(optimisticPlaybackState.id) : ''
+  const pendingKey = pendingPlaybackDesiredSourceId != null ? String(pendingPlaybackDesiredSourceId) : ''
+  const candidates = [optimisticKey, pendingKey, lastPlaybackSelectionId != null ? String(lastPlaybackSelectionId) : ''].filter(Boolean)
+  const incomingItem = incomingKey ? findAnyPlaybackItemById(incomingKey) : null
+  for (const key of candidates) {
+    if (!key || key === incomingKey) continue
+    const item = findAnyPlaybackItemById(key)
+    if (!item || !isHashChildItem(item)) continue
+    if (!incomingItem || areAppItemsSameHashFamily(incomingItem, item)) return key
+  }
+  return incomingKey || null
 }
 
 function bridgeDataSaysStopped(data) {
@@ -3448,9 +4626,43 @@ function getIncomingBridgePlayingId(data) {
     data?.activeSong?.id,
   ]
   for (const candidate of candidates) {
-    if (candidate !== undefined && candidate !== null && String(candidate).trim() !== '') return String(candidate)
+    if (isUsablePlaybackId(candidate)) return String(candidate)
   }
+  // Não usa fallback local aqui. Esta função precisa representar só o que veio do Bridge,
+  // para o Diretor conseguir trocar de música quando o Play vem manualmente do REAPER/timeline.
   return null
+}
+
+function syncDirectorPlaybackClockFromBridge(data) {
+  if (!data || typeof data !== 'object') return
+  const durationCandidates = [data.playbackDurationSec, data.durationSec, data?.currentSong?.durationSec, data?.playingSong?.durationSec, data?.activeSong?.durationSec]
+  const remainingCandidates = [data.playbackRemainingSec, data.remainingSec, data?.currentSong?.remainingSec, data?.playingSong?.remainingSec, data?.activeSong?.remainingSec]
+  const elapsedCandidates = [data.playbackElapsedSec, data.elapsedSec]
+  const startCandidates = [data.playbackStartPos, data.startPos, data?.currentSong?.startPos, data?.playingSong?.startPos]
+  const endCandidates = [data.playbackEndPos, data.endPos, data?.currentSong?.endPos, data?.playingSong?.endPos]
+
+  const firstFinite = (items) => {
+    for (const item of items) {
+      const num = Number(item)
+      if (Number.isFinite(num)) return num
+    }
+    return Number.NaN
+  }
+
+  const duration = firstFinite(durationCandidates)
+  const remaining = firstFinite(remainingCandidates)
+  const elapsed = firstFinite(elapsedCandidates)
+  const startPos = firstFinite(startCandidates)
+  const endPos = firstFinite(endCandidates)
+
+  if (Number.isFinite(duration) && duration > 0) state.playbackDurationSec = duration
+  if (Number.isFinite(remaining)) state.playbackRemainingSec = Math.max(0, remaining)
+  else if (Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed)) state.playbackRemainingSec = Math.max(0, duration - elapsed)
+  if (Number.isFinite(elapsed)) state.playbackElapsedSec = Math.max(0, elapsed)
+  else if (Number.isFinite(state.playbackDurationSec) && Number.isFinite(state.playbackRemainingSec)) state.playbackElapsedSec = Math.max(0, state.playbackDurationSec - state.playbackRemainingSec)
+  if (Number.isFinite(startPos)) state.playbackStartPos = startPos
+  if (Number.isFinite(endPos)) state.playbackEndPos = endPos
+  if (Number.isFinite(state.playbackRemainingSec)) state.playbackSyncedAtMs = Date.now()
 }
 
 function syncFromBridge(data) {
@@ -3461,16 +4673,29 @@ function syncFromBridge(data) {
   const previousPlayingId = state.playingId != null ? String(state.playingId) : null
   const previousSelectedMarkerId = state.selectedMarkerId != null ? String(state.selectedMarkerId) : null
   state.bridgeStatus = 'online'
-  state.lastBridgeUpdatedAtMs = Date.now()
+  const nativeBridgeConnected = !!(
+    data.connected === true ||
+    data.nativeBridge === true ||
+    data.bridgeMode === 'native' ||
+    data.bridgeMode === 'native_bridge' ||
+    data.bridgeMode === 'native_ext'
+  )
+  state.nativeBridgeConnected = nativeBridgeConnected
+  state.bridgeMode = String(data.bridgeMode || (nativeBridgeConnected ? 'native' : state.bridgeMode || ''))
+  const bridgeStateUpdatedMs = parseBridgeStateUpdatedMs(data)
+  state.lastBridgeUpdatedAtMs = bridgeStateUpdatedMs || (nativeBridgeConnected ? Date.now() : 0)
+  syncDirectorPlaybackClockFromBridge(data)
   state.appActive = !!data.appActive
   state.autoBlocoEnabled = !!data.autoBlocoEnabled
   state.regions = Array.isArray(data.regions) ? data.regions : state.regions
-  state.playlists = Array.isArray(data.playlists) ? data.playlists : state.playlists
+  state.playlists = normalizeBridgePlaylistsWithHashChildren(Array.isArray(data.playlists) ? data.playlists : state.playlists)
+  vshookCacheHashChildrenFromBridgeState()
   state.projectTabs = Array.isArray(data.projectTabs) ? data.projectTabs : (Array.isArray(data.projects) ? data.projects : state.projectTabs)
   state.activeProjectTabIndex = Number.isFinite(Number(data.activeProjectTabIndex)) ? Number(data.activeProjectTabIndex) : state.activeProjectTabIndex
   if (state.selectedProjectTabIndex === null) state.selectedProjectTabIndex = state.activeProjectTabIndex
   applyPendingTunerState()
   state.markers = Array.isArray(data.markers) ? data.markers : state.markers
+  syncDirectorMarkerArmedVisualWithPlayback?.()
   const mixerData = data.mixer && typeof data.mixer === 'object'
     ? data.mixer
     : {
@@ -3523,7 +4748,8 @@ function syncFromBridge(data) {
     else if (data.premix.globalPreMixEnabled !== undefined) state.premixGlobalEnabled = !!data.premix.globalPreMixEnabled
     state.premixSongs = Array.isArray(data.premix.songs) ? data.premix.songs : state.premixSongs
     if (!state.premixIsGlobal) {
-      if (data.premix.selectedSongId !== undefined && data.premix.selectedSongId !== null && String(data.premix.selectedSongId) !== '') {
+      const keepPremixListLocalSelection = !!(state.showPremixModal && state.premixView === 'songs' && state.premixSelectedSongId)
+      if (!keepPremixListLocalSelection && data.premix.selectedSongId !== undefined && data.premix.selectedSongId !== null && String(data.premix.selectedSongId) !== '') {
         state.premixSelectedSongId = String(data.premix.selectedSongId)
       } else if (!state.premixSelectedSongId && state.premixSongs[0]?.id != null) {
         state.premixSelectedSongId = String(state.premixSongs[0].id)
@@ -3533,19 +4759,23 @@ function syncFromBridge(data) {
       } else if (data.premix.selectedPreMixEnabled !== undefined) {
         state.premixSelectedEnabled = !!data.premix.selectedPreMixEnabled
       }
+      if (data.premix.selectedPlaying !== undefined) state.premixSelectedPlaying = !!data.premix.selectedPlaying
+      else if (data.premix.selectedPremixPlaying !== undefined) state.premixSelectedPlaying = !!data.premix.selectedPremixPlaying
+      if (data.premix.selectedCanEdit !== undefined) state.premixSelectedCanEdit = !!data.premix.selectedCanEdit
+      else if (data.premix.selectedPremixCanEdit !== undefined) state.premixSelectedCanEdit = !!data.premix.selectedPremixCanEdit
     } else {
       state.premixSelectedEnabled = !!state.premixGlobalEnabled
     }
-    if (Array.isArray(data.premix.tracks)) {
+    if (Array.isArray(data.premix.tracks) && data.premix.tracks.length) {
       state.premixTracks = data.premix.tracks.map((item) => normalizePremixTrackItem(item, 'tracks'))
     }
-    if (Array.isArray(data.premix.groups)) {
+    if (Array.isArray(data.premix.groups) && data.premix.groups.length) {
       state.premixGroups = data.premix.groups.map((item) => normalizePremixTrackItem(item, 'groups'))
     }
-    if (Array.isArray(data.premix.globalTracks)) {
+    if (Array.isArray(data.premix.globalTracks) && data.premix.globalTracks.length) {
       state.premixGlobalTracks = data.premix.globalTracks.map((item) => normalizePremixTrackItem(item, 'tracks'))
     }
-    if (Array.isArray(data.premix.globalGroups)) {
+    if (Array.isArray(data.premix.globalGroups) && data.premix.globalGroups.length) {
       state.premixGlobalGroups = data.premix.globalGroups.map((item) => normalizePremixTrackItem(item, 'groups'))
     }
     if ((!Array.isArray(state.premixTracks) || !state.premixTracks.length) && Array.isArray(state.mixerTracks)) {
@@ -3580,28 +4810,47 @@ function syncFromBridge(data) {
   const bridgePlayingId = getIncomingBridgePlayingId(data)
   const optimisticId = optimisticPlaybackState.id ? String(optimisticPlaybackState.id) : ''
   const optimisticStillActive = optimisticId && isOptimisticPlaybackActiveFor(optimisticId)
+  // DIRECTOR_FRONT_PLAY_STALE_BRIDGE_GUARD_PATCH
+  // Depois de Play pelo app, o primeiro JSON do Bridge pode ainda ser o estado antigo
+  // da musica que acabou de parar. O front deve continuar no alvo local por um pequeno
+  // atraso, e so aceitar outro playingId quando esse estado ja for novo o bastante.
+  const localPlayStartedAt = Math.max(
+    Number(optimisticPlaybackState.startedAtMs || 0),
+    pendingPlaybackDesiredPlaying === true ? Number(pendingPlaybackToggleAt || 0) : 0
+  )
+  const frontPlayReturnHoldActive = !!(optimisticStillActive && optimisticId && localPlayStartedAt && (Date.now() - localPlayStartedAt) < DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS)
+  const bridgeSnapshotOlderThanLocalPlay = !!(frontPlayReturnHoldActive && (!bridgeStateUpdatedMs || (bridgeStateUpdatedMs + 40) < localPlayStartedAt))
+  const bridgePlayingIdConflictsWithFrontPlay = !!(frontPlayReturnHoldActive && bridgePlayingId && String(bridgePlayingId) !== optimisticId)
+  const shouldDelayBridgePlayingReturn = bridgeSnapshotOlderThanLocalPlay || bridgePlayingIdConflictsWithFrontPlay
   const bridgeConfirmsPlaying = bridgeSaysPlaying || !!bridgePlayingId
   const bridgeConfirmsStopped = bridgeSaysStopped || data.playingId === null
 
   let incomingPlayingId = state.playingId
   if (bridgeSaysPlaying || bridgePlayingId) {
-    // O front do Diretor manda no visual imediatamente. Enquanto o Play local está
-    // otimista, um playingId antigo do Bridge não pode pintar a música anterior
-    // de vermelho nem mostrar barra de progresso por alguns frames.
-    if (optimisticStillActive && optimisticId && bridgePlayingId && String(bridgePlayingId) !== String(optimisticId)) {
+    // Front primeiro, mas só por poucos ms. Depois disso, o Bridge manda.
+    // Isso evita Play duplo/Stop duplo e também corrige quando alguém toca outra música
+    // manualmente pela timeline do REAPER.
+    if (shouldDelayBridgePlayingReturn || (optimisticStillActive && optimisticId && shouldHoldDirectorFrontPlayingId(bridgePlayingId))) {
       incomingPlayingId = optimisticId
     } else {
-      incomingPlayingId = bridgePlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+      incomingPlayingId = bridgePlayingId || null
     }
   } else if (bridgeSaysStopped) {
-    // JSON parado logo depois do Play é normalmente atraso do Bridge.
-    // Enquanto o Play local/otimista estiver válido, não derruba o botão para Play.
-    if (optimisticStillActive && (pendingPlaybackDesiredPlaying === true || String(state.playingId || '') === optimisticId || String(lastPlaybackSelectionId || '') === optimisticId)) {
+    // Estado parado logo após Play pode ser JSON antigo; segura só o pequeno delay do front.
+    if (optimisticStillActive && optimisticId && getOptimisticPlaybackAgeMs() < DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS) {
       incomingPlayingId = optimisticId
     } else {
       incomingPlayingId = null
     }
-  } else if (data.playingId === null && !optimisticStillActive) {
+  } else if (data.playingId === null || !optimisticStillActive) {
+    incomingPlayingId = null
+  }
+
+  const stoppedHoldBeforePlaybackApply = getActiveStoppedSelectionHoldTarget()
+  if (stoppedHoldBeforePlaybackApply && pendingPlaybackDesiredPlaying !== true && incomingPlayingId && String(incomingPlayingId) !== String(stoppedHoldBeforePlaybackApply.id)) {
+    // Depois de Stop pelo Diretor, alguns ciclos do Bridge ainda podem trazer
+    // o playingId da música parada. Esse ID velho não pode derrubar a seleção
+    // visual que já foi movida para a fila/Auto/AutoBloco.
     incomingPlayingId = null
   }
 
@@ -3610,18 +4859,17 @@ function syncFromBridge(data) {
 
     if (pendingPlaybackDesiredPlaying === true) {
       if (bridgeConfirmsPlaying) {
-        const confirmedId = incomingPlayingId || optimisticId || pendingPlaybackDesiredSourceId || state.playingId || lastPlaybackSelectionId || null
+        const confirmedId = incomingPlayingId || ((shouldDelayBridgePlayingReturn || shouldHoldDirectorFrontPlayingId(bridgePlayingId)) ? optimisticId : null) || null
         state.playingId = confirmedId
-        if (confirmedId) {
-          // Mantém o estado otimista mesmo depois da confirmação, para o JSON atrasado
-          // não fazer o botão ir e voltar enquanto o REAPER já está tocando.
-          if (!optimisticPlaybackState.id || String(optimisticPlaybackState.id) !== String(confirmedId)) {
-            optimisticPlaybackState.id = String(confirmedId)
-            optimisticPlaybackState.sourceTab = pendingPlaybackDesiredSourceTab || lastPlaybackSelectionTab || state.activeTab || 'playlist'
-            optimisticPlaybackState.startedAtMs = optimisticPlaybackState.startedAtMs || Date.now()
-            optimisticPlaybackState.durationSec = getOptimisticDurationSec(confirmedId) || Number(optimisticPlaybackState.durationSec) || 0
-            optimisticPlaybackState.expiresAtMs = Date.now() + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
-          }
+        if (confirmedId && optimisticPlaybackState.id && String(confirmedId) !== String(optimisticPlaybackState.id)) {
+          clearOptimisticPlayback()
+        }
+        if (confirmedId && !optimisticPlaybackState.id && getOptimisticPlaybackAgeMs() < DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS) {
+          optimisticPlaybackState.id = String(confirmedId)
+          optimisticPlaybackState.sourceTab = pendingPlaybackDesiredSourceTab || lastPlaybackSelectionTab || state.activeTab || 'playlist'
+          optimisticPlaybackState.startedAtMs = optimisticPlaybackState.startedAtMs || Date.now()
+          optimisticPlaybackState.durationSec = getOptimisticDurationSec(confirmedId) || Number(optimisticPlaybackState.durationSec) || 0
+          optimisticPlaybackState.expiresAtMs = Date.now() + getOptimisticPlaybackGraceMsForDuration(optimisticPlaybackState.durationSec)
         }
         clearPendingPlaybackToggle()
       } else if (elapsedPlayback < getPendingPlaybackGraceMs()) {
@@ -3662,7 +4910,29 @@ function syncFromBridge(data) {
     }
   }
 
-  state.activePlaylistId = typeof data.activePlaylistId === 'string' || data.activePlaylistId === null ? (data.activePlaylistId || null) : state.activePlaylistId
+  const incomingActivePlaylistId = (typeof data.activePlaylistId === 'string' || data.activePlaylistId === null) ? (data.activePlaylistId || null) : undefined
+  if (incomingActivePlaylistId !== undefined) {
+    const holdPlaylistSwitch = state.pendingPlaylistSwitchId && Date.now() < Number(state.pendingPlaylistSwitchUntilMs || 0)
+    if (!holdPlaylistSwitch || String(incomingActivePlaylistId || '') === String(state.pendingPlaylistSwitchId || '')) {
+      state.activePlaylistId = incomingActivePlaylistId
+      if (String(incomingActivePlaylistId || '') === String(state.pendingPlaylistSwitchId || '')) {
+        state.pendingPlaylistSwitchUntilMs = 0
+      }
+    }
+  }
+
+  const preferredPlayingId = getPreferredDirectorChildPlayingId(state.playingId)
+  if (preferredPlayingId && state.playingId && String(preferredPlayingId) !== String(state.playingId)) {
+    state.playingId = preferredPlayingId
+    if (state.activeTab === 'playlist') {
+      state.selectedPlaylistSongId = preferredPlayingId
+      state.selectedPlaylistSongIds = []
+    } else if (state.activeTab === 'regions') {
+      state.selectedRegionId = preferredPlayingId
+      state.selectedRegionIds = []
+    }
+    lockSelectionSync(2200)
+  }
 
   const currentPlayingId = state.playingId != null ? String(state.playingId) : null
   if (previousPlayingId !== currentPlayingId) {
@@ -3672,38 +4942,136 @@ function syncFromBridge(data) {
   }
   if (currentPlayingId) {
     rememberCurrentPlaybackSelection(currentPlayingId, pendingPlaybackDesiredSourceTab || lastPlaybackSelectionTab || state.activeTab)
+  } else {
+    clearDirectorPlaybackClockIfStopped()
   }
 
   if (previousPlayingId && !currentPlayingId) {
     state.pendingStopClear = false
     const stoppedPreferredTab = lastPlaybackSelectionTab || state.activeTab
-    if (applyStoppedSongSelection(previousPlayingId, stoppedPreferredTab)) {
-      forceStoppedSelectionDom(previousPlayingId, stoppedPreferredTab)
+    const stopSelectionTarget = getDirectorStopSelectionTarget(previousPlayingId, stoppedPreferredTab)
+    if (stopSelectionTarget && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(previousPlayingId || '')) {
+      if (applyStoppedSongSelection(stopSelectionTarget.id, stopSelectionTarget.tab)) {
+        forceStoppedSelectionDom(stopSelectionTarget.id, stopSelectionTarget.tab)
+      }
+    } else {
+      markDirectorRecentlyStoppedSelectionBlocked(previousPlayingId)
+      clearStoppedSelectionHold()
+      if (String(state.selectedPlaylistSongId || '') === String(previousPlayingId || '')) {
+        state.selectedPlaylistSongId = null
+        state.selectedPlaylistSongIds = []
+      }
+      if (String(state.selectedRegionId || '') === String(previousPlayingId || '')) {
+        state.selectedRegionId = null
+        state.selectedRegionIds = []
+      }
+      clearDirectorLocalSelectionHold()
+      state.selectionLockUntil = 0
     }
   }
 
   const holdActive = !!state.stoppedSelectionHoldId && Date.now() < Number(state.stoppedSelectionHoldUntil || 0)
+  const localSelectionHoldTarget = getActiveDirectorLocalSelectionHold()
   const selectionLocked = Date.now() < (state.selectionLockUntil || 0)
+  if (shouldDelayBridgePlayingReturn && optimisticId) {
+    const optimisticTab = optimisticPlaybackState.sourceTab || pendingPlaybackDesiredSourceTab || lastPlaybackSelectionTab || state.activeTab || 'playlist'
+    if (optimisticTab === 'playlist') {
+      state.selectedPlaylistSongId = optimisticId
+      state.selectedPlaylistSongIds = []
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+    } else if (optimisticTab === 'regions') {
+      state.selectedRegionId = optimisticId
+      state.selectedRegionIds = []
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+    }
+    state.selectionLockUntil = Math.max(Number(state.selectionLockUntil || 0), Date.now() + DIRECTOR_FRONT_PLAY_SYNC_HOLD_MS)
+  }
   const localSelectionControlActive = isLocalSelectionControlActive()
 
   if (state.pendingStopClear) {
     state.pendingStopClear = false
   }
 
-  if (holdActive && !currentPlayingId) {
+  if (localSelectionHoldTarget && !currentPlayingId) {
+    // Se o usuário acabou de selecionar pelo front, selectedId antigo do Bridge não pode voltar.
+    if (localSelectionHoldTarget.tab === 'playlist') {
+      state.selectedPlaylistSongId = localSelectionHoldTarget.id
+      state.selectedPlaylistSongIds = []
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+    } else {
+      state.selectedRegionId = localSelectionHoldTarget.id
+      state.selectedRegionIds = []
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+    }
+  } else if (holdActive && !currentPlayingId) {
+    applyStoppedSongSelection(state.stoppedSelectionHoldId, state.stoppedSelectionHoldTab, { hold: false })
+  } else if (holdActive && pendingPlaybackDesiredPlaying !== true) {
+    // Mantém o alvo visual pós-Stop acima de qualquer selectedId atrasado vindo do Bridge.
     applyStoppedSongSelection(state.stoppedSelectionHoldId, state.stoppedSelectionHoldTab, { hold: false })
   } else if (!selectionLocked && !localSelectionControlActive) {
-    state.selectedRegionId = typeof data.selectedRegionId === 'string' || typeof data.selectedRegionId === 'number' ? String(data.selectedRegionId) : (data.selectedRegionId === null ? null : state.selectedRegionId)
-    state.selectedRegionIds = Array.isArray(data.selectedRegionIds) ? data.selectedRegionIds.map(String) : state.selectedRegionIds
-    state.selectedPlaylistSongId = typeof data.selectedPlaylistSongId === 'string' || typeof data.selectedPlaylistSongId === 'number' ? String(data.selectedPlaylistSongId) : (data.selectedPlaylistSongId === null ? null : state.selectedPlaylistSongId)
+    const incomingSelectedRegionId = (typeof data.selectedRegionId === 'string' || typeof data.selectedRegionId === 'number') ? String(data.selectedRegionId) : null
+    const incomingSelectedPlaylistSongId = (typeof data.selectedPlaylistSongId === 'string' || typeof data.selectedPlaylistSongId === 'number') ? String(data.selectedPlaylistSongId) : null
+    const incomingSelectedId = incomingSelectedPlaylistSongId || incomingSelectedRegionId || ''
+    const currentFrontSelectedId = String(state.selectedPlaylistSongId || state.selectedRegionId || '')
+    const ignoreStoppedSelectionEcho = !!(incomingSelectedId && isDirectorStoppedSelectionBlocked(incomingSelectedId) && currentFrontSelectedId && incomingSelectedId !== currentFrontSelectedId && !currentPlayingId)
+    const ignorePlayingSelectionEcho = !!(incomingSelectedId && currentPlayingId && incomingSelectedId === String(currentPlayingId))
+    if (!ignoreStoppedSelectionEcho && !ignorePlayingSelectionEcho) {
+      state.selectedRegionId = incomingSelectedRegionId !== null ? incomingSelectedRegionId : (data.selectedRegionId === null ? null : state.selectedRegionId)
+      state.selectedRegionIds = Array.isArray(data.selectedRegionIds) ? data.selectedRegionIds.map(String) : state.selectedRegionIds
+      state.selectedPlaylistSongId = incomingSelectedPlaylistSongId !== null ? incomingSelectedPlaylistSongId : (data.selectedPlaylistSongId === null ? null : state.selectedPlaylistSongId)
+    } else if (ignorePlayingSelectionEcho) {
+      if (state.activeTab === 'playlist' && String(state.selectedPlaylistSongId || '') === String(currentPlayingId || '')) {
+        state.selectedPlaylistSongId = null
+        state.selectedPlaylistSongIds = []
+      }
+      if (state.activeTab === 'regions' && String(state.selectedRegionId || '') === String(currentPlayingId || '')) {
+        state.selectedRegionId = null
+        state.selectedRegionIds = []
+      }
+    }
   } else if (!localSelectionControlActive) {
     if (data.selectedRegionId === null) state.selectedRegionId = null
     if (Array.isArray(data.selectedRegionIds) && data.selectedRegionIds.length === 0) state.selectedRegionIds = []
     if (data.selectedPlaylistSongId === null) state.selectedPlaylistSongId = null
   }
 
-  if (!localSelectionControlActive) {
+  const localMarkerHoldId = getActiveDirectorMarkerLocalHoldId ? getActiveDirectorMarkerLocalHoldId() : null
+  if (state.markerGoFlashId) {
+    state.selectedMarkerId = String(state.markerGoFlashId)
+  } else if (localMarkerHoldId) {
+    state.selectedMarkerId = String(localMarkerHoldId)
+  } else if (!localSelectionControlActive) {
     state.selectedMarkerId = typeof data.selectedMarkerId === 'string' || typeof data.selectedMarkerId === 'number' ? String(data.selectedMarkerId) : (data.selectedMarkerId === null ? null : state.selectedMarkerId)
+  }
+
+  if (currentPlayingId) {
+    if (state.activeTab === 'playlist' && String(state.selectedPlaylistSongId || '') === String(currentPlayingId)) {
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+    }
+    if (state.activeTab === 'regions' && String(state.selectedRegionId || '') === String(currentPlayingId)) {
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+    }
+  }
+
+  // 2.0.28: Stop sem fila não mantém seleção azul da música parada.
+  if (!currentPlayingId && !state.stoppedSelectionHoldId) {
+    const blockedIds = Array.isArray(directorStoppedSelectionBlocked) ? directorStoppedSelectionBlocked : []
+    const selectedPlaylist = String(state.selectedPlaylistSongId || '')
+    const selectedRegion = String(state.selectedRegionId || '')
+    if (selectedPlaylist && isDirectorStoppedSelectionBlocked(selectedPlaylist)) {
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+    }
+    if (selectedRegion && isDirectorStoppedSelectionBlocked(selectedRegion)) {
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+    }
   }
 
   // Mesmo que o Bridge mande estado antigo, o Diretor nunca mantém
@@ -3732,9 +5100,15 @@ function syncFromBridge(data) {
       state.autoplayEnabled = data.autoplayEnabled
     }
   }
-  state.timerRunning = typeof data.timerRunning === 'boolean' ? data.timerRunning : state.timerRunning
-  state.timerStartedAt = Number.isFinite(Number(data.timerStartedAt)) ? Number(data.timerStartedAt) : state.timerStartedAt
-  state.timerAccumulatedSec = Number.isFinite(Number(data.timerAccumulatedSec)) ? Number(data.timerAccumulatedSec) : state.timerAccumulatedSec
+  if (Date.now() > Number(state.timerLocalOwnerUntil || 0)) {
+    state.timerRunning = typeof data.timerRunning === 'boolean' ? data.timerRunning : state.timerRunning
+    state.timerStartedAt = Number.isFinite(Number(data.timerStartedAt)) ? Number(data.timerStartedAt) : state.timerStartedAt
+    state.timerAccumulatedSec = Number.isFinite(Number(data.timerAccumulatedSec)) ? Number(data.timerAccumulatedSec) : state.timerAccumulatedSec
+    state.timerMode = String(data.timerMode || data.timerType || state.timerMode || 'progressive').toLowerCase() === 'countdown' ? 'countdown' : 'progressive'
+    state.timerTargetSec = Number.isFinite(Number(data.timerTargetSec)) ? Number(data.timerTargetSec) : state.timerTargetSec
+    state.timerDisplaySec = Number.isFinite(Number(data.timerDisplaySec)) ? Number(data.timerDisplaySec) : state.timerDisplaySec
+  }
+  state.liveModeEnabled = typeof data.liveModeEnabled === 'boolean' ? data.liveModeEnabled : (typeof data.liveEnabled === 'boolean' ? data.liveEnabled : state.liveModeEnabled)
   state.authEnabled = typeof data.authEnabled === 'boolean' ? data.authEnabled : state.authEnabled
   state.authHash = typeof data.authHash === 'string' ? data.authHash : state.authHash
   syncAuthStateFromBridge()
@@ -3744,10 +5118,15 @@ function syncFromBridge(data) {
   pendingNoticeToggleAt = 0
   pendingNoticeToggleValue = null
   state.loopActive = !!data.loopActive
-  state.bridgePopupVisible = !!data.popupVisible
-  state.bridgePopupText = String(data.popupText || '')
-  state.bridgePopupError = !!data.popupError
-  state.bridgePopupPersistent = !!data.popupPersistent
+
+  const incomingBridgePopupText = String(data.popupText || '')
+  const incomingBridgePopupIsPlaybackName = !!data.popupVisible && isDirectorPlaybackNamePopupText(incomingBridgePopupText)
+  const shouldShowIncomingPlaybackNamePopup = incomingBridgePopupIsPlaybackName ? markDirectorPlaybackNamePopup(incomingBridgePopupText) : false
+
+  state.bridgePopupVisible = incomingBridgePopupIsPlaybackName ? shouldShowIncomingPlaybackNamePopup : !!data.popupVisible
+  state.bridgePopupText = state.bridgePopupVisible ? incomingBridgePopupText : ''
+  state.bridgePopupError = incomingBridgePopupIsPlaybackName ? false : !!data.popupError
+  state.bridgePopupPersistent = incomingBridgePopupIsPlaybackName ? false : !!data.popupPersistent
 
   if (state.bridgePopupVisible && state.bridgePopupText) {
     if (bridgePopupFadeTimer) {
@@ -3800,7 +5179,7 @@ function syncFromBridge(data) {
   }
   state.clearButtonSide = data.clearButtonSide === 'left' ? 'left' : 'right'
 
-  let remoteBaseTab = (data.currentPage === 'playlist' || data.currentPage === 'markers') ? 'playlist' : 'regions'
+  let remoteBaseTab = (data.currentPage === 'playlist' || data.currentPage === 'markers') ? 'playlist' : (data.currentPage === 'regions' ? 'regions' : state.activeTab)
   if (state.forcePlaylistUntil && Date.now() < state.forcePlaylistUntil) remoteBaseTab = 'playlist'
   if (state.showMixerModal || state.showMixerVolumeModal || state.showPremixModal || state.showPremixVolumeModal || state.showBpmModal || state.showTunerModal) {
     return
@@ -3829,7 +5208,7 @@ function sendAppHeartbeat() {
   if (needsAuthGate()) return
   if (state.bridgeStatus !== 'online') return
   const now = Date.now()
-  if ((now - lastAppHeartbeatAt) < 900) return
+  if ((now - lastAppHeartbeatAt) < 2500) return
   lastAppHeartbeatAt = now
   postCommand('app_heartbeat')
 }
@@ -3887,6 +5266,7 @@ function shouldPauseBridgeRender() {
     state.showPremixVolumeModal ||
     state.showBpmModal ||
     state.showTunerModal ||
+    state.showTimerModal ||
     state.showProjectTabsModal ||
     state.showRecadosModal ||
     state.lyricsPanelOpen ||
@@ -3907,6 +5287,10 @@ function buildBridgeRenderSignature() {
     autoplayEnabled: getAutoplayVisualEnabled(),
     autoBlocoEnabled: state.autoBlocoEnabled,
     noticeEnabled: true,
+    liveModeEnabled: state.liveModeEnabled,
+    showLiveOffConfirmModal: state.showLiveOffConfirmModal,
+    timerMode: state.timerMode,
+    timerTargetSec: state.timerTargetSec,
     rgbMode: state.rgbMode,
     rgbFixedIndex: state.rgbFixedIndex,
     activeTab: state.activeTab,
@@ -3929,6 +5313,11 @@ function buildBridgeRenderSignature() {
     bridgePopupError: state.bridgePopupError,
     bridgePopupPersistent: state.bridgePopupPersistent,
     timerRunning: state.timerRunning,
+    timerStartedAt: state.timerStartedAt,
+    timerStartedAtMs: state.timerStartedAtMs,
+    timerAccumulatedSec: state.timerAccumulatedSec,
+    timerDisplaySec: state.timerDisplaySec,
+    chronoTick: state.timerRunning ? Math.floor(Date.now() / 250) : 0,
     playbackTick: (getPlaybackUiActive() && !state.lyricsPanelOpen) ? Math.floor(Date.now() / 200) : 0,
     playlists: (state.playlists || []).map((playlist) => ({
       id: String(playlist.id),
@@ -4007,7 +5396,19 @@ function buildBridgeRenderSignature() {
   })
 }
 
+function fastPollBridge(cycles = 4) {
+  const count = Math.max(1, Math.min(10, Number(cycles) || 4))
+  for (let i = 0; i < count; i += 1) {
+    window.setTimeout(() => {
+      try { pollBridge() } catch (error) {}
+    }, i * 45)
+  }
+}
+
 async function pollBridge() {
+  if (bridgePollInFlight) return
+  bridgePollInFlight = true
+  try {
   const previousSignature = buildBridgeRenderSignature()
   let bridgeOk = false
   try {
@@ -4024,6 +5425,7 @@ async function pollBridge() {
     }
   } catch (e) {
     state.bridgeStatus = 'offline'
+    state.nativeBridgeConnected = false
     state.appActive = false
   }
 
@@ -4051,6 +5453,10 @@ async function pollBridge() {
   if (bridgeOk && appLoadingVisible) {
     appLoadedOnce = true
     hideBootLoader()
+  }
+
+  } finally {
+    bridgePollInFlight = false
   }
 }
 
@@ -4167,7 +5573,7 @@ async function cancelDirectorRecado() {
 
 function renderRecadosModal() {
   if (!state.showRecadosModal) return ''
-  return `<div class="modalOverlay recadosOverlay" data-close-recados><div class="modalSpacer"></div><div class="modalBox recadosModalBox" data-stop-modal><div class="recadosTopButtons"><button class="modalOkBtnWide recadosSendBtn" data-action="recados-send" ${state.recadosSending ? 'disabled' : ''}>${state.recadosSending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="modalCancelBtn recadosCancelBtn" data-action="recados-cancel">CANCELAR</button><button class="modalCancelBtn recadosCloseBtn" data-action="recados-close">FECHAR</button></div><textarea id="recadosDirectorTextarea" class="recadosTextarea" placeholder="Digite o recado técnico..." maxlength="500">${escapeHtml(state.recadosDraft || '')}</textarea><div id="recadosDirectorStatus" class="recadosStatus">${escapeHtml(getDirectorRecadosStatusText())}</div></div><div class="modalBottomSpace"></div></div>`
+  return `<div class="modalOverlay recadosOverlay" data-close-recados><div class="modalSpacer"></div><div class="modalBox recadosModalBox" data-stop-modal><div class="recadosTopButtons"><button class="modalOkBtnWide recadosSendBtn" data-action="recados-send" ${state.recadosSending ? 'disabled' : ''}>${state.recadosSending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="modalCancelBtn recadosCancelBtn" data-action="recados-cancel">RETIRAR</button><button class="modalCancelBtn recadosCloseBtn" data-action="recados-close">FECHAR</button></div><textarea id="recadosDirectorTextarea" class="recadosTextarea" placeholder="Digite o recado técnico..." maxlength="500">${escapeHtml(state.recadosDraft || '')}</textarea><div id="recadosDirectorStatus" class="recadosStatus">${escapeHtml(getDirectorRecadosStatusText())}</div></div><div class="modalBottomSpace"></div></div>`
 }
 
 function openProjectTabsModal() {
@@ -4287,16 +5693,14 @@ function getBorderGlowCss() {
   return `hsla(${state.borderHue}, 100%, 55%, 0.35)`
 }
 
-function getBlockOutlineColorCss() {
-  normalizeRgbModeState()
-  if (String(state.rgbMode || '').toLowerCase() === 'off') return 'rgba(148,163,184,0.72)'
-  return getBorderColorCss()
+function getBlockOutlineColorCss(item = null) {
+  return getAppBridgeBlockColor(item) || 'var(--app-border-color)'
 }
 
-function getBlockOutlineGlowCss() {
-  normalizeRgbModeState()
-  if (String(state.rgbMode || '').toLowerCase() === 'off') return 'rgba(148,163,184,0.22)'
-  return getBorderGlowCss()
+function getBlockOutlineGlowCss(item = null) {
+  const color = getAppBridgeBlockColor(item)
+  if (color) return color
+  return 'var(--app-border-glow)'
 }
 
 function cycleRgbMode() {
@@ -4376,6 +5780,7 @@ function openMarkersPanel() {
   if (state.activeTab !== 'playlist') return
   state.localMarkersMode = true
   state.playlistView = 'markers'
+  state.markersPanelAnimateUntil = Date.now() + 360
   state.settingsMenuOpen = false
   state.showTunerModal = false
   postCommand('set_page', { page: 'playlist' })
@@ -4420,6 +5825,8 @@ function handleConfirmPlaylistSwitch() {
   const key = String(state.selectedSwitchPlaylistId || '')
   if (!key) return
   state.activePlaylistId = key
+  state.pendingPlaylistSwitchId = key
+  state.pendingPlaylistSwitchUntilMs = Date.now() + 9000
   state.showPlaylistSwitchModal = false
   state.settingsMenuOpen = false
   state.localMarkersMode = false
@@ -5058,11 +6465,90 @@ function bindEditDragHandlers(selector, tabName) {
   })
 }
 
+// 2.0.30: Marker armado no Diretor fica verde/local até Cancelar/ESC.
+// O Bridge parado pode demorar a confirmar selectedMarkerId; então o front mantém
+// a seleção local para o segundo clique e para exibir o botão Cancelar.
+const DIRECTOR_MARKER_LOCAL_HOLD_MS = 12000
+const DIRECTOR_MARKER_ARMED_HOLD_MS = 7200000
+let directorMarkerLocalHoldId = null
+let directorMarkerLocalHoldUntil = 0
+let directorMarkerArmedLocalHoldId = null
+let directorMarkerArmedLocalHoldUntil = 0
+
+function setDirectorMarkerLocalHold(id, ms = DIRECTOR_MARKER_LOCAL_HOLD_MS) {
+  const key = String(id ?? '')
+  if (!key) return
+  directorMarkerLocalHoldId = key
+  directorMarkerLocalHoldUntil = Date.now() + Math.max(800, Number(ms) || DIRECTOR_MARKER_LOCAL_HOLD_MS)
+}
+
+function clearDirectorMarkerLocalHold() {
+  directorMarkerLocalHoldId = null
+  directorMarkerLocalHoldUntil = 0
+}
+
+function setDirectorMarkerArmedLocalHold(id, ms = DIRECTOR_MARKER_ARMED_HOLD_MS) {
+  const key = String(id ?? '')
+  if (!key) return
+  directorMarkerArmedLocalHoldId = key
+  directorMarkerArmedLocalHoldUntil = Date.now() + Math.max(1200, Number(ms) || DIRECTOR_MARKER_ARMED_HOLD_MS)
+}
+
+function clearDirectorMarkerArmedLocalHold() {
+  directorMarkerArmedLocalHoldId = null
+  directorMarkerArmedLocalHoldUntil = 0
+}
+
+function getActiveDirectorMarkerArmedLocalHoldId() {
+  const key = String(directorMarkerArmedLocalHoldId || '')
+  if (!key) return null
+  if (Date.now() >= Number(directorMarkerArmedLocalHoldUntil || 0)) {
+    clearDirectorMarkerArmedLocalHold()
+    return null
+  }
+  return key
+}
+
+function isDirectorMarkerArmedLocally(id) {
+  const key = String(id ?? '')
+  const armed = getActiveDirectorMarkerArmedLocalHoldId()
+  return !!(key && armed && key === armed)
+}
+
+function getDirectorMarkerArmedVisualId() {
+  return String(state.markerGoFlashId || '') || getActiveDirectorMarkerArmedLocalHoldId() || ''
+}
+
+function shouldShowDirectorMarkerCancelButton() {
+  if (!isMarkersPanelOpen()) return false
+  return !!String(getDirectorMarkerArmedVisualId?.() || '').trim()
+}
+
+function getActiveDirectorMarkerLocalHoldId() {
+  const key = String(directorMarkerLocalHoldId || '')
+  if (!key) return null
+  if (Date.now() >= Number(directorMarkerLocalHoldUntil || 0)) {
+    clearDirectorMarkerLocalHold()
+    return null
+  }
+  return key
+}
+
+function isDirectorMarkerLocallyHeld(id) {
+  const key = String(id ?? '')
+  const held = getActiveDirectorMarkerLocalHoldId()
+  return !!(key && held && key === held)
+}
+
 function handleMarkerCancel() {
   state.markerGoFlashId = null
+  state.markerGoFlashStartedAtMs = 0
+  state.markerGoFlashForceUntil = 0
   state.selectedMarkerId = null
-  postCommand('marker_cancel')
-  render()
+  clearDirectorMarkerLocalHold()
+  clearDirectorMarkerArmedLocalHold()
+  postCommand('marker_cancel', { key: 'ESC', escapeKey: true, activeTab: 'playlist', page: 'markers' })
+  showAppPopup('MARKER CANCELADO', 'error', 1200)
 }
 
 function handleDeleteSelectedPlaylistItems() {
@@ -5189,10 +6675,30 @@ function handleConfirmRenameModal() {
   render()
 }
 
+
+function isAppItemIdHashChild(id, preferredList = null) {
+  const key = String(id ?? '')
+  if (!key) return false
+  const lists = []
+  if (Array.isArray(preferredList)) lists.push(preferredList)
+  const playlist = activePlaylist ? activePlaylist() : null
+  if (Array.isArray(playlist?.songs)) lists.push(playlist.songs)
+  if (Array.isArray(state.regions)) lists.push(state.regions)
+  for (const list of lists) {
+    const item = list.find((entry) => String(entry?.id ?? entry?.songId ?? '') === key)
+    if (item) return isHashChildItem(item)
+  }
+  return false
+}
+
 function selectRegion(id) {
   clearStoppedSelectionHold()
   const key = String(id)
   const item = Array.isArray(state.regions) ? state.regions.find((entry) => String(entry?.id ?? '') === key) : null
+
+  if (shouldIgnoreHashChildClickDuringPlayback(item, key)) {
+    return
+  }
 
   if (state.deleteMode) return
 
@@ -5214,6 +6720,7 @@ function selectRegion(id) {
         render()
         return
       }
+      if (isAppItemIdHashChild(nextPlayableId)) return
       const localQueuedSongId = getLocalQueuedSongIdForRows()
       lockSelectionSync()
       state.selectedRegionId = null
@@ -5221,8 +6728,8 @@ function selectRegion(id) {
       if (String(localQueuedSongId || '') === String(nextPlayableId)) {
         clearQueueAndMaybeAutoplay()
       } else {
-        setLocalQueuedSong(nextPlayableId)
-        postCommand('queue_region_song', { id: nextPlayableId, activeTab: 'regions' })
+        setLocalQueuedSong(nextPlayableId, 'regions')
+        postCommand('queue_region_song', { ...getPlaybackCommandPayloadForTarget(nextPlayableId, 'regions', false), id: nextPlayableId, targetId: nextPlayableId, activeTab: 'regions' })
         render()
       }
       return
@@ -5236,8 +6743,8 @@ function selectRegion(id) {
     if (String(localQueuedSongId || '') === key) {
       clearQueueAndMaybeAutoplay()
     } else {
-      setLocalQueuedSong(key)
-      postCommand('queue_region_song', { id: key, activeTab: 'regions' })
+      setLocalQueuedSong(key, 'regions')
+      postCommand('queue_region_song', { ...getPlaybackCommandPayloadForTarget(key, 'regions', false), id: key, targetId: key, activeTab: 'regions' })
       render()
     }
     return
@@ -5264,6 +6771,7 @@ function selectRegion(id) {
   if (String(state.selectedRegionId || '') === key) {
     state.selectedRegionId = null
     state.selectedRegionIds = []
+    clearDirectorLocalSelectionHold()
     lockSelectionSync()
     postCommand('clear_selection', { activeTab: 'regions' })
     render()
@@ -5272,7 +6780,8 @@ function selectRegion(id) {
 
   state.selectedRegionId = key
   state.selectedRegionIds = []
-  lockSelectionSync()
+  setDirectorLocalSelectionHold(key, 'regions')
+  lockSelectionSync(DIRECTOR_LOCAL_SELECTION_HOLD_MS)
   postCommand('select_region', { id: key, activeTab: 'regions' })
   render()
 }
@@ -5317,6 +6826,10 @@ function selectPlaylistSong(id) {
   const item = Array.isArray(playlist?.songs) ? playlist.songs.find((entry) => String(entry?.id ?? entry?.songId ?? '') === key) : null
   state.selectedMarkerId = null
 
+  if (shouldIgnoreHashChildClickDuringPlayback(item, key)) {
+    return
+  }
+
   if (state.deleteMode) {
     if (state.selectedPlaylistSongIds.includes(key)) {
       state.selectedPlaylistSongIds = state.selectedPlaylistSongIds.filter((item) => item !== key)
@@ -5343,14 +6856,15 @@ function selectPlaylistSong(id) {
         render()
         return
       }
+      if (isAppItemIdHashChild(nextPlayableId)) return
       const localQueuedSongId = getLocalQueuedSongIdForRows()
       lockSelectionSync()
       state.selectedPlaylistSongId = null
       if (String(localQueuedSongId || '') === String(nextPlayableId)) {
         clearQueueAndMaybeAutoplay()
       } else {
-        setLocalQueuedSong(nextPlayableId)
-        postCommand('queue_playlist_song', { id: nextPlayableId, activeTab: 'playlist' })
+        setLocalQueuedSong(nextPlayableId, 'playlist')
+        postCommand('queue_playlist_song', { ...getPlaybackCommandPayloadForTarget(nextPlayableId, 'playlist', false), id: nextPlayableId, targetId: nextPlayableId, activeTab: 'playlist' })
         render()
       }
       return
@@ -5363,8 +6877,8 @@ function selectPlaylistSong(id) {
     if (String(localQueuedSongId || '') === key) {
       clearQueueAndMaybeAutoplay()
     } else {
-      setLocalQueuedSong(key)
-      postCommand('queue_playlist_song', { id: key, activeTab: 'playlist' })
+      setLocalQueuedSong(key, 'playlist')
+      postCommand('queue_playlist_song', { ...getPlaybackCommandPayloadForTarget(key, 'playlist', false), id: key, targetId: key, activeTab: 'playlist' })
       render()
     }
     return
@@ -5375,6 +6889,7 @@ function selectPlaylistSong(id) {
   if (String(state.selectedPlaylistSongId || '') === key) {
     state.selectedPlaylistSongId = null
     state.selectedPlaylistSongIds = []
+    clearDirectorLocalSelectionHold()
     lockSelectionSync()
     postCommand('clear_selection', { activeTab: 'playlist' })
     render()
@@ -5383,27 +6898,81 @@ function selectPlaylistSong(id) {
 
   state.selectedPlaylistSongId = key
   state.selectedPlaylistSongIds = []
-  lockSelectionSync()
-  postCommand('select_playlist_song', { id: key, activeTab: 'playlist' })
+  setDirectorLocalSelectionHold(key, 'playlist')
+  lockSelectionSync(DIRECTOR_LOCAL_SELECTION_HOLD_MS)
+  postCommand('select_playlist_song', {
+    id: key,
+    targetId: key,
+    songId: key,
+    activeTab: 'playlist',
+    playlistId: state.activePlaylistId || playlist?.id || '',
+    playlistName: playlist?.name || state.activePlaylistName || state.currentPlaylistName || '',
+    sourceNumber: item?.sourceNumber ?? item?.source_number ?? key,
+    source_number: item?.source_number ?? item?.sourceNumber ?? key,
+    startPos: item?.startPos ?? item?.start_pos,
+    endPos: item?.endPos ?? item?.end_pos,
+    playlistOrder: item?.playlistOrder ?? item?.order ?? item?.index,
+    index: item?.index,
+    familyRole: item?.familyRole || item?.type || item?.itemType || '',
+    isHashChild: !!item?.isHashChild,
+    parentId: item?.parentId || '',
+  })
+  fastPollBridge(5)
   render()
+}
+
+
+function buildDirectorMarkerCommandPayload(key) {
+  const marker = currentMarkers().find((entry) => String(entry?.id) === String(key)) || null
+  const originalIndex = marker?.originalIndex ?? marker?.markerOriginalIndex ?? marker?.sourceIndex ?? marker?.index ?? key
+  const commandId = originalIndex != null && String(originalIndex) !== '' ? String(originalIndex) : String(key)
+  return {
+    id: commandId,
+    markerId: String(key),
+    selectedMarkerId: String(key),
+    targetId: commandId,
+    markerOriginalIndex: originalIndex,
+    originalIndex,
+    timeSec: marker?.timeSec,
+    position: marker?.timeSec,
+    songId: marker?.songId,
+    name: marker?.name || marker?.label || '',
+    confirm: false,
+  }
 }
 
 function selectMarker(id) {
   clearStoppedSelectionHold()
   const key = String(id)
-  if (String(state.selectedMarkerId || '') === key) {
+  if (!key) return
+
+  const alreadySelected = String(state.selectedMarkerId || '') === key || isDirectorMarkerLocallyHeld(key) || String(state.markerGoFlashId || '') === key
+  if (alreadySelected) {
+    // Segundo clique confirma/engatilha o marker: fica verde até cancelar/ESC.
+    state.selectedMarkerId = key
     state.markerGoFlashId = key
-    postCommand('marker_go', { id: key })
-    window.setTimeout(() => {
-      if (String(state.markerGoFlashId || '') === key) {
-        state.markerGoFlashId = null
-        render()
-      }
-    }, 1100)
+    state.markerGoFlashStartedAtMs = Date.now()
+    state.markerGoFlashForceUntil = Date.now() + 3600000
+    try {
+      const markerItem = currentMarkers().find((entry) => String(entry?.id) === key)
+      state.markerGoFlashTargetSec = Number(markerItem?.timeSec)
+    } catch (_) {
+      state.markerGoFlashTargetSec = null
+    }
+    setDirectorMarkerLocalHold(key)
+    setDirectorMarkerArmedLocalHold(key)
+    postCommand('marker_go', { ...buildDirectorMarkerCommandPayload(key), confirm: true })
+    showAppPopup('MARKER ENGATILHADO', 'marker', 1200)
   } else {
+    // Primeiro clique apenas seleciona: fica amarelo.
     state.selectedMarkerId = key
     state.markerGoFlashId = null
-    postCommand('marker_select', { id: key })
+    state.markerGoFlashStartedAtMs = 0
+    state.markerGoFlashForceUntil = 0
+    state.markerGoFlashTargetSec = null
+    clearDirectorMarkerArmedLocalHold()
+    setDirectorMarkerLocalHold(key)
+    postCommand('marker_select', { ...buildDirectorMarkerCommandPayload(key), confirm: false })
   }
   render()
 }
@@ -5475,9 +7044,75 @@ function handleConfirmAddExisting() {
   render()
 }
 
-function getNextAutoQueuedSongId() {
+function isDirectorQueuedIdAllowed(id) {
+  const key = String(id ?? '')
+  if (!key) return false
+  const song = findSongByIdEverywhere ? findSongByIdEverywhere(key) : null
+  return !(song && isHashChildItem(song))
+}
+
+function getExplicitQueuedSongId() {
+  if (state.localQueuedSongId != null && String(state.localQueuedSongId) !== '') {
+    const age = Date.now() - Number(state.localQueuedSongAt || 0)
+    if (age >= 0 && age <= 12000 && isDirectorQueuedIdAllowed(state.localQueuedSongId)) return String(state.localQueuedSongId)
+    clearLocalQueuedSong()
+  }
+  if (Date.now() >= Number(remoteQueuedIgnoreUntil || 0) && state.queuedSongId != null && String(state.queuedSongId) !== '') {
+    if (isDirectorQueuedIdAllowed(state.queuedSongId)) return String(state.queuedSongId)
+  }
+  return null
+}
+
+function findAutoBlocoBoundaryStopTargetFromList(list, playingKey) {
+  if (!Array.isArray(list) || !playingKey) return null
+  const idx = list.findIndex((item) => String(item?.id ?? item?.songId ?? '') === String(playingKey))
+  if (idx < 0) return null
+
+  let crossedBlock = false
+  for (let i = idx + 1; i < list.length; i += 1) {
+    const item = list[i]
+    if (!item) continue
+    if (isHashChildItem(item)) continue
+    if (detectBlockItem(item)) {
+      crossedBlock = true
+      continue
+    }
+    const id = String(item.id ?? item.songId ?? '')
+    if (!id || id === String(playingKey)) continue
+    return crossedBlock ? id : null
+  }
+  return null
+}
+
+function getAutoBlocoStoppedSelectionTargetId(stoppedId = state.playingId, preferredTab = null) {
+  if (!state.autoBlocoEnabled || !getAutoplayVisualEnabled()) return null
+  const playingKey = String(stoppedId || state.playingId || '')
+  if (!playingKey) return null
+
+  const lists = []
+  const playlist = activePlaylist()
+  if ((preferredTab || state.activeTab) === 'playlist' && Array.isArray(playlist?.songs)) lists.push(playlist.songs)
+  if ((preferredTab || state.activeTab) === 'regions' && Array.isArray(state.regions)) lists.push(state.regions)
+  if (Array.isArray(playlist?.songs) && !lists.includes(playlist.songs)) lists.push(playlist.songs)
+  if (Array.isArray(state.regions) && !lists.includes(state.regions)) lists.push(state.regions)
+
+  for (const list of lists) {
+    const target = findAutoBlocoBoundaryStopTargetFromList(list, playingKey)
+    if (target && isDirectorQueuedIdAllowed(target)) return String(target)
+  }
+  return null
+}
+
+function getNextAutoQueuedSongId(options = {}) {
   if (!getAutoplayVisualEnabled() || !state.playingId) return null
   const playingKey = String(state.playingId || '')
+
+  // Se o AutoBloco bloqueou a passagem para o próximo bloco, essa música não
+  // deve aparecer como fila amarela. Ela só vira seleção quando o usuário parar.
+  if (!options.allowAutoBlocoBoundary && getAutoBlocoStoppedSelectionTargetId(playingKey, state.activeTab)) {
+    return null
+  }
+
   const candidates = []
   const playlist = activePlaylist()
   if (Array.isArray(playlist?.songs) && playlist.songs.length) candidates.push(playlist.songs)
@@ -5488,25 +7123,44 @@ function getNextAutoQueuedSongId() {
     if (idx < 0) continue
     for (let i = idx + 1; i < list.length; i += 1) {
       const item = list[i]
-      if (!item || detectBlockItem(item)) continue
+      if (!item || detectBlockItem(item) || isHashChildItem(item)) continue
       const id = String(item.id ?? item.songId ?? '')
-      if (id && id !== playingKey) return id
+      if (id && id !== playingKey && isDirectorQueuedIdAllowed(id)) return id
     }
   }
   return null
 }
 
 function getVisualQueuedSongId() {
-  if (state.localQueuedSongId != null && String(state.localQueuedSongId) !== '') {
-    const age = Date.now() - Number(state.localQueuedSongAt || 0)
-    if (age >= 0 && age <= 12000) return String(state.localQueuedSongId)
-    clearLocalQueuedSong()
+  const explicitQueuedId = getExplicitQueuedSongId()
+  if (explicitQueuedId) return explicitQueuedId
+  const autoQueuedId = getNextAutoQueuedSongId({ allowAutoBlocoBoundary: false })
+  if (autoQueuedId && isDirectorQueuedIdAllowed(autoQueuedId)) return String(autoQueuedId)
+  return null
+}
+
+function getDirectorStopSelectionTarget(stoppedId, preferredTab = null) {
+  const stoppedKey = stoppedId != null ? String(stoppedId) : ''
+  const explicitQueuedKey = getExplicitQueuedSongId ? getExplicitQueuedSongId() : null
+
+  if (explicitQueuedKey) {
+    const queuedItem = findSongByIdEverywhere ? findSongByIdEverywhere(explicitQueuedKey) : null
+    if (queuedItem && !detectBlockItem(queuedItem) && !isHashChildItem(queuedItem)) {
+      const queuedTab = state.localQueuedSongTab || getPreferredStoppedSelectionTab(explicitQueuedKey, state.activeTab || preferredTab || null)
+      return { id: String(explicitQueuedKey), tab: queuedTab || preferredTab || state.activeTab || 'playlist', fromQueue: true, source: 'manual_queue' }
+    }
   }
-  if (Date.now() >= Number(remoteQueuedIgnoreUntil || 0) && state.queuedSongId != null && String(state.queuedSongId) !== '') {
-    return String(state.queuedSongId)
+
+  const autoBlocoTarget = getAutoBlocoStoppedSelectionTargetId ? getAutoBlocoStoppedSelectionTargetId(stoppedKey, preferredTab) : null
+  if (autoBlocoTarget) {
+    return { id: String(autoBlocoTarget), tab: getPreferredStoppedSelectionTab(autoBlocoTarget, preferredTab || state.activeTab || 'playlist'), fromQueue: false, source: 'auto_bloco' }
   }
-  const autoQueuedId = getNextAutoQueuedSongId()
-  if (autoQueuedId) return String(autoQueuedId)
+
+  const autoQueuedKey = getNextAutoQueuedSongId ? getNextAutoQueuedSongId({ allowAutoBlocoBoundary: false }) : null
+  if (autoQueuedKey) {
+    return { id: String(autoQueuedKey), tab: getPreferredStoppedSelectionTab(autoQueuedKey, preferredTab || state.activeTab || 'playlist'), fromQueue: true, source: 'auto_queue' }
+  }
+
   return null
 }
 
@@ -5566,7 +7220,13 @@ function applyDirectorLocalStopIfMusicEnded() {
   if (!duration && remaining > 0.05) return false
 
   const preferredTab = lastPlaybackSelectionTab || state.activeTab || 'playlist'
-  applyStoppedSongSelection(playingId, preferredTab)
+  const stopSelectionTarget = getDirectorStopSelectionTarget(playingId, preferredTab)
+  if (stopSelectionTarget && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(playingId || '')) {
+    applyStoppedSongSelection(stopSelectionTarget.id, stopSelectionTarget.tab)
+  } else {
+    clearStoppedSelectionHold()
+    state.selectionLockUntil = 0
+  }
   state.pendingStopClear = false
   state.loopActive = false
   state.bridgePopupVisible = false
@@ -5584,7 +7244,9 @@ function applyDirectorLocalStopIfMusicEnded() {
   pendingPlaybackDesiredSourceTab = null
   lockSelectionSync()
   try { render() } catch (error) {}
-  try { forceStoppedSelectionDom(playingId, preferredTab) } catch (error) {}
+  if (stopSelectionTarget && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(playingId || '')) {
+    try { forceStoppedSelectionDom(stopSelectionTarget.id, stopSelectionTarget.tab) } catch (error) {}
+  }
   return true
 }
 
@@ -5663,14 +7325,34 @@ function applyStoppedSongSelection(songId, preferredTab = null, options = {}) {
   state.multiSelectMode = false
   state.multiSelectTab = null
 
+  // Depois do Stop, o próximo Play precisa usar a música selecionada pelo Lua/Auto/Fila,
+  // não a música que estava tocando antes. Mantém também a memória interna do player.
+  lastPlaybackSelectionId = key
+  lastPlaybackSelectionTab = tab
+  pendingPlaybackDesiredSourceId = null
+  pendingPlaybackDesiredSourceTab = tab
+
+  clearDirectorLocalSelectionHold()
+
   if (options.hold !== false) {
     state.stoppedSelectionHoldId = key
     state.stoppedSelectionHoldTab = tab
-    state.stoppedSelectionHoldUntil = Date.now() + 4200
-    state.selectionLockUntil = Math.max(Number(state.selectionLockUntil || 0), Date.now() + 4200)
+    state.stoppedSelectionHoldUntil = Date.now() + 8000
+    state.selectionLockUntil = Math.max(Number(state.selectionLockUntil || 0), Date.now() + 8000)
   }
 
   return true
+}
+
+function getActiveStoppedSelectionHoldTarget() {
+  const key = String(state.stoppedSelectionHoldId || '')
+  if (!key) return null
+  if (Date.now() >= Number(state.stoppedSelectionHoldUntil || 0)) {
+    clearStoppedSelectionHold()
+    return null
+  }
+  const tab = getPreferredStoppedSelectionTab(key, state.stoppedSelectionHoldTab || state.activeTab || 'playlist')
+  return { id: key, tab }
 }
 
 function forceStoppedSelectionDom(songId, preferredTab = null) {
@@ -5719,6 +7401,17 @@ function rememberCurrentPlaybackSelection(songId, preferredTab = null) {
 }
 
 function handlePlayToggle(event = null) {
+  if (isDirectorTransportProtectionEnabled()) {
+    const nowProtectedTap = Date.now()
+    const lastProtectedTap = Number(state.lastProtectedPlayTapAt || 0)
+    if (!lastProtectedTap || (nowProtectedTap - lastProtectedTap) > 420) {
+      state.lastProtectedPlayTapAt = nowProtectedTap
+      showAppPopup('TOQUE DE NOVO PARA PLAY/STOP', 'info', 700)
+      return
+    }
+    state.lastProtectedPlayTapAt = 0
+  }
+
   const playCommandNow = Date.now()
 
   // Guarda apenas contra duplo clique real muito rápido.
@@ -5733,12 +7426,17 @@ function handlePlayToggle(event = null) {
 
   const uiWasPlaying = getPlaybackUiActive()
 
+  const stoppedHoldTarget = uiWasPlaying ? null : getActiveStoppedSelectionHoldTarget()
   let targetId = uiWasPlaying
     ? null
-    : (selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : null))
+    : (stoppedHoldTarget?.id || (selectedRegionId != null ? String(selectedRegionId) : (selectedPlaylistSongId != null ? String(selectedPlaylistSongId) : null)))
   const targetTab = uiWasPlaying
     ? null
-    : (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab))
+    : (stoppedHoldTarget?.tab || (selectedRegionId != null ? 'regions' : (selectedPlaylistSongId != null ? 'playlist' : state.activeTab)))
+
+  if (!uiWasPlaying && stoppedHoldTarget?.id) {
+    applyStoppedSongSelection(stoppedHoldTarget.id, stoppedHoldTarget.tab, { hold: false })
+  }
 
   if (!uiWasPlaying && targetId) {
     const originalTargetId = String(targetId)
@@ -5777,8 +7475,20 @@ function handlePlayToggle(event = null) {
   if (uiWasPlaying) {
     const stoppedId = state.playingId || lastPlaybackSelectionId || pendingPlaybackDesiredSourceId
     const stoppedPreferredTab = lastPlaybackSelectionTab || pendingPlaybackDesiredSourceTab || state.activeTab
-    postPlaybackToggleCommand(stoppedId, stoppedPreferredTab, false)
-    applyStoppedSongSelection(stoppedId, stoppedPreferredTab)
+    const stopSelectionTarget = getDirectorStopSelectionTarget(stoppedId, stoppedPreferredTab)
+    const hasRealStopSelectionTarget = !!(stopSelectionTarget && stopSelectionTarget.id && stopSelectionTarget.source && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(stoppedId || ''))
+    postPlaybackToggleCommand(stoppedId, stoppedPreferredTab, false, hasRealStopSelectionTarget ? { stopSelectionTargetId: stopSelectionTarget.id, stopSelectionTargetTab: stopSelectionTarget.tab, stopSelectionTargetSource: stopSelectionTarget.source } : null)
+    if (hasRealStopSelectionTarget) {
+      applyStoppedSongSelection(stopSelectionTarget.id, stopSelectionTarget.tab)
+    } else {
+      clearStoppedSelectionHold()
+      clearDirectorLocalSelectionHold()
+      state.selectedRegionId = null
+      state.selectedRegionIds = []
+      state.selectedPlaylistSongId = null
+      state.selectedPlaylistSongIds = []
+      state.selectionLockUntil = 0
+    }
     state.pendingStopClear = false
     state.loopActive = false
     state.bridgePopupVisible = false
@@ -5792,7 +7502,9 @@ function handlePlayToggle(event = null) {
     resetPlaybackLiveState(true)
     lockSelectionSync()
     render()
-    forceStoppedSelectionDom(stoppedId, stoppedPreferredTab)
+    if (stopSelectionTarget && stopSelectionTarget.source !== 'stopped' && String(stopSelectionTarget.id || '') !== String(stoppedId || '')) {
+      forceStoppedSelectionDom(stopSelectionTarget.id, stopSelectionTarget.tab)
+    }
   } else {
     if (targetId) {
       showLocalPlaybackPopupForId(targetId)
@@ -5897,6 +7609,7 @@ function handleTouchEnd(e) {
     // Repertórios -> swipe para esquerda abre Markers.
     state.localMarkersMode = true
     state.playlistView = 'markers'
+    state.markersPanelAnimateUntil = Date.now() + 360
     postCommand('set_page', { page: 'playlist' })
     postCommand('set_parts_visibility', { page: 'playlist', visible: '1' })
     render()
@@ -5924,21 +7637,42 @@ function handleTouchEnd(e) {
 
 function getCurrentPlayingElapsedSec() {
   if (!state.playingId) return null
-  const region = state.regions.find((item) => String(item.id) === String(state.playingId))
-  if (!region) return null
-  const duration = Number(region.durationSec) || 0
-  const remaining = Number(region.remainingSec) || 0
-  return Math.max(0, duration - remaining)
+
+  // Fonte principal: sync real do Bridge/Lua. O app interpola localmente
+  // para limpar o marker verde/piscando assim que a reprodução chega na Part.
+  const syncedElapsed = Number(state.playbackElapsedSec)
+  if (Number.isFinite(syncedElapsed)) {
+    const syncedAt = Number(state.playbackSyncedAtMs || 0)
+    const ageMs = syncedAt > 0 ? Math.max(0, Date.now() - syncedAt) : 0
+    const localAdd = ageMs > 0 && ageMs < 8000 ? ageMs / 1000 : 0
+    return Math.max(0, syncedElapsed + localAdd)
+  }
+
+  const item = findSongByIdEverywhere ? findSongByIdEverywhere(state.playingId) : null
+  if (!item) return null
+  const duration = Number(item.durationSec) || 0
+  const remaining = Number(item.remainingSec) || 0
+  if (duration > 0 && remaining >= 0) return Math.max(0, duration - remaining)
+  return null
 }
 
 function isMarkerBlinking(item) {
-  if (!state.playingId) return false
-  if (String(state.selectedMarkerId || '') !== String(item.id)) return false
-  const elapsed = getCurrentPlayingElapsedSec()
-  if (elapsed == null) return false
-  const timeUntilMarker = (Number(item.timeSec) || 0) - elapsed
-  return timeUntilMarker >= 0 && timeUntilMarker <= 4
+  if (!item) return false
+  const itemId = String(item.id ?? '')
+  if (!itemId) return false
+  const armedId = String(getDirectorMarkerArmedVisualId?.() || '')
+  if (!armedId || armedId !== itemId) return false
+  return true
 }
+
+
+
+function syncDirectorMarkerArmedVisualWithPlayback(markersList = null) {
+  // O App Diretor não limpa mais o verde/pisca sozinho pelo elapsed.
+  // O marker confirmado fica visualmente armado até Cancelar/ESC ou novo marker.
+  return false
+}
+
 
 function formatRowLabel(item, type) {
   const rawLabel = upperText(item.label || item.name || '---')
@@ -5973,28 +7707,42 @@ function renderRows(items, type) {
   return items.map((item, index) => {
     const itemId = String(item.id)
     const isPlaying = type !== 'marker' && String(state.playingId || '') === itemId
-    const isQueued = (type === 'song' || type === 'region') && String(visualQueuedSongId || '') === itemId
+    const isHashChildForVisualGuard = isHashChildItem(item)
+    const isQueued = (type === 'song' || type === 'region') && !isHashChildForVisualGuard && String(visualQueuedSongId || '') === itemId
     const isBlock = detectBlockItem(item)
-    const blockOutlineStyle = isBlock ? ` style="--block-outline-color:${escapeHtml(getBlockOutlineColorCss())};--block-outline-glow:${escapeHtml(getBlockOutlineGlowCss())};"` : ''
-    const isSelected = type === 'region'
+    const isLiveExecuted = !isPlaying && !isQueued && !isBlock && !!(item?.isLiveExecuted || item?.liveExecuted || item?.alreadyPlayed || item?.played || item?.executed)
+    const blockOutlineStyle = isBlock ? ` style="--block-outline-color:${escapeHtml(getBlockOutlineColorCss(item))};--block-outline-glow:${escapeHtml(getBlockOutlineGlowCss(item))};"` : ''
+    const suppressBlockedChildVisual = (type === 'song' || type === 'region')
+      && isHashChildForVisualGuard
+      && !!state.playingId
+      && String(state.playingId || '') !== itemId
+      && String(visualQueuedSongId || '') !== itemId
+    const rawSelected = type === 'region'
       ? (isMultiSelectActiveFor('regions') ? state.selectedRegionIds.includes(itemId) : String(state.selectedRegionId || '') === itemId)
       : type === 'song'
       ? (isMultiSelectActiveFor('playlist') ? state.selectedPlaylistSongIds.includes(itemId) : String(state.selectedPlaylistSongId || '') === itemId)
-      : String(state.selectedMarkerId || '') === itemId
+      : (String(state.selectedMarkerId || '') === itemId || isDirectorMarkerLocallyHeld?.(itemId) || String(getDirectorMarkerArmedVisualId?.() || '') === itemId)
+    // O item tocando não deve herdar azul de seleção antigo.
+    // A música em reprodução já tem estado visual próprio; seleção azul é somente alvo manual/local.
+    const suppressPlayingSelectedVisual = (type === 'song' || type === 'region') && isPlaying
+    const isSelected = (suppressBlockedChildVisual || suppressPlayingSelectedVisual) ? false : rawSelected
 
     const classes = ['item']
     if (isQueued) {
       classes.push('queuedYellow')
     } else if (type === 'marker' && isSelected) {
       classes.push('markerSelectedActive')
-      if (String(state.markerGoFlashId || '') === itemId) classes.push('markerGoConfirmed')
+      if (String(getDirectorMarkerArmedVisualId() || '') === itemId) classes.push('markerGoConfirmed')
       if (isMarkerBlinking(item)) classes.push('markerBlink')
     } else if (isSelected) {
       classes.push(isBlock ? 'selectedPink' : 'selectedBlue')
     }
     if (isPlaying) classes.push('playing')
+    if (isLiveExecuted) classes.push('liveExecuted')
 
     const attr = type === 'region' ? `data-region-id="${itemId}"` : type === 'song' ? `data-song-id="${itemId}"` : `data-marker-id="${itemId}"`
+    const familyGroupId = item?.familyGroupId != null ? String(item.familyGroupId) : ''
+    const familyAttr = familyGroupId ? ` data-family-group-id="${escapeHtml(familyGroupId)}" data-family-role="${escapeHtml(item?.familyRole || '')}" data-parent-id="${escapeHtml(String(item?.parentId || item?.parentSourceNumber || ''))}"` : ''
     const label = formatRowLabel(item, type)
     const isHashChild = isHashChildItem(item)
     const isHashParent = isHashParentItem(item)
@@ -6020,6 +7768,8 @@ function renderRows(items, type) {
       ? 'markerSelectedText'
       : isSelected
       ? (isBlock ? 'selectedPinkText' : 'selectedBlueText')
+      : isLiveExecuted
+      ? 'liveExecutedText'
       : isBlock
       ? 'blockText'
       : 'text'
@@ -6032,12 +7782,18 @@ function renderRows(items, type) {
       ? 'markerSelectedTimeText'
       : isSelected
       ? (isBlock ? 'selectedPinkTimeText' : 'selectedBlueTimeText')
+      : isLiveExecuted
+      ? 'liveExecutedTimeText'
       : isBlock
       ? 'blockTimeText'
       : 'timeText'
 
     if (isBlock) classes.push('blockItem')
-    if (isHashChild) classes.push('hashChildItem')
+    if (isHashChild) {
+      classes.push('hashChildItem')
+      const hashAnimClass = vshookHashChildAnimationClasses(item, type === 'song' ? 'song' : 'region')
+      if (hashAnimClass) classes.push(hashAnimClass)
+    }
     if (isHashParent) classes.push('hashParentItem')
     if (hasNumberCol) classes.push('numberedItem')
     const showEditHandle = state.editMode && !state.deleteMode && (type === 'song' || type === 'region')
@@ -6052,12 +7808,15 @@ function renderRows(items, type) {
     const displayLabel = formatHashFamilyLabel(item, label)
     const labelHtml = `<span class="${rowLabelClass}"${labelStyle}>${isBlock ? escapeHtmlPreserveSpaces(displayLabel) : escapeHtml(displayLabel)}</span>`
     const progressRatio = getRowProgressRatio(playbackItem, isPlaying, isBlock)
+    const progressWidthCss = hasNumberCol
+      ? `left:42px;width:calc(${(progressRatio * 100).toFixed(3)}% - ${(42 * progressRatio).toFixed(3)}px);min-width:10px;`
+      : `left:0;width:${Math.round(progressRatio * 1000) / 10}%;min-width:10px;`
     const progressBarHtml = progressRatio > 0
-      ? `<div class="progressBar ${hasNumberCol ? 'progressBarWithNumber' : ''}" style="${hasNumberCol ? `left:42px;width:calc((100% - 42px) * ${progressRatio.toFixed(4)});min-width:10px;` : `left:0;width:${Math.round(progressRatio * 1000) / 10}%;min-width:10px;`}"></div>`
+      ? `<div class="progressBar ${hasNumberCol ? 'progressBarWithNumber' : ''}" style="${progressWidthCss}"></div>`
       : ''
 
     const rightColHtml = time ? `<div class="rightCol"><span class="${timeClass}">${time}</span></div>` : `<div class="rightCol rightColEmpty"></div>`
-    return `<div class="${classes.join(' ')}" ${attr}${blockOutlineStyle}>${progressBarHtml}${numberCol}${dragHandle}<div class="leftCol">${labelHtml}</div>${rightColHtml}</div>`
+    return `<div class="${classes.join(' ')}" ${attr}${familyAttr}${blockOutlineStyle}>${progressBarHtml}${numberCol}${dragHandle}<div class="leftCol">${labelHtml}</div>${rightColHtml}</div>`
   }).join('')
 }
 
@@ -6082,6 +7841,100 @@ function installPremixSafetyCloseFallback() {
   return true
 }
 
+
+function bindHashChildrenLongPress(el, type) {
+  if (!el || el.__hashLongPressBound === '1') return
+  el.__hashLongPressBound = '1'
+  let timer = null
+  let startX = 0
+  let startY = 0
+  let fired = false
+
+  const clear = () => {
+    if (timer) window.clearTimeout(timer)
+    timer = null
+    document.body.classList.remove('vshookNoTextSelect')
+  }
+
+  const run = (event) => {
+    fired = true
+    el.__hashLongPressJustFiredUntil = Date.now() + 900
+    document.body.classList.add('vshookNoTextSelect')
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+    event?.stopImmediatePropagation?.()
+    const id = type === 'region' ? el.getAttribute('data-region-id') : el.getAttribute('data-song-id')
+    const activeTab = type === 'region' ? 'regions' : 'playlist'
+    vshookToggleHashChildrenFront(el, type)
+    markDirectorLocalInput(1500)
+    postCommand('toggle_hash_children', {
+      id,
+      targetId: id,
+      selectedRegionId: activeTab === 'regions' ? id : undefined,
+      selectedPlaylistSongId: activeTab === 'playlist' ? id : undefined,
+      familyGroupId: el.getAttribute('data-family-group-id') || '',
+      familyRole: el.getAttribute('data-family-role') || '',
+      parentId: el.getAttribute('data-parent-id') || '',
+      activeTab,
+      page: activeTab,
+    })
+    showAppPopup('MOSTRAR / OCULTAR FILHOS', 'marker', 1200)
+    window.setTimeout(() => document.body.classList.remove('vshookNoTextSelect'), 250)
+  }
+
+  const begin = (event, x, y) => {
+    if (event?.pointerType === 'mouse' && event.button !== 0) return
+    if (type !== 'song') return
+    if (state.activeTab !== 'playlist' || state.playlistView === 'markers') return
+    if (state.editMode || state.deleteMode || state.dragActive || state.dragPending) return
+    fired = false
+    startX = Number(x) || 0
+    startY = Number(y) || 0
+    clear()
+    document.body.classList.add('vshookNoTextSelect')
+    timer = window.setTimeout(() => run(event), 1000)
+  }
+
+  const move = (event, x, y) => {
+    if (!timer) return
+    const dx = Math.abs((Number(x) || 0) - startX)
+    const dy = Math.abs((Number(y) || 0) - startY)
+    if (dx > 24 || dy > 24) clear()
+  }
+
+  const finish = (event) => {
+    const wasFired = fired
+    clear()
+    if (wasFired) {
+      event?.preventDefault?.()
+      event?.stopPropagation?.()
+      event?.stopImmediatePropagation?.()
+    }
+    window.setTimeout(() => { fired = false }, 160)
+  }
+
+  el.addEventListener('pointerdown', (event) => begin(event, event.clientX, event.clientY), { passive: false })
+  el.addEventListener('pointermove', (event) => move(event, event.clientX, event.clientY), { passive: true })
+  el.addEventListener('pointerup', finish, { passive: false })
+  el.addEventListener('pointercancel', finish, { passive: false })
+
+  el.addEventListener('touchstart', (event) => {
+    const t = event.changedTouches && event.changedTouches[0]
+    begin(event, t?.clientX, t?.clientY)
+  }, { passive: false })
+  el.addEventListener('touchmove', (event) => {
+    const t = event.changedTouches && event.changedTouches[0]
+    move(event, t?.clientX, t?.clientY)
+  }, { passive: true })
+  el.addEventListener('touchend', finish, { passive: false })
+  el.addEventListener('touchcancel', finish, { passive: false })
+
+  el.addEventListener('contextmenu', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  })
+}
+
 function bindEvents() {
   installSettingsMenuFallback()
   installPremixOpenFallback()
@@ -6094,6 +7947,12 @@ function bindEvents() {
   document.querySelector('[data-action="open-timer"]')?.addEventListener('click', openTimerModal)
   document.querySelector('[data-action="close-timer"]')?.addEventListener('click', closeTimerModal)
   document.querySelector('[data-action="confirm-timer"]')?.addEventListener('click', confirmTimerModal)
+  document.querySelector('[data-action="timer-mode-progressive"]')?.addEventListener('click', () => setTimerModeFromApp('progressive'))
+  document.querySelector('[data-action="timer-mode-countdown"]')?.addEventListener('click', () => setTimerModeFromApp('countdown'))
+  document.querySelectorAll('[data-timer-part]').forEach((input) => {
+    input.addEventListener('input', syncTimerTargetPreviewFromInputs)
+    input.addEventListener('change', syncTimerTargetPreviewFromInputs)
+  })
   bindReliableTapAction(document.querySelector('[data-action="toggle-settings"]'), 'toggle-settings', handleToggleSettingsMenu)
   bindReliableTapAction(document.querySelector('[data-action="open-project-tabs"]'), 'open-project-tabs', openProjectTabsModal)
   document.querySelector('[data-action="open-recados"]')?.addEventListener('click', openRecadosModal)
@@ -6110,13 +7969,14 @@ function bindEvents() {
   document.querySelector('[data-close-recados]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeRecadosModal() })
   document.querySelectorAll('[data-project-tab-index]').forEach((el) => el.addEventListener('click', () => selectProjectTabInModal(el.getAttribute('data-project-tab-index'))))
   document.querySelector('[data-action="cycle-rgb-mode"]')?.addEventListener('click', cycleRgbMode)
+  document.querySelector('[data-action="toggle-protection"]')?.addEventListener('click', toggleDirectorTransportProtection)
   document.querySelector('[data-action="theme-light"]')?.addEventListener('click', () => setTheme('light'))
   document.querySelector('[data-action="theme-dark"]')?.addEventListener('click', () => setTheme('dark'))
   document.querySelector('[data-action="toggle-select"]')?.addEventListener('click', handleSelectAction)
   document.querySelector('[data-action="copy-playlist-names"]')?.addEventListener('click', handleCopyPlaylistNames)
   bindPressAction(document.querySelector('[data-action="open-mixer"]'), 'open-mixer', () => openMixerModal('tracks'))
   bindPremixMenuButton(document.querySelector('[data-action="open-premix"]'))
-  bindPremixGlobalMenuButton(document.querySelector('[data-action="open-premix-global"]'))
+  // Global Premix removido
   bindPressAction(document.querySelector('[data-action="open-bpm"]'), 'open-bpm', openBpmModal)
   bindPressAction(document.querySelector('[data-action="open-tuner"]'), 'open-tuner', openTunerModal)
   bindModalCloseAction(document.querySelector('[data-action="close-bpm"]'), 'close-bpm', closeBpmModal)
@@ -6212,7 +8072,7 @@ function bindEvents() {
   document.querySelector('[data-action="edit-done"]')?.addEventListener('click', handleEditDone)
   document.querySelector('[data-action="delete-confirm"]')?.addEventListener('click', handleDeleteConfirm)
   document.querySelector('[data-action="delete-cancel"]')?.addEventListener('click', handleDeleteCancel)
-  document.querySelector('[data-action="marker-cancel"]')?.addEventListener('click', handleMarkerCancel)
+  document.querySelectorAll('[data-action="marker-cancel"]').forEach((el) => bindReliableTapAction(el, 'marker-cancel', handleMarkerCancel))
   bindPlayTapAction(document.querySelector('[data-action="play"]'), handlePlayToggle)
   document.querySelector('[data-action="all"]')?.addEventListener('click', handleSelectAll)
   document.querySelector('[data-action="add-list"]')?.addEventListener('click', handleOpenCreatePlaylist)
@@ -6285,6 +8145,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-song-id]').forEach((el) => {
     const id = el.getAttribute('data-song-id')
+    bindHashChildrenLongPress(el, 'song')
     bindReliableTapAction(el, `song:${id || ''}`, () => selectPlaylistSong(id))
   })
 
@@ -6423,8 +8284,26 @@ function bindEvents() {
   }
 }
 
+function installMarkerCancelHardDelegation() {
+  if (window.__vshookMarkerCancelHardDelegation === '1') return
+  window.__vshookMarkerCancelHardDelegation = '1'
+  const run = (event) => {
+    const target = event?.target?.closest?.('[data-action="marker-cancel"], .vshookMarkerCancelHardButton, .markerCancelGlobalButton')
+    if (!target) return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    handleMarkerCancel()
+  }
+  document.addEventListener('pointerup', run, true)
+  document.addEventListener('click', run, true)
+}
+
 function renderBridgePopupHtml(extraClass = '') {
   const hasLocalPopup = state.appPopupVisible && String(state.appPopupText || '').trim()
+  if (!hasLocalPopup && bridgePlaybackNamePopupKey && Date.now() >= Number(bridgePlaybackNamePopupExpireAtMs || 0) && normalizeDirectorPopupText(bridgePopupDisplay.text) === bridgePlaybackNamePopupKey) {
+    hideExpiredDirectorPlaybackNamePopup(bridgePlaybackNamePopupKey)
+    return ''
+  }
   if (!hasLocalPopup && !bridgePopupDisplay.mounted) return ''
   const popupTextForRender = upperText(hasLocalPopup ? state.appPopupText : bridgePopupDisplay.text)
   const popupErrorForRender = hasLocalPopup ? (state.appPopupKind === 'error') : bridgePopupDisplay.error
@@ -6551,6 +8430,7 @@ function render() {
   if (!app) return
   const playlist = activePlaylist()
   const markers = currentMarkers()
+  syncDirectorMarkerArmedVisualWithPlayback(markers)
   const hue = getBorderColorCss()
   const glow = getBorderGlowCss()
   const topTitle = state.activeTab === 'playlist' ? upperText(playlist?.name || 'SEM REPERTÓRIO') : 'ESCOLHA SUAS MUSICAS'
@@ -6558,21 +8438,25 @@ function render() {
   const topTitleHtml = state.activeTab === 'playlist' ? `<button class="playlistTitleButton" data-action="open-playlist-switch"><span class="playlistTitleContent">${buildTitleTicker(topTitle)}</span><span class="playlistTitleArrow">▾</span></button>` : `<span class="regionsTopLabel">MÚSICAS</span>`
   const topTimerHtml = `<button class="topTimerButton ${state.timerRunning ? 'topTimerButtonRunning' : ''}" data-action="open-timer"><span data-chrono-display>${timerText}</span></button>`
   const topTime = state.activeTab === 'playlist'
-    ? `${formatTotalTime((playlist?.songs || []).reduce((sum, item) => sum + (Number(item.durationSec) || 0), 0))}`
-    : `${formatTotalTime(state.regions.reduce((sum, item) => sum + (Number(item.durationSec) || 0), 0))}`
+    ? `${formatTotalTime(vshookSumRootDuration(playlist?.songs || []))}`
+    : `${formatTotalTime(vshookSumRootDuration(state.regions))}`
 
-  const showMarkerCancelFloating = state.activeTab === 'playlist' && state.playlistView === 'markers' && !!state.selectedMarkerId
+  // 2.0.35: Cancelar de Markers aparece somente quando o marker estiver verde/engatilhado.
+  // O rodapé reserva espaço fixo na tela de Markers para o botão não cobrir a lista.
+  const markerCancelVisible = shouldShowDirectorMarkerCancelButton()
+  const showMarkerFooterSpace = isMarkersPanelOpen()
   const markerFooterHtml = state.playlistView === 'markers'
-    ? `<div class="vshookFixedFooter">${showMarkerCancelFloating ? `<button class="floatingCancelButton" data-action="marker-cancel">Cancelar</button>` : `<div class="footerButtonPlaceholder"></div>`}</div>`
+    ? `<div class="directorMarkersCancelFooter ${markerCancelVisible ? 'directorMarkersCancelFooterActive' : 'directorMarkersCancelFooterIdle'}">${markerCancelVisible ? `<button class="directorMarkersCancelButton markerCancelGlobalButton" data-action="marker-cancel" type="button">Cancelar</button>` : ''}</div>`
     : ''
+  const markerCancelGlobalButton = ''
 
   const content = state.activeTab === 'regions'
-    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(state.regions, 'region')}</div></div>`
-    : `<div class="contentPanel ${state.playlistView === 'markers' ? 'markerContentPanel' : ''}"><div class="controlsStickyPanel">${state.playlistView === 'markers'
+    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(vshookRootFamilyItems(state.regions), 'region')}</div></div>`
+    : `<div class="contentPanel ${state.playlistView === 'markers' ? `markerContentPanel ${Date.now() < Number(state.markersPanelAnimateUntil || 0) ? 'markerPanelSlideIn' : ''}` : ''}"><div class="controlsStickyPanel">${state.playlistView === 'markers'
         ? `<div class="controlsRowPlaylist controlsRowEqual controlsRowMarkers"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.loopActive ? 'btnLoopActive loopBlink markerLoopButton' : 'btn markerLoopButton'}" data-action="loop">Loop</button><button class="tab btnLyricsOpen lyricsNavButton markersInlineBackButton markerBackLyricsButton" data-action="close-markers">&lt;&lt;</button></div>`
         : `<div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>`}
        ${state.playlistView === 'markers' ? '' : `${renderNowPlayingBanner()}`}</div>
-       <div class="listBox ${state.playlistView === 'markers' ? 'markerListBox' : ''}" id="playlistListBox">${state.playlistView === 'markers' ? renderRows(markers, 'marker') : renderRows(playlist?.songs || [], 'song')}</div>${markerFooterHtml}</div>`
+       <div class="listBox ${state.playlistView === 'markers' ? `markerListBox ${Date.now() < Number(state.markersPanelAnimateUntil || 0) ? 'markerPanelSlideIn' : ''}` : ''}" id="playlistListBox">${state.playlistView === 'markers' ? renderRows(markers, 'marker') : renderRows(vshookGetDisplayItemsWithFrontHashChildren(playlist?.songs || [], 'song', playlist?.id), 'song')}</div>${markerFooterHtml}</div>`
 
   const shouldShowClearButton = !state.editMode && !state.deleteMode && isMultiSelectActiveFor('regions') && state.selectedRegionIds.length > 0
   const showSettingsButton = true
@@ -6586,7 +8470,7 @@ function render() {
   const settingsButtonActive = state.editMode || state.deleteMode || state.settingsMenuOpen
   const canCopyPlaylistNames = state.activeTab === 'playlist' && state.playlistView !== 'markers' && !!(playlist?.songs || []).length
   const settingsMenu = state.settingsMenuOpen
-    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction settingsActionPremix" data-action="open-premix">PREMIX</button><button class="settingsAction settingsActionPremixGlobal" data-action="open-premix-global">GLOBAL</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
+    ? `<div class="settingsMenu" data-settings-menu><button class="settingsAction" data-action="open-project-tabs">PROJETOS</button><button class="settingsAction" data-action="open-mixer">MIXER</button><button class="settingsAction settingsActionPremix" data-action="open-premix">PREMIX</button><button class="settingsAction settingsActionTuner" data-action="open-tuner">TUNER</button><button class="settingsAction settingsActionRecados" data-action="open-recados">RECADOS</button>${state.activeTab === 'playlist' && state.playlistView !== 'markers' ? `<button class="settingsAction ${state.autoBlocoEnabled ? 'settingsActionActive' : ''}" data-action="auto-bloco">AT/BL</button><button class="settingsAction settingsActionCopy" data-action="copy-playlist-names" ${canCopyPlaylistNames ? '' : 'disabled'}>COPY</button>` : ''}</div>`
     : ''
   const rightToolsHtml = showSettingsButton
     ? (state.activeTab === 'playlist' && state.playlistView === 'markers'
@@ -6621,12 +8505,22 @@ function render() {
   const recadosModal = renderRecadosModal()
 
   const gearModal = state.showGearModal
-    ? `<div class="modalOverlay" data-close-gear><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="bridgeStatusCard"><span class="bridgeStatusLabel">CONEXÃO</span><span class="${state.bridgeStatus === 'online' ? 'bridgeOnline' : 'bridgeOffline'}">${state.bridgeStatus === 'online' ? 'ON' : 'OFF'}</span></div><div class="settingsSectionTitle">BORDA RGB</div><div class="settingsGrid settingsGridSingle"><button class="settingsToggleBtn settingsToggleWide" data-action="cycle-rgb-mode">RGB: ${getRgbModeLabel()}</button></div><div class="settingsSectionTitle">TEMA</div><div class="settingsGrid settingsGridTheme"><button class="${state.theme === 'dark' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-dark">ESCURO</button><button class="${state.theme === 'light' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-light">CLARO</button></div><div class="modalButtons settingsBottomButtons"><button class="modalCancelBtn vshookExitButton" data-action="back-project-selector">SAIR</button><button class="modalOkBtnWide settingsCloseButton" data-action="close-gear">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    ? `<div class="modalOverlay" data-close-gear><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="bridgeStatusCard"><span class="bridgeStatusLabel">CONEXÃO</span><span class="bridgeOnline">NATIVE ON</span></div><div class="settingsSectionTitle">BORDA RGB</div><div class="settingsGrid settingsGridSingle"><button class="settingsToggleBtn settingsToggleWide" data-action="cycle-rgb-mode">RGB: ${getRgbModeLabel()}</button></div>${getDirectorProtectionSettingsHtml()}${typeof getDirectorTpSettingsHtmlFix12 === 'function' ? getDirectorTpSettingsHtmlFix12() : ''}<div class="settingsSectionTitle">TEMA</div><div class="settingsGrid settingsGridTheme"><button class="${state.theme === 'dark' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-dark">ESCURO</button><button class="${state.theme === 'light' ? 'settingsToggleBtn settingsToggleBtnActive' : 'settingsToggleBtn'}" data-action="theme-light">CLARO</button></div><div class="modalButtons settingsBottomButtons"><button class="modalCancelBtn vshookExitButton" data-action="back-project-selector">SAIR</button><button class="modalOkBtnWide settingsCloseButton" data-action="close-gear">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     : ''
 
   const timerModalTitle = state.timerRunning ? 'DESEJA PARAR?' : 'DESEJA INICIAR?'
+  const timerModeLabel = state.timerMode === 'countdown' ? 'REGRESSIVO' : 'PROGRESSIVO'
+  const timerTargetParts = getTimerTargetPartsFromSeconds(state.timerTargetSec || 0)
+  const timerTargetEditor = state.timerMode === 'countdown'
+    ? `<div class="timerTargetEditor"><div class="timerTargetLabel">TEMPO REGRESSIVO</div><div class="timerTargetGrid"><label>H<input data-timer-part="h" type="number" inputmode="numeric" min="0" max="99" value="${timerTargetParts.h}"></label><label>M<input data-timer-part="m" type="number" inputmode="numeric" min="0" max="59" value="${timerTargetParts.m}"></label><label>S<input data-timer-part="s" type="number" inputmode="numeric" min="0" max="59" value="${timerTargetParts.s}"></label></div></div>`
+    : ''
+  const timerConfirmLabel = state.timerRunning ? 'PARAR' : 'INICIAR'
   const timerModal = state.showTimerModal
-    ? `<div class="modalOverlay" data-close-timer><div class="modalSpacer"></div><div class="modalBox timerModalBox" data-stop-modal><div class="modalTitle">${timerModalTitle}</div><div class="timerModalPreview" data-chrono-display>${timerText}</div><div class="modalButtons"><button class="modalCancelBtn" data-action="close-timer">SAIR</button><button class="modalOkBtnWide" data-action="confirm-timer">OK</button></div></div><div class="modalBottomSpace"></div></div>`
+    ? `<div class="modalOverlay" data-close-timer><div class="modalSpacer"></div><div class="modalBox timerModalBox timerModalBoxWide" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview" data-chrono-display>${state.timerMode === 'countdown' && !state.timerRunning ? formatChronoTime(state.timerTargetSec || 0) : timerText}</div><div class="timerModeCurrent">MODO: ${timerModeLabel}</div><div class="timerModeGrid"><button class="${state.timerMode === 'progressive' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${state.timerMode === 'countdown' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-countdown">REGRESSIVO</button></div>${timerTargetEditor}<div class="modalTitle timerModalActionTitle">${timerModalTitle}</div><div class="modalButtons"><button class="modalCancelBtn" data-action="close-timer">SAIR</button><button class="modalOkBtnWide" data-action="confirm-timer">${timerConfirmLabel}</button></div></div><div class="modalBottomSpace"></div></div>`
+    : ''
+
+  const liveOffConfirmModal = state.showLiveOffConfirmModal
+    ? `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox" data-stop-modal><div class="modalTitle">DESLIGAR LIVE?</div><div class="modalInfoText">Ao desligar o Live, as marcações de músicas já tocadas serão limpas.</div><div class="modalButtons"><button class="modalCancelBtn" data-action="cancel-live-off">Cancelar</button><button class="modalOkBtnWide" data-action="confirm-live-off">OK</button></div></div><div class="modalBottomSpace"></div></div>`
     : ''
 
   const mixerModal = renderMixerModal()
@@ -6649,11 +8543,12 @@ function render() {
     ? `<span class="headerNavButtons">${markersToggleButton}${lyricsHeaderButton}</span>`
     : ''
   const lyricsPanelHtml = renderLyricsPanel()
-  const appPopupHtml = renderBridgePopupHtml()
+  const appPopupHtml = renderBridgePopupHtml(isMarkersPanelOpen() ? 'appPopupMarkersPanel' : '')
 
-  app.innerHTML = `<div class="app" data-theme="${state.theme}" style="--app-border-color:${appBorderColor};--app-border-glow:${appBorderGlow};"><style>.app{height:var(--app-vh,100dvh);min-height:var(--app-vh,100dvh);overflow:hidden}.container{height:calc(var(--app-vh,100dvh) - 16px)!important;min-height:calc(var(--app-vh,100dvh) - 16px)!important;overflow:hidden}@media (max-width:480px){.container{height:calc(var(--app-vh,100dvh) - 12px)!important;min-height:calc(var(--app-vh,100dvh) - 12px)!important}}.contentPanel{display:flex;flex-direction:column;flex:1;min-height:0;padding-bottom:2px}.controlsStickyPanel{flex:0 0 auto;position:relative;z-index:4;background:linear-gradient(180deg,#0a1018 0%,#06090f 100%)}.topTimerButton{min-width:96px;height:34px;padding:0 10px;border-radius:10px;border:1px solid #475569;background:#111827;color:#facc15;font-weight:900;font-size:14px;letter-spacing:.03em}.topTimerButtonRunning{border-color:#22c55e;background:#052e16;color:#86efac;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 16px rgba(34,197,94,.14)}.timerModalBox{max-width:330px}.timerModalPreview{height:54px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:10px;background:#05070a;color:#facc15;font-size:22px;font-weight:900;margin-bottom:14px}.progressBar{position:absolute;left:0;top:0;bottom:0;opacity:1;background:linear-gradient(90deg,#22c55e 0%,#16a34a 100%);pointer-events:none;border-radius:0;box-shadow:inset 0 0 0 1px rgba(134,239,172,.28),0 0 10px rgba(34,197,94,.22)}.progressBarWithNumber{left:42px}.sectionLabelSticky{margin-bottom:8px}.listBox{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px);scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px)}.markersNavButtonWide{min-width:88px;padding:10px 24px;font-size:22px;justify-content:center}.headerTotalSpacer{flex:1 1 auto;min-width:4px}.headerNavStack{display:flex;flex-direction:column;gap:4px;align-items:stretch}.headerNavFloating{position:absolute;right:12px;top:76px;z-index:8;width:88px}.headerNavFloatingSingle{position:absolute;right:12px;top:120px;z-index:8;width:88px}.headerLyricsButton{padding-top:8px;padding-bottom:8px;font-size:20px}.markersInlineBackButton{height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important}.markerLoopButton{height:46px!important;min-height:46px!important;border-radius:12px!important;font-size:18px!important}.markerBackLyricsButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.settingsBottomButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:26px!important}.settingsBottomButtons>*{width:100%!important;min-height:46px!important;border-radius:12px!important;font-weight:900!important}.settingsCloseButton{border:1px solid #475569!important;background:#111827!important;color:#f8fafc!important}@keyframes appPopupFade{0%{opacity:0;transform:translateX(-50%) translateY(8px)}12%{opacity:1;transform:translateX(-50%) translateY(0)}78%{opacity:1;transform:translateX(-50%) translateY(0)}100%{opacity:0;transform:translateX(-50%) translateY(10px)}}@keyframes loopBlinkPulse{0%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}50%{opacity:.38;box-shadow:0 0 16px rgba(250,204,21,.58)}100%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}}.loopBlink{animation:loopBlinkPulse .58s linear infinite}.appPopup{position:fixed;left:50%;bottom:22px;top:auto;transform:translateX(-50%) translateY(0);z-index:3000;width:min(86vw,520px);min-height:78px;padding:16px 22px;border-radius:10px;font-weight:900;font-size:22px;line-height:1.18;text-align:center;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 42px rgba(0,0,0,.46);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);opacity:1;transition:opacity .22s ease,transform .22s ease}.appPopupTransient{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}.appPopupHidden{opacity:0;transform:translateX(-50%) translateY(10px)}.appPopupInfo{background:rgba(17,24,39,.97);color:#f8fafc}.appPopupSuccess{background:rgba(21,128,61,.97);color:#fff}.appPopupMarker{background:rgba(250,204,21,.98);color:#111827;border-color:rgba(255,255,255,.35)}.appPopupError{background:rgba(185,28,28,.97);color:#fff}.appPopupPersistent{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}@media (max-width:480px){.appPopup{width:min(88vw,460px);min-height:66px;padding:12px 16px;font-size:18px}.markersNavButtonWide{min-width:82px;padding:10px 20px;font-size:20px}.headerNavFloating{right:10px;top:72px;width:82px}.headerNavFloatingSingle{right:10px;top:114px;width:82px}.topTimerButton{min-width:88px;height:32px;font-size:13px;padding:0 8px}.timerModalPreview{font-size:20px;height:50px}}.mixerOverlay{align-items:center;justify-content:flex-start}.mixerVolumeOverlay{align-items:center;justify-content:flex-start;background:rgba(0,0,0,.52)}.mixerModalBox,.mixerVolumeModalBox,.bpmModalBox{width:min(92vw,420px)}.mixerRowsBox{border:1px solid #364152;border-radius:10px;background:#0b1220}.mixerRow{display:grid;grid-template-columns:10px 34px minmax(0,1fr) 58px 10px 38px 38px;align-items:center;gap:8px;padding:10px 10px;border-bottom:1px solid #18212c;min-height:56px;touch-action:pan-y}.mixerRow:last-child{border-bottom:none}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:var(--mixer-color,#334155)}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:900;color:#e2e8f0;text-align:right}.mixerMeter{position:relative;width:10px;height:38px;border-radius:999px;background:#111827;overflow:hidden;border:1px solid #334155}.mixerMeterFill{position:absolute;left:0;right:0;bottom:0;border-radius:999px;background:linear-gradient(180deg,#22c55e 0%,#16a34a 100%)}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniBtnActive{background:#15803d;border-color:#22c55e;color:#fff}.mixerVolumeTitle{margin:8px 0 14px;padding:12px 14px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);box-shadow:inset 3px 0 0 var(--mixer-color,#334155);font-weight:900}.mixerVolumeMeterWrap{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px}.mixerVolumeDb{font-size:28px;font-weight:900;color:#f8fafc}.mixerVolumeSlider{width:100%;height:46px;appearance:none;background:transparent;touch-action:pan-x;will-change:transform}.mixerVolumeSlider::-webkit-slider-runnable-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18);margin-top:-9px}.mixerVolumeSlider::-moz-range-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18)}.mixerSwipeHint{margin-top:12px}.bpmModalBox{max-width:320px}.bpmValueDisplay{font-size:42px;font-weight:900;text-align:center;margin:8px 0 10px;color:#f8fafc}.bpmMetaText{text-align:center;color:#cbd5e1;font-weight:700;margin-bottom:14px}.bpmControlsSimple{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bpmAdjustBtn{height:52px;border-radius:12px;border:1px solid #22c55e;background:#15803d;color:#fff;font-size:28px;font-weight:900}.settingsActionTuner{background:#102a20;border-color:#34d399;color:#a7f3d0}.tunerOverlay{z-index:1670;align-items:stretch;justify-content:flex-end;padding:0;background:rgba(0,0,0,.45)}.tunerDrawer{width:clamp(260px,52vw,430px);height:var(--app-vh,100dvh);background:#111827;border-left:1px solid #364152;box-shadow:-18px 0 42px rgba(0,0,0,.45);padding:16px 14px 20px;display:flex;flex-direction:column;gap:10px;overflow:hidden}.tunerDrawerHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.tunerDrawerSub{color:#94a3b8;font-weight:700;font-size:12px;margin-top:-4px}.tunerDrawerActions{display:flex;justify-content:flex-end}.tunerResetBtn{min-height:40px;padding:0 14px;border-radius:10px;border:1px solid #facc15;background:#3b2f0b;color:#fde68a;font-weight:900}.tunerRowsBox{flex:1 1 auto;min-height:0;overflow-y:auto;border:1px solid #364152;border-radius:10px;background:#0b1220}.tunerRow{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:10px;border-bottom:1px solid #18212c}.tunerRow:last-child{border-bottom:none}.tunerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tunerRowBlock .tunerRowName{color:#facc15}.tunerRowControls{display:grid;grid-template-columns:58px minmax(64px,1fr) 58px;gap:4px;align-items:center}.tunerAdjustHitBtn{height:58px;width:58px;border:0;background:transparent;padding:0;margin:0;display:flex;align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.tunerAdjustBtnFace{height:42px;width:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-size:24px;font-weight:900;display:flex;align-items:center;justify-content:center;box-sizing:border-box;pointer-events:none}.tunerValueBox{height:42px;border-radius:10px;border:1px solid #334155;background:#020617;color:#facc15;font-weight:900;font-size:20px;display:flex;align-items:center;justify-content:center}.app[data-theme="light"] .settingsActionTuner{background:#d1fae5;color:#065f46}.app[data-theme="light"] .tunerDrawer{background:#ffffff;border-left-color:#dbe4ee}.app[data-theme="light"] .tunerRowsBox{background:#f8fafc;border-color:#dbe4ee}.app[data-theme="light"] .tunerRowName{color:#0f172a}@media (max-width:480px){.tunerDrawer{width:calc(50vw + 26px);min-width:260px;padding:14px 12px 18px}.tunerRowControls{grid-template-columns:54px minmax(58px,1fr) 54px;gap:2px}.tunerAdjustHitBtn{height:54px;width:54px}.tunerAdjustBtnFace{height:38px;width:38px}.tunerValueBox{height:38px}}.markerFooterContainer .listBox{padding-bottom:160px!important;scroll-padding-bottom:160px!important}.vshookMarkerFooter{position:fixed;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom,0px) + 104px);z-index:2990;display:flex;justify-content:center;pointer-events:none}.vshookMarkerFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;pointer-events:auto}.app:has(.vshookMarkerFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important}.app:has(.vshookMarkerFooter) .contentPanel{padding-bottom:0!important}@media(max-width:480px){.markerFooterContainer .listBox{padding-bottom:150px!important;scroll-padding-bottom:150px!important}.vshookMarkerFooter{bottom:calc(env(safe-area-inset-bottom,0px) + 98px)}}.markerGoConfirmed{background:#16a34a!important;border-color:#22c55e!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.38),0 0 16px rgba(34,197,94,.28)!important}.markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}.markerContentPanel{display:flex;flex-direction:column;min-height:0}.markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}.vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto;z-index:2}.footerButtonPlaceholder{height:54px}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;z-index:3010;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important}@media(max-width:480px){.vshookFixedFooter{flex-basis:148px;min-height:148px}.vshookFixedFooter .floatingCancelButton{height:52px!important}.app:has(.vshookFixedFooter) .appPopup{min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(112px,1fr) minmax(112px,1fr) minmax(112px,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowDirectorMain>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important}.lyricsNavButtonInline{border-color:#38bdf8!important;background:linear-gradient(180deg,#0284c7 0%,#075985 100%)!important;color:#fff!important;box-shadow:0 0 0 1px rgba(56,189,248,.30),0 0 12px rgba(14,165,233,.20)!important}.tabRow{padding-right:86px!important}.tabRow .headerNavButtons{width:82px!important}.tabRow .markersNavButtonHeader{flex:0 0 82px!important;width:82px!important;min-width:82px!important}.tabRow .lyricsNavButtonHeader{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(96px,1fr) minmax(96px,1fr) minmax(96px,1fr)!important;gap:7px!important}.controlsStickyPanel .controlsRowDirectorMain>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow{padding-right:78px!important}.tabRow .headerNavButtons{width:74px!important}.tabRow .markersNavButtonHeader{flex-basis:74px!important;width:74px!important;min-width:74px!important}}.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowMarkers>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important;padding:0 10px!important}.markerLoopButton,.markersInlineBackButton{height:46px!important;min-height:46px!important}.markerOpenYellowButton,.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.tabRow .headerNavButtons{width:92px!important}.tabRow .markersNavButtonHeader{flex:0 0 92px!important;width:92px!important;min-width:92px!important}.tabRow{padding-right:96px!important}.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}/* v121 - ajustes finos Diretor: Play padronizado e contorno da aba Músicas */.controlsStickyPanel .controlsRowRegions.controlsRowEqual {  display: grid !important;  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;  gap: 8px !important;  width: 100% !important;  max-width: 100% !important;  justify-content: stretch !important;}.controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {  height: 46px !important;  min-height: 46px !important;  max-height: 46px !important;  padding: 0 10px !important;  border-radius: 12px !important;  font-size: 18px !important;  line-height: 1 !important;  box-sizing: border-box !important;}.regionsTopLabel {  display: flex !important;  align-items: center !important;  min-height: 42px !important;  width: 100% !important;  min-width: 0 !important;  padding: 8px 12px !important;  border-radius: 10px !important;  border: 1px solid #374151 !important;  background: rgba(15, 23, 42, 0.9) !important;  color: #f8fafc !important;  font-weight: 900 !important;  box-sizing: border-box !important;  white-space: nowrap !important;  overflow: hidden !important;  text-overflow: ellipsis !important;}.app[data-theme="light"] .regionsTopLabel {  background: #ffffff !important;  border-color: #cbd5e1 !important;  color: #0f172a !important;}@media(max-width:380px){  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {    height: 44px !important;    min-height: 44px !important;    max-height: 44px !important;    font-size: 17px !important;  }}.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"]{width:100%!important;font-size:15px!important;letter-spacing:0!important;padding:0 6px!important;justify-self:stretch!important;}.settingsActionPremix{background:#1f1637!important;border-color:#8b5cf6!important;color:#ddd6fe!important}.settingsActionPremixGlobal{background:#241b09!important;border-color:#f59e0b!important;color:#fde68a!important}.premixTopControls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.premixTopControls button{height:42px;border-radius:12px;font-weight:900}.premixPlayButton{width:100%!important}.premixLockMessage{margin:-2px 0 10px;padding:10px;border:1px solid rgba(239,68,68,.65);border-radius:10px;background:rgba(127,29,29,.45);color:#fecaca;font-weight:900;text-align:center}.premixMixerRowDisabled{opacity:.58}.premixModalBoxFull,.mixerModalBoxFull{padding:14px!important}.premixRowsBoxFull{max-height:none!important}.premixVolumeModalBoxFull{padding:16px!important}.mixerModalBoxFull .mixerRowsBox{max-height:none!important}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;margin-left:8px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.premixMixerRow{cursor:pointer}.premixVolumeOverlay{background:rgba(0,0,0,.56)}.premixBlockRow{justify-content:center!important;border-color:rgba(250,204,21,.45)!important;background:rgba(250,204,21,.10)!important;pointer-events:none!important}.premixBlockRow .songRowLabel{width:100%;text-align:center;font-weight:900;letter-spacing:.08em;color:var(--premix-row-color,#facc15)!important}.mixerCloseBtn{touch-action:manipulation!important;pointer-events:auto!important;min-width:86px!important;min-height:38px!important;position:relative!important;z-index:5!important}.app .item.playing{background:#b91c1c!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.36)!important}.app .item.playing.selectedBlue,.app .item.playing.selectedPink,.app .item.playing.queuedYellow{background:#b91c1c!important}.app .item.playing .rowLabelText,.app .item.playing .timeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#fff!important;font-weight:900!important}</style>${appPopupHtml}<div class="container ${showMarkerCancelFloating ? 'markerFooterContainer' : ''}" style="${borderStyle}"><div class="topStatusRow"><div class="${state.activeTab === 'playlist' ? 'topStatusLeftPlaylist' : 'topStatusLeft'}">${topTitleHtml}</div>${topTimerHtml}${rightToolsHtml}</div><div class="headerRow"><div class="tabRow"><button class="${state.activeTab === 'playlist' ? 'activeTab' : 'tab'}" data-action="go-playlist">REPERTÓRIOS</button><button class="${state.activeTab === 'regions' ? 'activeTab' : 'tab'}" data-action="go-regions">MÚSICAS</button><span class="headerTotal">${topTime}</span>${headerNavButtons}<span class="headerTotalSpacer"></span></div><div class="middleInfo"><span class="middleInfoText">${middleLabel}</span></div></div>${content}${showEditDoneFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="edit-done">OK</button>` : ''}${showDeleteConfirmFloating ? `<button class="floatingDangerButton floatingDangerLeft" data-action="delete-confirm">${state.activeTab === 'regions' ? 'SAIR' : 'DEL'}</button>` : ''}${showDeleteCancelFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="delete-cancel">SAIR</button>` : ''}${shouldShowClearButton ? `<button class="floatingClearButton" id="floatingClearButton" style="left:${state.clearButtonSide === 'left' ? '20px' : 'calc(100vw - 92px)'};">SAIR</button>` : ''}</div>${lyricsPanelHtml}${createModal}${addExistingModal}${renameModal}${playlistSwitchModal}${deletePlaylistConfirmModal}${projectTabsModal}${recadosModal}${gearModal}${timerModal}${mixerModal}${mixerVolumeModal}${premixModal}${premixVolumeModal}${bpmModal}${tunerModal}</div>`
+  app.innerHTML = `<div class="app" data-theme="${state.theme}" style="--app-border-color:${appBorderColor};--app-border-glow:${appBorderGlow};"><style>.app{height:var(--app-vh,100dvh);min-height:var(--app-vh,100dvh);overflow:hidden}.container{height:calc(var(--app-vh,100dvh) - 16px)!important;min-height:calc(var(--app-vh,100dvh) - 16px)!important;overflow:hidden}@media (max-width:480px){.container{height:calc(var(--app-vh,100dvh) - 12px)!important;min-height:calc(var(--app-vh,100dvh) - 12px)!important}}.contentPanel{display:flex;flex-direction:column;flex:1;min-height:0;padding-bottom:2px}.controlsStickyPanel{flex:0 0 auto;position:relative;z-index:4;background:linear-gradient(180deg,#0a1018 0%,#06090f 100%)}.topTimerButton{min-width:96px;height:34px;padding:0 10px;border-radius:10px;border:1px solid #475569;background:#111827;color:#facc15;font-weight:900;font-size:14px;letter-spacing:.03em}.topTimerButtonRunning{border-color:#22c55e;background:#052e16;color:#86efac;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 16px rgba(34,197,94,.14)}.timerModalBox{max-width:330px}.timerModalBoxWide{width:min(92vw,480px)!important;max-width:480px!important}.timerModeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGrid button{min-height:44px;border-radius:12px;font-weight:900}.timerModeCurrent{text-align:center;color:#facc15;font-weight:900;margin:-4px 0 6px}.timerTargetEditor{margin:10px 0 8px;padding:10px;border:1px solid rgba(250,204,21,.35);border-radius:12px;background:rgba(250,204,21,.08)}.timerTargetLabel{text-align:center;color:#fde68a;font-weight:900;font-size:13px;margin-bottom:8px}.timerTargetGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.timerTargetGrid label{display:flex;flex-direction:column;gap:5px;text-align:center;color:#cbd5e1;font-weight:900;font-size:12px}.timerTargetGrid input{width:100%;height:42px;border-radius:10px;border:1px solid #475569;background:#020617;color:#f8fafc;text-align:center;font-weight:900;font-size:18px;box-sizing:border-box}.app[data-theme="light"] .timerTargetGrid input{background:#fff;color:#0f172a;border-color:#cbd5e1}.timerModalActionTitle{font-size:14px!important;margin-top:6px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalPreview{height:54px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:10px;background:#05070a;color:#facc15;font-size:22px;font-weight:900;margin-bottom:14px}.progressBar{position:absolute;left:0;top:0;bottom:0;opacity:1;background:linear-gradient(90deg,#22c55e 0%,#16a34a 100%);pointer-events:none;border-radius:0;box-shadow:inset 0 0 0 1px rgba(134,239,172,.28),0 0 10px rgba(34,197,94,.22)}.progressBarWithNumber{left:42px}.sectionLabelSticky{margin-bottom:8px}.listBox{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px);scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px)}.markersNavButtonWide{min-width:88px;padding:10px 24px;font-size:22px;justify-content:center}.headerTotalSpacer{flex:1 1 auto;min-width:4px}.headerNavStack{display:flex;flex-direction:column;gap:4px;align-items:stretch}.headerNavFloating{position:absolute;right:12px;top:76px;z-index:8;width:88px}.headerNavFloatingSingle{position:absolute;right:12px;top:120px;z-index:8;width:88px}.headerLyricsButton{padding-top:8px;padding-bottom:8px;font-size:20px}.markersInlineBackButton{height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important}.markerLoopButton{height:46px!important;min-height:46px!important;border-radius:12px!important;font-size:18px!important}.markerBackLyricsButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.settingsBottomButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:26px!important}.settingsBottomButtons>*{width:100%!important;min-height:46px!important;border-radius:12px!important;font-weight:900!important}.settingsCloseButton{border:1px solid #475569!important;background:#111827!important;color:#f8fafc!important}@keyframes appPopupFade{0%{opacity:0;transform:translateX(-50%) translateY(8px)}12%{opacity:1;transform:translateX(-50%) translateY(0)}78%{opacity:1;transform:translateX(-50%) translateY(0)}100%{opacity:0;transform:translateX(-50%) translateY(10px)}}@keyframes loopBlinkPulse{0%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}50%{opacity:.38;box-shadow:0 0 16px rgba(250,204,21,.58)}100%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}}.loopBlink{animation:loopBlinkPulse .58s linear infinite}.appPopup{position:fixed;left:50%;bottom:22px;top:auto;transform:translateX(-50%) translateY(0);z-index:3000;pointer-events:none;width:min(86vw,520px);min-height:78px;padding:16px 22px;border-radius:10px;font-weight:900;font-size:22px;line-height:1.18;text-align:center;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 42px rgba(0,0,0,.46);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);opacity:1;transition:opacity .22s ease,transform .22s ease}.appPopupTransient{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}.appPopupHidden{opacity:0;transform:translateX(-50%) translateY(10px)}.appPopupInfo{background:rgba(17,24,39,.97);color:#f8fafc}.appPopupSuccess{background:rgba(21,128,61,.97);color:#fff}.appPopupMarker{background:rgba(250,204,21,.98);color:#111827;border-color:rgba(255,255,255,.35)}.appPopupError{background:rgba(185,28,28,.97);color:#fff}.appPopupPersistent{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}@media (max-width:480px){.appPopup{width:min(88vw,460px);min-height:66px;padding:12px 16px;font-size:18px}.markersNavButtonWide{min-width:82px;padding:10px 20px;font-size:20px}.headerNavFloating{right:10px;top:72px;width:82px}.headerNavFloatingSingle{right:10px;top:114px;width:82px}.topTimerButton{min-width:88px;height:32px;font-size:13px;padding:0 8px}.timerModalPreview{font-size:20px;height:50px}}.mixerOverlay{align-items:center;justify-content:flex-start}.mixerVolumeOverlay{align-items:center;justify-content:flex-start;background:rgba(0,0,0,.52)}.mixerModalBox,.mixerVolumeModalBox,.bpmModalBox{width:min(92vw,420px)}.mixerRowsBox{border:1px solid #364152;border-radius:10px;background:#0b1220}.mixerRow{display:grid;grid-template-columns:10px 34px minmax(0,1fr) 58px 10px 38px 38px;align-items:center;gap:8px;padding:10px 10px;border-bottom:1px solid #18212c;min-height:56px;touch-action:pan-y}.mixerRow:last-child{border-bottom:none}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:var(--mixer-color,#334155)}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:900;color:#e2e8f0;text-align:right}.mixerMeter{position:relative;width:10px;height:38px;border-radius:999px;background:#111827;overflow:hidden;border:1px solid #334155}.mixerMeterFill{position:absolute;left:0;right:0;bottom:0;border-radius:999px;background:linear-gradient(180deg,#22c55e 0%,#16a34a 100%)}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniBtnActive{background:#15803d;border-color:#22c55e;color:#fff}.mixerVolumeTitle{margin:8px 0 14px;padding:12px 14px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);box-shadow:inset 3px 0 0 var(--mixer-color,#334155);font-weight:900}.mixerVolumeMeterWrap{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px}.mixerVolumeDb{font-size:28px;font-weight:900;color:#f8fafc}.mixerVolumeSlider{width:100%;height:46px;appearance:none;background:transparent;touch-action:pan-x;will-change:transform}.mixerVolumeSlider::-webkit-slider-runnable-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18);margin-top:-9px}.mixerVolumeSlider::-moz-range-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18)}.mixerSwipeHint{margin-top:12px}.bpmModalBox{max-width:320px}.bpmValueDisplay{font-size:42px;font-weight:900;text-align:center;margin:8px 0 10px;color:#f8fafc}.bpmMetaText{text-align:center;color:#cbd5e1;font-weight:700;margin-bottom:14px}.bpmControlsSimple{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bpmAdjustBtn{height:52px;border-radius:12px;border:1px solid #22c55e;background:#15803d;color:#fff;font-size:28px;font-weight:900}.settingsActionTuner{background:#102a20;border-color:#34d399;color:#a7f3d0}.tunerOverlay{z-index:1670;align-items:stretch;justify-content:flex-end;padding:0;background:rgba(0,0,0,.45)}.tunerDrawer{width:clamp(260px,52vw,430px);height:var(--app-vh,100dvh);background:#111827;border-left:1px solid #364152;box-shadow:-18px 0 42px rgba(0,0,0,.45);padding:16px 14px 20px;display:flex;flex-direction:column;gap:10px;overflow:hidden}.tunerDrawerHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.tunerDrawerSub{color:#94a3b8;font-weight:700;font-size:12px;margin-top:-4px}.tunerDrawerActions{display:flex;justify-content:flex-end}.tunerResetBtn{min-height:40px;padding:0 14px;border-radius:10px;border:1px solid #facc15;background:#3b2f0b;color:#fde68a;font-weight:900}.tunerRowsBox{flex:1 1 auto;min-height:0;overflow-y:auto;border:1px solid #364152;border-radius:10px;background:#0b1220}.tunerRow{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:10px;border-bottom:1px solid #18212c}.tunerRow:last-child{border-bottom:none}.tunerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tunerRowBlock .tunerRowName{color:#facc15}.tunerRowControls{display:grid;grid-template-columns:58px minmax(64px,1fr) 58px;gap:4px;align-items:center}.tunerAdjustHitBtn{height:58px;width:58px;border:0;background:transparent;padding:0;margin:0;display:flex;align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.tunerAdjustBtnFace{height:42px;width:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-size:24px;font-weight:900;display:flex;align-items:center;justify-content:center;box-sizing:border-box;pointer-events:none}.tunerValueBox{height:42px;border-radius:10px;border:1px solid #334155;background:#020617;color:#facc15;font-weight:900;font-size:20px;display:flex;align-items:center;justify-content:center}.app[data-theme="light"] .settingsActionTuner{background:#d1fae5;color:#065f46}.app[data-theme="light"] .tunerDrawer{background:#ffffff;border-left-color:#dbe4ee}.app[data-theme="light"] .tunerRowsBox{background:#f8fafc;border-color:#dbe4ee}.app[data-theme="light"] .tunerRowName{color:#0f172a}@media (max-width:480px){.tunerDrawer{width:calc(50vw + 26px);min-width:260px;padding:14px 12px 18px}.tunerRowControls{grid-template-columns:54px minmax(58px,1fr) 54px;gap:2px}.tunerAdjustHitBtn{height:54px;width:54px}.tunerAdjustBtnFace{height:38px;width:38px}.tunerValueBox{height:38px}}.markerFooterContainer .listBox{padding-bottom:160px!important;scroll-padding-bottom:160px!important}.vshookMarkerFooter{position:fixed;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom,0px) + 104px);z-index:2990;display:flex;justify-content:center;pointer-events:none}.vshookMarkerFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;pointer-events:auto}.app:has(.vshookMarkerFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important}.app:has(.vshookMarkerFooter) .contentPanel{padding-bottom:0!important}@media(max-width:480px){.markerFooterContainer .listBox{padding-bottom:150px!important;scroll-padding-bottom:150px!important}.vshookMarkerFooter{bottom:calc(env(safe-area-inset-bottom,0px) + 98px)}}.markerGoConfirmed{background:#16a34a!important;border-color:#22c55e!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.38),0 0 16px rgba(34,197,94,.28)!important}.markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}.markerContentPanel{display:flex;flex-direction:column;min-height:0}.markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}.vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto;z-index:2}.footerButtonPlaceholder{height:54px}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;z-index:3010;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important}@media(max-width:480px){.vshookFixedFooter{flex-basis:148px;min-height:148px}.vshookFixedFooter .floatingCancelButton{height:52px!important}.app:has(.vshookFixedFooter) .appPopup{min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(112px,1fr) minmax(112px,1fr) minmax(112px,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowDirectorMain>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important}.lyricsNavButtonInline{border-color:#38bdf8!important;background:linear-gradient(180deg,#0284c7 0%,#075985 100%)!important;color:#fff!important;box-shadow:0 0 0 1px rgba(56,189,248,.30),0 0 12px rgba(14,165,233,.20)!important}.tabRow{padding-right:86px!important}.tabRow .headerNavButtons{width:82px!important}.tabRow .markersNavButtonHeader{flex:0 0 82px!important;width:82px!important;min-width:82px!important}.tabRow .lyricsNavButtonHeader{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(96px,1fr) minmax(96px,1fr) minmax(96px,1fr)!important;gap:7px!important}.controlsStickyPanel .controlsRowDirectorMain>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow{padding-right:78px!important}.tabRow .headerNavButtons{width:74px!important}.tabRow .markersNavButtonHeader{flex-basis:74px!important;width:74px!important;min-width:74px!important}}.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowMarkers>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important;padding:0 10px!important}.markerLoopButton,.markersInlineBackButton{height:46px!important;min-height:46px!important}.markerOpenYellowButton,.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.tabRow .headerNavButtons{width:92px!important}.tabRow .markersNavButtonHeader{flex:0 0 92px!important;width:92px!important;min-width:92px!important}.tabRow{padding-right:96px!important}.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}/* v121 - ajustes finos Diretor: Play padronizado e contorno da aba Músicas */.controlsStickyPanel .controlsRowRegions.controlsRowEqual {  display: grid !important;  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;  gap: 8px !important;  width: 100% !important;  max-width: 100% !important;  justify-content: stretch !important;}.controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {  height: 46px !important;  min-height: 46px !important;  max-height: 46px !important;  padding: 0 10px !important;  border-radius: 12px !important;  font-size: 18px !important;  line-height: 1 !important;  box-sizing: border-box !important;}.regionsTopLabel {  display: flex !important;  align-items: center !important;  min-height: 42px !important;  width: 100% !important;  min-width: 0 !important;  padding: 8px 12px !important;  border-radius: 10px !important;  border: 1px solid #374151 !important;  background: rgba(15, 23, 42, 0.9) !important;  color: #f8fafc !important;  font-weight: 900 !important;  box-sizing: border-box !important;  white-space: nowrap !important;  overflow: hidden !important;  text-overflow: ellipsis !important;}.app[data-theme="light"] .regionsTopLabel {  background: #ffffff !important;  border-color: #cbd5e1 !important;  color: #0f172a !important;}@media(max-width:380px){  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {    height: 44px !important;    min-height: 44px !important;    max-height: 44px !important;    font-size: 17px !important;  }}.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"]{width:100%!important;font-size:15px!important;letter-spacing:0!important;padding:0 6px!important;justify-self:stretch!important;}.settingsActionPremix{background:#1f1637!important;border-color:#8b5cf6!important;color:#ddd6fe!important}.settingsActionPremixGlobal{background:#241b09!important;border-color:#f59e0b!important;color:#fde68a!important}.premixTopControls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.premixTopControls button{height:42px;border-radius:12px;font-weight:900}.premixPlayButton{width:100%!important}.premixLockMessage{margin:-2px 0 10px;padding:10px;border:1px solid rgba(239,68,68,.65);border-radius:10px;background:rgba(127,29,29,.45);color:#fecaca;font-weight:900;text-align:center}.premixMixerRowDisabled{opacity:.58}.premixModalBoxFull,.mixerModalBoxFull{padding:14px!important}.premixRowsBoxFull{max-height:none!important}.premixVolumeModalBoxFull{padding:16px!important}.mixerModalBoxFull .mixerRowsBox{max-height:none!important}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;margin-left:8px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.premixMixerRow{cursor:pointer}.premixVolumeOverlay{background:rgba(0,0,0,.56)}.premixBlockRow{justify-content:center!important;border-color:rgba(250,204,21,.45)!important;background:rgba(250,204,21,.10)!important;pointer-events:none!important}.premixBlockRow .songRowLabel{width:100%;text-align:center;font-weight:900;letter-spacing:.08em;color:var(--premix-row-color,#facc15)!important}.mixerCloseBtn{touch-action:manipulation!important;pointer-events:auto!important;min-width:86px!important;min-height:38px!important;position:relative!important;z-index:5!important}.app .item.playing{background:#b91c1c!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.36)!important}.app .item.playing.selectedBlue,.app .item.playing.selectedPink,.app .item.playing.queuedYellow{background:#b91c1c!important}.app .item.playing .rowLabelText,.app .item.playing .timeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#fff!important;font-weight:900!important}.hashChildItem{overflow:hidden;will-change:transform,opacity,max-height}.hashChildExpandIn{animation:vshookHashDrawerOpen .24s ease-out both}.hashChildCollapseOut{animation:vshookHashDrawerClose .20s ease-in both}@keyframes vshookHashDrawerOpen{0%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}100%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}}@keyframes vshookHashDrawerClose{0%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}100%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}}.vshookMarkerCancelOverlay{position:fixed!important;left:50%!important;bottom:calc(env(safe-area-inset-bottom,0px) + 18px)!important;transform:translateX(-50%)!important;z-index:9999!important;min-width:210px!important;height:56px!important;border-radius:14px!important;border:2px solid #fecaca!important;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%)!important;color:#fff!important;font-weight:1000!important;font-size:20px!important;text-transform:uppercase!important;letter-spacing:.05em!important;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.36)!important;pointer-events:auto!important;touch-action:manipulation!important}.vshookMarkerCancelOverlay:active{transform:translateX(-50%) scale(.97)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 160px)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:12px!important;scroll-padding-bottom:12px!important}.directorMarkersCancelFooter{flex:0 0 auto;min-height:calc(env(safe-area-inset-bottom,0px) + 84px);display:flex;align-items:center;justify-content:center;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 12px);box-sizing:border-box;background:linear-gradient(180deg,rgba(6,9,15,.96) 0%,rgba(2,6,23,.99) 100%);border-top:1px solid rgba(148,163,184,.18);position:relative;z-index:9}.directorMarkersCancelFooterIdle{pointer-events:none}.directorMarkersCancelButton{min-width:220px;height:56px;border-radius:14px;border:2px solid #fecaca;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%);color:#fff;font-weight:1000;font-size:20px;text-transform:uppercase;letter-spacing:.05em;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.38);pointer-events:auto;touch-action:manipulation}.directorMarkersCancelButton:active{transform:scale(.97)}.appPopupMarkersPanel{bottom:calc(env(safe-area-inset-bottom,0px) + 102px)!important;z-index:7000!important}.vshookNoTextSelect,.vshookNoTextSelect *,.hashChildItem,.hashParentItem,.rowLabelText,.songRowLabel,.regionRowLabel{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}.premixInlineSlider{width:108px;min-width:88px;accent-color:#facc15}.premixMixerRow .mixerMiniBtn{flex:0 0 auto}</style>${appPopupHtml}<div class="container ${showMarkerFooterSpace ? 'markerFooterContainer' : ''}" style="${borderStyle}"><div class="topStatusRow"><div class="${state.activeTab === 'playlist' ? 'topStatusLeftPlaylist' : 'topStatusLeft'}">${topTitleHtml}</div>${topTimerHtml}${rightToolsHtml}</div><div class="headerRow"><div class="tabRow"><button class="${state.activeTab === 'playlist' ? 'activeTab' : 'tab'}" data-action="go-playlist">REPERTÓRIOS</button><button class="${state.activeTab === 'regions' ? 'activeTab' : 'tab'}" data-action="go-regions">MÚSICAS</button><span class="headerTotal">${topTime}</span>${headerNavButtons}<span class="headerTotalSpacer"></span></div><div class="middleInfo"><span class="middleInfoText">${middleLabel}</span></div></div>${content}${showEditDoneFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="edit-done">OK</button>` : ''}${showDeleteConfirmFloating ? `<button class="floatingDangerButton floatingDangerLeft" data-action="delete-confirm">${state.activeTab === 'regions' ? 'SAIR' : 'DEL'}</button>` : ''}${showDeleteCancelFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="delete-cancel">SAIR</button>` : ''}${shouldShowClearButton ? `<button class="floatingClearButton" id="floatingClearButton" style="left:${state.clearButtonSide === 'left' ? '20px' : 'calc(100vw - 92px)'};">SAIR</button>` : ''}</div>${markerCancelGlobalButton}${lyricsPanelHtml}${createModal}${addExistingModal}${renameModal}${playlistSwitchModal}${deletePlaylistConfirmModal}${projectTabsModal}${recadosModal}${gearModal}${timerModal}${liveOffConfirmModal}${mixerModal}${mixerVolumeModal}${premixModal}${premixVolumeModal}${bpmModal}${tunerModal}</div>`
   syncChronoDisplays()
   bindEvents()
+  installMarkerCancelHardDelegation()
   scheduleMarqueeBehavior()
 
   const visibleListAfterRender = document.querySelector('.listBox')
@@ -6702,6 +8597,7 @@ function updateBorderEffect() {
 }
 
 function startApp() {
+  try { state.transportProtectionEnabled = localStorage.getItem(DIRECTOR_TRANSPORT_PROTECTION_KEY) === '1' } catch (error) {}
   registerPwaServiceWorker()
   syncAppViewportHeight()
   appBootStartedAt = Date.now()
@@ -6745,7 +8641,24 @@ function startApp() {
   window.visualViewport?.addEventListener('resize', syncAppViewportHeight)
   window.visualViewport?.addEventListener('scroll', syncAppViewportHeight)
 
+  // VSHOOK_NO_TEXT_SELECT_DIRECTOR_PATCH
+  document.addEventListener('contextmenu', (event) => {
+    if (event.target && event.target.closest && event.target.closest('.item,.rowLabelText,.songRowLabel,.regionRowLabel')) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+  }, { capture: true })
+  // VSHOOK_NO_TEXT_SELECT_SELECTSTART_PATCH
+  ;['selectstart', 'dragstart'].forEach((eventName) => {
+    document.addEventListener(eventName, (event) => {
+      if (event.target && event.target.closest && event.target.closest('.item,.rowLabelText,.songRowLabel,.regionRowLabel,.markerRowLabel')) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }, { capture: true })
+  })
   setupWakeLock()
+  installDirectorInputRenderGuard()
   try { render() } catch (error) { console.error('render start error', error) }
   updateBorderEffect()
   pollBridge()
@@ -6759,8 +8672,8 @@ function startApp() {
       state.borderHue = (state.borderHue + 6) % 360
       updateBorderEffect()
     }
-  }, 120)
-  bridgeTimer = setInterval(pollBridge, 200)
+  }, 180)
+  bridgeTimer = setInterval(pollBridge, 250)
   playbackRenderTimer = setInterval(() => {
     try {
       syncDirectorChronoDom()
@@ -6779,7 +8692,7 @@ function startApp() {
     } catch (error) {
       console.error('playback render error', error)
     }
-  }, 200)
+  }, 100)
   window.setTimeout(() => {
     if (appLoadingVisible) {
       hideBootLoader(true)
@@ -6831,3 +8744,3720 @@ function syncDirectorPlaybackDom() {
 }
 
 /* VSHOOK_PATCH_LYRICS_SMART_SCROLL_V138 */
+
+// VSHOOK_DIRECTOR_2036_STOP_POPUP_FIX
+
+
+/* VS Hook Native Bridge FIX3 - Premix por Item definitivo: sem Global, sem ON/OFF, sem grupos. */
+(function(){
+  try {
+    window.VSHOOK_PREMIX_ITEM_ONLY_FIX3 = true;
+    if (typeof PREMIX_GLOBAL_ID !== 'undefined') {}
+  } catch (e) {}
+})();
+
+function isPremixGlobalMode() { return false }
+function getPremixEntityId() { return String(state.premixSelectedSongId || '') }
+function getPremixOnState() { return true }
+function getPremixOnLabel() { return 'PREMIX' }
+function canEditCurrentPremix(showMessage = true) { return true }
+function canOpenPremixSong(songId, showMessage = true) { return !!String(songId || '') }
+function getPremixItemsForView(view = 'tracks') {
+  return (Array.isArray(state.premixTracks) ? state.premixTracks : []).filter(Boolean)
+}
+function getPremixTracks() { return getPremixItemsForView('tracks') }
+function openPremixGlobalModal(event) { event?.preventDefault?.(); event?.stopPropagation?.(); return openPremixFromMenu(event) }
+function bindPremixGlobalMenuButton(el) { if (el) el.style.display = 'none' }
+function handlePremixOnOffToggle(event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+function handlePremixGlobalReset(event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+function setPremixTrackView(view) { state.premixTrackView = 'tracks'; return true }
+
+function openPremixModal() {
+  state.settingsMenuOpen = false
+  state.showGearModal = false
+  state.showMixerModal = false
+  state.showMixerVolumeModal = false
+  state.showPremixVolumeModal = false
+  state.showBpmModal = false
+  state.showTunerModal = false
+  state.showPremixModal = true
+  state.premixIsGlobal = false
+  state.premixView = 'songs'
+  state.premixTrackView = 'tracks'
+  state.premixSelectedTrackId = null
+  state.premixTracks = []
+  state.premixGroups = []
+  armOverlayCloseGuard?.(900)
+  render()
+  postCommand('premix_item_open', { requestFull: '1', page: getCurrentPcPageName() })
+  fastPollBridge?.(12)
+}
+
+function selectPremixSong(songId) {
+  const id = String(songId || '')
+  if (!id) return
+  const song = getPremixSongs().find((entry) => vshookPremixItemSongId(entry) === id)
+  if (!isPremixSelectableSong(song)) return
+  state.premixIsGlobal = false
+  state.premixSelectedSongId = id
+  state.selectedRegionId = id
+  state.selectedRegionIds = [id]
+  state.selectedPlaylistSongId = null
+  state.selectedPlaylistSongIds = []
+  state.premixSelectedTrackId = null
+  state.showPremixVolumeModal = false
+  state.premixView = 'tracks'
+  state.premixTrackView = 'tracks'
+  state.premixTracks = []
+  state.premixGroups = []
+  render()
+  postCommand('premix_item_focus_song', { id, songId: id, selectedRegionId: id, page: getCurrentPcPageName() })
+  fastPollBridge?.(16)
+}
+
+function backPremixSongList() {
+  state.premixView = 'songs'
+  state.showPremixVolumeModal = false
+  state.premixSelectedTrackId = null
+  render()
+  postCommand('premix_item_open', { requestFull: '1', page: getCurrentPcPageName() })
+  fastPollBridge?.(8)
+}
+
+function findPremixTrack(id, view = 'tracks') {
+  const wanted = String(id || '')
+  if (!wanted) return null
+  return getPremixItemsForView('tracks').find((entry) => String(entry?.id || entry?.guid || entry?.itemId || '') === wanted) || null
+}
+
+function setPremixTrackLocalState(id, patch = {}, view = 'tracks') {
+  const wanted = String(id || '')
+  if (!wanted) return
+  const applyPatch = (list) => (Array.isArray(list) ? list : []).map((item) => {
+    const key = String(item?.id || item?.guid || item?.itemId || '')
+    return key === wanted ? { ...item, ...patch } : item
+  })
+  state.premixTracks = applyPatch(state.premixTracks)
+}
+
+function handlePremixTrackToggle(event, action, trackId, view = 'tracks') {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  const id = String(trackId || '')
+  const songId = getPremixEntityId()
+  if (!id || !songId) return
+  const item = findPremixTrack(id, 'tracks')
+  const normalizedAction = (action === 'phase' || action === 'fx') ? 'fx' : 'mute'
+  if (item) {
+    if (normalizedAction === 'mute') setPremixTrackLocalState(id, { mute: !item.mute, muted: !item.mute }, 'tracks')
+    if (normalizedAction === 'fx') setPremixTrackLocalState(id, { fxEnabled: !item.fxEnabled, fxOn: !item.fxEnabled }, 'tracks')
+  }
+  render()
+  postCommand(normalizedAction === 'fx' ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute', {
+    id: songId, songId, selectedRegionId: songId, targetId: id, itemId: id, trackId: id, guid: id, page: getCurrentPcPageName()
+  })
+  fastPollBridge?.(10)
+}
+
+function handlePremixVolumeInput(view, trackId, value) {
+  const id = String(trackId || '')
+  const songId = getPremixEntityId()
+  if (!id || !songId) return
+  const ratio = normalizeMixerRatio(value, 0.5)
+  setPremixTrackLocalState(id, { volumeRatio: ratio, liveVolumeRatio: ratio }, 'tracks')
+  extendMixerVolumeInteraction?.(320)
+  postCommand('premix_item_set_volume', {
+    id: songId, songId, selectedRegionId: songId, targetId: id, itemId: id, trackId: id, guid: id, ratio, volumeRatio: ratio, page: getCurrentPcPageName()
+  })
+}
+
+function handlePremixVolumeReset(event, view, trackId) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  handlePremixVolumeInput('tracks', trackId, getMixerZeroDbRatio())
+  render()
+}
+function openPremixVolumeModal(view, id) { return false }
+function closePremixVolumeModal(force = false) { state.showPremixVolumeModal = false; state.premixSelectedTrackId = null; render() }
+function renderPremixVolumeModal() { return '' }
+function handlePremixRowOpenFromElement(el, event) { event?.preventDefault?.(); event?.stopPropagation?.(); return false }
+
+function renderPremixTrackRows() {
+  const tracks = getPremixItemsForView('tracks')
+  if (!tracks.length) return '<div class="emptyBox">SEM ITENS NESSA MÚSICA</div>'
+  return tracks.map((item, index) => {
+    const idRaw = String(item?.id || item?.guid || item?.itemId || '')
+    const id = escapeHtml(idRaw)
+    const indexText = String(item?.index ?? (index + 1)).padStart(2, '0')
+    const rawName = item?.name || item?.label || item?.trackName || item?.itemName || item?.takeName || `ITEM ${indexText}`
+    const name = buildMarqueeText(rawName, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee')
+    const ratio = normalizeMixerRatio(item?.volumeRatio ?? item?.liveVolumeRatio, 0.5)
+    const db = escapeHtml(formatMixerDbLabel(item?.db ?? 0, ratio, item?.displayScale))
+    const isMuted = !!(item?.mute || item?.muted)
+    const muteClass = isMuted ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniMute' : 'mixerMiniBtn'
+    const hasFx = !!(item?.hasFx || Number(item?.fxCount || 0) > 0)
+    const fxOn = item?.fxEnabled !== false && item?.fxOn !== false
+    const fxClass = !hasFx ? 'mixerMiniBtn btnDisabled' : (fxOn ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn')
+    const drawerStyle = item?.isDrawer || item?.is_drawer ? ' style="background:rgba(250,204,21,.92);color:#111827;border-color:#facc15"' : ''
+    return `<div class="mixerRow premixMixerRow"${drawerStyle} data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">${escapeHtml(indexText)}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div></div><div class="mixerRowDb">${db}</div><button class="${muteClass}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${id}">M</button><button class="${fxClass}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${id}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button><input class="premixInlineSlider" type="range" min="0" max="1" step="0.01" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${id}" /></div>`
+  }).join('')
+}
+
+function renderPremixModal() {
+  if (!state.showPremixModal) return ''
+  const isTracks = state.premixView === 'tracks'
+  const selectedSong = getPremixSongs().find((song) => vshookPremixItemSongId(song) === String(state.premixSelectedSongId || ''))
+  const title = isTracks && selectedSong ? upperText(selectedSong.name || selectedSong.label || 'PREMIX') : 'PREMIX'
+  const titleHtml = buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee')
+  const closeOrBack = isTracks ? `<button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button>` : `<button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button>`
+  const content = isTracks
+    ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px"><div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div>${closeOrBack}</div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">ITENS</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+    : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div>${closeOrBack}</div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div></div><div class="mixerRowsBox premixSongListBox" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`
+  return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`
+}
+
+
+// VS Hook Native Bridge FIX5 - Diretor: aba Músicas sempre em ordem alfabética.
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX5_ALPHA_MUSICAS__) return;
+  window.__VSHOOK_DIRECTOR_FIX5_ALPHA_MUSICAS__ = true;
+  const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+  function cleanNameForSort(item) {
+    return String(item?.name || item?.label || item?.title || '').replace(/^\s*--\s*/, '').trim();
+  }
+  function sortMusicRootItemsAlpha(list) {
+    return (Array.isArray(list) ? [...list] : []).sort((a, b) => {
+      const ab = (typeof detectBlockItem === 'function' && detectBlockItem(a)) ? 1 : 0;
+      const bb = (typeof detectBlockItem === 'function' && detectBlockItem(b)) ? 1 : 0;
+      if (ab !== bb) return ab - bb;
+      const c = collator.compare(cleanNameForSort(a), cleanNameForSort(b));
+      if (c !== 0) return c;
+      return (Number(a?.startPos ?? a?.start_pos ?? 0) || 0) - (Number(b?.startPos ?? b?.start_pos ?? 0) || 0);
+    });
+  }
+  if (typeof vshookRootFamilyItems === 'function') {
+    const previousRootFamilyItems = vshookRootFamilyItems;
+    vshookRootFamilyItems = function(items) {
+      const roots = previousRootFamilyItems(items);
+      if (state && state.activeTab === 'regions') return sortMusicRootItemsAlpha(roots);
+      return roots;
+    };
+  }
+})();
+
+
+// VS_HOOK_NATIVE_FIX6_APP_PATCH: premix/mixer vêm da extensão; cronômetro local otimista; repertório não volta para primeiro durante hold.
+
+
+/* VS_HOOK_NATIVE_FIX8: Premix por item robusto + cronômetro otimista + animação Markers/Letras. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX8_DIRECTOR__) return;
+  window.__VSHOOK_NATIVE_FIX8_DIRECTOR__ = true;
+
+  function normalizePremixMap(map) {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return {};
+    return map;
+  }
+
+  function getPremixTrackMap() {
+    return normalizePremixMap(state.premixTracksBySongId || state.premixTracksByRegionId || state.premixItemsBySongId || {});
+  }
+
+  function getMappedPremixTracks(songId) {
+    const key = String(songId || state.premixSelectedSongId || '');
+    if (!key) return [];
+    const map = getPremixTrackMap();
+    const list = map[key] || map[String(Number(key))] || [];
+    return Array.isArray(list) ? list.filter(Boolean).map((item) => normalizePremixTrackItem(item, 'tracks')) : [];
+  }
+
+  const previousSyncFromBridgeFix8 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (previousSyncFromBridgeFix8) {
+    syncFromBridge = function(data) {
+      const optimistic = window.__VSHOOK_TIMER_OPTIMISTIC_FIX8__ || null;
+      previousSyncFromBridgeFix8(data);
+
+      if (data && data.premix && typeof data.premix === 'object') {
+        const map = data.premix.tracksBySongId || data.premix.tracksByRegionId || data.premix.itemsBySongId || data.premix.itemTracksBySongId || null;
+        if (map && typeof map === 'object' && !Array.isArray(map)) {
+          state.premixTracksBySongId = map;
+          state.premixTracksByRegionId = map;
+          if (state.showPremixModal && state.premixView === 'tracks' && state.premixSelectedSongId) {
+            const mapped = getMappedPremixTracks(state.premixSelectedSongId);
+            if (mapped.length) state.premixTracks = mapped;
+          }
+        }
+      }
+
+      if (optimistic && Date.now() < Number(optimistic.until || 0)) {
+        if (optimistic.desiredRunning) {
+          state.timerRunning = true;
+          state.timerStartedAt = Number(optimistic.startedAt) || Date.now();
+          state.timerStartedAtMs = state.timerStartedAt;
+          state.timerAccumulatedSec = Number(optimistic.accumulatedSec) || 0;
+          state.timerMode = optimistic.mode || state.timerMode || 'progressive';
+          state.timerTargetSec = Number(optimistic.targetSec ?? state.timerTargetSec ?? 0) || 0;
+        } else {
+          state.timerRunning = false;
+          state.timerStartedAt = 0;
+          state.timerStartedAtMs = 0;
+        }
+        try { refreshChronoRenderLoop(); syncChronoDisplays(); } catch (error) {}
+      }
+    };
+  }
+
+  if (typeof confirmTimerModal === 'function') {
+    const previousConfirmTimerModalFix8 = confirmTimerModal;
+    confirmTimerModal = function() {
+      const wasRunning = !!state.timerRunning;
+      const beforeElapsed = typeof getTimerElapsedSec === 'function' ? getTimerElapsedSec() : (Number(state.timerAccumulatedSec) || 0);
+      const targetSec = Number(state.timerTargetSec) || 0;
+      const mode = state.timerMode || 'progressive';
+      previousConfirmTimerModalFix8();
+      const now = Date.now();
+      window.__VSHOOK_TIMER_OPTIMISTIC_FIX8__ = {
+        desiredRunning: !wasRunning,
+        startedAt: !wasRunning ? now : 0,
+        accumulatedSec: !wasRunning ? beforeElapsed : 0,
+        mode,
+        targetSec,
+        until: now + 3500,
+      };
+      if (!wasRunning) {
+        state.timerRunning = true;
+        state.timerStartedAt = now;
+        state.timerStartedAtMs = now;
+        state.timerAccumulatedSec = beforeElapsed;
+      } else {
+        state.timerRunning = false;
+        state.timerStartedAt = 0;
+        state.timerStartedAtMs = 0;
+      }
+      try { refreshChronoRenderLoop(); syncChronoDisplays(); render(); } catch (error) {}
+    };
+  }
+
+  getPremixItemsForView = function(view = 'tracks') {
+    const mapped = getMappedPremixTracks(state.premixSelectedSongId);
+    if (mapped.length) return mapped;
+    return (Array.isArray(state.premixTracks) ? state.premixTracks : []).filter(Boolean).map((item) => normalizePremixTrackItem(item, 'tracks'));
+  };
+
+  selectPremixSong = function(songId) {
+    const id = String(songId || '');
+    if (!id) return;
+    const song = getPremixSongs().find((entry) => vshookPremixItemSongId(entry) === id || String(entry?.id || '') === id || String(entry?.sourceNumber || entry?.source_number || '') === id);
+    if (!isPremixSelectableSong(song)) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = id;
+    state.selectedRegionId = id;
+    state.selectedRegionIds = [id];
+    state.selectedPlaylistSongId = null;
+    state.selectedPlaylistSongIds = [];
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    const mapped = getMappedPremixTracks(id);
+    state.premixTracks = mapped.length ? mapped : [];
+    state.premixGroups = [];
+    render();
+    postCommand('premix_item_focus_song', { id, songId: id, selectedRegionId: id, page: getCurrentPcPageName() });
+    fastPollBridge?.(20);
+  };
+
+  backPremixSongList = function() {
+    state.premixView = 'songs';
+    state.showPremixVolumeModal = false;
+    state.premixSelectedTrackId = null;
+    render();
+    postCommand('premix_item_open', { requestFull: '1', page: getCurrentPcPageName() });
+    fastPollBridge?.(10);
+  };
+
+  function installDirectorPanelAnimationFix8() {
+    if (document.getElementById('vshook-native-fix8-panel-animation')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix8-panel-animation';
+    style.textContent = `
+      @keyframes vshookDirectorLyricsFromLeftFix8{0%{opacity:.1;transform:translateX(-26px)}100%{opacity:1;transform:translateX(0)}}
+      @keyframes vshookDirectorMarkersFromRightFix8{0%{opacity:.1;transform:translateX(26px)}100%{opacity:1;transform:translateX(0)}}
+      .lyricsScreen{animation:vshookDirectorLyricsFromLeftFix8 .24s cubic-bezier(.2,.7,.2,1) both!important;will-change:transform,opacity!important}
+      .markerPanelSlideIn{animation:vshookDirectorMarkersFromRightFix8 .24s cubic-bezier(.2,.7,.2,1) both!important;will-change:transform,opacity!important}
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installDirectorPanelAnimationFix8);
+  else installDirectorPanelAnimationFix8();
+})();
+
+
+/* VS_HOOK_NATIVE_FIX9: comandos rápidos, Premix selecionado, timer sem fechar teclado e animação Markers reversa. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX9_DIRECTOR__) return;
+  window.__VSHOOK_NATIVE_FIX9_DIRECTOR__ = true;
+
+  const originalShouldPauseBridgeRenderFix9 = typeof shouldPauseBridgeRender === 'function' ? shouldPauseBridgeRender : null;
+  if (originalShouldPauseBridgeRenderFix9) {
+    shouldPauseBridgeRender = function() {
+      if (state && state.showTimerModal) return true;
+      return originalShouldPauseBridgeRenderFix9();
+    };
+  }
+
+  const originalPollBridgeFix9 = typeof pollBridge === 'function' ? pollBridge : null;
+  if (originalPollBridgeFix9) {
+    pollBridge = async function() {
+      const active = document.activeElement;
+      const timerInputFocused = !!(state && state.showTimerModal && active && active.matches && active.matches('[data-timer-part]'));
+      await originalPollBridgeFix9();
+      if (timerInputFocused && document.contains(active)) {
+        try { active.focus({ preventScroll: true }); } catch (error) {}
+      }
+    };
+  }
+
+  function normalizePremixFix9(item) {
+    if (typeof normalizePremixTrackItem === 'function') return normalizePremixTrackItem(item, 'tracks');
+    return item;
+  }
+
+  function currentPremixSelectedFix9() {
+    return String(state?.premixSelectedSongId || '');
+  }
+
+  function premixListFromStateFix9(songId) {
+    const key = String(songId || currentPremixSelectedFix9());
+    const map = state?.premixTracksBySongId || state?.premixTracksByRegionId || state?.premixItemsBySongId || {};
+    const fromMap = key && map && typeof map === 'object' ? (map[key] || map[String(Number(key))]) : null;
+    if (Array.isArray(fromMap) && fromMap.length) return fromMap.map(normalizePremixFix9);
+    if (Array.isArray(state?.premixTracks) && state.premixTracks.length) return state.premixTracks.map(normalizePremixFix9);
+    return [];
+  }
+
+  const originalSyncFromBridgeFix9 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (originalSyncFromBridgeFix9) {
+    syncFromBridge = function(data) {
+      const selectedBefore = currentPremixSelectedFix9();
+      const keepPremixScreen = !!(state && state.showPremixModal && state.premixView === 'tracks' && selectedBefore);
+      originalSyncFromBridgeFix9(data);
+
+      if (data && data.premix && typeof data.premix === 'object') {
+        const selectedFromBridge = data.premix.selectedSongId != null ? String(data.premix.selectedSongId) : '';
+        const tracks = Array.isArray(data.premix.tracks) ? data.premix.tracks.map(normalizePremixFix9) : [];
+        const map = data.premix.tracksBySongId || data.premix.tracksByRegionId || data.premix.itemsBySongId || null;
+        if (map && typeof map === 'object' && !Array.isArray(map)) {
+          state.premixTracksBySongId = map;
+          state.premixTracksByRegionId = map;
+        }
+        if (keepPremixScreen) {
+          state.premixSelectedSongId = selectedBefore;
+          const mapped = premixListFromStateFix9(selectedBefore);
+          if (mapped.length) state.premixTracks = mapped;
+          else if (selectedFromBridge === selectedBefore && tracks.length) state.premixTracks = tracks;
+        } else if (tracks.length) {
+          state.premixTracks = tracks;
+        }
+      }
+    };
+  }
+
+  getPremixItemsForView = function(view = 'tracks') {
+    return premixListFromStateFix9(state?.premixSelectedSongId);
+  };
+  getPremixTracks = function() { return getPremixItemsForView('tracks'); };
+
+  selectPremixSong = function(songId) {
+    const id = String(songId || '');
+    if (!id) return;
+    const song = getPremixSongs().find((entry) => {
+      const sid = typeof vshookPremixItemSongId === 'function' ? vshookPremixItemSongId(entry) : String(entry?.id || '');
+      return sid === id || String(entry?.id || '') === id || String(entry?.sourceNumber || entry?.source_number || '') === id;
+    });
+    if (typeof isPremixSelectableSong === 'function' && !isPremixSelectableSong(song)) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = id;
+    state.selectedRegionId = id;
+    state.selectedRegionIds = [id];
+    state.selectedPlaylistSongId = null;
+    state.selectedPlaylistSongIds = [];
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixGroups = [];
+    state.premixTracks = premixListFromStateFix9(id);
+    render();
+    postCommand('premix_item_focus_song', { id, songId: id, selectedRegionId: id, regionId: id, requestTracks: '1', page: getCurrentPcPageName() });
+    fastPollBridge?.(30);
+  };
+
+  // Ao parar, zera visualmente no app também. O Lua já zera do lado dele.
+  if (typeof confirmTimerModal === 'function') {
+    const previousConfirmTimerModalFix9 = confirmTimerModal;
+    confirmTimerModal = function() {
+      const wasRunning = !!state.timerRunning;
+      if (state.timerMode === 'countdown') {
+        try { state.timerTargetSec = readTimerTargetSecondsFromModal(); } catch (error) {}
+      }
+      previousConfirmTimerModalFix9();
+      if (wasRunning) {
+        state.timerRunning = false;
+        state.timerStartedAt = 0;
+        state.timerStartedAtMs = 0;
+        state.timerAccumulatedSec = 0;
+        state.timerElapsedSec = 0;
+        state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+        window.__VSHOOK_TIMER_OPTIMISTIC_FIX8__ = {
+          desiredRunning: false,
+          startedAt: 0,
+          accumulatedSec: 0,
+          mode: state.timerMode || 'progressive',
+          targetSec: Number(state.timerTargetSec) || 0,
+          until: Date.now() + 2500,
+        };
+        try { syncChronoDisplays(); render(); } catch (error) {}
+      }
+    };
+  }
+
+  function installFix9Animation() {
+    if (document.getElementById('vshook-native-fix9-animation')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix9-animation';
+    style.textContent = `
+      @keyframes vshookDirectorLyricsInFix9{0%{opacity:.05;transform:translateX(-100%)}100%{opacity:1;transform:translateX(0)}}
+      @keyframes vshookDirectorMarkersInFix9{0%{opacity:.05;transform:translateX(100%)}100%{opacity:1;transform:translateX(0)}}
+      .lyricsScreen{animation:vshookDirectorLyricsInFix9 .26s cubic-bezier(.18,.78,.24,1) both!important;will-change:transform,opacity!important}
+      .markerContentPanel.markerPanelSlideIn,.markerListBox.markerPanelSlideIn,.markerPanelSlideIn{animation:vshookDirectorMarkersInFix9 .26s cubic-bezier(.18,.78,.24,1) both!important;will-change:transform,opacity!important}
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installFix9Animation);
+  else installFix9Animation();
+})();
+
+
+/* VS_HOOK_NATIVE_FIX10_DIRECTOR: Premix fallback real, TP1-only lyrics, timer, markers, auth, settings. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX10_DIRECTOR__) return;
+  window.__VSHOOK_NATIVE_FIX10_DIRECTOR__ = true;
+
+  const TP_COLOR_KEY = 'vshook_tp_text_color';
+  const TP_FONT_KEY = 'vshook_tp_font_family';
+  const TP_COLORS = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+
+  function lsGet(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch(e) { return fallback; } }
+  function lsSet(key, value) { try { localStorage.setItem(key, String(value || '')); } catch(e) {} }
+  function getTpTextColorFix10() { return lsGet(TP_COLOR_KEY, '#f8fafc'); }
+  function getTpFontFix10() { return lsGet(TP_FONT_KEY, TP_FONTS[0]); }
+  function setTpTextColorFix10(value) { lsSet(TP_COLOR_KEY, value); render?.(); }
+  function setTpFontFix10(value) { lsSet(TP_FONT_KEY, value); render?.(); }
+  window.vshookSetTpTextColorFix10 = setTpTextColorFix10;
+  window.vshookSetTpFontFix10 = setTpFontFix10;
+
+  // A primeira entrada do Diretor deve cair em Repertórios.
+  try {
+    if (state) {
+      state.activeTab = 'playlist';
+      state.playlistView = 'songs';
+      state.localMarkersMode = false;
+      state.pendingTabCommand = 'playlist';
+      state.forcePlaylistUntil = Date.now() + 4200;
+    }
+  } catch(e) {}
+
+  function mediaAllowsTextFix10(mediaType) {
+    const t = String(mediaType || 'text').toLowerCase().replace(/[- ]/g, '_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain';
+  }
+
+  function syncTp1FromBridgeFix10(data) {
+    if (!data || typeof data !== 'object' || !state) return;
+    const mediaType = String(data.tp1MediaType || data.telepromptTp1MediaType || data?.tp1?.mediaType || data?.tp1?.type || state.tp1MediaType || 'text').toLowerCase();
+    state.tp1MediaType = mediaType;
+    state.tp1SongName = String(data.tp1SongName || data.telepromptTp1SongName || data.tp1Song || data?.tp1?.songName || data?.tp1?.musicName || state.tp1SongName || '');
+    state.tp1LyricsText = mediaAllowsTextFix10(mediaType) ? String(data.tp1LyricsText || data.tp1Lyrics || data.telepromptTp1Lyrics || data?.tp1?.lyricsText || data?.tp1?.lyrics || data?.tp1?.text || '') : '';
+    state.tp1UpdatedAt = data.tp1UpdatedAt || data?.tp1?.updatedAt || state.tp1UpdatedAt || null;
+  }
+
+  function getTp1TitleFix10() {
+    const fromTp = String(state?.tp1SongName || '').trim();
+    if (fromTp) return fromTp;
+    const fromState = String(state?.currentSongName || state?.playingSongName || state?.songName || state?.musicName || '').trim();
+    if (fromState) return fromState;
+    const song = typeof getCurrentLyricsSong === 'function' ? getCurrentLyricsSong() : null;
+    return String(song?.name || song?.label || 'TELEPROMPT 1');
+  }
+
+  function getTp1TextFix10() {
+    const media = String(state?.tp1MediaType || 'text');
+    if (!mediaAllowsTextFix10(media)) return '';
+    return String(state?.tp1LyricsText || '').trim();
+  }
+
+  const originalSyncFromBridgeFix10 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (originalSyncFromBridgeFix10) {
+    syncFromBridge = function(data) {
+      const timerHold = window.__vshookTimerLocalHoldFix10;
+      const timerHoldActive = !!(timerHold && Date.now() < Number(timerHold.until || 0));
+      const savedTimer = timerHoldActive ? {
+        running: !!state.timerRunning,
+        startedAt: Number(state.timerStartedAt) || 0,
+        startedAtMs: Number(state.timerStartedAtMs) || 0,
+        accumulatedSec: Number(state.timerAccumulatedSec) || 0,
+        displaySec: Number(state.timerDisplaySec) || 0,
+        mode: state.timerMode,
+        targetSec: Number(state.timerTargetSec) || 0,
+      } : null;
+
+      syncTp1FromBridgeFix10(data);
+      originalSyncFromBridgeFix10(data);
+      syncTp1FromBridgeFix10(data);
+
+      if (timerHoldActive && savedTimer) {
+        state.timerRunning = savedTimer.running;
+        state.timerStartedAt = savedTimer.startedAt;
+        state.timerStartedAtMs = savedTimer.startedAtMs;
+        state.timerAccumulatedSec = savedTimer.accumulatedSec;
+        state.timerDisplaySec = savedTimer.displaySec;
+        state.timerMode = savedTimer.mode || state.timerMode;
+        state.timerTargetSec = savedTimer.targetSec;
+      }
+
+      if (data && data.forceDirectorLogout === true) {
+        try { clearAccessSession?.(); } catch(e) {}
+        try { localStorage.removeItem('vshook_access_session'); } catch(e) {}
+      }
+    };
+  }
+
+  // Evita que o app volte para a senha durante Play se a sessão local já está autenticada.
+  if (typeof needsAuthGate === 'function') {
+    const previousNeedsAuthGateFix10 = needsAuthGate;
+    needsAuthGate = function() {
+      try {
+        const saved = getSavedAccessSession?.() || localStorage.getItem('vshook_access_session') || '';
+        if (saved && state && state.authHash && saved === state.authHash && !bridgeLooksOffline?.()) {
+          state.authAuthenticated = true;
+          state.authError = '';
+          return false;
+        }
+      } catch(e) {}
+      return previousNeedsAuthGateFix10();
+    };
+  }
+
+  // Markers: se a extensão entregar markers globais sem songId, filtra por posição dentro da música atual.
+  if (typeof currentMarkers === 'function') {
+    const previousCurrentMarkersFix10 = currentMarkers;
+    currentMarkers = function() {
+      let list = [];
+      try { list = previousCurrentMarkersFix10() || []; } catch(e) { list = []; }
+      if (Array.isArray(list) && list.length) return list;
+
+      let sourceSongId = null;
+      if (state.playingId) sourceSongId = String(state.playingId);
+      else if (state.selectedPlaylistSongId) sourceSongId = String(state.selectedPlaylistSongId);
+      else if (state.selectedRegionId) sourceSongId = String(state.selectedRegionId);
+      if (!sourceSongId) return [];
+
+      const sourceItem = typeof findSongByIdEverywhere === 'function' ? findSongByIdEverywhere(sourceSongId) : null;
+      if (!sourceItem || (typeof detectBlockItem === 'function' && detectBlockItem(sourceItem))) return [];
+      const start = Number(sourceItem.startPos ?? sourceItem.start_pos ?? sourceItem.pos ?? 0);
+      const end = Number(sourceItem.endPos ?? sourceItem.end_pos ?? sourceItem.end ?? 0);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+
+      const out = [];
+      const seen = new Set();
+      const markers = Array.isArray(state.markers) ? state.markers : [];
+      markers.forEach((marker, index) => {
+        const abs = Number(marker.absoluteSec ?? marker.pos ?? marker.position ?? marker.startPos ?? marker.time ?? marker.timeSec);
+        if (!Number.isFinite(abs) || abs < start - 0.0005 || abs >= end - 0.0005) return;
+        const rawName = String(marker.rawName || marker.name || marker.label || `Marker ${index + 1}`);
+        if (!rawName || rawName.startsWith('!')) return;
+        const id = String(marker.id || `m${marker.number || index + 1}`);
+        const key = `${id}|${abs}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push({
+          ...marker,
+          id,
+          songId: sourceSongId,
+          regionId: sourceSongId,
+          name: rawName,
+          label: rawName,
+          rawName,
+          absoluteSec: abs,
+          pos: abs,
+          timeSec: Math.max(0, abs - start),
+          relativeSec: Math.max(0, abs - start),
+          index: out.length + 1,
+        });
+      });
+      out.sort((a,b) => (Number(a.timeSec)||0) - (Number(b.timeSec)||0));
+      return out;
+    };
+  }
+
+  // Premix: nunca deixa vazio. Se a extensão ainda não respondeu com itens, usa as pistas do Mixer como linhas de Premix.
+  function premixSongKeyFix10(songId) { return String(songId || state?.premixSelectedSongId || ''); }
+  function normalizePremixRowFix10(item, view = 'tracks') {
+    const row = typeof normalizePremixTrackItem === 'function' ? normalizePremixTrackItem(item, view) : { ...item };
+    const id = String(row.itemId || row.id || row.guid || item?.itemId || item?.id || item?.guid || '');
+    row.id = id;
+    row.guid = String(row.guid || id);
+    row.itemId = String(row.itemId || id);
+    row.trackId = String(row.trackId || item?.trackId || item?.trackGuid || item?.guid || id);
+    row.name = String(row.name || row.trackName || item?.trackName || item?.name || 'PISTA');
+    row.label = String(row.label || row.name);
+    row.view = 'tracks';
+    return row;
+  }
+  function premixRowsFromMapFix10(songId) {
+    const key = premixSongKeyFix10(songId);
+    const maps = [state?.premixTracksBySongId, state?.premixTracksByRegionId, state?.premixItemsBySongId, state?.premixItemsByRegionId];
+    for (const map of maps) {
+      if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+      const value = map[key] || map[String(Number(key))];
+      if (Array.isArray(value) && value.length) return value.map((x) => normalizePremixRowFix10(x, 'tracks'));
+    }
+    return [];
+  }
+  function getPremixRowsFix10(songId) {
+    const mapped = premixRowsFromMapFix10(songId);
+    if (mapped.length) return mapped;
+    if (Array.isArray(state?.premixTracks) && state.premixTracks.length) return state.premixTracks.map((x) => normalizePremixRowFix10(x, 'tracks'));
+    if (Array.isArray(state?.mixerTracks) && state.mixerTracks.length) {
+      return state.mixerTracks.map((x) => normalizePremixRowFix10({ ...x, itemId: x.id || x.guid, trackId: x.id || x.guid, name: x.name || x.trackName }, 'tracks'));
+    }
+    return [];
+  }
+  canEditCurrentPremix = function() { return true; };
+  getPremixItemsForView = function() { return getPremixRowsFix10(state?.premixSelectedSongId); };
+  getPremixTracks = function() { return getPremixItemsForView('tracks'); };
+  findPremixTrack = function(id) {
+    const wanted = String(id || '');
+    return getPremixRowsFix10(state?.premixSelectedSongId).find((x) => [x.id, x.guid, x.itemId, x.trackId].map(String).includes(wanted)) || null;
+  };
+  if (typeof openPremixModal === 'function') {
+    const previousOpenPremixModalFix10 = openPremixModal;
+    openPremixModal = function() {
+      previousOpenPremixModalFix10();
+      postCommand('premix_item_open', { requestTracks: '1', selectedRegionId: state.premixSelectedSongId || state.selectedRegionId || state.selectedPlaylistSongId || state.playingId || '', page: getCurrentPcPageName?.() || 'playlist' });
+      fastPollBridge?.(12);
+    };
+  }
+  selectPremixSong = function(songId) {
+    const id = String(songId || '');
+    if (!id) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = id;
+    state.premixSelectedTrackId = null;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.showPremixVolumeModal = false;
+    state.premixGroups = [];
+    state.premixTracks = getPremixRowsFix10(id);
+    postCommand('premix_item_focus_song', { id, songId: id, selectedRegionId: id, regionId: id, requestTracks: '1', page: getCurrentPcPageName?.() || 'playlist' });
+    fastPollBridge?.(18);
+    render?.();
+  };
+  handlePremixTrackToggle = function(event, action, trackId) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    const songId = premixSongKeyFix10();
+    const item = findPremixTrack(trackId);
+    const id = String(item?.itemId || item?.id || trackId || '');
+    const trackGuid = String(item?.trackId || item?.trackGuid || item?.guid || id);
+    if (!id) return;
+    if (action === 'mute') {
+      setPremixTrackLocalState?.(id, { mute: !(item?.mute || item?.muted) }, 'tracks');
+      postCommand('premix_item_toggle_mute', { id: songId, songId, selectedRegionId: songId, itemId: id, targetId: id, trackId: trackGuid, guid: id, page: getCurrentPcPageName?.() || 'playlist' });
+    } else if (action === 'phase' || action === 'fx') {
+      postCommand('premix_item_toggle_fx', { id: songId, songId, selectedRegionId: songId, itemId: id, targetId: id, trackId: trackGuid, guid: id, page: getCurrentPcPageName?.() || 'playlist' });
+    }
+    fastPollBridge?.(10);
+    render?.();
+  };
+  handlePremixVolumeInput = function(view, trackId, value) {
+    const songId = premixSongKeyFix10();
+    const item = findPremixTrack(trackId);
+    const id = String(item?.itemId || item?.id || trackId || '');
+    const trackGuid = String(item?.trackId || item?.trackGuid || item?.guid || id);
+    const ratio = Math.max(0, Math.min(1, Number(value) || 0));
+    if (!id) return;
+    const db = typeof mixerRatioToDb === 'function' ? mixerRatioToDb(ratio) : undefined;
+    setPremixTrackLocalState?.(id, { volumeRatio: ratio, liveVolumeRatio: ratio, db, displayScale: 'db' }, 'tracks');
+    postCommand('premix_item_set_volume', { id: songId, songId, selectedRegionId: songId, itemId: id, targetId: id, trackId: trackGuid, guid: id, ratio, volumeRatio: ratio, page: getCurrentPcPageName?.() || 'playlist' });
+    fastPollBridge?.(8);
+  };
+
+  // Timer local correto no Diretor: progressivo não usa alvo; stop zera.
+  function setTimerHoldFix10(ms = 4500) {
+    window.__vshookTimerLocalHoldFix10 = { until: Date.now() + ms };
+  }
+  if (typeof getTimerElapsedSec === 'function') {
+    const previousGetTimerElapsedSecFix10 = getTimerElapsedSec;
+    getTimerElapsedSec = function() {
+      try {
+        if (state.timerRunning) {
+          const base = Math.max(0, Number(state.timerAccumulatedSec) || 0);
+          const started = Number(state.timerStartedAt || state.timerStartedAtMs || 0);
+          const live = started > 0 ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0;
+          if (state.timerMode === 'countdown') {
+            const target = Math.max(0, Number(state.timerTargetSec) || 0);
+            return Math.max(0, target - (base + live));
+          }
+          return base + live;
+        }
+      } catch(e) {}
+      return previousGetTimerElapsedSecFix10();
+    };
+  }
+  confirmTimerModal = function() {
+    const wasRunning = !!state.timerRunning;
+    if (wasRunning) {
+      state.timerRunning = false;
+      state.timerStartedAt = 0;
+      state.timerStartedAtMs = 0;
+      state.timerAccumulatedSec = 0;
+      state.timerElapsedSec = 0;
+      state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+      state.showTimerModal = false;
+      setTimerHoldFix10(3000);
+      postCommand('timer_stop_reset');
+      postCommand('timer_stop');
+      syncChronoDisplays?.();
+      refreshChronoRenderLoop?.();
+      render?.();
+      return;
+    }
+    if (state.timerMode === 'countdown') state.timerTargetSec = readTimerTargetSecondsFromModal?.() || 0;
+    else state.timerTargetSec = 0;
+    const now = Date.now();
+    state.timerRunning = true;
+    state.timerStartedAt = now;
+    state.timerStartedAtMs = now;
+    state.timerAccumulatedSec = 0;
+    state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+    state.showTimerModal = false;
+    setTimerHoldFix10(5000);
+    postCommand('timer_set_mode', { timerMode: state.timerMode, mode: state.timerMode, timerTargetSec: state.timerTargetSec || 0, targetSec: state.timerTargetSec || 0, seconds: state.timerTargetSec || 0 });
+    postCommand('timer_start');
+    postCommand('timer_toggle');
+    syncChronoDisplays?.();
+    refreshChronoRenderLoop?.();
+    render?.();
+  };
+  setTimerModeFromApp = function(mode) {
+    const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive';
+    if (state.timerMode === 'countdown' && next !== 'countdown') {
+      try { state.timerTargetSec = readTimerTargetSecondsFromModal?.() || state.timerTargetSec || 0; } catch(e) {}
+    }
+    state.timerMode = next;
+    if (next === 'progressive' && !state.timerRunning) {
+      state.timerDisplaySec = 0;
+    }
+    postCommand('timer_set_mode', { timerMode: next, mode: next, timerTargetSec: next === 'countdown' ? (state.timerTargetSec || 0) : 0, targetSec: next === 'countdown' ? (state.timerTargetSec || 0) : 0, seconds: next === 'countdown' ? (state.timerTargetSec || 0) : 0 });
+    render?.();
+  };
+
+  // Tela de Letras do Diretor agora é visualização TP1: sem armazenamento/editar.
+  openLyricsPanel = function() {
+    state.lyricsPanelOpen = true;
+    state.lyricsEditing = false;
+    state.lyricsDraft = '';
+    state.settingsMenuOpen = false;
+    render?.();
+  };
+  closeLyricsPanel = function() {
+    document.body.classList.add('vshookReturningFromLyricsFix10');
+    setTimeout(() => document.body.classList.remove('vshookReturningFromLyricsFix10'), 340);
+    state.lyricsPanelOpen = false;
+    state.lyricsEditing = false;
+    state.lyricsDraft = '';
+    render?.();
+  };
+  cancelLyricsEditAndClosePanel = closeLyricsPanel;
+  startLyricsEdit = function() {};
+  cancelLyricsEdit = function() {};
+  confirmLyricsEdit = function() {};
+  renderLyricsPanel = function() {
+    if (!state.lyricsPanelOpen) return '';
+    const title = upperText?.(getTp1TitleFix10()) || getTp1TitleFix10().toUpperCase();
+    const text = getTp1TextFix10() || 'SEM CONTEÚDO NO TP1';
+    const song = typeof getCurrentLyricsSong === 'function' ? getCurrentLyricsSong() : null;
+    const progress = typeof getLyricsProgressRatio === 'function' ? (Math.round(getLyricsProgressRatio(song) * 1000) / 10) : 0;
+    return `<div class="lyricsScreen telepromptOnlyScreen directorTp1OnlyScreen" style="--tp-text-color:${escapeHtml(getTpTextColorFix10())};--tp-font:${escapeHtml(getTpFontFix10())}">
+      <div class="lyricsTopBar lyricsTopBarTpFix10">
+        <div class="lyricsNowPlaying lyricsNowPlayingWideFix10">
+          <div class="lyricsNowPlayingTitle" data-lyrics-title>${escapeHtml(title)}</div>
+          <div class="lyricsProgressTrack"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${progress}%"></div></div>
+        </div>
+        <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonCompactFix10" data-action="close-lyrics-panel">&gt;&gt;</button>
+      </div>
+      <div class="lyricsBody">
+        <div class="lyricsTextView tpLyricsTextFix10" data-lyrics-text-view data-lyrics-source="${escapeHtml(text)}">${lyricsTextToHtml?.(text) || escapeHtml(text)}</div>
+      </div>
+    </div>`;
+  };
+  if (typeof syncLyricsPanelDom === 'function') {
+    syncLyricsPanelDom = function() {
+      if (!state.lyricsPanelOpen) return;
+      const titleNode = document.querySelector('[data-lyrics-title]');
+      if (titleNode) titleNode.textContent = (upperText?.(getTp1TitleFix10()) || getTp1TitleFix10().toUpperCase());
+      const textNode = document.querySelector('[data-lyrics-text-view]');
+      const next = getTp1TextFix10() || 'SEM CONTEÚDO NO TP1';
+      if (textNode && textNode.getAttribute('data-lyrics-source') !== next) {
+        textNode.setAttribute('data-lyrics-source', next);
+        textNode.innerHTML = lyricsTextToHtml?.(next) || escapeHtml(next);
+      }
+    };
+  }
+  if (typeof closeMarkersPanel === 'function') {
+    const previousCloseMarkersPanelFix10 = closeMarkersPanel;
+    closeMarkersPanel = function() {
+      document.body.classList.add('vshookReturningFromMarkersFix10');
+      setTimeout(() => document.body.classList.remove('vshookReturningFromMarkersFix10'), 340);
+      return previousCloseMarkersPanelFix10();
+    };
+  }
+
+  // Config: cor/fonte do texto TP1.
+  if (typeof renderGearModal === 'function') {
+    const previousRenderGearModalFix10 = renderGearModal;
+    renderGearModal = function() {
+      let html = previousRenderGearModalFix10();
+      if (!html || html.includes('TP1 LETRA')) return html;
+      const colorButtons = TP_COLORS.map(c => `<button class="settingsToggleBtn ${getTpTextColorFix10() === c ? 'settingsToggleBtnActive' : ''}" data-action="tp-color" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+      const fontButtons = TP_FONTS.map((f,i) => `<button class="settingsToggleBtn ${getTpFontFix10() === f ? 'settingsToggleBtnActive' : ''}" data-action="tp-font" data-font="${escapeHtml(f)}" style="font-family:${escapeHtml(f)}">${TP_FONT_LABELS[i]}</button>`).join('');
+      const block = `<div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix10">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix10">${fontButtons}</div>`;
+      return html.replace('<div class="modalButtons settingsBottomButtons">', block + '<div class="modalButtons settingsBottomButtons">');
+    };
+  }
+  if (typeof bindEvents === 'function') {
+    const previousBindEventsFix10 = bindEvents;
+    bindEvents = function() {
+      previousBindEventsFix10();
+      document.querySelectorAll('[data-action="tp-color"]').forEach(el => el.addEventListener('click', () => setTpTextColorFix10(el.getAttribute('data-color') || '#f8fafc')));
+      document.querySelectorAll('[data-action="tp-font"]').forEach(el => el.addEventListener('click', () => setTpFontFix10(el.getAttribute('data-font') || TP_FONTS[0])));
+    };
+  }
+
+  function installFix10Styles() {
+    if (document.getElementById('vshook-native-fix10-director-style')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix10-director-style';
+    style.textContent = `
+      @keyframes vshookDirectorLyricsEnterFix10{0%{opacity:.05;transform:translateX(-100%)}100%{opacity:1;transform:translateX(0)}}
+      @keyframes vshookDirectorMarkersEnterFix10{0%{opacity:.05;transform:translateX(100%)}100%{opacity:1;transform:translateX(0)}}
+      @keyframes vshookDirectorMainFromLyricsFix10{0%{opacity:.4;transform:translateX(22px)}100%{opacity:1;transform:translateX(0)}}
+      @keyframes vshookDirectorMainFromMarkersFix10{0%{opacity:.4;transform:translateX(-22px)}100%{opacity:1;transform:translateX(0)}}
+      .directorTp1OnlyScreen,.lyricsScreen{animation:vshookDirectorLyricsEnterFix10 .26s cubic-bezier(.18,.78,.24,1) both!important;}
+      .markerContentPanel.markerPanelSlideIn,.markerListBox.markerPanelSlideIn,.markerPanelSlideIn{animation:vshookDirectorMarkersEnterFix10 .26s cubic-bezier(.18,.78,.24,1) both!important;}
+      body.vshookReturningFromLyricsFix10 .contentPanel{animation:vshookDirectorMainFromLyricsFix10 .24s cubic-bezier(.18,.78,.24,1) both!important;}
+      body.vshookReturningFromMarkersFix10 .contentPanel{animation:vshookDirectorMainFromMarkersFix10 .24s cubic-bezier(.18,.78,.24,1) both!important;}
+      .lyricsBackButtonCompactFix10{width:54px!important;min-width:54px!important;max-width:54px!important;padding-left:0!important;padding-right:0!important;flex:0 0 54px!important;}
+      .lyricsNowPlayingWideFix10{min-width:0!important;flex:1 1 auto!important;}
+      .tpLyricsTextFix10{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important;font-size:clamp(22px,5.6vw,38px)!important;line-height:1.28!important;text-align:center!important;white-space:pre-wrap!important;}
+      .settingsGridTpFix10{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important;}
+      .settingsGridFontFix10{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important;}
+      .settingsGridTpFix10 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important;}
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installFix10Styles); else installFix10Styles();
+})();
+
+
+/* VS_HOOK_NATIVE_FIX11_DIRECTOR: ajustes finais pedidos pelo Joabe.
+   - Premix: lista somente pista/item; tocar na linha abre controle; slider/M/FX só dentro do controle.
+   - Comandos seguem direto para o Lua pelo fluxo premix_item_*.
+   - Config força status NATIVE ON e injeta cor/fonte TP1 no Diretor.
+   - Markers mostram só $, *1 e *2, sem símbolos, mantendo id original para engatilhar.
+   - TP1: botão >> compacto, mas área do nome realmente maior.
+*/
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX11_DIRECTOR__) return;
+  window.__VSHOOK_NATIVE_FIX11_DIRECTOR__ = true;
+
+  const TP_COLOR_KEY = 'vshook_tp_text_color';
+  const TP_FONT_KEY = 'vshook_tp_font_family';
+  const TP_COLORS = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+  const getLS = (k, f) => { try { return localStorage.getItem(k) || f; } catch(e) { return f; } };
+  const setLS = (k, v) => { try { localStorage.setItem(k, String(v || '')); } catch(e) {} };
+  const getTpColor = () => getLS(TP_COLOR_KEY, '#f8fafc');
+  const getTpFont = () => getLS(TP_FONT_KEY, TP_FONTS[0]);
+  const setTpColor = (v) => { setLS(TP_COLOR_KEY, v || '#f8fafc'); render?.(); };
+  const setTpFont = (v) => { setLS(TP_FONT_KEY, v || TP_FONTS[0]); render?.(); };
+
+  function installFix11Style(){
+    if (document.getElementById('vshook-native-fix11-director-style')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix11-director-style';
+    style.textContent = `
+      .lyricsTopBarTpFix10,.lyricsTopBarTpFix11{display:flex!important;align-items:center!important;gap:8px!important;width:100%!important;box-sizing:border-box!important;}
+      .lyricsNowPlayingWideFix10,.lyricsNowPlayingWideFix11{flex:1 1 auto!important;width:auto!important;max-width:none!important;min-width:0!important;overflow:hidden!important;}
+      .lyricsBackButtonCompactFix10,.lyricsBackButtonCompactFix11{width:68px!important;min-width:68px!important;max-width:68px!important;flex:0 0 68px!important;padding-left:0!important;padding-right:0!important;font-size:22px!important;}
+      .tpLyricsTextFix10,.tpLyricsTextFix11{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important;}
+      .settingsGridTpFix11{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important;}
+      .settingsGridFontFix11{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important;}
+      .settingsGridTpFix11 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important;}
+      .bridgeStatusCard .bridgeOnline{color:#86efac!important;}
+      .premixControlOverlayFix11{background:rgba(0,0,0,.62)!important;}
+      .premixControlBoxFix11{width:100vw!important;max-width:none!important;height:var(--app-vh,100dvh)!important;max-height:none!important;border-radius:0!important;display:flex!important;flex-direction:column!important;justify-content:center!important;padding:16px!important;box-sizing:border-box!important;}
+      .premixControlActionsFix11{display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important;margin:18px 0 24px!important;}
+      .premixControlActionsFix11 button{height:56px!important;border-radius:14px!important;font-size:22px!important;font-weight:1000!important;}
+      .premixControlSliderFix11{width:100%!important;height:54px!important;accent-color:#facc15!important;}
+      .premixTrackRowFix11{min-height:58px!important;cursor:pointer!important;}
+      .premixTrackRowFix11 .mixerRowDb{margin-left:auto!important;}
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installFix11Style); else installFix11Style();
+
+  function forceNativeOnlineDom(){
+    try {
+      if (state) {
+        state.bridgeStatus = 'online';
+        state.nativeBridgeConnected = true;
+        state.nativeBridge = true;
+        state.bridgeMode = state.bridgeMode || 'native';
+      }
+      document.querySelectorAll('.bridgeStatusCard').forEach(card => {
+        const value = card.querySelector('.bridgeOffline,.bridgeOnline,span:last-child');
+        if (value) {
+          value.classList.remove('bridgeOffline');
+          value.classList.add('bridgeOnline');
+          value.textContent = 'NATIVE ON';
+        }
+      });
+    } catch(e) {}
+  }
+
+  function injectTpSettingsIntoDirector(){
+    try {
+      const box = document.querySelector('.settingsModalBox');
+      if (!box || box.querySelector('[data-fix11-tp-settings="1"]') || box.querySelector('[data-fix12-tp-settings="1"]')) return;
+      forceNativeOnlineDom();
+      const wrap = document.createElement('div');
+      wrap.setAttribute('data-fix11-tp-settings','1');
+      const colorButtons = TP_COLORS.map(c => `<button class="settingsToggleBtn ${getTpColor() === c ? 'settingsToggleBtnActive' : ''}" data-action="tp-color-fix11" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+      const fontButtons = TP_FONTS.map((f,i) => `<button class="settingsToggleBtn ${getTpFont() === f ? 'settingsToggleBtnActive' : ''}" data-action="tp-font-fix11" data-font="${escapeHtml?.(f) || f}" style="font-family:${escapeHtml?.(f) || f}">${TP_FONT_LABELS[i]}</button>`).join('');
+      wrap.innerHTML = `<div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix11">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix11">${fontButtons}</div>`;
+      const bottom = box.querySelector('.settingsBottomButtons');
+      box.insertBefore(wrap, bottom || null);
+      wrap.querySelectorAll('[data-action="tp-color-fix11"]').forEach(el => el.addEventListener('click', () => setTpColor(el.getAttribute('data-color') || '#f8fafc')));
+      wrap.querySelectorAll('[data-action="tp-font-fix11"]').forEach(el => el.addEventListener('click', () => setTpFont(el.getAttribute('data-font') || TP_FONTS[0])));
+    } catch(e) {}
+  }
+
+  if (typeof bindEvents === 'function') {
+    const previousBindEventsFix11 = bindEvents;
+    bindEvents = function(){
+      previousBindEventsFix11();
+      forceNativeOnlineDom();
+      injectTpSettingsIntoDirector();
+    };
+  }
+  if (typeof bridgeLooksOffline === 'function') {
+    bridgeLooksOffline = function(){ return false; };
+  }
+
+  function markerAllowedAndCleanFix11(marker){
+    const raw = String(marker?.rawName || marker?.name || marker?.label || '').trim();
+    let clean = '';
+    if (raw.startsWith('$')) clean = raw.replace(/^\$\s*/, '');
+    else if (/^\*1\s*/.test(raw)) clean = raw.replace(/^\*1\s*/, '');
+    else if (/^\*2\s*/.test(raw)) clean = raw.replace(/^\*2\s*/, '');
+    else return null;
+    clean = clean.trim();
+    if (!clean) clean = raw.replace(/^(\$|\*1|\*2)\s*/, '').trim() || 'PART';
+    return { ...marker, name: clean, label: clean, displayName: clean, rawName: raw };
+  }
+  if (typeof currentMarkers === 'function') {
+    const previousCurrentMarkersFix11 = currentMarkers;
+    currentMarkers = function(){
+      const list = previousCurrentMarkersFix11() || [];
+      const out = [];
+      const seen = new Set();
+      for (const marker of list) {
+        const fixed = markerAllowedAndCleanFix11(marker);
+        if (!fixed) continue;
+        // Mantém o id original para o Lua engatilhar corretamente.
+        const key = `${fixed.id}|${fixed.timeSec}|${fixed.rawName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(fixed);
+      }
+      return out;
+    };
+  }
+
+  function premixRowsFix11(){
+    const list = Array.isArray(state?.premixTracks) ? state.premixTracks : [];
+    return list.filter(Boolean).map((item, index) => {
+      const id = String(item.itemId || item.id || item.guid || item.trackId || '');
+      return {
+        ...item,
+        id,
+        guid: String(item.guid || id),
+        itemId: String(item.itemId || id),
+        trackId: String(item.trackId || item.trackGuid || item.guid || id),
+        index: item.index || index + 1,
+        name: String(item.name || item.label || item.trackName || item.takeName || `PISTA ${index + 1}`),
+        volumeRatio: normalizeMixerRatio?.(item.volumeRatio ?? item.ratio, 0.5) ?? 0.5,
+        mute: !!(item.mute ?? item.muted),
+        hasFx: !!(item.hasFx || Number(item.fxCount || 0) > 0),
+        fxEnabled: !!(item.fxEnabled ?? item.fxOn ?? item.fxActive),
+      };
+    });
+  }
+  getPremixItemsForView = function(){ return premixRowsFix11(); };
+  findPremixTrack = function(id){
+    const wanted = String(id || '');
+    return premixRowsFix11().find(x => String(x.id || x.guid || x.itemId || '') === wanted) || null;
+  };
+  setPremixTrackLocalState = function(id, patch){
+    const wanted = String(id || '');
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map(item => {
+      const key = String(item.itemId || item.id || item.guid || '');
+      return key === wanted ? { ...item, ...patch } : item;
+    });
+  };
+
+  renderPremixTrackRows = function(){
+    const tracks = premixRowsFix11();
+    if (!tracks.length) return '<div class="emptyBox">SEM PISTAS/ITENS NESSA MÚSICA</div>';
+    return tracks.map((item, index) => {
+      const idRaw = String(item.id || item.guid || item.itemId || '');
+      const id = escapeHtml?.(idRaw) || idRaw;
+      const indexText = String(item.index ?? (index + 1)).padStart(2, '0');
+      const name = buildMarqueeText?.(item.name || `PISTA ${indexText}`, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee') || (escapeHtml?.(item.name || `PISTA ${indexText}`) || item.name || `PISTA ${indexText}`);
+      const db = escapeHtml?.(formatMixerDbLabel?.(item.db ?? 0, item.volumeRatio, item.displayScale) || '') || '';
+      return `<div class="mixerRow premixMixerRow premixTrackRowFix11" data-action="open-premix-volume" data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">${escapeHtml?.(indexText) || indexText}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div></div><div class="mixerRowDb">${db}</div></div>`;
+    }).join('');
+  };
+
+  openPremixVolumeModal = function(view, id){
+    const item = findPremixTrack(id);
+    if (!item) return;
+    state.showPremixVolumeModal = true;
+    state.premixTrackView = 'tracks';
+    state.premixSelectedTrackId = String(id || item.id || item.itemId || '');
+    armOverlayCloseGuard?.(650);
+    render?.();
+  };
+  closePremixVolumeModal = function(force = false){
+    if (!force && shouldIgnoreOverlayClose?.()) return;
+    state.showPremixVolumeModal = false;
+    state.premixSelectedTrackId = null;
+    render?.();
+  };
+  handlePremixRowOpenFromElement = function(el, event){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (!el) return;
+    openPremixVolumeModal('tracks', el.getAttribute('data-premix-track-id'));
+  };
+
+  function premixCommandPayloadFix11(id, extra = {}){
+    const item = findPremixTrack(id) || {};
+    const songId = String(state?.premixSelectedSongId || '');
+    const itemId = String(item.itemId || item.id || item.guid || id || '');
+    return { id: songId, songId, selectedRegionId: songId, targetId: itemId, itemId, guid: itemId, trackId: String(item.trackId || item.trackGuid || item.guid || itemId), page: getCurrentPcPageName?.() || 'premix', ...extra };
+  }
+  handlePremixTrackToggle = function(event, action, trackId){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const id = String(trackId || '');
+    if (!id || !String(state?.premixSelectedSongId || '')) return;
+    const item = findPremixTrack(id);
+    const fx = action === 'phase' || action === 'fx';
+    if (fx && item && !(item.hasFx || Number(item.fxCount || 0) > 0)) return;
+    if (fx) setPremixTrackLocalState(id, { fxEnabled: !(item?.fxEnabled) });
+    else setPremixTrackLocalState(id, { mute: !(item?.mute) });
+    render?.();
+    postCommand?.(fx ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute', premixCommandPayloadFix11(id));
+    fastPollBridge?.(8);
+  };
+  handlePremixVolumeInput = function(view, trackId, value){
+    const id = String(trackId || '');
+    if (!id || !String(state?.premixSelectedSongId || '')) return;
+    const ratio = normalizeMixerRatio?.(value, 0.5) ?? Math.max(0, Math.min(1, Number(value) || 0.5));
+    setPremixTrackLocalState(id, { volumeRatio: ratio, ratio });
+    try { syncMixerVolumeModalUi?.('premix', id); } catch(e) {}
+    postCommand?.('premix_item_set_volume', premixCommandPayloadFix11(id, { ratio, volumeRatio: ratio, scrollRatio: ratio }));
+  };
+  handlePremixVolumeReset = function(event, view, trackId){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    handlePremixVolumeInput('tracks', trackId, getMixerZeroDbRatio?.() ?? 0.5);
+    render?.();
+  };
+  renderPremixVolumeModal = function(){
+    if (!state.showPremixVolumeModal || !state.premixSelectedTrackId) return '';
+    const item = findPremixTrack(state.premixSelectedTrackId);
+    if (!item) return '';
+    const id = escapeHtml?.(String(state.premixSelectedTrackId)) || String(state.premixSelectedTrackId);
+    const ratio = normalizeMixerRatio?.(item.volumeRatio ?? item.ratio, 0.5) ?? 0.5;
+    const title = buildMarqueeText?.(item.name || 'PREMIX', '', 'rowMarquee mixerNameMarquee') || (escapeHtml?.(item.name || 'PREMIX') || item.name || 'PREMIX');
+    const muteClass = item.mute ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniMute' : 'mixerMiniBtn';
+    const hasFx = !!(item.hasFx || Number(item.fxCount || 0) > 0);
+    const fxClass = !hasFx ? 'mixerMiniBtn btnDisabled' : (item.fxEnabled ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn');
+    const db = escapeHtml?.(formatMixerDbLabel?.(item.db ?? 0, item.volumeRatio, item.displayScale) || '') || '';
+    return `<div class="modalOverlay mixerVolumeOverlay premixVolumeOverlay premixControlOverlayFix11" data-close-premix-volume style="z-index:3000;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox premixControlBoxFix11" data-stop-modal data-mixer-volume-modal="1"><div class="mixerModalHeader"><div class="modalTitle" style="min-width:0;overflow:hidden;white-space:nowrap">${title}</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix-volume">FECHAR</button></div><div class="premixControlActionsFix11"><button class="${muteClass}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${id}">M</button><button class="${fxClass}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${id}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button></div><div class="mixerVolumeDb" style="text-align:center;margin-bottom:10px">${db}</div><input class="mixerVolumeSlider premixControlSliderFix11" type="range" min="0" max="1" step="0.01" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${id}" /><button class="modalCancelBtn" data-action="premix-volume-reset" data-premix-view="tracks" data-premix-track-id="${id}" style="margin-top:18px;min-height:42px;background:#facc15;color:#111827;border-color:#facc15">RESET</button></div></div>`;
+  };
+
+  if (typeof renderLyricsPanel === 'function') {
+    const prevRenderLyricsFix11 = renderLyricsPanel;
+    renderLyricsPanel = function(){
+      const html = prevRenderLyricsFix11();
+      if (!html) return html;
+      return html
+        .replace(/lyricsTopBarTpFix10/g, 'lyricsTopBarTpFix10 lyricsTopBarTpFix11')
+        .replace(/lyricsNowPlayingWideFix10/g, 'lyricsNowPlayingWideFix10 lyricsNowPlayingWideFix11')
+        .replace(/lyricsBackButtonCompactFix10/g, 'lyricsBackButtonCompactFix10 lyricsBackButtonCompactFix11')
+        .replace(/tpLyricsTextFix10/g, 'tpLyricsTextFix10 tpLyricsTextFix11')
+        .replace(/--tp-text-color:[^;]+;/, `--tp-text-color:${getTpColor()};`)
+        .replace(/--tp-font:[^;]+;/, `--tp-font:${getTpFont()};`);
+    };
+  }
+})();
+
+
+/* VS_HOOK_NATIVE_FIX12_DIRECTOR: TP1 layout, native config, marker trigger, timer direct commands, premix stable control. */
+(function(){
+  if (window.__VSHOOK_NATIVE_FIX12_DIRECTOR__) return;
+  window.__VSHOOK_NATIVE_FIX12_DIRECTOR__ = true;
+
+  const TP_COLOR_KEY = 'vshook_director_tp_text_color';
+  const TP_FONT_KEY = 'vshook_director_tp_font_family';
+  const TP_COLORS_FIX12 = ['#f8fafc', '#facc15', '#22c55e', '#38bdf8', '#f472b6', '#fb923c'];
+  const TP_FONTS_FIX12 = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Verdana, sans-serif', 'Georgia, serif', 'Courier New, monospace', 'Times New Roman, serif'];
+  const TP_FONT_LABELS_FIX12 = ['PADRÃO', 'ARIAL', 'VERDANA', 'GEORGIA', 'COURIER', 'TIMES'];
+  const esc12 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const upper12 = (v) => (typeof upperText === 'function' ? upperText(v) : String(v || '').toUpperCase());
+  function lsGet12(key, fallback){ try { return localStorage.getItem(key) || fallback; } catch(e) { return fallback; } }
+  function lsSet12(key, value){ try { localStorage.setItem(key, String(value || '')); } catch(e) {} }
+  function getTpColor12(){ return lsGet12(TP_COLOR_KEY, '#f8fafc'); }
+  function getTpFont12(){ return lsGet12(TP_FONT_KEY, TP_FONTS_FIX12[0]); }
+  function setTpColor12(v){ lsSet12(TP_COLOR_KEY, v || '#f8fafc'); render?.(); }
+  function setTpFont12(v){ lsSet12(TP_FONT_KEY, v || TP_FONTS_FIX12[0]); render?.(); }
+  window.__vshookDirectorTpColorFix12 = getTpColor12;
+  window.__vshookDirectorTpFontFix12 = getTpFont12;
+
+  function mediaAllowsTextFix12(type){
+    const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g, '_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain';
+  }
+  function readTp1TitleFix12(){
+    return String(state?.tp1SongName || state?.telepromptTp1SongName || state?.tp1Song || state?.currentSongName || state?.playingSongName || state?.songName || 'TELEPROMPT 1').trim() || 'TELEPROMPT 1';
+  }
+  function readTp1TextFix12(){
+    const media = String(state?.tp1MediaType || state?.telepromptTp1MediaType || 'text');
+    if (!mediaAllowsTextFix12(media)) return '';
+    return String(state?.tp1LyricsText || state?.tp1Lyrics || state?.telepromptTp1Lyrics || state?.telepromptTp1Text || '').trim();
+  }
+
+  // Sync TP1 vindo do bridge para o Diretor também.
+  if (typeof syncFromBridge === 'function' && !window.__VSHOOK_NATIVE_FIX12_DIRECTOR_SYNC_WRAPPED__) {
+    window.__VSHOOK_NATIVE_FIX12_DIRECTOR_SYNC_WRAPPED__ = true;
+    const prevSync = syncFromBridge;
+    syncFromBridge = function(data){
+      prevSync(data);
+      try {
+        const media = String(data?.tp1MediaType || data?.telepromptTp1MediaType || state.tp1MediaType || 'text');
+        state.tp1MediaType = media;
+        state.tp1SongName = String(data?.tp1SongName || data?.telepromptTp1SongName || data?.tp1Song || state.tp1SongName || '');
+        state.tp1LyricsText = mediaAllowsTextFix12(media) ? String(data?.tp1LyricsText || data?.tp1Lyrics || data?.telepromptTp1Lyrics || data?.telepromptTp1Text || state.tp1LyricsText || '') : '';
+        state.nativeBridgeConnected = true;
+        state.bridgeStatus = 'online';
+        state.bridgeMode = 'native';
+      } catch(e) {}
+    };
+  }
+
+  // Tela Letras = visualização TP1 somente. Sem armazenamento/editar.
+  openLyricsPanel = function(){
+    state.lyricsPanelOpen = true;
+    state.lyricsEditing = false;
+    state.lyricsDraft = '';
+    state.settingsMenuOpen = false;
+    document.body.classList.add('vshookEnteringLyricsFix12');
+    setTimeout(() => document.body.classList.remove('vshookEnteringLyricsFix12'), 360);
+    render?.();
+  };
+  closeLyricsPanel = function(){
+    document.body.classList.add('vshookLeavingLyricsFix12');
+    setTimeout(() => document.body.classList.remove('vshookLeavingLyricsFix12'), 360);
+    state.lyricsPanelOpen = false;
+    state.lyricsEditing = false;
+    state.lyricsDraft = '';
+    render?.();
+  };
+  startLyricsEdit = function(){};
+  cancelLyricsEdit = function(){};
+  confirmLyricsEdit = function(){};
+  cancelLyricsEditAndClosePanel = closeLyricsPanel;
+  renderLyricsPanel = function(){
+    if (!state.lyricsPanelOpen) return '';
+    const title = upper12(readTp1TitleFix12());
+    const text = readTp1TextFix12() || 'SEM CONTEÚDO NO TP1';
+    const progress = (() => {
+      try {
+        const duration = Number(state.playbackDurationSec || state.currentSongDurationSec || 0);
+        const remaining = Number(state.playbackRemainingSec || state.currentSongRemainingSec);
+        if (duration > 0 && Number.isFinite(remaining)) return Math.max(0, Math.min(100, ((duration - remaining) / duration) * 100));
+      } catch(e) {}
+      return 0;
+    })();
+    return `<div class="lyricsScreen telepromptOnlyScreen directorTp1OnlyScreen" style="--tp-text-color:${esc12(getTpColor12())};--tp-font:${esc12(getTpFont12())}">
+      <div class="lyricsTopBar lyricsTopBarTpFix12">
+        <div class="lyricsNowPlaying lyricsNowPlayingTpFix12">
+          <div class="lyricsNowPlayingTitle lyricsNowPlayingTitleFix12" data-lyrics-title>${esc12(title)}</div>
+          <div class="lyricsProgressTrack lyricsProgressTrackFix12"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${Math.round(progress * 10) / 10}%"></div></div>
+        </div>
+        <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonFix12" data-action="close-lyrics-panel">&gt;&gt;</button>
+      </div>
+      <div class="lyricsBody lyricsBodyTpFix12">
+        <div class="lyricsTextView tpLyricsTextFix12" data-lyrics-text-view data-lyrics-source="${esc12(text)}">${typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(text) : esc12(text)}</div>
+      </div>
+    </div>`;
+  };
+
+  // Config do Diretor: status sempre NATIVE ON quando vem pelo Native Bridge + cor/fonte TP1 sem depender de injeção frágil.
+  window.getDirectorTpSettingsHtmlFix12 = function(){
+    const colorButtons = TP_COLORS_FIX12.map(c => `<button class="settingsToggleBtn ${getTpColor12() === c ? 'settingsToggleBtnActive' : ''}" data-action="director-tp-color-fix12" data-color="${c}" style="color:${c};border-color:${c}">A</button>`).join('');
+    const fontButtons = TP_FONTS_FIX12.map((f,i) => `<button class="settingsToggleBtn ${getTpFont12() === f ? 'settingsToggleBtnActive' : ''}" data-action="director-tp-font-fix12" data-font="${esc12(f)}" style="font-family:${esc12(f)}">${TP_FONT_LABELS_FIX12[i]}</button>`).join('');
+    return `<div data-fix11-tp-settings="1" data-fix12-tp-settings="1"><div class="settingsSectionTitle">TP1 LETRA</div><div class="settingsGrid settingsGridTpFix12">${colorButtons}</div><div class="settingsSectionTitle">FONTE TP1</div><div class="settingsGrid settingsGridFontFix12">${fontButtons}</div></div>`;
+  };
+
+  function forceNativeOnlineFix12(){
+    try {
+      state.bridgeStatus = 'online';
+      state.nativeBridgeConnected = true;
+      state.bridgeMode = 'native';
+      document.querySelectorAll('.bridgeStatusCard span:last-child,.bridgeStatusCard .bridgeOffline,.bridgeStatusCard .bridgeOnline').forEach((el) => {
+        el.classList.remove('bridgeOffline');
+        el.classList.add('bridgeOnline');
+        el.textContent = 'NATIVE ON';
+      });
+    } catch(e) {}
+  }
+  if (typeof bridgeLooksOffline === 'function') bridgeLooksOffline = function(){ return false; };
+
+  // Timer: comando direto, sem toggle duplicado; progressivo não mistura target do regressivo.
+  window.__vshookTimerLocalHoldFix12 = { until: 0 };
+  function holdTimer12(ms){ window.__vshookTimerLocalHoldFix12.until = Date.now() + Math.max(600, Number(ms) || 0); }
+  getTimerElapsedSec = function(){
+    const max = 99 * 3600 + 59 * 60 + 59;
+    const running = !!state.timerRunning;
+    const mode = String(state.timerMode || 'progressive') === 'countdown' ? 'countdown' : 'progressive';
+    if (!running) {
+      if (mode === 'countdown') return Math.max(0, Math.min(max, Math.floor(Number(state.timerDisplaySec ?? state.timerTargetSec) || 0)));
+      return Math.max(0, Math.min(max, Math.floor(Number(state.timerDisplaySec ?? state.timerAccumulatedSec) || 0)));
+    }
+    const base = Math.max(0, Number(state.timerAccumulatedSec) || 0);
+    const started = Number(state.timerStartedAt || state.timerStartedAtMs || 0);
+    const live = started > 0 ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0;
+    if (mode === 'countdown') {
+      const target = Math.max(0, Number(state.timerTargetSec) || 0);
+      return Math.max(0, Math.min(max, target - (base + live)));
+    }
+    return Math.max(0, Math.min(max, base + live));
+  };
+  confirmTimerModal = function(){
+    const wasRunning = !!state.timerRunning;
+    if (wasRunning) {
+      state.timerRunning = false;
+      state.timerStartedAt = 0;
+      state.timerStartedAtMs = 0;
+      state.timerAccumulatedSec = 0;
+      state.timerElapsedSec = 0;
+      state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+      state.showTimerModal = false;
+      holdTimer12(3500);
+      postCommand('timer_stop_reset', { timerMode: state.timerMode, mode: state.timerMode });
+      syncChronoDisplays?.(); refreshChronoRenderLoop?.(); render?.();
+      return;
+    }
+    if (state.timerMode === 'countdown') state.timerTargetSec = readTimerTargetSecondsFromModal?.() || 0;
+    else state.timerTargetSec = 0;
+    const now = Date.now();
+    state.timerRunning = true;
+    state.timerStartedAt = now;
+    state.timerStartedAtMs = now;
+    state.timerAccumulatedSec = 0;
+    state.timerElapsedSec = 0;
+    state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+    state.showTimerModal = false;
+    holdTimer12(4500);
+    postCommand('timer_start', { timerMode: state.timerMode, mode: state.timerMode, timerTargetSec: state.timerTargetSec || 0, targetSec: state.timerTargetSec || 0, seconds: state.timerTargetSec || 0 });
+    syncChronoDisplays?.(); refreshChronoRenderLoop?.(); render?.();
+  };
+  setTimerModeFromApp = function(mode){
+    const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive';
+    if (state.timerMode === 'countdown' && next !== 'countdown') {
+      try { state.timerTargetSec = readTimerTargetSecondsFromModal?.() || state.timerTargetSec || 0; } catch(e) {}
+    }
+    state.timerMode = next;
+    if (next === 'progressive') {
+      state.timerDisplaySec = state.timerRunning ? getTimerElapsedSec() : 0;
+    } else if (!state.timerRunning) {
+      state.timerDisplaySec = Number(state.timerTargetSec) || 0;
+    }
+    postCommand('timer_set_mode', { timerMode: next, mode: next, timerTargetSec: next === 'countdown' ? (state.timerTargetSec || 0) : 0, targetSec: next === 'countdown' ? (state.timerTargetSec || 0) : 0, seconds: next === 'countdown' ? (state.timerTargetSec || 0) : 0 });
+    render?.();
+  };
+
+  // Premix: seleciona música no Lua, mas NÃO abre janela no Lua; controle estável do slider.
+  const premixLocalOverride12 = new Map();
+  function keyOfPremix12(id){ return String(id || ''); }
+  function applyPremixOverride12(item){
+    if (!item) return item;
+    const key = keyOfPremix12(item.itemId || item.id || item.guid || item.trackId);
+    const local = premixLocalOverride12.get(key);
+    if (local && Date.now() < local.until) return { ...item, ...local.patch };
+    if (local) premixLocalOverride12.delete(key);
+    return item;
+  }
+  const oldFindPremixTrack12 = typeof findPremixTrack === 'function' ? findPremixTrack : null;
+  findPremixTrack = function(id, view){
+    const wanted = keyOfPremix12(id);
+    let item = oldFindPremixTrack12 ? oldFindPremixTrack12(id, view) : null;
+    if (!item && Array.isArray(state.premixTracks)) item = state.premixTracks.find(x => keyOfPremix12(x.itemId || x.id || x.guid || x.trackId) === wanted) || null;
+    return applyPremixOverride12(item);
+  };
+  const oldGetPremixItems12 = typeof getPremixItemsForView === 'function' ? getPremixItemsForView : null;
+  getPremixItemsForView = function(view){
+    const normalizedView = view === 'groups' ? 'groups' : 'tracks';
+    let list = oldGetPremixItems12 ? oldGetPremixItems12(normalizedView) : (Array.isArray(state.premixTracks) ? state.premixTracks : []);
+
+    // Se o Bridge ainda retornar Premix vazio depois da seleção, mantém a tela preenchida
+    // com o cache do Mixer em vez de deixar o App Diretor sem pistas.
+    if (!Array.isArray(list) || !list.length) {
+      const directPremix = normalizedView === 'groups' ? state.premixGroups : state.premixTracks;
+      const mixerFallback = normalizedView === 'groups' ? state.mixerGroups : state.mixerTracks;
+      const fallback = Array.isArray(directPremix) && directPremix.length ? directPremix : (Array.isArray(mixerFallback) ? mixerFallback : []);
+      const normalize = (item) => typeof normalizePremixTrackItem === 'function' ? normalizePremixTrackItem(item, normalizedView) : item;
+      list = fallback.map(normalize).filter(Boolean);
+    }
+
+    return (Array.isArray(list) ? list : []).map(applyPremixOverride12);
+  };
+  setPremixTrackLocalState = function(id, patch){
+    const key = keyOfPremix12(id);
+    if (!key) return;
+    premixLocalOverride12.set(key, { until: Date.now() + 2500, patch: { ...patch } });
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map(item => {
+      const itemKey = keyOfPremix12(item.itemId || item.id || item.guid || item.trackId);
+      return itemKey === key ? { ...item, ...patch } : item;
+    });
+  };
+  const oldSelectPremixSong12 = typeof selectPremixSong === 'function' ? selectPremixSong : null;
+  selectPremixSong = function(id){
+    const songId = String(id || '');
+    if (!songId) return;
+    const songs = typeof getPremixSongs === 'function' ? getPremixSongs() : (Array.isArray(state.premixSongs) ? state.premixSongs : []);
+    const song = songs.find(s => String(s?.id ?? s?.source_number ?? s?.sourceNumber ?? '') === songId) || {};
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = songId;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    const premixTrackBackup12 = Array.isArray(state.premixTracks) ? state.premixTracks : [];
+    const premixGroupBackup12 = Array.isArray(state.premixGroups) ? state.premixGroups : [];
+    const premixNormalize12 = (item, view) => typeof normalizePremixTrackItem === 'function' ? normalizePremixTrackItem(item, view) : item;
+    const premixFallbackTracks12 = Array.isArray(state.mixerTracks) && state.mixerTracks.length ? state.mixerTracks : premixTrackBackup12;
+    const premixFallbackGroups12 = Array.isArray(state.mixerGroups) && state.mixerGroups.length ? state.mixerGroups : premixGroupBackup12;
+    state.premixTracks = premixFallbackTracks12.map(item => premixNormalize12(item, 'tracks')).filter(Boolean);
+    state.premixGroups = premixFallbackGroups12.map(item => premixNormalize12(item, 'groups')).filter(Boolean);
+    // Seleção visual do Diretor/Lua acompanha a música escolhida no Premix.
+    if (state.activeTab === 'playlist') state.selectedPlaylistSongId = songId;
+    else state.selectedRegionId = songId;
+    const payload = {
+      id: songId,
+      songId,
+      selectedRegionId: songId,
+      source_number: song?.source_number ?? song?.sourceNumber ?? song?.number,
+      sourceNumber: song?.sourceNumber ?? song?.source_number ?? song?.number,
+      startPos: song?.startPos ?? song?.start_pos ?? song?.start,
+      start_pos: song?.start_pos ?? song?.startPos ?? song?.start,
+      endPos: song?.endPos ?? song?.end_pos ?? song?.end,
+      end_pos: song?.end_pos ?? song?.endPos ?? song?.end,
+      name: song?.name ?? song?.label ?? '',
+      noOpenModal: true,
+      openLuaPremix: false,
+      page: getCurrentPcPageName?.() || 'premix'
+    };
+    postCommand('premix_item_focus_song', payload);
+    render?.();
+    fastPollBridge?.(16);
+  };
+  handlePremixVolumeInput = function(view, trackId, value){
+    const item = findPremixTrack(trackId) || {};
+    const id = keyOfPremix12(item.itemId || item.id || trackId);
+    const songId = String(state.premixSelectedSongId || '');
+    if (!id || !songId) return;
+    const ratio = Math.max(0, Math.min(1, Number(value) || 0));
+    const db = typeof mixerRatioToDb === 'function' ? mixerRatioToDb(ratio) : undefined;
+    setPremixTrackLocalState(id, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { syncMixerVolumeModalUi?.('premix', id); } catch(e) {}
+    postCommand('premix_item_set_volume', { id: songId, songId, selectedRegionId: songId, itemId: id, targetId: id, trackId: String(item.trackId || item.trackGuid || item.guid || id), guid: id, ratio, volumeRatio: ratio, page: getCurrentPcPageName?.() || 'premix' });
+  };
+
+  // Markers: só $/*1/*2, sem símbolo, e engatilho manda índice original para o Lua.
+  function cleanMarker12(marker){
+    const raw = String(marker?.rawName || marker?.name || marker?.label || '').trim();
+    let clean = '';
+    if (raw.startsWith('$')) clean = raw.replace(/^\$+\s*/, '');
+    else if (/^\*\s*1\s*/.test(raw)) clean = raw.replace(/^\*\s*1\s*[-:|.]?\s*/, '');
+    else if (/^\*\s*2\s*/.test(raw)) clean = raw.replace(/^\*\s*2\s*[-:|.]?\s*/, '');
+    else return null;
+    clean = clean.trim() || 'PART';
+    return { ...marker, name: clean, label: clean, displayName: clean, rawName: raw };
+  }
+  const oldCurrentMarkers12 = typeof currentMarkers === 'function' ? currentMarkers : null;
+  currentMarkers = function(){
+    const list = oldCurrentMarkers12 ? oldCurrentMarkers12() : [];
+    const out = [];
+    const seen = new Set();
+    for (const marker of Array.isArray(list) ? list : []) {
+      const fixed = cleanMarker12(marker);
+      if (!fixed) continue;
+      const key = `${fixed.originalIndex ?? fixed.original_index ?? fixed.index ?? fixed.id}|${fixed.timeSec}|${fixed.rawName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(fixed);
+    }
+    return out;
+  };
+  selectMarker = function(id){
+    clearStoppedSelectionHold?.();
+    const key = String(id || '');
+    if (!key) return;
+    const marker = (currentMarkers?.() || []).find(m => String(m?.id ?? '') === key) || {};
+    const originalIndex = marker.originalIndex ?? marker.original_index ?? marker.index ?? key;
+    const commandId = originalIndex != null && String(originalIndex) !== '' ? String(originalIndex) : key;
+    const payload = { id: commandId, markerId: key, selectedMarkerId: key, markerOriginalIndex: originalIndex, originalIndex, timeSec: marker.timeSec, songId: marker.songId, name: marker.name || marker.label || '' };
+    const alreadySelected = String(state.selectedMarkerId || '') === key || isDirectorMarkerLocallyHeld?.(key) || String(state.markerGoFlashId || '') === key;
+    if (alreadySelected) {
+      state.selectedMarkerId = key;
+      state.markerGoFlashId = key;
+      setDirectorMarkerLocalHold?.(key);
+      setDirectorMarkerArmedLocalHold?.(key);
+      postCommand('marker_go', { ...payload, confirm: true });
+      showAppPopup?.('MARKER ENGATILHADO', 'marker', 1200);
+    } else {
+      state.selectedMarkerId = key;
+      state.markerGoFlashId = null;
+      clearDirectorMarkerArmedLocalHold?.();
+      setDirectorMarkerLocalHold?.(key);
+      postCommand('marker_select', { ...payload, confirm: false });
+    }
+    render?.();
+  };
+
+  // Heartbeat mais frequente para manter aviso permanente no Lua enquanto o app Diretor está autenticado.
+  if (typeof sendAppHeartbeat === 'function') {
+    const previousHeartbeat12 = sendAppHeartbeat;
+    sendAppHeartbeat = function(){
+      if (needsAuthGate?.()) return;
+      if (state.bridgeStatus !== 'online' && !state.nativeBridgeConnected) return;
+      const now = Date.now();
+      if ((now - (lastAppHeartbeatAt || 0)) < 950) return;
+      lastAppHeartbeatAt = now;
+      postCommand('app_heartbeat', { heartbeat: true, role: 'director', clientRole: 'director', appRole: 'director' });
+    };
+  }
+
+  if (typeof bindEvents === 'function') {
+    const previousBind12 = bindEvents;
+    bindEvents = function(){
+      previousBind12();
+      forceNativeOnlineFix12();
+      document.querySelectorAll('[data-action="director-tp-color-fix12"]').forEach(el => el.addEventListener('click', () => setTpColor12(el.getAttribute('data-color') || '#f8fafc')));
+      document.querySelectorAll('[data-action="director-tp-font-fix12"]').forEach(el => el.addEventListener('click', () => setTpFont12(el.getAttribute('data-font') || TP_FONTS_FIX12[0])));
+    };
+  }
+
+  function installStyle12(){
+    if (document.getElementById('vshook-native-fix12-director-style')) return;
+    const style = document.createElement('style');
+    style.id = 'vshook-native-fix12-director-style';
+    style.textContent = `
+      .lyricsTopBarTpFix12{display:flex!important;align-items:center!important;gap:10px!important;width:100%!important;box-sizing:border-box!important;padding:10px 10px 8px!important;min-height:74px!important;}
+      .lyricsNowPlayingTpFix12{flex:1 1 auto!important;min-width:0!important;width:auto!important;max-width:none!important;display:flex!important;flex-direction:column!important;gap:7px!important;overflow:hidden!important;}
+      .lyricsNowPlayingTitleFix12{display:block!important;min-width:0!important;max-width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;font-size:clamp(15px,4.2vw,24px)!important;font-weight:1000!important;line-height:1.05!important;}
+      .lyricsProgressTrackFix12{width:100%!important;min-width:0!important;flex:0 0 8px!important;height:8px!important;}
+      .lyricsBackButtonFix12{width:82px!important;min-width:82px!important;max-width:82px!important;flex:0 0 82px!important;padding-left:0!important;padding-right:0!important;font-size:23px!important;font-weight:1000!important;display:flex!important;align-items:center!important;justify-content:center!important;}
+      .tpLyricsTextFix12{color:var(--tp-text-color,#f8fafc)!important;font-family:var(--tp-font,Inter,Arial,sans-serif)!important;font-size:clamp(22px,5.8vw,40px)!important;line-height:1.26!important;text-align:center!important;white-space:pre-wrap!important;}
+      .settingsGridTpFix12{display:grid!important;grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:8px!important}.settingsGridTpFix12 .settingsToggleBtn{font-size:22px!important;font-weight:1000!important}.settingsGridFontFix12{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
+      .bridgeStatusCard .bridgeOnline{color:#86efac!important;}
+      .premixControlSliderFix11,.premixControlSliderFix12{width:100%!important;touch-action:none!important;}
+      .markerGoConfirmed{background:#14532d!important;border-color:#22c55e!important;box-shadow:0 0 16px rgba(34,197,94,.42)!important;}
+      .markerGoConfirmed.markerBlink{animation:markerBlinkPulseFix12 .45s linear infinite!important;}
+      @keyframes markerBlinkPulseFix12{0%{filter:brightness(1)}50%{filter:brightness(1.45)}100%{filter:brightness(1)}}
+      .vshookLeavingLyricsFix12 .lyricsScreen{animation:vshookLyricsLeaveFix12 .28s ease-in both}.vshookEnteringLyricsFix12 .lyricsScreen{animation:vshookLyricsEnterFix12 .28s ease-out both}
+      @keyframes vshookLyricsEnterFix12{from{transform:translateX(-28px);opacity:.2}to{transform:translateX(0);opacity:1}}@keyframes vshookLyricsLeaveFix12{from{transform:translateX(0);opacity:1}to{transform:translateX(28px);opacity:.2}}
+    `;
+    document.head.appendChild(style);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installStyle12); else installStyle12();
+})();
+
+/* VS_HOOK_DIRECTOR_FIX13_REFLEXO_LUA
+   Premix do Diretor = reflexo do Lua: sem Global/cache/fallback de Mixer.
+   Mixer continua espelhando o Mixer do Lua. Ordem da aba Músicas segue a ordem do Lua.
+   Heartbeat do Diretor só vale com sessão autenticada e para após logout pelo botão Acessar no Lua.
+*/
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX13_REFLEXO_LUA__) return;
+  window.__VSHOOK_DIRECTOR_FIX13_REFLEXO_LUA__ = true;
+
+  const esc13 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const key13 = (v) => String(v ?? '').trim();
+  const normPremix13 = (item) => {
+    if (!item || typeof item !== 'object') return null;
+    const id = key13(item.itemId || item.id || item.guid || item.trackId);
+    if (!id) return null;
+    const row = typeof normalizePremixTrackItem === 'function' ? normalizePremixTrackItem(item, 'tracks') : { ...item };
+    row.id = key13(row.id || id);
+    row.guid = key13(row.guid || id);
+    row.itemId = key13(row.itemId || id);
+    row.trackId = key13(row.trackId || item.trackId || item.trackGuid || id);
+    row.name = String(row.name || row.label || row.trackName || item.name || item.label || item.trackName || 'ITEM');
+    row.label = String(row.label || row.name);
+    row.view = 'tracks';
+    row.itemMode = true;
+    return row;
+  };
+
+  // Volta a ordem original entregue pelo Lua/extensão. O patch alfa antigo bagunçava a aba Músicas.
+  if (typeof vshookRootFamilyItems === 'function') {
+    vshookRootFamilyItems = function(items) {
+      return (Array.isArray(items) ? items : []).filter((item) => !(typeof isHashChildItem === 'function' && isHashChildItem(item)));
+    };
+  }
+
+  isPremixGlobalMode = function(){ return false; };
+  getPremixOnState = function(){ return true; };
+  getPremixOnLabel = function(){ return 'PREMIX'; };
+  canEditCurrentPremix = function(){ return !!key13(state?.premixSelectedSongId); };
+  setPremixTrackView = function(){ state.premixTrackView = 'tracks'; return true; };
+
+  getPremixSongs = function(){
+    const source = Array.isArray(state?.premixSongs) && state.premixSongs.length ? state.premixSongs : (Array.isArray(state?.regions) ? state.regions : []);
+    return (Array.isArray(source) ? source : []).filter((song) => {
+      if (typeof detectBlockItem === 'function' && detectBlockItem(song)) return false;
+      if (typeof vshookPremixIsParentSong === 'function' && vshookPremixIsParentSong(song)) return false;
+      return true;
+    });
+  };
+
+  getPremixItemsForView = function(){
+    return (Array.isArray(state?.premixTracks) ? state.premixTracks : []).map(normPremix13).filter(Boolean);
+  };
+  getPremixTracks = function(){ return getPremixItemsForView('tracks'); };
+  findPremixTrack = function(id){
+    const wanted = key13(id);
+    if (!wanted) return null;
+    return getPremixItemsForView('tracks').find((item) => [item.id, item.guid, item.itemId, item.trackId].map(key13).includes(wanted)) || null;
+  };
+  setPremixTrackLocalState = function(id, patch = {}){
+    const wanted = key13(id);
+    if (!wanted) return;
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((item) => {
+      const row = normPremix13(item);
+      if (!row) return item;
+      return [row.id, row.guid, row.itemId, row.trackId].map(key13).includes(wanted) ? { ...item, ...patch } : item;
+    });
+  };
+
+  if (typeof syncFromBridge === 'function' && !window.__VSHOOK_DIRECTOR_FIX13_SYNC_WRAPPED__) {
+    window.__VSHOOK_DIRECTOR_FIX13_SYNC_WRAPPED__ = true;
+    const prevSync13 = syncFromBridge;
+    syncFromBridge = function(data){
+      if (data && typeof data === 'object' && (data.forceDirectorLogout === true || data.directorLogoutRequested === true)) {
+        window.__vshookDirectorLogoutInProgress = true;
+        window.__vshookDirectorHeartbeatBlockedUntil = Date.now() + 20000;
+      }
+      prevSync13(data);
+      try {
+        if (data && data.premix && typeof data.premix === 'object') {
+          state.premixIsGlobal = false;
+          state.premixGlobalEnabled = false;
+          state.premixBypassEnabled = false;
+          state.premixGroups = [];
+          state.premixGlobalTracks = [];
+          state.premixGlobalGroups = [];
+          if (Array.isArray(data.premix.songs)) state.premixSongs = data.premix.songs;
+          if (data.premix.selectedSongId != null && String(data.premix.selectedSongId) !== '') {
+            state.premixSelectedSongId = String(data.premix.selectedSongId);
+          }
+          if (Array.isArray(data.premix.tracks)) {
+            state.premixTracks = data.premix.tracks.map(normPremix13).filter(Boolean);
+          }
+          state.premixSelectedEnabled = true;
+          state.premixSelectedCanEdit = !!key13(state.premixSelectedSongId);
+        }
+      } catch(e) {}
+    };
+  }
+
+  openPremixModal = function(){
+    state.settingsMenuOpen = false;
+    state.showGearModal = false;
+    state.showMixerModal = false;
+    state.showMixerVolumeModal = false;
+    state.showPremixVolumeModal = false;
+    state.showBpmModal = false;
+    state.showTunerModal = false;
+    state.showPremixModal = true;
+    state.premixIsGlobal = false;
+    state.premixView = 'songs';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedTrackId = null;
+    state.premixGroups = [];
+    if (typeof armOverlayCloseGuard === 'function') armOverlayCloseGuard(900);
+    postCommand('premix_item_open', { requestTracks: '1', requestFull: '1', page: (typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'playlist') });
+    if (typeof fastPollBridge === 'function') fastPollBridge(12);
+    render?.();
+  };
+
+  selectPremixSong = function(id){
+    const songId = key13(id);
+    if (!songId) return;
+    const song = getPremixSongs().find((entry) => [entry?.id, entry?.source_number, entry?.sourceNumber, entry?.number].map(key13).includes(songId)) || {};
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = songId;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixTracks = [];
+    state.premixGroups = [];
+    if (state.activeTab === 'playlist') {
+      state.selectedPlaylistSongId = songId;
+      state.selectedPlaylistSongIds = [songId];
+    } else {
+      state.selectedRegionId = songId;
+      state.selectedRegionIds = [songId];
+    }
+    postCommand('premix_item_focus_song', {
+      id: songId,
+      songId,
+      selectedRegionId: songId,
+      regionId: songId,
+      requestTracks: '1',
+      noOpenModal: true,
+      openLuaPremix: false,
+      source_number: song?.source_number ?? song?.sourceNumber ?? song?.number,
+      sourceNumber: song?.sourceNumber ?? song?.source_number ?? song?.number,
+      startPos: song?.startPos ?? song?.start_pos ?? song?.start,
+      start_pos: song?.start_pos ?? song?.startPos ?? song?.start,
+      endPos: song?.endPos ?? song?.end_pos ?? song?.end,
+      end_pos: song?.end_pos ?? song?.endPos ?? song?.end,
+      name: song?.name ?? song?.label ?? '',
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    });
+    if (typeof fastPollBridge === 'function') fastPollBridge(18);
+    render?.();
+  };
+
+  handlePremixTrackToggle = function(event, action, trackId){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    const item = findPremixTrack(trackId) || {};
+    const itemId = key13(item.itemId || item.id || item.guid || trackId);
+    const songId = key13(state.premixSelectedSongId);
+    if (!itemId || !songId) return;
+    const isFx = action === 'phase' || action === 'fx';
+    if (isFx) setPremixTrackLocalState(itemId, { fxEnabled: !(item.fxEnabled !== false && item.fxOn !== false), fxOn: !(item.fxEnabled !== false && item.fxOn !== false) });
+    else setPremixTrackLocalState(itemId, { mute: !(item.mute || item.muted), muted: !(item.mute || item.muted) });
+    postCommand(isFx ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute', {
+      id: songId, songId, selectedRegionId: songId,
+      itemId, targetId: itemId, guid: itemId, trackId: key13(item.trackId || item.trackGuid || item.guid || itemId),
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    });
+    if (typeof fastPollBridge === 'function') fastPollBridge(10);
+    render?.();
+  };
+
+  handlePremixVolumeInput = function(view, trackId, value){
+    const item = findPremixTrack(trackId) || {};
+    const itemId = key13(item.itemId || item.id || item.guid || trackId);
+    const songId = key13(state.premixSelectedSongId);
+    if (!itemId || !songId) return;
+    const ratio = Math.max(0, Math.min(1, Number(value) || 0));
+    const db = typeof mixerRatioToDb === 'function' ? mixerRatioToDb(ratio) : undefined;
+    setPremixTrackLocalState(itemId, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    postCommand('premix_item_set_volume', {
+      id: songId, songId, selectedRegionId: songId,
+      itemId, targetId: itemId, guid: itemId, trackId: key13(item.trackId || item.trackGuid || item.guid || itemId),
+      ratio, volumeRatio: ratio,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    });
+  };
+
+  if (typeof sendAppHeartbeat === 'function') {
+    sendAppHeartbeat = function(){
+      if (window.__vshookDirectorLogoutInProgress || Date.now() < Number(window.__vshookDirectorHeartbeatBlockedUntil || 0)) return;
+      if (typeof needsAuthGate === 'function' && needsAuthGate()) return;
+      if (state.authEnabled && !state.authAuthenticated) return;
+      if (state.bridgeStatus !== 'online' && !state.nativeBridgeConnected) return;
+      const now = Date.now();
+      if ((now - (lastAppHeartbeatAt || 0)) < 900) return;
+      lastAppHeartbeatAt = now;
+      postCommand('app_heartbeat', {
+        heartbeat: true,
+        role: 'director', clientRole: 'director', appRole: 'director',
+        desiredState: 'authenticated',
+        authAuthenticated: '1',
+        sessionHash: state.authHash || ''
+      });
+    };
+  }
+
+  if (typeof logoutDirectorToModeSelection === 'function') {
+    const prevLogout13 = logoutDirectorToModeSelection;
+    logoutDirectorToModeSelection = function(data){
+      window.__vshookDirectorLogoutInProgress = true;
+      window.__vshookDirectorHeartbeatBlockedUntil = Date.now() + 20000;
+      try { postCommand('director_logout_ack', { desiredState: 'logout', role: 'director', clientRole: 'director', appRole: 'director' }); } catch(e) {}
+      try { clearAccessSession?.(); localStorage.removeItem('vshook_access_session'); } catch(e) {}
+      return prevLogout13(data);
+    };
+  }
+
+  if (typeof bindEvents === 'function') {
+    const prevBind13 = bindEvents;
+    bindEvents = function(){
+      prevBind13();
+      document.querySelectorAll('[data-action="premix-view-groups"], [data-action="premix-onoff"], [data-action="premix-global-reset"]').forEach((el) => {
+        el.style.display = 'none';
+      });
+    };
+  }
+})();
+
+
+
+/* VS_HOOK_DIRECTOR_FIX14_LUA_REFLECT_MIXER_PREMIX
+   Mixer/Premix no App Diretor agora sao reflexo do Lua:
+   - preserva ordem recebida;
+   - separa grupo de pista;
+   - slider envia ratio/volumeRatio/scrollRatio para o Lua;
+   - Premix nao usa fallback do Mixer; espera a lista do Lua. */
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX14_LUA_REFLECT_MIXER_PREMIX__) return;
+  window.__VSHOOK_DIRECTOR_FIX14_LUA_REFLECT_MIXER_PREMIX__ = true;
+
+  const esc14 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const key14 = (v) => String(v ?? '').trim();
+  const num14 = (v, f = 0) => { const n = Number(v); return Number.isFinite(n) ? n : f; };
+  const ratio14 = (v, f = 0.5) => Math.max(0, Math.min(1, num14(v, f)));
+  const isMaster14 = (item) => {
+    const id = key14(item?.id || item?.guid || item?.trackId).toUpperCase();
+    const type = key14(item?.type || item?.view || item?.kind || item?.role).toLowerCase();
+    return id === 'MASTER' || id === 'MASTER_TRACK' || type === 'master' || item?.isMaster === true || item?.master === true;
+  };
+  const isGroup14 = (item) => {
+    if (!item || isMaster14(item)) return false;
+    const type = key14(item.type || item.view || item.kind || item.category || item.role).toLowerCase();
+    if (item.isGroup === true || item.is_group === true || item.group === true || item.folder === true || item.isFolder === true || item.folderTrack === true) return true;
+    if (type === 'group' || type === 'groups' || type === 'folder' || type === 'bus') return true;
+    const fd = Number(item.folderDepth ?? item.folder_depth ?? item.i_folderdepth ?? item.I_FOLDERDEPTH);
+    return Number.isFinite(fd) && fd > 0;
+  };
+  const mixerId14 = (item, fallback = '') => key14(item?.id || item?.guid || item?.trackId || item?.itemId || item?.targetId || fallback);
+  const mixerName14 = (item, fallback) => key14(item?.name || item?.label || item?.trackName || item?.displayName || item?.title || fallback);
+
+  function normMixer14(item, view, index) {
+    if (!item || typeof item !== 'object') return null;
+    const mode = view === 'master' ? 'master' : (isGroup14(item) || view === 'groups' ? 'groups' : 'tracks');
+    const id = mixerId14(item, `${mode}-${index || 0}`);
+    const name = mixerName14(item, mode === 'groups' ? `GRUPO ${index || ''}` : (mode === 'master' ? 'MASTER' : `TRACK ${index || ''}`));
+    const volumeRatio = ratio14(item.volumeRatio ?? item.liveVolumeRatio ?? item.ratio, 0.5);
+    return {
+      ...item,
+      id,
+      guid: key14(item.guid || id),
+      trackId: key14(item.trackId || item.guid || id),
+      targetId: key14(item.targetId || item.guid || id),
+      name,
+      label: key14(item.label || name),
+      index: Number.isFinite(Number(item.index)) ? Number(item.index) : index,
+      orderIndex: Number.isFinite(Number(item.orderIndex ?? item.order_index)) ? Number(item.orderIndex ?? item.order_index) : index,
+      view: mode,
+      type: mode === 'groups' ? 'group' : mode,
+      isGroup: mode === 'groups',
+      is_group: mode === 'groups',
+      isMaster: mode === 'master',
+      volumeRatio,
+      liveVolumeRatio: volumeRatio,
+      muted: !!(item.muted ?? item.mute),
+      mute: !!(item.mute ?? item.muted),
+      solo: !!item.solo,
+      displayScale: item.displayScale || 'db'
+    };
+  }
+
+  function splitMixer14(data) {
+    const mixer = data?.mixer && typeof data.mixer === 'object' ? data.mixer : {};
+    const rawTracks = Array.isArray(mixer.tracks) ? mixer.tracks : (Array.isArray(data?.mixerTracks) ? data.mixerTracks : state.mixerTracks || []);
+    const rawGroups = Array.isArray(mixer.groups) ? mixer.groups : (Array.isArray(data?.mixerGroups) ? data.mixerGroups : state.mixerGroups || []);
+    const rawMaster = mixer.master && typeof mixer.master === 'object' ? mixer.master : (data?.mixerMaster && typeof data.mixerMaster === 'object' ? data.mixerMaster : state.mixerMaster);
+
+    const tracks = [];
+    const groups = [];
+    const groupSeen = new Set();
+    const trackSeen = new Set();
+
+    rawGroups.forEach((item, idx) => {
+      const row = normMixer14(item, 'groups', idx + 1);
+      if (!row) return;
+      const id = mixerId14(row);
+      if (id && groupSeen.has(id)) return;
+      if (id) groupSeen.add(id);
+      groups.push(row);
+    });
+
+    rawTracks.forEach((item, idx) => {
+      if (isMaster14(item)) return;
+      if (isGroup14(item)) {
+        const row = normMixer14(item, 'groups', groups.length + 1);
+        const id = mixerId14(row);
+        if (id && !groupSeen.has(id)) { groupSeen.add(id); groups.push(row); }
+        return;
+      }
+      const row = normMixer14(item, 'tracks', idx + 1);
+      if (!row) return;
+      const id = mixerId14(row);
+      if (id && trackSeen.has(id)) return;
+      if (id) trackSeen.add(id);
+      tracks.push(row);
+    });
+
+    const master = rawMaster && typeof rawMaster === 'object' ? normMixer14(rawMaster, 'master', 0) : null;
+    return { tracks, groups, master };
+  }
+
+  function premixSource14(data) {
+    const p = data?.premix && typeof data.premix === 'object' ? data.premix : {};
+    const selected = key14(p.selectedSongId || p.selectedRegionId || p.songId || data?.premixSelectedSongId || state.premixSelectedSongId);
+    const rows = Array.isArray(p.tracks) ? p.tracks
+      : Array.isArray(p.items) ? p.items
+      : Array.isArray(p.itemTracks) ? p.itemTracks
+      : Array.isArray(p.rows) ? p.rows
+      : Array.isArray(data?.premixTracks) ? data.premixTracks
+      : [];
+    return { selected, rows };
+  }
+
+  function normPremix14(item, index) {
+    const base = typeof normPremix13 === 'function' ? normPremix13(item) : (typeof normalizePremixTrackItem === 'function' ? normalizePremixTrackItem(item, 'tracks') : item);
+    if (!base || typeof base !== 'object') return null;
+    const id = key14(base.itemId || base.id || base.guid || base.trackId || base.targetId || `item-${index || 0}`);
+    const volumeRatio = ratio14(base.volumeRatio ?? base.liveVolumeRatio ?? base.ratio, 0.5);
+    return {
+      ...base,
+      id,
+      guid: key14(base.guid || id),
+      itemId: key14(base.itemId || id),
+      targetId: key14(base.targetId || id),
+      trackId: key14(base.trackId || base.trackGuid || base.guid || id),
+      name: key14(base.name || base.label || base.trackName || base.displayName || `ITEM ${index || ''}`),
+      label: key14(base.label || base.name || base.trackName || `ITEM ${index || ''}`),
+      index: Number.isFinite(Number(base.index)) ? Number(base.index) : index,
+      view: 'tracks',
+      itemMode: true,
+      volumeRatio,
+      liveVolumeRatio: volumeRatio,
+      ratio: volumeRatio,
+      mute: !!(base.mute ?? base.muted),
+      muted: !!(base.muted ?? base.mute),
+      fxEnabled: base.fxEnabled !== undefined ? !!base.fxEnabled : (base.fxOn !== undefined ? !!base.fxOn : true),
+      fxOn: base.fxOn !== undefined ? !!base.fxOn : (base.fxEnabled !== undefined ? !!base.fxEnabled : true),
+      displayScale: base.displayScale || 'db'
+    };
+  }
+
+  const prevSync14 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync14) {
+    syncFromBridge = function(data) {
+      prevSync14(data);
+      try {
+        if (data && typeof data === 'object') {
+          const mx = splitMixer14(data);
+          state.mixerTracks = mx.tracks;
+          state.mixerGroups = mx.groups;
+          state.mixerMaster = mx.master;
+
+          const premix = premixSource14(data);
+          if (premix.selected) state.premixSelectedSongId = premix.selected;
+          state.premixIsGlobal = false;
+          state.premixGlobalEnabled = false;
+          state.premixGroups = [];
+          state.premixGlobalTracks = [];
+          state.premixGlobalGroups = [];
+          if (data.premix && Array.isArray(data.premix.songs)) state.premixSongs = data.premix.songs;
+          if (premix.rows.length) {
+            const mapped = premix.rows.map(normPremix14).filter(Boolean);
+            state.premixTracks = mapped;
+            if (premix.selected) {
+              state.premixTracksBySongId = state.premixTracksBySongId || {};
+              state.premixTracksByRegionId = state.premixTracksByRegionId || {};
+              state.premixTracksBySongId[premix.selected] = mapped;
+              state.premixTracksByRegionId[premix.selected] = mapped;
+            }
+          } else if (premix.selected) {
+            const cached = state.premixTracksBySongId?.[premix.selected] || state.premixTracksByRegionId?.[premix.selected];
+            state.premixTracks = Array.isArray(cached) ? cached.map(normPremix14).filter(Boolean) : [];
+          }
+          state.premixSelectedEnabled = true;
+          state.premixSelectedCanEdit = !!key14(state.premixSelectedSongId);
+        }
+      } catch(e) {}
+    };
+  }
+
+  getMixerItemsForView = function(view = state.mixerView) {
+    if (view === 'groups') return Array.isArray(state.mixerGroups) ? state.mixerGroups : [];
+    if (view === 'master') return state.mixerMaster ? [state.mixerMaster] : [];
+    return Array.isArray(state.mixerTracks) ? state.mixerTracks : [];
+  };
+
+  const prevFindMixer14 = typeof findMixerItem === 'function' ? findMixerItem : null;
+  findMixerItem = function(view, id) {
+    const wanted = key14(id);
+    const list = getMixerItemsForView(view);
+    return list.find(item => [item?.id, item?.guid, item?.trackId, item?.targetId].map(key14).includes(wanted)) || (prevFindMixer14 ? prevFindMixer14(view, id) : null);
+  };
+
+  function mixerPayload14(view, id, ratioValue) {
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const item = findMixerItem(normalizedView, id) || {};
+    const target = mixerId14(item, id);
+    const ratio = ratio14(ratioValue, 0.5);
+    return {
+      view: normalizedView,
+      id: target,
+      targetId: target,
+      trackId: key14(item.trackId || item.guid || target),
+      guid: key14(item.guid || target),
+      ratio,
+      volumeRatio: ratio,
+      scrollRatio: ratio,
+      routeToLua: true,
+      luaControl: true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'mixer'
+    };
+  }
+
+  handleMixerVolumeInput = function(view, id, value) {
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const ratio = ratio14(value, 0.5);
+    const item = findMixerItem(normalizedView, id);
+    const target = mixerId14(item, id);
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    if (typeof setMixerItemLocalState === 'function') setMixerItemLocalState(normalizedView, target, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { syncMixerVolumeModalUi?.(normalizedView, target); } catch(e) {}
+    postCommand('mixer_set_volume', mixerPayload14(normalizedView, target, ratio));
+    window.clearTimeout(window.__vshookMixerVolumeConfirmTimer14 || 0);
+    window.__vshookMixerVolumeConfirmTimer14 = window.setTimeout(() => postCommand('mixer_set_volume', mixerPayload14(normalizedView, target, ratio)), 90);
+  };
+
+  const prevMixerReset14 = typeof handleMixerVolumeReset === 'function' ? handleMixerVolumeReset : null;
+  handleMixerVolumeReset = function(event, view, id) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const zero = typeof getMixerZeroDbRatio === 'function' ? getMixerZeroDbRatio() : 0.76;
+    handleMixerVolumeInput(normalizedView, id, zero);
+    if (prevMixerReset14) {
+      // Mantem qualquer atualizacao visual antiga, mas o comando oficial ja foi enviado acima.
+      try { prevMixerReset14(event, normalizedView, id); } catch(e) {}
+    }
+  };
+
+  getPremixItemsForView = function(){ return (Array.isArray(state.premixTracks) ? state.premixTracks : []).map(normPremix14).filter(Boolean); };
+  getPremixTracks = function(){ return getPremixItemsForView('tracks'); };
+  findPremixTrack = function(id){
+    const wanted = key14(id);
+    return getPremixItemsForView('tracks').find(item => [item.id, item.guid, item.itemId, item.trackId, item.targetId].map(key14).includes(wanted)) || null;
+  };
+
+  const prevSelectPremix14 = typeof selectPremixSong === 'function' ? selectPremixSong : null;
+  selectPremixSong = function(id) {
+    const songId = key14(id);
+    if (!songId) return;
+    const song = (typeof getPremixSongs === 'function' ? getPremixSongs() : (state.premixSongs || [])).find(entry => [entry?.id, entry?.source_number, entry?.sourceNumber, entry?.number].map(key14).includes(songId)) || {};
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = songId;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixGroups = [];
+    const cached = state.premixTracksBySongId?.[songId] || state.premixTracksByRegionId?.[songId];
+    state.premixTracks = Array.isArray(cached) ? cached.map(normPremix14).filter(Boolean) : [];
+    postCommand('premix_item_focus_song', {
+      id: songId, songId, selectedRegionId: songId, regionId: songId,
+      requestTracks: '1', requestFull: '1', routeToLua: true, luaControl: true,
+      source_number: song?.source_number ?? song?.sourceNumber ?? song?.number,
+      sourceNumber: song?.sourceNumber ?? song?.source_number ?? song?.number,
+      startPos: song?.startPos ?? song?.start_pos ?? song?.start,
+      start_pos: song?.start_pos ?? song?.startPos ?? song?.start,
+      endPos: song?.endPos ?? song?.end_pos ?? song?.end,
+      end_pos: song?.end_pos ?? song?.endPos ?? song?.end,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    });
+    if (typeof fastPollBridge === 'function') fastPollBridge(24);
+    render?.();
+  };
+
+  function premixPayload14(id, ratioValue = null) {
+    const item = findPremixTrack(id) || {};
+    const itemId = key14(item.itemId || item.id || item.guid || id);
+    const songId = key14(state.premixSelectedSongId);
+    const payload = {
+      id: songId,
+      songId,
+      selectedRegionId: songId,
+      regionId: songId,
+      itemId,
+      targetId: itemId,
+      trackId: key14(item.trackId || item.trackGuid || item.guid || itemId),
+      guid: itemId,
+      routeToLua: true,
+      luaControl: true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+    if (ratioValue !== null) {
+      const ratio = ratio14(ratioValue, 0.5);
+      payload.ratio = ratio; payload.volumeRatio = ratio; payload.scrollRatio = ratio;
+    }
+    return payload;
+  }
+
+  handlePremixVolumeInput = function(view, id, value) {
+    const ratio = ratio14(value, 0.5);
+    const item = findPremixTrack(id) || {};
+    const itemId = key14(item.itemId || item.id || item.guid || id);
+    if (!itemId || !key14(state.premixSelectedSongId)) return;
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    if (typeof setPremixTrackLocalState === 'function') setPremixTrackLocalState(itemId, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { syncMixerVolumeModalUi?.('premix', itemId); } catch(e) {}
+    postCommand('premix_item_set_volume', premixPayload14(itemId, ratio));
+    window.clearTimeout(window.__vshookPremixVolumeConfirmTimer14 || 0);
+    window.__vshookPremixVolumeConfirmTimer14 = window.setTimeout(() => postCommand('premix_item_set_volume', premixPayload14(itemId, ratio)), 90);
+  };
+
+  handlePremixTrackToggle = function(event, action, id) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    const item = findPremixTrack(id) || {};
+    const itemId = key14(item.itemId || item.id || item.guid || id);
+    if (!itemId || !key14(state.premixSelectedSongId)) return;
+    const isFx = action === 'phase' || action === 'fx';
+    if (typeof setPremixTrackLocalState === 'function') {
+      if (isFx) setPremixTrackLocalState(itemId, { fxEnabled: !(item.fxEnabled !== false && item.fxOn !== false), fxOn: !(item.fxEnabled !== false && item.fxOn !== false) });
+      else setPremixTrackLocalState(itemId, { mute: !(item.mute || item.muted), muted: !(item.mute || item.muted) });
+    }
+    postCommand(isFx ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute', premixPayload14(itemId));
+    if (typeof fastPollBridge === 'function') fastPollBridge(12);
+    render?.();
+  };
+
+  const prevBind14 = typeof bindEvents === 'function' ? bindEvents : null;
+  if (prevBind14) {
+    bindEvents = function(){
+      prevBind14();
+      document.querySelectorAll('[data-action="mixer-volume-slider"]').forEach((el) => {
+        const view = el.getAttribute('data-mixer-view') || state.mixerVolumeView || 'tracks';
+        const id = el.getAttribute('data-mixer-id') || state.mixerSelectedId || '';
+        const run = () => handleMixerVolumeInput(view, id, el.value);
+        el.addEventListener('pointermove', (event) => { if (event.buttons) run(); }, { passive: true });
+        el.addEventListener('touchmove', run, { passive: true });
+        el.addEventListener('pointerup', run, { passive: true });
+        el.addEventListener('touchend', run, { passive: true });
+      });
+      document.querySelectorAll('[data-action="premix-volume-slider"]').forEach((el) => {
+        const id = el.getAttribute('data-premix-track-id') || state.premixSelectedTrackId || '';
+        const run = () => handlePremixVolumeInput('tracks', id, el.value);
+        el.addEventListener('pointermove', (event) => { if (event.buttons) run(); }, { passive: true });
+        el.addEventListener('touchmove', run, { passive: true });
+        el.addEventListener('pointerup', run, { passive: true });
+        el.addEventListener('touchend', run, { passive: true });
+      });
+      document.querySelectorAll('[data-action="premix-view-groups"], [data-action="premix-onoff"], [data-action="premix-global-reset"]').forEach((el) => { el.style.display = 'none'; });
+    };
+  }
+
+  const style = document.createElement('style');
+  style.setAttribute('data-vshook-fix14-mixer-premix', '1');
+  style.textContent = `
+    .mixerModalBoxFull .mixerViewTabsTriple{flex:0 0 auto!important;gap:6px!important;padding:4px 0 8px!important}
+    .mixerModalBoxFull .mixerViewTabsTriple button,.mixerModalBoxFull .mixerViewTabs button{height:38px!important;min-height:38px!important;max-height:38px!important;padding:0 10px!important;font-size:12px!important;border-radius:10px!important}
+    .mixerModalBoxFull .mixerRowsBox,.premixModalBoxFull .mixerRowsBox{align-content:flex-start!important;justify-content:flex-start!important}
+    .mixerModalBoxFull .mixerRow,.premixModalBoxFull .mixerRow{flex:0 0 auto!important;min-height:52px!important;max-height:66px!important}
+    .mixerModalBoxFull .sectionLabel,.premixModalBoxFull .sectionLabel{flex:0 0 auto!important;min-height:24px!important;margin:4px 0 6px!important}
+    .premixInlineSlider{width:126px!important;min-width:104px!important;touch-action:pan-x!important}
+  `;
+  document.head?.appendChild(style);
+})();
+
+
+/* VS_HOOK_DIRECTOR_FIX15_NO_BOUNCE_AND_PREMIX_FROM_LUA
+   - Mixer: segura valor local do slider até o snapshot novo chegar, evitando vai-e-volta.
+   - Premix: lê sempre o payload do Lua, aceita premixTracks no topo ou dentro de premix,
+     mantém carregando durante a requisição e manda regionIndex/start/end para o Lua achar a música certa.
+*/
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX15_NO_BOUNCE_AND_PREMIX_FROM_LUA__) return;
+  window.__VSHOOK_DIRECTOR_FIX15_NO_BOUNCE_AND_PREMIX_FROM_LUA__ = true;
+
+  const key15 = (v) => String(v ?? '').trim();
+  const num15 = (v, f = 0) => { const n = Number(v); return Number.isFinite(n) ? n : f; };
+  const clamp15 = (v, f = 0.5) => Math.max(0, Math.min(1, num15(v, f)));
+  const now15 = () => Date.now();
+  const esc15 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+
+  window.__vshookDirectorMixerHold15 = window.__vshookDirectorMixerHold15 || {};
+  window.__vshookDirectorPremixHold15 = window.__vshookDirectorPremixHold15 || {};
+  window.__vshookDirectorPremixRequest15 = window.__vshookDirectorPremixRequest15 || { songId: '', until: 0, tries: 0 };
+
+  function parseMaybeJson15(value) {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return null;
+    try { return JSON.parse(value); } catch(e) { return null; }
+  }
+
+  function mergeSource15(data) {
+    const base = (data && typeof data === 'object') ? data : {};
+    const candidates = [
+      base.luaLiveState, base.luaState, base.luaLive, base.lua,
+      parseMaybeJson15(base.luaLiveJson), parseMaybeJson15(base.luaStateJson), parseMaybeJson15(base.LUA_LIVE_JSON_V1)
+    ].filter(x => x && typeof x === 'object');
+    return Object.assign({}, base, ...candidates);
+  }
+
+  function rowId15(item, fallback = '') {
+    return key15(item?.id || item?.guid || item?.trackId || item?.itemId || item?.targetId || fallback);
+  }
+  function mixerHoldKey15(view, id) { return `${key15(view || 'tracks')}:${key15(id)}`; }
+  function premixHoldKey15(songId, id) { return `${key15(songId)}:${key15(id)}`; }
+  function setMixerHold15(view, id, ratio) {
+    const k = mixerHoldKey15(view, id);
+    window.__vshookDirectorMixerHold15[k] = { ratio: clamp15(ratio), until: now15() + 1600 };
+  }
+  function setPremixHold15(songId, id, ratio) {
+    const k = premixHoldKey15(songId, id);
+    window.__vshookDirectorPremixHold15[k] = { ratio: clamp15(ratio), until: now15() + 1600 };
+  }
+  function applyHoldRatio15(item, ratio) {
+    if (!item || typeof item !== 'object') return item;
+    return { ...item, volumeRatio: ratio, liveVolumeRatio: ratio, ratio, displayScale: item.displayScale || 'db' };
+  }
+  function overlayMixerHolds15(list, view) {
+    const t = now15();
+    return (Array.isArray(list) ? list : []).map((item, idx) => {
+      const id = rowId15(item, `${view}-${idx}`);
+      const hold = window.__vshookDirectorMixerHold15[mixerHoldKey15(view, id)] || window.__vshookDirectorMixerHold15[mixerHoldKey15(view, item?.guid)] || window.__vshookDirectorMixerHold15[mixerHoldKey15(view, item?.trackId)];
+      if (!hold) return item;
+      if (hold.until < t) { delete window.__vshookDirectorMixerHold15[mixerHoldKey15(view, id)]; return item; }
+      const incoming = clamp15(item?.volumeRatio ?? item?.liveVolumeRatio ?? item?.ratio, -1);
+      if (Math.abs(incoming - hold.ratio) < 0.012) {
+        delete window.__vshookDirectorMixerHold15[mixerHoldKey15(view, id)];
+        return item;
+      }
+      return applyHoldRatio15(item, hold.ratio);
+    });
+  }
+  function overlayPremixHolds15(list, songId) {
+    const t = now15();
+    return (Array.isArray(list) ? list : []).map((item, idx) => {
+      const id = rowId15(item, `premix-${idx}`);
+      const hold = window.__vshookDirectorPremixHold15[premixHoldKey15(songId, id)] || window.__vshookDirectorPremixHold15[premixHoldKey15(songId, item?.guid)] || window.__vshookDirectorPremixHold15[premixHoldKey15(songId, item?.trackId)];
+      if (!hold) return item;
+      if (hold.until < t) { delete window.__vshookDirectorPremixHold15[premixHoldKey15(songId, id)]; return item; }
+      const incoming = clamp15(item?.volumeRatio ?? item?.liveVolumeRatio ?? item?.ratio, -1);
+      if (Math.abs(incoming - hold.ratio) < 0.012) {
+        delete window.__vshookDirectorPremixHold15[premixHoldKey15(songId, id)];
+        return item;
+      }
+      return applyHoldRatio15(item, hold.ratio);
+    });
+  }
+
+  function normalizePremix15(item, index) {
+    const base = (typeof normPremix14 === 'function') ? normPremix14(item, index)
+      : (typeof normPremix13 === 'function') ? normPremix13(item)
+      : (typeof normalizePremixTrackItem === 'function') ? normalizePremixTrackItem(item, 'tracks')
+      : { ...(item || {}) };
+    if (!base || typeof base !== 'object') return null;
+    const id = rowId15(base, `item-${index || 0}`);
+    if (!id) return null;
+    const ratio = clamp15(base.volumeRatio ?? base.liveVolumeRatio ?? base.ratio, 0.5);
+    const name = key15(base.name || base.label || base.trackName || base.displayName || `ITEM ${index || ''}`);
+    return {
+      ...base,
+      id,
+      guid: key15(base.guid || id),
+      itemId: key15(base.itemId || id),
+      targetId: key15(base.targetId || id),
+      trackId: key15(base.trackId || base.trackGuid || base.guid || id),
+      name,
+      label: key15(base.label || name),
+      view: 'tracks',
+      type: 'item',
+      itemMode: true,
+      volumeRatio: ratio,
+      liveVolumeRatio: ratio,
+      ratio,
+      mute: !!(base.mute ?? base.muted),
+      muted: !!(base.muted ?? base.mute),
+      fxEnabled: base.fxEnabled !== undefined ? !!base.fxEnabled : (base.fxOn !== undefined ? !!base.fxOn : true),
+      fxOn: base.fxOn !== undefined ? !!base.fxOn : (base.fxEnabled !== undefined ? !!base.fxEnabled : true),
+      displayScale: base.displayScale || 'db'
+    };
+  }
+
+  function premixRowsFromSource15(src) {
+    const p = src?.premix && typeof src.premix === 'object' ? src.premix : {};
+    const arrays = [p.tracks, p.items, p.itemTracks, p.rows, src.premixTracks, src.premixItems, src.premixItemTracks, src.premixRows];
+    for (const arr of arrays) if (Array.isArray(arr)) return arr;
+    return [];
+  }
+  function premixSelectedFromSource15(src) {
+    const p = src?.premix && typeof src.premix === 'object' ? src.premix : {};
+    return key15(p.selectedSongId || p.selectedRegionId || src.premixSelectedSongId || src.premixSelectedRegionId || state.premixSelectedSongId);
+  }
+
+  const prevSync15 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync15) {
+    syncFromBridge = function(data) {
+      prevSync15(data);
+      try {
+        const src = mergeSource15(data);
+
+        // Mixer: depois que o Bridge sincroniza, reaplica hold local se o snapshot ainda vier velho.
+        if (Array.isArray(state.mixerTracks)) state.mixerTracks = overlayMixerHolds15(state.mixerTracks, 'tracks');
+        if (Array.isArray(state.mixerGroups)) state.mixerGroups = overlayMixerHolds15(state.mixerGroups, 'groups');
+        if (state.mixerMaster) state.mixerMaster = overlayMixerHolds15([state.mixerMaster], 'master')[0] || state.mixerMaster;
+
+        const selected = premixSelectedFromSource15(src);
+        const currentSelected = key15(state.premixSelectedSongId || window.__vshookDirectorPremixRequest15.songId);
+        const rowsRaw = premixRowsFromSource15(src);
+        const rows = rowsRaw.map((x, i) => normalizePremix15(x, i + 1)).filter(Boolean);
+
+        if (src?.premix && Array.isArray(src.premix.songs)) state.premixSongs = src.premix.songs;
+        if (selected) state.premixSelectedSongId = selected;
+        state.premixIsGlobal = false;
+        state.premixGlobalEnabled = false;
+        state.premixGroups = [];
+        state.premixGlobalTracks = [];
+        state.premixGlobalGroups = [];
+
+        if (rows.length) {
+          const sid = selected || currentSelected;
+          const finalRows = overlayPremixHolds15(rows, sid);
+          state.premixTracks = finalRows;
+          if (sid) {
+            state.premixTracksBySongId = state.premixTracksBySongId || {};
+            state.premixTracksByRegionId = state.premixTracksByRegionId || {};
+            state.premixTracksBySongId[sid] = finalRows;
+            state.premixTracksByRegionId[sid] = finalRows;
+          }
+          window.__vshookDirectorPremixRequest15.until = 0;
+        } else if (currentSelected && now15() < Number(window.__vshookDirectorPremixRequest15.until || 0)) {
+          // Snapshot velho sem premix não pode apagar a tela enquanto o Lua ainda está respondendo.
+          const cached = state.premixTracksBySongId?.[currentSelected] || state.premixTracksByRegionId?.[currentSelected];
+          state.premixTracks = Array.isArray(cached) ? overlayPremixHolds15(cached.map((x,i)=>normalizePremix15(x,i+1)).filter(Boolean), currentSelected) : (Array.isArray(state.premixTracks) ? state.premixTracks : []);
+        } else if (selected && selected === currentSelected) {
+          const cached = state.premixTracksBySongId?.[selected] || state.premixTracksByRegionId?.[selected];
+          state.premixTracks = Array.isArray(cached) ? overlayPremixHolds15(cached.map((x,i)=>normalizePremix15(x,i+1)).filter(Boolean), selected) : [];
+        }
+        state.premixSelectedEnabled = true;
+        state.premixSelectedCanEdit = !!key15(state.premixSelectedSongId);
+      } catch(e) {}
+    };
+  }
+
+  function songPayload15(songId) {
+    const songs = typeof getPremixSongs === 'function' ? getPremixSongs() : (Array.isArray(state.premixSongs) ? state.premixSongs : []);
+    const song = (songs || []).find(entry => [entry?.id, entry?.source_number, entry?.sourceNumber, entry?.number, entry?.regionIndex, entry?.luaRegionIndex].map(key15).includes(key15(songId))) || {};
+    return {
+      id: songId,
+      songId,
+      selectedRegionId: songId,
+      regionId: songId,
+      luaRegionIndex: song?.luaRegionIndex ?? song?.regionIndex ?? song?.region_index,
+      regionIndex: song?.regionIndex ?? song?.luaRegionIndex ?? song?.region_index,
+      region_index: song?.region_index ?? song?.regionIndex ?? song?.luaRegionIndex,
+      requestTracks: '1',
+      requestFull: '1',
+      forceLuaPremix: true,
+      routeToLua: true,
+      luaControl: true,
+      source_number: song?.source_number ?? song?.sourceNumber ?? song?.number,
+      sourceNumber: song?.sourceNumber ?? song?.source_number ?? song?.number,
+      startPos: song?.startPos ?? song?.start_pos ?? song?.start,
+      start_pos: song?.start_pos ?? song?.startPos ?? song?.start,
+      endPos: song?.endPos ?? song?.end_pos ?? song?.end,
+      end_pos: song?.end_pos ?? song?.endPos ?? song?.end,
+      name: song?.name ?? song?.label ?? '',
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+  }
+
+  selectPremixSong = function(id) {
+    const songId = key15(id);
+    if (!songId) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = songId;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixGroups = [];
+    const cached = state.premixTracksBySongId?.[songId] || state.premixTracksByRegionId?.[songId];
+    state.premixTracks = Array.isArray(cached) ? cached.map((x,i)=>normalizePremix15(x,i+1)).filter(Boolean) : [];
+    window.__vshookDirectorPremixRequest15 = { songId, until: now15() + 3500, tries: 0 };
+    postCommand?.('premix_item_focus_song', songPayload15(songId));
+    setTimeout(() => { if (key15(state.premixSelectedSongId) === songId && (!Array.isArray(state.premixTracks) || !state.premixTracks.length)) postCommand?.('premix_item_focus_song', songPayload15(songId)); }, 180);
+    setTimeout(() => { if (key15(state.premixSelectedSongId) === songId && (!Array.isArray(state.premixTracks) || !state.premixTracks.length)) postCommand?.('premix_item_focus_song', songPayload15(songId)); }, 520);
+    if (typeof fastPollBridge === 'function') fastPollBridge(30);
+    render?.();
+  };
+
+  openPremixModal = function(){
+    state.settingsMenuOpen = false;
+    state.showGearModal = false;
+    state.showMixerModal = false;
+    state.showMixerVolumeModal = false;
+    state.showPremixVolumeModal = false;
+    state.showBpmModal = false;
+    state.showTunerModal = false;
+    state.showPremixModal = true;
+    state.premixIsGlobal = false;
+    state.premixView = 'songs';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedTrackId = null;
+    state.premixGroups = [];
+    postCommand?.('premix_item_open', { requestTracks: '1', requestFull: '1', forceLuaPremix: true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix' });
+    if (typeof fastPollBridge === 'function') fastPollBridge(24);
+    render?.();
+  };
+
+  getPremixItemsForView = function(){
+    return (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((x,i)=>normalizePremix15(x,i+1)).filter(Boolean);
+  };
+  getPremixTracks = function(){ return getPremixItemsForView('tracks'); };
+  findPremixTrack = function(id){
+    const wanted = key15(id);
+    return getPremixItemsForView('tracks').find(item => [item.id, item.guid, item.itemId, item.trackId, item.targetId].map(key15).includes(wanted)) || null;
+  };
+
+  const prevSetMixerLocal15 = typeof setMixerItemLocalState === 'function' ? setMixerItemLocalState : null;
+  setMixerItemLocalState = function(view, id, patch = {}) {
+    if (prevSetMixerLocal15) { try { prevSetMixerLocal15(view, id, patch); } catch(e) {} }
+    const wanted = key15(id);
+    const apply = (item) => [item?.id, item?.guid, item?.trackId, item?.targetId].map(key15).includes(wanted) ? { ...item, ...patch } : item;
+    if (view === 'groups') state.mixerGroups = (Array.isArray(state.mixerGroups) ? state.mixerGroups : []).map(apply);
+    else if (view === 'master' && state.mixerMaster) state.mixerMaster = apply(state.mixerMaster);
+    else state.mixerTracks = (Array.isArray(state.mixerTracks) ? state.mixerTracks : []).map(apply);
+  };
+
+  handleMixerVolumeInput = function(view, id, value) {
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const ratio = clamp15(value, 0.5);
+    const item = typeof findMixerItem === 'function' ? (findMixerItem(normalizedView, id) || {}) : {};
+    const target = rowId15(item, id);
+    setMixerHold15(normalizedView, target, ratio);
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    setMixerItemLocalState(normalizedView, target, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { syncMixerVolumeModalUi?.(normalizedView, target); } catch(e) {}
+    const payload = {
+      view: normalizedView,
+      id: target,
+      targetId: target,
+      trackId: key15(item.trackId || item.guid || target),
+      guid: key15(item.guid || target),
+      ratio,
+      volumeRatio: ratio,
+      scrollRatio: ratio,
+      routeToLua: true,
+      luaControl: true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'mixer'
+    };
+    postCommand?.('mixer_set_volume', payload);
+    clearTimeout(window.__vshookMixerVolumeConfirmTimer15 || 0);
+    window.__vshookMixerVolumeConfirmTimer15 = setTimeout(() => postCommand?.('mixer_set_volume', payload), 120);
+  };
+
+  const prevPremixLocal15 = typeof setPremixTrackLocalState === 'function' ? setPremixTrackLocalState : null;
+  setPremixTrackLocalState = function(id, patch = {}) {
+    if (prevPremixLocal15) { try { prevPremixLocal15(id, patch); } catch(e) {} }
+    const wanted = key15(id);
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((item) => {
+      const row = normalizePremix15(item, 0);
+      return row && [row.id, row.guid, row.itemId, row.trackId, row.targetId].map(key15).includes(wanted) ? { ...item, ...patch } : item;
+    });
+  };
+
+  function premixPayload15(id, ratioValue = null) {
+    const item = findPremixTrack(id) || {};
+    const itemId = rowId15(item, id);
+    const songId = key15(state.premixSelectedSongId || window.__vshookDirectorPremixRequest15.songId);
+    const payload = songPayload15(songId);
+    Object.assign(payload, {
+      itemId,
+      targetId: itemId,
+      guid: itemId,
+      trackId: key15(item.trackId || item.trackGuid || item.guid || itemId)
+    });
+    if (ratioValue !== null) {
+      const ratio = clamp15(ratioValue, 0.5);
+      payload.ratio = ratio;
+      payload.volumeRatio = ratio;
+      payload.scrollRatio = ratio;
+    }
+    return payload;
+  }
+
+  handlePremixVolumeInput = function(view, id, value) {
+    const ratio = clamp15(value, 0.5);
+    const item = findPremixTrack(id) || {};
+    const itemId = rowId15(item, id);
+    const songId = key15(state.premixSelectedSongId || window.__vshookDirectorPremixRequest15.songId);
+    if (!itemId || !songId) return;
+    setPremixHold15(songId, itemId, ratio);
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    setPremixTrackLocalState(itemId, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { syncMixerVolumeModalUi?.('premix', itemId); } catch(e) {}
+    const payload = premixPayload15(itemId, ratio);
+    postCommand?.('premix_item_set_volume', payload);
+    clearTimeout(window.__vshookPremixVolumeConfirmTimer15 || 0);
+    window.__vshookPremixVolumeConfirmTimer15 = setTimeout(() => postCommand?.('premix_item_set_volume', payload), 120);
+  };
+
+  handlePremixTrackToggle = function(event, action, id) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    const item = findPremixTrack(id) || {};
+    const itemId = rowId15(item, id);
+    const songId = key15(state.premixSelectedSongId || window.__vshookDirectorPremixRequest15.songId);
+    if (!itemId || !songId) return;
+    const isFx = action === 'phase' || action === 'fx';
+    if (isFx) setPremixTrackLocalState(itemId, { fxEnabled: !(item.fxEnabled !== false && item.fxOn !== false), fxOn: !(item.fxEnabled !== false && item.fxOn !== false) });
+    else setPremixTrackLocalState(itemId, { mute: !(item.mute || item.muted), muted: !(item.mute || item.muted) });
+    postCommand?.(isFx ? 'premix_item_toggle_fx' : 'premix_item_toggle_mute', premixPayload15(itemId));
+    if (typeof fastPollBridge === 'function') fastPollBridge(14);
+    render?.();
+  };
+
+  const prevRenderPremixRows15 = typeof renderPremixTrackRows === 'function' ? renderPremixTrackRows : null;
+  renderPremixTrackRows = function(){
+    const rows = getPremixItemsForView('tracks');
+    if (!rows.length && now15() < Number(window.__vshookDirectorPremixRequest15.until || 0)) {
+      return `<div class="emptyState" style="padding:18px;text-align:center;color:#cbd5e1;font-weight:900">CARREGANDO ITENS DO LUA...</div>`;
+    }
+    if (prevRenderPremixRows15) return prevRenderPremixRows15();
+    return rows.map((item) => `<div class="mixerRow premixMixerRow"><div class="mixerRowMain"><div class="mixerRowName">${esc15(item.name || item.label || 'ITEM')}</div></div></div>`).join('') || `<div class="emptyState" style="padding:18px;text-align:center;color:#cbd5e1;font-weight:900">SEM ITENS PARA ESSA MÚSICA</div>`;
+  };
+
+  const prevBind15 = typeof bindEvents === 'function' ? bindEvents : null;
+  if (prevBind15) {
+    bindEvents = function(){
+      prevBind15();
+      document.querySelectorAll('[data-action="mixer-volume-slider"]').forEach((el) => {
+        const view = el.getAttribute('data-mixer-view') || state.mixerVolumeView || 'tracks';
+        const id = el.getAttribute('data-mixer-id') || state.mixerSelectedId || '';
+        const run = () => handleMixerVolumeInput(view, id, el.value);
+        el.oninput = run;
+        el.onchange = run;
+      });
+      document.querySelectorAll('[data-action="premix-volume-slider"]').forEach((el) => {
+        const id = el.getAttribute('data-premix-track-id') || state.premixSelectedTrackId || '';
+        const run = () => handlePremixVolumeInput('tracks', id, el.value);
+        el.oninput = run;
+        el.onchange = run;
+      });
+    };
+  }
+})();
+
+
+/* VSHOOK_DIRECTOR_FIX18_LUA_COMMAND_FLATTEN_UI_HOLD
+   - Premix: clique em música força tela de ITENS e pede lista ao Lua.
+   - Mixer: snapshot velho não redesenha por cima do slider enquanto o usuário mexe.
+   - Visual: master/grupos/tracks compactos no mobile. */
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX18_LUA_COMMAND_FLATTEN_UI_HOLD) return;
+  window.__VSHOOK_DIRECTOR_FIX18_LUA_COMMAND_FLATTEN_UI_HOLD = true;
+
+  const now18 = () => Date.now();
+  const key18 = (v) => String(v ?? '').trim();
+  const clamp18 = (v, fb = 0.5) => Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : fb));
+  const hasMixerHold18 = () => {
+    const obj = window.__vshookDirectorMixerHold15 || {};
+    const t = now18();
+    return Object.keys(obj).some(k => obj[k] && Number(obj[k].until || 0) > t);
+  };
+  const hasPremixHold18 = () => {
+    const obj = window.__vshookDirectorPremixHold15 || {};
+    const t = now18();
+    return Object.keys(obj).some(k => obj[k] && Number(obj[k].until || 0) > t);
+  };
+  function scheduleRender18(delay = 0) {
+    clearTimeout(window.__vshookFix18RenderTimer || 0);
+    window.__vshookFix18RenderTimer = setTimeout(() => { try { render?.(); } catch(e) {} }, delay);
+  }
+  function forceSliderDom18(selector, value) {
+    try {
+      document.querySelectorAll(selector).forEach((el) => {
+        if (document.activeElement === el || el.matches(':active')) el.value = String(clamp18(value));
+      });
+    } catch(e) {}
+  }
+
+  // Reaplica render depois do sync antigo. Sem isso o prevSync renderiza o snapshot velho e o hold só fica no state.
+  const prevSync18 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync18) {
+    syncFromBridge = function(data) {
+      const beforeMixerHold = hasMixerHold18();
+      const beforePremixHold = hasPremixHold18();
+      prevSync18(data);
+      const afterMixerHold = hasMixerHold18();
+      const afterPremixHold = hasPremixHold18();
+      if ((state.showMixerModal || state.showMixerVolumeModal) && (beforeMixerHold || afterMixerHold)) {
+        scheduleRender18(0);
+      }
+      if (state.showPremixModal && (beforePremixHold || afterPremixHold || state.premixView === 'tracks')) {
+        scheduleRender18(0);
+      }
+    };
+  }
+
+  // Hold maior para cortar o vai-e-volta enquanto o Bridge ainda devolve estado antigo.
+  if (typeof setMixerHold15 === 'function') {
+    const oldSetMixerHold18 = setMixerHold15;
+    setMixerHold15 = function(view, id, ratio) {
+      oldSetMixerHold18(view, id, ratio);
+      const k = (typeof mixerHoldKey15 === 'function') ? mixerHoldKey15(view, id) : `${view}:${id}`;
+      window.__vshookDirectorMixerHold15 = window.__vshookDirectorMixerHold15 || {};
+      window.__vshookDirectorMixerHold15[k] = { ratio: clamp18(ratio), until: now18() + 2600 };
+    };
+  }
+  if (typeof setPremixHold15 === 'function') {
+    const oldSetPremixHold18 = setPremixHold15;
+    setPremixHold15 = function(songId, id, ratio) {
+      oldSetPremixHold18(songId, id, ratio);
+      const k = (typeof premixHoldKey15 === 'function') ? premixHoldKey15(songId, id) : `${songId}:${id}`;
+      window.__vshookDirectorPremixHold15 = window.__vshookDirectorPremixHold15 || {};
+      window.__vshookDirectorPremixHold15[k] = { ratio: clamp18(ratio), until: now18() + 2600 };
+    };
+  }
+
+  const prevMixerInput18 = typeof handleMixerVolumeInput === 'function' ? handleMixerVolumeInput : null;
+  if (prevMixerInput18) {
+    handleMixerVolumeInput = function(view, id, value) {
+      const ratio = clamp18(value);
+      prevMixerInput18(view, id, ratio);
+      forceSliderDom18('[data-action="mixer-volume-slider"]', ratio);
+      scheduleRender18(0);
+    };
+  }
+
+  const prevPremixInput18 = typeof handlePremixVolumeInput === 'function' ? handlePremixVolumeInput : null;
+  if (prevPremixInput18) {
+    handlePremixVolumeInput = function(view, id, value) {
+      const ratio = clamp18(value);
+      prevPremixInput18(view, id, ratio);
+      forceSliderDom18('[data-action="premix-volume-slider"]', ratio);
+      scheduleRender18(0);
+    };
+  }
+
+  function findSong18(songId) {
+    const id = key18(songId);
+    const songs = (typeof getPremixSongs === 'function' ? getPremixSongs() : (Array.isArray(state.premixSongs) ? state.premixSongs : [])) || [];
+    return songs.find((s) => [s?.id, s?.source_number, s?.sourceNumber, s?.number, s?.regionIndex, s?.luaRegionIndex, s?.region_index].map(key18).includes(id)) || {};
+  }
+  function songPayload18(songId) {
+    const id = key18(songId);
+    const song = findSong18(id);
+    return {
+      id, songId: id, selectedRegionId: id, regionId: id,
+      luaRegionIndex: song?.luaRegionIndex ?? song?.regionIndex ?? song?.region_index,
+      regionIndex: song?.regionIndex ?? song?.luaRegionIndex ?? song?.region_index,
+      region_index: song?.region_index ?? song?.regionIndex ?? song?.luaRegionIndex,
+      source_number: song?.source_number ?? song?.sourceNumber ?? song?.number,
+      sourceNumber: song?.sourceNumber ?? song?.source_number ?? song?.number,
+      startPos: song?.startPos ?? song?.start_pos ?? song?.start,
+      start_pos: song?.start_pos ?? song?.startPos ?? song?.start,
+      endPos: song?.endPos ?? song?.end_pos ?? song?.end,
+      end_pos: song?.end_pos ?? song?.endPos ?? song?.end,
+      name: song?.name ?? song?.label ?? '',
+      requestTracks: '1', requestFull: '1', forceLuaPremix: true, routeToLua: true, luaControl: true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+  }
+
+  // Força o comportamento correto no mobile: escolheu música => abre a tela de ITENS, não fica parado na lista.
+  const prevSelectPremix18 = typeof selectPremixSong === 'function' ? selectPremixSong : null;
+  selectPremixSong = function(id) {
+    const songId = key18(id);
+    if (!songId) return;
+    state.premixIsGlobal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedSongId = songId;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixGroups = [];
+    window.__vshookDirectorPremixRequest15 = { songId, until: now18() + 6000, tries: 0 };
+    try { if (prevSelectPremix18) prevSelectPremix18(songId); } catch(e) {}
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedSongId = songId;
+    postCommand?.('premix_item_focus_song', songPayload18(songId));
+    setTimeout(() => postCommand?.('premix_item_focus_song', songPayload18(songId)), 120);
+    setTimeout(() => postCommand?.('premix_item_focus_song', songPayload18(songId)), 420);
+    setTimeout(() => postCommand?.('premix_item_focus_song', songPayload18(songId)), 900);
+    if (typeof fastPollBridge === 'function') fastPollBridge(40);
+    scheduleRender18(0);
+  };
+
+  // Captura o toque antes de qualquer bind antigo que só seleciona visualmente.
+  document.addEventListener('click', function(ev) {
+    const row = ev.target?.closest?.('[data-action="premix-song"][data-premix-song-id]');
+    if (!row || !state.showPremixModal) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectPremixSong(row.getAttribute('data-premix-song-id'));
+  }, true);
+
+  // Se já tem música selecionada e a tela está aberta, nunca fica numa coluna vazia à direita.
+  const prevRenderPremix18 = typeof renderPremixModal === 'function' ? renderPremixModal : null;
+  if (prevRenderPremix18) {
+    renderPremixModal = function() {
+      if (state.showPremixModal && key18(state.premixSelectedSongId) && state.premixView !== 'tracks') {
+        state.premixView = 'tracks';
+        state.premixTrackView = 'tracks';
+      }
+      return prevRenderPremix18();
+    };
+  }
+
+  const prevRenderPremixRows18 = typeof renderPremixTrackRows === 'function' ? renderPremixTrackRows : null;
+  if (prevRenderPremixRows18) {
+    renderPremixTrackRows = function() {
+      const rows = typeof getPremixItemsForView === 'function' ? getPremixItemsForView('tracks') : [];
+      if ((!rows || !rows.length) && now18() < Number(window.__vshookDirectorPremixRequest15?.until || 0)) {
+        return `<div class="emptyState" style="padding:18px;text-align:center;color:#cbd5e1;font-weight:900">CARREGANDO ITENS DO LUA...</div>`;
+      }
+      return prevRenderPremixRows18();
+    };
+  }
+
+  // CSS final compacto e corrige container gigante do Master/Grupos.
+  const style = document.createElement('style');
+  style.textContent = `
+    .mixerRowsBox{min-height:0!important;}
+    .mixerModalBox .mixerRowsBox{height:auto!important;}
+    .mixerRow{min-height:58px!important;height:auto!important;padding:8px 10px!important;gap:8px!important;}
+    .mixerRowMain{min-width:0!important;}
+    .mixerRowName{font-size:18px!important;line-height:1.1!important;}
+    .mixerRowDb{min-width:42px!important;font-size:13px!important;}
+    .mixerMiniBtn{width:42px!important;height:42px!important;min-width:42px!important;}
+    .mixerViewTabs{gap:8px!important;margin:8px 0 10px!important;}
+    .mixerViewTabs button{height:52px!important;min-height:52px!important;}
+    .premixSongListBox{max-width:100%!important;width:100%!important;}
+    .premixSongCard{width:100%!important;max-width:100%!important;}
+    .premixInlineSlider{width:86px!important;max-width:28vw!important;}
+    @media (max-width: 820px){
+      .mixerModalBox,.premixModalBox{padding:24px!important;}
+      .mixerRowsBox{max-height:calc(var(--app-vh,100dvh) - 250px)!important;}
+      .mixerSwipePanel{flex:0 1 auto!important;min-height:0!important;}
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+/* VSHOOK_DIRECTOR_FIX19_PREMIX_LIST_AND_FREE_SLIDERS
+   - Premix abre SEMPRE na lista de músicas do repertório atual.
+   - Voltar do Premix volta para lista e não fecha/trava.
+   - Sliders de Mixer/Premix não redesenham a tela enquanto o dedo está arrastando.
+   - Comando de volume é throttled e o envio final ocorre no soltar. */
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX19_PREMIX_LIST_AND_FREE_SLIDERS__) return;
+  window.__VSHOOK_DIRECTOR_FIX19_PREMIX_LIST_AND_FREE_SLIDERS__ = true;
+
+  const now19 = () => Date.now();
+  const key19 = (v) => String(v ?? '').trim();
+  const clamp19 = (v, fb = 0.5) => Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : fb));
+  const esc19 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(String(v ?? '')) : String(v ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])));
+  const upper19 = (v) => (typeof upperText === 'function' ? upperText(String(v || '')) : String(v || '').toUpperCase());
+
+  window.__vshookSliderDragging19 = window.__vshookSliderDragging19 || { active:false, until:0, pendingRender:false };
+  function sliderActive19(){ return window.__vshookSliderDragging19.active || now19() < Number(window.__vshookSliderDragging19.until || 0); }
+  function startSlider19(){ window.__vshookSliderDragging19.active = true; window.__vshookSliderDragging19.until = now19() + 1800; }
+  function endSlider19(){
+    window.__vshookSliderDragging19.active = false;
+    window.__vshookSliderDragging19.until = now19() + 220;
+    clearTimeout(window.__vshookSliderEndRender19 || 0);
+    window.__vshookSliderEndRender19 = setTimeout(() => {
+      window.__vshookSliderDragging19.until = 0;
+      if (window.__vshookSliderDragging19.pendingRender) {
+        window.__vshookSliderDragging19.pendingRender = false;
+        try { window.__vshookRealRender19?.(); } catch(e) {}
+      }
+    }, 260);
+  }
+
+  if (typeof render === 'function' && !window.__vshookRealRender19) {
+    window.__vshookRealRender19 = render;
+    render = function(){
+      if (sliderActive19()) {
+        window.__vshookSliderDragging19.pendingRender = true;
+        return '';
+      }
+      return window.__vshookRealRender19.apply(this, arguments);
+    };
+  }
+
+  function rowId19(item, fallback) {
+    return key19(item?.id || item?.guid || item?.trackId || item?.targetId || item?.itemId || item?.trackGuid || fallback);
+  }
+  function mixerList19(view) {
+    if (view === 'groups') return Array.isArray(state.mixerGroups) ? state.mixerGroups : [];
+    if (view === 'master') return state.mixerMaster ? [state.mixerMaster] : [];
+    return Array.isArray(state.mixerTracks) ? state.mixerTracks : [];
+  }
+  function findMixer19(view, id) {
+    const wanted = key19(id);
+    if (!wanted) return null;
+    if (typeof findMixerItem === 'function') {
+      try { const found = findMixerItem(view, wanted); if (found) return found; } catch(e) {}
+    }
+    return mixerList19(view).find((item) => [item?.id,item?.guid,item?.trackId,item?.targetId].map(key19).includes(wanted)) || null;
+  }
+  function setMixerLocal19(view, id, ratio) {
+    const wanted = key19(id);
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    const patch = { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale:'db' };
+    if (typeof setMixerItemLocalState === 'function') { try { setMixerItemLocalState(view, wanted, patch); } catch(e) {} }
+    const apply = (item) => [item?.id,item?.guid,item?.trackId,item?.targetId].map(key19).includes(wanted) ? { ...item, ...patch } : item;
+    if (view === 'groups') state.mixerGroups = mixerList19('groups').map(apply);
+    else if (view === 'master' && state.mixerMaster) state.mixerMaster = apply(state.mixerMaster);
+    else state.mixerTracks = mixerList19('tracks').map(apply);
+  }
+  function postMixer19(view, id, ratio, finalSend=false) {
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const item = findMixer19(normalizedView, id) || {};
+    const target = rowId19(item, id);
+    const payload = {
+      view: normalizedView, id: target, targetId: target,
+      trackId: key19(item.trackId || item.guid || target), guid: key19(item.guid || target),
+      ratio, volumeRatio: ratio, scrollRatio: ratio,
+      routeToLua:true, luaControl:true, final: !!finalSend,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'mixer'
+    };
+    postCommand?.('mixer_set_volume', payload);
+  }
+
+  handleMixerVolumeInput = function(view, id, value, finalSend=false) {
+    const normalizedView = view === 'groups' ? 'groups' : (view === 'master' ? 'master' : 'tracks');
+    const ratio = clamp19(value, 0.5);
+    const item = findMixer19(normalizedView, id) || {};
+    const target = rowId19(item, id);
+    startSlider19();
+    try { if (typeof setMixerHold15 === 'function') setMixerHold15(normalizedView, target, ratio); } catch(e) {}
+    setMixerLocal19(normalizedView, target, ratio);
+    const input = document.querySelector(`[data-action="mixer-volume-slider"][data-mixer-id="${CSS.escape(String(id))}"]`) || document.querySelector('[data-action="mixer-volume-slider"]');
+    if (input) input.value = String(ratio);
+    clearTimeout(window.__vshookMixerSend19 || 0);
+    if (finalSend) postMixer19(normalizedView, target, ratio, true);
+    else window.__vshookMixerSend19 = setTimeout(() => postMixer19(normalizedView, target, ratio, false), 70);
+  };
+
+  function songIdFromSong19(song){ return key19(song?.id ?? song?.source_number ?? song?.sourceNumber ?? song?.number ?? song?.regionIndex ?? song?.luaRegionIndex ?? ''); }
+  function isBlockSong19(song){ try { return typeof detectBlockItem === 'function' && detectBlockItem(song); } catch(e) { return false; } }
+  function isParentSong19(song){ return !!(song && (song.isHashParent || song.familyRole === 'parent' || song.itemType === 'hash_parent' || song.type === 'hash_parent')); }
+  function normalizeSongList19(list){
+    return (Array.isArray(list) ? list : []).filter((song) => song && !isBlockSong19(song) && song.isPlayable !== false && !isParentSong19(song) && songIdFromSong19(song));
+  }
+  getPremixSongs = function(){
+    const active = typeof getActivePlaylistSongsForPremix === 'function' ? normalizeSongList19(getActivePlaylistSongsForPremix()) : [];
+    if (active.length) return active;
+    const premix = normalizeSongList19(state.premixSongs);
+    if (premix.length) return premix;
+    return normalizeSongList19(state.regions);
+  };
+  if (typeof isPremixSelectableSong === 'function') {
+    isPremixSelectableSong = function(song){ return !!songIdFromSong19(song) && !isBlockSong19(song) && song?.isPlayable !== false && !isParentSong19(song); };
+  }
+
+  const oldOpenPremix19 = typeof openPremixModal === 'function' ? openPremixModal : null;
+  openPremixModal = function(){
+    state.settingsMenuOpen = false;
+    state.showGearModal = false;
+    state.showMixerModal = false;
+    state.showMixerVolumeModal = false;
+    state.showPremixVolumeModal = false;
+    state.showBpmModal = false;
+    state.showTunerModal = false;
+    state.showPremixModal = true;
+    state.premixIsGlobal = false;
+    state.premixView = 'songs';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    state.premixTracks = [];
+    state.premixGroups = [];
+    try { armOverlayCloseGuard?.(650); } catch(e) {}
+    postCommand?.('premix_item_open', { requestFull:'1', currentPlaylistOnly:true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix' });
+    if (typeof fastPollBridge === 'function') fastPollBridge(8);
+    try { window.__vshookRealRender19 ? window.__vshookRealRender19() : render?.(); } catch(e) {}
+    return true;
+  };
+  openPremixFromMenu = function(event){ event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.(); return openPremixModal(); };
+
+  backPremixSongList = function(event){
+    event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
+    state.premixView = 'songs';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixTracks = [];
+    state.premixGroups = [];
+    postCommand?.('premix_item_open', { requestFull:'1', currentPlaylistOnly:true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix' });
+    if (typeof fastPollBridge === 'function') fastPollBridge(6);
+    try { window.__vshookRealRender19 ? window.__vshookRealRender19() : render?.(); } catch(e) {}
+    return false;
+  };
+
+  function songPayload19(songId) {
+    const id = key19(songId);
+    const song = getPremixSongs().find((s) => songIdFromSong19(s) === id) || {};
+    return {
+      id, songId:id, selectedRegionId:id, regionId:id,
+      luaRegionIndex: song.luaRegionIndex ?? song.regionIndex ?? song.region_index,
+      regionIndex: song.regionIndex ?? song.luaRegionIndex ?? song.region_index,
+      source_number: song.source_number ?? song.sourceNumber ?? song.number,
+      sourceNumber: song.sourceNumber ?? song.source_number ?? song.number,
+      startPos: song.startPos ?? song.start_pos ?? song.start,
+      endPos: song.endPos ?? song.end_pos ?? song.end,
+      name: song.name ?? song.label ?? song.title ?? '',
+      requestTracks:'1', requestItems:'1', requestFull:'1', forceLuaPremix:true, routeToLua:true, luaControl:true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+  }
+  selectPremixSong = function(songId){
+    const id = key19(songId);
+    if (!id) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = id;
+    state.selectedRegionId = id;
+    state.selectedRegionIds = [id];
+    state.selectedPlaylistSongId = null;
+    state.selectedPlaylistSongIds = [];
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixTracks = [];
+    state.premixGroups = [];
+    window.__vshookDirectorPremixRequest15 = { songId:id, until: now19() + 7000, tries:0 };
+    postCommand?.('premix_item_focus_song', songPayload19(id));
+    setTimeout(() => postCommand?.('premix_item_focus_song', songPayload19(id)), 180);
+    setTimeout(() => postCommand?.('premix_item_focus_song', songPayload19(id)), 520);
+    if (typeof fastPollBridge === 'function') fastPollBridge(18);
+    try { window.__vshookRealRender19 ? window.__vshookRealRender19() : render?.(); } catch(e) {}
+  };
+
+  function premixRows19(){ return (Array.isArray(state.premixTracks) ? state.premixTracks : []).filter(Boolean).map((item, index) => {
+    const idRaw = key19(item.id || item.guid || item.itemId || item.trackId || item.targetId || `item-${index+1}`);
+    const id = esc19(idRaw);
+    const indexText = String(item.index ?? (index + 1)).padStart(2, '0');
+    const rawName = item.name || item.label || item.trackName || item.itemName || item.takeName || `ITEM ${indexText}`;
+    const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(rawName, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee') : esc19(rawName);
+    const ratio = clamp19(item.volumeRatio ?? item.ratio ?? item.volume_ratio, 0.5);
+    const db = esc19(typeof formatMixerDbLabel === 'function' ? formatMixerDbLabel(item.db ?? 0, ratio, item.displayScale) : String(item.db ?? ''));
+    const muteClass = item.mute || item.muted ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniMute' : 'mixerMiniBtn';
+    const hasFx = !!(item.hasFx || Number(item.fxCount || 0) > 0 || item.fxEnabled !== undefined || item.fxOn !== undefined);
+    const fxOn = item.fxEnabled !== false && item.fxOn !== false && hasFx;
+    const fxClass = !hasFx ? 'mixerMiniBtn btnDisabled' : (fxOn ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn');
+    return `<div class="mixerRow premixMixerRow premixMixerRowFix19" data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowIndex">${esc19(indexText)}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div></div><div class="mixerRowDb">${db}</div><button class="${muteClass}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${id}">M</button><button class="${fxClass}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${id}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button><input class="premixInlineSlider premixInlineSliderFix19" type="range" min="0" max="1" step="0.001" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${id}" /></div>`;
+  }).join(''); }
+
+  renderPremixSongRows = function(){
+    const songs = getPremixSongs();
+    if (!songs.length) return '<div class="emptyBox">SEM MÚSICAS NO REPERTÓRIO ATUAL</div>';
+    return songs.map((song) => {
+      const id = songIdFromSong19(song);
+      const selected = id && key19(state.premixSelectedSongId) === id;
+      const title = song.name || song.label || song.title || song.displayName || song.sourceName || song.source_name || song.regionName || song.songName || `MÚSICA ${id}`;
+      const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, 'premixSongTitleText', 'rowMarquee premixSongMarquee') : esc19(title);
+      const duration = song.durationSec ? `<span class="premixSongDuration">${esc19(typeof formatTime === 'function' ? formatTime(song.durationSec) : song.durationSec)}</span>` : '';
+      const color = typeof getAppItemTextColor === 'function' ? getAppItemTextColor(song) : '';
+      const style = color ? ` style="--premix-row-color:${esc19(color)}"` : '';
+      return `<div class="premixSongCard ${selected ? 'premixSongCardSelected selectedRow' : ''}"${style} data-action="premix-song" data-premix-song-id="${esc19(id)}"><div class="premixSongAccent"></div><div class="premixSongMain"><div class="premixSongTitle">${name}</div><div class="premixSongMeta">${duration}</div></div></div>`;
+    }).join('');
+  };
+  renderPremixTrackRows = function(){
+    const html = premixRows19();
+    if (html) return html;
+    if (now19() < Number(window.__vshookDirectorPremixRequest15?.until || 0)) return '<div class="emptyBox">CARREGANDO ITENS DO LUA...</div>';
+    return '<div class="emptyBox">SEM ITENS NESSA MÚSICA</div>';
+  };
+  renderPremixModal = function(){
+    if (!state.showPremixModal) return '';
+    const isTracks = state.premixView === 'tracks' && key19(state.premixSelectedSongId);
+    const selectedSong = getPremixSongs().find((song) => songIdFromSong19(song) === key19(state.premixSelectedSongId));
+    const title = isTracks && selectedSong ? upper19(selectedSong.name || selectedSong.label || selectedSong.title || 'PREMIX') : 'PREMIX';
+    const titleHtml = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee') : esc19(title);
+    const content = isTracks
+      ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px"><div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div><button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button></div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">ITENS</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+      : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div></div><div class="mixerRowsBox premixSongListBox" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`;
+    return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`;
+  };
+
+  function premixItem19(id){
+    const wanted = key19(id);
+    return (Array.isArray(state.premixTracks) ? state.premixTracks : []).find((item) => [item?.id,item?.guid,item?.itemId,item?.trackId,item?.targetId].map(key19).includes(wanted)) || {};
+  }
+  function setPremixLocal19(id, ratio) {
+    const wanted = key19(id);
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((item) => [item?.id,item?.guid,item?.itemId,item?.trackId,item?.targetId].map(key19).includes(wanted) ? { ...item, volumeRatio:ratio, liveVolumeRatio:ratio, ratio, db, displayScale:'db' } : item);
+  }
+  function premixPayload19(id, ratio, finalSend=false) {
+    const item = premixItem19(id);
+    const itemId = rowId19(item, id);
+    return { ...songPayload19(state.premixSelectedSongId), itemId, targetId:itemId, trackId:key19(item.trackId || item.guid || itemId), guid:key19(item.guid || itemId), ratio, volumeRatio:ratio, scrollRatio:ratio, final:!!finalSend };
+  }
+  handlePremixVolumeInput = function(view, id, value, finalSend=false){
+    const itemId = key19(id);
+    const songId = key19(state.premixSelectedSongId);
+    if (!itemId || !songId) return;
+    const ratio = clamp19(value, 0.5);
+    startSlider19();
+    try { if (typeof setPremixHold15 === 'function') setPremixHold15(songId, itemId, ratio); } catch(e) {}
+    setPremixLocal19(itemId, ratio);
+    const input = document.querySelector(`[data-action="premix-volume-slider"][data-premix-track-id="${CSS.escape(String(id))}"]`);
+    if (input) input.value = String(ratio);
+    clearTimeout(window.__vshookPremixSend19 || 0);
+    if (finalSend) postCommand?.('premix_item_set_volume', premixPayload19(itemId, ratio, true));
+    else window.__vshookPremixSend19 = setTimeout(() => postCommand?.('premix_item_set_volume', premixPayload19(itemId, ratio, false)), 70);
+  };
+
+  document.addEventListener('pointerdown', (ev) => { if (ev.target?.matches?.('[data-action="mixer-volume-slider"], [data-action="premix-volume-slider"]')) startSlider19(); }, true);
+  document.addEventListener('touchstart', (ev) => { if (ev.target?.matches?.('[data-action="mixer-volume-slider"], [data-action="premix-volume-slider"]')) startSlider19(); }, {capture:true, passive:true});
+  document.addEventListener('pointerup', (ev) => {
+    const el = ev.target?.closest?.('[data-action="mixer-volume-slider"], [data-action="premix-volume-slider"]');
+    if (el) {
+      if (el.getAttribute('data-action') === 'mixer-volume-slider') handleMixerVolumeInput(el.getAttribute('data-mixer-view') || state.mixerVolumeView || 'tracks', el.getAttribute('data-mixer-id') || state.mixerSelectedId || '', el.value, true);
+      else handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || '', el.value, true);
+    }
+    endSlider19();
+  }, true);
+  document.addEventListener('touchend', (ev) => { endSlider19(); }, {capture:true, passive:true});
+  document.addEventListener('input', function(ev){
+    const el = ev.target?.closest?.('[data-action="mixer-volume-slider"], [data-action="premix-volume-slider"]');
+    if (!el) return;
+    ev.stopPropagation();
+    ev.stopImmediatePropagation?.();
+    startSlider19();
+    if (el.getAttribute('data-action') === 'mixer-volume-slider') handleMixerVolumeInput(el.getAttribute('data-mixer-view') || state.mixerVolumeView || 'tracks', el.getAttribute('data-mixer-id') || state.mixerSelectedId || '', el.value, false);
+    else handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || '', el.value, false);
+  }, true);
+  document.addEventListener('change', function(ev){
+    const el = ev.target?.closest?.('[data-action="mixer-volume-slider"], [data-action="premix-volume-slider"]');
+    if (!el) return;
+    ev.stopPropagation();
+    ev.stopImmediatePropagation?.();
+    if (el.getAttribute('data-action') === 'mixer-volume-slider') handleMixerVolumeInput(el.getAttribute('data-mixer-view') || state.mixerVolumeView || 'tracks', el.getAttribute('data-mixer-id') || state.mixerSelectedId || '', el.value, true);
+    else handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || '', el.value, true);
+    endSlider19();
+  }, true);
+  document.addEventListener('click', function(ev){
+    const back = ev.target?.closest?.('[data-action="premix-back"]');
+    if (back && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); backPremixSongList(ev); return; }
+    const row = ev.target?.closest?.('[data-action="premix-song"][data-premix-song-id]');
+    if (row && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); selectPremixSong(row.getAttribute('data-premix-song-id')); }
+  }, true);
+
+  const style = document.createElement('style');
+  style.id = 'vshook-director-fix19-style';
+  style.textContent = `
+    .premixInlineSliderFix19,.premixInlineSlider{flex:1 1 150px!important;width:150px!important;min-width:130px!important;max-width:42vw!important;height:42px!important;touch-action:pan-x!important;accent-color:#facc15!important;}
+    .mixerVolumeSlider{width:100%!important;min-height:56px!important;height:56px!important;touch-action:pan-x!important;accent-color:#facc15!important;}
+    .premixMixerRowFix19{grid-template-columns:34px minmax(0,1fr) 48px 42px 46px minmax(130px,42vw)!important;display:grid!important;align-items:center!important;}
+    .premixSongListBox{width:100%!important;max-width:none!important;}
+    .premixSongCard{width:100%!important;max-width:none!important;}
+    .mixerRowsBox,.premixRowsBoxFull{overscroll-behavior:contain!important;}
+    body.vshookDraggingSlider19 .mixerRowsBox{overflow:hidden!important;}
+    @media (max-width:420px){.premixMixerRowFix19{grid-template-columns:28px minmax(0,1fr) 42px 38px 42px minmax(110px,38vw)!important;gap:5px!important}.premixInlineSliderFix19,.premixInlineSlider{min-width:110px!important;width:120px!important;}}
+  `;
+  document.head.appendChild(style);
+})();
+
+
+/* FIX20 - Premix: lista primeiro, ao clicar entra nos itens sem apagar as pistas; restaura comportamento do FIX18. */
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX20_PREMIX_RESTORE_ITEMS__) return;
+  window.__VSHOOK_DIRECTOR_FIX20_PREMIX_RESTORE_ITEMS__ = true;
+
+  const k20 = (v) => String(v ?? '').trim();
+  const n20 = (v, f = 0.5) => { const n = Number(v); return Number.isFinite(n) ? n : f; };
+  const c20 = (v, f = 0.5) => Math.max(0, Math.min(1, n20(v, f)));
+  const esc20 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])));
+  const now20 = () => Date.now();
+
+  function normalize20(item, index){
+    if (!item || typeof item !== 'object') return null;
+    let base = item;
+    try {
+      if (typeof normalizePremix15 === 'function') base = normalizePremix15(item, index);
+      else if (typeof normalizePremixTrackItem === 'function') base = normalizePremixTrackItem(item, 'tracks');
+    } catch(e) { base = item; }
+    if (!base || typeof base !== 'object') return null;
+    const id = k20(base.id || base.guid || base.itemId || base.trackId || base.targetId || `item-${index || 0}`);
+    if (!id) return null;
+    const name = k20(base.name || base.label || base.trackName || base.itemName || base.displayName || `ITEM ${index || ''}`);
+    const ratio = c20(base.volumeRatio ?? base.liveVolumeRatio ?? base.ratio ?? base.volume_ratio, 0.5);
+    return { ...base, id, guid:k20(base.guid || id), itemId:k20(base.itemId || id), targetId:k20(base.targetId || id), trackId:k20(base.trackId || base.trackGuid || base.guid || id), name, label:k20(base.label || name), volumeRatio:ratio, liveVolumeRatio:ratio, ratio, view:'tracks', type:'item', itemMode:true, displayScale:base.displayScale || 'db' };
+  }
+
+  function rowId20(item, fallback='') { return k20(item?.id || item?.guid || item?.itemId || item?.targetId || item?.trackId || fallback); }
+  function songId20(song){ return k20(song?.id ?? song?.source_number ?? song?.sourceNumber ?? song?.number ?? song?.regionIndex ?? song?.luaRegionIndex ?? ''); }
+  function block20(song){ try { return typeof detectBlockItem === 'function' && detectBlockItem(song); } catch(e) { return false; } }
+  function parent20(song){ return !!(song && (song.isHashParent || song.familyRole === 'parent' || song.itemType === 'hash_parent' || song.type === 'hash_parent')); }
+  function cleanSongs20(list){ return (Array.isArray(list) ? list : []).filter(s => s && !block20(s) && !parent20(s) && s.isPlayable !== false && songId20(s)); }
+
+  getPremixSongs = function(){
+    let active = [];
+    try { if (typeof getActivePlaylistSongsForPremix === 'function') active = cleanSongs20(getActivePlaylistSongsForPremix()); } catch(e) {}
+    if (active.length) return active;
+    const premix = cleanSongs20(state.premixSongs);
+    if (premix.length) return premix;
+    return cleanSongs20(state.regions);
+  };
+
+  function cachedRows20(id){
+    const keys = [k20(id)];
+    const song = getPremixSongs().find(s => songId20(s) === k20(id));
+    if (song) keys.push(k20(song.regionIndex), k20(song.luaRegionIndex), k20(song.source_number), k20(song.sourceNumber), k20(song.number));
+    const maps = [state.premixTracksBySongId, state.premixTracksByRegionId, state.premixItemsBySongId, state.premixItemsByRegionId];
+    for (const map of maps) {
+      if (!map || typeof map !== 'object') continue;
+      for (const key of keys) {
+        if (key && Array.isArray(map[key]) && map[key].length) return map[key].map((x,i)=>normalize20(x,i+1)).filter(Boolean);
+      }
+    }
+    const currentSel = k20(state.premixSelectedSongId || window.__vshookDirectorPremixRequest15?.songId);
+    if (currentSel === k20(id) && Array.isArray(state.premixTracks) && state.premixTracks.length) return state.premixTracks.map((x,i)=>normalize20(x,i+1)).filter(Boolean);
+    return [];
+  }
+
+  function temporaryRows20(id){
+    const cached = cachedRows20(id);
+    if (cached.length) return cached;
+    // Último recurso visual: usa as pistas do Mixer apenas até o Lua devolver os ITENS reais.
+    // Não salva isso como premix do Lua; é só para a tela não ficar vazia/travada.
+    const mixer = Array.isArray(state.mixerTracks) ? state.mixerTracks : [];
+    return mixer.map((x,i)=>normalize20({ ...x, type:'item', itemMode:true }, i+1)).filter(Boolean);
+  }
+
+  function payload20(id){
+    const song = getPremixSongs().find(s => songId20(s) === k20(id)) || {};
+    const sid = k20(id);
+    return {
+      id:sid, songId:sid, selectedRegionId:sid, regionId:sid,
+      luaRegionIndex: song.luaRegionIndex ?? song.regionIndex ?? song.region_index,
+      regionIndex: song.regionIndex ?? song.luaRegionIndex ?? song.region_index,
+      region_index: song.region_index ?? song.regionIndex ?? song.luaRegionIndex,
+      source_number: song.source_number ?? song.sourceNumber ?? song.number,
+      sourceNumber: song.sourceNumber ?? song.source_number ?? song.number,
+      startPos: song.startPos ?? song.start_pos ?? song.start,
+      start_pos: song.start_pos ?? song.startPos ?? song.start,
+      endPos: song.endPos ?? song.end_pos ?? song.end,
+      end_pos: song.end_pos ?? song.endPos ?? song.end,
+      name: song.name ?? song.label ?? song.title ?? '',
+      requestTracks:'1', requestItems:'1', requestFull:'1', forceLuaPremix:true, routeToLua:true, luaControl:true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+  }
+
+  openPremixModal = function(){
+    state.settingsMenuOpen = false;
+    state.showGearModal = false;
+    state.showMixerModal = false;
+    state.showMixerVolumeModal = false;
+    state.showPremixVolumeModal = false;
+    state.showBpmModal = false;
+    state.showTunerModal = false;
+    state.showPremixModal = true;
+    state.premixIsGlobal = false;
+    state.premixView = 'songs';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    try { armOverlayCloseGuard?.(650); } catch(e) {}
+    postCommand?.('premix_item_open', { requestFull:'1', requestTracks:'1', requestItems:'1', currentPlaylistOnly:true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix' });
+    if (typeof fastPollBridge === 'function') fastPollBridge(12);
+    render?.();
+    return true;
+  };
+  openPremixFromMenu = function(event){ event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.(); return openPremixModal(); };
+
+  selectPremixSong = function(id){
+    const sid = k20(id);
+    if (!sid) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = sid;
+    state.selectedRegionId = sid;
+    state.selectedRegionIds = [sid];
+    state.selectedPlaylistSongId = null;
+    state.selectedPlaylistSongIds = [];
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixGroups = [];
+
+    const rows = temporaryRows20(sid);
+    if (rows.length) state.premixTracks = rows;
+
+    window.__vshookDirectorPremixRequest15 = { songId:sid, until: now20() + 9000, tries:0 };
+    const p = payload20(sid);
+    postCommand?.('premix_item_focus_song', p);
+    postCommand?.('premix_focus_song', p);
+    setTimeout(() => { if (k20(state.premixSelectedSongId) === sid) postCommand?.('premix_item_focus_song', payload20(sid)); }, 160);
+    setTimeout(() => { if (k20(state.premixSelectedSongId) === sid) postCommand?.('premix_focus_song', payload20(sid)); }, 420);
+    setTimeout(() => { if (k20(state.premixSelectedSongId) === sid) postCommand?.('premix_item_focus_song', payload20(sid)); }, 900);
+    if (typeof fastPollBridge === 'function') fastPollBridge(40);
+    render?.();
+  };
+
+  backPremixSongList = function(event){
+    event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
+    state.premixView = 'songs';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    if (typeof fastPollBridge === 'function') fastPollBridge(8);
+    render?.();
+    return false;
+  };
+
+  renderPremixSongRows = function(){
+    const songs = getPremixSongs();
+    if (!songs.length) return '<div class="emptyBox">SEM MÚSICAS NO REPERTÓRIO ATUAL</div>';
+    return songs.map(song => {
+      const id = songId20(song);
+      const selected = id && k20(state.premixSelectedSongId) === id;
+      const title = song.name || song.label || song.title || song.displayName || song.sourceName || song.regionName || song.songName || `MÚSICA ${id}`;
+      const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, 'premixSongTitleText', 'rowMarquee premixSongMarquee') : esc20(title);
+      const duration = song.durationSec ? `<span class="premixSongDuration">${esc20(typeof formatTime === 'function' ? formatTime(song.durationSec) : song.durationSec)}</span>` : '';
+      return `<div class="premixSongCard ${selected ? 'premixSongCardSelected selectedRow' : ''}" data-action="premix-song" data-premix-song-id="${esc20(id)}"><div class="premixSongAccent"></div><div class="premixSongMain"><div class="premixSongTitle">${name}</div><div class="premixSongMeta">${duration}</div></div></div>`;
+    }).join('');
+  };
+
+  renderPremixTrackRows = function(){
+    const rows = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((x,i)=>normalize20(x,i+1)).filter(Boolean);
+    if (!rows.length && now20() < Number(window.__vshookDirectorPremixRequest15?.until || 0)) return '<div class="emptyBox">CARREGANDO ITENS DO LUA...</div>';
+    if (!rows.length) return '<div class="emptyBox">SEM ITENS NESSA MÚSICA</div>';
+    return rows.map((item, index) => {
+      const rawId = rowId20(item, `item-${index+1}`);
+      const id = esc20(rawId);
+      const idx = String(item.index ?? (index + 1)).padStart(2, '0');
+      const title = item.name || item.label || item.trackName || item.itemName || `ITEM ${idx}`;
+      const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee') : esc20(title);
+      const ratio = c20(item.volumeRatio ?? item.liveVolumeRatio ?? item.ratio, 0.5);
+      const db = esc20(typeof formatMixerDbLabel === 'function' ? formatMixerDbLabel(item.db ?? 0, ratio, item.displayScale) : String(item.db ?? ''));
+      const muted = !!(item.mute || item.muted);
+      const hasFx = !!(item.hasFx || Number(item.fxCount || 0) > 0 || item.fxEnabled !== undefined || item.fxOn !== undefined);
+      const fxOn = hasFx && item.fxEnabled !== false && item.fxOn !== false;
+      return `<div class="mixerRow premixMixerRow premixMixerRowFix20" data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowIndex">${esc20(idx)}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div></div><div class="mixerRowDb">${db}</div><button class="${muted ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniMute' : 'mixerMiniBtn'}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${id}">M</button><button class="${!hasFx ? 'mixerMiniBtn btnDisabled' : (fxOn ? 'mixerMiniBtn mixerMiniBtnActive mixerMiniSolo' : 'mixerMiniBtn')}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${id}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button><input class="premixInlineSlider premixInlineSliderFix20" type="range" min="0" max="1" step="0.001" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${id}" /></div>`;
+    }).join('');
+  };
+
+  renderPremixModal = function(){
+    if (!state.showPremixModal) return '';
+    const isTracks = state.premixView === 'tracks' && k20(state.premixSelectedSongId);
+    const selectedSong = getPremixSongs().find(s => songId20(s) === k20(state.premixSelectedSongId));
+    const title = isTracks && selectedSong ? (selectedSong.name || selectedSong.label || selectedSong.title || 'PREMIX') : 'PREMIX';
+    const titleHtml = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee') : esc20(title);
+    const content = isTracks
+      ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px"><div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div><button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button></div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">ITENS</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+      : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div></div><div class="mixerRowsBox premixSongListBox" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`;
+    return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`;
+  };
+
+  document.addEventListener('click', function(ev){
+    const back = ev.target?.closest?.('[data-action="premix-back"]');
+    if (back && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); backPremixSongList(ev); return; }
+    const row = ev.target?.closest?.('[data-action="premix-song"][data-premix-song-id]');
+    if (row && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); selectPremixSong(row.getAttribute('data-premix-song-id')); return; }
+  }, true);
+
+  const style = document.createElement('style');
+  style.id = 'vshook-director-fix20-premix-style';
+  style.textContent = `.premixMixerRowFix20{grid-template-columns:30px minmax(0,1fr) 46px 40px 44px minmax(125px,42vw)!important;display:grid!important;align-items:center!important;gap:6px!important}.premixInlineSliderFix20{min-width:125px!important;width:150px!important;max-width:42vw!important;height:42px!important;touch-action:pan-x!important;accent-color:#facc15!important}.premixSongCard{width:100%!important;max-width:none!important}@media(max-width:420px){.premixMixerRowFix20{grid-template-columns:26px minmax(0,1fr) 40px 36px 40px minmax(105px,38vw)!important}.premixInlineSliderFix20{min-width:105px!important;width:118px!important}}`;
+  document.head.appendChild(style);
+})();
+
+/* FIX21 - Premix Diretor igual ao Lua: MÚSICAS -> PISTAS -> CONTROLE da pista; comandos diretos Lua; projeto muda aba no REAPER. */
+(function(){
+  if (window.__VSHOOK_DIRECTOR_FIX21_PREMIX_TRACK_CONTROL_PROJECT_TAB__) return;
+  window.__VSHOOK_DIRECTOR_FIX21_PREMIX_TRACK_CONTROL_PROJECT_TAB__ = true;
+
+  const k21 = (v) => String(v ?? '').trim();
+  const esc21 = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])));
+  const clamp21 = (v, fb = 0.5) => {
+    const n = Number(v);
+    return Math.max(0, Math.min(1, Number.isFinite(n) ? n : fb));
+  };
+  const now21 = () => Date.now();
+
+  function songId21(song) {
+    return k21(song?.id ?? song?.source_number ?? song?.sourceNumber ?? song?.number ?? song?.regionIndex ?? song?.luaRegionIndex ?? '');
+  }
+  function isBlock21(song) {
+    try { return typeof detectBlockItem === 'function' && detectBlockItem(song); } catch(e) { return false; }
+  }
+  function isParent21(song) {
+    return !!(song && (song.isHashParent || song.familyRole === 'parent' || song.itemType === 'hash_parent' || song.type === 'hash_parent'));
+  }
+  function cleanSongs21(list) {
+    return (Array.isArray(list) ? list : []).filter((song) => song && !isBlock21(song) && !isParent21(song) && song.isPlayable !== false && songId21(song));
+  }
+
+  getPremixSongs = function(){
+    let active = [];
+    try { if (typeof getActivePlaylistSongsForPremix === 'function') active = cleanSongs21(getActivePlaylistSongsForPremix()); } catch(e) {}
+    if (active.length) return active;
+    const premix = cleanSongs21(state.premixSongs);
+    if (premix.length) return premix;
+    return cleanSongs21(state.regions);
+  };
+
+  function selectedSong21(id = state.premixSelectedSongId) {
+    const sid = k21(id);
+    return getPremixSongs().find((song) => songId21(song) === sid) || {};
+  }
+  function payloadSong21(id = state.premixSelectedSongId) {
+    const sid = k21(id);
+    const song = selectedSong21(sid);
+    return {
+      id: sid,
+      songId: sid,
+      selectedRegionId: sid,
+      regionId: sid,
+      luaRegionIndex: song.luaRegionIndex ?? song.regionIndex ?? song.region_index,
+      regionIndex: song.regionIndex ?? song.luaRegionIndex ?? song.region_index,
+      region_index: song.region_index ?? song.regionIndex ?? song.luaRegionIndex,
+      source_number: song.source_number ?? song.sourceNumber ?? song.number,
+      sourceNumber: song.sourceNumber ?? song.source_number ?? song.number,
+      startPos: song.startPos ?? song.start_pos ?? song.start,
+      start_pos: song.start_pos ?? song.startPos ?? song.start,
+      endPos: song.endPos ?? song.end_pos ?? song.end,
+      end_pos: song.end_pos ?? song.endPos ?? song.end,
+      name: song.name ?? song.label ?? song.title ?? '',
+      requestTracks: '1',
+      requestItems: '1',
+      requestFull: '1',
+      forceLuaPremix: true,
+      routeToLua: true,
+      luaControl: true,
+      page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix'
+    };
+  }
+
+  function normRow21(row, index = 0) {
+    if (!row || typeof row !== 'object') return null;
+    let base = row;
+    try {
+      if (typeof normalizePremix15 === 'function') base = normalizePremix15(row, index + 1);
+      else if (typeof normalizePremixTrackItem === 'function') base = normalizePremixTrackItem(row, 'tracks');
+    } catch(e) { base = row; }
+    const id = k21(base.id || base.guid || base.itemId || base.targetId || base.trackId || `premix-${index}`);
+    if (!id) return null;
+    const name = k21(base.name || base.label || base.trackName || base.itemName || base.displayName || `PISTA ${index + 1}`);
+    const ratio = clamp21(base.volumeRatio ?? base.liveVolumeRatio ?? base.ratio ?? base.volume_ratio, 0.5);
+    return {
+      ...base,
+      id,
+      guid: k21(base.guid || id),
+      itemId: k21(base.itemId || id),
+      targetId: k21(base.targetId || id),
+      trackId: k21(base.trackId || base.trackGuid || base.guid || id),
+      name,
+      label: k21(base.label || name),
+      volumeRatio: ratio,
+      liveVolumeRatio: ratio,
+      ratio,
+      view: 'tracks',
+      displayScale: base.displayScale || 'db'
+    };
+  }
+  function rows21() {
+    return (Array.isArray(state.premixTracks) ? state.premixTracks : []).map(normRow21).filter(Boolean);
+  }
+  function rowKey21(row, fallback = '') {
+    return k21(row?.id || row?.guid || row?.itemId || row?.targetId || row?.trackId || fallback);
+  }
+  function findRow21(id) {
+    const wanted = k21(id);
+    return rows21().find((row) => [row.id, row.guid, row.itemId, row.targetId, row.trackId].map(k21).includes(wanted)) || null;
+  }
+  function setRowPatch21(id, patch) {
+    const wanted = k21(id);
+    if (!wanted) return;
+    state.premixTracks = (Array.isArray(state.premixTracks) ? state.premixTracks : []).map((row, i) => {
+      const r = normRow21(row, i);
+      if (!r) return row;
+      return [r.id, r.guid, r.itemId, r.targetId, r.trackId].map(k21).includes(wanted) ? { ...r, ...patch } : r;
+    });
+  }
+  function postPremix21(type, rowId = '', extra = {}) {
+    const sid = k21(state.premixSelectedSongId);
+    const row = findRow21(rowId) || {};
+    const rid = rowKey21(row, rowId);
+    const payload = {
+      ...payloadSong21(sid),
+      itemId: rid,
+      targetId: rid,
+      trackId: k21(row.trackId || row.trackGuid || row.guid || rid),
+      guid: k21(row.guid || rid),
+      rowId: rid,
+      ...extra
+    };
+    postCommand?.(type, payload);
+    if (typeof fastPollBridge === 'function') fastPollBridge(12);
+  }
+
+  openPremixModal = function(){
+    state.settingsMenuOpen = false;
+    state.showGearModal = false;
+    state.showMixerModal = false;
+    state.showMixerVolumeModal = false;
+    state.showPremixVolumeModal = false;
+    state.showBpmModal = false;
+    state.showTunerModal = false;
+    state.showPremixModal = true;
+    state.premixIsGlobal = false;
+    state.premixView = 'songs';
+    state.premixTrackView = 'tracks';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    state.premixTracks = [];
+    state.premixGroups = [];
+    try { armOverlayCloseGuard?.(650); } catch(e) {}
+    postCommand?.('premix_item_open', { requestFull:'1', requestTracks:'1', requestItems:'1', currentPlaylistOnly:true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'premix' });
+    if (typeof fastPollBridge === 'function') fastPollBridge(16);
+    render?.();
+    return true;
+  };
+  openPremixFromMenu = function(event){ event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.(); return openPremixModal(); };
+
+  selectPremixSong = function(id){
+    const sid = k21(id);
+    if (!sid) return;
+    const song = selectedSong21(sid);
+    if (!song || !songId21(song)) return;
+    state.premixIsGlobal = false;
+    state.premixSelectedSongId = sid;
+    state.selectedRegionId = sid;
+    state.selectedRegionIds = [sid];
+    state.selectedPlaylistSongId = null;
+    state.selectedPlaylistSongIds = [];
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixView = 'tracks';
+    state.premixTrackView = 'tracks';
+    state.premixTracks = [];
+    state.premixGroups = [];
+    window.__vshookDirectorPremixRequest21 = { songId: sid, until: now21() + 9000 };
+    const p = payloadSong21(sid);
+    postCommand?.('premix_item_focus_song', p);
+    postCommand?.('premix_focus_song', p);
+    setTimeout(() => { if (k21(state.premixSelectedSongId) === sid) postCommand?.('premix_item_focus_song', payloadSong21(sid)); }, 180);
+    setTimeout(() => { if (k21(state.premixSelectedSongId) === sid) postCommand?.('premix_item_focus_song', payloadSong21(sid)); }, 550);
+    setTimeout(() => { if (k21(state.premixSelectedSongId) === sid) postCommand?.('premix_item_focus_song', payloadSong21(sid)); }, 1100);
+    if (typeof fastPollBridge === 'function') fastPollBridge(40);
+    render?.();
+  };
+
+  backPremixSongList = function(event){
+    event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
+    state.premixView = 'songs';
+    state.premixSelectedSongId = null;
+    state.premixSelectedTrackId = null;
+    state.showPremixVolumeModal = false;
+    state.premixTracks = [];
+    render?.();
+    return false;
+  };
+
+  renderPremixSongRows = function(){
+    const songs = getPremixSongs();
+    if (!songs.length) return '<div class="emptyBox">SEM MÚSICAS NO REPERTÓRIO ATUAL</div>';
+    return songs.map((song) => {
+      const id = songId21(song);
+      const selected = id && k21(state.premixSelectedSongId) === id;
+      const title = song.name || song.label || song.title || song.displayName || song.sourceName || song.regionName || song.songName || `MÚSICA ${id}`;
+      const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, 'premixSongTitleText', 'rowMarquee premixSongMarquee') : esc21(title);
+      const duration = song.durationSec ? `<span class="premixSongDuration">${esc21(typeof formatTime === 'function' ? formatTime(song.durationSec) : song.durationSec)}</span>` : '';
+      return `<div class="premixSongCard ${selected ? 'premixSongCardSelected selectedRow' : ''}" data-action="premix-song" data-premix-song-id="${esc21(id)}"><div class="premixSongAccent"></div><div class="premixSongMain"><div class="premixSongTitle">${name}</div><div class="premixSongMeta">${duration}</div></div></div>`;
+    }).join('');
+  };
+
+  renderPremixTrackRows = function(){
+    const list = rows21();
+    if (!list.length && now21() < Number(window.__vshookDirectorPremixRequest21?.until || 0)) return '<div class="emptyBox">CARREGANDO PISTAS DO LUA...</div>';
+    if (!list.length) return '<div class="emptyBox">SEM PISTAS COM ITENS NESSA MÚSICA</div>';
+    return list.map((item, index) => {
+      const idRaw = rowKey21(item, `item-${index + 1}`);
+      const id = esc21(idRaw);
+      const idx = String(item.index ?? (index + 1)).padStart(2, '0');
+      const title = item.name || item.label || item.trackName || item.itemName || `PISTA ${idx}`;
+      const name = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'rowMarquee mixerNameMarquee premixTrackNameMarquee') : esc21(title);
+      const ratio = clamp21(item.volumeRatio ?? item.liveVolumeRatio ?? item.ratio, 0.5);
+      const db = esc21(typeof formatMixerDbLabel === 'function' ? formatMixerDbLabel(item.db ?? 0, ratio, item.displayScale) : String(item.db ?? ''));
+      const muted = !!(item.mute || item.muted);
+      const fxCount = Number(item.fxCount || 0);
+      const hasFx = !!(item.hasFx || fxCount > 0 || item.fxEnabled !== undefined || item.fxOn !== undefined);
+      const fxOn = hasFx && item.fxEnabled !== false && item.fxOn !== false;
+      const sub = item.itemCount ? `<div class="mixerRowGroupName">${esc21(item.itemCount)} ITEM${Number(item.itemCount) === 1 ? '' : 'S'}${hasFx ? ' · FX ' + (fxOn ? 'ON' : 'OFF') : ''}${muted ? ' · MUTE' : ''}</div>` : '';
+      return `<div class="mixerRow premixMixerRow premixTrackOnlyRowFix21" data-action="open-premix-volume" data-premix-view="tracks" data-premix-track-id="${id}" data-mixer-row-view="premix" data-mixer-row-id="${id}"><div class="mixerRowIndex">${esc21(idx)}</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div>${sub}</div><div class="mixerRowDb">${db}</div><div class="premixRowChevronFix21">›</div></div>`;
+    }).join('');
+  };
+
+  openPremixVolumeModal = function(view, id){
+    const row = findRow21(id);
+    if (!row) return;
+    state.showPremixVolumeModal = true;
+    state.premixTrackView = 'tracks';
+    state.premixSelectedTrackId = rowKey21(row, id);
+    try { armOverlayCloseGuard?.(450); } catch(e) {}
+    render?.();
+  };
+  closePremixVolumeModal = function(force = false){
+    state.showPremixVolumeModal = false;
+    state.premixSelectedTrackId = null;
+    render?.();
+  };
+  renderPremixVolumeModal = function(){
+    if (!state.showPremixVolumeModal || !state.premixSelectedTrackId) return '';
+    const item = findRow21(state.premixSelectedTrackId);
+    if (!item) return '';
+    const id = rowKey21(item, state.premixSelectedTrackId);
+    const title = item.name || item.label || item.trackName || item.itemName || 'PISTA';
+    const ratio = clamp21(item.volumeRatio ?? item.liveVolumeRatio ?? item.ratio, 0.5);
+    const muted = !!(item.mute || item.muted);
+    const hasFx = !!(item.hasFx || Number(item.fxCount || 0) > 0 || item.fxEnabled !== undefined || item.fxOn !== undefined);
+    const fxOn = hasFx && item.fxEnabled !== false && item.fxOn !== false;
+    const db = esc21(typeof formatMixerDbLabel === 'function' ? formatMixerDbLabel(item.db ?? 0, ratio, item.displayScale) : String(item.db ?? ''));
+    const nameHtml = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'rowMarquee mixerNameMarquee') : esc21(title);
+    return `<div class="modalOverlay mixerVolumeOverlay premixVolumeOverlay" data-close-premix-volume style="z-index:3000;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerVolumeModalBox premixVolumeModalBoxFull premixControlBoxFix21" data-stop-modal data-mixer-volume-modal="1" style="position:relative;z-index:3001;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;overflow:hidden;border-radius:0;display:flex;flex-direction:column"><div class="mixerModalHeader"><div class="modalTitle">CONTROLE PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix-volume">VOLTAR</button></div><div class="premixControlTitleFix21">${nameHtml}</div><div class="premixControlButtonsFix21"><button class="${muted ? 'btnPlayActive premixControlMuteFix21' : 'btn premixControlMuteFix21'}" data-action="premix-mute" data-premix-view="tracks" data-premix-track-id="${esc21(id)}">M</button><button class="${!hasFx ? 'btnDisabled premixControlFxFix21' : (fxOn ? 'btnPlayActive premixControlFxFix21' : 'btn premixControlFxFix21')}" data-action="premix-phase" data-premix-view="tracks" data-premix-track-id="${esc21(id)}" ${hasFx ? '' : 'aria-disabled="true"'}>FX</button></div><div class="premixControlDbFix21">${db}</div><input class="mixerVolumeSlider premixControlSliderFix21" type="range" min="0" max="1" step="0.001" value="${ratio}" data-action="premix-volume-slider" data-premix-view="tracks" data-premix-track-id="${esc21(id)}" /><button class="modalCancelBtn premixResetFix21" data-action="premix-volume-reset" data-premix-view="tracks" data-premix-track-id="${esc21(id)}">RESET 0 dB</button></div></div>`;
+  };
+
+  renderPremixModal = function(){
+    if (!state.showPremixModal) return '';
+    const isTracks = state.premixView === 'tracks' && k21(state.premixSelectedSongId);
+    const song = selectedSong21(state.premixSelectedSongId);
+    const title = isTracks ? (song.name || song.label || song.title || 'PREMIX') : 'PREMIX';
+    const titleHtml = typeof buildMarqueeText === 'function' ? buildMarqueeText(title, '', 'playlistTitleMarquee premixTitleMarquee') : esc21(title);
+    const content = isTracks
+      ? `<div class="mixerModalHeader premixFullHeader" style="gap:8px"><div class="modalTitle premixHeaderTitle" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap">${titleHtml}</div><button class="modalCancelBtn mixerCloseBtn" data-action="premix-back">VOLTAR</button></div><div class="mixerSwipePanel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 auto"><div class="sectionLabel mixerSectionLabel">PISTAS</div><div class="mixerRowsBox premixRowsBoxFull" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-right:2px">${renderPremixTrackRows()}</div></div>`
+      : `<div class="mixerModalHeader"><div class="modalTitle">PREMIX</div><button class="modalCancelBtn mixerCloseBtn" data-action="close-premix">FECHAR</button></div><div class="premixSongListHeader"><div class="sectionLabel mixerSectionLabel">MÚSICAS</div></div><div class="mixerRowsBox premixSongListBox" style="flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-right:2px;margin-bottom:0;padding-bottom:0">${renderPremixSongRows()}</div>`;
+    return `<div class="modalOverlay premixOverlay" data-close-premix style="z-index:2800;pointer-events:auto;align-items:stretch;justify-content:stretch;padding:0"><div class="modalBox mixerModalBox premixModalBox premixModalBoxFull" data-stop-modal style="display:flex;flex-direction:column;width:100vw;max-width:none;height:var(--app-vh,100dvh);max-height:none;min-height:0;overflow:hidden;pointer-events:auto;border-radius:0">${content}</div></div>`;
+  };
+
+  handlePremixTrackToggle = function(event, action, trackId, view = 'tracks'){
+    event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
+    const id = k21(trackId || state.premixSelectedTrackId);
+    const row = findRow21(id);
+    if (!row) return;
+    if (action === 'mute') {
+      const next = !(row.mute || row.muted);
+      setRowPatch21(id, { mute: next, muted: next });
+      postPremix21('premix_item_toggle_mute', id);
+    } else if (action === 'phase' || action === 'fx') {
+      const hasFx = !!(row.hasFx || Number(row.fxCount || 0) > 0 || row.fxEnabled !== undefined || row.fxOn !== undefined);
+      if (!hasFx) return;
+      const next = !(row.fxEnabled !== false && row.fxOn !== false);
+      setRowPatch21(id, { fxEnabled: next, fxOn: next });
+      postPremix21('premix_item_toggle_fx', id);
+    }
+    render?.();
+  };
+
+  function applyVolume21(id, ratio) {
+    const db = typeof estimateMixerDisplayValueFromRatio === 'function' ? estimateMixerDisplayValueFromRatio(ratio, 0, 'db') : undefined;
+    setRowPatch21(id, { volumeRatio: ratio, liveVolumeRatio: ratio, ratio, db, displayScale: 'db' });
+    try { if (typeof setPremixHold15 === 'function') setPremixHold15(k21(state.premixSelectedSongId), id, ratio); } catch(e) {}
+    const input = document.querySelector(`[data-action="premix-volume-slider"][data-premix-track-id="${CSS.escape(String(id))}"]`);
+    if (input) input.value = String(ratio);
+    const dbEl = document.querySelector('.premixControlDbFix21');
+    if (dbEl && typeof formatMixerDbLabel === 'function') {
+      const row = findRow21(id) || {};
+      dbEl.textContent = formatMixerDbLabel(row.db ?? 0, ratio, row.displayScale);
+    }
+  }
+
+  handlePremixVolumeInput = function(view, id, value, finalSend = false){
+    const rid = k21(id || state.premixSelectedTrackId);
+    if (!rid || !k21(state.premixSelectedSongId)) return;
+    const ratio = clamp21(value, 0.5);
+    applyVolume21(rid, ratio);
+    clearTimeout(window.__vshookPremixSend21 || 0);
+    const send = () => postPremix21('premix_item_set_volume', rid, { ratio, volumeRatio: ratio, scrollRatio: ratio, final: !!finalSend });
+    if (finalSend) send(); else window.__vshookPremixSend21 = setTimeout(send, 55);
+  };
+  handlePremixVolumeReset = function(event, view, id){
+    event?.preventDefault?.(); event?.stopPropagation?.(); event?.stopImmediatePropagation?.();
+    const rid = k21(id || state.premixSelectedTrackId);
+    const ratio = typeof getMixerZeroDbRatio === 'function' ? getMixerZeroDbRatio() : 0.76;
+    handlePremixVolumeInput('tracks', rid, ratio, true);
+    render?.();
+  };
+
+  // Projeto: ao tocar numa aba/projeto, já manda o REAPER trocar. OK continua mandando também.
+  function sendProjectTab21(indexValue) {
+    const idx = Number(indexValue);
+    if (!Number.isFinite(idx)) return false;
+    state.selectedProjectTabIndex = idx;
+    state.activeProjectTabIndex = idx;
+    const payload = { projectTabIndex: idx, index: idx, tabIndex: idx, projectIndex: idx, forceProjectTab: true, page: typeof getCurrentPcPageName === 'function' ? getCurrentPcPageName() : 'project' };
+    postCommand?.('set_project_tab', payload);
+    postCommand?.('select_project_tab', payload);
+    if (typeof fastPollBridge === 'function') fastPollBridge(20);
+    return true;
+  }
+  const oldSelectProjectTab21 = typeof selectProjectTabInModal === 'function' ? selectProjectTabInModal : null;
+  selectProjectTabInModal = function(indexValue){
+    if (oldSelectProjectTab21) { try { oldSelectProjectTab21(indexValue); } catch(e) {} }
+    sendProjectTab21(indexValue);
+    render?.();
+  };
+  confirmProjectTabsModal = function(){
+    const idx = Number(state.selectedProjectTabIndex);
+    state.showProjectTabsModal = false;
+    render?.();
+    if (Number.isFinite(idx)) sendProjectTab21(idx);
+    if (typeof fastPollBridge === 'function') fastPollBridge(20);
+  };
+
+  document.addEventListener('click', function(ev){
+    const back = ev.target?.closest?.('[data-action="premix-back"]');
+    if (back && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); backPremixSongList(ev); return; }
+    const song = ev.target?.closest?.('[data-action="premix-song"][data-premix-song-id]');
+    if (song && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); selectPremixSong(song.getAttribute('data-premix-song-id')); return; }
+    const row = ev.target?.closest?.('[data-action="open-premix-volume"],[data-premix-track-id].premixTrackOnlyRowFix21');
+    if (row && state.showPremixModal && !ev.target?.closest?.('button,input')) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); openPremixVolumeModal('tracks', row.getAttribute('data-premix-track-id')); return; }
+    const m = ev.target?.closest?.('[data-action="premix-mute"]');
+    if (m && state.showPremixModal) { handlePremixTrackToggle(ev, 'mute', m.getAttribute('data-premix-track-id'), 'tracks'); return; }
+    const fx = ev.target?.closest?.('[data-action="premix-phase"],[data-action="premix-fx"]');
+    if (fx && state.showPremixModal) { handlePremixTrackToggle(ev, 'fx', fx.getAttribute('data-premix-track-id'), 'tracks'); return; }
+    const reset = ev.target?.closest?.('[data-action="premix-volume-reset"]');
+    if (reset && state.showPremixModal) { handlePremixVolumeReset(ev, 'tracks', reset.getAttribute('data-premix-track-id')); return; }
+    const closeVol = ev.target?.closest?.('[data-action="close-premix-volume"]');
+    if (closeVol && state.showPremixModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); closePremixVolumeModal(true); return; }
+    const project = ev.target?.closest?.('[data-project-tab-index]');
+    if (project && state.showProjectTabsModal) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation?.(); selectProjectTabInModal(project.getAttribute('data-project-tab-index')); return; }
+  }, true);
+
+  document.addEventListener('input', function(ev){
+    const el = ev.target?.closest?.('[data-action="premix-volume-slider"]');
+    if (!el || !state.showPremixModal) return;
+    ev.stopPropagation(); ev.stopImmediatePropagation?.();
+    handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || state.premixSelectedTrackId || '', el.value, false);
+  }, true);
+  document.addEventListener('change', function(ev){
+    const el = ev.target?.closest?.('[data-action="premix-volume-slider"]');
+    if (!el || !state.showPremixModal) return;
+    ev.stopPropagation(); ev.stopImmediatePropagation?.();
+    handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || state.premixSelectedTrackId || '', el.value, true);
+  }, true);
+  document.addEventListener('pointerup', function(ev){
+    const el = ev.target?.closest?.('[data-action="premix-volume-slider"]');
+    if (!el || !state.showPremixModal) return;
+    handlePremixVolumeInput('tracks', el.getAttribute('data-premix-track-id') || state.premixSelectedTrackId || '', el.value, true);
+  }, true);
+
+  const style = document.createElement('style');
+  style.id = 'vshook-director-fix21-premix-style';
+  style.textContent = `
+    .premixTrackOnlyRowFix21{grid-template-columns:34px minmax(0,1fr) 54px 26px!important;display:grid!important;align-items:center!important;gap:8px!important;min-height:64px!important;touch-action:manipulation!important;}
+    .premixTrackOnlyRowFix21 .mixerRowMain{min-width:0!important;}
+    .premixRowChevronFix21{font-size:34px;font-weight:900;color:#93c5fd;line-height:1;text-align:center;}
+    .premixControlBoxFix21{padding:22px!important;justify-content:flex-start!important;gap:18px!important;}
+    .premixControlTitleFix21{min-height:58px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:26px;font-weight:1000;color:#f8fafc;border:1px solid rgba(148,163,184,.32);border-radius:14px;background:rgba(15,23,42,.92);padding:10px;overflow:hidden;}
+    .premixControlButtonsFix21{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:100%;}
+    .premixControlButtonsFix21 button{height:62px!important;border-radius:14px!important;font-size:26px!important;font-weight:1000!important;}
+    .premixControlDbFix21{text-align:center;font-size:30px;font-weight:1000;color:#facc15;margin-top:10px;}
+    .premixControlSliderFix21{width:100%!important;height:78px!important;min-height:78px!important;touch-action:pan-x!important;accent-color:#facc15!important;}
+    .premixResetFix21{height:52px!important;border-radius:14px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important;font-weight:1000!important;}
+  `;
+  document.head.appendChild(style);
+})();
+
+
+/* VS_HOOK_DIRECTOR_FIX22_REMOVE_PREMIX_APP
+   Premix foi removido do App Diretor. O Premix continua local no Lua.
+   O Diretor fica com repertórios/músicas/letras via extensão e Mixer direto via extensão. */
+(function(){
+  const msg = 'Premix removido do App Diretor. Use o Premix direto no VS Hook.';
+  function blockPremix(ev){
+    const el = ev && ev.target && ev.target.closest ? ev.target.closest('[data-action="open-premix"],[data-action="open-premix-global"],[data-action^="premix"],[data-premix-track-id],[data-premix-song-id]') : null;
+    if (!el) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    try { if (typeof closePremixModal === 'function') closePremixModal(true); } catch(e) {}
+    try { if (typeof showAppPopup === 'function') showAppPopup(msg, 'info', 1400); } catch(e) {}
+    return false;
+  }
+  window.VSHOOK_DIRECTOR_PREMIX_DISABLED = true;
+  try {
+    openPremixModal = function(){ try { if (typeof showAppPopup === 'function') showAppPopup(msg, 'info', 1400); } catch(e) {} return false; };
+    openPremixFromMenu = function(ev){ ev?.preventDefault?.(); ev?.stopPropagation?.(); try { if (typeof showAppPopup === 'function') showAppPopup(msg, 'info', 1400); } catch(e) {} return false; };
+    openPremixGlobalModal = openPremixFromMenu;
+    closePremixModal = function(){ if (state) { state.showPremixModal = false; state.showPremixVolumeModal = false; } return true; };
+    renderPremixModal = function(){ return ''; };
+    renderPremixVolumeModal = function(){ return ''; };
+    if (state) { state.showPremixModal = false; state.showPremixVolumeModal = false; state.premixSelectedSongId = null; }
+  } catch(e) {}
+  document.addEventListener('click', blockPremix, true);
+  document.addEventListener('pointerdown', blockPremix, true);
+  const style = document.createElement('style');
+  style.id = 'vshook-director-fix22-remove-premix';
+  style.textContent = '[data-action="open-premix"],[data-action="open-premix-global"],.settingsActionPremix,.settingsActionPremixGlobal{display:none!important}.premixOverlay,.premixVolumeOverlay{display:none!important}';
+  document.head.appendChild(style);
+})();
+
+
+// VS Hook FIX38 - Basic minimal/native app corrections
+;(function(){
+  try {
+    const style = document.createElement('style')
+    style.textContent = `
+      .settingsBottomButtons{grid-template-columns:1fr 1fr!important;gap:10px!important}
+      .settingsBottomButtons .settingsCloseButton{margin-left:0!important}
+      .controlsRowDirectorMain{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important}
+    `
+    document.head && document.head.appendChild(style)
+  } catch (error) {}
+})();

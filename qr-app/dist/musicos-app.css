@@ -8914,7 +8914,7 @@ padding:12px !important;
   .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
 }
 
-/* v1.9.0 - tema escuro mais claro e blocos sem seleção no app dos músicos */
+/* v1.8.2 - tema escuro mais claro e blocos sem seleção no app dos músicos */
 html, body, .app { background:#0b1118 !important; }
 .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
 .musicosListBox, .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }
@@ -9031,4 +9031,89 @@ html, body, .app { background:#0b1118 !important; }
 .app[data-theme="light"] .item.blockItem .marqueeTrack,
 .app[data-theme="light"] .item.blockItem .marqueeSegment{
   color:#0f172a!important;
+}
+
+/* VS Hook - Live executada via bridge */
+.item.liveExecuted{
+  background:rgba(127,29,29,.58)!important;
+  border-color:rgba(248,113,113,.46)!important;
+  box-shadow:inset 0 0 0 1px rgba(248,113,113,.22)!important;
+}
+.liveExecutedText,.liveExecutedTimeText{
+  color:#fecaca!important;
+  text-decoration:line-through!important;
+  text-decoration-thickness:2px!important;
+  text-decoration-color:rgba(254,202,202,.82)!important;
+}
+
+
+/* VS Hook 20260627 - bloco usa sempre a cor vinda do Lua/Bridge */
+.app .item.blockItem,
+.app .item.blockItem[data-song-id],
+.app .item.blockItem[data-region-id],
+.app .item.blockItem[data-item-id]{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 1px var(--block-outline-color, rgba(148,163,184,.72)),0 0 14px var(--block-outline-glow, rgba(148,163,184,.22)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
+}
+.app .item.blockItem::before,
+.app .item.blockItem[data-song-id]::before,
+.app .item.blockItem[data-region-id]::before,
+.app .item.blockItem[data-item-id]::before{
+  background:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 12px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem.selectedPink,
+.app .item.blockItem.selectedBlue,
+.app .item.blockItem.queuedYellow,
+.app .item.blockItem.playing,
+.app .item.blockItem[data-song-id].selectedPink,
+.app .item.blockItem[data-song-id].selectedBlue,
+.app .item.blockItem[data-song-id].queuedYellow,
+.app .item.blockItem[data-song-id].playing,
+.app .item.blockItem[data-region-id].selectedPink,
+.app .item.blockItem[data-region-id].selectedBlue,
+.app .item.blockItem[data-region-id].queuedYellow,
+.app .item.blockItem[data-region-id].playing,
+.app .item.blockItem[data-item-id].selectedPink,
+.app .item.blockItem[data-item-id].selectedBlue,
+.app .item.blockItem[data-item-id].queuedYellow,
+.app .item.blockItem[data-item-id].playing{
+  border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
+  box-shadow:0 0 0 2px var(--block-outline-color, rgba(148,163,184,.72)),0 0 18px var(--block-outline-glow, rgba(148,163,184,.22))!important;
+}
+.app .item.blockItem .rowLabelText,
+.app .item.blockItem .blockText,
+.app .item.blockItem .blockTimeText,
+.app .item.blockItem .marqueeStatic,
+.app .item.blockItem .marqueeTrack,
+.app .item.blockItem .marqueeSegment,
+.app .item.blockItem[data-song-id] .rowLabelText,
+.app .item.blockItem[data-song-id] .blockText,
+.app .item.blockItem[data-song-id] .blockTimeText,
+.app .item.blockItem[data-song-id] .marqueeStatic,
+.app .item.blockItem[data-song-id] .marqueeTrack,
+.app .item.blockItem[data-song-id] .marqueeSegment,
+.app .item.blockItem[data-region-id] .rowLabelText,
+.app .item.blockItem[data-region-id] .blockText,
+.app .item.blockItem[data-region-id] .blockTimeText,
+.app .item.blockItem[data-region-id] .marqueeStatic,
+.app .item.blockItem[data-region-id] .marqueeTrack,
+.app .item.blockItem[data-region-id] .marqueeSegment,
+.app .item.blockItem[data-item-id] .rowLabelText,
+.app .item.blockItem[data-item-id] .blockText,
+.app .item.blockItem[data-item-id] .blockTimeText,
+.app .item.blockItem[data-item-id] .marqueeStatic,
+.app .item.blockItem[data-item-id] .marqueeTrack,
+.app .item.blockItem[data-item-id] .marqueeSegment{
+  color:var(--block-outline-color, #facc15)!important;
+  text-shadow:none!important;
+  font-weight:900!important;
+}
+.app[data-theme="light"] .item.blockItem .rowLabelText,
+.app[data-theme="light"] .item.blockItem .blockText,
+.app[data-theme="light"] .item.blockItem .blockTimeText,
+.app[data-theme="light"] .item.blockItem .marqueeStatic,
+.app[data-theme="light"] .item.blockItem .marqueeTrack,
+.app[data-theme="light"] .item.blockItem .marqueeSegment{
+  color:var(--block-outline-color, #d97706)!important;
 }

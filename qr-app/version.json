@@ -1,13 +1,14 @@
 {
-  "version": "2.0.37",
-  "title": "VS Hook Mobile 2.0.37 - Stop imediato no primeiro toque",
-  "updatedAt": "2026-06-27T00:00:00.000Z",
-  "build": "2.0.37",
-  "notes": "Corrige o primeiro Stop após recarregar a página disparando Stop no pointerdown/touchstart e mantendo Play sem duplicação.",
-  "cacheBust": "2.0.37-stop-immediate-fix",
-  "label": "2.0.37 stop immediate fix",
-  "updateId": "2.0.37-stop-immediate-fix",
-  "generatedAt": "2026-06-27T00:00:00Z",
-  "cacheVersion": "2.0.37",
-  "note": "Stop inicial imediato no app Diretor."
+  "version": "2.0.67",
+  "title": "VS Hook Mobile 2.0.67 - Stop mantém seleção e App QR embutido",
+  "updatedAt": "2026-07-01T00:00:00.000Z",
+  "build": "2.0.67",
+  "notes": "Diretor mantém a seleção azul na música parada quando não existe fila; App QR passa a ser atualizado somente junto com o Hook Center.",
+  "cacheBust": "2.0.67-stop-selecao-app-embutido",
+  "label": "2.0.67 Stop seleção / App embutido",
+  "updateId": "2.0.67-stop-selecao-app-embutido",
+  "generatedAt": "2026-07-01T00:00:00Z",
+  "cacheVersion": "2.0.67",
+  "note": "Stop sem fila mantém seleção no Diretor; QR embutido no Hook Center.",
+  "fix": "FIX67"
 }

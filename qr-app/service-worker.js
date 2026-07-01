@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-store-2-0-33-marker-cancel-footer';
+const CACHE_NAME = 'vshook-2.0.67';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,8 +16,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './vshook-diretor-play-single-command-block-name-20260620',
-  './vshook-diretor-play-single-command-block-name-20260620',
+  './vshook-2.0.67',
+  './vshook-2.0.67',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

@@ -1,13 +1,13 @@
 {
-  "version": "2.0.36",
-  "title": "VS Hook Mobile 2.0.36 - Stop inicial e popup Play",
-  "updatedAt": "2026-06-27T00:00:00.000Z",
-  "build": "2.0.36",
-  "notes": "Corrige primeiro Stop após recarregar a página e faz o popup do nome da música sumir automaticamente após o Play.",
-  "cacheBust": "2.0.36-stop-popup-fix",
-  "label": "2.0.36 stop popup fix",
-  "updateId": "2.0.36-stop-popup-fix",
-  "generatedAt": "2026-06-27T00:00:00Z",
-  "cacheVersion": "2.0.36",
-  "note": "Stop inicial confiável e popup de Play temporário."
+  "version": "2.0.40",
+  "title": "VS Hook Mobile 2.0.40 - TP e fila nativos",
+  "updatedAt": "2026-07-01T00:00:00.000Z",
+  "build": "2.0.40",
+  "notes": "Teleprompt TP1/TP2 e fila de espera passam a sair da extensão; Músicos recebe fila criada pelo Diretor ou pelo Lua.",
+  "cacheBust": "2.0.40-tp-fila-nativos",
+  "label": "2.0.40 TP/fila nativos",
+  "updateId": "2.0.40-tp-fila-nativos",
+  "generatedAt": "2026-07-01T00:00:00Z",
+  "cacheVersion": "2.0.40",
+  "note": "TP1/TP2 e fila pela extensão."
 }

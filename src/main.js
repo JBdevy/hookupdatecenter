@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const Store = require('electron-store');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
+const http = require('http');
 const { createBridgeServer, getLanIp, getAllLanIps, ensureJsonFile } = require('./bridge-server');
 const { createQrSvg } = require('./qr-svg');
 
@@ -843,8 +844,8 @@ function normalizeUpdate(raw) {
     changed: source.changed || files.changed || {},
     files: {
       windows: {
-        proLua: pickFirst(windows.proLua, windows.proLuaUrl, windows.vsHookProLua, windows.vsHookProLuaUrl, windows.pro, windows.proUrl, source.proLua, source.proLuaUrl, source.vsHookProLua, source.vsHookProLuaUrl),
-        basicLua: pickFirst(windows.basicLua, windows.basicLuaUrl, windows.vsHookBasicLua, windows.vsHookBasicLuaUrl, windows.basic, windows.basicUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
+        betaLua: pickFirst(windows.betaLua, windows.betaLuaUrl, windows.vsHookBetaLua, windows.vsHookBetaLuaUrl, windows.beta, windows.betaUrl, windows.proLua, windows.proLuaUrl, windows.vsHookProLua, windows.vsHookProLuaUrl, windows.pro, windows.proUrl, source.betaLua, source.betaLuaUrl, source.vsHookBetaLua, source.vsHookBetaLuaUrl, source.proLua, source.proLuaUrl, source.vsHookProLua, source.vsHookProLuaUrl),
+        estableLua: pickFirst(windows.estableLua, windows.estableLuaUrl, windows.stableLua, windows.stableLuaUrl, windows.vsHookEstableLua, windows.vsHookEstableLuaUrl, windows.estable, windows.stable, windows.estableUrl, windows.stableUrl, windows.basicLua, windows.basicLuaUrl, windows.vsHookBasicLua, windows.vsHookBasicLuaUrl, windows.basic, windows.basicUrl, source.estableLua, source.estableLuaUrl, source.stableLua, source.stableLuaUrl, source.vsHookEstableLua, source.vsHookEstableLuaUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
         lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(windows.hookLyricsLua, windows.hookLyricsLuaUrl, windows.lyricsLua, windows.lyricsLuaUrl, windows.hookLyrics, windows.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDll: pickFirst(windows.vshookDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
@@ -852,8 +853,8 @@ function normalizeUpdate(raw) {
         logoPng: pickFirst(windows.logoPng, windows.logoPngUrl, windows.loadingLogo, windows.loadingLogoUrl, windows.logohookPng, windows.logohookPngUrl, windows.logo, windows.logoUrl, source.logoPng, source.logoPngUrl)
       },
       macos: {
-        proLua: pickFirst(macos.proLua, macos.proLuaUrl, macos.vsHookProLua, macos.vsHookProLuaUrl, macos.pro, macos.proUrl, source.proLua, source.proLuaUrl, source.vsHookProLua, source.vsHookProLuaUrl),
-        basicLua: pickFirst(macos.basicLua, macos.basicLuaUrl, macos.vsHookBasicLua, macos.vsHookBasicLuaUrl, macos.basic, macos.basicUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
+        betaLua: pickFirst(macos.betaLua, macos.betaLuaUrl, macos.vsHookBetaLua, macos.vsHookBetaLuaUrl, macos.beta, macos.betaUrl, macos.proLua, macos.proLuaUrl, macos.vsHookProLua, macos.vsHookProLuaUrl, macos.pro, macos.proUrl, source.betaLua, source.betaLuaUrl, source.vsHookBetaLua, source.vsHookBetaLuaUrl, source.proLua, source.proLuaUrl, source.vsHookProLua, source.vsHookProLuaUrl),
+        estableLua: pickFirst(macos.estableLua, macos.estableLuaUrl, macos.stableLua, macos.stableLuaUrl, macos.vsHookEstableLua, macos.vsHookEstableLuaUrl, macos.estable, macos.stable, macos.estableUrl, macos.stableUrl, macos.basicLua, macos.basicLuaUrl, macos.vsHookBasicLua, macos.vsHookBasicLuaUrl, macos.basic, macos.basicUrl, source.estableLua, source.estableLuaUrl, source.stableLua, source.stableLuaUrl, source.vsHookEstableLua, source.vsHookEstableLuaUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
         lua: pickFirst(macos.lua, macos.luaUrl, macos.vsHookLua, macos.vsHookLuaUrl, macos.script, macos.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(macos.hookLyricsLua, macos.hookLyricsLuaUrl, macos.lyricsLua, macos.lyricsLuaUrl, macos.hookLyrics, macos.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDylib: pickFirst(macos.vshookDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
@@ -1127,16 +1128,22 @@ function bridgeAppNeedsUpdate(update) {
 }
 
 async function checkBridgeAppUpdates(manual = false) {
-  const raw = await fetchJsonForUpdateSoft(BRIDGE_APP_API_URL, { cache: 'no-store' });
-  const fetchedUpdate = normalizeBridgeAppUpdate(raw);
-  const cachedUpdate = store.get('bridgeAppLatest') || null;
-  const update = fetchedUpdate || cachedUpdate || null;
-  const hasUpdate = bridgeAppNeedsUpdate(update);
-  if (fetchedUpdate || !store.get('bridgeAppLatest')) store.set('bridgeAppLatest', update);
-  store.set('bridgeAppUpdateAvailable', hasUpdate);
+  // App QR não é mais atualizado pelo backend.
+  // A versão servida pelo QR agora vem sempre embutida no build atual do Hook Center.
+  const installedPath = ensureExternalBridgeWebApp();
+  store.set('bridgeAppLatest', null);
+  store.set('bridgeAppUpdateAvailable', false);
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
   if (manual) showMainWindow();
-  return { ok: true, hasUpdate, update, offline: !fetchedUpdate, state: getAppState() };
+  return {
+    ok: true,
+    hasUpdate: false,
+    update: null,
+    skipped: true,
+    reason: 'bridge-app-bundled-in-hook-center',
+    installedPath,
+    state: getAppState()
+  };
 }
 
 function sha256File(filePath) {
@@ -1216,55 +1223,23 @@ function installExtractedBridgeApp(appRoot, update) {
 }
 
 async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
-  const checked = updateOverride ? { update: updateOverride, hasUpdate: bridgeAppNeedsUpdate(updateOverride) } : await checkBridgeAppUpdates(false);
-  const update = checked.update || store.get('bridgeAppLatest');
-  if (!update?.downloadUrl) return { ok: false, skipped: true, reason: 'bridge-app-unavailable' };
-  if (!bridgeAppNeedsUpdate(update)) return { ok: true, skipped: true, reason: 'already-current' };
-
-  const downloadDir = path.join(app.getPath('userData'), 'downloads', 'bridge-app', update.updateId || update.version || 'latest');
-  const zipPath = path.join(downloadDir, 'bridge-app.zip');
-  await downloadFile(update.downloadUrl, zipPath, (progress) => {
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
-  });
-
-  if (update.sha256) {
-    const actualHash = sha256File(zipPath);
-    if (actualHash !== update.sha256) throw new Error('Falha na validação do App QR: SHA256 diferente do backend.');
-  }
-
-  const extractDir = path.join(downloadDir, 'extract');
-  await extractZip(zipPath, extractDir);
-  const appRoot = findBridgeAppRoot(extractDir);
-  if (!appRoot) throw new Error('ZIP do App QR inválido: index.html não encontrado.');
-  const installedPath = installExtractedBridgeApp(appRoot, update);
-
-  store.set('bridgeAppInstalled', {
-    version: update.version || '',
-    updateId: update.updateId || update.version || '',
-    title: update.title || '',
-    notes: update.notes || '',
-    downloadUrl: update.downloadUrl || '',
-    sha256: update.sha256 || '',
-    path: installedPath,
-    installedAt: new Date().toISOString()
-  });
+  // Mantido apenas para compatibilidade com IPC/renderer antigo.
+  // Não baixa mais ZIP do App QR: o conteúdo é sincronizado do qr-app embutido no Hook Center.
+  const installedPath = ensureExternalBridgeWebApp();
+  store.set('bridgeAppLatest', null);
   store.set('bridgeAppUpdateAvailable', false);
-
-  await startBridgeServers();
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
-  return { ok: true, installedPath, update };
+  return {
+    ok: true,
+    skipped: true,
+    reason: 'bridge-app-bundled-in-hook-center',
+    installedPath,
+    update: null
+  };
 }
 
 async function checkAndInstallBridgeAppUpdate() {
-  const result = await checkBridgeAppUpdates(false);
-  if (!result.ok || !result.hasUpdate || !result.update) return result;
-  try {
-    return await downloadAndInstallBridgeAppUpdate(result.update);
-  } catch (error) {
-    console.error('[Hook Center] Falha ao atualizar App QR:', error?.message || error);
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-error', `App QR: ${error.message}`);
-    return { ok: false, error: error.message };
-  }
+  return checkBridgeAppUpdates(false);
 }
 
 async function checkLicenseStatus(manual = false) {
@@ -2032,8 +2007,98 @@ function getFileUrlSafe(filePath) {
   }
 }
 
-function getLyricsState(slot = 1) {
+function requestNativeBridgeStateForLyrics(timeoutMs = 220) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830),
+      path: '/state',
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; if (body.length > 1024 * 1024 * 2) req.destroy(); });
+      res.on('end', () => {
+        try {
+          const data = body ? JSON.parse(body) : null;
+          resolve(data && data.connected ? data : null);
+        } catch (_) {
+          resolve(null);
+        }
+      });
+    });
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve(null); });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
+function normalizeNativeTelepromptState(nativeState, slot) {
+  if (!nativeState || typeof nativeState !== 'object') return null;
   const id = normalizeLyricsSlot(slot);
+  const tp = id === 2 ? (nativeState.tp2 || null) : (nativeState.tp1 || null);
+  const prefix = id === 2 ? 'tp2' : 'tp1';
+  const telePrefix = id === 2 ? 'telepromptTp2' : 'telepromptTp1';
+  const raw = tp && typeof tp === 'object' ? tp : {};
+  const mediaType = normalizeLyricsMediaType(raw.telepromptType || raw.mediaType || raw.type || nativeState[`${prefix}MediaType`] || nativeState[`${telePrefix}MediaType`] || 'text');
+  const mediaPath = String(raw.mediaPath || raw.path || '');
+  const mediaUrl = getFileUrlSafe(raw.mediaUrl || mediaPath);
+  const textValue = (mediaType === 'image' || mediaType === 'video') ? '' : String(raw.text || raw.lyrics || raw.lyricsText || nativeState[`${prefix}LyricsText`] || nativeState[`${prefix}Lyrics`] || nativeState[`${telePrefix}Lyrics`] || nativeState[`${telePrefix}Text`] || '');
+  const songValue = String(raw.song || raw.songName || raw.currentSongName || raw.musicName || nativeState[`${prefix}SongName`] || nativeState[`${telePrefix}SongName`] || nativeState.currentSongName || nativeState.playingSongName || nativeState.songName || '');
+  const hasNativeTp = !!(tp || textValue || songValue || raw.trackFound === true || raw.itemFound === true || nativeState[`${prefix}UpdatedAt`]);
+  if (!hasNativeTp) return null;
+  const media = {
+    type: mediaType,
+    path: mediaPath,
+    url: mediaUrl,
+    ext: String(raw.mediaExt || ''),
+    currentTime: Math.max(0, Number(raw.mediaCurrentTime || raw.videoCurrentTime || 0)),
+    offset: Math.max(0, Number(raw.mediaOffset || 0)),
+    playrate: Number(raw.mediaPlayrate || raw.playrate || 1) || 1,
+    itemGuid: String(raw.itemGuid || ''),
+    itemStart: Number(raw.itemStart || 0),
+    itemEnd: Number(raw.itemEnd || 0),
+    itemLength: Number(raw.itemLength || 0)
+  };
+  return {
+    slot: id,
+    text: textValue,
+    song: songValue,
+    part: String(raw.part || raw.currentPart || ''),
+    telepromptType: mediaType,
+    mediaType,
+    mediaPath,
+    mediaUrl,
+    mediaCurrentTime: media.currentTime,
+    mediaOffset: media.offset,
+    mediaPlayrate: media.playrate,
+    media,
+    itemGuid: media.itemGuid,
+    itemStart: media.itemStart,
+    itemEnd: media.itemEnd,
+    itemLength: media.itemLength,
+    timerRunning: Boolean(nativeState.timerRunning),
+    timerStartedAt: Number(nativeState.timerStartedAt || nativeState.timerStartedAtMs || 0),
+    timerAccumulatedSec: Number(nativeState.timerAccumulatedSec || 0),
+    timerMode: String(nativeState.timerMode || nativeState.timerType || 'progressive'),
+    timerType: String(nativeState.timerMode || nativeState.timerType || 'progressive'),
+    timerTargetSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
+    timerCountdownStartSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
+    timerDisplaySec: Number(nativeState.timerDisplaySec || 0),
+    playing: Boolean(raw.playing || nativeState.playing || nativeState.isPlaying),
+    updatedAt: raw.updatedAt || nativeState[`${prefix}UpdatedAt`] || nativeState.updatedAt || null,
+    technicalNotice: getActiveTechnicalNotice(),
+    technicalNoticeSettings: getTechnicalNoticeSettings()
+  };
+}
+
+async function getLyricsState(slot = 1) {
+  const id = normalizeLyricsSlot(slot);
+  const nativeState = await requestNativeBridgeStateForLyrics();
+  const nativeTpState = normalizeNativeTelepromptState(nativeState, id);
+  if (nativeTpState) return nativeTpState;
+
   const data = readJsonFileSafe(getLyricsStatePath(id), {});
   const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
   const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
@@ -2089,7 +2154,6 @@ function getLyricsState(slot = 1) {
     technicalNoticeSettings: getTechnicalNoticeSettings()
   };
 }
-
 function createLyricsWindow(slot = 1) {
   const id = Number(slot) === 2 ? 2 : 1;
   const existing = lyricsWindows.get(id);
@@ -2272,13 +2336,13 @@ function entriesChangedSinceLastInstall(update, entries) {
 }
 
 function buildPayloadEntries(files) {
-  const proLuaUrl = ensureAbsoluteUrl(files.proLua || files.lua);
-  const basicLuaUrl = ensureAbsoluteUrl(files.basicLua);
+  const betaLuaUrl = ensureAbsoluteUrl(files.betaLua || files.proLua || files.lua);
+  const estableLuaUrl = ensureAbsoluteUrl(files.estableLua || files.stableLua || files.basicLua);
 
   if (process.platform === 'win32') {
     return [
-      { key: 'proLua', url: proLuaUrl, filename: 'VS Hook Pro.lua' },
-      { key: 'basicLua', url: basicLuaUrl, filename: 'VS Hook Basic.lua' },
+      { key: 'betaLua', url: betaLuaUrl, filename: 'VS Hook Beta.lua' },
+      { key: 'estableLua', url: estableLuaUrl, filename: 'VS Hook Estable.lua' },
       { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
       { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
     ].filter((entry) => !!entry.url);
@@ -2293,8 +2357,8 @@ function buildPayloadEntries(files) {
     );
 
     return [
-      { key: 'proLua', url: proLuaUrl, filename: 'VS Hook Pro.lua' },
-      { key: 'basicLua', url: basicLuaUrl, filename: 'VS Hook Basic.lua' },
+      { key: 'betaLua', url: betaLuaUrl, filename: 'VS Hook Beta.lua' },
+      { key: 'estableLua', url: estableLuaUrl, filename: 'VS Hook Estable.lua' },
       { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
       { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
     ].filter((entry) => !!entry.url);
@@ -2418,14 +2482,22 @@ function getWindowsReaperUserPluginsDir() {
   return path.join(appData, 'REAPER', 'UserPlugins');
 }
 
+function removeLegacyVsHookLuaFiles(dir) {
+  if (!dir) return;
+  for (const filename of ['VS Hook Pro.lua', 'VS Hook Basic.lua', 'VS Hook.lua', 'Hook Lyrics.lua', 'Hook lyrics.lua']) {
+    try { fs.rmSync(path.join(dir, filename), { force: true }); } catch (_) {}
+  }
+}
+
 function installWindowsPayload(files) {
   const publicVsHookDir = getWindowsPublicVsHookDir();
 
-  // Windows: instala os scripts Pro e Basic apenas na pasta pública.
-  copyFileEnsured(files.proLua || files.lua, path.join(publicVsHookDir, 'VS Hook Pro.lua'));
-  copyFileEnsured(files.basicLua, path.join(publicVsHookDir, 'VS Hook Basic.lua'));
-  try { fs.rmSync(path.join(publicVsHookDir, 'VS Hook.lua'), { force: true }); } catch (_) {}
-  try { fs.rmSync(path.join(publicVsHookDir, 'Hook Lyrics.lua'), { force: true }); } catch (_) {}
+  removeLegacyVsHookLuaFiles(publicVsHookDir);
+  removeLegacyVsHookLuaFiles(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'REAPER', 'Scripts', 'VS Hook APP'));
+  removeLegacyVsHookLuaFiles(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'REAPER', 'Scripts'));
+
+  copyFileEnsured(files.betaLua || files.proLua || files.lua, path.join(publicVsHookDir, 'VS Hook Beta.lua'));
+  copyFileEnsured(files.estableLua || files.stableLua || files.basicLua, path.join(publicVsHookDir, 'VS Hook Estable.lua'));
 
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
   copyFileEnsured(files.jsApiDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_js_ReaScriptAPI64.dll'));
@@ -2433,8 +2505,8 @@ function installWindowsPayload(files) {
 
 function installMacPayload(files) {
   const commands = [];
-  const proLuaSource = files.proLua || files.lua;
-  const basicLuaSource = files.basicLua;
+  const betaLuaSource = files.betaLua || files.proLua || files.lua;
+  const estableLuaSource = files.estableLua || files.stableLua || files.basicLua;
   const vshookSource = files.vshookDylib;
   const jsApiSource = files.jsApiDylib;
 
@@ -2444,12 +2516,12 @@ function installMacPayload(files) {
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
 
-  if (proLuaSource) commands.push(`cp -f ${shellQuote(proLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua"`);
-  if (basicLuaSource) commands.push(`cp -f ${shellQuote(basicLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua"`);
-  commands.push('rm -f "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
+  commands.push('rm -f "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua" "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" "$GLOBAL_SCRIPT_DIR/Hook lyrics.lua" 2>/dev/null || true');
+  if (betaLuaSource) commands.push(`cp -f ${shellQuote(betaLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Beta.lua"`);
+  if (estableLuaSource) commands.push(`cp -f ${shellQuote(estableLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Estable.lua"`);
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua" 2>/dev/null || true');
+  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook Beta.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Estable.lua" 2>/dev/null || true');
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -2460,13 +2532,13 @@ function installMacPayload(files) {
   commands.push('  USER_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
-  if (proLuaSource) commands.push(`  cp -f ${shellQuote(proLuaSource)} "$USER_SCRIPT_DIR/VS Hook Pro.lua"`);
-  if (basicLuaSource) commands.push(`  cp -f ${shellQuote(basicLuaSource)} "$USER_SCRIPT_DIR/VS Hook Basic.lua"`);
-  commands.push('  rm -f "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/Hook Lyrics.lua" 2>/dev/null || true');
+  commands.push('  rm -f "$USER_SCRIPT_DIR/VS Hook Pro.lua" "$USER_SCRIPT_DIR/VS Hook Basic.lua" "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/Hook Lyrics.lua" "$USER_SCRIPT_DIR/Hook lyrics.lua" 2>/dev/null || true');
+  if (betaLuaSource) commands.push(`  cp -f ${shellQuote(betaLuaSource)} "$USER_SCRIPT_DIR/VS Hook Beta.lua"`);
+  if (estableLuaSource) commands.push(`  cp -f ${shellQuote(estableLuaSource)} "$USER_SCRIPT_DIR/VS Hook Estable.lua"`);
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
   if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
   commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook Pro.lua" "$USER_SCRIPT_DIR/VS Hook Basic.lua" 2>/dev/null || true');
+  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook Beta.lua" "$USER_SCRIPT_DIR/VS Hook Estable.lua" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
 
@@ -2709,7 +2781,6 @@ app.whenReady().then(async () => {
 
   await checkForUpdates(false);
   await checkHookCenterUpdates(false);
-  await checkAndInstallBridgeAppUpdate();
   await checkLicenseStatus(false);
 
   bridgeWatchTimer = setInterval(() => {
@@ -2722,7 +2793,6 @@ app.whenReady().then(async () => {
     await ensureBridgeServersRunning().catch(() => {});
     await checkForUpdates(false);
     await checkHookCenterUpdates(false);
-    await checkAndInstallBridgeAppUpdate();
     await checkLicenseStatus(false);
   }, CHECK_INTERVAL_MS);
 

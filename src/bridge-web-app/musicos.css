@@ -8810,7 +8810,7 @@ html, body {
   .lyricsScreenEditing .lyricsEditorInput{font-size:20px!important;line-height:1.45!important;padding-left:2px!important;padding-right:2px!important;}
 }
 
-/* v1.9.0 - tema escuro mais claro e blocos sem seleção no app dos músicos */
+/* v1.8.2 - tema escuro mais claro e blocos sem seleção no app dos músicos */
 html, body, .app { background:#0b1118 !important; }
 .container { background:linear-gradient(180deg,#0e1722 0%,#0b1118 100%) !important; }
 .musicosListBox, .listBox { background:linear-gradient(90deg,rgba(255,255,255,0.025) 0%,rgba(255,255,255,0.04) 100%) !important; }

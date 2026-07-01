@@ -5,7 +5,7 @@ const path = require('path')
 const { URL } = require('url')
 const { createQrSvg } = require('./qr-svg')
 
-const PROJECT_STALE_MS = 8000
+const PROJECT_STALE_MS = 20000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
 const TECHNICAL_NOTICE_DURATION_MS = 20000
 const DIRECTOR_NOTICE_DURATION_MS = 15000
@@ -243,6 +243,121 @@ function ensureJsonFile(filePath, fallbackObject) {
 const lastGoodJsonByFile = new Map()
 const readJsonShortCacheByFile = new Map()
 const READ_JSON_CACHE_TTL_MS = 60
+
+const NATIVE_BRIDGE_PORT = Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830)
+const NATIVE_BRIDGE_CACHE_TTL_MS = 20 // VSHOOK_BRIDGE_SERVER_FIX18_NO_STALE_MIXER_PREMIX
+let nativeBridgeStateCache = null
+let nativeBridgeStateCacheAt = 0
+let nativeBridgeRefreshInFlight = false
+
+function requestNativeBridgeJson(pathname, options = {}) {
+  const method = options.method || 'GET'
+  const body = options.body ? String(options.body) : ''
+  const timeoutMs = Number(options.timeoutMs || 220)
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: NATIVE_BRIDGE_PORT,
+      path: pathname,
+      method,
+      headers: body ? {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      } : undefined,
+      timeout: timeoutMs,
+    }, (res) => {
+      let raw = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { raw += chunk })
+      res.on('end', () => {
+        try {
+          const parsed = raw ? JSON.parse(raw) : {}
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, data: parsed })
+        } catch (_) {
+          resolve({ ok: false, data: null })
+        }
+      })
+    })
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, data: null }) })
+    req.on('error', () => resolve({ ok: false, data: null }))
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+
+function parseEmbeddedLuaLiveState(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  if (typeof value !== 'string') return null
+  try { return JSON.parse(value) } catch (error) { return null }
+}
+
+function mergeLuaLiveStateIntoNativeState(state) {
+  if (!state || typeof state !== 'object') return state
+  const candidates = [
+    state.luaLiveState,
+    state.luaState,
+    state.luaLive,
+    state.lua,
+    parseEmbeddedLuaLiveState(state.luaLiveJson),
+    parseEmbeddedLuaLiveState(state.luaStateJson),
+    parseEmbeddedLuaLiveState(state.LUA_LIVE_JSON_V1),
+  ].filter((item) => item && typeof item === 'object')
+  if (!candidates.length) return state
+  const live = Object.assign({}, ...candidates)
+  return {
+    ...state,
+    ...live,
+    projects: state.projects || live.projects,
+    projectTabs: state.projectTabs || live.projectTabs,
+    regions: state.regions || live.regions,
+    playlists: state.playlists || live.playlists,
+    markers: state.markers || live.markers,
+    mixer: live.mixer || state.mixer,
+    mixerTracks: live.mixerTracks || state.mixerTracks,
+    mixerGroups: live.mixerGroups || state.mixerGroups,
+    mixerMaster: live.mixerMaster || state.mixerMaster,
+    premix: live.premix || state.premix,
+    premixTracks: live.premixTracks || state.premixTracks,
+    premixItems: live.premixItems || state.premixItems,
+    premixRows: live.premixRows || state.premixRows,
+    premixSelectedSongId: live.premixSelectedSongId || state.premixSelectedSongId,
+    luaLiveMerged: true,
+  }
+}
+
+async function refreshNativeBridgeState() {
+  if (nativeBridgeRefreshInFlight) return nativeBridgeStateCache
+  nativeBridgeRefreshInFlight = true
+  try {
+    const result = await requestNativeBridgeJson('/state', { timeoutMs: 650 })
+    if (result.ok && result.data && result.data.connected) {
+      nativeBridgeStateCache = mergeLuaLiveStateIntoNativeState(result.data)
+      nativeBridgeStateCacheAt = Date.now()
+      return nativeBridgeStateCache
+    }
+  } finally {
+    nativeBridgeRefreshInFlight = false
+  }
+  return null
+}
+
+function getFreshNativeBridgeState() {
+  if (nativeBridgeStateCache && (Date.now() - nativeBridgeStateCacheAt) <= NATIVE_BRIDGE_CACHE_TTL_MS) {
+    return nativeBridgeStateCache
+  }
+  return null
+}
+
+async function postNativeBridgeCommand(command) {
+  const result = await requestNativeBridgeJson('/command', {
+    method: 'POST',
+    body: JSON.stringify(command || {}),
+    timeoutMs: 850,
+  })
+  return !!(result.ok && result.data && result.data.ok)
+}
 
 function readJson(filePath, fallback) {
   const now = Date.now()
@@ -780,6 +895,57 @@ function applyLyricsToState(state, lyricsFile) {
   return next
 }
 
+
+function readTelepromptTp1State(sharedDir) {
+  const candidates = [
+    path.join(sharedDir, 'vshook_lyrics_state_1.json'),
+    path.join(sharedDir, 'vshook_lyrics_state.json'),
+  ]
+  for (const file of candidates) {
+    const data = readJson(file, null)
+    if (data && typeof data === 'object') {
+      const rawText = String(data.lyricsText ?? data.lyrics ?? data.text ?? '').trim()
+      const song = String(data.songName ?? data.song ?? data.currentSongName ?? data.musicName ?? '').trim()
+      const mediaType = String(data.telepromptType || data.mediaType || data.type || 'text').trim().toLowerCase()
+      // App dos Músicos recebe somente o texto do TP1/empty item. Imagem e vídeo não são repassados.
+      const isTextTp1 = !mediaType || mediaType === 'text' || mediaType === 'lyrics' || mediaType === 'empty' || mediaType === 'empty_item' || mediaType === 'emptyitem' || mediaType === 'text/plain'
+      const text = isTextTp1 ? rawText : ''
+      return {
+        tp1: data,
+        tp1LyricsText: text,
+        tp1Lyrics: text,
+        telepromptTp1Lyrics: text,
+        tp1SongName: song,
+        telepromptTp1SongName: song,
+        tp1MediaType: isTextTp1 ? mediaType : 'media',
+        telepromptTp1MediaType: isTextTp1 ? mediaType : 'media',
+        tp1UpdatedAt: data.updatedAt || null,
+      }
+    }
+  }
+  return {
+    tp1: null,
+    tp1LyricsText: '',
+    tp1Lyrics: '',
+    telepromptTp1Lyrics: '',
+    tp1SongName: '',
+    telepromptTp1SongName: '',
+    tp1MediaType: 'text',
+    telepromptTp1MediaType: 'text',
+    tp1UpdatedAt: null,
+  }
+}
+
+function mergeTelepromptTp1State(state, sharedDir) {
+  const base = state || {}
+  const nativeHasTp1 = base.tp1 || base.tp1LyricsText || base.tp1Lyrics || base.telepromptTp1Lyrics || base.telepromptTp1Text
+  if (nativeHasTp1) return base
+  return {
+    ...base,
+    ...readTelepromptTp1State(sharedDir),
+  }
+}
+
 function normalizeRoutes(extraRoutes) {
   const out = new Map()
   for (const route of extraRoutes || []) {
@@ -861,6 +1027,40 @@ function createBridgeServer(options) {
     queuedSongUntil: 0,
   }
 
+  function readEffectiveState() {
+    // Native Bridge EXT ONLY: a Hook Center nao monta nem le repertorio do JSON antigo.
+    // A extensao reaper_vshook e a unica fonte de repertorios/blocos/musicas/markers/playback.
+    const nativeState = getFreshNativeBridgeState()
+    if (nativeState && nativeState.connected) {
+      return mergeTelepromptTp1State(nativeState, sharedDir)
+    }
+
+    // Não some com repertório/app enquanto uma leitura do /state estoura timeout.
+    // Mantém o último snapshot bom por alguns minutos e marca como stale,
+    // evitando lista piscando/sumindo no Diretor e Músicos.
+    if (nativeBridgeStateCache && (Date.now() - nativeBridgeStateCacheAt) <= MAX_LAST_GOOD_STATE_AGE_MS) {
+      return mergeTelepromptTp1State({
+        ...nativeBridgeStateCache,
+        connected: true,
+        nativeBridge: true,
+        stale: true,
+        staleReason: 'using_last_good_native_state',
+      }, sharedDir)
+    }
+
+    return mergeTelepromptTp1State({
+      ...fallbackState,
+      connected: false,
+      nativeBridge: false,
+      nativeBridgeRequired: true,
+      bridgeMode: 'native_unavailable',
+      updatedAt: new Date().toISOString(),
+      regions: [],
+      playlists: [],
+      markers: [],
+    }, sharedDir)
+  }
+
   function updateLiveCommandOverlay(type, payload = {}) {
     const now = Date.now()
     const commandType = String(type || '')
@@ -901,7 +1101,7 @@ function createBridgeServer(options) {
 
 
   function buildDiscoveryPayload() {
-    const state = applyLiveCommandOverlay(readJson(stateFile, fallbackState))
+    const state = applyLiveCommandOverlay(readEffectiveState())
     const ip = getLanIp()
     const projectPayload = buildProjectPayload(state)
 
@@ -929,19 +1129,9 @@ function createBridgeServer(options) {
     }
   }
 
-  ensureJsonFile(stateFile, fallbackState)
-  ensureJsonFile(commandsFile, {
-    bridgeVersion: 1,
-    updatedAt: null,
-    commands: [],
-  })
-  // Comandos sao efemeros. Ao iniciar o Hook Center, limpa fila antiga para evitar
-  // primeiro Play do app executar um comando pendurado de sessao anterior.
-  writeJson(commandsFile, {
-    bridgeVersion: 1,
-    updatedAt: null,
-    commands: [],
-  })
+  // Native Bridge EXT ONLY: nao cria/limpa vshook_state.json nem vshook_commands.json.
+  // Repertorio e comandos passam pela extensao reaper_vshook.
+  // Mantemos apenas o arquivo de letras/TP1, que continua sendo fonte do teleprompt.
   ensureJsonFile(lyricsFile, {
     bridgeVersion: 1,
     updatedAt: null,
@@ -999,19 +1189,23 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
-      const rawState = mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState))
-      const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
-      sendJson(res, 200, buildPublicStatePayload(state))
+      refreshNativeBridgeState().catch(() => {}).finally(() => {
+        const rawState = mergeHookCenterRecadosAuth(readEffectiveState())
+        const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
+        sendJson(res, 200, buildPublicStatePayload(state))
+      })
       return
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/projects' || parsedUrl.pathname === '/projects.json')) {
-      const state = applyLiveCommandOverlay(mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState)))
-      sendJson(res, 200, {
+      refreshNativeBridgeState().catch(() => {}).finally(() => {
+        const state = applyLiveCommandOverlay(mergeHookCenterRecadosAuth(readEffectiveState()))
+        sendJson(res, 200, {
         ok: true,
         appName,
         ...buildPublicProjectPayload(state),
         updatedAt: state.updatedAt || null,
+        })
       })
       return
     }
@@ -1041,7 +1235,7 @@ function createBridgeServer(options) {
           const action = String(parsed.action || parsed.command || '').toLowerCase()
           const source = normalizeNoticeSource(parsed.source || 'recados')
           const priority = getTechnicalNoticePriority(source)
-          const state = mergeHookCenterRecadosAuth(readJson(stateFile, fallbackState))
+          const state = mergeHookCenterRecadosAuth(readEffectiveState())
 
           if (action === 'cancel' || action === 'clear' || action === 'remove') {
             if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
@@ -1176,7 +1370,7 @@ function createBridgeServer(options) {
           req.pause()
         }
       })
-      req.on('end', () => {
+      req.on('end', async () => {
         if (tooLarge) {
           sendJson(res, 413, { ok: false, error: 'Comando muito grande' })
           return
@@ -1190,8 +1384,31 @@ function createBridgeServer(options) {
             lyricsResult = saveLyricsPayload(lyricsFile, payload)
           }
           updateLiveCommandOverlay(type, payload)
-          const command = enqueueCommand(commandsFile, type, payload)
-          sendJson(res, 200, { ok: true, command, lyricsSaved: lyricsResult ? !!lyricsResult.ok : undefined, lyrics: lyricsResult || undefined })
+          // FIX21: manda comando achatado e com payload. Algumas versões da extensão/Lua leem
+          // campos no topo; outras leem dentro de payload. Enviar os dois evita comando sem target.
+          const nativeCommandPayload = {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            type,
+            payload,
+            ...(payload && typeof payload === 'object' ? payload : {}),
+            createdAt: new Date().toISOString(),
+            fromHookCenter: true,
+          }
+          const nativeOk = await postNativeBridgeCommand(nativeCommandPayload)
+          nativeBridgeStateCacheAt = 0
+          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 40)
+          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 130)
+          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 280)
+          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 650)
+          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 1200)
+          // Native Bridge EXT ONLY: comandos nao caem mais no vshook_commands.json.
+          // Se a extensao nao estiver respondendo, o app recebe erro em vez de usar ponte antiga por arquivo.
+          if (!nativeOk) {
+            sendJson(res, 503, { ok: false, nativeBridge: false, nativeBridgeRequired: true, error: 'Native Bridge indisponivel' })
+            return
+          }
+          const command = { id: `native-${Date.now()}`, type, payload, nativeBridge: true, createdAt: new Date().toISOString() }
+          sendJson(res, 200, { ok: true, command, nativeBridge: true, lyricsSaved: lyricsResult ? !!lyricsResult.ok : undefined, lyrics: lyricsResult || undefined })
         } catch (error) {
           sendJson(res, 400, { ok: false, error: 'JSON inválido' })
         }
@@ -1227,6 +1444,10 @@ function createBridgeServer(options) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
     res.end('404')
   })
+
+  const nativePollTimer = setInterval(() => { refreshNativeBridgeState().catch(() => {}) }, 60)
+  if (nativePollTimer.unref) nativePollTimer.unref()
+  refreshNativeBridgeState().catch(() => {})
 
   // Evita queda por inatividade em conexões longas do APK.
   server.keepAliveTimeout = 120000
@@ -1269,6 +1490,7 @@ function createBridgeServer(options) {
           resolve()
           return
         }
+        clearInterval(nativePollTimer)
         server.close(() => resolve())
       })
     },
