@@ -102,7 +102,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
     </div>
-    <div class="vshook-app-version">Versão 2.0 app</div>
+    <div class="vshook-app-version">Versão 2.7 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {

@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   removeLicenseDevice: (payload) => ipcRenderer.invoke('remove-license-device', payload),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   openSupport: () => ipcRenderer.invoke('open-support'),
+  selectHookRenameFolder: () => ipcRenderer.invoke('hook-rename-select-folder'),
+  selectManyHookRenameFolders: () => ipcRenderer.invoke('hook-rename-select-many-folders'),
+  previewHookRename: (payload) => ipcRenderer.invoke('hook-rename-preview', payload),
+  runHookRename: (payload) => ipcRenderer.invoke('hook-rename-run', payload),
   getBridgeState: () => ipcRenderer.invoke('get-bridge-state'),
   restartBridge: () => ipcRenderer.invoke('restart-bridge'),
   getLyricsSettings: (slot) => ipcRenderer.invoke('get-lyrics-settings', slot),
@@ -38,6 +42,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   onBridgeStatus: (callback) => ipcRenderer.on('bridge-status', (_event, data) => callback(data)),
   onUpdateError: (callback) => ipcRenderer.on('update-error', (_event, message) => callback(message)),
   onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (_event, progress) => callback(progress)),
+  onHookRenameProgress: (callback) => ipcRenderer.on('hook-rename-progress', (_event, progress) => callback(progress)),
   onLyricsSettingsUpdated: (callback) => ipcRenderer.on('lyrics-settings-updated', (_event, data) => callback(data)),
   onTechnicalNoticeSettingsUpdated: (callback) => ipcRenderer.on('technical-notice-settings-updated', (_event, data) => callback(data)),
   onLyricsWindowsStateUpdated: (callback) => ipcRenderer.on('lyrics-windows-state-updated', (_event, data) => callback(data))

@@ -4,6 +4,8 @@ const $$ = (selector) => document.querySelectorAll(selector);
 let state = null;
 let currentYoutubeWatchUrl = "";
 let pendingConfirmResolve = null;
+let hookRenameFolder = null;
+let hookRenameLastPreview = null;
 
 function cleanErrorMessage(error) {
   let message = String(error?.message || error || 'Erro inesperado.');
@@ -238,6 +240,291 @@ async function installVsHookDownloadedUpdate() {
 }
 
 
+
+function getHookRenameFolderPaths() {
+  if (Array.isArray(hookRenameFolder?.folderPaths) && hookRenameFolder.folderPaths.length) {
+    return hookRenameFolder.folderPaths;
+  }
+  return hookRenameFolder?.folderPath ? [hookRenameFolder.folderPath] : [];
+}
+
+function getHookRenamePayload() {
+  const useFolderSuffix = $('#hookRenameUseFolderSuffixCheck')?.checked === true;
+  const bulkMode = $('#hookRenameBulkModeCheck')?.checked === true;
+  const manualSuffix = $('#hookRenameSuffixInput')?.value || '';
+  const suggestedSuffix = hookRenameFolder?.suggestedSuffix || $('#hookRenameSuggestedSuffixInput')?.value || '';
+  const folderPaths = getHookRenameFolderPaths();
+  return {
+    folderPath: folderPaths[0] || '',
+    folderPaths,
+    suffix: useFolderSuffix ? suggestedSuffix : manualSuffix,
+    useFolderSuffix,
+    bulkMode
+  };
+}
+
+function formatHookRenameSelectedPaths(result) {
+  const paths = Array.isArray(result?.folderPaths) ? result.folderPaths : (result?.folderPath ? [result.folderPath] : []);
+  if (!paths.length) return 'Escolha uma pasta para começar.';
+  if (!result?.multiple) return paths[0] || '';
+
+  const names = Array.isArray(result.folderNames) && result.folderNames.length
+    ? result.folderNames
+    : paths.map((item) => item.split(/[\\/]/).filter(Boolean).pop() || item);
+  const visible = names.slice(0, 6).join(', ');
+  const hidden = Math.max(0, names.length - 6);
+  return hidden ? `${visible} + ${hidden} pasta(s)` : visible;
+}
+
+function setHookRenameProgress({ percent = 0, current = 0, total = 0, renamed = 0, failed = 0, phase = '' } = {}) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  const bar = $('#hookRenameProgressBar');
+  const text = $('#hookRenameProgressText');
+  const count = $('#hookRenameProgressCount');
+  if (bar) bar.style.width = `${safePercent}%`;
+  if (text) text.textContent = `${safePercent}%`;
+  if (count) {
+    if (phase === 'done') count.textContent = `${renamed} renomeados${failed ? `, ${failed} falharam` : ''}`;
+    else count.textContent = total ? `${current}/${total} arquivos` : 'Preparando...';
+  }
+}
+
+function resetHookRenameProgress() {
+  $('#hookRenameProgressArea')?.classList.add('hidden');
+  setHookRenameProgress({ percent: 0, current: 0, total: 0, renamed: 0, failed: 0 });
+}
+
+function updateHookRenameControls() {
+  const folderPaths = getHookRenameFolderPaths();
+  const hasFolder = folderPaths.length > 0;
+  const isManyFolders = hookRenameFolder?.multiple === true;
+  const useFolderSuffix = $('#hookRenameUseFolderSuffixCheck')?.checked === true;
+  const bulkCheck = $('#hookRenameBulkModeCheck');
+  const suffixInput = $('#hookRenameSuffixInput');
+  const suggestedInput = $('#hookRenameSuggestedSuffixInput');
+
+  if (suffixInput) suffixInput.disabled = useFolderSuffix;
+  if (suggestedInput) suggestedInput.value = hookRenameFolder?.suggestedSuffix || '';
+
+  if (bulkCheck) {
+    bulkCheck.disabled = !useFolderSuffix || !isManyFolders;
+    if (!useFolderSuffix || !isManyFolders) bulkCheck.checked = false;
+  }
+
+  const payload = getHookRenamePayload();
+  const hasSuffix = !!String(payload.suffix || '').trim();
+  const runButton = $('#hookRenameRunButton');
+  if (runButton) runButton.disabled = !hasFolder || !hasSuffix || !hookRenameLastPreview?.totalOperations;
+
+  const help = $('#hookRenameModeHelp');
+  if (help) {
+    if (payload.bulkMode) {
+      help.textContent = 'Modo em massa ativo: processa as pastas selecionadas uma por uma, sem entrar em subpastas, renomeando somente MP3, WAV e AIFF com o nome da própria pasta como sufixo.';
+    } else if (isManyFolders) {
+      help.textContent = 'Você selecionou várias pastas. Marque “Usar nome da pasta como sufixo” para liberar o modo Renomear em massa.';
+    } else {
+      help.textContent = 'Modo normal: renomeia somente os arquivos da pasta selecionada. Subpastas não são alteradas.';
+    }
+  }
+}
+
+function renderHookRenamePreview(preview = null) {
+  hookRenameLastPreview = preview;
+  const list = $('#hookRenamePreviewList');
+  const summary = $('#hookRenameSummary');
+  const badge = $('#hookRenamePreviewBadge');
+  if (!list || !summary || !badge) return;
+
+  const total = Number(preview?.totalOperations || 0);
+  badge.textContent = String(total);
+
+  if (!preview) {
+    summary.textContent = 'Nenhuma prévia gerada ainda.';
+    list.innerHTML = '<p class="muted">Escolha uma pasta e clique em gerar prévia.</p>';
+    updateHookRenameControls();
+    return;
+  }
+
+  const skipped = Number(preview.totalSkipped || 0);
+  const scanned = Number(preview.totalScanned || 0);
+  const folders = Number(preview.totalFolders || 0);
+  const audioText = preview.audioOnly ? ' Somente MP3, WAV e AIFF.' : '';
+  const folderText = folders > 1 ? ` ${folders} pasta(s).` : '';
+  summary.textContent = `${total} arquivo(s) prontos para renomear.${folderText} ${scanned} arquivo(s) analisados. ${skipped} ignorado(s).${audioText}`;
+
+  if (!total) {
+    const reason = preview.bulkMode
+      ? 'Nenhum arquivo de áudio MP3, WAV ou AIFF foi encontrado diretamente nas pastas selecionadas.'
+      : 'Nenhum arquivo foi encontrado para renomear nesta pasta, ou todos já tinham o sufixo/teriam conflito.';
+    list.innerHTML = `<p class="muted">${reason}</p>`;
+    updateHookRenameControls();
+    return;
+  }
+
+  const hiddenCount = total - (preview.operations?.length || 0);
+  list.innerHTML = `
+    ${(preview.operations || []).map((item) => `
+      <div class="hook-rename-preview-item">
+        <div>
+          <span>${escapeHtml(item.fromName || '')}</span>
+          <strong>${escapeHtml(item.toName || '')}</strong>
+        </div>
+        <small>${escapeHtml(item.relativeFolder || '.')}</small>
+      </div>
+    `).join('')}
+    ${hiddenCount > 0 ? `<p class="muted hook-rename-preview-limit">Mais ${hiddenCount} arquivo(s) não aparecem na lista para manter a tela leve.</p>` : ''}
+  `;
+  updateHookRenameControls();
+}
+
+function clearHookRename() {
+  hookRenameFolder = null;
+  hookRenameLastPreview = null;
+  $('#hookRenameFolderLabel').textContent = 'Nenhuma pasta selecionada';
+  $('#hookRenameFolderPath').textContent = 'Escolha uma pasta para começar.';
+  $('#hookRenameSuffixInput').value = '';
+  $('#hookRenameSuggestedSuffixInput').value = '';
+  $('#hookRenameUseFolderSuffixCheck').checked = false;
+  $('#hookRenameBulkModeCheck').checked = false;
+  resetHookRenameProgress();
+  renderHookRenamePreview(null);
+}
+
+function applyHookRenameSelection(result) {
+  hookRenameFolder = result;
+  hookRenameLastPreview = null;
+  $('#hookRenameFolderLabel').textContent = result.folderName || 'Pasta selecionada';
+  $('#hookRenameFolderPath').textContent = formatHookRenameSelectedPaths(result);
+  $('#hookRenameSuggestedSuffixInput').value = result.suggestedSuffix || '';
+  $('#hookRenameBulkModeCheck').checked = false;
+  resetHookRenameProgress();
+  renderHookRenamePreview(null);
+  updateHookRenameControls();
+}
+
+async function selectHookRenameFolder() {
+  const result = await window.hookUpdateCenter.selectHookRenameFolder();
+  if (!result?.ok) return;
+  applyHookRenameSelection(result);
+}
+
+async function selectManyHookRenameFolders() {
+  const result = await window.hookUpdateCenter.selectManyHookRenameFolders();
+  if (!result?.ok) return;
+  applyHookRenameSelection(result);
+}
+
+async function generateHookRenamePreview() {
+  const folderPaths = getHookRenameFolderPaths();
+  if (!folderPaths.length) {
+    showModal({ title: 'Hook Rename', message: 'Escolha uma pasta primeiro.', type: 'error' });
+    return;
+  }
+  const payload = getHookRenamePayload();
+  if (hookRenameFolder?.multiple && !payload.bulkMode) {
+    showModal({ title: 'Hook Rename', message: 'Para várias pastas, marque “Usar nome da pasta como sufixo” e ative “Renomear em massa”.', type: 'error' });
+    return;
+  }
+  if (payload.bulkMode && !payload.useFolderSuffix) {
+    showModal({ title: 'Hook Rename', message: 'O modo em massa só funciona usando o nome da pasta como sufixo.', type: 'error' });
+    return;
+  }
+  if (!String(payload.suffix || '').trim()) {
+    showModal({ title: 'Hook Rename', message: 'Digite um sufixo ou marque para usar o nome da pasta.', type: 'error' });
+    return;
+  }
+
+  const button = $('#hookRenamePreviewButton');
+  try {
+    button.disabled = true;
+    button.textContent = 'Gerando...';
+    const preview = await window.hookUpdateCenter.previewHookRename(payload);
+    renderHookRenamePreview(preview);
+  } catch (error) {
+    hookRenameLastPreview = null;
+    updateHookRenameControls();
+    showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível gerar a prévia.'), type: 'error' });
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Gerar prévia';
+  }
+}
+
+async function runHookRename() {
+  if (!hookRenameLastPreview?.totalOperations) {
+    await generateHookRenamePreview();
+    if (!hookRenameLastPreview?.totalOperations) return;
+  }
+
+  const payload = getHookRenamePayload();
+  const confirmed = await confirmModal({
+    title: 'Renomear arquivos',
+    message: payload.bulkMode
+      ? `O Hook Rename vai renomear ${hookRenameLastPreview.totalOperations} arquivo(s) de áudio em ${hookRenameLastPreview.totalFolders || payload.folderPaths.length} pasta(s), sem entrar em subpastas, usando o nome de cada pasta como sufixo.`
+      : `O Hook Rename vai renomear ${hookRenameLastPreview.totalOperations} arquivo(s) na pasta selecionada.`,
+    type: 'info',
+    okText: 'Renomear',
+    cancelText: 'Cancelar'
+  });
+
+  if (!confirmed) return;
+
+  const runButton = $('#hookRenameRunButton');
+  const previewButton = $('#hookRenamePreviewButton');
+  try {
+    $('#hookRenameProgressArea')?.classList.remove('hidden');
+    setHookRenameProgress({ percent: 0, current: 0, total: hookRenameLastPreview.totalOperations });
+    runButton.disabled = true;
+    previewButton.disabled = true;
+    const result = await window.hookUpdateCenter.runHookRename(payload);
+    const message = `${result.renamed || 0} arquivo(s) renomeado(s). ${result.totalSkipped || 0} ignorado(s).${result.failed ? ` ${result.failed} falharam.` : ''}`;
+    showModal({ title: result.failed ? 'Hook Rename concluído com avisos' : 'Hook Rename concluído', message, type: result.failed ? 'info' : 'success' });
+    hookRenameLastPreview = null;
+    await generateHookRenamePreview();
+  } catch (error) {
+    showModal({ title: 'Erro ao renomear', message: friendlyError(error, 'Não foi possível renomear os arquivos.'), type: 'error' });
+  } finally {
+    runButton.disabled = false;
+    previewButton.disabled = false;
+    updateHookRenameControls();
+  }
+}
+
+function setupHookRename() {
+  $('#hookRenameSelectFolderButton')?.addEventListener('click', async () => {
+    try { await selectHookRenameFolder(); } catch (error) { showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' }); }
+  });
+  $('#hookRenameSelectManyFoldersButton')?.addEventListener('click', async () => {
+    try { await selectManyHookRenameFolders(); } catch (error) { showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível escolher as pastas.'), type: 'error' }); }
+  });
+  $('#hookRenamePreviewButton')?.addEventListener('click', generateHookRenamePreview);
+  $('#hookRenameRunButton')?.addEventListener('click', runHookRename);
+  $('#hookRenameClearButton')?.addEventListener('click', clearHookRename);
+
+  $('#hookRenameUseFolderSuffixCheck')?.addEventListener('change', () => {
+    hookRenameLastPreview = null;
+    renderHookRenamePreview(null);
+    updateHookRenameControls();
+  });
+  $('#hookRenameBulkModeCheck')?.addEventListener('change', () => {
+    hookRenameLastPreview = null;
+    renderHookRenamePreview(null);
+    updateHookRenameControls();
+  });
+  $('#hookRenameSuffixInput')?.addEventListener('input', () => {
+    hookRenameLastPreview = null;
+    renderHookRenamePreview(null);
+    updateHookRenameControls();
+  });
+
+  window.hookUpdateCenter.onHookRenameProgress?.((progress) => {
+    $('#hookRenameProgressArea')?.classList.remove('hidden');
+    setHookRenameProgress(progress || {});
+  });
+
+  updateHookRenameControls();
+}
+
 function setView(viewName) {
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
   $$('.view').forEach((view) => view.classList.remove('active'));
@@ -245,6 +532,7 @@ function setView(viewName) {
   document.body.classList.toggle('bridge-mode', viewName === 'bridge');
   document.body.classList.toggle('previous-mode', viewName === 'previous');
   document.body.classList.toggle('lyrics-mode', viewName === 'lyrics');
+  document.body.classList.toggle('tools-mode', viewName === 'tools');
   updateDownloadCompactMode();
 }
 
@@ -1119,6 +1407,7 @@ async function init() {
         if (button.dataset.view === 'previous') loadPreviousUpdates();
         if (button.dataset.view === 'bridge') refreshBridgeState();
         if (button.dataset.view === 'lyrics') refreshLyricsSettings();
+        if (button.dataset.view === 'tools') updateHookRenameControls();
       });
     }
   });
@@ -1135,6 +1424,8 @@ async function init() {
       });
     }
   };
+
+  setupHookRename();
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
   $('#restartBridgeButton')?.addEventListener('click', async () => {

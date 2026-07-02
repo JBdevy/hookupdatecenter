@@ -1,13 +1,14 @@
 {
-  "version": "2.0.40",
-  "title": "VS Hook Mobile 2.0.40 - TP e fila nativos",
-  "updatedAt": "2026-07-01T00:00:00.000Z",
-  "build": "2.0.40",
-  "notes": "Teleprompt TP1/TP2 e fila de espera passam a sair da extensão; Músicos recebe fila criada pelo Diretor ou pelo Lua.",
-  "cacheBust": "2.0.40-tp-fila-nativos",
-  "label": "2.0.40 TP/fila nativos",
-  "updateId": "2.0.40-tp-fila-nativos",
-  "generatedAt": "2026-07-01T00:00:00Z",
-  "cacheVersion": "2.0.40",
-  "note": "TP1/TP2 e fila pela extensão."
+  "version": "2.7.0",
+  "title": "VS Hook Mobile 2.7.0 - Seleção azul somente parado",
+  "updatedAt": "2026-07-02T00:00:00.000Z",
+  "build": "2.7.0",
+  "notes": "App do Diretor limpa a seleção azul enquanto existe música tocando; versão visual do app atualizada para 2.7.",
+  "cacheBust": "2.7.0-fix90-selecao-azul-tocando",
+  "label": "2.7 Seleção azul somente parado",
+  "updateId": "2.7.0-fix90-selecao-azul-tocando",
+  "generatedAt": "2026-07-02T00:00:00Z",
+  "cacheVersion": "2.7.0",
+  "note": "Seleção azul aparece somente quando parado.",
+  "fix": "FIX91"
 }

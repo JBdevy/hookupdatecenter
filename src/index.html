@@ -24,6 +24,7 @@
         <button class="nav-item" data-view="devices">Dispositivos</button>
         <button class="nav-item" data-view="bridge">Conexão via app</button>
         <button class="nav-item" data-view="lyrics">Teleprompt</button>
+        <button class="nav-item" data-view="tools">Ferramentas</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
@@ -632,6 +633,96 @@
             </div>
             <div class="actions lyrics-actions">
               <button id="saveLyricsSettingsButton2" class="primary-button" type="button">Aplicar janela 2</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <section id="toolsView" class="view">
+        <div class="hero-card tools-hero">
+          <div>
+            <p class="eyebrow">Ferramentas</p>
+            <h1>Hook Rename</h1>
+            <p class="muted">Renomeie arquivos com sufixo, prévia antes de executar e modo em massa por nome de pasta.</p>
+          </div>
+          <div class="tools-hero-actions">
+            <button id="hookRenameSelectFolderButton" class="primary-button" type="button">Escolher pasta</button>
+            <button id="hookRenameSelectManyFoldersButton" class="secondary-button" type="button">Escolher multipastas</button>
+          </div>
+        </div>
+
+        <div class="tools-grid">
+          <div class="card hook-rename-card">
+            <div class="tool-card-header">
+              <div>
+                <p class="eyebrow">Hook Rename</p>
+                <h2>Renomeador de arquivos</h2>
+              </div>
+              <span class="badge">Novo</span>
+            </div>
+
+            <div class="selected-folder-box">
+              <span>Pasta selecionada</span>
+              <strong id="hookRenameFolderLabel">Nenhuma pasta selecionada</strong>
+              <small id="hookRenameFolderPath" class="muted">Escolha uma pasta para começar.</small>
+            </div>
+
+            <div class="form-grid hook-rename-form">
+              <label>
+                Sufixo manual
+                <input id="hookRenameSuffixInput" type="text" placeholder="Ex.: _v2, _master, _backup" autocomplete="off" />
+              </label>
+
+              <label>
+                Sufixo sugerido pelo nome da pasta
+                <input id="hookRenameSuggestedSuffixInput" type="text" placeholder="Escolha uma pasta para gerar sugestão" autocomplete="off" readonly />
+              </label>
+            </div>
+
+            <div class="hook-rename-options">
+              <label class="settings-check hook-rename-check">
+                <input id="hookRenameUseFolderSuffixCheck" type="checkbox" />
+                Usar nome da pasta como sufixo
+              </label>
+              <label class="settings-check hook-rename-check">
+                <input id="hookRenameBulkModeCheck" type="checkbox" />
+                Renomear em massa
+              </label>
+            </div>
+
+            <p id="hookRenameModeHelp" class="muted hook-rename-help">
+              No modo normal, o Hook Rename renomeia os arquivos da pasta escolhida. O modo em massa usa várias pastas selecionadas e só funciona usando o nome da pasta como sufixo. Processa apenas MP3, WAV e AIFF.
+            </p>
+
+            <div class="actions hook-rename-actions">
+              <button id="hookRenamePreviewButton" class="secondary-button" type="button">Gerar prévia</button>
+              <button id="hookRenameRunButton" class="primary-button" type="button" disabled>Renomear arquivos</button>
+              <button id="hookRenameClearButton" class="secondary-button" type="button">Limpar</button>
+            </div>
+
+            <div id="hookRenameProgressArea" class="inline-progress-area hidden">
+              <div class="progress-shell">
+                <div id="hookRenameProgressBar" class="progress-bar"></div>
+              </div>
+              <div class="progress-row hook-rename-progress-row">
+                <span id="hookRenameProgressText">0%</span>
+                <strong id="hookRenameProgressCount">Aguardando...</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="card hook-rename-preview-card">
+            <div class="tool-card-header">
+              <div>
+                <p class="eyebrow">Prévia</p>
+                <h2>Arquivos que serão renomeados</h2>
+              </div>
+              <span id="hookRenamePreviewBadge" class="badge">0</span>
+            </div>
+            <div id="hookRenameSummary" class="hook-rename-summary muted">Nenhuma prévia gerada ainda.</div>
+            <div id="hookRenamePreviewList" class="hook-rename-preview-list">
+              <p class="muted">Escolha uma pasta e clique em gerar prévia.</p>
             </div>
           </div>
         </div>

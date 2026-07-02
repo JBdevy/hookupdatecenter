@@ -3070,3 +3070,830 @@ body.sidebar-open .sidebar {
   border: 1px solid rgba(141,255,31,.30) !important;
   animation: hookCenterSoftRgbBorder 3.8s linear infinite !important;
 }
+
+/* Ferramentas / Hook Rename */
+.tools-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.tools-hero {
+  background:
+    radial-gradient(circle at top right, rgba(158,255,0,.12), transparent 34%),
+    linear-gradient(180deg, rgba(23,23,37,.96), rgba(15,15,24,.96));
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.selected-folder-box {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(158,255,0,.22);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at left, rgba(158,255,0,.08), transparent 42%),
+    rgba(255,255,255,.045);
+}
+
+.selected-folder-box span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 800;
+}
+
+.selected-folder-box strong {
+  color: var(--text);
+  font-size: 16px;
+  word-break: break-word;
+}
+
+.selected-folder-box small {
+  word-break: break-word;
+}
+
+.hook-rename-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hook-rename-form input[readonly] {
+  color: var(--green);
+  border-color: rgba(158,255,0,.20);
+  background: rgba(158,255,0,.055);
+}
+
+.hook-rename-form input:disabled {
+  opacity: .62;
+  cursor: not-allowed;
+}
+
+.hook-rename-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 8px 0 8px;
+}
+
+.hook-rename-check {
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 16px;
+  background: rgba(255,255,255,.045);
+  color: var(--text);
+}
+
+.hook-rename-check:has(input:checked) {
+  border-color: rgba(158,255,0,.36);
+  background:
+    radial-gradient(circle at left, rgba(158,255,0,.10), transparent 44%),
+    rgba(255,255,255,.055);
+}
+
+.hook-rename-check:has(input:disabled) {
+  opacity: .55;
+}
+
+.hook-rename-help {
+  min-height: 44px;
+  margin: 12px 0 0;
+}
+
+.hook-rename-actions {
+  flex-wrap: wrap;
+}
+
+.hook-rename-actions .primary-button:disabled,
+.hook-rename-actions .secondary-button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.hook-rename-progress-row {
+  justify-content: space-between;
+}
+
+.hook-rename-preview-card {
+  min-height: 420px;
+}
+
+.hook-rename-summary {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,.04);
+}
+
+.hook-rename-preview-list {
+  display: grid;
+  gap: 10px;
+  max-height: calc(100vh - 290px);
+  min-height: 230px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.hook-rename-preview-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,.045);
+}
+
+.hook-rename-preview-item div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.hook-rename-preview-item span,
+.hook-rename-preview-item strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-rename-preview-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hook-rename-preview-item strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.hook-rename-preview-item small {
+  color: var(--green);
+  font-size: 11px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-rename-preview-limit {
+  padding: 12px 14px;
+  border: 1px dashed rgba(158,255,0,.28);
+  border-radius: 14px;
+  background: rgba(158,255,0,.045);
+}
+
+@media (max-width: 1100px) {
+  .tools-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hook-rename-preview-list {
+    max-height: 360px;
+  }
+}
+
+@media (max-width: 760px) {
+  .hook-rename-form,
+  .hook-rename-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Ajuste compacto para Ferramentas / Hook Rename */
+body.tools-mode .content {
+  padding: 14px 16px;
+}
+
+body.tools-mode .hero-card,
+body.tools-mode .card {
+  padding: 14px;
+  border-radius: 16px;
+}
+
+body.tools-mode .hero-card {
+  margin-bottom: 10px;
+}
+
+body.tools-mode h1 {
+  font-size: 26px;
+  margin-bottom: 5px;
+}
+
+body.tools-mode h2 {
+  font-size: 18px;
+  margin-bottom: 5px;
+}
+
+body.tools-mode .eyebrow {
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+body.tools-mode .muted,
+body.tools-mode .description {
+  line-height: 1.35;
+}
+
+.tools-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+body.tools-mode .tools-grid {
+  gap: 10px;
+}
+
+body.tools-mode .tool-card-header {
+  margin-bottom: 8px;
+}
+
+body.tools-mode .selected-folder-box {
+  padding: 9px 11px;
+  gap: 3px;
+  border-radius: 12px;
+}
+
+body.tools-mode .selected-folder-box strong {
+  font-size: 14px;
+}
+
+body.tools-mode .selected-folder-box small {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+body.tools-mode .form-grid {
+  gap: 9px;
+  margin-top: 10px;
+}
+
+body.tools-mode label {
+  gap: 5px;
+}
+
+body.tools-mode input,
+body.tools-mode select,
+body.tools-mode textarea {
+  padding: 9px 10px;
+}
+
+body.tools-mode .hook-rename-options {
+  gap: 8px;
+  margin: 7px 0 6px;
+}
+
+body.tools-mode .hook-rename-check {
+  padding: 9px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+body.tools-mode .hook-rename-help {
+  min-height: 34px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+body.tools-mode .actions {
+  margin-top: 8px;
+  padding: 9px;
+  gap: 8px;
+  border-radius: 12px;
+}
+
+body.tools-mode .primary-button,
+body.tools-mode .secondary-button {
+  padding: 8px 11px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+body.tools-mode .progress-shell {
+  margin-top: 10px;
+  height: 13px;
+}
+
+body.tools-mode .progress-row {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+body.tools-mode .hook-rename-preview-card {
+  min-height: 0;
+}
+
+body.tools-mode .hook-rename-summary {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+body.tools-mode .hook-rename-preview-list {
+  gap: 7px;
+  min-height: 120px;
+  max-height: calc(100vh - 210px);
+}
+
+body.tools-mode .hook-rename-preview-item {
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+body.tools-mode .hook-rename-preview-item strong {
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .tools-hero-actions {
+    justify-content: flex-start;
+  }
+}
+
+/* Ajuste v2 - Ferramentas / Hook Rename ainda mais compacto.
+   A prévia passa a ocupar o espaço restante da tela e rolar internamente,
+   evitando que o conteúdo fique cortado em janelas menores. */
+body.tools-mode .content {
+  padding: 8px 12px;
+  overflow: hidden;
+}
+
+body.tools-mode #toolsView.active {
+  height: calc(100vh - 16px);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+}
+
+body.tools-mode .tools-hero {
+  margin-bottom: 0;
+  padding: 9px 14px;
+  min-height: 78px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body.tools-mode .tools-hero h1 {
+  font-size: 24px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+body.tools-mode .tools-hero .muted {
+  max-width: 560px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+body.tools-mode .tools-hero-actions {
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+body.tools-mode .tools-hero-actions .primary-button,
+body.tools-mode .tools-hero-actions .secondary-button {
+  min-height: 30px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+body.tools-mode .tools-grid {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+body.tools-mode .hook-rename-card,
+body.tools-mode .hook-rename-preview-card {
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+
+body.tools-mode .hook-rename-card {
+  overflow: visible;
+}
+
+body.tools-mode .tool-card-header {
+  margin-bottom: 6px;
+  align-items: center;
+}
+
+body.tools-mode .tool-card-header h2 {
+  font-size: 17px;
+  line-height: 1.05;
+  margin: 0;
+}
+
+body.tools-mode .badge {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+body.tools-mode .selected-folder-box {
+  padding: 7px 10px;
+  gap: 2px;
+  border-radius: 11px;
+}
+
+body.tools-mode .selected-folder-box span {
+  font-size: 10px;
+}
+
+body.tools-mode .selected-folder-box strong {
+  font-size: 13px;
+  line-height: 1.12;
+}
+
+body.tools-mode .selected-folder-box small {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.tools-mode .form-grid {
+  gap: 8px;
+  margin: 7px 0 7px;
+}
+
+body.tools-mode label {
+  gap: 3px;
+  font-size: 12px;
+}
+
+body.tools-mode input,
+body.tools-mode select,
+body.tools-mode textarea {
+  min-height: 32px;
+  padding: 6px 9px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+body.tools-mode .hook-rename-options {
+  gap: 7px;
+  margin: 5px 0 4px;
+}
+
+body.tools-mode .settings-check {
+  min-height: 36px;
+}
+
+body.tools-mode .hook-rename-check {
+  padding: 6px 9px;
+  border-radius: 11px;
+  font-size: 12px;
+  gap: 8px;
+}
+
+body.tools-mode .hook-rename-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+body.tools-mode .hook-rename-help {
+  min-height: 0;
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.25;
+}
+
+body.tools-mode .actions {
+  margin-top: 6px;
+  padding: 7px;
+  gap: 7px;
+  border-radius: 11px;
+}
+
+body.tools-mode .primary-button,
+body.tools-mode .secondary-button {
+  min-height: 30px;
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+
+body.tools-mode .progress-shell {
+  margin-top: 7px;
+  height: 10px;
+}
+
+body.tools-mode .progress-row {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+body.tools-mode .hook-rename-preview-card {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+body.tools-mode .hook-rename-preview-card .tool-card-header {
+  flex: 0 0 auto;
+}
+
+body.tools-mode .hook-rename-summary {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.tools-mode .hook-rename-preview-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  gap: 5px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+body.tools-mode .hook-rename-preview-item {
+  padding: 6px 8px;
+  min-height: 38px;
+  gap: 8px;
+  border-radius: 10px;
+}
+
+body.tools-mode .hook-rename-preview-item div {
+  gap: 2px;
+}
+
+body.tools-mode .hook-rename-preview-item span {
+  font-size: 11px;
+}
+
+body.tools-mode .hook-rename-preview-item strong {
+  font-size: 12px;
+  line-height: 1.1;
+}
+
+body.tools-mode .hook-rename-preview-item small {
+  max-width: 120px;
+  font-size: 10px;
+}
+
+body.tools-mode .hook-rename-preview-limit {
+  padding: 7px 9px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  body.tools-mode .tools-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  body.tools-mode #toolsView.active {
+    overflow: auto;
+  }
+
+  body.tools-mode .content {
+    overflow: auto;
+  }
+}
+
+/* Ajuste v3 - Hook Rename em duas colunas.
+   A prévia fica na lateral, com scroll interno, para não empurrar a tela para baixo. */
+body.tools-mode #toolsView.active {
+  height: calc(100vh - 16px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 7px;
+  overflow: hidden;
+}
+
+body.tools-mode .tools-hero {
+  min-height: 58px;
+  padding: 7px 12px;
+}
+
+body.tools-mode .tools-hero h1 {
+  font-size: 22px;
+  margin-bottom: 2px;
+}
+
+body.tools-mode .tools-hero .muted {
+  font-size: 11.5px;
+  line-height: 1.22;
+  max-width: 500px;
+}
+
+body.tools-mode .tools-grid {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: grid !important;
+  grid-template-columns: minmax(300px, .88fr) minmax(315px, 1.12fr) !important;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+}
+
+body.tools-mode .hook-rename-card,
+body.tools-mode .hook-rename-preview-card {
+  height: 100%;
+  min-height: 0;
+  padding: 9px 10px;
+  overflow: hidden;
+}
+
+body.tools-mode .hook-rename-card {
+  display: flex;
+  flex-direction: column;
+}
+
+body.tools-mode .hook-rename-card .tool-card-header,
+body.tools-mode .hook-rename-preview-card .tool-card-header {
+  margin-bottom: 5px;
+}
+
+body.tools-mode .hook-rename-card .tool-card-header h2,
+body.tools-mode .hook-rename-preview-card .tool-card-header h2 {
+  font-size: 15px;
+  line-height: 1;
+}
+
+body.tools-mode .selected-folder-box {
+  padding: 6px 8px;
+  border-radius: 9px;
+}
+
+body.tools-mode .selected-folder-box strong {
+  font-size: 12px;
+}
+
+body.tools-mode .selected-folder-box small {
+  font-size: 10.5px;
+}
+
+body.tools-mode .form-grid.hook-rename-form {
+  grid-template-columns: 1fr;
+  gap: 5px;
+  margin: 5px 0;
+}
+
+body.tools-mode .hook-rename-options {
+  grid-template-columns: 1fr;
+  gap: 5px;
+  margin: 4px 0;
+}
+
+body.tools-mode .hook-rename-check {
+  min-height: 29px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  font-size: 11.5px;
+}
+
+body.tools-mode .hook-rename-check input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+}
+
+body.tools-mode label {
+  font-size: 11.5px;
+}
+
+body.tools-mode input,
+body.tools-mode select,
+body.tools-mode textarea {
+  min-height: 28px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+body.tools-mode .hook-rename-help {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.18;
+}
+
+body.tools-mode .actions.hook-rename-actions {
+  margin-top: 5px;
+  padding: 6px;
+  gap: 5px;
+  border-radius: 9px;
+}
+
+body.tools-mode .hook-rename-actions .primary-button,
+body.tools-mode .hook-rename-actions .secondary-button {
+  min-height: 28px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
+
+body.tools-mode .inline-progress-area {
+  margin-top: 6px;
+}
+
+body.tools-mode .hook-rename-preview-card {
+  display: flex;
+  flex-direction: column;
+}
+
+body.tools-mode .hook-rename-preview-card .badge {
+  flex: 0 0 auto;
+}
+
+body.tools-mode .hook-rename-summary {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  margin-bottom: 5px;
+  font-size: 10.8px;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+body.tools-mode .hook-rename-preview-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding-right: 4px;
+}
+
+body.tools-mode .hook-rename-preview-item {
+  min-height: 31px;
+  padding: 5px 7px;
+  gap: 8px;
+  border-radius: 8px;
+}
+
+body.tools-mode .hook-rename-preview-item div {
+  gap: 1px;
+}
+
+body.tools-mode .hook-rename-preview-item span {
+  font-size: 10px;
+  line-height: 1.05;
+}
+
+body.tools-mode .hook-rename-preview-item strong {
+  font-size: 11.5px;
+  line-height: 1.05;
+}
+
+body.tools-mode .hook-rename-preview-item small {
+  max-width: 86px;
+  font-size: 9.5px;
+}
+
+@media (max-width: 640px) {
+  body.tools-mode #toolsView.active {
+    overflow: auto;
+  }
+
+  body.tools-mode .content {
+    overflow: auto;
+  }
+
+  body.tools-mode .tools-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: auto minmax(260px, 1fr);
+    overflow: visible;
+  }
+}

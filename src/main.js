@@ -2611,6 +2611,316 @@ function normalizeSupportUrl(data) {
   return `https://${value}`;
 }
 
+
+const HOOK_RENAME_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.aiff']);
+const HOOK_RENAME_MAX_PREVIEW_ITEMS = 300;
+
+function sanitizeHookRenameSuffix(raw) {
+  const value = String(raw || '')
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return value.replace(/[.\s]+$/g, '');
+}
+
+function getHookRenameFolderName(folderPath) {
+  return sanitizeHookRenameSuffix(path.basename(String(folderPath || '').replace(/[\\/]+$/g, '')) || 'pasta');
+}
+
+function getHookRenameSuggestedSuffix(folderPath) {
+  const folderName = getHookRenameFolderName(folderPath);
+  return folderName ? `_${folderName}` : '';
+}
+
+function normalizeHookRenameSuffix(raw, { fallbackFolderPath = '' } = {}) {
+  const value = sanitizeHookRenameSuffix(raw || '');
+  if (value) return value;
+  if (fallbackFolderPath) return getHookRenameSuggestedSuffix(fallbackFolderPath);
+  return '';
+}
+
+function isHookRenameAudioFile(filePath) {
+  return HOOK_RENAME_AUDIO_EXTENSIONS.has(path.extname(filePath || '').toLowerCase());
+}
+
+function isPathInside(parentPath, childPath) {
+  const parent = path.resolve(parentPath);
+  const child = path.resolve(childPath);
+  const relative = path.relative(parent, child);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function listHookRenameDirectFiles(folderPath, { audioOnly = false } = {}) {
+  const entries = await fs.promises.readdir(folderPath, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(folderPath, entry.name))
+    .filter((filePath) => !audioOnly || isHookRenameAudioFile(filePath));
+}
+
+function normalizeHookRenameFolderPaths(payload = {}) {
+  const rawList = Array.isArray(payload.folderPaths)
+    ? payload.folderPaths
+    : (payload.folderPath ? [payload.folderPath] : []);
+
+  const unique = [];
+  const seen = new Set();
+
+  for (const rawFolderPath of rawList) {
+    const value = String(rawFolderPath || '').trim();
+    if (!value) continue;
+    const resolved = path.resolve(value);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(resolved);
+  }
+
+  return unique;
+}
+
+async function assertHookRenameFolder(folderPath) {
+  let stat = null;
+  try {
+    stat = await fs.promises.stat(folderPath);
+  } catch (_) {
+    throw new Error(`A pasta selecionada não foi encontrada: ${path.basename(folderPath) || folderPath}`);
+  }
+  if (!stat.isDirectory()) throw new Error(`O caminho selecionado não é uma pasta: ${folderPath}`);
+  return folderPath;
+}
+
+async function buildHookRenameOperations(payload = {}) {
+  const bulkMode = payload.bulkMode === true;
+  const useFolderSuffix = payload.useFolderSuffix === true;
+  const folderPaths = normalizeHookRenameFolderPaths(payload);
+
+  if (!folderPaths.length) throw new Error(bulkMode ? 'Escolha as pastas primeiro.' : 'Escolha uma pasta primeiro.');
+
+  if (!bulkMode && folderPaths.length > 1) {
+    throw new Error('Para várias pastas, ative o modo Renomear em massa.');
+  }
+
+  if (bulkMode && !useFolderSuffix) {
+    throw new Error('O modo em massa só funciona usando o nome da pasta como sufixo.');
+  }
+
+  const checkedFolders = [];
+  for (const folderPath of folderPaths) {
+    checkedFolders.push(await assertHookRenameFolder(folderPath));
+  }
+
+  const filesByRoot = [];
+  for (const folderPath of checkedFolders) {
+    const files = await listHookRenameDirectFiles(folderPath, { audioOnly: bulkMode });
+    for (const filePath of files) {
+      filesByRoot.push({ sourcePath: filePath, rootFolderPath: folderPath });
+    }
+  }
+
+  const operations = [];
+  const skipped = [];
+
+  for (const item of filesByRoot) {
+    const sourcePath = item.sourcePath;
+    const rootFolderPath = item.rootFolderPath;
+    if (!isPathInside(rootFolderPath, sourcePath)) continue;
+
+    const parsed = path.parse(sourcePath);
+    const suffix = useFolderSuffix
+      ? getHookRenameSuggestedSuffix(parsed.dir)
+      : normalizeHookRenameSuffix(payload.suffix || '', { fallbackFolderPath: '' });
+
+    if (!suffix) {
+      skipped.push({ sourcePath, reason: 'suffix_empty' });
+      continue;
+    }
+
+    if (parsed.name.toLowerCase().endsWith(suffix.toLowerCase())) {
+      skipped.push({ sourcePath, reason: 'already_has_suffix', suffix });
+      continue;
+    }
+
+    const nextName = `${parsed.name}${suffix}${parsed.ext}`;
+    const targetPath = path.join(parsed.dir, nextName);
+
+    if (path.resolve(targetPath) === path.resolve(sourcePath)) {
+      skipped.push({ sourcePath, reason: 'same_name', suffix });
+      continue;
+    }
+
+    let targetExists = false;
+    try {
+      await fs.promises.access(targetPath, fs.constants.F_OK);
+      targetExists = true;
+    } catch (_) {
+      targetExists = false;
+    }
+
+    if (targetExists) {
+      skipped.push({ sourcePath, targetPath, reason: 'target_exists', suffix });
+      continue;
+    }
+
+    operations.push({
+      sourcePath,
+      targetPath,
+      fromName: path.basename(sourcePath),
+      toName: nextName,
+      folderName: path.basename(parsed.dir),
+      relativeFolder: bulkMode ? path.basename(rootFolderPath) : '.',
+      rootFolderPath,
+      suffix
+    });
+  }
+
+  const firstFolder = checkedFolders[0] || '';
+  return {
+    ok: true,
+    folderPath: firstFolder,
+    folderPaths: checkedFolders,
+    folderName: checkedFolders.length > 1 ? `${checkedFolders.length} pastas selecionadas` : path.basename(firstFolder),
+    suggestedSuffix: checkedFolders.length > 1 ? 'Nome de cada pasta' : getHookRenameSuggestedSuffix(firstFolder),
+    bulkMode,
+    useFolderSuffix,
+    audioOnly: bulkMode,
+    totalFolders: checkedFolders.length,
+    totalScanned: filesByRoot.length,
+    totalOperations: operations.length,
+    totalSkipped: skipped.length,
+    operations,
+    skipped
+  };
+}
+
+function summarizeHookRenameSkipped(skipped = []) {
+  return skipped.reduce((acc, item) => {
+    const key = item.reason || 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+ipcMain.handle('hook-rename-select-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: 'Escolher pasta para o Hook Rename',
+    properties: ['openDirectory']
+  });
+
+  if (result.canceled || !result.filePaths?.[0]) {
+    return { ok: false, cancelled: true };
+  }
+
+  const folderPath = result.filePaths[0];
+  return {
+    ok: true,
+    multiple: false,
+    folderPath,
+    folderPaths: [folderPath],
+    folderName: path.basename(folderPath),
+    suggestedSuffix: getHookRenameSuggestedSuffix(folderPath)
+  };
+});
+
+ipcMain.handle('hook-rename-select-many-folders', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: 'Escolher multipastas para o Hook Rename',
+    properties: ['openDirectory', 'multiSelections']
+  });
+
+  if (result.canceled || !result.filePaths?.length) {
+    return { ok: false, cancelled: true };
+  }
+
+  const folderPaths = normalizeHookRenameFolderPaths({ folderPaths: result.filePaths });
+  return {
+    ok: true,
+    multiple: true,
+    folderPath: folderPaths[0] || '',
+    folderPaths,
+    folderName: `${folderPaths.length} pasta(s) selecionada(s)`,
+    folderNames: folderPaths.map((folderPath) => path.basename(folderPath)),
+    suggestedSuffix: 'Nome de cada pasta'
+  };
+});
+
+ipcMain.handle('hook-rename-preview', async (_event, payload = {}) => {
+  const result = await buildHookRenameOperations(payload);
+  return {
+    ...result,
+    operations: result.operations.slice(0, HOOK_RENAME_MAX_PREVIEW_ITEMS),
+    skippedSummary: summarizeHookRenameSkipped(result.skipped),
+    skipped: result.skipped.slice(0, HOOK_RENAME_MAX_PREVIEW_ITEMS),
+    previewLimit: HOOK_RENAME_MAX_PREVIEW_ITEMS
+  };
+});
+
+ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
+  const result = await buildHookRenameOperations(payload);
+  const total = result.operations.length;
+  let renamed = 0;
+  let failed = 0;
+  const errors = [];
+
+  event.sender.send('hook-rename-progress', {
+    ok: true,
+    phase: 'start',
+    current: 0,
+    total,
+    percent: total > 0 ? 0 : 100,
+    renamed: 0,
+    failed: 0
+  });
+
+  for (const operation of result.operations) {
+    try {
+      await fs.promises.rename(operation.sourcePath, operation.targetPath);
+      renamed += 1;
+    } catch (error) {
+      failed += 1;
+      errors.push({
+        fromName: operation.fromName,
+        toName: operation.toName,
+        message: error?.message || 'Erro ao renomear.'
+      });
+    }
+
+    const current = renamed + failed;
+    event.sender.send('hook-rename-progress', {
+      ok: true,
+      phase: 'running',
+      current,
+      total,
+      percent: total > 0 ? Math.round((current / total) * 100) : 100,
+      renamed,
+      failed,
+      currentFile: operation.fromName
+    });
+  }
+
+  event.sender.send('hook-rename-progress', {
+    ok: true,
+    phase: 'done',
+    current: total,
+    total,
+    percent: 100,
+    renamed,
+    failed
+  });
+
+  return {
+    ok: failed === 0,
+    totalScanned: result.totalScanned,
+    totalOperations: total,
+    renamed,
+    failed,
+    totalSkipped: result.totalSkipped,
+    skippedSummary: summarizeHookRenameSkipped(result.skipped),
+    errors: errors.slice(0, 20)
+  };
+});
+
 async function openSupport() {
   const data = await fetchJson(SUPPORT_API_URL, { cache: 'no-store' });
   const supportUrl = normalizeSupportUrl(data);

@@ -303,7 +303,8 @@ function bridgeRequestsDirectorLogout(data) {
 }
 
 function logoutDirectorToModeSelection(data) {
-  if (window.__vshookDirectorLogoutInProgress) return true
+  if (window.__vshookDirectorLogoutInProgress && (Date.now() - Number(window.__vshookDirectorLogoutStartedAt || 0)) < 1000) return true
+  window.__vshookDirectorLogoutStartedAt = Date.now()
   const token = getDirectorLogoutToken(data) || String(Date.now())
   if (token && wasDirectorLogoutTokenHandled(token)) return true
   window.__vshookDirectorLogoutInProgress = true
@@ -12731,3 +12732,600 @@ function getPremixSongs() {
   } catch (_) {}
 })();
 
+
+/* VS_HOOK_FIX83_DIRECTOR_ACTIVE_AND_QUEUE_STOP
+   - Mantém heartbeat vivo para a extensão/Lua mostrar "APP DO DIRETOR ATIVO".
+   - Mantém a fila local do Diretor até Stop/clear real, sem expirar em 12s.
+   - Stop com fila seleciona imediatamente a música da fila e manda dados completos. */
+(function(){
+  if (window.__vshookFix83DirectorActiveQueueStopInstalled) return;
+  window.__vshookFix83DirectorActiveQueueStopInstalled = true;
+  const FIX83_QUEUE_TTL_MS = 30 * 60 * 1000;
+  const FIX83_HEARTBEAT_MS = 650;
+  let fix83LastHeartbeatAt = 0;
+  let fix83ExplicitQueueClearUntil = 0;
+
+  function fix83Str(v){ return v == null ? '' : String(v); }
+  function fix83Now(){ return Date.now(); }
+  function fix83CanHeartbeat(){
+    try {
+      if (window.__vshookDirectorLogoutInProgress) return false;
+      if (fix83Now() < Number(window.__vshookDirectorHeartbeatBlockedUntil || 0)) return false;
+      if (typeof needsAuthGate === 'function' && needsAuthGate()) return false;
+      if (state && state.authEnabled && !state.authAuthenticated) return false;
+      return true;
+    } catch(e) { return true; }
+  }
+
+  function fix83DirectCommand(type, payload){
+    if (!type) return;
+    const now = fix83Now();
+    const body = JSON.stringify({
+      type,
+      payload: {
+        heartbeat: true,
+        role: 'director',
+        clientRole: 'director',
+        appRole: 'director',
+        source: 'director',
+        mode: 'director',
+        desiredState: 'active',
+        authAuthenticated: '1',
+        issuedAtMs: now,
+        clientCommandId: `${now}-${type}-fix83-${Math.random().toString(16).slice(2, 8)}`,
+        ...(payload && typeof payload === 'object' ? payload : {})
+      }
+    });
+    try {
+      const url = typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl('/command') : '/command';
+      fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body, cache:'no-store' }).catch(function(){});
+    } catch(e) {}
+  }
+
+  function fix83SendDirectorHeartbeat(force){
+    if (!fix83CanHeartbeat()) return;
+    const now = fix83Now();
+    if (!force && (now - fix83LastHeartbeatAt) < FIX83_HEARTBEAT_MS) return;
+    fix83LastHeartbeatAt = now;
+    if (state) {
+      state.appActive = true;
+      state.directorAppActive = true;
+      state.nativeBridgeConnected = state.nativeBridgeConnected || state.bridgeStatus === 'online';
+    }
+    fix83DirectCommand('director_heartbeat', { appActive:true, directorAppActive:true, directorActive:true });
+  }
+
+  const prevSendAppHeartbeatFix83 = typeof sendAppHeartbeat === 'function' ? sendAppHeartbeat : null;
+  if (prevSendAppHeartbeatFix83) {
+    sendAppHeartbeat = function(){
+      try { prevSendAppHeartbeatFix83.apply(this, arguments); } catch(e) {}
+      fix83SendDirectorHeartbeat(false);
+    };
+  }
+
+  window.addEventListener('focus', function(){ fix83SendDirectorHeartbeat(true); }, { passive:true });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) fix83SendDirectorHeartbeat(true); }, { passive:true });
+  document.addEventListener('pointerdown', function(){ fix83SendDirectorHeartbeat(true); }, { passive:true, capture:true });
+  document.addEventListener('touchstart', function(){ fix83SendDirectorHeartbeat(true); }, { passive:true, capture:true });
+  setInterval(function(){ fix83SendDirectorHeartbeat(false); }, FIX83_HEARTBEAT_MS);
+  setTimeout(function(){ fix83SendDirectorHeartbeat(true); }, 80);
+  setTimeout(function(){ fix83SendDirectorHeartbeat(true); }, 650);
+  setTimeout(function(){ fix83SendDirectorHeartbeat(true); }, 1500);
+
+  const prevSetLocalQueuedSongFix83 = typeof setLocalQueuedSong === 'function' ? setLocalQueuedSong : null;
+  if (prevSetLocalQueuedSongFix83) {
+    setLocalQueuedSong = function(id, tab){
+      const key = fix83Str(id);
+      const r = prevSetLocalQueuedSongFix83.apply(this, arguments);
+      if (key) {
+        state.localQueuedSongId = key;
+        state.localQueuedSongAt = fix83Now();
+        state.localQueuedSongTab = tab || state.activeTab || state.localQueuedSongTab || null;
+        state.localQueuedSongHoldUntil = fix83Now() + FIX83_QUEUE_TTL_MS;
+      }
+      return r;
+    };
+  }
+
+  const prevClearVisualQueueForDirectorFix83 = typeof clearVisualQueueForDirector === 'function' ? clearVisualQueueForDirector : null;
+  if (prevClearVisualQueueForDirectorFix83) {
+    clearVisualQueueForDirector = function(ms){
+      fix83ExplicitQueueClearUntil = fix83Now() + 2500;
+      state.localQueuedSongHoldUntil = 0;
+      return prevClearVisualQueueForDirectorFix83.apply(this, arguments);
+    };
+  }
+
+  if (typeof getLocalQueuedSongIdForRows === 'function') {
+    getLocalQueuedSongIdForRows = function(){
+      const key = fix83Str(state.localQueuedSongId);
+      if (!key) return null;
+      const at = Number(state.localQueuedSongAt || 0);
+      const holdUntil = Number(state.localQueuedSongHoldUntil || 0) || (at + FIX83_QUEUE_TTL_MS);
+      if (fix83Now() <= holdUntil) return key;
+      if (typeof clearLocalQueuedSong === 'function') clearLocalQueuedSong();
+      return null;
+    };
+  }
+
+  if (typeof getExplicitQueuedSongId === 'function') {
+    getExplicitQueuedSongId = function(){
+      const key = fix83Str(state.localQueuedSongId);
+      if (key) {
+        const at = Number(state.localQueuedSongAt || 0);
+        const holdUntil = Number(state.localQueuedSongHoldUntil || 0) || (at + FIX83_QUEUE_TTL_MS);
+        if (fix83Now() <= holdUntil && (!isDirectorQueuedIdAllowed || isDirectorQueuedIdAllowed(key))) return key;
+      }
+      if (fix83Now() >= Number(remoteQueuedIgnoreUntil || 0) && state.queuedSongId != null && fix83Str(state.queuedSongId) !== '') {
+        const q = fix83Str(state.queuedSongId);
+        if (!isDirectorQueuedIdAllowed || isDirectorQueuedIdAllowed(q)) return q;
+      }
+      return null;
+    };
+  }
+
+  function fix83FindItem(id){
+    const key = fix83Str(id);
+    if (!key) return null;
+    try { if (typeof findSongByIdEverywhere === 'function') { const x = findSongByIdEverywhere(key); if (x) return x; } } catch(e) {}
+    try { if (typeof findAnyPlaybackItemById === 'function') { const x = findAnyPlaybackItemById(key); if (x) return x; } } catch(e) {}
+    return null;
+  }
+
+  function fix83PreferredTab(id, fallback){
+    try { if (typeof getPreferredStoppedSelectionTab === 'function') return getPreferredStoppedSelectionTab(id, fallback || state.activeTab || 'playlist'); } catch(e) {}
+    const item = fix83FindItem(id);
+    if (item && Array.isArray(state.regions) && state.regions.includes(item)) return 'regions';
+    return fallback || state.activeTab || 'playlist';
+  }
+
+  const prevGetDirectorStopSelectionTargetFix83 = typeof getDirectorStopSelectionTarget === 'function' ? getDirectorStopSelectionTarget : null;
+  if (prevGetDirectorStopSelectionTargetFix83) {
+    getDirectorStopSelectionTarget = function(stoppedId, preferredTab){
+      const explicit = typeof getExplicitQueuedSongId === 'function' ? getExplicitQueuedSongId() : null;
+      if (explicit) {
+        const item = fix83FindItem(explicit);
+        if (!item || !(typeof detectBlockItem === 'function' && detectBlockItem(item)) && !(typeof isHashChildItem === 'function' && isHashChildItem(item))) {
+          return { id: fix83Str(explicit), tab: state.localQueuedSongTab || fix83PreferredTab(explicit, preferredTab || state.activeTab || 'playlist'), fromQueue:true, source:'manual_queue' };
+        }
+      }
+      const r = prevGetDirectorStopSelectionTargetFix83.apply(this, arguments);
+      if (r && r.id) return r;
+      try {
+        if (typeof getNextAutoQueuedSongId === 'function') {
+          const autoId = getNextAutoQueuedSongId({ allowAutoBlocoBoundary:false });
+          if (autoId) return { id: fix83Str(autoId), tab: fix83PreferredTab(autoId, preferredTab || state.activeTab || 'playlist'), fromQueue:true, source:'auto_queue' };
+        }
+      } catch(e) {}
+      return r;
+    };
+  }
+
+  const prevPostPlaybackToggleCommandFix83 = typeof postPlaybackToggleCommand === 'function' ? postPlaybackToggleCommand : null;
+  if (prevPostPlaybackToggleCommandFix83) {
+    postPlaybackToggleCommand = function(targetId, sourceTab, desiredPlaying, extraPayload){
+      if (!desiredPlaying && extraPayload && extraPayload.stopSelectionTargetId != null && fix83Str(extraPayload.stopSelectionTargetId) !== '') {
+        const stopId = fix83Str(extraPayload.stopSelectionTargetId);
+        const item = fix83FindItem(stopId);
+        if (item && typeof item === 'object') {
+          const start = Number(item.startPos ?? item.start_pos);
+          const end = Number(item.endPos ?? item.end_pos);
+          const idx = Number(item.index);
+          extraPayload = { ...extraPayload };
+          extraPayload.queuedSelectionId = stopId;
+          extraPayload.nextSelectionId = stopId;
+          extraPayload.targetSelectionId = stopId;
+          extraPayload.stopSelectionTargetTab = extraPayload.stopSelectionTargetTab || fix83PreferredTab(stopId, sourceTab || state.activeTab || 'playlist');
+          if (Number.isFinite(start)) extraPayload.stopSelectionStartPos = start;
+          if (Number.isFinite(end)) extraPayload.stopSelectionEndPos = end;
+          if (Number.isFinite(idx)) extraPayload.stopSelectionPlaylistIndex = idx;
+          if (item.source_number != null) extraPayload.stopSelectionSourceNumber = String(item.source_number);
+          if (item.sourceNumber != null) extraPayload.stopSelectionSourceNumber = String(item.sourceNumber);
+          if (item.uid != null) extraPayload.stopSelectionUid = String(item.uid);
+        }
+      }
+      return prevPostPlaybackToggleCommandFix83.call(this, targetId, sourceTab, desiredPlaying, extraPayload);
+    };
+  }
+
+  const prevSyncFromBridgeFix83 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSyncFromBridgeFix83) {
+    syncFromBridge = function(data){
+      const savedId = fix83Str(state.localQueuedSongId);
+      const savedAt = Number(state.localQueuedSongAt || 0);
+      const savedTab = state.localQueuedSongTab || null;
+      const savedHold = Number(state.localQueuedSongHoldUntil || 0) || (savedAt + FIX83_QUEUE_TTL_MS);
+      const r = prevSyncFromBridgeFix83.apply(this, arguments);
+      const incomingPlayingId = fix83Str(data && (data.playingId ?? data.currentPlayingId ?? data.selectedPlayingId));
+      if (savedId && fix83Now() > Number(fix83ExplicitQueueClearUntil || 0) && fix83Now() <= savedHold && incomingPlayingId !== savedId && !state.localQueuedSongId) {
+        state.localQueuedSongId = savedId;
+        state.localQueuedSongAt = savedAt || fix83Now();
+        state.localQueuedSongTab = savedTab || state.activeTab || null;
+        state.localQueuedSongHoldUntil = savedHold;
+      }
+      return r;
+    };
+  }
+})();
+
+/* VS_HOOK_FIX86_DIRECTOR_ACTIVE_SIMPLE_LOGOUT
+   Comando simples: Diretor entra -> Lua mostra tela. Lua ACESSAR -> Diretor desloga.
+   Sem heartbeat pesado e sem afetar Musicos/Recados. */
+(function(){
+  if (window.__vshookFix86DirectorActiveSimpleLogoutInstalled) return;
+  window.__vshookFix86DirectorActiveSimpleLogoutInstalled = true;
+  let announced = false;
+  let lastAnnounceAt = 0;
+
+  function now(){ return Date.now(); }
+  function canAnnounceDirector(){
+    try {
+      if (window.__vshookDirectorLogoutInProgress) return false;
+      if (typeof needsAuthGate === 'function' && needsAuthGate()) return false;
+      if (state && state.authEnabled && !state.authAuthenticated) return false;
+      return true;
+    } catch(e) { return true; }
+  }
+  function bridgeUrl(path){
+    try { return typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl(path) : path; }
+    catch(e) { return path; }
+  }
+  function sendDirectorEnter(force){
+    if (!canAnnounceDirector()) return;
+    const t = now();
+    if (!force && announced && (t - lastAnnounceAt) < 60000) return;
+    announced = true;
+    lastAnnounceAt = t;
+    try {
+      if (state) { state.appActive = true; state.directorAppActive = true; }
+      window.__vshookDirectorHeartbeatBlockedUntil = t + (365 * 24 * 60 * 60 * 1000); // bloqueia heartbeat antigo pesado
+      fetch(bridgeUrl('/command'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          type: 'director_enter',
+          payload: {
+            role: 'director', clientRole: 'director', appRole: 'director', source: 'director',
+            appActive: true, directorAppActive: true, directorActive: true,
+            issuedAtMs: t,
+            clientCommandId: `director-enter-${t}-${Math.random().toString(16).slice(2, 8)}`
+          }
+        })
+      }).catch(function(){});
+    } catch(e) {}
+  }
+
+  const prevSync86 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync86 && !syncFromBridge.__fix86DirectorLogoutWrapped) {
+    syncFromBridge = function(data){
+      if (data && typeof data === 'object') {
+        const target = String(data.appLogoutTarget || data.logoutTarget || data.target || '').toLowerCase();
+        const wantsDirector = !target || target === 'director' || target === 'diretor';
+        const logout = wantsDirector && (data.forceDirectorLogout === true || data.directorLogoutRequested === true || data.logoutDirector === true);
+        if (logout && typeof logoutDirectorToModeSelection === 'function') {
+          try { logoutDirectorToModeSelection(data); } catch(e) {}
+          return;
+        }
+      }
+      return prevSync86.apply(this, arguments);
+    };
+    syncFromBridge.__fix86DirectorLogoutWrapped = true;
+  }
+
+  const prevLogout86 = typeof logoutDirectorToModeSelection === 'function' ? logoutDirectorToModeSelection : null;
+  if (prevLogout86 && !logoutDirectorToModeSelection.__fix86LogoutWrapped) {
+    logoutDirectorToModeSelection = function(data){
+      announced = false;
+      window.__vshookDirectorLogoutInProgress = true;
+      window.__vshookDirectorHeartbeatBlockedUntil = now() + 20000;
+      try {
+        fetch(bridgeUrl('/command'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+          body: JSON.stringify({ type: 'director_logout_ack', payload: { role:'director', clientRole:'director', appRole:'director' } })
+        }).catch(function(){});
+      } catch(e) {}
+      return prevLogout86.apply(this, arguments);
+    };
+    logoutDirectorToModeSelection.__fix86LogoutWrapped = true;
+  }
+
+  const prevSendHeartbeat86 = typeof sendAppHeartbeat === 'function' ? sendAppHeartbeat : null;
+  if (prevSendHeartbeat86 && !sendAppHeartbeat.__fix86LightWrapped) {
+    sendAppHeartbeat = function(){ sendDirectorEnter(false); };
+    sendAppHeartbeat.__fix86LightWrapped = true;
+  }
+
+  window.addEventListener('focus', function(){ sendDirectorEnter(true); }, { passive:true });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) sendDirectorEnter(true); }, { passive:true });
+  setTimeout(function(){ sendDirectorEnter(true); }, 80);
+  setTimeout(function(){ sendDirectorEnter(true); }, 900);
+})();
+
+
+
+/* VS_HOOK_FIX87_EXPLICIT_DIRECTOR_FORCE_LOGOUT
+   Lua -> extensao -> app Diretor: comando explicito director_force_logout. */
+(function(){
+  if (window.__vshookFix87ExplicitDirectorForceLogoutInstalled) return;
+  window.__vshookFix87ExplicitDirectorForceLogoutInstalled = true;
+
+  function bridgeUrl87(path){
+    try { return typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl(path) : path; }
+    catch(e) { return path; }
+  }
+  function getLogoutCommand87(data){
+    if (!data || typeof data !== 'object') return '';
+    return String(data.directorCommand || data.appCommand || data.directorLogoutCommand || data.command || '').toLowerCase();
+  }
+  function getLogoutTarget87(data){
+    if (!data || typeof data !== 'object') return '';
+    return String(data.appLogoutTarget || data.logoutTarget || data.target || data.commandTarget || '').toLowerCase();
+  }
+  function getLogoutToken87(data){
+    if (!data || typeof data !== 'object') return '';
+    return String(data.directorLogoutToken || data.appLogoutToken || data.logoutToken || data.directorLogoutAt || data.updatedAt || '');
+  }
+  function hasConsumedLogout87(token){
+    if (!token) return false;
+    try { return localStorage.getItem('vshook_fix87_last_director_force_logout') === token; } catch(e) { return false; }
+  }
+  function markConsumedLogout87(token){
+    if (!token) return;
+    try { localStorage.setItem('vshook_fix87_last_director_force_logout', token); } catch(e) {}
+  }
+  function sendDirectorForceLogoutAck87(){
+    try {
+      fetch(bridgeUrl87('/command'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          type: 'director_force_logout_ack',
+          payload: { role: 'director', clientRole: 'director', appRole: 'director', command: 'director_force_logout_ack' }
+        })
+      }).catch(function(){});
+    } catch(e) {}
+  }
+  function shouldForceLogoutDirector87(data){
+    const cmd = getLogoutCommand87(data);
+    const target = getLogoutTarget87(data);
+    const explicit = cmd === 'director_force_logout';
+    const compatible = data && (data.forceDirectorLogout === true || data.directorLogoutRequested === true || data.logoutDirector === true);
+    const wantsDirector = !target || target === 'director' || target === 'diretor';
+    return wantsDirector && (explicit || compatible);
+  }
+  function forceDirectorLocalLogout88(data){
+    // FIX88: nao setar __vshookDirectorLogoutInProgress antes de executar o logout.
+    // A funcao antiga usa essa flag como guarda de reentrada; no FIX87 ela era ligada antes
+    // e acabava bloqueando o proprio logout.
+    try { window.__vshookDirectorLogoutInProgress = false; } catch(e) {}
+    try { clearAccessSession(); } catch(e) {}
+    try {
+      localStorage.removeItem('vshook_access_session');
+      localStorage.removeItem('vshook_director_auth');
+      localStorage.removeItem('vshook_director_session');
+      localStorage.removeItem('vshook_director_token');
+      localStorage.setItem('vshook_last_director_logout_at', new Date().toISOString());
+    } catch(e) {}
+    try {
+      if (state) {
+        state.appActive = false;
+        state.directorAppActive = false;
+        state.authAuthenticated = false;
+        state.authPassInput = '';
+        state.authError = '';
+        state.authShowPassword = false;
+      }
+    } catch(e) {}
+    try { window.__vshookDirectorLogoutInProgress = true; } catch(e) {}
+    if (typeof window.vshookExitToProjectSelector === 'function') {
+      try { window.vshookExitToProjectSelector(); return true; } catch(e) {}
+    }
+    try { window.location.reload(); } catch(e) {}
+    return true;
+  }
+
+  function executeDirectorForceLogout87(data){
+    const token = getLogoutToken87(data) || `director-force-logout-${Date.now()}`;
+    if (hasConsumedLogout87(token)) return true;
+    markConsumedLogout87(token);
+    try { window.__vshookDirectorHeartbeatBlockedUntil = Date.now() + 20000; } catch(e) {}
+    sendDirectorForceLogoutAck87();
+    return forceDirectorLocalLogout88(data || { directorCommand: 'director_force_logout', appLogoutTarget: 'director' });
+  }
+
+  const prevSync87 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync87 && !syncFromBridge.__fix87ExplicitLogoutWrapped) {
+    syncFromBridge = function(data){
+      if (shouldForceLogoutDirector87(data)) {
+        executeDirectorForceLogout87(data);
+        return;
+      }
+      return prevSync87.apply(this, arguments);
+    };
+    syncFromBridge.__fix87ExplicitLogoutWrapped = true;
+  }
+
+  window.vshookHandleDirectorForceLogout = executeDirectorForceLogout87;
+})();
+/* VS_HOOK_FIX89_QUEUE_HANDOFF_VISUAL_SELECTION
+   Quando a fila entra automaticamente e a proxima musica começa a tocar,
+   limpa a seleção azul que ficou presa na musica anterior. Ajuste visual apenas. */
+(function(){
+  if (window.__vshookFix89QueueHandoffVisualSelectionInstalled) return;
+  window.__vshookFix89QueueHandoffVisualSelectionInstalled = true;
+
+  function s89(value){ return value == null ? '' : String(value); }
+
+  function isSame89(a, b){
+    const aa = s89(a);
+    const bb = s89(b);
+    return !!aa && !!bb && aa === bb;
+  }
+
+  function clearStoppedHold89(){
+    try {
+      state.stoppedSelectionHoldId = null;
+      state.stoppedSelectionHoldTab = null;
+      state.stoppedSelectionHoldUntil = 0;
+    } catch(e) {}
+    try { if (typeof clearDirectorLocalSelectionHold === 'function') clearDirectorLocalSelectionHold(); } catch(e) {}
+  }
+
+  function clearSelectionForTab89(tab){
+    try {
+      if (tab === 'playlist') {
+        state.selectedPlaylistSongId = null;
+        state.selectedPlaylistSongIds = [];
+      } else if (tab === 'regions') {
+        state.selectedRegionId = null;
+        state.selectedRegionIds = [];
+      } else {
+        state.selectedPlaylistSongId = null;
+        state.selectedPlaylistSongIds = [];
+        state.selectedRegionId = null;
+        state.selectedRegionIds = [];
+      }
+    } catch(e) {}
+  }
+
+  function fixQueueHandoffVisualSelection89(previousPlayingId, currentPlayingId){
+    const prev = s89(previousPlayingId);
+    const now = s89(currentPlayingId || (state && state.playingId));
+    if (!prev || !now || prev === now) return false;
+
+    const selectedPlaylist = s89(state && state.selectedPlaylistSongId);
+    const selectedRegion = s89(state && state.selectedRegionId);
+    const stoppedHold = s89(state && state.stoppedSelectionHoldId);
+    const activeTab = (state && state.activeTab) || 'playlist';
+
+    const stalePlaylist = isSame89(selectedPlaylist, prev);
+    const staleRegion = isSame89(selectedRegion, prev);
+    const staleHold = isSame89(stoppedHold, prev);
+
+    if (!stalePlaylist && !staleRegion && !staleHold) return false;
+
+    clearStoppedHold89();
+    try { state.selectionLockUntil = 0; } catch(e) {}
+    try { if (typeof markDirectorRecentlyStoppedSelectionBlocked === 'function') markDirectorRecentlyStoppedSelectionBlocked(prev); } catch(e) {}
+
+    // A musica tocando ja tem visual proprio. O azul antigo nao pode ficar na anterior.
+    // Portanto limpamos a seleção presa; nao forçamos azul na musica tocando para nao misturar estados.
+    if (stalePlaylist) clearSelectionForTab89('playlist');
+    if (staleRegion) clearSelectionForTab89('regions');
+    if (!stalePlaylist && !staleRegion && staleHold) clearSelectionForTab89(activeTab);
+
+    try { if (typeof render === 'function') render(); } catch(e) {}
+    return true;
+  }
+
+  const prevSync89 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync89 && !syncFromBridge.__fix89QueueHandoffVisualWrapped) {
+    syncFromBridge = function(data){
+      const previousPlayingId = s89(state && state.playingId);
+      const previousSelectedPlaylist = s89(state && state.selectedPlaylistSongId);
+      const previousSelectedRegion = s89(state && state.selectedRegionId);
+      const previousStoppedHold = s89(state && state.stoppedSelectionHoldId);
+      const result = prevSync89.apply(this, arguments);
+      const currentPlayingId = s89(state && state.playingId);
+      if (currentPlayingId && previousPlayingId && currentPlayingId !== previousPlayingId) {
+        // Restaura temporariamente a referência anterior para detectar corretamente
+        // quando o wrapper interno já mexeu nos campos antes deste wrapper rodar.
+        if (!s89(state.selectedPlaylistSongId) && previousSelectedPlaylist === previousPlayingId) state.selectedPlaylistSongId = previousSelectedPlaylist;
+        if (!s89(state.selectedRegionId) && previousSelectedRegion === previousPlayingId) state.selectedRegionId = previousSelectedRegion;
+        if (!s89(state.stoppedSelectionHoldId) && previousStoppedHold === previousPlayingId) state.stoppedSelectionHoldId = previousStoppedHold;
+        fixQueueHandoffVisualSelection89(previousPlayingId, currentPlayingId);
+      }
+      return result;
+    };
+    syncFromBridge.__fix89QueueHandoffVisualWrapped = true;
+  }
+
+  window.vshookFixQueueHandoffVisualSelection89 = fixQueueHandoffVisualSelection89;
+})();
+
+
+/* VS_HOOK_FIX90_CLEAR_BLUE_SELECTION_WHILE_PLAYING
+   Seleção azul é apenas para música selecionada quando o Diretor está parado.
+   Durante playback a música tocando usa o visual vermelho; fila usa amarelo.
+   Portanto, quando existe playingId ativo, limpamos qualquer azul antigo sem mover
+   a seleção para a música tocando. */
+(function(){
+  if (window.__vshookFix90ClearBlueWhilePlayingInstalled) return;
+  window.__vshookFix90ClearBlueWhilePlayingInstalled = true;
+
+  function hasPlaying90(){
+    try {
+      const id = state && state.playingId != null ? String(state.playingId) : '';
+      if (id) return true;
+      if (state && (state.isPlaying === true || state.playing === true || state.playbackPlaying === true)) return true;
+    } catch(e) {}
+    return false;
+  }
+
+  function clearBlueSelection90(){
+    let changed = false;
+    try {
+      if (state.selectedPlaylistSongId != null || (Array.isArray(state.selectedPlaylistSongIds) && state.selectedPlaylistSongIds.length)) {
+        state.selectedPlaylistSongId = null;
+        state.selectedPlaylistSongIds = [];
+        changed = true;
+      }
+      if (state.selectedRegionId != null || (Array.isArray(state.selectedRegionIds) && state.selectedRegionIds.length)) {
+        state.selectedRegionId = null;
+        state.selectedRegionIds = [];
+        changed = true;
+      }
+      if (state.stoppedSelectionHoldId != null || state.stoppedSelectionHoldUntil) {
+        state.stoppedSelectionHoldId = null;
+        state.stoppedSelectionHoldTab = null;
+        state.stoppedSelectionHoldUntil = 0;
+        changed = true;
+      }
+      if (state.localSelectionHoldId != null || state.localSelectionHoldUntil) {
+        state.localSelectionHoldId = null;
+        state.localSelectionHoldTab = null;
+        state.localSelectionHoldUntil = 0;
+        changed = true;
+      }
+      if (state.directorLocalSelectionHoldId != null || state.directorLocalSelectionHoldUntil) {
+        state.directorLocalSelectionHoldId = null;
+        state.directorLocalSelectionHoldTab = null;
+        state.directorLocalSelectionHoldUntil = 0;
+        changed = true;
+      }
+      if (state.selectionLockUntil) {
+        state.selectionLockUntil = 0;
+        changed = true;
+      }
+    } catch(e) {}
+    try { if (typeof clearDirectorLocalSelectionHold === 'function') clearDirectorLocalSelectionHold(); } catch(e) {}
+    return changed;
+  }
+
+  const prevSync90 = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (prevSync90 && !syncFromBridge.__fix90ClearBlueWhilePlayingWrapped) {
+    syncFromBridge = function(data){
+      const result = prevSync90.apply(this, arguments);
+      if (hasPlaying90()) {
+        if (clearBlueSelection90()) {
+          try { if (typeof render === 'function') setTimeout(function(){ try { render(); } catch(e) {} }, 0); } catch(e) {}
+        }
+      }
+      return result;
+    };
+    syncFromBridge.__fix90ClearBlueWhilePlayingWrapped = true;
+  }
+
+  const prevRender90 = typeof render === 'function' ? render : null;
+  if (prevRender90 && !render.__fix90ClearBlueWhilePlayingWrapped) {
+    render = function(){
+      if (hasPlaying90()) clearBlueSelection90();
+      return prevRender90.apply(this, arguments);
+    };
+    render.__fix90ClearBlueWhilePlayingWrapped = true;
+  }
+
+  window.vshookFix90ClearBlueSelectionWhilePlaying = clearBlueSelection90;
+})();

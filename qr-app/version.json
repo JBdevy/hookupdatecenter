@@ -1,14 +1,14 @@
 {
-  "version": "2.0.67",
-  "title": "VS Hook Mobile 2.0.67 - Stop mantém seleção e App QR embutido",
-  "updatedAt": "2026-07-01T00:00:00.000Z",
-  "build": "2.0.67",
-  "notes": "Diretor mantém a seleção azul na música parada quando não existe fila; App QR passa a ser atualizado somente junto com o Hook Center.",
-  "cacheBust": "2.0.67-stop-selecao-app-embutido",
-  "label": "2.0.67 Stop seleção / App embutido",
-  "updateId": "2.0.67-stop-selecao-app-embutido",
-  "generatedAt": "2026-07-01T00:00:00Z",
-  "cacheVersion": "2.0.67",
-  "note": "Stop sem fila mantém seleção no Diretor; QR embutido no Hook Center.",
-  "fix": "FIX67"
+  "version": "2.7.0",
+  "title": "VS Hook Mobile 2.7.0 - Seleção azul somente parado",
+  "updatedAt": "2026-07-02T00:00:00.000Z",
+  "build": "2.7.0",
+  "notes": "App do Diretor limpa a seleção azul enquanto existe música tocando; versão visual do app atualizada para 2.7.",
+  "cacheBust": "2.7.0-fix90-selecao-azul-tocando",
+  "label": "2.7 Seleção azul somente parado",
+  "updateId": "2.7.0-fix90-selecao-azul-tocando",
+  "generatedAt": "2026-07-02T00:00:00Z",
+  "cacheVersion": "2.7.0",
+  "note": "Seleção azul aparece somente quando parado.",
+  "fix": "FIX91"
 }
