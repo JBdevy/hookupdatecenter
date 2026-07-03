@@ -74,6 +74,22 @@ const state = {
   currentPage: 'playlist',
   currentPlaylistName: '',
   activePlaylistId: null,
+  activePlaylistTotalSec: null,
+  currentPlaylistTotalSec: null,
+  playlistTotalSec: null,
+  totalPlaylistSec: null,
+  activePlaylistTotalText: '',
+  currentPlaylistTotalText: '',
+  playlistTotalText: '',
+  totalPlaylistText: '',
+  regionsTotalSec: null,
+  totalRegionsSec: null,
+  musicasTotalSec: null,
+  totalMusicasSec: null,
+  regionsTotalText: '',
+  totalRegionsText: '',
+  musicasTotalText: '',
+  totalMusicasText: '',
   regions: [],
   playlists: [],
   markers: [],
@@ -90,7 +106,14 @@ const state = {
   showGearModal: false,
   timerRunning: false,
   timerStartedAt: 0,
+  timerStartedAtMs: 0,
   timerAccumulatedSec: 0,
+  timerMode: 'progressive',
+  timerTargetSec: 0,
+  timerDisplaySec: 0,
+  timerDisplayText: '',
+  timerLocalTimeText: '',
+  timerTriggerSeq: 0,
   playlistScrollRatio: null,
   regionsScrollRatio: null,
   playlistScrollOffsetRows: null,
@@ -163,6 +186,84 @@ function formatTotalTime(totalSeconds) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+function musicosFirstTotalText(values) {
+  for (const value of values) {
+    const raw = String(value ?? '').trim()
+    if (!raw) continue
+    const clean = raw.replace(/^total\s*:\s*/i, '').trim()
+    if (/^\d{1,3}:\d{2}(?::\d{2})?$/.test(clean)) return clean
+  }
+  return ''
+}
+
+function musicosFirstFiniteTotalNumber(values) {
+  for (const value of values) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number >= 0) return number
+  }
+  return null
+}
+
+function resolveMusicosPlaylistTotalText(playlist) {
+  // Exibe exatamente o texto enviado pelo Lua/Bridge quando existir.
+  // Isso evita diferença de arredondamento entre app e Lua.
+  const fromStateText = musicosFirstTotalText([
+    state?.activePlaylistTotalText,
+    state?.currentPlaylistTotalText,
+    state?.playlistTotalText,
+    state?.totalPlaylistText,
+    state?.repertorioTotalText,
+    state?.repertoryTotalText,
+    playlist?.activePlaylistTotalText,
+    playlist?.currentPlaylistTotalText,
+    playlist?.playlistTotalText,
+    playlist?.totalPlaylistText,
+    playlist?.repertorioTotalText,
+    playlist?.totalText,
+    playlist?.durationText,
+  ])
+  if (fromStateText) return fromStateText
+  const fromStateNumber = musicosFirstFiniteTotalNumber([
+    state?.activePlaylistTotalSec,
+    state?.currentPlaylistTotalSec,
+    state?.playlistTotalSec,
+    state?.totalPlaylistSec,
+    state?.repertorioTotalSec,
+    state?.repertoryTotalSec,
+    playlist?.activePlaylistTotalSec,
+    playlist?.currentPlaylistTotalSec,
+    playlist?.playlistTotalSec,
+    playlist?.totalPlaylistSec,
+    playlist?.repertorioTotalSec,
+    playlist?.totalSec,
+    playlist?.durationSec,
+  ])
+  if (fromStateNumber !== null) return formatTotalTime(fromStateNumber)
+  return formatTotalTime(vshookSumRootDuration(playlist?.songs || []))
+}
+
+function resolveMusicosRegionsTotalText() {
+  const fromStateText = musicosFirstTotalText([
+    state?.regionsTotalText,
+    state?.totalRegionsText,
+    state?.musicasTotalText,
+    state?.musicTotalText,
+    state?.songsTotalText,
+    state?.totalMusicasText,
+  ])
+  if (fromStateText) return fromStateText
+  const fromStateNumber = musicosFirstFiniteTotalNumber([
+    state?.regionsTotalSec,
+    state?.totalRegionsSec,
+    state?.musicasTotalSec,
+    state?.musicTotalSec,
+    state?.songsTotalSec,
+    state?.totalMusicasSec,
+  ])
+  if (fromStateNumber !== null) return formatTotalTime(fromStateNumber)
+  return formatTotalTime(vshookSumRootDuration(state.regions))
+}
+
 const TITLE_TICKER_CYCLE_MS = 9000
 
 function getTickerPhaseStyle(durationMs) {
@@ -181,12 +282,50 @@ function buildTitleTicker(text) {
   return `<span class="titleTicker titleTickerAnimated"><span class="titleTickerTrack"${getTickerPhaseStyle(TITLE_TICKER_CYCLE_MS)}><span class="titleTickerSegment musicosTitleText">${safeText}</span><span class="titleTickerGap">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="titleTickerSegment musicosTitleText">${safeText}</span></span></span>`
 }
 
+function normalizeMusicosTimerMode(value) {
+  const mode = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (mode === 'regressivo' || mode === 'regressive' || mode === 'countdown') return 'countdown'
+  if (mode === 'local' || mode === 'local_time' || mode === 'horario_local' || mode === 'hora_local') return 'local_time'
+  return 'progressive'
+}
+
+function getMusicosDeviceLocalTimeText() {
+  const fromBridge = String(state.timerLocalTimeText || state.timerDisplayText || '').trim()
+  if (fromBridge && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(fromBridge)) return fromBridge
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+}
+
 function getChronoElapsedSeconds() {
+  const max = 99 * 3600 + 59 * 60 + 59
+  const mode = normalizeMusicosTimerMode(state.timerMode || 'progressive')
+  const remoteDisplay = Number(state.timerDisplaySec)
+
+  if (mode === 'countdown') {
+    if (!state.timerRunning && Number.isFinite(remoteDisplay)) {
+      return Math.max(0, Math.min(max, Math.floor(remoteDisplay)))
+    }
+    const target = Math.max(0, Math.min(max, Number(state.timerTargetSec) || 0))
+    const base = Math.max(0, Number(state.timerAccumulatedSec) || 0)
+    const startedAt = Number(state.timerStartedAt || state.timerStartedAtMs) || 0
+    const live = state.timerRunning && startedAt > 0 ? Math.floor((Date.now() - startedAt) / 1000) : 0
+    return Math.max(0, target - Math.max(0, base + live))
+  }
+
+  if (!state.timerRunning && Number.isFinite(remoteDisplay) && remoteDisplay > 0) {
+    return Math.max(0, Math.min(max, Math.floor(remoteDisplay)))
+  }
   const base = Math.max(0, Math.floor(Number(state.timerAccumulatedSec) || 0))
-  if (!state.timerRunning) return base
-  const startedAt = Number(state.timerStartedAt) || 0
-  if (!startedAt) return base
-  return Math.max(0, base + Math.floor((Date.now() - startedAt) / 1000))
+  if (!state.timerRunning) return Math.min(base, max)
+  const startedAt = Number(state.timerStartedAt || state.timerStartedAtMs) || 0
+  if (!startedAt) return Math.min(base, max)
+  return Math.max(0, Math.min(max, base + Math.floor((Date.now() - startedAt) / 1000)))
+}
+
+function getMusicosChronoDisplayText() {
+  return normalizeMusicosTimerMode(state.timerMode || 'progressive') === 'local_time'
+    ? getMusicosDeviceLocalTimeText()
+    : formatChronoTime(getChronoElapsedSeconds())
 }
 
 function formatChronoTime(totalSeconds) {
@@ -418,7 +557,7 @@ function getBlockFallbackSuffix(item) {
 
 function extractBlockSuffix(rawLabel, fallbackSuffix = '01') {
   let text = upperText(rawLabel).trim()
-  text = text.replace(/^[=\-\s]+/, '').replace(/[=\-\s]+$/, '')
+  text = text.replace(/^[=:\-\s]+/, '').replace(/[=:\-\s]+$/, '')
   const match = text.match(/^BLOCO(?:\s+(.*?))?$/i) || text.match(/BLOCO\s+(.+)/i)
   let suffix = (match && match[1] ? match[1] : '').trim()
   if (!suffix) suffix = fallbackSuffix
@@ -1136,6 +1275,22 @@ function updateBridgeState(data) {
   state.autoBlocoEnabled = !!data.autoBlocoEnabled
   state.autoplayEnabled = typeof data.autoplayEnabled === 'boolean' ? data.autoplayEnabled : !!data.autoplayEnabled
   state.activePlaylistId = data.activePlaylistId != null ? String(data.activePlaylistId) : state.activePlaylistId
+  state.activePlaylistTotalSec = musicosFirstFiniteTotalNumber([data.activePlaylistTotalSec, data.currentPlaylistTotalSec, data.playlistTotalSec, data.totalPlaylistSec, data.repertorioTotalSec, data.repertoryTotalSec]) ?? state.activePlaylistTotalSec
+  state.currentPlaylistTotalSec = state.activePlaylistTotalSec
+  state.playlistTotalSec = state.activePlaylistTotalSec
+  state.totalPlaylistSec = state.activePlaylistTotalSec
+  state.activePlaylistTotalText = musicosFirstTotalText([data.activePlaylistTotalText, data.currentPlaylistTotalText, data.playlistTotalText, data.totalPlaylistText, data.repertorioTotalText, data.repertoryTotalText]) || state.activePlaylistTotalText || ''
+  state.currentPlaylistTotalText = state.activePlaylistTotalText
+  state.playlistTotalText = state.activePlaylistTotalText
+  state.totalPlaylistText = state.activePlaylistTotalText
+  state.regionsTotalSec = musicosFirstFiniteTotalNumber([data.regionsTotalSec, data.totalRegionsSec, data.musicasTotalSec, data.musicTotalSec, data.songsTotalSec, data.totalMusicasSec]) ?? state.regionsTotalSec
+  state.totalRegionsSec = state.regionsTotalSec
+  state.musicasTotalSec = state.regionsTotalSec
+  state.totalMusicasSec = state.regionsTotalSec
+  state.regionsTotalText = musicosFirstTotalText([data.regionsTotalText, data.totalRegionsText, data.musicasTotalText, data.musicTotalText, data.songsTotalText, data.totalMusicasText]) || state.regionsTotalText || ''
+  state.totalRegionsText = state.regionsTotalText
+  state.musicasTotalText = state.regionsTotalText
+  state.totalMusicasText = state.regionsTotalText
   state.regions = Array.isArray(data.regions) ? data.regions : []
   state.playlists = normalizeBridgePlaylistsWithHashChildren(Array.isArray(data.playlists) ? data.playlists : [])
   state.projectTabs = Array.isArray(data.projectTabs) ? data.projectTabs : (Array.isArray(data.projects) ? data.projects : state.projectTabs)
@@ -1161,8 +1316,18 @@ function updateBridgeState(data) {
   resetPlaybackLiveState()
   state.queuedSongId = data.queuedSongId != null ? String(data.queuedSongId) : (data.queuedPlaylistSongId != null ? String(data.queuedPlaylistSongId) : null)
   state.timerRunning = !!data.timerRunning
-  state.timerStartedAt = Number(data.timerStartedAt) || 0
+  state.timerStartedAt = Number(data.timerStartedAt || data.timerStartedAtMs) || 0
+  state.timerStartedAtMs = state.timerStartedAt
   state.timerAccumulatedSec = Number(data.timerAccumulatedSec) || 0
+  state.timerMode = normalizeMusicosTimerMode(data.timerMode || data.timerType || state.timerMode || 'progressive')
+  const nextTarget = Number(data.timerTargetSec ?? data.timerCountdownStartSec)
+  if (Number.isFinite(nextTarget)) state.timerTargetSec = Math.max(0, nextTarget)
+  const nextDisplay = Number(data.timerDisplaySec)
+  if (Number.isFinite(nextDisplay)) state.timerDisplaySec = Math.max(0, nextDisplay)
+  else if (state.timerMode === 'countdown' && !state.timerRunning) state.timerDisplaySec = Math.max(0, Number(state.timerTargetSec) || 0)
+  state.timerDisplayText = String(data.timerDisplayText || '')
+  state.timerLocalTimeText = String(data.timerLocalTimeText || '')
+  state.timerTriggerSeq = Number(data.timerTriggerSeq || state.timerTriggerSeq || 0) || 0
   state.tp1MediaType = String(data.tp1MediaType || data.telepromptTp1MediaType || 'text').toLowerCase()
   const tp1AllowsText = !state.tp1MediaType || state.tp1MediaType === 'text' || state.tp1MediaType === 'lyrics' || state.tp1MediaType === 'empty' || state.tp1MediaType === 'empty_item' || state.tp1MediaType === 'emptyitem' || state.tp1MediaType === 'text/plain'
   state.tp1LyricsText = tp1AllowsText ? String(data.tp1LyricsText || data.tp1Lyrics || data.telepromptTp1Lyrics || '') : ''
@@ -1286,6 +1451,10 @@ function buildRenderSignature() {
     musicosLocalSelectedSongId,
     currentPlaylistName: state.currentPlaylistName,
     activePlaylistId: state.activePlaylistId,
+    activePlaylistTotalText: state.activePlaylistTotalText,
+    activePlaylistTotalSec: state.activePlaylistTotalSec,
+    regionsTotalText: state.regionsTotalText,
+    regionsTotalSec: state.regionsTotalSec,
     // No app dos musicos, com tudo parado a selecao remota do REAPER nao deve
     // recriar a lista nem puxar o scroll. A selecao local serve para consultar letras.
     selectedRegionId: null,
@@ -1541,8 +1710,8 @@ function render() {
     ? upperText(playlist?.name || state.currentPlaylistName || 'SEM REPERTÓRIO')
     : 'MÚSICAS'
   const topTime = state.activeTab === 'playlist'
-    ? formatTotalTime(vshookSumRootDuration(playlist?.songs || []))
-    : formatTotalTime(vshookSumRootDuration(state.regions))
+    ? resolveMusicosPlaylistTotalText(playlist)
+    : resolveMusicosRegionsTotalText()
 
   const borderColor = getBorderColorCss()
   const borderGlow = getBorderGlowCss()
@@ -1554,7 +1723,7 @@ function render() {
   const gearModal = renderGearModal()
   const projectTabsModal = renderProjectTabsModal()
   const lyricsPanelHtml = renderMusicosLyricsPanel()
-  const chronoText = formatChronoTime(getChronoElapsedSeconds())
+  const chronoText = getMusicosChronoDisplayText()
   const nowPlayingHtml = renderNowPlayingLine()
 
   const topTitleHtml = buildTitleTicker(topTitle)
@@ -1570,7 +1739,7 @@ function render() {
           <div class="${state.activeTab === 'playlist' ? 'topStatusLeftPlaylist' : 'topStatusLeft'}">
             <span class="musicosStaticTitle">${topTitleHtml}</span>
           </div>
-          <div class="topTimerButton topTimerButtonMusicos ${state.timerRunning ? 'topTimerButtonRunning' : ''}" aria-live="polite" data-chrono-display="1">${escapeHtml(chronoText)}</div>
+          <div class="topTimerButton topTimerButtonMusicos ${(state.timerRunning || state.timerMode === 'local_time') ? 'topTimerButtonRunning' : ''}" aria-live="polite" data-chrono-display="1">${escapeHtml(chronoText)}</div>
           <div class="topRightTools">
             <button class="menuButton gearMenuButton" data-action="open-gear">⚙</button>
           </div>
@@ -1791,7 +1960,7 @@ if (document.readyState === 'loading') {
 
 
 function syncChronoDom() {
-  const chronoText = formatChronoTime(getChronoElapsedSeconds())
+  const chronoText = getMusicosChronoDisplayText()
   document.querySelectorAll('[data-chrono-display]').forEach((node) => {
     if (node.textContent !== chronoText) node.textContent = chronoText
   })
@@ -2284,4 +2453,349 @@ function syncPlaybackDom() {
     try { if (typeof refreshChronoRenderLoop === 'function') refreshChronoRenderLoop(); } catch(e) {}
     try { if (typeof render === 'function') render(); } catch(e) {}
   };
+})();
+
+
+/* VS_HOOK_FIX103_NATIVE_TP_MEDIA_AND_AUTO_SYNC
+   TP1 via extensão: imagem/vídeo são renderizados por URL HTTP da extensão, não como texto. */
+(function(){
+  if (window.__VSHOOK_FIX103_NATIVE_TP_MEDIA_MUSICOS__) return;
+  window.__VSHOOK_FIX103_NATIVE_TP_MEDIA_MUSICOS__ = true;
+  const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const up = (v) => (typeof upperText === 'function' ? upperText(v) : String(v || '').toUpperCase());
+  const mediaKind = (type, path) => {
+    const t = String(type || '').toLowerCase();
+    const p = String(path || '').toLowerCase().split('?')[0];
+    if (t.includes('image') || /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(p)) return 'image';
+    if (t.includes('video') || /\.(mp4|mov|m4v|webm|mkv|avi)$/.test(p)) return 'video';
+    return 'text';
+  };
+  const mediaAllowsText = (type) => {
+    const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g,'_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain';
+  };
+  const bridgeUrl = (path) => { try { return typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl(path) : path; } catch(e) { return path; } };
+  function setTpFromBridge103(data){
+    if (!data || typeof data !== 'object' || !state) return;
+    const tp = data.tp1 && typeof data.tp1 === 'object' ? data.tp1 : {};
+    const mediaType = String(data.tp1MediaType || data.telepromptTp1MediaType || tp.mediaType || tp.telepromptType || state.tp1MediaType || 'text').toLowerCase();
+    const mediaPath = String(data.tp1MediaPath || data.telepromptTp1MediaPath || tp.mediaPath || tp.path || state.tp1MediaPath || '').trim();
+    state.tp1MediaType = mediaType;
+    state.telepromptTp1MediaType = mediaType;
+    state.tp1MediaPath = mediaPath;
+    state.telepromptTp1MediaPath = mediaPath;
+    state.tp1MediaCurrentTime = Number(data.tp1MediaCurrentTime ?? tp.mediaCurrentTime ?? state.tp1MediaCurrentTime ?? 0) || 0;
+    state.tp1MediaOffset = Number(data.tp1MediaOffset ?? tp.mediaOffset ?? state.tp1MediaOffset ?? 0) || 0;
+    state.tp1MediaPlayrate = Number(data.tp1MediaPlayrate ?? tp.mediaPlayrate ?? state.tp1MediaPlayrate ?? 1) || 1;
+    state.tp1SongName = String(data.tp1SongName || data.telepromptTp1SongName || data.tp1Song || tp.songName || tp.song || state.tp1SongName || '');
+    state.tp1LyricsText = mediaAllowsText(mediaType) ? String(data.tp1LyricsText || data.tp1Lyrics || data.telepromptTp1Lyrics || data.telepromptTp1Text || tp.lyricsText || tp.lyrics || tp.text || state.tp1LyricsText || '') : '';
+    state.tp1UpdatedAt = data.tp1UpdatedAt || tp.updatedAt || state.tp1UpdatedAt || null;
+  }
+  if (typeof syncFromBridge === 'function' && !syncFromBridge.__fix103TpMediaWrapped) {
+    const prev = syncFromBridge;
+    syncFromBridge = function(data){
+      const result = prev(data);
+      try { setTpFromBridge103(data); } catch(e) {}
+      return result;
+    };
+    syncFromBridge.__fix103TpMediaWrapped = true;
+  }
+  function tpTitle(){ return String(state?.tp1SongName || state?.telepromptTp1SongName || state?.currentSongName || state?.playingSongName || state?.songName || 'TELEPROMPT 1').trim() || 'TELEPROMPT 1'; }
+  function tpPath(){ return String(state?.tp1MediaPath || state?.telepromptTp1MediaPath || '').trim(); }
+  function tpType(){ return String(state?.tp1MediaType || state?.telepromptTp1MediaType || 'text').toLowerCase(); }
+  function tpText(){ return mediaAllowsText(tpType()) ? String(state?.tp1LyricsText || state?.tp1Lyrics || state?.telepromptTp1Lyrics || state?.telepromptTp1Text || '').trim() : ''; }
+  function tpMediaUrl(path){ return path ? bridgeUrl('/media?slot=1&path=' + encodeURIComponent(path)) : ''; }
+  function progress103(){ try { const d = Number(state.playbackDurationSec || state.currentSongDurationSec || 0); const r = Number(state.playbackRemainingSec || state.currentSongRemainingSec); if (d > 0 && Number.isFinite(r)) return Math.max(0, Math.min(100, ((d-r)/d)*100)); } catch(e){} return 0; }
+  function renderTpBody103(){
+    const path = tpPath();
+    const kind = mediaKind(tpType(), path);
+    if (kind === 'image') {
+      const src = tpMediaUrl(path);
+      return src ? `<div class="tpMediaStageFix103"><img class="tpMediaImageFix103" data-tp-media="image" src="${esc(src)}" alt="TP1" /></div>` : `<div class="lyricsTextView tpLyricsTextFix103">MÍDIA TP1 SEM CAMINHO</div>`;
+    }
+    if (kind === 'video') {
+      const src = tpMediaUrl(path);
+      const cur = Number(state?.tp1MediaCurrentTime || 0) || 0;
+      return src ? `<div class="tpMediaStageFix103"><video class="tpMediaVideoFix103" data-tp-media="video" data-tp-current-time="${esc(cur)}" src="${esc(src)}" autoplay muted playsinline webkit-playsinline preload="auto"></video></div>` : `<div class="lyricsTextView tpLyricsTextFix103">VÍDEO TP1 SEM CAMINHO</div>`;
+    }
+    const text = tpText() || 'SEM CONTEÚDO NO TP1';
+    return `<div class="lyricsTextView tpLyricsTextFix103" data-lyrics-text-view data-lyrics-source="${esc(text)}">${typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(text) : esc(text)}</div>`;
+  }
+  function syncTpMediaDom103(){
+    const v = document.querySelector('video[data-tp-media="video"]');
+    if (v) {
+      const wanted = Number(state?.tp1MediaCurrentTime || v.getAttribute('data-tp-current-time') || 0) || 0;
+      try { if (Number.isFinite(wanted) && Math.abs((v.currentTime || 0) - wanted) > 0.45) v.currentTime = wanted; } catch(e) {}
+      try { v.muted = true; const p = v.play?.(); if (p && p.catch) p.catch(()=>{}); } catch(e) {}
+    }
+    const titleNode = document.querySelector('[data-lyrics-title]');
+    if (titleNode) titleNode.textContent = up(tpTitle());
+    const fill = document.querySelector('[data-lyrics-progress-fill]');
+    if (fill) fill.style.width = `${Math.round(progress103()*10)/10}%`;
+  }
+  if (typeof renderMusicosLyricsPanel === 'function' || typeof renderLyricsPanel === 'function') {
+    const renderTpPanel103 = function(){
+      if (!state.lyricsPanelOpen) return '';
+      const title = up(tpTitle());
+      const progress = Math.round(progress103()*10)/10;
+      return `<div class="lyricsScreen telepromptOnlyScreen musicosTp1OnlyScreen tpMediaScreenFix103" style="--tp-text-color:${esc((window.__vshookMusicosTpColorFix12 && window.__vshookMusicosTpColorFix12()) || '#f8fafc')};--tp-font:${esc((window.__vshookMusicosTpFontFix12 && window.__vshookMusicosTpFontFix12()) || 'Inter, Arial, sans-serif')}">
+        <div class="lyricsTopBar lyricsTopBarTpFix12">
+          <div class="lyricsNowPlaying lyricsNowPlayingTpFix12">
+            <div class="lyricsNowPlayingTitle lyricsNowPlayingTitleFix12" data-lyrics-title>${esc(title)}</div>
+            <div class="lyricsProgressTrack lyricsProgressTrackFix12"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${progress}%"></div></div>
+          </div>
+          <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonFix12" data-action="close-lyrics-panel">&gt;&gt;</button>
+        </div>
+        <div class="lyricsBody lyricsBodyTpFix12 tpMediaBodyFix103">${renderTpBody103()}</div>
+      </div>`;
+    };
+    if (typeof renderMusicosLyricsPanel !== 'undefined') renderMusicosLyricsPanel = renderTpPanel103;
+    if (typeof renderLyricsPanel !== 'undefined') renderLyricsPanel = renderTpPanel103;
+  }
+  if (typeof syncLyricsPanelDom === 'function') {
+    const prevSyncDom = syncLyricsPanelDom;
+    syncLyricsPanelDom = function(){ try { prevSyncDom(); } catch(e) {} syncTpMediaDom103(); };
+  }
+  setInterval(syncTpMediaDom103, 500);
+})();
+
+
+/* VS_HOOK_FIX_STOP_QUEUE_TP_MUSICOS_FINAL
+   - Blocos sem ':' no app dos musicos.
+   - Progresso do TP1 usa a mesma base da musica tocando/lista, sem sobe/desce.
+*/
+(function(){
+  if (window.__VSHOOK_FIX_STOP_QUEUE_TP_MUSICOS_FINAL__) return;
+  window.__VSHOOK_FIX_STOP_QUEUE_TP_MUSICOS_FINAL__ = true;
+  const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const up = (v) => (typeof upperText === 'function' ? upperText(v) : String(v || '').toUpperCase());
+  const originalFormatAppBlockLabel = typeof formatAppBlockLabel === 'function' ? formatAppBlockLabel : null;
+  formatAppBlockLabel = function(item) {
+    let label = originalFormatAppBlockLabel ? originalFormatAppBlockLabel(item) : String(item?.blockDisplayName || item?.blockName || item?.name || item?.label || 'BLOCO');
+    label = String(label || '').replace(/\s*:\s*$/g, '').replace(/\s+:\s+/g, ' ').replace(/^:+\s*/g, '').trim();
+    return up(label || 'BLOCO');
+  };
+
+  let tpProgressLastId = null;
+  let tpProgressLastValue = 0;
+  let tpProgressLastAt = 0;
+  function findCurrentPlayingItemForTp() {
+    const id = state && state.playingId != null ? String(state.playingId) : '';
+    if (!id) return null;
+    if (typeof findMusicosSongById === 'function') {
+      const song = findMusicosSongById(id);
+      if (song && !(typeof detectBlockItem === 'function' && detectBlockItem(song))) return song;
+    }
+    const lists = [];
+    if (Array.isArray(state?.regions)) lists.push(state.regions);
+    if (Array.isArray(state?.playlists)) {
+      state.playlists.forEach(pl => { if (Array.isArray(pl?.songs)) lists.push(pl.songs); });
+    }
+    for (const list of lists) {
+      const found = list.find(item => String(item?.id ?? item?.songId ?? '') === id);
+      if (found && !(typeof detectBlockItem === 'function' && detectBlockItem(found))) return found;
+    }
+    return null;
+  }
+  function computeStableTpProgressPercent() {
+    const id = state && state.playingId != null ? String(state.playingId) : '';
+    if (!id) { tpProgressLastId = null; tpProgressLastValue = 0; return 0; }
+    let ratio = 0;
+    try {
+      const item = findCurrentPlayingItemForTp();
+      if (item) {
+        const aware = (typeof getPlaybackAwareItem === 'function') ? getPlaybackAwareItem(item, true, false) : item;
+        if (typeof getRowProgressRatio === 'function') ratio = Number(getRowProgressRatio(aware, true, false)) || 0;
+      }
+    } catch(e) { ratio = 0; }
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      try {
+        const d = Number(state.playbackDurationSec || state.currentSongDurationSec || 0) || 0;
+        const r = Number(state.playbackRemainingSec || state.currentSongRemainingSec);
+        if (d > 0 && Number.isFinite(r)) ratio = Math.max(0, Math.min(1, (d - r) / d));
+      } catch(e) {}
+    }
+    ratio = Math.max(0, Math.min(1, Number(ratio) || 0));
+    const value = Math.round(ratio * 1000) / 10;
+    const now = Date.now();
+    if (tpProgressLastId !== id) {
+      tpProgressLastId = id;
+      tpProgressLastValue = value;
+      tpProgressLastAt = now;
+      return value;
+    }
+    // Durante reprodução, a barra não pode voltar/subir e descer a cada poll.
+    const stable = Math.max(tpProgressLastValue || 0, value);
+    tpProgressLastValue = stable;
+    tpProgressLastAt = now;
+    return stable;
+  }
+  window.__vshookMusicosTpProgressPercent = computeStableTpProgressPercent;
+  const mediaAllowsText = (type) => { const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g,'_'); return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain'; };
+  const tpTitle = () => String(state?.tp1SongName || state?.telepromptTp1SongName || state?.currentSongName || state?.playingSongName || state?.songName || 'TELEPROMPT 1').trim() || 'TELEPROMPT 1';
+  const tpText = () => mediaAllowsText(state?.tp1MediaType || state?.telepromptTp1MediaType || 'text') ? String(state?.tp1LyricsText || state?.tp1Lyrics || state?.telepromptTp1Lyrics || state?.telepromptTp1Text || '').trim() : '';
+  if (typeof renderMusicosLyricsPanel === 'function' || typeof renderLyricsPanel === 'function') {
+    const renderFixedTpPanel = function(){
+      if (!state.lyricsPanelOpen) return '';
+      const title = up(tpTitle());
+      const text = tpText() || 'SEM CONTEÚDO NO TP1';
+      const progress = computeStableTpProgressPercent();
+      return `<div class="lyricsScreen telepromptOnlyScreen musicosTp1OnlyScreen" style="--tp-text-color:${esc((window.__vshookMusicosTpColorFix12 && window.__vshookMusicosTpColorFix12()) || '#f8fafc')};--tp-font:${esc((window.__vshookMusicosTpFontFix12 && window.__vshookMusicosTpFontFix12()) || 'Inter, Arial, sans-serif')}">
+        <div class="lyricsTopBar lyricsTopBarTpFix12">
+          <div class="lyricsNowPlaying lyricsNowPlayingTpFix12">
+            <div class="lyricsNowPlayingTitle lyricsNowPlayingTitleFix12" data-lyrics-title>${esc(title)}</div>
+            <div class="lyricsProgressTrack lyricsProgressTrackFix12"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${progress}%"></div></div>
+          </div>
+          <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonFix12" data-action="close-lyrics-panel">&gt;&gt;</button>
+        </div>
+        <div class="lyricsBody lyricsBodyTpFix12"><div class="lyricsTextView tpLyricsTextFix12" data-lyrics-text-view data-lyrics-source="${esc(text)}">${typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(text) : esc(text)}</div></div>
+      </div>`;
+    };
+    if (typeof renderMusicosLyricsPanel !== 'undefined') renderMusicosLyricsPanel = renderFixedTpPanel;
+    if (typeof renderLyricsPanel !== 'undefined') renderLyricsPanel = renderFixedTpPanel;
+  }
+  const prevSyncMusicosLyricsPanelDom = typeof syncMusicosLyricsPanelDom === 'function' ? syncMusicosLyricsPanelDom : null;
+  syncMusicosLyricsPanelDom = function(){
+    try { if (prevSyncMusicosLyricsPanelDom) prevSyncMusicosLyricsPanelDom(); } catch(e) {}
+    if (!state.lyricsPanelOpen) return;
+    const fill = document.querySelector('[data-lyrics-progress-fill]');
+    if (fill) fill.style.width = `${computeStableTpProgressPercent()}%`;
+    const titleNode = document.querySelector('[data-lyrics-title]');
+    const title = up(tpTitle());
+    if (titleNode && titleNode.textContent !== title) titleNode.textContent = title;
+    const textNode = document.querySelector('[data-lyrics-text-view]');
+    const nextText = tpText() || 'SEM CONTEÚDO NO TP1';
+    if (textNode && textNode.getAttribute('data-lyrics-source') !== nextText) {
+      textNode.setAttribute('data-lyrics-source', nextText);
+      textNode.innerHTML = typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(nextText) : esc(nextText);
+    }
+  };
+  setInterval(() => { try { syncMusicosLyricsPanelDom(); } catch(e) {} }, 500);
+})();
+
+
+/* VS_HOOK_FIX_MUSICOS_BLOCK_LABEL_SAME_AS_DIRETOR_FINAL
+   App dos Músicos usa a mesma limpeza visual dos blocos do repertório do Diretor: sem :, sem ====, sem wrappers. */
+(function(){
+  if (window.__VSHOOK_MUSICOS_BLOCK_LABEL_SAME_AS_DIRETOR_FINAL__) return;
+  window.__VSHOOK_MUSICOS_BLOCK_LABEL_SAME_AS_DIRETOR_FINAL__ = true;
+
+  function _up(v){
+    try { return typeof upperText === 'function' ? upperText(v) : String(v || '').toLocaleUpperCase('pt-BR'); }
+    catch(e){ return String(v || '').toUpperCase(); }
+  }
+
+  function _fallbackSuffix(item){
+    try {
+      if (typeof getBlockFallbackSuffix === 'function') return getBlockFallbackSuffix(item);
+      const n = Math.abs(Number(item && (item.source_number ?? item.sourceNumber ?? item.id) || 1)) || 1;
+      return String(n).padStart(2, '0');
+    } catch(e) { return '01'; }
+  }
+
+  function _stripBlockDecor(text){
+    let t = _up(text).trim();
+    // remove qualquer decoração repetida nas pontas: :::: BLOCO X :::: / ==== BLOCO X ==== / ---- BLOCO X ----
+    t = t.replace(/^[=:\-\s]+/g, '').replace(/[=:\-\s]+$/g, '').trim();
+    // remove separadores soltos depois de BLOCO: BLOCO: X / BLOCO - X / BLOCO = X
+    t = t.replace(/^BLOCO\s*[=:\-]+\s*/i, 'BLOCO ');
+    // remove ':' que tenha sobrado no começo/fim depois da primeira limpeza
+    t = t.replace(/^:+/g, '').replace(/:+$/g, '').trim();
+    // troca sequências internas de dois-pontos decorativos por espaço, sem destruir nomes normais
+    t = t.replace(/\s*:{2,}\s*/g, ' ').trim();
+    return t;
+  }
+
+  formatAppBlockLabel = function(item){
+    const rawCandidate = String((item && (item.blockDisplayName || item.blockName || item.name || item.label)) || '').trim();
+    const customCandidate = String((item && item.blockCustomName) || '').trim();
+    const raw = customCandidate || rawCandidate || 'BLOCO';
+    let clean = _stripBlockDecor(raw);
+
+    if (!clean) clean = 'BLOCO';
+
+    // Se veio BLOCO decorado, normaliza igual ao Diretor: BLOCO + sufixo/nome, sem pontuação.
+    if (/^BLOCO(?:\s+|$)/i.test(clean)) {
+      let suffix = clean.replace(/^BLOCO\s*/i, '').trim();
+      suffix = _stripBlockDecor(suffix);
+      if (!suffix || suffix === 'BLOCO') suffix = _fallbackSuffix(item);
+      return _up('BLOCO ' + suffix);
+    }
+
+    // Se for nome customizado do bloco, exibe o nome limpo, igual o Diretor.
+    return _up(clean);
+  };
+
+  if (typeof renderApp === 'function') {
+    try { renderApp(); } catch(e) {}
+  }
+})();
+
+
+/* VS_HOOK_FIX_MUSICOS_TIMER_REGRESSIVO_LOCAL_FINAL */
+(function(){
+  if (window.__VSHOOK_FIX_MUSICOS_TIMER_REGRESSIVO_LOCAL_FINAL__) return;
+  window.__VSHOOK_FIX_MUSICOS_TIMER_REGRESSIVO_LOCAL_FINAL__ = true;
+
+  function mode(value){
+    try { return normalizeMusicosTimerMode(value); } catch(e) {
+      const m = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+      if (m === 'regressivo' || m === 'regressive' || m === 'countdown') return 'countdown';
+      if (m === 'local' || m === 'local_time' || m === 'horario_local' || m === 'hora_local') return 'local_time';
+      return 'progressive';
+    }
+  }
+
+  const oldSync = typeof syncFromBridge === 'function' ? syncFromBridge : null;
+  if (oldSync && !oldSync.__vshookMusicosTimerFinalWrapped) {
+    syncFromBridge = function(data){
+      const result = oldSync(data);
+      try {
+        if (data && typeof data === 'object') {
+          const hasTimer = Object.prototype.hasOwnProperty.call(data, 'timerMode') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerType') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerTargetSec') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerCountdownStartSec') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerDisplaySec') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerDisplayText') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerLocalTimeText') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerRunning') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerStartedAt') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerStartedAtMs') ||
+            Object.prototype.hasOwnProperty.call(data, 'timerAccumulatedSec');
+          if (hasTimer) {
+            state.timerMode = mode(data.timerMode || data.timerType || state.timerMode || 'progressive');
+            if (Object.prototype.hasOwnProperty.call(data, 'timerRunning')) state.timerRunning = !!data.timerRunning;
+            const started = Number(data.timerStartedAt || data.timerStartedAtMs);
+            if (Number.isFinite(started)) { state.timerStartedAt = started; state.timerStartedAtMs = started; }
+            const accum = Number(data.timerAccumulatedSec);
+            if (Number.isFinite(accum)) state.timerAccumulatedSec = Math.max(0, accum);
+            const target = Number(data.timerTargetSec ?? data.timerCountdownStartSec);
+            if (Number.isFinite(target)) state.timerTargetSec = Math.max(0, target);
+            const display = Number(data.timerDisplaySec);
+            if (Number.isFinite(display)) state.timerDisplaySec = Math.max(0, display);
+            else if (state.timerMode === 'countdown' && !state.timerRunning) state.timerDisplaySec = Math.max(0, Number(state.timerTargetSec) || 0);
+            state.timerDisplayText = String(data.timerDisplayText || state.timerDisplayText || '');
+            state.timerLocalTimeText = String(data.timerLocalTimeText || state.timerLocalTimeText || '');
+            state.timerTriggerSeq = Number(data.timerTriggerSeq || state.timerTriggerSeq || 0) || 0;
+            try { syncChronoDom?.(); } catch(e) {}
+          }
+        }
+      } catch(e) {}
+      return result;
+    };
+    syncFromBridge.__vshookMusicosTimerFinalWrapped = true;
+  }
+
+  if (typeof syncChronoDom === 'function' && !syncChronoDom.__vshookMusicosTimerFinalWrapped) {
+    syncChronoDom = function(){
+      const text = (typeof getMusicosChronoDisplayText === 'function') ? getMusicosChronoDisplayText() : formatChronoTime(getChronoElapsedSeconds());
+      document.querySelectorAll('[data-chrono-display]').forEach((node) => { if (node.textContent !== text) node.textContent = text; });
+      document.querySelectorAll('.topTimerButtonMusicos').forEach((node) => {
+        if (mode(state.timerMode) === 'local_time' || !!state.timerRunning) node.classList.add('topTimerButtonRunning');
+        else node.classList.remove('topTimerButtonRunning');
+      });
+    };
+    syncChronoDom.__vshookMusicosTimerFinalWrapped = true;
+  }
 })();

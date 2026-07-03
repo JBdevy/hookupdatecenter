@@ -689,6 +689,105 @@ function sendText(res, statusCode, body, contentType) {
 
 const lastDirectorPlaybackCommandBySignature = new Map()
 
+
+
+function isQueueCommandTypeNoTransport(type) {
+  const t = String(type || '').toLowerCase()
+  return t === 'queue_playlist_song' || t === 'queue_region_song' || t === 'clear_queue'
+}
+
+function sanitizeNativeCommandForTransportSafety(type, payload = {}) {
+  const commandType = String(type || '')
+  const out = payload && typeof payload === 'object' ? { ...payload } : {}
+  if (isQueueCommandTypeNoTransport(commandType)) {
+    delete out.desiredPlaying
+    delete out.desiredState
+    delete out.forceStop
+    delete out.forcePlay
+    delete out.transportOnly
+    delete out.selectedStartPos
+    delete out.selectedEndPos
+    delete out.stopSelectionStartPos
+    delete out.stopSelectionEndPos
+    delete out.stopSelectionPlaylistIndex
+    out.queueOnly = commandType !== 'clear_queue'
+    out.noTransport = true
+    out.keepPlaying = true
+    out.noSeek = true
+    out.preserveCursor = true
+  }
+  return out
+}
+
+function isDirectorTransportStopCommand(type, payload = {}) {
+  const commandType = String(type || '').toLowerCase()
+  if (isQueueCommandTypeNoTransport(commandType)) return false
+  const source = String(payload.role || payload.clientRole || payload.appRole || payload.source || payload.mode || '').toLowerCase()
+  const isDirector = !source || source.includes('director') || source.includes('diretor') || commandType.startsWith('director_') || commandType.startsWith('transport_')
+  const explicitStopType = commandType === 'transport_stop_no_seek' || commandType === 'director_stop_no_seek' || commandType === 'play_stop_no_seek' || commandType === 'play_stop' || commandType === 'stop' ||
+    (commandType.includes('stop') && !commandType.includes('timer'))
+  return isDirector && explicitStopType
+}
+
+function makeNativeTransportOnlyStopCommand(type, payload = {}) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    type: 'director_stop_no_seek',
+    payload: {
+      role: 'director',
+      clientRole: 'director',
+      appRole: 'director',
+      source: 'director',
+      mode: 'director',
+      activeTab: payload.activeTab || payload.page || 'playlist',
+      desiredPlaying: false,
+      desiredState: 'stopped',
+      forcePlay: false,
+      forceStop: true,
+      noSeek: true,
+      preserveCursor: true,
+      transportOnly: true,
+      stopTransportOnly: true,
+      ignoreSelection: true,
+      ignoreTarget: true,
+      noPosition: true,
+      preventFallbackZero: true,
+      clientCommandId: payload.clientCommandId || `director-stop-transport-only-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      issuedAtMs: Date.now(),
+    },
+    role: 'director',
+    clientRole: 'director',
+    appRole: 'director',
+    source: 'director',
+    mode: 'director',
+    desiredPlaying: false,
+    desiredState: 'stopped',
+    forcePlay: false,
+    forceStop: true,
+    noSeek: true,
+    preserveCursor: true,
+    transportOnly: true,
+    stopTransportOnly: true,
+    ignoreSelection: true,
+    ignoreTarget: true,
+    noPosition: true,
+    preventFallbackZero: true,
+    activeTab: payload.activeTab || payload.page || 'playlist',
+    desiredPlaying: false,
+    desiredState: 'stopped',
+    forcePlay: false,
+    forceStop: true,
+    noSeek: true,
+    preserveCursor: true,
+    transportOnly: true,
+    stopTransportOnly: true,
+    ignoreSelection: true,
+    ignoreTarget: true,
+    createdAt: new Date().toISOString(),
+    fromHookCenter: true,
+  }
+}
+
 function shouldDropDuplicateDirectorPlaybackCommand(type, payload = {}) {
   const commandType = String(type || '')
   if (!['play_start', 'play_stop', 'play_toggle', 'director_play_button', 'play_button'].includes(commandType)) return false
@@ -1378,15 +1477,16 @@ function createBridgeServer(options) {
         try {
           const parsed = body ? JSON.parse(body) : {}
           const type = typeof parsed.type === 'string' ? parsed.type : 'unknown'
-          const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {}
+          let payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {}
           let lyricsResult = null
           if (type === 'update_lyrics' || type === 'save_lyrics') {
             lyricsResult = saveLyricsPayload(lyricsFile, payload)
           }
+          payload = sanitizeNativeCommandForTransportSafety(type, payload)
           updateLiveCommandOverlay(type, payload)
           // FIX21: manda comando achatado e com payload. Algumas versões da extensão/Lua leem
           // campos no topo; outras leem dentro de payload. Enviar os dois evita comando sem target.
-          const nativeCommandPayload = {
+          let nativeCommandPayload = {
             id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             type,
             payload,
@@ -1394,6 +1494,14 @@ function createBridgeServer(options) {
             createdAt: new Date().toISOString(),
             fromHookCenter: true,
           }
+          if (isDirectorTransportStopCommand(type, payload)) {
+            nativeCommandPayload = makeNativeTransportOnlyStopCommand(type, payload)
+          }
+          if (nativeCommandPayload && String(nativeCommandPayload.type || '') === 'transport_stop_no_seek') {
+            nativeCommandPayload.type = 'director_stop_no_seek'
+            if (nativeCommandPayload.payload && typeof nativeCommandPayload.payload === 'object') nativeCommandPayload.payload.type = 'director_stop_no_seek'
+          }
+          // VS_HOOK_FIX_NATIVE_STOP_TYPE_RECOGNIZED
           const nativeOk = await postNativeBridgeCommand(nativeCommandPayload)
           nativeBridgeStateCacheAt = 0
           setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 40)

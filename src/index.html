@@ -45,6 +45,11 @@
           </div>
           <button id="checkButton" class="primary-button">Conferir atualização</button>
         </div>
+        <div id="updateDescriptionCard" class="card update-description-card hidden" aria-hidden="true">
+          <p class="eyebrow">Descrição da atualização</p>
+          <div id="updateDescription" class="update-description-text">--</div>
+        </div>
+
         <div class="home-update-split" id="homeUpdateSplit">
           <div class="update-column script-update-column">
             <div id="noUpdateCard" class="card hidden">
@@ -69,8 +74,7 @@
                 </button>
               </div>
 
-              <p id="updateDescription" class="description hidden" aria-hidden="true"></p>
-              <ul id="changelogList" class="changelog"></ul>
+              <ul id="changelogList" class="changelog hidden" aria-hidden="true"></ul>
 
               <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar</button>
@@ -378,6 +382,10 @@
                     Cor do nome da música
                     <input id="lyricsSongNameColor1" type="color" value="#00ff55" />
                   </label>
+                  <label>
+                    Cor do nome da fila
+                    <input id="lyricsQueueNameColor1" type="color" value="#ffea00" />
+                  </label>
                 </div>
               </section>
 
@@ -399,6 +407,14 @@
                   <label>
                     Escala da mídia
                     <input id="lyricsMediaScale1" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                  <label>
+                    Profundidade Preview
+                    <input id="lyricsPreviewScale1" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                  <label>
+                    Profundidade nome da fila
+                    <input id="lyricsQueueNameDepth1" type="range" min="0" max="240" step="1" value="80" />
                   </label>
                 </div>
               </section>
@@ -431,6 +447,18 @@
                     </select>
                   </label>
                   <label>
+                    Fonte do nome da fila
+                    <select id="lyricsQueueNameFontFamily1">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
                     Posição do relógio
                     <select id="lyricsClockPosition1">
                       <option value="top">Em cima</option>
@@ -440,6 +468,13 @@
                   <label>
                     Posição do nome da música
                     <select id="lyricsSongNamePosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da fila
+                    <select id="lyricsQueueNamePosition1">
                       <option value="top">Em cima</option>
                       <option value="bottom">Em baixo</option>
                     </select>
@@ -482,6 +517,14 @@
                     <input id="lyricsSongNameEnabled1" type="checkbox" />
                     Mostrar nome da música
                   </label>
+                  <label class="settings-check">
+                    <input id="lyricsQueueNameEnabled1" type="checkbox" checked />
+                    Mostrar nome da fila
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsPreviewEnabled1" type="checkbox" checked />
+                    Mostrar Preview nesta janela
+                  </label>
                 </div>
               </section>
 
@@ -523,6 +566,10 @@
                     Cor do nome da música
                     <input id="lyricsSongNameColor2" type="color" value="#00ff55" />
                   </label>
+                  <label>
+                    Cor do nome da fila
+                    <input id="lyricsQueueNameColor2" type="color" value="#ffea00" />
+                  </label>
                 </div>
               </section>
 
@@ -544,6 +591,14 @@
                   <label>
                     Escala da mídia
                     <input id="lyricsMediaScale2" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                  <label>
+                    Profundidade Preview
+                    <input id="lyricsPreviewScale2" type="range" min="50" max="100" step="5" value="100" />
+                  </label>
+                  <label>
+                    Profundidade nome da fila
+                    <input id="lyricsQueueNameDepth2" type="range" min="0" max="240" step="1" value="80" />
                   </label>
                 </div>
               </section>
@@ -576,6 +631,18 @@
                     </select>
                   </label>
                   <label>
+                    Fonte do nome da fila
+                    <select id="lyricsQueueNameFontFamily2">
+                      <option value="Arial">Arial</option>
+                      <option value="Segoe UI">Segoe UI</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Impact">Impact</option>
+                    </select>
+                  </label>
+                  <label>
                     Posição do relógio
                     <select id="lyricsClockPosition2">
                       <option value="top">Em cima</option>
@@ -585,6 +652,13 @@
                   <label>
                     Posição do nome da música
                     <select id="lyricsSongNamePosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom">Em baixo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Posição do nome da fila
+                    <select id="lyricsQueueNamePosition2">
                       <option value="top">Em cima</option>
                       <option value="bottom">Em baixo</option>
                     </select>
@@ -626,6 +700,14 @@
                   <label class="settings-check">
                     <input id="lyricsSongNameEnabled2" type="checkbox" />
                     Mostrar nome da música
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsQueueNameEnabled2" type="checkbox" checked />
+                    Mostrar nome da fila
+                  </label>
+                  <label class="settings-check">
+                    <input id="lyricsPreviewEnabled2" type="checkbox"  />
+                    Mostrar Preview nesta janela
                   </label>
                 </div>
               </section>
@@ -773,7 +855,6 @@
             <span id="statusVersionBadge" class="badge">VS Hook</span>
           </div>
           <p class="installed-version-line">Versão do VS Hook instalada: <strong id="statusUpdateInstalledVersion">--</strong></p>
-          <p id="statusUpdateDescription" class="description"></p>
           <div class="actions">
             <button id="statusDownloadButton" class="primary-button" type="button">Baixar</button>
             <button id="statusInstallButton" class="secondary-button hidden" type="button">Instalar</button>

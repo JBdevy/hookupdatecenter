@@ -7,6 +7,7 @@
   --lyrics-clock-scale: 1;
   --lyrics-clock-letter-spacing: .12em;
   --lyrics-media-scale: 1;
+  --lyrics-preview-scale: 1;
   --notice-text-color: #ffea00;
   --notice-flash-color: #ff0000;
   --notice-font: Arial, sans-serif;
@@ -1009,6 +1010,7 @@ body::after,
 /* v24 definitivo: sem cantos arredondados. A escala da midia agora vem do painel Teleprompt. */
 :root {
   --lyrics-media-scale: 1;
+  --lyrics-preview-scale: 1;
 }
 
 html,
@@ -1619,6 +1621,7 @@ body:not(.rgb-clock-border-enabled) .lyrics-timer::after {
    100% permanece o limite da janela; abaixo de 100% reduz imagem/vídeo. */
 :root {
   --lyrics-media-scale: 1;
+  --lyrics-preview-scale: 1;
 }
 .lyrics-image,
 .lyrics-video,
@@ -1629,4 +1632,532 @@ body.clear-mode .lyrics-video {
   transform: translateZ(0) scale(var(--lyrics-media-scale, 1)) !important;
   transform-origin: center center !important;
   will-change: transform !important;
+}
+
+
+/* FIX109: prioridade nas janelas locais do Teleprompt.
+   Letra fica por cima da mídia; vídeo ganha de imagem no estado enviado pela extensão. */
+body.media-active .lyrics-media {
+  z-index: 10 !important;
+}
+body.media-active .lyrics-text:not(.hidden) {
+  z-index: 30 !important;
+  display: flex !important;
+  background: rgba(0,0,0,.10) !important;
+}
+body.media-active .lyrics-image,
+body.media-active .lyrics-video {
+  z-index: 11 !important;
+}
+
+
+.lyrics-preview {
+  position: fixed;
+  inset: 7vh 5vw 6vh;
+  z-index: 2147483550;
+  pointer-events: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  transform: scale(var(--lyrics-preview-scale));
+  transform-origin: center center;
+  color: #fff;
+  font-family: var(--lyrics-font);
+  text-shadow: 0 .08em .08em rgba(0,0,0,.98), 0 0 18px rgba(0,0,0,.88);
+}
+.lyrics-preview.hidden { display: none; }
+.lyrics-preview-card {
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 14px;
+  border: 2px solid rgba(255,234,0,.85);
+  background: rgba(0,0,0,.70);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lyrics-preview-title {
+  color: #ffea00;
+  font-size: clamp(18px, 2.0vw, 34px);
+  line-height: 1.05;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 8px;
+}
+.lyrics-preview-song {
+  color: #fff;
+  font-size: clamp(13px, 1.30vw, 24px);
+  line-height: 1.12;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 2px 0;
+}
+.lyrics-preview-song.playing {
+  color: #00ff55;
+  animation: previewPlayingBlink .7s steps(1,end) infinite;
+}
+@keyframes previewPlayingBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: .18; }
+}
+.lyrics-song-name { white-space: pre-line; }
+.lyrics-song-queue {
+  display: block;
+  margin-top: 4px;
+  color: #ffea00;
+  font-size: .70em;
+  line-height: 1.05;
+}
+
+
+/* VS_HOOK_FIX_PREVIEW_TP_BLOCKS_WITH_SONGS_QUEUE_CONTROLS
+   Preview do TP mostra bloco + musicas do bloco; mídia/nome/fila somem enquanto preview está ativo. */
+:root {
+  --lyrics-queue-color: #ffea00;
+  --lyrics-queue-font: Arial, sans-serif;
+  --lyrics-queue-z-index: 2147483380;
+  --lyrics-queue-stack-height: calc((clamp(14px, 1.65vw, 27px) + 8px) * var(--lyrics-song-scale));
+}
+
+.lyrics-preview {
+  inset: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height) + 10px) 5vw 6vh !important;
+  z-index: 2147483400 !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  overflow: hidden !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+}
+body.clock-bottom:not(.clock-hidden) .lyrics-preview {
+  inset: 6vh 5vw calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height) + 10px) 5vw !important;
+}
+body.clock-hidden .lyrics-preview {
+  inset: 7vh 5vw 6vh !important;
+}
+body.preview-active .lyrics-text,
+body.preview-active .lyrics-media,
+body.preview-active .lyrics-image,
+body.preview-active .lyrics-video {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+body.preview-active .lyrics-song-name,
+body.preview-active .lyrics-queue-name {
+  display: none !important;
+  visibility: hidden !important;
+}
+body.preview-active .lyrics-timer {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 2147483622 !important;
+}
+
+.lyrics-preview-card {
+  justify-content: flex-start !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+  padding: 10px 12px !important;
+}
+.lyrics-preview-title {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 0 8px 0 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  flex: 0 0 auto !important;
+}
+.lyrics-preview-song-list {
+  width: 100% !important;
+  min-height: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  gap: 2px !important;
+}
+.lyrics-preview-song {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  margin: 1px 0 !important;
+}
+.lyrics-preview-song.queued {
+  color: var(--lyrics-queue-color) !important;
+  text-shadow: 0 0 10px rgba(0,0,0,.95) !important;
+}
+.lyrics-preview-song-empty {
+  opacity: .72 !important;
+}
+.lyrics-preview-empty {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 / -1 !important;
+  align-self: center !important;
+  justify-self: center !important;
+  width: min(860px, calc(100vw - 80px)) !important;
+  max-width: 100% !important;
+  padding: 18px 24px !important;
+  border: 2px solid rgba(255,255,255,.35) !important;
+  background: rgba(0,0,0,.72) !important;
+  color: var(--lyrics-queue-color) !important;
+  font-family: var(--lyrics-font) !important;
+  font-size: clamp(28px, 5vw, 72px) !important;
+  font-weight: 900 !important;
+  line-height: 1.05 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+}
+.lyrics-marquee-text,
+.lyrics-static-text {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.lyrics-marquee-text {
+  min-width: 100%;
+  animation: lyricsNameMarquee 8s linear infinite;
+  will-change: transform;
+}
+@keyframes lyricsNameMarquee {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(-100% + min(100%, 86vw))); }
+}
+.lyrics-preview-title .lyrics-marquee-text {
+  animation-duration: 9s;
+}
+
+.lyrics-queue-name {
+  display: none;
+  position: fixed !important;
+  left: 50% !important;
+  top: var(--lyrics-edge-offset) !important;
+  bottom: auto !important;
+  transform: translateX(-50%) !important;
+  max-width: calc(100vw - 48px) !important;
+  padding: 0 8px !important;
+  background: rgba(0,0,0,.72) !important;
+  color: var(--lyrics-queue-color) !important;
+  font-family: var(--lyrics-queue-font) !important;
+  font-size: clamp(14px, 1.65vw, 27px) !important;
+  line-height: 1 !important;
+  font-weight: 900 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  text-shadow: 0 0 12px rgba(0,0,0,.95) !important;
+  z-index: var(--lyrics-queue-z-index) !important;
+  pointer-events: none !important;
+  -webkit-app-region: no-drag !important;
+}
+body.queue-enabled:not(.preview-active):not(.clear-mode) .lyrics-queue-name:not(:empty) {
+  display: block !important;
+}
+body.queue-top.clock-top:not(.clock-hidden) .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height)) !important;
+  bottom: auto !important;
+}
+body.queue-top.song-enabled.song-top .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-song-stack-height)) !important;
+  bottom: auto !important;
+}
+body.queue-top.clock-top.song-enabled.song-top:not(.clock-hidden) .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height) + var(--lyrics-song-stack-height) + 2px) !important;
+  bottom: auto !important;
+}
+body.queue-bottom .lyrics-queue-name {
+  top: auto !important;
+  bottom: var(--lyrics-edge-offset) !important;
+}
+body.queue-bottom.clock-bottom:not(.clock-hidden) .lyrics-queue-name {
+  top: auto !important;
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height)) !important;
+}
+body.queue-bottom.song-enabled.song-bottom .lyrics-queue-name {
+  top: auto !important;
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-song-stack-height)) !important;
+}
+body.queue-bottom.clock-bottom.song-enabled.song-bottom:not(.clock-hidden) .lyrics-queue-name {
+  top: auto !important;
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-stack-height) + var(--lyrics-song-stack-height) + 2px) !important;
+}
+.lyrics-song-queue {
+  color: var(--lyrics-queue-color) !important;
+}
+.lyrics-song-name .lyrics-marquee-text,
+.lyrics-queue-name .lyrics-marquee-text {
+  animation-duration: 8s;
+}
+
+/* VS_HOOK_FIX_PREVIEW_TP_MARQUEE_TRACK */
+.lyrics-marquee-track {
+  display: inline-flex !important;
+  width: max-content !important;
+  min-width: 100% !important;
+  gap: 3em !important;
+  white-space: nowrap !important;
+  animation: lyricsMarqueeTrack 10s linear infinite !important;
+  will-change: transform !important;
+}
+.lyrics-marquee-track > span {
+  flex: 0 0 auto !important;
+}
+@keyframes lyricsMarqueeTrack {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(-50% - 1.5em)); }
+}
+.lyrics-preview-title .lyrics-marquee-track {
+  animation-duration: 11s !important;
+}
+.lyrics-preview-song .lyrics-marquee-track {
+  animation-duration: 9s !important;
+}
+
+
+/* VS_HOOK_FIX_PREVIEW_NAMES_OVERFLOW_MARQUEE
+   Letreiro somente nos nomes do Preview: bloco e musicas do bloco. */
+.lyrics-marquee-wrap {
+  display: inline-block !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  line-height: inherit !important;
+  vertical-align: middle !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap,
+.lyrics-preview-song .lyrics-marquee-wrap {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+.lyrics-marquee-wrap .lyrics-static-text {
+  display: inline-block !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: clip !important;
+  vertical-align: middle !important;
+}
+.lyrics-marquee-wrap .lyrics-marquee-track {
+  display: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-static-text,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-static-text {
+  display: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  display: inline-flex !important;
+  width: max-content !important;
+  max-width: none !important;
+  gap: 3em !important;
+  white-space: nowrap !important;
+  animation: lyricsMarqueeTrack 9s linear infinite !important;
+  will-change: transform !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 11s !important;
+}
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 9s !important;
+}
+.lyrics-marquee-track > span {
+  flex: 0 0 auto !important;
+}
+@keyframes lyricsMarqueeTrack {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(calc(-50% - 1.5em)); }
+}
+
+
+/* VS_HOOK_FIX_PREVIEW_MARQUEE_REAL_ELEMENT
+   Letreiro aplicado no elemento real dentro do contorno do bloco do Preview. */
+.lyrics-preview-title,
+.lyrics-preview-song {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap,
+.lyrics-preview-song .lyrics-marquee-wrap {
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  contain: paint !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap .lyrics-static-text,
+.lyrics-preview-song .lyrics-marquee-wrap .lyrics-static-text {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap .lyrics-marquee-track {
+  display: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-static-text,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-static-text {
+  display: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  display: inline-flex !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: max-content !important;
+  max-width: none !important;
+  gap: 4em !important;
+  white-space: nowrap !important;
+  will-change: transform !important;
+  animation-name: lyricsPreviewMarqueeReal !important;
+  animation-timing-function: linear !important;
+  animation-iteration-count: infinite !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 12s !important;
+}
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 9s !important;
+}
+.lyrics-preview-title .lyrics-marquee-track > span,
+.lyrics-preview-song .lyrics-marquee-track > span {
+  flex: 0 0 auto !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+}
+@keyframes lyricsPreviewMarqueeReal {
+  0%, 10% { transform: translateX(0); }
+  90%, 100% { transform: translateX(calc(-50% - 2em)); }
+}
+
+
+/* VS_HOOK_FIX_PREVIEW_LETREIRO_FORCADO_REAL
+   Letreiro real apenas no nome do bloco e nas músicas dentro do Preview do TP. */
+.lyrics-preview-title,
+.lyrics-preview-song {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap,
+.lyrics-preview-song .lyrics-marquee-wrap {
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.preview-marquee-force .lyrics-static-text,
+.lyrics-preview-song .lyrics-marquee-wrap.preview-marquee-force .lyrics-static-text,
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-static-text,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-static-text {
+  display: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.preview-marquee-force .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap.preview-marquee-force .lyrics-marquee-track,
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  display: inline-flex !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: max-content !important;
+  max-width: none !important;
+  gap: 4em !important;
+  white-space: nowrap !important;
+  will-change: transform !important;
+  animation-name: lyricsPreviewMarqueeForced !important;
+  animation-timing-function: linear !important;
+  animation-iteration-count: infinite !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap.preview-marquee-force .lyrics-marquee-track,
+.lyrics-preview-title .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 12s !important;
+}
+.lyrics-preview-song .lyrics-marquee-wrap.preview-marquee-force .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  animation-duration: 9s !important;
+}
+.lyrics-preview-title .lyrics-marquee-track > span,
+.lyrics-preview-song .lyrics-marquee-track > span {
+  flex: 0 0 auto !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+}
+@keyframes lyricsPreviewMarqueeForced {
+  0%, 10% { transform: translateX(0); }
+  90%, 100% { transform: translateX(calc(-50% - 2em)); }
+}
+
+
+/* VS_HOOK_FIX_PREVIEW_WRAP_LINES_NO_MARQUEE
+   Preview do Teleprompt: sem letreiro. Nomes de blocos e musicas quebram linha dentro do card. */
+.lyrics-preview-title,
+.lyrics-preview-song {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+  hyphens: auto !important;
+}
+.lyrics-preview-title {
+  line-height: 1.05 !important;
+  max-height: calc(1.05em * 3) !important;
+  overflow: hidden !important;
+}
+.lyrics-preview-song {
+  line-height: 1.12 !important;
+  max-height: calc(1.12em * 2) !important;
+  overflow: hidden !important;
+}
+.lyrics-preview-wrap-text {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+  line-height: inherit !important;
+  animation: none !important;
+  transform: none !important;
+}
+.lyrics-preview-title .lyrics-marquee-wrap,
+.lyrics-preview-song .lyrics-marquee-wrap,
+.lyrics-preview-title .lyrics-marquee-track,
+.lyrics-preview-song .lyrics-marquee-track {
+  animation: none !important;
+  transform: none !important;
+}
+.lyrics-preview-song-list {
+  overflow: hidden !important;
+}
+.lyrics-preview-empty .lyrics-preview-wrap-text {
+  text-align: center !important;
 }

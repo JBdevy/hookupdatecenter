@@ -114,6 +114,26 @@ function confirmModal({ title = 'Confirmar', message = '', type = 'info', okText
   });
 }
 
+function noticeModal({ title = 'Aviso', message = '', type = 'info', okText = 'OK' }) {
+  return new Promise((resolve) => {
+    pendingConfirmResolve = resolve;
+    showModal({ title, message, type });
+    const okButton = $('#modalOkButton');
+    const cancelButton = $('#modalCancelButton');
+    okButton.textContent = okText;
+    if (cancelButton) cancelButton.classList.add('hidden');
+  });
+}
+
+async function showDownloadDescriptionNotice() {
+  return noticeModal({
+    title: 'Leia a descrição',
+    message: 'Leia a descrição da atualização antes de baixar.',
+    type: 'info',
+    okText: 'OK'
+  });
+}
+
 function openVideoModal() {
   if (!currentYoutubeWatchUrl) {
     showModal({
@@ -194,6 +214,7 @@ function updateVsHookProgress(progress) {
 
 async function startVsHookDownload(updateOverride = null) {
   try {
+    if (!(await showDownloadDescriptionNotice())) return;
     if (!(await ensureDeviceName())) return;
     setProgressVisible(true);
     resetVsHookProgress();
@@ -610,12 +631,19 @@ function applyLyricsSettingsToForm(settings = {}) {
     const clockEnabled = $(`#lyricsClockEnabled${slot}`);
     const songNameEnabled = $(`#lyricsSongNameEnabled${slot}`);
     const songNameColor = $(`#lyricsSongNameColor${slot}`);
+    const queueNameColor = $(`#lyricsQueueNameColor${slot}`);
+    const queueNameEnabled = $(`#lyricsQueueNameEnabled${slot}`);
+    const queueNameDepth = $(`#lyricsQueueNameDepth${slot}`);
+    const queueNameFontFamily = $(`#lyricsQueueNameFontFamily${slot}`);
     const songNameFontFamily = $(`#lyricsSongNameFontFamily${slot}`);
     const songNameScale = $(`#lyricsSongNameScale${slot}`);
     const songNamePosition = $(`#lyricsSongNamePosition${slot}`);
+    const queueNamePosition = $(`#lyricsQueueNamePosition${slot}`);
     const clockPosition = $(`#lyricsClockPosition${slot}`);
     const clockScale = $(`#lyricsClockScale${slot}`);
     const mediaScale = $(`#lyricsMediaScale${slot}`);
+    const previewScale = $(`#lyricsPreviewScale${slot}`);
+    const previewEnabled = $(`#lyricsPreviewEnabled${slot}`);
     const clearModeButton = $(`#lyricsClearModeButton${slot}`);
     if (textColor) textColor.value = data.textColor || '#ffea00';
     if (clockColor) clockColor.value = data.clockColor || '#00ff55';
@@ -635,12 +663,19 @@ function applyLyricsSettingsToForm(settings = {}) {
     if (clockEnabled) clockEnabled.checked = data.clockEnabled !== false;
     if (songNameEnabled) songNameEnabled.checked = data.songNameEnabled === true;
     if (songNameColor) songNameColor.value = data.songNameColor || data.clockColor || '#00ff55';
+    if (queueNameColor) queueNameColor.value = data.queueNameColor || '#ffea00';
+    if (queueNameEnabled) queueNameEnabled.checked = data.queueNameEnabled !== false;
+    if (queueNameDepth) queueNameDepth.value = String(Math.max(0, Math.min(240, Math.round(Number(data.queueNameDepth ?? 80) || 80))));
+    if (queueNameFontFamily) queueNameFontFamily.value = data.queueNameFontFamily || data.songNameFontFamily || data.fontFamily || 'Arial';
     if (songNameFontFamily) songNameFontFamily.value = data.songNameFontFamily || data.fontFamily || 'Arial';
     if (songNameScale) songNameScale.value = String(Math.round((Number(data.songNameScale || 1) || 1) * 100));
     if (songNamePosition) songNamePosition.value = normalizeLyricsScreenPosition(data.songNamePosition, 'top');
+    if (queueNamePosition) queueNamePosition.value = normalizeLyricsScreenPosition(data.queueNamePosition, 'top');
     if (clockPosition) clockPosition.value = data.clockPosition === 'bottom' ? 'bottom' : 'top';
     if (clockScale) clockScale.value = String(Math.round((Number(data.clockScale || 1) || 1) * 100));
     if (mediaScale) mediaScale.value = String(Math.round((Number(data.mediaScale || 1) || 1) * 100));
+    if (previewScale) previewScale.value = String(Math.round((Number(data.previewScale || 1) || 1) * 100));
+    if (previewEnabled) previewEnabled.checked = data.previewEnabled !== false;
     if (clearModeButton) {
       const active = data.clearMode === true;
       clearModeButton.classList.toggle('active', active);
@@ -704,12 +739,19 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     clockEnabled: $(`#lyricsClockEnabled${id}`)?.checked !== false,
     songNameEnabled: $(`#lyricsSongNameEnabled${id}`)?.checked === true,
     songNameColor: $(`#lyricsSongNameColor${id}`)?.value || $(`#lyricsClockColor${id}`)?.value || '#00ff55',
+    queueNameColor: $(`#lyricsQueueNameColor${id}`)?.value || '#ffea00',
+    queueNameEnabled: $(`#lyricsQueueNameEnabled${id}`)?.checked !== false,
+    queueNamePosition: normalizeLyricsScreenPosition($(`#lyricsQueueNamePosition${id}`)?.value, 'top'),
+    queueNameDepth: Math.max(0, Math.min(240, Math.round(Number($(`#lyricsQueueNameDepth${id}`)?.value || 80)))),
+    queueNameFontFamily: $(`#lyricsQueueNameFontFamily${id}`)?.value || $(`#lyricsSongNameFontFamily${id}`)?.value || $(`#lyricsFontFamily${id}`)?.value || 'Arial',
     songNameFontFamily: $(`#lyricsSongNameFontFamily${id}`)?.value || $(`#lyricsFontFamily${id}`)?.value || 'Arial',
     songNameScale: Math.max(0.5, Math.min(3, (Number($(`#lyricsSongNameScale${id}`)?.value || 100) / 100))),
     songNamePosition: normalizeLyricsScreenPosition($(`#lyricsSongNamePosition${id}`)?.value, 'top'),
     clockPosition: $(`#lyricsClockPosition${id}`)?.value === 'bottom' ? 'bottom' : 'top',
     clockScale: Math.max(0.5, Math.min(2.5, (Number($(`#lyricsClockScale${id}`)?.value || 100) / 100))),
     mediaScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsMediaScale${id}`)?.value || 100) / 100))),
+    previewEnabled: $(`#lyricsPreviewEnabled${id}`)?.checked !== false,
+    previewScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsPreviewScale${id}`)?.value || 100) / 100))),
     clearMode: $(`#lyricsClearModeButton${id}`)?.getAttribute('aria-pressed') === 'true'
   };
   const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
@@ -860,13 +902,19 @@ function setupLyricsAutoApply() {
       `lyricsTextBoxEnabled${slot}`,
       `lyricsClockEnabled${slot}`,
       `lyricsSongNameEnabled${slot}`,
+      `lyricsQueueNameEnabled${slot}`,
       `lyricsSongNameColor${slot}`,
+      `lyricsQueueNameColor${slot}`,
+      `lyricsQueueNameDepth${slot}`,
+      `lyricsQueueNamePosition${slot}`,
       `lyricsSongNameFontFamily${slot}`,
       `lyricsSongNameScale${slot}`,
       `lyricsSongNamePosition${slot}`,
       `lyricsClockPosition${slot}`,
       `lyricsClockScale${slot}`,
       `lyricsMediaScale${slot}`,
+      `lyricsPreviewScale${slot}`,
+      `lyricsPreviewEnabled${slot}`,
       `lyricsClearModeButton${slot}`
     ];
     ids.forEach((id) => {
@@ -1176,20 +1224,43 @@ function renderState(nextState) {
 
   if (hasLatest) {
     const update = state.latestUpdate;
+    // A descrição da atualização do VS Hook fica exclusivamente no card separado de cima.
+    // Remove do DOM qualquer descrição herdada que ainda exista dentro dos cards do VS Hook.
+    document.querySelectorAll('#updateCard .description, #updateCard [data-update-description], #updateCard .changelog, #noUpdateCard .description, #statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
     const displayTitle = update.title || `VS Hook ${update.version || ''}`;
     const displayVersion = update.version ? `v${update.version}` : 'VS Hook';
     $('#updateTitle').textContent = displayTitle;
     $('#versionBadge').textContent = displayVersion;
+    const homeDescriptionCard = $('#updateDescriptionCard');
     const homeDescription = $('#updateDescription');
-    if (homeDescription) homeDescription.textContent = '';
+    if (homeDescriptionCard && homeDescription) {
+      const descriptionText = String(update.description || '').trim() || 'Sem descrição disponível.';
+      homeDescription.textContent = descriptionText;
+      homeDescriptionCard.classList.remove('hidden');
+      homeDescriptionCard.setAttribute('aria-hidden', 'false');
+    }
 
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
     $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
     $('#videoModalTitle').textContent = displayTitle;
 
-    const changelog = Array.isArray(update.changelog) ? update.changelog : [];
-    $('#changelogList').innerHTML = changelog.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+    // A descrição/changelog da atualização do VS Hook fica exclusivamente no card amarelo separado.
+    // Não renderiza lista dentro do card principal para evitar duplicidade e liberar espaço.
+    const changelogListEl = $('#changelogList');
+    if (changelogListEl) {
+      changelogListEl.innerHTML = '';
+      changelogListEl.classList.add('hidden');
+      changelogListEl.setAttribute('aria-hidden', 'true');
+    }
+  } else {
+    const homeDescriptionCard = $('#updateDescriptionCard');
+    if (homeDescriptionCard) {
+      homeDescriptionCard.classList.add('hidden');
+      homeDescriptionCard.setAttribute('aria-hidden', 'true');
+    }
+    const homeDescription = $('#updateDescription');
+    if (homeDescription) homeDescription.textContent = '';
   }
 
   if (hasStatusTestUpdate) {
@@ -1200,8 +1271,7 @@ function renderState(nextState) {
     if (statusTitle) statusTitle.textContent = displayTitle;
     const statusBadge = $('#statusVersionBadge');
     if (statusBadge) statusBadge.textContent = displayVersion;
-    const statusDescription = $('#statusUpdateDescription');
-    if (statusDescription) statusDescription.textContent = update.description || '';
+    document.querySelectorAll('#statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
     const statusDownloadButton = $('#statusDownloadButton');
     if (statusDownloadButton) {
       statusDownloadButton.disabled = !hasInstallableFiles(update);
@@ -1212,8 +1282,7 @@ function renderState(nextState) {
     if (statusTitle) statusTitle.textContent = 'Atualização disponível';
     const statusBadge = $('#statusVersionBadge');
     if (statusBadge) statusBadge.textContent = 'VS Hook';
-    const statusDescription = $('#statusUpdateDescription');
-    if (statusDescription) statusDescription.textContent = '';
+    document.querySelectorAll('#statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
     const statusDownloadButton = $('#statusDownloadButton');
     if (statusDownloadButton) {
       statusDownloadButton.disabled = true;
@@ -1245,6 +1314,10 @@ function renderState(nextState) {
 
 
 async function refreshBridgeState() {
+
+  // Garante que nenhum card de atualização do VS Hook volte a exibir descrição duplicada.
+  document.querySelectorAll('#updateCard .description, #updateCard [data-update-description], #updateCard .changelog, #noUpdateCard .description, #statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
+
   try {
     const bridge = await window.hookUpdateCenter.getBridgeState();
     renderBridgeState(bridge);
@@ -1324,6 +1397,7 @@ function renderPreviousUpdates(updates) {
       }
 
       try {
+        if (!(await showDownloadDescriptionNotice())) return;
         setView('home');
         setProgressVisible(true);
         resetVsHookProgress();

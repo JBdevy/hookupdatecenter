@@ -109,9 +109,9 @@ function isValidWindow(win) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1040,
-    height: 720,
-    minWidth: 920,
+    width: 1280,
+    height: 660,
+    minWidth: 1180,
     minHeight: 620,
     show: false,
     backgroundColor: '#0b0b10',
@@ -1639,12 +1639,19 @@ function getLyricsDefaults() {
     clockEnabled: true,
     songNameEnabled: false,
     songNameColor: '#00ff55',
+    queueNameColor: '#ffea00',
+    queueNameEnabled: true,
+    queueNamePosition: 'top',
+    queueNameDepth: 80,
+    queueNameFontFamily: 'Arial',
     songNameFontFamily: 'Arial',
     songNameScale: 1,
     songNamePosition: 'top',
     clockPosition: 'top',
     clockScale: 1,
     mediaScale: 1,
+    previewEnabled: true,
+    previewScale: 1,
     clearMode: false
   };
 }
@@ -1761,12 +1768,22 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (typeof settings.clockEnabled === 'boolean') next.clockEnabled = settings.clockEnabled;
   if (typeof settings.songNameEnabled === 'boolean') next.songNameEnabled = settings.songNameEnabled;
   if (typeof settings.songNameColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.songNameColor)) next.songNameColor = settings.songNameColor;
+  if (typeof settings.queueNameColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.queueNameColor)) next.queueNameColor = settings.queueNameColor;
+  if (typeof settings.queueNameEnabled === 'boolean') next.queueNameEnabled = settings.queueNameEnabled;
+  if (settings.queueNamePosition !== undefined) next.queueNamePosition = normalizeLyricsScreenPosition(settings.queueNamePosition, next.queueNamePosition || 'top');
+  if (settings.queueNameDepth !== undefined) {
+    const depth = Math.round(Number(settings.queueNameDepth));
+    if (Number.isFinite(depth)) next.queueNameDepth = Math.max(0, Math.min(240, depth));
+  }
+  if (allowedFonts.includes(settings.queueNameFontFamily)) next.queueNameFontFamily = settings.queueNameFontFamily;
   if (allowedFonts.includes(settings.songNameFontFamily)) next.songNameFontFamily = settings.songNameFontFamily;
   if (settings.songNameScale !== undefined) next.songNameScale = clampLyricsScale(settings.songNameScale, next.songNameScale || 1, 3);
   if (settings.songNamePosition !== undefined) next.songNamePosition = normalizeLyricsScreenPosition(settings.songNamePosition, next.songNamePosition || 'top');
   if (settings.clockPosition === 'top' || settings.clockPosition === 'bottom') next.clockPosition = settings.clockPosition;
   if (settings.clockScale !== undefined) next.clockScale = clampLyricsScale(settings.clockScale, next.clockScale || 1, 2.5);
   if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1, 1);
+  if (typeof settings.previewEnabled === 'boolean') next.previewEnabled = settings.previewEnabled;
+  if (settings.previewScale !== undefined) next.previewScale = clampLyricsScale(settings.previewScale, next.previewScale || 1, 1);
   if (typeof settings.clearMode === 'boolean') next.clearMode = settings.clearMode;
   all[id] = next;
   store.set('lyrics', all);
@@ -2007,6 +2024,25 @@ function getFileUrlSafe(filePath) {
   }
 }
 
+function inferLyricsMediaTypeFromPath(filePath) {
+  const ext = path.extname(String(filePath || '').split('?')[0]).replace(/^\./, '').toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(ext)) return 'image';
+  if (['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'].includes(ext)) return 'video';
+  return 'text';
+}
+
+function getNativeTelepromptMediaUrl(rawUrl, filePath) {
+  // FIX108: nas janelas locais do Teleprompt do Hook Center, o caminho real
+  // do arquivo e a verdade principal. Isso evita proxy HTTP para video local
+  // e deixa o <video> tocar o mesmo arquivo do item do grid, sincronizado por
+  // mediaCurrentTime/mediaOffset/mediaPlayrate. App Diretor continua texto.
+  const rawPath = String(filePath || '').trim();
+  if (rawPath) return getFileUrlSafe(rawPath);
+  const value = String(rawUrl || '').trim();
+  if (!value) return '';
+  return getFileUrlSafe(value);
+}
+
 function requestNativeBridgeStateForLyrics(timeoutMs = 220) {
   return new Promise((resolve) => {
     const req = http.request({
@@ -2034,6 +2070,176 @@ function requestNativeBridgeStateForLyrics(timeoutMs = 220) {
   });
 }
 
+
+function normalizePreviewText(value) {
+  return String(value || '').trim();
+}
+
+function normalizePreviewBlockName(value, fallback = '') {
+  const raw = normalizePreviewText(value || fallback);
+  return raw
+    .replace(/^\s*[:：]+\s*/g, '')
+    .replace(/\s*[:：]+\s*$/g, '')
+    .trim();
+}
+
+function nativeItemIdCandidates(item = {}) {
+  return [item.playlistEntryId, item.id, item.songId, item.regionId, item.sourceNumber, item.number]
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
+}
+
+function nativeItemMatchesIdOrRange(item = {}, idValue = '', startValue = 0, endValue = 0) {
+  const id = String(idValue || '').trim();
+  if (id && nativeItemIdCandidates(item).includes(id)) return true;
+  const start = Number(startValue || 0);
+  const end = Number(endValue || 0);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    const itemStart = Number(item.start ?? item.startPos ?? item.selectedStartPos ?? 0);
+    const itemEnd = Number(item.end ?? item.endPos ?? item.selectedEndPos ?? 0);
+    return Math.abs(itemStart - start) <= 0.01 && Math.abs(itemEnd - end) <= 0.01;
+  }
+  return false;
+}
+
+function findActivePreviewPlaylist(nativeState = {}) {
+  const playlists = Array.isArray(nativeState.playlists) ? nativeState.playlists : [];
+  if (!playlists.length) return null;
+  const activeIndex = Number(nativeState.currentPlaylistIndex || nativeState.activePlaylistIndex || nativeState.activePlaylistId || 0);
+  const activeName = String(nativeState.currentPlaylistName || nativeState.activePlaylistName || '').trim();
+  return playlists.find((p) => p && (p.active === true || p.current === true)) ||
+    playlists.find((p) => Number(p.id || p.index || 0) === activeIndex) ||
+    playlists.find((p) => String(p.name || '').trim() === activeName) || playlists[0];
+}
+
+function getPreviewQueueTarget(nativeState = {}) {
+  const id = String(
+    nativeState.queuedPlaylistSongId ??
+    nativeState.queuedSongId ??
+    nativeState.queuedRegionId ??
+    nativeState.queuedRegionNumber ??
+    nativeState.queueSongId ??
+    ''
+  ).trim();
+  const start = Number(
+    nativeState.queuedStartPos ??
+    nativeState.queuedRegionStart ??
+    nativeState.queueStartPos ??
+    nativeState.queuedStart ??
+    0
+  );
+  const end = Number(
+    nativeState.queuedEndPos ??
+    nativeState.queuedRegionEnd ??
+    nativeState.queueEndPos ??
+    nativeState.queuedEnd ??
+    0
+  );
+  const name = normalizePreviewText(
+    nativeState.queuedSongName ||
+    nativeState.queueSongName ||
+    nativeState.queuedName ||
+    nativeState.queueName ||
+    ''
+  );
+  return { id, start, end, name };
+}
+
+function getPreviewSongNameFromQueue(nativeState = {}, songs = []) {
+  const queue = getPreviewQueueTarget(nativeState);
+  const found = songs.find((item) => item && nativeItemMatchesIdOrRange(item, queue.id, queue.start, queue.end));
+  return normalizePreviewText(found?.name || found?.title || found?.label || queue.name || '');
+}
+
+
+function getNativeQueuedSongName(nativeState = {}) {
+  const playlist = findActivePreviewPlaylist(nativeState);
+  const items = Array.isArray(playlist?.songs) ? playlist.songs : [];
+  const songItems = items.filter((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const type = String(item.type || item.itemType || '').toLowerCase();
+    const sourceNumber = Number(item.sourceNumber || 0);
+    return !(item.isBlock === true || type === 'block' || sourceNumber < 0);
+  });
+  return getPreviewSongNameFromQueue(nativeState, songItems);
+}
+
+function isNativePreviewSongQueued(item = {}, queue = {}, resolvedQueueName = '') {
+  if (!item || typeof item !== 'object') return false;
+  if (nativeItemMatchesIdOrRange(item, queue.id, queue.start, queue.end)) return true;
+  const itemName = normalizePreviewText(item.name || item.title || item.label || '').toLowerCase();
+  const queueName = normalizePreviewText(resolvedQueueName || queue.name || '').toLowerCase();
+  return !!queueName && itemName === queueName;
+}
+
+function buildNativePreviewOverlay(nativeState = {}) {
+  const mode = Number(nativeState.previewMode || nativeState.previewIndex || 0);
+  if (!Number.isFinite(mode) || mode < 1 || mode > 3) return null;
+  const playlist = findActivePreviewPlaylist(nativeState);
+  const items = Array.isArray(playlist?.songs) ? playlist.songs : [];
+
+  const playingId = String(nativeState.playingSongId || nativeState.currentSongId || nativeState.playingId || '').trim();
+  const playingStart = Number(nativeState.currentSongStart || nativeState.playbackStartPos || 0);
+  const playingEnd = Number(nativeState.currentSongEnd || nativeState.playbackEndPos || 0);
+  const playing = Boolean(nativeState.playing || nativeState.isPlaying || nativeState.transportPlaying);
+  const queue = getPreviewQueueTarget(nativeState);
+  const allSongItems = [];
+  const allBlocks = [];
+  let current = null;
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const type = String(item.type || item.itemType || '').toLowerCase();
+    const sourceNumber = Number(item.sourceNumber || 0);
+    const isBlock = item.isBlock === true || type === 'block' || sourceNumber < 0;
+    if (isBlock) {
+      current = { name: normalizePreviewBlockName(item.name || item.title, `Bloco ${allBlocks.length + 1}`), songs: [] };
+      allBlocks.push(current);
+      continue;
+    }
+
+    allSongItems.push(item);
+    if (!current) {
+      current = { name: 'Sem bloco', songs: [] };
+      allBlocks.push(current);
+    }
+
+    const name = normalizePreviewText(item.name || item.title || item.label || '');
+    if (!name || current.songs.length >= 18) continue;
+    current.songs.push({
+      id: String(item.playlistEntryId || item.id || item.songId || item.regionId || item.sourceNumber || item.number || ''),
+      name,
+      playing: playing && nativeItemMatchesIdOrRange(item, playingId, playingStart, playingEnd),
+      queued: false
+    });
+  }
+
+  const resolvedQueueName = getPreviewSongNameFromQueue(nativeState, allSongItems);
+  for (const block of allBlocks) {
+    for (const song of block.songs) {
+      const matchingItem = allSongItems.find((item) => {
+        const itemName = normalizePreviewText(item.name || item.title || item.label || '');
+        return itemName === song.name && nativeItemIdCandidates(item).includes(song.id);
+      }) || allSongItems.find((item) => normalizePreviewText(item.name || item.title || item.label || '') === song.name);
+      song.queued = isNativePreviewSongQueued(matchingItem || { name: song.name, id: song.id }, queue, resolvedQueueName);
+    }
+  }
+
+  const offset = (mode - 1) * 8;
+  const pageBlocks = allBlocks.slice(offset, offset + 8);
+
+  return {
+    active: true,
+    mode,
+    playlistName: normalizePreviewText(playlist?.name || nativeState.currentPlaylistName || ''),
+    blocks: pageBlocks,
+    totalBlocks: allBlocks.length,
+    noSongsMessage: 'Sem músicas',
+    playingSongName: normalizePreviewText(nativeState.currentSongName || nativeState.playingSongName || ''),
+    queuedSongName: resolvedQueueName
+  };
+}
+
 function normalizeNativeTelepromptState(nativeState, slot) {
   if (!nativeState || typeof nativeState !== 'object') return null;
   const id = normalizeLyricsSlot(slot);
@@ -2041,12 +2247,20 @@ function normalizeNativeTelepromptState(nativeState, slot) {
   const prefix = id === 2 ? 'tp2' : 'tp1';
   const telePrefix = id === 2 ? 'telepromptTp2' : 'telepromptTp1';
   const raw = tp && typeof tp === 'object' ? tp : {};
-  const mediaType = normalizeLyricsMediaType(raw.telepromptType || raw.mediaType || raw.type || nativeState[`${prefix}MediaType`] || nativeState[`${telePrefix}MediaType`] || 'text');
-  const mediaPath = String(raw.mediaPath || raw.path || '');
-  const mediaUrl = getFileUrlSafe(raw.mediaUrl || mediaPath);
-  const textValue = (mediaType === 'image' || mediaType === 'video') ? '' : String(raw.text || raw.lyrics || raw.lyricsText || nativeState[`${prefix}LyricsText`] || nativeState[`${prefix}Lyrics`] || nativeState[`${telePrefix}Lyrics`] || nativeState[`${telePrefix}Text`] || '');
+  const mediaPath = String(raw.mediaPath || raw.path || nativeState[`${prefix}MediaPath`] || nativeState[`${telePrefix}MediaPath`] || '');
+  const nativeMediaType = normalizeLyricsMediaType(raw.telepromptType || raw.mediaType || raw.type || nativeState[`${prefix}MediaType`] || nativeState[`${telePrefix}MediaType`] || '');
+  const rawMediaUrl = String(raw.mediaUrl || raw.url || nativeState[`${prefix}MediaUrl`] || nativeState[`${telePrefix}MediaUrl`] || '');
+  const inferredMediaType = inferLyricsMediaTypeFromPath(mediaPath || rawMediaUrl);
+  // FIX108: se existe caminho/extensao de mídia, ele manda no tipo.
+  // mediaType separado fica só como fallback para texto/empty.
+  const mediaType = inferredMediaType !== 'text' ? inferredMediaType : (nativeMediaType || 'text');
+  const mediaUrl = getNativeTelepromptMediaUrl(rawMediaUrl, mediaPath);
+  const previewOverlay = buildNativePreviewOverlay(nativeState);
+  const nativeQueuedSongName = previewOverlay ? String(previewOverlay.queuedSongName || '') : getNativeQueuedSongName(nativeState);
+  // FIX109: se houver texto e mídia no mesmo ponto, texto fica sobreposto.
+  const textValue = String(raw.overlayText || raw.text || raw.lyrics || raw.lyricsText || nativeState[`${prefix}LyricsText`] || nativeState[`${prefix}Lyrics`] || nativeState[`${telePrefix}Lyrics`] || nativeState[`${telePrefix}Text`] || '');
   const songValue = String(raw.song || raw.songName || raw.currentSongName || raw.musicName || nativeState[`${prefix}SongName`] || nativeState[`${telePrefix}SongName`] || nativeState.currentSongName || nativeState.playingSongName || nativeState.songName || '');
-  const hasNativeTp = !!(tp || textValue || songValue || raw.trackFound === true || raw.itemFound === true || nativeState[`${prefix}UpdatedAt`]);
+  const hasNativeTp = !!(tp || textValue || songValue || nativeQueuedSongName || previewOverlay || raw.trackFound === true || raw.itemFound === true || nativeState[`${prefix}UpdatedAt`]);
   if (!hasNativeTp) return null;
   const media = {
     type: mediaType,
@@ -2086,8 +2300,12 @@ function normalizeNativeTelepromptState(nativeState, slot) {
     timerTargetSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
     timerCountdownStartSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
     timerDisplaySec: Number(nativeState.timerDisplaySec || 0),
+    timerDisplayText: String(nativeState.timerDisplayText || nativeState.timerLocalTimeText || ''),
+    timerLocalTimeText: String(nativeState.timerLocalTimeText || ''),
     playing: Boolean(raw.playing || nativeState.playing || nativeState.isPlaying),
     updatedAt: raw.updatedAt || nativeState[`${prefix}UpdatedAt`] || nativeState.updatedAt || null,
+    previewOverlay,
+    queuedSongName: nativeQueuedSongName,
     technicalNotice: getActiveTechnicalNotice(),
     technicalNoticeSettings: getTechnicalNoticeSettings()
   };
@@ -2102,10 +2320,14 @@ async function getLyricsState(slot = 1) {
   const data = readJsonFileSafe(getLyricsStatePath(id), {});
   const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
   const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
-  const mediaType = normalizeLyricsMediaType(data.telepromptType || data.mediaType || data.type);
   const mediaPath = String(data.mediaPath || data.path || '');
-  const mediaUrl = getFileUrlSafe(data.mediaUrl || mediaPath);
-  const textValue = (mediaType === 'image' || mediaType === 'video') ? '' : String(data.text || data.lyrics || data.lyricsText || '');
+  const dataMediaUrl = String(data.mediaUrl || '');
+  const dataMediaType = normalizeLyricsMediaType(data.telepromptType || data.mediaType || data.type);
+  const inferredDataMediaType = inferLyricsMediaTypeFromPath(mediaPath || dataMediaUrl);
+  const mediaType = inferredDataMediaType !== 'text' ? inferredDataMediaType : (dataMediaType || 'text');
+  const mediaUrl = mediaPath ? getFileUrlSafe(mediaPath) : getFileUrlSafe(dataMediaUrl);
+  // FIX109: texto pode coexistir com imagem/video na janela local do Teleprompt.
+  const textValue = String(data.overlayText || data.text || data.lyrics || data.lyricsText || '');
   const songValue = String(
     data.song || data.songName || data.currentSong || data.currentSongName || data.musicName || data.playingSongName ||
     bridgeState.songName || bridgeState.currentSongName || bridgeState.musicName || bridgeState.playingSongName || ''
@@ -2148,8 +2370,12 @@ async function getLyricsState(slot = 1) {
     timerTargetSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
     timerCountdownStartSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
     timerDisplaySec: Number(timerSource.timerDisplaySec || 0),
+    timerDisplayText: String(timerSource.timerDisplayText || timerSource.timerLocalTimeText || ''),
+    timerLocalTimeText: String(timerSource.timerLocalTimeText || ''),
     playing: Boolean(data.playing || bridgeState.playing || bridgeState.isPlaying),
     updatedAt: data.updatedAt || bridgeState.updatedAt || null,
+    previewOverlay: null,
+    queuedSongName: '',
     technicalNotice: getActiveTechnicalNotice(),
     technicalNoticeSettings: getTechnicalNoticeSettings()
   };

@@ -43,6 +43,65 @@ function normalizeBridgePlaylistsWithHashChildren(playlists) {
 }
 
 
+function flattenBridgeHashChildrenFromSongListForMusicosTotal(songs) {
+  const out = []
+  const seen = new Set()
+  const push = (item) => {
+    if (!item || typeof item !== 'object') return
+    const key = String(item.id ?? item.source_number ?? item.sourceNumber ?? `${out.length}`)
+    const role = String(item.familyRole || item.itemType || item.type || '')
+    const dedupeKey = `${key}|${role}|${String(item.parentId || item.parentSourceNumber || '')}`
+    if (seen.has(dedupeKey)) return
+    seen.add(dedupeKey)
+    out.push(item)
+  }
+  for (const song of Array.isArray(songs) ? songs : []) {
+    push(song)
+    const children = Array.isArray(song?.hashChildren) ? song.hashChildren
+      : Array.isArray(song?.children) ? song.children
+      : Array.isArray(song?.visibleChildren) ? song.visibleChildren
+      : []
+    for (const child of children) {
+      push({
+        ...child,
+        isHashChild: true,
+        isFamilyItem: true,
+        familyRole: child?.familyRole || 'child',
+        itemType: child?.itemType || 'hash_child',
+        type: child?.type || 'hash_child',
+        parentId: child?.parentId ?? song?.id,
+        parentSourceNumber: child?.parentSourceNumber ?? song?.source_number ?? song?.sourceNumber,
+        familyGroupId: child?.familyGroupId ?? song?.familyGroupId,
+      })
+    }
+  }
+  return out
+}
+
+function normalizeMusicosCompatiblePlaylistsForTotal(playlists) {
+  return (Array.isArray(playlists) ? playlists : []).map((playlist) => ({
+    ...playlist,
+    songs: flattenBridgeHashChildrenFromSongListForMusicosTotal(playlist?.songs || []),
+  }))
+}
+
+function getDirectorMusicosCompatiblePlaylistForTotal(fallbackPlaylist) {
+  const playlists = Array.isArray(state.musicosCompatiblePlaylistsForTotal) ? state.musicosCompatiblePlaylistsForTotal : []
+  if (!playlists.length) return fallbackPlaylist || null
+  const activeId = String(state.activePlaylistId || '')
+  const byId = playlists.find((item) => String(item?.id || '') === activeId)
+  if (byId) return byId
+  const currentName = String(state.currentPlaylistName || fallbackPlaylist?.name || '')
+  const byName = playlists.find((item) => String(item?.name || '') === currentName)
+  if (byName) return byName
+  if (fallbackPlaylist?.id != null) {
+    const byFallbackId = playlists.find((item) => String(item?.id || '') === String(fallbackPlaylist.id))
+    if (byFallbackId) return byFallbackId
+  }
+  return playlists[0] || fallbackPlaylist || null
+}
+
+
 
 // Front local dos filhos R/P no Diretor.
 // O bridge continua sendo a fonte oficial, mas o front usa cache local para abrir/fechar a gaveta imediatamente.
@@ -59,7 +118,12 @@ function vshookHashChildScope(type, playlistId) {
 
 function vshookHashFamilyIdentity(item) {
   if (!item || typeof item !== 'object') return ''
+  try {
+    const familyKey = typeof getHashFamilyKeyForAppItem === 'function' ? getHashFamilyKeyForAppItem(item) : ''
+    if (vshookHashClean(familyKey)) return vshookHashClean(familyKey)
+  } catch (_) {}
   return vshookHashClean(item.familyGroupId)
+    || vshookHashClean(item.parentFamilyGroupId)
     || vshookHashClean(item.parentId)
     || vshookHashClean(item.parentSourceNumber)
     || vshookHashClean(item.source_number)
@@ -70,6 +134,10 @@ function vshookHashFamilyIdentity(item) {
 
 function vshookHashParentIdentity(item) {
   if (!item || typeof item !== 'object') return ''
+  try {
+    const familyKey = typeof getHashFamilyKeyForAppItem === 'function' ? getHashFamilyKeyForAppItem(item) : ''
+    if (vshookHashClean(familyKey)) return vshookHashClean(familyKey)
+  } catch (_) {}
   return vshookHashClean(item.familyGroupId)
     || vshookHashClean(item.id)
     || vshookHashClean(item.songId)
@@ -88,7 +156,11 @@ function vshookHashKeyFromElement(el, type) {
   const playlistId = state.activePlaylistId || ''
   const scope = vshookHashChildScope(type === 'song' ? 'song' : 'region', playlistId)
   const id = type === 'region' ? el.getAttribute('data-region-id') : el.getAttribute('data-song-id')
+  const sourceNumber = vshookHashClean(el.getAttribute('data-source-number'))
+  const sourceStart = vshookHashClean(el.getAttribute('data-source-start'))
+  const sourceIdentity = sourceNumber || sourceStart ? `${sourceNumber}|${sourceStart}` : ''
   const identity = vshookHashClean(el.getAttribute('data-family-group-id'))
+    || sourceIdentity
     || vshookHashClean(el.getAttribute('data-parent-id'))
     || vshookHashClean(id)
   return identity ? `${scope}|${identity}` : ''
@@ -101,15 +173,132 @@ function vshookEnsureHashFrontState() {
   state.hashChildClosingUntilByKey = state.hashChildClosingUntilByKey || {}
 }
 
+function vshookHashAddCandidateKey(list, seen, type, playlistId, identity) {
+  const clean = vshookHashClean(identity)
+  if (!clean) return
+  const key = `${vshookHashChildScope(type, playlistId)}|${clean}`
+  if (seen.has(key)) return
+  seen.add(key)
+  list.push(key)
+}
+
+function vshookHashItemCandidateKeys(item, type, playlistId, role) {
+  const keys = []
+  const seen = new Set()
+  if (!item || typeof item !== 'object') return keys
+
+  const add = (value) => vshookHashAddCandidateKey(keys, seen, type, playlistId, value)
+
+  const familyKey = (() => {
+    try { return typeof getHashFamilyKeyForAppItem === 'function' ? getHashFamilyKeyForAppItem(item) : '' } catch (_) { return '' }
+  })()
+
+  add(familyKey)
+  add(item.familyGroupId)
+  add(item.family_group_id)
+  add(item.familyKey)
+  add(item.family_key)
+  add(item.parentFamilyGroupId)
+  add(item.parent_family_group_id)
+
+  if (role === 'child') {
+    add(item.parentId)
+    add(item.parent_id)
+    add(item.parentSongId)
+    add(item.parent_song_id)
+    add(item.parentSourceNumber)
+    add(item.parent_source_number)
+    add(item.parent_region_number)
+
+    const parentNumber = vshookHashClean(item.parentSourceNumber ?? item.parent_source_number ?? item.parent_region_number ?? '')
+    const parentStart = vshookHashClean(item.parentStartPos ?? item.parent_start_pos ?? item.parent_region_start_pos ?? '')
+    if (parentNumber || parentStart) add(`${parentNumber}|${parentStart}`)
+
+    // Alguns bridges antigos mandam somente source_number/id no filho.
+    // Mantém estes candidatos como fallback, sem depender do Lua abrir/fechar filhos.
+    add(item.source_number)
+    add(item.sourceNumber)
+    add(item.number)
+    add(item.id)
+    add(item.songId)
+  } else {
+    add(item.id)
+    add(item.songId)
+    add(item.regionId)
+    add(item.source_number)
+    add(item.sourceNumber)
+    add(item.number)
+
+    const number = vshookHashClean(item.source_number ?? item.sourceNumber ?? item.number ?? '')
+    const start = vshookHashClean(item.startPos ?? item.start_pos ?? item.pos ?? item.rgnstart ?? item.regionStart ?? item.region_start ?? '')
+    if (number || start) add(`${number}|${start}`)
+  }
+
+  return keys
+}
+
+function vshookHashParentCandidateKeys(item, type, playlistId) {
+  return vshookHashItemCandidateKeys(item, type, playlistId, 'parent')
+}
+
+function vshookHashChildCandidateKeys(item, type, playlistId) {
+  return vshookHashItemCandidateKeys(item, type, playlistId, 'child')
+}
+
+function vshookHashKeysFromElementAndItem(el, type, item) {
+  const playlistId = state.activePlaylistId || ''
+  const keys = []
+  const seen = new Set()
+  const addKey = (key) => {
+    const clean = vshookHashClean(key)
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    keys.push(clean)
+  }
+
+  addKey(vshookHashKeyFromElement(el, type))
+  for (const key of vshookHashParentCandidateKeys(item || {}, type === 'song' ? 'song' : 'region', playlistId)) addKey(key)
+
+  if (el) {
+    const scope = vshookHashChildScope(type === 'song' ? 'song' : 'region', playlistId)
+    const id = type === 'region' ? el.getAttribute('data-region-id') : el.getAttribute('data-song-id')
+    const sourceNumber = vshookHashClean(el.getAttribute('data-source-number'))
+    const sourceStart = vshookHashClean(el.getAttribute('data-source-start'))
+    const familyGroupId = vshookHashClean(el.getAttribute('data-family-group-id'))
+    const parentId = vshookHashClean(el.getAttribute('data-parent-id'))
+    const addIdentity = (value) => {
+      const clean = vshookHashClean(value)
+      if (clean) addKey(`${scope}|${clean}`)
+    }
+    addIdentity(familyGroupId)
+    if (sourceNumber || sourceStart) addIdentity(`${sourceNumber}|${sourceStart}`)
+    addIdentity(sourceNumber)
+    addIdentity(parentId)
+    addIdentity(id)
+  }
+
+  return keys
+}
+
+function vshookPushChildIntoMap(map, key, child) {
+  if (!key || !child) return
+  if (!map.has(key)) map.set(key, [])
+  const list = map.get(key)
+  const childId = String(child?.id ?? child?.songId ?? child?.source_number ?? child?.sourceNumber ?? child?.name ?? '')
+  const exists = list.some((entry) => String(entry?.id ?? entry?.songId ?? entry?.source_number ?? entry?.sourceNumber ?? entry?.name ?? '') === childId && childId)
+  if (!exists) list.push(child)
+}
+
 function vshookCacheHashChildrenFromItems(items, type, playlistId) {
   vshookEnsureHashFrontState()
   const incoming = new Map()
   for (const item of Array.isArray(items) ? items : []) {
     if (!isHashChildItem(item)) continue
-    const key = vshookHashKeyForItem(item, type, playlistId)
-    if (!key) continue
-    if (!incoming.has(key)) incoming.set(key, [])
-    incoming.get(key).push({ ...item })
+    for (const key of vshookHashChildCandidateKeys(item, type, playlistId)) {
+      if (!key) continue
+      if (!incoming.has(key)) incoming.set(key, [])
+      incoming.get(key).push({ ...item })
+    }
   }
   incoming.forEach((children, key) => {
     if (children.length) state.hashChildCacheByParentKey[key] = children
@@ -128,10 +317,9 @@ function vshookBuildHashChildMap(items, type, playlistId) {
   const map = new Map()
   for (const item of Array.isArray(items) ? items : []) {
     if (!isHashChildItem(item)) continue
-    const key = vshookHashKeyForItem(item, type, playlistId)
-    if (!key) continue
-    if (!map.has(key)) map.set(key, [])
-    map.get(key).push(item)
+    for (const key of vshookHashChildCandidateKeys(item, type, playlistId)) {
+      vshookPushChildIntoMap(map, key, item)
+    }
   }
   return map
 }
@@ -153,79 +341,61 @@ function vshookShouldShowHashChildren(key, bridgeChildMap) {
   vshookEnsureHashFrontState()
   if (!key) return false
   if (vshookIsHashDrawerClosing(key)) return true
+  // R/P no App Diretor é local e independente do Lua.
+  // Se o Lua estiver aberto/fechado com filhos visíveis, isso não manda no app.
   if (Object.prototype.hasOwnProperty.call(state.hashChildLocalOpenByKey, key)) {
     return state.hashChildLocalOpenByKey[key] === true
   }
-  const fromBridge = bridgeChildMap && bridgeChildMap.get(key)
-  return Array.isArray(fromBridge) && fromBridge.length > 0
+  return false
 }
 
-function vshookGetDisplayItemsWithFrontHashChildren(items, type, playlistId) {
-  vshookEnsureHashFrontState()
-  const source = Array.isArray(items) ? items : []
-  const childMap = vshookBuildHashChildMap(source, type, playlistId)
-  const out = []
-  const seenChildren = new Set()
+function vshookAnyHashKeyOpen(keys, bridgeChildMap) {
+  for (const key of Array.isArray(keys) ? keys : []) {
+    if (vshookShouldShowHashChildren(key, bridgeChildMap)) return true
+  }
+  return false
+}
 
-  for (const item of source) {
-    if (isHashChildItem(item)) continue
-    out.push(item)
-    if (!isHashParentItem(item)) continue
-    const key = vshookHashKeyForItem(item, type, playlistId)
-    if (!key || !vshookShouldShowHashChildren(key, childMap)) continue
-    const children = vshookGetHashVisibleChildren(key, childMap)
-    for (const child of children) {
-      const childId = String(child?.id ?? child?.songId ?? child?.source_number ?? child?.sourceNumber ?? '')
-      const dedupe = `${key}|${childId || out.length}`
-      if (seenChildren.has(dedupe)) continue
-      seenChildren.add(dedupe)
+function vshookGetChildrenForAnyHashKey(keys, bridgeChildMap) {
+  const out = []
+  const seen = new Set()
+  for (const key of Array.isArray(keys) ? keys : []) {
+    const children = vshookGetHashVisibleChildren(key, bridgeChildMap)
+    for (const child of Array.isArray(children) ? children : []) {
+      const childId = String(child?.id ?? child?.songId ?? child?.source_number ?? child?.sourceNumber ?? child?.name ?? out.length)
+      const dedupe = `${key}|${childId}`
+      if (seen.has(dedupe)) continue
+      seen.add(dedupe)
       out.push(child)
     }
   }
   return out
 }
 
+function vshookGetDisplayItemsWithFrontHashChildren(items, type, playlistId) {
+  // Long press/RP local removido do App Diretor.
+  // O Diretor não expande filhos localmente; mantém apenas itens raiz na lista.
+  const source = Array.isArray(items) ? items : []
+  return source.filter((item) => !isHashChildItem(item))
+}
+
+
 function vshookToggleHashChildrenFront(el, type) {
-  vshookEnsureHashFrontState()
-  const key = vshookHashKeyFromElement(el, type)
-  if (!key) return false
-  const currentItems = type === 'region'
-    ? (Array.isArray(state.regions) ? state.regions : [])
-    : (Array.isArray(activePlaylist()?.songs) ? activePlaylist().songs : [])
-  const childMap = vshookBuildHashChildMap(currentItems, type === 'region' ? 'region' : 'song', state.activePlaylistId || '')
-  const currentlyOpen = vshookShouldShowHashChildren(key, childMap)
-  const nextOpen = !currentlyOpen
-  const now = Date.now()
-  if (nextOpen) {
-    state.hashChildLocalOpenByKey[key] = true
-    state.hashChildOpeningUntilByKey[key] = now + 260
-    state.hashChildClosingUntilByKey[key] = 0
-    render()
-  } else {
-    state.hashChildLocalOpenByKey[key] = false
-    state.hashChildClosingUntilByKey[key] = now + 220
-    state.hashChildOpeningUntilByKey[key] = 0
-    render()
-    window.setTimeout(() => {
-      if (Date.now() >= Number(state.hashChildClosingUntilByKey?.[key] || 0)) {
-        if (state.hashChildClosingUntilByKey) state.hashChildClosingUntilByKey[key] = 0
-        render()
-      }
-    }, 230)
-  }
-  return true
+  // Desativado por decisão de interface: App Diretor não abre/fecha filhos por toque longo.
+  return false
 }
 
 function vshookHashChildAnimationClasses(item, type) {
   if (!isHashChildItem(item)) return ''
   vshookEnsureHashFrontState()
-  const key = vshookHashKeyForItem(item, type, state.activePlaylistId || '')
-  if (!key) return ''
+  const keys = vshookHashChildCandidateKeys(item, type, state.activePlaylistId || '')
   const now = Date.now()
   const classes = []
-  if (now < Number(state.hashChildOpeningUntilByKey[key] || 0)) classes.push('hashChildExpandIn')
-  if (now < Number(state.hashChildClosingUntilByKey[key] || 0)) classes.push('hashChildCollapseOut')
-  return classes.join(' ')
+  for (const key of keys) {
+    if (now < Number(state.hashChildOpeningUntilByKey[key] || 0)) classes.push('hashChildExpandIn')
+    if (now < Number(state.hashChildClosingUntilByKey[key] || 0)) classes.push('hashChildCollapseOut')
+  }
+  return Array.from(new Set(classes)).join(' ')
 }
 
 function getVSHookBridgeBaseUrl() {
@@ -349,7 +519,16 @@ function formatTime(totalSeconds) {
 }
 
 function formatTotalTime(totalSeconds) {
-  // Corrige o +1s visual no total vindo da conversao REAPER/bridge.
+  const raw = Number(totalSeconds) || 0
+  // Mesmo arredondamento do Lua: total bruto correto e arredondamento só no final.
+  const safe = Math.max(0, Math.floor(raw + 0.5))
+  const h = Math.floor(safe / 3600)
+  const m = Math.floor((safe % 3600) / 60)
+  const s = safe % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+function formatDirectorPlaylistTotalSameAsMusicos(totalSeconds) {
   const raw = Number(totalSeconds) || 0
   const safe = Math.max(0, Math.floor(raw > 1 ? raw - 1 : raw))
   const h = Math.floor(safe / 3600)
@@ -357,6 +536,7 @@ function formatTotalTime(totalSeconds) {
   const s = safe % 60
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
+
 
 
 
@@ -886,7 +1066,7 @@ function confirmTimerModal() {
 
 
 function setTimerModeFromApp(mode) {
-  const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive'
+  const next = normalizeDirectorTimerMode(mode)
   if (state.timerMode === 'countdown') {
     state.timerTargetSec = readTimerTargetSecondsFromModal()
   }
@@ -928,6 +1108,9 @@ function syncTimerTargetPreviewFromInputs() {
   if (state.timerMode !== 'countdown') return
   const target = readTimerTargetSecondsFromModal()
   state.timerTargetSec = target
+  try {
+    if (window.localStorage) window.localStorage.setItem('vshook.director.timer.countdownSec.v1', String(target))
+  } catch (error) {}
   const preview = document.querySelector('.timerModalPreview')
   if (preview) preview.textContent = formatChronoTime(target)
 }
@@ -1035,10 +1218,138 @@ function vshookRootFamilyItems(items) {
   return (Array.isArray(items) ? items : []).filter((item) => !isHashChildItem(item))
 }
 
+function vshookRawItemDurationSec(item) {
+  if (!item) return 0
+  const start = Number(item.startPos ?? item.start_pos ?? item.pos ?? item.rgnstart ?? item.regionStart ?? item.region_start ?? 0)
+  const end = Number(
+    item.endPos
+    ?? item.end_pos
+    ?? item.rgnend
+    ?? item.regionEnd
+    ?? item.region_end
+    ?? item.fullRegionEndPos
+    ?? item.full_region_end_pos
+    ?? item.originalRegionEndPos
+    ?? item.original_region_end_pos
+    ?? start
+  )
+  if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+    return Math.max(0, end - start)
+  }
+  const fallback = Number(item.durationRawSec ?? item.duration_sec_raw ?? item.durationSec ?? item.duration_sec ?? 0)
+  return Number.isFinite(fallback) ? Math.max(0, fallback) : 0
+}
+
 function vshookSumRootDuration(items) {
-  return vshookRootFamilyItems(items).reduce((sum, item) => {
-    if (detectBlockItem(item)) return sum
-    return sum + (Number(item?.durationSec) || 0)
+  // Igual ao Lua: soma end-start bruto de cada item válido e arredonda só no formatTotalTime.
+  // Não soma filhos que estão embaixo do pai, para não duplicar família R/P.
+  const list = Array.isArray(items) ? items : []
+  let total = 0
+  let activeParentFamily = ''
+  for (const item of list) {
+    if (!item || detectBlockItem(item)) {
+      activeParentFamily = ''
+      continue
+    }
+    if (isHashParentItem(item)) {
+      activeParentFamily = getHashFamilyKeyForAppItem(item)
+      total += vshookRawItemDurationSec(item)
+      continue
+    }
+    if (isHashChildItem(item)) {
+      const childFamily = getHashFamilyKeyForAppItem(item)
+      if (!childFamily || childFamily !== activeParentFamily) {
+        activeParentFamily = ''
+        total += vshookRawItemDurationSec(item)
+      }
+      continue
+    }
+    activeParentFamily = ''
+    total += vshookRawItemDurationSec(item)
+  }
+  return total
+}
+
+
+function directorFirstFiniteTotalNumber(values) {
+  for (const value of values) {
+    const n = Number(value)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return null
+}
+
+function directorFirstTotalText(values) {
+  for (const value of values) {
+    const raw = String(value ?? '').trim()
+    if (!raw) continue
+    const clean = raw.replace(/^total\s*:\s*/i, '').trim()
+    if (/^\d{1,3}:\d{2}(?::\d{2})?$/.test(clean)) return clean
+  }
+  return ''
+}
+
+function resolveDirectorPlaylistTotalSeconds(playlist) {
+  // Fallback: mesma base visual do Lua, usando start/end bruto e arredondando só no texto final.
+  const sourcePlaylist = getDirectorMusicosCompatiblePlaylistForTotal(playlist)
+  const songs = Array.isArray(sourcePlaylist?.songs) ? sourcePlaylist.songs : []
+  return vshookSumRootDuration(songs)
+}
+
+function resolveDirectorPlaylistTotalText(playlist) {
+  // Para bater exatamente com o Lua, o App Diretor prioriza o texto pronto enviado pelo Lua/Bridge.
+  // Só recalcula como fallback quando o estado ainda não trouxe esse campo.
+  const fromStateText = directorFirstTotalText([
+    state?.activePlaylistTotalText,
+    state?.currentPlaylistTotalText,
+    state?.playlistTotalText,
+    state?.totalPlaylistText,
+    state?.repertorioTotalText,
+    state?.repertoryTotalText,
+    playlist?.activePlaylistTotalText,
+    playlist?.currentPlaylistTotalText,
+    playlist?.playlistTotalText,
+    playlist?.totalPlaylistText,
+    playlist?.repertorioTotalText,
+    playlist?.totalText,
+    playlist?.durationText,
+  ])
+  if (fromStateText) return fromStateText
+  return formatTotalTime(resolveDirectorPlaylistTotalSeconds(playlist))
+}
+
+function resolveDirectorRegionsTotalSeconds() {
+  const fromState = directorFirstFiniteTotalNumber([
+    state?.regionsTotalSec,
+    state?.totalRegionsSec,
+    state?.musicasTotalSec,
+    state?.musicTotalSec,
+    state?.songsTotalSec,
+    state?.totalMusicasSec,
+  ])
+  if (fromState != null) return fromState
+  return vshookSumRegionsDuration(state.regions)
+}
+
+function resolveDirectorRegionsTotalText() {
+  const fromStateText = directorFirstTotalText([
+    state?.regionsTotalText,
+    state?.totalRegionsText,
+    state?.musicasTotalText,
+    state?.musicTotalText,
+    state?.songsTotalText,
+    state?.totalMusicasText,
+  ])
+  if (fromStateText) return fromStateText
+  return formatTotalTime(resolveDirectorRegionsTotalSeconds())
+}
+
+function vshookSumRegionsDuration(items) {
+  // Igual ao Lua na aba Músicas: filhos R/P não entram no total.
+  const list = Array.isArray(items) ? items : []
+  return list.reduce((sum, item) => {
+    if (!item || detectBlockItem(item) || isHashChildItem(item)) return sum
+    return sum + vshookRawItemDurationSec(item)
   }, 0)
 }
 
@@ -2969,6 +3280,38 @@ function getPlaybackCommandPayloadForTarget(targetId, sourceTab = null, desiredP
   return payload
 }
 
+
+function buildQueueOnlyPayload(targetId, sourceTab = 'playlist') {
+  const key = targetId != null && String(targetId) !== '' ? String(targetId) : ''
+  const tab = sourceTab || state.activeTab || 'playlist'
+  const payload = {
+    id: key,
+    targetId: key,
+    songId: key,
+    activeTab: tab,
+    queueOnly: true,
+    noTransport: true,
+    keepPlaying: true,
+    noSeek: true,
+    preserveCursor: true,
+    transportOnly: false,
+    role: 'director',
+    clientRole: 'director',
+    appRole: 'director',
+    source: 'director',
+    mode: 'director',
+  }
+  if (tab === 'regions') {
+    payload.selectedRegionId = key
+    payload.regionId = key
+  } else {
+    payload.selectedPlaylistSongId = key
+    payload.playlistSongId = key
+    if (state.activePlaylistId != null) payload.activePlaylistId = String(state.activePlaylistId)
+  }
+  return payload
+}
+
 function showLocalPlaybackPopupForId(id) {
   const item = findAnyPlaybackItemById(id)
   if (!item || detectBlockItem(item)) return false
@@ -2981,62 +3324,46 @@ function showLocalPlaybackPopupForId(id) {
 let directorStopRetryTimer = null
 
 function postPlaybackToggleCommand(targetId, sourceTab = null, desiredPlaying = true, extraPayload = null) {
-  const payload = getPlaybackCommandPayloadForTarget(targetId, sourceTab, desiredPlaying)
-  if (extraPayload && typeof extraPayload === 'object') Object.assign(payload, extraPayload)
-
-  // Stop vindo do Diretor: o Lua precisa receber como seleção principal a música
-  // que deve ficar azul depois do Stop, não a música que estava tocando.
-  // Antes o app mandava selectedPlaylistSongId/selectedRegionId com o ID da música parada
-  // e apenas stopSelectionTargetId com o próximo alvo. Como campos extras antigos podem
-  // não ser lidos por algumas versões do Lua, o azul ficava preso na música parada.
-  if (!desiredPlaying && extraPayload && extraPayload.stopSelectionTargetId != null && String(extraPayload.stopSelectionTargetId) !== '' && String(extraPayload.stopSelectionTargetSource || '') !== 'stopped') {
-    const stopTargetId = String(extraPayload.stopSelectionTargetId)
-    const stopTargetTab = extraPayload.stopSelectionTargetTab || getPreferredStoppedSelectionTab(stopTargetId, sourceTab || state.activeTab || payload.activeTab || 'playlist')
-    const stopTargetItem = findSongByIdEverywhere(stopTargetId) || findAnyPlaybackItemById(stopTargetId)
-
-    payload.activeTab = stopTargetTab || payload.activeTab || sourceTab || state.activeTab || 'playlist'
-    payload.selectedRegionId = payload.activeTab === 'regions' ? stopTargetId : null
-    payload.selectedPlaylistSongId = payload.activeTab === 'playlist' ? stopTargetId : null
-    payload.targetId = stopTargetId
-    payload.songId = stopTargetId
-    payload.nextSelectionId = stopTargetId
-    payload.queuedSelectionId = stopTargetId
-
-    if (stopTargetItem && typeof stopTargetItem === 'object') {
-      const itemIndex = Number(stopTargetItem.index)
-      const itemStart = Number(stopTargetItem.startPos ?? stopTargetItem.start_pos)
-      const itemEnd = Number(stopTargetItem.endPos ?? stopTargetItem.end_pos)
-      if (Number.isFinite(itemIndex)) payload.stopSelectionPlaylistIndex = itemIndex
-      if (Number.isFinite(itemStart)) payload.stopSelectionStartPos = itemStart
-      if (Number.isFinite(itemEnd)) payload.stopSelectionEndPos = itemEnd
+  if (!desiredPlaying) {
+    if (directorStopRetryTimer) {
+      clearTimeout(directorStopRetryTimer)
+      directorStopRetryTimer = null
     }
+    const stopPayload = {
+      role: 'director',
+      clientRole: 'director',
+      appRole: 'director',
+      source: 'director',
+      mode: 'director',
+      activeTab: sourceTab || state.activeTab || 'playlist',
+      desiredPlaying: false,
+      desiredState: 'stopped',
+      forcePlay: false,
+      forceStop: true,
+      noSeek: true,
+      preserveCursor: true,
+      transportOnly: true,
+      stopTransportOnly: true,
+      ignoreSelection: true,
+      ignoreTarget: true,
+      noPosition: true,
+      preventFallbackZero: true,
+    }
+    if (extraPayload && typeof extraPayload === 'object') {
+      if (extraPayload.stopSelectionTargetId != null) stopPayload.stopSelectionTargetId = String(extraPayload.stopSelectionTargetId)
+      if (extraPayload.stopSelectionTargetTab != null) stopPayload.stopSelectionTargetTab = String(extraPayload.stopSelectionTargetTab)
+      if (extraPayload.stopSelectionTargetSource != null) stopPayload.stopSelectionTargetSource = String(extraPayload.stopSelectionTargetSource)
+    }
+    return postCommand('director_stop_no_seek', stopPayload)
   }
 
+  const payload = getPlaybackCommandPayloadForTarget(targetId, sourceTab, true)
+  if (extraPayload && typeof extraPayload === 'object') Object.assign(payload, extraPayload)
   payload.noSeek = true
   payload.preserveCursor = true
   payload.transportOnly = true
   payload.activeTab = payload.activeTab || sourceTab || state.activeTab || 'playlist'
-  // Play do Diretor não pode reselecionar/reposicionar a música.
-  // A seleção já posiciona o cursor; o botão Play só dá transporte no ponto atual.
-  const commandName = desiredPlaying ? 'director_play_no_seek' : 'director_stop_no_seek'
-  const sent = postCommand(commandName, payload)
-
-  // v2.0.36: após recarregar a página, o primeiro Stop podia ser perdido pelo
-  // ciclo inicial do front/Bridge. Stop é idempotente, então fazemos um retry
-  // curto apenas para Stop. Play continua sem duplicação.
-  if (!desiredPlaying) {
-    if (directorStopRetryTimer) clearTimeout(directorStopRetryTimer)
-    const retryPayload = { ...payload, appRetry: true, retryReason: 'first_stop_after_reload_guard' }
-    directorStopRetryTimer = setTimeout(() => {
-      directorStopRetryTimer = null
-      const stillLooksActive = !!(state.playingId || getPlaybackUiActive?.() || pendingPlaybackDesiredPlaying === false)
-      if (!stillLooksActive) return
-      retryPayload.clientCommandId = makeDirectorClientCommandId(commandName, retryPayload)
-      postCommand(commandName, retryPayload)
-    }, 180)
-  }
-
-  return sent
+  return postCommand('director_play_no_seek', payload)
 }
 const pendingMixerToggleState = new Map()
 const PENDING_MIXER_TOGGLE_GRACE_MS = 1400
@@ -3538,12 +3865,12 @@ function buildCurrentPlaylistCopyText() {
   const songs = vshookRootFamilyItems(Array.isArray(playlist?.songs) ? playlist.songs : [])
   if (!playlist || !songs.length) return ''
 
-  const totalSec = songs.reduce((sum, song) => sum + (Number(song?.durationSec) || 0), 0)
+  const totalText = resolveDirectorPlaylistTotalText(playlist)
   const lines = []
   const playlistName = String(playlist?.name ?? '').trim()
   if (playlistName) lines.push(playlistName)
   lines.push('')
-  lines.push(`Tempo total: ${formatTotalTime(totalSec)}`)
+  lines.push(`Tempo total: ${totalText}`)
   lines.push('')
 
   for (const song of songs) {
@@ -4135,16 +4462,68 @@ function makeDirectorClientCommandId(type, payload = {}) {
   return `${Date.now()}-${String(type || 'cmd')}-${getOutgoingCommandTargetKey(payload) || 'none'}-${Math.random().toString(16).slice(2, 8)}`
 }
 
+
+function sanitizeDirectorOutgoingCommandPayload(commandType, payload = {}) {
+  const out = payload && typeof payload === 'object' ? { ...payload } : {}
+  const type = String(commandType || '')
+  const isQueue = type === 'queue_playlist_song' || type === 'queue_region_song' || type === 'clear_queue'
+  if (isQueue) {
+    delete out.desiredPlaying
+    delete out.desiredState
+    delete out.forceStop
+    delete out.forcePlay
+    delete out.transportOnly
+    delete out.selectedStartPos
+    delete out.selectedEndPos
+    delete out.stopSelectionStartPos
+    delete out.stopSelectionEndPos
+    delete out.stopSelectionPlaylistIndex
+    out.queueOnly = type !== 'clear_queue'
+    out.noTransport = true
+    out.keepPlaying = true
+    out.noSeek = true
+    out.preserveCursor = true
+  }
+  if (type === 'transport_stop_no_seek' || type === 'director_stop_no_seek' || type === 'play_stop_no_seek') {
+    const keep = {
+      role: out.role || 'director',
+      clientRole: out.clientRole || 'director',
+      appRole: out.appRole || 'director',
+      source: out.source || 'director',
+      mode: out.mode || 'director',
+      activeTab: out.activeTab || state.activeTab || 'playlist',
+      desiredPlaying: false,
+      desiredState: 'stopped',
+      forcePlay: false,
+      forceStop: true,
+      noSeek: true,
+      preserveCursor: true,
+      transportOnly: true,
+      stopTransportOnly: true,
+      ignoreSelection: true,
+      ignoreTarget: true,
+      noPosition: true,
+      preventFallbackZero: true,
+      stopSelectionTargetId: out.stopSelectionTargetId,
+      stopSelectionTargetTab: out.stopSelectionTargetTab,
+      stopSelectionTargetSource: out.stopSelectionTargetSource,
+    }
+    Object.keys(keep).forEach((k) => keep[k] === undefined && delete keep[k])
+    return keep
+  }
+  return out
+}
+
 function postCommand(type, payload = {}) {
   markDirectorLocalInput(700)
-  const commandPayload = payload && typeof payload === 'object' ? { ...payload } : {}
+  const commandType = String(type || '')
+  const commandPayload = sanitizeDirectorOutgoingCommandPayload(commandType, payload)
   commandPayload.role = commandPayload.role || 'director'
   commandPayload.clientRole = commandPayload.clientRole || 'director'
   commandPayload.appRole = commandPayload.appRole || 'director'
   commandPayload.source = commandPayload.source || 'director'
   commandPayload.mode = commandPayload.mode || 'director'
 
-  const commandType = String(type || '')
   if (shouldBlockOutgoingDuplicateCommand(commandType, commandPayload)) {
     return Promise.resolve(null)
   }
@@ -4686,7 +5065,26 @@ function syncFromBridge(data) {
   state.appActive = !!data.appActive
   state.autoBlocoEnabled = !!data.autoBlocoEnabled
   state.regions = Array.isArray(data.regions) ? data.regions : state.regions
+  if (Array.isArray(data.playlists)) {
+    state.musicosCompatiblePlaylistsForTotal = normalizeMusicosCompatiblePlaylistsForTotal(data.playlists)
+  }
   state.playlists = normalizeBridgePlaylistsWithHashChildren(Array.isArray(data.playlists) ? data.playlists : state.playlists)
+  state.activePlaylistTotalSec = directorFirstFiniteTotalNumber([data.activePlaylistTotalSec, data.currentPlaylistTotalSec, data.playlistTotalSec, data.totalPlaylistSec, data.repertorioTotalSec, data.repertoryTotalSec]) ?? state.activePlaylistTotalSec
+  state.currentPlaylistTotalSec = state.activePlaylistTotalSec
+  state.playlistTotalSec = state.activePlaylistTotalSec
+  state.totalPlaylistSec = state.activePlaylistTotalSec
+  state.activePlaylistTotalText = directorFirstTotalText([data.activePlaylistTotalText, data.currentPlaylistTotalText, data.playlistTotalText, data.totalPlaylistText, data.repertorioTotalText, data.repertoryTotalText]) || state.activePlaylistTotalText || ''
+  state.currentPlaylistTotalText = state.activePlaylistTotalText
+  state.playlistTotalText = state.activePlaylistTotalText
+  state.totalPlaylistText = state.activePlaylistTotalText
+  state.regionsTotalSec = directorFirstFiniteTotalNumber([data.regionsTotalSec, data.totalRegionsSec, data.musicasTotalSec, data.musicTotalSec, data.songsTotalSec, data.totalMusicasSec]) ?? state.regionsTotalSec
+  state.totalRegionsSec = state.regionsTotalSec
+  state.musicasTotalSec = state.regionsTotalSec
+  state.totalMusicasSec = state.regionsTotalSec
+  state.regionsTotalText = directorFirstTotalText([data.regionsTotalText, data.totalRegionsText, data.musicasTotalText, data.musicTotalText, data.songsTotalText, data.totalMusicasText]) || state.regionsTotalText || ''
+  state.totalRegionsText = state.regionsTotalText
+  state.musicasTotalText = state.regionsTotalText
+  state.totalMusicasText = state.regionsTotalText
   vshookCacheHashChildrenFromBridgeState()
   state.projectTabs = Array.isArray(data.projectTabs) ? data.projectTabs : (Array.isArray(data.projects) ? data.projects : state.projectTabs)
   state.activeProjectTabIndex = Number.isFinite(Number(data.activeProjectTabIndex)) ? Number(data.activeProjectTabIndex) : state.activeProjectTabIndex
@@ -5093,7 +5491,7 @@ function syncFromBridge(data) {
     state.timerRunning = typeof data.timerRunning === 'boolean' ? data.timerRunning : state.timerRunning
     state.timerStartedAt = Number.isFinite(Number(data.timerStartedAt)) ? Number(data.timerStartedAt) : state.timerStartedAt
     state.timerAccumulatedSec = Number.isFinite(Number(data.timerAccumulatedSec)) ? Number(data.timerAccumulatedSec) : state.timerAccumulatedSec
-    state.timerMode = String(data.timerMode || data.timerType || state.timerMode || 'progressive').toLowerCase() === 'countdown' ? 'countdown' : 'progressive'
+    state.timerMode = normalizeDirectorTimerMode(data.timerMode || data.timerType || state.timerMode || 'progressive')
     state.timerTargetSec = Number.isFinite(Number(data.timerTargetSec)) ? Number(data.timerTargetSec) : state.timerTargetSec
     state.timerDisplaySec = Number.isFinite(Number(data.timerDisplaySec)) ? Number(data.timerDisplaySec) : state.timerDisplaySec
   }
@@ -5306,6 +5704,10 @@ function buildBridgeRenderSignature() {
     timerStartedAtMs: state.timerStartedAtMs,
     timerAccumulatedSec: state.timerAccumulatedSec,
     timerDisplaySec: state.timerDisplaySec,
+    activePlaylistTotalSec: state.activePlaylistTotalSec,
+    activePlaylistTotalText: state.activePlaylistTotalText,
+    regionsTotalSec: state.regionsTotalSec,
+    regionsTotalText: state.regionsTotalText,
     chronoTick: state.timerRunning ? Math.floor(Date.now() / 250) : 0,
     playbackTick: (getPlaybackUiActive() && !state.lyricsPanelOpen) ? Math.floor(Date.now() / 200) : 0,
     playlists: (state.playlists || []).map((playlist) => ({
@@ -6721,7 +7123,7 @@ function selectRegion(id) {
         clearQueueAndMaybeAutoplay()
       } else {
         setLocalQueuedSong(nextPlayableId, 'regions')
-        postCommand('queue_region_song', { ...getPlaybackCommandPayloadForTarget(nextPlayableId, 'regions', false), id: nextPlayableId, targetId: nextPlayableId, activeTab: 'regions' })
+        postCommand('queue_region_song', buildQueueOnlyPayload(nextPlayableId, 'regions'))
         render()
       }
       return
@@ -6736,7 +7138,7 @@ function selectRegion(id) {
       clearQueueAndMaybeAutoplay()
     } else {
       setLocalQueuedSong(key, 'regions')
-      postCommand('queue_region_song', { ...getPlaybackCommandPayloadForTarget(key, 'regions', false), id: key, targetId: key, activeTab: 'regions' })
+      postCommand('queue_region_song', buildQueueOnlyPayload(key, 'regions'))
       render()
     }
     return
@@ -6774,8 +7176,8 @@ function selectRegion(id) {
   state.selectedRegionIds = []
   setDirectorLocalSelectionHold(key, 'regions')
   lockSelectionSync(DIRECTOR_LOCAL_SELECTION_HOLD_MS)
-  postCommand('select_region', { id: key, activeTab: 'regions' })
   render()
+  postCommand('select_region', { id: key, activeTab: 'regions' })
 }
 
 
@@ -6806,7 +7208,7 @@ function clearQueueAndMaybeAutoplay() {
   postCommand('clear_queue')
   if (getAutoplayVisualEnabled()) {
     setAutoplayVisualEnabled(false)
-    postCommand('autoplay_toggle')
+    postCommand('autoplay_set', { desiredAutoplay: false, desiredState: 'off' })
   }
   render()
 }
@@ -6856,7 +7258,7 @@ function selectPlaylistSong(id) {
         clearQueueAndMaybeAutoplay()
       } else {
         setLocalQueuedSong(nextPlayableId, 'playlist')
-        postCommand('queue_playlist_song', { ...getPlaybackCommandPayloadForTarget(nextPlayableId, 'playlist', false), id: nextPlayableId, targetId: nextPlayableId, activeTab: 'playlist' })
+        postCommand('queue_playlist_song', buildQueueOnlyPayload(nextPlayableId, 'playlist'))
         render()
       }
       return
@@ -6870,7 +7272,7 @@ function selectPlaylistSong(id) {
       clearQueueAndMaybeAutoplay()
     } else {
       setLocalQueuedSong(key, 'playlist')
-      postCommand('queue_playlist_song', { ...getPlaybackCommandPayloadForTarget(key, 'playlist', false), id: key, targetId: key, activeTab: 'playlist' })
+      postCommand('queue_playlist_song', buildQueueOnlyPayload(key, 'playlist'))
       render()
     }
     return
@@ -6892,6 +7294,7 @@ function selectPlaylistSong(id) {
   state.selectedPlaylistSongIds = []
   setDirectorLocalSelectionHold(key, 'playlist')
   lockSelectionSync(DIRECTOR_LOCAL_SELECTION_HOLD_MS)
+  render()
   postCommand('select_playlist_song', {
     id: key,
     targetId: key,
@@ -6910,7 +7313,6 @@ function selectPlaylistSong(id) {
     parentId: item?.parentId || '',
   })
   fastPollBridge(5)
-  render()
 }
 
 
@@ -7512,7 +7914,7 @@ function handlePlayToggle(event = null) {
 function handleAutoplayToggle() {
   const nextEnabled = !getAutoplayVisualEnabled()
   setAutoplayVisualEnabled(nextEnabled)
-  postCommand('autoplay_toggle', { desiredAutoplay: nextEnabled, desiredState: nextEnabled ? 'on' : 'off' })
+  postCommand('autoplay_set', { desiredAutoplay: nextEnabled, desiredState: nextEnabled ? 'on' : 'off' })
   render()
 }
 
@@ -7520,7 +7922,7 @@ function handleAutoBlocoToggle() {
   const nextEnabled = !state.autoBlocoEnabled
   state.autoBlocoEnabled = nextEnabled
   render()
-  postCommand('auto_bloco_toggle', { desiredAutoBloco: nextEnabled, desiredState: nextEnabled ? 'on' : 'off' })
+  postCommand('auto_bloco_set', { desiredAutoBloco: nextEnabled, desiredState: nextEnabled ? 'on' : 'off' })
   fastPollBridge?.(4)
 }
 
@@ -7738,6 +8140,10 @@ function renderRows(items, type) {
     const attr = type === 'region' ? `data-region-id="${itemId}"` : type === 'song' ? `data-song-id="${itemId}"` : `data-marker-id="${itemId}"`
     const familyGroupId = item?.familyGroupId != null ? String(item.familyGroupId) : ''
     const familyAttr = familyGroupId ? ` data-family-group-id="${escapeHtml(familyGroupId)}" data-family-role="${escapeHtml(item?.familyRole || '')}" data-parent-id="${escapeHtml(String(item?.parentId || item?.parentSourceNumber || ''))}"` : ''
+    const rowSourceNumber = item?.source_number ?? item?.sourceNumber ?? item?.number ?? ''
+    const rowStartPos = item?.startPos ?? item?.start_pos ?? ''
+    const rowEndPos = item?.endPos ?? item?.end_pos ?? ''
+    const rowMetaAttr = ` data-source-number="${escapeHtml(String(rowSourceNumber ?? ''))}" data-source-start="${escapeHtml(String(rowStartPos ?? ''))}" data-source-end="${escapeHtml(String(rowEndPos ?? ''))}"`
     const label = formatRowLabel(item, type)
     const isHashChild = isHashChildItem(item)
     const isHashParent = isHashParentItem(item)
@@ -7811,7 +8217,7 @@ function renderRows(items, type) {
       : ''
 
     const rightColHtml = time ? `<div class="rightCol"><span class="${timeClass}">${time}</span></div>` : `<div class="rightCol rightColEmpty"></div>`
-    return `<div class="${classes.join(' ')}" ${attr}${familyAttr}${blockOutlineStyle}>${progressBarHtml}${numberCol}${dragHandle}<div class="leftCol">${labelHtml}</div>${rightColHtml}</div>`
+    return `<div class="${classes.join(' ')}" ${attr}${familyAttr}${rowMetaAttr}${blockOutlineStyle}>${progressBarHtml}${numberCol}${dragHandle}<div class="leftCol">${labelHtml}</div>${rightColHtml}</div>`
   }).join('')
 }
 
@@ -7838,96 +8244,8 @@ function installPremixSafetyCloseFallback() {
 
 
 function bindHashChildrenLongPress(el, type) {
-  if (!el || el.__hashLongPressBound === '1') return
-  el.__hashLongPressBound = '1'
-  let timer = null
-  let startX = 0
-  let startY = 0
-  let fired = false
-
-  const clear = () => {
-    if (timer) window.clearTimeout(timer)
-    timer = null
-    document.body.classList.remove('vshookNoTextSelect')
-  }
-
-  const run = (event) => {
-    fired = true
-    el.__hashLongPressJustFiredUntil = Date.now() + 900
-    document.body.classList.add('vshookNoTextSelect')
-    event?.preventDefault?.()
-    event?.stopPropagation?.()
-    event?.stopImmediatePropagation?.()
-    const id = type === 'region' ? el.getAttribute('data-region-id') : el.getAttribute('data-song-id')
-    const activeTab = type === 'region' ? 'regions' : 'playlist'
-    vshookToggleHashChildrenFront(el, type)
-    markDirectorLocalInput(1500)
-    postCommand('toggle_hash_children', {
-      id,
-      targetId: id,
-      selectedRegionId: activeTab === 'regions' ? id : undefined,
-      selectedPlaylistSongId: activeTab === 'playlist' ? id : undefined,
-      familyGroupId: el.getAttribute('data-family-group-id') || '',
-      familyRole: el.getAttribute('data-family-role') || '',
-      parentId: el.getAttribute('data-parent-id') || '',
-      activeTab,
-      page: activeTab,
-    })
-    showAppPopup('MOSTRAR / OCULTAR FILHOS', 'marker', 1200)
-    window.setTimeout(() => document.body.classList.remove('vshookNoTextSelect'), 250)
-  }
-
-  const begin = (event, x, y) => {
-    if (event?.pointerType === 'mouse' && event.button !== 0) return
-    if (type !== 'song') return
-    if (state.activeTab !== 'playlist' || state.playlistView === 'markers') return
-    if (state.editMode || state.deleteMode || state.dragActive || state.dragPending) return
-    fired = false
-    startX = Number(x) || 0
-    startY = Number(y) || 0
-    clear()
-    document.body.classList.add('vshookNoTextSelect')
-    timer = window.setTimeout(() => run(event), 1000)
-  }
-
-  const move = (event, x, y) => {
-    if (!timer) return
-    const dx = Math.abs((Number(x) || 0) - startX)
-    const dy = Math.abs((Number(y) || 0) - startY)
-    if (dx > 24 || dy > 24) clear()
-  }
-
-  const finish = (event) => {
-    const wasFired = fired
-    clear()
-    if (wasFired) {
-      event?.preventDefault?.()
-      event?.stopPropagation?.()
-      event?.stopImmediatePropagation?.()
-    }
-    window.setTimeout(() => { fired = false }, 160)
-  }
-
-  el.addEventListener('pointerdown', (event) => begin(event, event.clientX, event.clientY), { passive: false })
-  el.addEventListener('pointermove', (event) => move(event, event.clientX, event.clientY), { passive: true })
-  el.addEventListener('pointerup', finish, { passive: false })
-  el.addEventListener('pointercancel', finish, { passive: false })
-
-  el.addEventListener('touchstart', (event) => {
-    const t = event.changedTouches && event.changedTouches[0]
-    begin(event, t?.clientX, t?.clientY)
-  }, { passive: false })
-  el.addEventListener('touchmove', (event) => {
-    const t = event.changedTouches && event.changedTouches[0]
-    move(event, t?.clientX, t?.clientY)
-  }, { passive: true })
-  el.addEventListener('touchend', finish, { passive: false })
-  el.addEventListener('touchcancel', finish, { passive: false })
-
-  el.addEventListener('contextmenu', (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-  })
+  // Desativado por decisão de produto: App Diretor não usa mais apertar/segurar para filhos.
+  return false
 }
 
 function bindEvents() {
@@ -7944,6 +8262,7 @@ function bindEvents() {
   document.querySelector('[data-action="confirm-timer"]')?.addEventListener('click', confirmTimerModal)
   document.querySelector('[data-action="timer-mode-progressive"]')?.addEventListener('click', () => setTimerModeFromApp('progressive'))
   document.querySelector('[data-action="timer-mode-countdown"]')?.addEventListener('click', () => setTimerModeFromApp('countdown'))
+  document.querySelector('[data-action="timer-mode-local"]')?.addEventListener('click', () => setTimerModeFromApp('local_time'))
   document.querySelectorAll('[data-timer-part]').forEach((input) => {
     input.addEventListener('input', syncTimerTargetPreviewFromInputs)
     input.addEventListener('change', syncTimerTargetPreviewFromInputs)
@@ -8135,6 +8454,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-region-id]').forEach((el) => {
     const id = el.getAttribute('data-region-id')
+    bindHashChildrenLongPress(el, 'region')
     bindReliableTapAction(el, `region:${id || ''}`, () => selectRegion(id))
   })
 
@@ -8431,10 +8751,10 @@ function render() {
   const topTitle = state.activeTab === 'playlist' ? upperText(playlist?.name || 'SEM REPERTÓRIO') : 'ESCOLHA SUAS MUSICAS'
   const timerText = formatChronoTime(getTimerElapsedSec())
   const topTitleHtml = state.activeTab === 'playlist' ? `<button class="playlistTitleButton" data-action="open-playlist-switch"><span class="playlistTitleContent">${buildTitleTicker(topTitle)}</span><span class="playlistTitleArrow">▾</span></button>` : `<span class="regionsTopLabel">MÚSICAS</span>`
-  const topTimerHtml = `<button class="topTimerButton ${state.timerRunning ? 'topTimerButtonRunning' : ''}" data-action="open-timer"><span data-chrono-display>${timerText}</span></button>`
+  const topTimerHtml = `<button class="topTimerButton ${state.timerRunning || state.timerMode === 'local_time' ? 'topTimerButtonRunning' : ''}" data-action="open-timer"><span data-chrono-display>${state.timerMode === 'local_time' ? getDirectorDeviceLocalTimeText() : timerText}</span></button>`
   const topTime = state.activeTab === 'playlist'
-    ? `${formatTotalTime(vshookSumRootDuration(playlist?.songs || []))}`
-    : `${formatTotalTime(vshookSumRootDuration(state.regions))}`
+    ? `${resolveDirectorPlaylistTotalText(playlist)}`
+    : `${resolveDirectorRegionsTotalText()}`
 
   // 2.0.35: Cancelar de Markers aparece somente quando o marker estiver verde/engatilhado.
   // O rodapé reserva espaço fixo na tela de Markers para o botão não cobrir a lista.
@@ -8446,7 +8766,7 @@ function render() {
   const markerCancelGlobalButton = ''
 
   const content = state.activeTab === 'regions'
-    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(vshookRootFamilyItems(state.regions), 'region')}</div></div>`
+    ? `<div class="contentPanel"><div class="controlsStickyPanel"><div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>${renderNowPlayingBanner()}</div><div class="listBox">${renderRows(vshookGetDisplayItemsWithFrontHashChildren(state.regions || [], 'region', ''), 'region')}</div></div>`
     : `<div class="contentPanel ${state.playlistView === 'markers' ? `markerContentPanel ${Date.now() < Number(state.markersPanelAnimateUntil || 0) ? 'markerPanelSlideIn' : ''}` : ''}"><div class="controlsStickyPanel">${state.playlistView === 'markers'
         ? `<div class="controlsRowPlaylist controlsRowEqual controlsRowMarkers"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${state.loopActive ? 'btnLoopActive loopBlink markerLoopButton' : 'btn markerLoopButton'}" data-action="loop">Loop</button><button class="tab btnLyricsOpen lyricsNavButton markersInlineBackButton markerBackLyricsButton" data-action="close-markers">&lt;&lt;</button></div>`
         : `<div class="controlsRowPlaylist controlsRowEqual controlsRowDirectorMain"><button class="${getPlayButtonClass()}" data-action="play">${getPlayButtonLabel()}</button><button class="${getAutoplayVisualEnabled() ? 'btnAutoplayActive' : 'btn'}" data-action="autoplay">AUTO</button><button class="tab btnLyricsOpen lyricsNavButton lyricsNavButtonInline" data-action="open-lyrics-panel">&lt;&lt;</button></div>`}
@@ -8504,14 +8824,14 @@ function render() {
     : ''
 
   const timerModalTitle = state.timerRunning ? 'DESEJA PARAR?' : 'DESEJA INICIAR?'
-  const timerModeLabel = state.timerMode === 'countdown' ? 'REGRESSIVO' : 'PROGRESSIVO'
+  const timerModeLabel = state.timerMode === 'local_time' ? 'HORÁRIO LOCAL' : (state.timerMode === 'countdown' ? 'REGRESSIVO' : 'PROGRESSIVO')
   const timerTargetParts = getTimerTargetPartsFromSeconds(state.timerTargetSec || 0)
   const timerTargetEditor = state.timerMode === 'countdown'
     ? `<div class="timerTargetEditor"><div class="timerTargetLabel">TEMPO REGRESSIVO</div><div class="timerTargetGrid"><label>H<input data-timer-part="h" type="number" inputmode="numeric" min="0" max="99" value="${timerTargetParts.h}"></label><label>M<input data-timer-part="m" type="number" inputmode="numeric" min="0" max="59" value="${timerTargetParts.m}"></label><label>S<input data-timer-part="s" type="number" inputmode="numeric" min="0" max="59" value="${timerTargetParts.s}"></label></div></div>`
     : ''
   const timerConfirmLabel = state.timerRunning ? 'PARAR' : 'INICIAR'
   const timerModal = state.showTimerModal
-    ? `<div class="modalOverlay" data-close-timer><div class="modalSpacer"></div><div class="modalBox timerModalBox timerModalBoxWide" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview" data-chrono-display>${state.timerMode === 'countdown' && !state.timerRunning ? formatChronoTime(state.timerTargetSec || 0) : timerText}</div><div class="timerModeCurrent">MODO: ${timerModeLabel}</div><div class="timerModeGrid"><button class="${state.timerMode === 'progressive' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${state.timerMode === 'countdown' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-countdown">REGRESSIVO</button></div>${timerTargetEditor}<div class="modalTitle timerModalActionTitle">${timerModalTitle}</div><div class="modalButtons"><button class="modalCancelBtn" data-action="close-timer">SAIR</button><button class="modalOkBtnWide" data-action="confirm-timer">${timerConfirmLabel}</button></div></div><div class="modalBottomSpace"></div></div>`
+    ? `<div class="modalOverlay" data-close-timer><div class="modalSpacer"></div><div class="modalBox timerModalBox timerModalBoxWide" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview" data-chrono-display>${state.timerMode === 'local_time' ? getDirectorDeviceLocalTimeText() : (state.timerMode === 'countdown' && !state.timerRunning ? formatChronoTime(state.timerTargetSec || 0) : timerText)}</div><div class="timerModeCurrent">MODO: ${timerModeLabel}</div><div class="timerModeGrid timerModeGrid3"><button class="${state.timerMode === 'progressive' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${state.timerMode === 'countdown' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-countdown">REGRESSIVO</button><button class="${state.timerMode === 'local_time' ? 'modalOkBtnWide' : 'modalCancelBtn'}" data-action="timer-mode-local">HORÁRIO LOCAL</button></div>${timerTargetEditor}<div class="modalTitle timerModalActionTitle">${timerModalTitle}</div><div class="modalButtons"><button class="modalCancelBtn" data-action="close-timer">SAIR</button><button class="modalOkBtnWide" data-action="confirm-timer">${timerConfirmLabel}</button></div></div><div class="modalBottomSpace"></div></div>`
     : ''
 
   const liveOffConfirmModal = state.showLiveOffConfirmModal
@@ -8540,7 +8860,7 @@ function render() {
   const lyricsPanelHtml = renderLyricsPanel()
   const appPopupHtml = renderBridgePopupHtml(isMarkersPanelOpen() ? 'appPopupMarkersPanel' : '')
 
-  app.innerHTML = `<div class="app" data-theme="${state.theme}" style="--app-border-color:${appBorderColor};--app-border-glow:${appBorderGlow};"><style>.app{height:var(--app-vh,100dvh);min-height:var(--app-vh,100dvh);overflow:hidden}.container{height:calc(var(--app-vh,100dvh) - 16px)!important;min-height:calc(var(--app-vh,100dvh) - 16px)!important;overflow:hidden}@media (max-width:480px){.container{height:calc(var(--app-vh,100dvh) - 12px)!important;min-height:calc(var(--app-vh,100dvh) - 12px)!important}}.contentPanel{display:flex;flex-direction:column;flex:1;min-height:0;padding-bottom:2px}.controlsStickyPanel{flex:0 0 auto;position:relative;z-index:4;background:linear-gradient(180deg,#0a1018 0%,#06090f 100%)}.topTimerButton{min-width:96px;height:34px;padding:0 10px;border-radius:10px;border:1px solid #475569;background:#111827;color:#facc15;font-weight:900;font-size:14px;letter-spacing:.03em}.topTimerButtonRunning{border-color:#22c55e;background:#052e16;color:#86efac;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 16px rgba(34,197,94,.14)}.timerModalBox{max-width:330px}.timerModalBoxWide{width:min(92vw,480px)!important;max-width:480px!important}.timerModeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGrid button{min-height:44px;border-radius:12px;font-weight:900}.timerModeCurrent{text-align:center;color:#facc15;font-weight:900;margin:-4px 0 6px}.timerTargetEditor{margin:10px 0 8px;padding:10px;border:1px solid rgba(250,204,21,.35);border-radius:12px;background:rgba(250,204,21,.08)}.timerTargetLabel{text-align:center;color:#fde68a;font-weight:900;font-size:13px;margin-bottom:8px}.timerTargetGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.timerTargetGrid label{display:flex;flex-direction:column;gap:5px;text-align:center;color:#cbd5e1;font-weight:900;font-size:12px}.timerTargetGrid input{width:100%;height:42px;border-radius:10px;border:1px solid #475569;background:#020617;color:#f8fafc;text-align:center;font-weight:900;font-size:18px;box-sizing:border-box}.app[data-theme="light"] .timerTargetGrid input{background:#fff;color:#0f172a;border-color:#cbd5e1}.timerModalActionTitle{font-size:14px!important;margin-top:6px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalPreview{height:54px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:10px;background:#05070a;color:#facc15;font-size:22px;font-weight:900;margin-bottom:14px}.progressBar{position:absolute;left:0;top:0;bottom:0;opacity:1;background:linear-gradient(90deg,#22c55e 0%,#16a34a 100%);pointer-events:none;border-radius:0;box-shadow:inset 0 0 0 1px rgba(134,239,172,.28),0 0 10px rgba(34,197,94,.22)}.progressBarWithNumber{left:42px}.sectionLabelSticky{margin-bottom:8px}.listBox{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px);scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px)}.markersNavButtonWide{min-width:88px;padding:10px 24px;font-size:22px;justify-content:center}.headerTotalSpacer{flex:1 1 auto;min-width:4px}.headerNavStack{display:flex;flex-direction:column;gap:4px;align-items:stretch}.headerNavFloating{position:absolute;right:12px;top:76px;z-index:8;width:88px}.headerNavFloatingSingle{position:absolute;right:12px;top:120px;z-index:8;width:88px}.headerLyricsButton{padding-top:8px;padding-bottom:8px;font-size:20px}.markersInlineBackButton{height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important}.markerLoopButton{height:46px!important;min-height:46px!important;border-radius:12px!important;font-size:18px!important}.markerBackLyricsButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.settingsBottomButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:26px!important}.settingsBottomButtons>*{width:100%!important;min-height:46px!important;border-radius:12px!important;font-weight:900!important}.settingsCloseButton{border:1px solid #475569!important;background:#111827!important;color:#f8fafc!important}@keyframes appPopupFade{0%{opacity:0;transform:translateX(-50%) translateY(8px)}12%{opacity:1;transform:translateX(-50%) translateY(0)}78%{opacity:1;transform:translateX(-50%) translateY(0)}100%{opacity:0;transform:translateX(-50%) translateY(10px)}}@keyframes loopBlinkPulse{0%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}50%{opacity:.38;box-shadow:0 0 16px rgba(250,204,21,.58)}100%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}}.loopBlink{animation:loopBlinkPulse .58s linear infinite}.appPopup{position:fixed;left:50%;bottom:22px;top:auto;transform:translateX(-50%) translateY(0);z-index:3000;pointer-events:none;width:min(86vw,520px);min-height:78px;padding:16px 22px;border-radius:10px;font-weight:900;font-size:22px;line-height:1.18;text-align:center;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 42px rgba(0,0,0,.46);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);opacity:1;transition:opacity .22s ease,transform .22s ease}.appPopupTransient{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}.appPopupHidden{opacity:0;transform:translateX(-50%) translateY(10px)}.appPopupInfo{background:rgba(17,24,39,.97);color:#f8fafc}.appPopupSuccess{background:rgba(21,128,61,.97);color:#fff}.appPopupMarker{background:rgba(250,204,21,.98);color:#111827;border-color:rgba(255,255,255,.35)}.appPopupError{background:rgba(185,28,28,.97);color:#fff}.appPopupPersistent{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}@media (max-width:480px){.appPopup{width:min(88vw,460px);min-height:66px;padding:12px 16px;font-size:18px}.markersNavButtonWide{min-width:82px;padding:10px 20px;font-size:20px}.headerNavFloating{right:10px;top:72px;width:82px}.headerNavFloatingSingle{right:10px;top:114px;width:82px}.topTimerButton{min-width:88px;height:32px;font-size:13px;padding:0 8px}.timerModalPreview{font-size:20px;height:50px}}.mixerOverlay{align-items:center;justify-content:flex-start}.mixerVolumeOverlay{align-items:center;justify-content:flex-start;background:rgba(0,0,0,.52)}.mixerModalBox,.mixerVolumeModalBox,.bpmModalBox{width:min(92vw,420px)}.mixerRowsBox{border:1px solid #364152;border-radius:10px;background:#0b1220}.mixerRow{display:grid;grid-template-columns:10px 34px minmax(0,1fr) 58px 10px 38px 38px;align-items:center;gap:8px;padding:10px 10px;border-bottom:1px solid #18212c;min-height:56px;touch-action:pan-y}.mixerRow:last-child{border-bottom:none}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:var(--mixer-color,#334155)}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:900;color:#e2e8f0;text-align:right}.mixerMeter{position:relative;width:10px;height:38px;border-radius:999px;background:#111827;overflow:hidden;border:1px solid #334155}.mixerMeterFill{position:absolute;left:0;right:0;bottom:0;border-radius:999px;background:linear-gradient(180deg,#22c55e 0%,#16a34a 100%)}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniBtnActive{background:#15803d;border-color:#22c55e;color:#fff}.mixerVolumeTitle{margin:8px 0 14px;padding:12px 14px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);box-shadow:inset 3px 0 0 var(--mixer-color,#334155);font-weight:900}.mixerVolumeMeterWrap{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px}.mixerVolumeDb{font-size:28px;font-weight:900;color:#f8fafc}.mixerVolumeSlider{width:100%;height:46px;appearance:none;background:transparent;touch-action:pan-x;will-change:transform}.mixerVolumeSlider::-webkit-slider-runnable-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18);margin-top:-9px}.mixerVolumeSlider::-moz-range-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18)}.mixerSwipeHint{margin-top:12px}.bpmModalBox{max-width:320px}.bpmValueDisplay{font-size:42px;font-weight:900;text-align:center;margin:8px 0 10px;color:#f8fafc}.bpmMetaText{text-align:center;color:#cbd5e1;font-weight:700;margin-bottom:14px}.bpmControlsSimple{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bpmAdjustBtn{height:52px;border-radius:12px;border:1px solid #22c55e;background:#15803d;color:#fff;font-size:28px;font-weight:900}.settingsActionTuner{background:#102a20;border-color:#34d399;color:#a7f3d0}.tunerOverlay{z-index:1670;align-items:stretch;justify-content:flex-end;padding:0;background:rgba(0,0,0,.45)}.tunerDrawer{width:clamp(260px,52vw,430px);height:var(--app-vh,100dvh);background:#111827;border-left:1px solid #364152;box-shadow:-18px 0 42px rgba(0,0,0,.45);padding:16px 14px 20px;display:flex;flex-direction:column;gap:10px;overflow:hidden}.tunerDrawerHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.tunerDrawerSub{color:#94a3b8;font-weight:700;font-size:12px;margin-top:-4px}.tunerDrawerActions{display:flex;justify-content:flex-end}.tunerResetBtn{min-height:40px;padding:0 14px;border-radius:10px;border:1px solid #facc15;background:#3b2f0b;color:#fde68a;font-weight:900}.tunerRowsBox{flex:1 1 auto;min-height:0;overflow-y:auto;border:1px solid #364152;border-radius:10px;background:#0b1220}.tunerRow{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:10px;border-bottom:1px solid #18212c}.tunerRow:last-child{border-bottom:none}.tunerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tunerRowBlock .tunerRowName{color:#facc15}.tunerRowControls{display:grid;grid-template-columns:58px minmax(64px,1fr) 58px;gap:4px;align-items:center}.tunerAdjustHitBtn{height:58px;width:58px;border:0;background:transparent;padding:0;margin:0;display:flex;align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.tunerAdjustBtnFace{height:42px;width:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-size:24px;font-weight:900;display:flex;align-items:center;justify-content:center;box-sizing:border-box;pointer-events:none}.tunerValueBox{height:42px;border-radius:10px;border:1px solid #334155;background:#020617;color:#facc15;font-weight:900;font-size:20px;display:flex;align-items:center;justify-content:center}.app[data-theme="light"] .settingsActionTuner{background:#d1fae5;color:#065f46}.app[data-theme="light"] .tunerDrawer{background:#ffffff;border-left-color:#dbe4ee}.app[data-theme="light"] .tunerRowsBox{background:#f8fafc;border-color:#dbe4ee}.app[data-theme="light"] .tunerRowName{color:#0f172a}@media (max-width:480px){.tunerDrawer{width:calc(50vw + 26px);min-width:260px;padding:14px 12px 18px}.tunerRowControls{grid-template-columns:54px minmax(58px,1fr) 54px;gap:2px}.tunerAdjustHitBtn{height:54px;width:54px}.tunerAdjustBtnFace{height:38px;width:38px}.tunerValueBox{height:38px}}.markerFooterContainer .listBox{padding-bottom:160px!important;scroll-padding-bottom:160px!important}.vshookMarkerFooter{position:fixed;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom,0px) + 104px);z-index:2990;display:flex;justify-content:center;pointer-events:none}.vshookMarkerFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;pointer-events:auto}.app:has(.vshookMarkerFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important}.app:has(.vshookMarkerFooter) .contentPanel{padding-bottom:0!important}@media(max-width:480px){.markerFooterContainer .listBox{padding-bottom:150px!important;scroll-padding-bottom:150px!important}.vshookMarkerFooter{bottom:calc(env(safe-area-inset-bottom,0px) + 98px)}}.markerGoConfirmed{background:#16a34a!important;border-color:#22c55e!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.38),0 0 16px rgba(34,197,94,.28)!important}.markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}.markerContentPanel{display:flex;flex-direction:column;min-height:0}.markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}.vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto;z-index:2}.footerButtonPlaceholder{height:54px}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;z-index:3010;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important}@media(max-width:480px){.vshookFixedFooter{flex-basis:148px;min-height:148px}.vshookFixedFooter .floatingCancelButton{height:52px!important}.app:has(.vshookFixedFooter) .appPopup{min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(112px,1fr) minmax(112px,1fr) minmax(112px,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowDirectorMain>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important}.lyricsNavButtonInline{border-color:#38bdf8!important;background:linear-gradient(180deg,#0284c7 0%,#075985 100%)!important;color:#fff!important;box-shadow:0 0 0 1px rgba(56,189,248,.30),0 0 12px rgba(14,165,233,.20)!important}.tabRow{padding-right:86px!important}.tabRow .headerNavButtons{width:82px!important}.tabRow .markersNavButtonHeader{flex:0 0 82px!important;width:82px!important;min-width:82px!important}.tabRow .lyricsNavButtonHeader{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(96px,1fr) minmax(96px,1fr) minmax(96px,1fr)!important;gap:7px!important}.controlsStickyPanel .controlsRowDirectorMain>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow{padding-right:78px!important}.tabRow .headerNavButtons{width:74px!important}.tabRow .markersNavButtonHeader{flex-basis:74px!important;width:74px!important;min-width:74px!important}}.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowMarkers>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important;padding:0 10px!important}.markerLoopButton,.markersInlineBackButton{height:46px!important;min-height:46px!important}.markerOpenYellowButton,.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.tabRow .headerNavButtons{width:92px!important}.tabRow .markersNavButtonHeader{flex:0 0 92px!important;width:92px!important;min-width:92px!important}.tabRow{padding-right:96px!important}.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}/* v121 - ajustes finos Diretor: Play padronizado e contorno da aba Músicas */.controlsStickyPanel .controlsRowRegions.controlsRowEqual {  display: grid !important;  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;  gap: 8px !important;  width: 100% !important;  max-width: 100% !important;  justify-content: stretch !important;}.controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {  height: 46px !important;  min-height: 46px !important;  max-height: 46px !important;  padding: 0 10px !important;  border-radius: 12px !important;  font-size: 18px !important;  line-height: 1 !important;  box-sizing: border-box !important;}.regionsTopLabel {  display: flex !important;  align-items: center !important;  min-height: 42px !important;  width: 100% !important;  min-width: 0 !important;  padding: 8px 12px !important;  border-radius: 10px !important;  border: 1px solid #374151 !important;  background: rgba(15, 23, 42, 0.9) !important;  color: #f8fafc !important;  font-weight: 900 !important;  box-sizing: border-box !important;  white-space: nowrap !important;  overflow: hidden !important;  text-overflow: ellipsis !important;}.app[data-theme="light"] .regionsTopLabel {  background: #ffffff !important;  border-color: #cbd5e1 !important;  color: #0f172a !important;}@media(max-width:380px){  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {    height: 44px !important;    min-height: 44px !important;    max-height: 44px !important;    font-size: 17px !important;  }}.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"]{width:100%!important;font-size:15px!important;letter-spacing:0!important;padding:0 6px!important;justify-self:stretch!important;}.settingsActionPremix{background:#1f1637!important;border-color:#8b5cf6!important;color:#ddd6fe!important}.settingsActionPremixGlobal{background:#241b09!important;border-color:#f59e0b!important;color:#fde68a!important}.premixTopControls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.premixTopControls button{height:42px;border-radius:12px;font-weight:900}.premixPlayButton{width:100%!important}.premixLockMessage{margin:-2px 0 10px;padding:10px;border:1px solid rgba(239,68,68,.65);border-radius:10px;background:rgba(127,29,29,.45);color:#fecaca;font-weight:900;text-align:center}.premixMixerRowDisabled{opacity:.58}.premixModalBoxFull,.mixerModalBoxFull{padding:14px!important}.premixRowsBoxFull{max-height:none!important}.premixVolumeModalBoxFull{padding:16px!important}.mixerModalBoxFull .mixerRowsBox{max-height:none!important}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;margin-left:8px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.premixMixerRow{cursor:pointer}.premixVolumeOverlay{background:rgba(0,0,0,.56)}.premixBlockRow{justify-content:center!important;border-color:rgba(250,204,21,.45)!important;background:rgba(250,204,21,.10)!important;pointer-events:none!important}.premixBlockRow .songRowLabel{width:100%;text-align:center;font-weight:900;letter-spacing:.08em;color:var(--premix-row-color,#facc15)!important}.mixerCloseBtn{touch-action:manipulation!important;pointer-events:auto!important;min-width:86px!important;min-height:38px!important;position:relative!important;z-index:5!important}.app .item.playing{background:#b91c1c!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.36)!important}.app .item.playing.selectedBlue,.app .item.playing.selectedPink,.app .item.playing.queuedYellow{background:#b91c1c!important}.app .item.playing .rowLabelText,.app .item.playing .timeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#fff!important;font-weight:900!important}.hashChildItem{overflow:hidden;will-change:transform,opacity,max-height}.hashChildExpandIn{animation:vshookHashDrawerOpen .24s ease-out both}.hashChildCollapseOut{animation:vshookHashDrawerClose .20s ease-in both}@keyframes vshookHashDrawerOpen{0%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}100%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}}@keyframes vshookHashDrawerClose{0%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}100%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}}.vshookMarkerCancelOverlay{position:fixed!important;left:50%!important;bottom:calc(env(safe-area-inset-bottom,0px) + 18px)!important;transform:translateX(-50%)!important;z-index:9999!important;min-width:210px!important;height:56px!important;border-radius:14px!important;border:2px solid #fecaca!important;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%)!important;color:#fff!important;font-weight:1000!important;font-size:20px!important;text-transform:uppercase!important;letter-spacing:.05em!important;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.36)!important;pointer-events:auto!important;touch-action:manipulation!important}.vshookMarkerCancelOverlay:active{transform:translateX(-50%) scale(.97)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 160px)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:12px!important;scroll-padding-bottom:12px!important}.directorMarkersCancelFooter{flex:0 0 auto;min-height:calc(env(safe-area-inset-bottom,0px) + 84px);display:flex;align-items:center;justify-content:center;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 12px);box-sizing:border-box;background:linear-gradient(180deg,rgba(6,9,15,.96) 0%,rgba(2,6,23,.99) 100%);border-top:1px solid rgba(148,163,184,.18);position:relative;z-index:9}.directorMarkersCancelFooterIdle{pointer-events:none}.directorMarkersCancelButton{min-width:220px;height:56px;border-radius:14px;border:2px solid #fecaca;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%);color:#fff;font-weight:1000;font-size:20px;text-transform:uppercase;letter-spacing:.05em;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.38);pointer-events:auto;touch-action:manipulation}.directorMarkersCancelButton:active{transform:scale(.97)}.appPopupMarkersPanel{bottom:calc(env(safe-area-inset-bottom,0px) + 102px)!important;z-index:7000!important}.vshookNoTextSelect,.vshookNoTextSelect *,.hashChildItem,.hashParentItem,.rowLabelText,.songRowLabel,.regionRowLabel{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}.premixInlineSlider{width:108px;min-width:88px;accent-color:#facc15}.premixMixerRow .mixerMiniBtn{flex:0 0 auto}</style>${appPopupHtml}<div class="container ${showMarkerFooterSpace ? 'markerFooterContainer' : ''}" style="${borderStyle}"><div class="topStatusRow"><div class="${state.activeTab === 'playlist' ? 'topStatusLeftPlaylist' : 'topStatusLeft'}">${topTitleHtml}</div>${topTimerHtml}${rightToolsHtml}</div><div class="headerRow"><div class="tabRow"><button class="${state.activeTab === 'playlist' ? 'activeTab' : 'tab'}" data-action="go-playlist">REPERTÓRIOS</button><button class="${state.activeTab === 'regions' ? 'activeTab' : 'tab'}" data-action="go-regions">MÚSICAS</button><span class="headerTotal">${topTime}</span>${headerNavButtons}<span class="headerTotalSpacer"></span></div><div class="middleInfo"><span class="middleInfoText">${middleLabel}</span></div></div>${content}${showEditDoneFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="edit-done">OK</button>` : ''}${showDeleteConfirmFloating ? `<button class="floatingDangerButton floatingDangerLeft" data-action="delete-confirm">${state.activeTab === 'regions' ? 'SAIR' : 'DEL'}</button>` : ''}${showDeleteCancelFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="delete-cancel">SAIR</button>` : ''}${shouldShowClearButton ? `<button class="floatingClearButton" id="floatingClearButton" style="left:${state.clearButtonSide === 'left' ? '20px' : 'calc(100vw - 92px)'};">SAIR</button>` : ''}</div>${markerCancelGlobalButton}${lyricsPanelHtml}${createModal}${addExistingModal}${renameModal}${playlistSwitchModal}${deletePlaylistConfirmModal}${projectTabsModal}${recadosModal}${gearModal}${timerModal}${liveOffConfirmModal}${mixerModal}${mixerVolumeModal}${premixModal}${premixVolumeModal}${bpmModal}${tunerModal}</div>`
+  app.innerHTML = `<div class="app" data-theme="${state.theme}" style="--app-border-color:${appBorderColor};--app-border-glow:${appBorderGlow};"><style>.app{height:var(--app-vh,100dvh);min-height:var(--app-vh,100dvh);overflow:hidden}.container{height:calc(var(--app-vh,100dvh) - 16px)!important;min-height:calc(var(--app-vh,100dvh) - 16px)!important;overflow:hidden}@media (max-width:480px){.container{height:calc(var(--app-vh,100dvh) - 12px)!important;min-height:calc(var(--app-vh,100dvh) - 12px)!important}}.contentPanel{display:flex;flex-direction:column;flex:1;min-height:0;padding-bottom:2px}.controlsStickyPanel{flex:0 0 auto;position:relative;z-index:4;background:linear-gradient(180deg,#0a1018 0%,#06090f 100%)}.topTimerButton{min-width:96px;height:34px;padding:0 10px;border-radius:10px;border:1px solid #475569;background:#111827;color:#facc15;font-weight:900;font-size:14px;letter-spacing:.03em}.topTimerButtonRunning{border-color:#22c55e;background:#052e16;color:#86efac;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 16px rgba(34,197,94,.14)}.timerModalBox{max-width:330px}.timerModalBoxWide{width:min(92vw,480px)!important;max-width:480px!important}.timerModeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGrid3{grid-template-columns:1fr 1fr 1fr!important}.timerModeGrid3 button{font-size:11px!important;padding:0 6px!important}.timerModeGrid button{min-height:44px;border-radius:12px;font-weight:900}.timerModeCurrent{text-align:center;color:#facc15;font-weight:900;margin:-4px 0 6px}.timerTargetEditor{margin:10px 0 8px;padding:10px;border:1px solid rgba(250,204,21,.35);border-radius:12px;background:rgba(250,204,21,.08)}.timerTargetLabel{text-align:center;color:#fde68a;font-weight:900;font-size:13px;margin-bottom:8px}.timerTargetGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.timerTargetGrid label{display:flex;flex-direction:column;gap:5px;text-align:center;color:#cbd5e1;font-weight:900;font-size:12px}.timerTargetGrid input{width:100%;height:42px;border-radius:10px;border:1px solid #475569;background:#020617;color:#f8fafc;text-align:center;font-weight:900;font-size:18px;box-sizing:border-box}.app[data-theme="light"] .timerTargetGrid input{background:#fff;color:#0f172a;border-color:#cbd5e1}.timerModalActionTitle{font-size:14px!important;margin-top:6px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalPreview{height:54px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:10px;background:#05070a;color:#facc15;font-size:22px;font-weight:900;margin-bottom:14px}.progressBar{position:absolute;left:0;top:0;bottom:0;opacity:1;background:linear-gradient(90deg,#22c55e 0%,#16a34a 100%);pointer-events:none;border-radius:0;box-shadow:inset 0 0 0 1px rgba(134,239,172,.28),0 0 10px rgba(34,197,94,.22)}.progressBarWithNumber{left:42px}.sectionLabelSticky{margin-bottom:8px}.listBox{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px);scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 118px)}.markersNavButtonWide{min-width:88px;padding:10px 24px;font-size:22px;justify-content:center}.headerTotalSpacer{flex:1 1 auto;min-width:4px}.headerNavStack{display:flex;flex-direction:column;gap:4px;align-items:stretch}.headerNavFloating{position:absolute;right:12px;top:76px;z-index:8;width:88px}.headerNavFloatingSingle{position:absolute;right:12px;top:120px;z-index:8;width:88px}.headerLyricsButton{padding-top:8px;padding-bottom:8px;font-size:20px}.markersInlineBackButton{height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important}.markerLoopButton{height:46px!important;min-height:46px!important;border-radius:12px!important;font-size:18px!important}.markerBackLyricsButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.settingsBottomButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:26px!important}.settingsBottomButtons>*{width:100%!important;min-height:46px!important;border-radius:12px!important;font-weight:900!important}.settingsCloseButton{border:1px solid #475569!important;background:#111827!important;color:#f8fafc!important}@keyframes appPopupFade{0%{opacity:0;transform:translateX(-50%) translateY(8px)}12%{opacity:1;transform:translateX(-50%) translateY(0)}78%{opacity:1;transform:translateX(-50%) translateY(0)}100%{opacity:0;transform:translateX(-50%) translateY(10px)}}@keyframes loopBlinkPulse{0%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}50%{opacity:.38;box-shadow:0 0 16px rgba(250,204,21,.58)}100%{opacity:1;box-shadow:0 0 0 rgba(250,204,21,0)}}.loopBlink{animation:loopBlinkPulse .58s linear infinite}.appPopup{position:fixed;left:50%;bottom:22px;top:auto;transform:translateX(-50%) translateY(0);z-index:3000;pointer-events:none;width:min(86vw,520px);min-height:78px;padding:16px 22px;border-radius:10px;font-weight:900;font-size:22px;line-height:1.18;text-align:center;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 42px rgba(0,0,0,.46);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(8px);opacity:1;transition:opacity .22s ease,transform .22s ease}.appPopupTransient{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}.appPopupHidden{opacity:0;transform:translateX(-50%) translateY(10px)}.appPopupInfo{background:rgba(17,24,39,.97);color:#f8fafc}.appPopupSuccess{background:rgba(21,128,61,.97);color:#fff}.appPopupMarker{background:rgba(250,204,21,.98);color:#111827;border-color:rgba(255,255,255,.35)}.appPopupError{background:rgba(185,28,28,.97);color:#fff}.appPopupPersistent{animation:none;opacity:1;transform:translateX(-50%) translateY(0)}@media (max-width:480px){.appPopup{width:min(88vw,460px);min-height:66px;padding:12px 16px;font-size:18px}.markersNavButtonWide{min-width:82px;padding:10px 20px;font-size:20px}.headerNavFloating{right:10px;top:72px;width:82px}.headerNavFloatingSingle{right:10px;top:114px;width:82px}.topTimerButton{min-width:88px;height:32px;font-size:13px;padding:0 8px}.timerModalPreview{font-size:20px;height:50px}}.mixerOverlay{align-items:center;justify-content:flex-start}.mixerVolumeOverlay{align-items:center;justify-content:flex-start;background:rgba(0,0,0,.52)}.mixerModalBox,.mixerVolumeModalBox,.bpmModalBox{width:min(92vw,420px)}.mixerRowsBox{border:1px solid #364152;border-radius:10px;background:#0b1220}.mixerRow{display:grid;grid-template-columns:10px 34px minmax(0,1fr) 58px 10px 38px 38px;align-items:center;gap:8px;padding:10px 10px;border-bottom:1px solid #18212c;min-height:56px;touch-action:pan-y}.mixerRow:last-child{border-bottom:none}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:var(--mixer-color,#334155)}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:900;color:#e2e8f0;text-align:right}.mixerMeter{position:relative;width:10px;height:38px;border-radius:999px;background:#111827;overflow:hidden;border:1px solid #334155}.mixerMeterFill{position:absolute;left:0;right:0;bottom:0;border-radius:999px;background:linear-gradient(180deg,#22c55e 0%,#16a34a 100%)}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniBtnActive{background:#15803d;border-color:#22c55e;color:#fff}.mixerVolumeTitle{margin:8px 0 14px;padding:12px 14px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);box-shadow:inset 3px 0 0 var(--mixer-color,#334155);font-weight:900}.mixerVolumeMeterWrap{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:14px}.mixerVolumeDb{font-size:28px;font-weight:900;color:#f8fafc}.mixerVolumeSlider{width:100%;height:46px;appearance:none;background:transparent;touch-action:pan-x;will-change:transform}.mixerVolumeSlider::-webkit-slider-runnable-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18);margin-top:-9px}.mixerVolumeSlider::-moz-range-track{height:14px;border-radius:999px;background:#1f2937;border:1px solid #475569}.mixerVolumeSlider::-moz-range-thumb{width:30px;height:30px;border-radius:50%;background:#22c55e;border:2px solid #ecfdf5;box-shadow:0 0 0 3px rgba(34,197,94,.18)}.mixerSwipeHint{margin-top:12px}.bpmModalBox{max-width:320px}.bpmValueDisplay{font-size:42px;font-weight:900;text-align:center;margin:8px 0 10px;color:#f8fafc}.bpmMetaText{text-align:center;color:#cbd5e1;font-weight:700;margin-bottom:14px}.bpmControlsSimple{display:grid;grid-template-columns:1fr 1fr;gap:10px}.bpmAdjustBtn{height:52px;border-radius:12px;border:1px solid #22c55e;background:#15803d;color:#fff;font-size:28px;font-weight:900}.settingsActionTuner{background:#102a20;border-color:#34d399;color:#a7f3d0}.tunerOverlay{z-index:1670;align-items:stretch;justify-content:flex-end;padding:0;background:rgba(0,0,0,.45)}.tunerDrawer{width:clamp(260px,52vw,430px);height:var(--app-vh,100dvh);background:#111827;border-left:1px solid #364152;box-shadow:-18px 0 42px rgba(0,0,0,.45);padding:16px 14px 20px;display:flex;flex-direction:column;gap:10px;overflow:hidden}.tunerDrawerHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.tunerDrawerSub{color:#94a3b8;font-weight:700;font-size:12px;margin-top:-4px}.tunerDrawerActions{display:flex;justify-content:flex-end}.tunerResetBtn{min-height:40px;padding:0 14px;border-radius:10px;border:1px solid #facc15;background:#3b2f0b;color:#fde68a;font-weight:900}.tunerRowsBox{flex:1 1 auto;min-height:0;overflow-y:auto;border:1px solid #364152;border-radius:10px;background:#0b1220}.tunerRow{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:10px;border-bottom:1px solid #18212c}.tunerRow:last-child{border-bottom:none}.tunerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tunerRowBlock .tunerRowName{color:#facc15}.tunerRowControls{display:grid;grid-template-columns:58px minmax(64px,1fr) 58px;gap:4px;align-items:center}.tunerAdjustHitBtn{height:58px;width:58px;border:0;background:transparent;padding:0;margin:0;display:flex;align-items:center;justify-content:center;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.tunerAdjustBtnFace{height:42px;width:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-size:24px;font-weight:900;display:flex;align-items:center;justify-content:center;box-sizing:border-box;pointer-events:none}.tunerValueBox{height:42px;border-radius:10px;border:1px solid #334155;background:#020617;color:#facc15;font-weight:900;font-size:20px;display:flex;align-items:center;justify-content:center}.app[data-theme="light"] .settingsActionTuner{background:#d1fae5;color:#065f46}.app[data-theme="light"] .tunerDrawer{background:#ffffff;border-left-color:#dbe4ee}.app[data-theme="light"] .tunerRowsBox{background:#f8fafc;border-color:#dbe4ee}.app[data-theme="light"] .tunerRowName{color:#0f172a}@media (max-width:480px){.tunerDrawer{width:calc(50vw + 26px);min-width:260px;padding:14px 12px 18px}.tunerRowControls{grid-template-columns:54px minmax(58px,1fr) 54px;gap:2px}.tunerAdjustHitBtn{height:54px;width:54px}.tunerAdjustBtnFace{height:38px;width:38px}.tunerValueBox{height:38px}}.markerFooterContainer .listBox{padding-bottom:160px!important;scroll-padding-bottom:160px!important}.vshookMarkerFooter{position:fixed;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom,0px) + 104px);z-index:2990;display:flex;justify-content:center;pointer-events:none}.vshookMarkerFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;pointer-events:auto}.app:has(.vshookMarkerFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important}.app:has(.vshookMarkerFooter) .contentPanel{padding-bottom:0!important}@media(max-width:480px){.markerFooterContainer .listBox{padding-bottom:150px!important;scroll-padding-bottom:150px!important}.vshookMarkerFooter{bottom:calc(env(safe-area-inset-bottom,0px) + 98px)}}.markerGoConfirmed{background:#16a34a!important;border-color:#22c55e!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.38),0 0 16px rgba(34,197,94,.28)!important}.markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}.markerContentPanel{display:flex;flex-direction:column;min-height:0}.markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}.vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto;z-index:2}.footerButtonPlaceholder{height:54px}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;z-index:3010;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important}@media(max-width:480px){.vshookFixedFooter{flex-basis:148px;min-height:148px}.vshookFixedFooter .floatingCancelButton{height:52px!important}.app:has(.vshookFixedFooter) .appPopup{min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(112px,1fr) minmax(112px,1fr) minmax(112px,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowDirectorMain>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important}.lyricsNavButtonInline{border-color:#38bdf8!important;background:linear-gradient(180deg,#0284c7 0%,#075985 100%)!important;color:#fff!important;box-shadow:0 0 0 1px rgba(56,189,248,.30),0 0 12px rgba(14,165,233,.20)!important}.tabRow{padding-right:86px!important}.tabRow .headerNavButtons{width:82px!important}.tabRow .markersNavButtonHeader{flex:0 0 82px!important;width:82px!important;min-width:82px!important}.tabRow .lyricsNavButtonHeader{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowDirectorMain{grid-template-columns:minmax(96px,1fr) minmax(96px,1fr) minmax(96px,1fr)!important;gap:7px!important}.controlsStickyPanel .controlsRowDirectorMain>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow{padding-right:78px!important}.tabRow .headerNavButtons{width:74px!important}.tabRow .markersNavButtonHeader{flex-basis:74px!important;width:74px!important;min-width:74px!important}}.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;justify-content:stretch!important}.controlsStickyPanel .controlsRowMarkers>*{width:100%!important;max-width:none!important;height:46px!important;min-height:46px!important;font-size:18px!important;border-radius:12px!important;padding:0 10px!important}.markerLoopButton,.markersInlineBackButton{height:46px!important;min-height:46px!important}.markerOpenYellowButton,.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important}.tabRow .headerNavButtons{width:92px!important}.tabRow .markersNavButtonHeader{flex:0 0 92px!important;width:92px!important;min-width:92px!important}.tabRow{padding-right:96px!important}.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}/* v121 - ajustes finos Diretor: Play padronizado e contorno da aba Músicas */.controlsStickyPanel .controlsRowRegions.controlsRowEqual {  display: grid !important;  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;  gap: 8px !important;  width: 100% !important;  max-width: 100% !important;  justify-content: stretch !important;}.controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {  height: 46px !important;  min-height: 46px !important;  max-height: 46px !important;  padding: 0 10px !important;  border-radius: 12px !important;  font-size: 18px !important;  line-height: 1 !important;  box-sizing: border-box !important;}.regionsTopLabel {  display: flex !important;  align-items: center !important;  min-height: 42px !important;  width: 100% !important;  min-width: 0 !important;  padding: 8px 12px !important;  border-radius: 10px !important;  border: 1px solid #374151 !important;  background: rgba(15, 23, 42, 0.9) !important;  color: #f8fafc !important;  font-weight: 900 !important;  box-sizing: border-box !important;  white-space: nowrap !important;  overflow: hidden !important;  text-overflow: ellipsis !important;}.app[data-theme="light"] .regionsTopLabel {  background: #ffffff !important;  border-color: #cbd5e1 !important;  color: #0f172a !important;}@media(max-width:380px){  .controlsStickyPanel .controlsRowRegions.controlsRowEqual > * {    height: 44px !important;    min-height: 44px !important;    max-height: 44px !important;    font-size: 17px !important;  }}.app .controlsStickyPanel .controlsRowRegions.controlsRowEqual > button[data-action="play"]{width:100%!important;font-size:15px!important;letter-spacing:0!important;padding:0 6px!important;justify-self:stretch!important;}.settingsActionPremix{background:#1f1637!important;border-color:#8b5cf6!important;color:#ddd6fe!important}.settingsActionPremixGlobal{background:#241b09!important;border-color:#f59e0b!important;color:#fde68a!important}.premixTopControls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.premixTopControls button{height:42px;border-radius:12px;font-weight:900}.premixPlayButton{width:100%!important}.premixLockMessage{margin:-2px 0 10px;padding:10px;border:1px solid rgba(239,68,68,.65);border-radius:10px;background:rgba(127,29,29,.45);color:#fecaca;font-weight:900;text-align:center}.premixMixerRowDisabled{opacity:.58}.premixModalBoxFull,.mixerModalBoxFull{padding:14px!important}.premixRowsBoxFull{max-height:none!important}.premixVolumeModalBoxFull{padding:16px!important}.mixerModalBoxFull .mixerRowsBox{max-height:none!important}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;margin-left:8px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.premixMixerRow{cursor:pointer}.premixVolumeOverlay{background:rgba(0,0,0,.56)}.premixBlockRow{justify-content:center!important;border-color:rgba(250,204,21,.45)!important;background:rgba(250,204,21,.10)!important;pointer-events:none!important}.premixBlockRow .songRowLabel{width:100%;text-align:center;font-weight:900;letter-spacing:.08em;color:var(--premix-row-color,#facc15)!important}.mixerCloseBtn{touch-action:manipulation!important;pointer-events:auto!important;min-width:86px!important;min-height:38px!important;position:relative!important;z-index:5!important}.app .item.playing{background:#b91c1c!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.36)!important}.app .item.playing.selectedBlue,.app .item.playing.selectedPink,.app .item.playing.queuedYellow{background:#b91c1c!important}.app .item.playing .rowLabelText,.app .item.playing .timeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#fff!important;font-weight:900!important}.hashChildItem{overflow:hidden;will-change:transform,opacity,max-height}.hashChildExpandIn{animation:vshookHashDrawerOpen .24s ease-out both}.hashChildCollapseOut{animation:vshookHashDrawerClose .20s ease-in both}@keyframes vshookHashDrawerOpen{0%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}100%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}}@keyframes vshookHashDrawerClose{0%{opacity:1;max-height:64px;transform:translateY(0) scaleY(1)}100%{opacity:0;max-height:0;transform:translateY(-8px) scaleY(.86)}}.vshookMarkerCancelOverlay{position:fixed!important;left:50%!important;bottom:calc(env(safe-area-inset-bottom,0px) + 18px)!important;transform:translateX(-50%)!important;z-index:9999!important;min-width:210px!important;height:56px!important;border-radius:14px!important;border:2px solid #fecaca!important;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%)!important;color:#fff!important;font-weight:1000!important;font-size:20px!important;text-transform:uppercase!important;letter-spacing:.05em!important;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.36)!important;pointer-events:auto!important;touch-action:manipulation!important}.vshookMarkerCancelOverlay:active{transform:translateX(-50%) scale(.97)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 160px)!important}.container.markerFooterContainer .listBox.markerListBox{padding-bottom:12px!important;scroll-padding-bottom:12px!important}.directorMarkersCancelFooter{flex:0 0 auto;min-height:calc(env(safe-area-inset-bottom,0px) + 84px);display:flex;align-items:center;justify-content:center;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 12px);box-sizing:border-box;background:linear-gradient(180deg,rgba(6,9,15,.96) 0%,rgba(2,6,23,.99) 100%);border-top:1px solid rgba(148,163,184,.18);position:relative;z-index:9}.directorMarkersCancelFooterIdle{pointer-events:none}.directorMarkersCancelButton{min-width:220px;height:56px;border-radius:14px;border:2px solid #fecaca;background:linear-gradient(180deg,#ef4444 0%,#991b1b 100%);color:#fff;font-weight:1000;font-size:20px;text-transform:uppercase;letter-spacing:.05em;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 0 22px rgba(239,68,68,.38);pointer-events:auto;touch-action:manipulation}.directorMarkersCancelButton:active{transform:scale(.97)}.appPopupMarkersPanel{bottom:calc(env(safe-area-inset-bottom,0px) + 102px)!important;z-index:7000!important}.vshookNoTextSelect,.vshookNoTextSelect *,.hashChildItem,.hashParentItem,.rowLabelText,.songRowLabel,.regionRowLabel{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important;}.premixInlineSlider{width:108px;min-width:88px;accent-color:#facc15}.premixMixerRow .mixerMiniBtn{flex:0 0 auto}</style>${appPopupHtml}<div class="container ${showMarkerFooterSpace ? 'markerFooterContainer' : ''}" style="${borderStyle}"><div class="topStatusRow"><div class="${state.activeTab === 'playlist' ? 'topStatusLeftPlaylist' : 'topStatusLeft'}">${topTitleHtml}</div>${topTimerHtml}${rightToolsHtml}</div><div class="headerRow"><div class="tabRow"><button class="${state.activeTab === 'playlist' ? 'activeTab' : 'tab'}" data-action="go-playlist">REPERTÓRIOS</button><button class="${state.activeTab === 'regions' ? 'activeTab' : 'tab'}" data-action="go-regions">MÚSICAS</button><span class="headerTotal">${topTime}</span>${headerNavButtons}<span class="headerTotalSpacer"></span></div><div class="middleInfo"><span class="middleInfoText">${middleLabel}</span></div></div>${content}${showEditDoneFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="edit-done">OK</button>` : ''}${showDeleteConfirmFloating ? `<button class="floatingDangerButton floatingDangerLeft" data-action="delete-confirm">${state.activeTab === 'regions' ? 'SAIR' : 'DEL'}</button>` : ''}${showDeleteCancelFloating ? `<button class="floatingConfirmButton floatingConfirmRight" data-action="delete-cancel">SAIR</button>` : ''}${shouldShowClearButton ? `<button class="floatingClearButton" id="floatingClearButton" style="left:${state.clearButtonSide === 'left' ? '20px' : 'calc(100vw - 92px)'};">SAIR</button>` : ''}</div>${markerCancelGlobalButton}${lyricsPanelHtml}${createModal}${addExistingModal}${renameModal}${playlistSwitchModal}${deletePlaylistConfirmModal}${projectTabsModal}${recadosModal}${gearModal}${timerModal}${liveOffConfirmModal}${mixerModal}${mixerVolumeModal}${premixModal}${premixVolumeModal}${bpmModal}${tunerModal}</div>`
   syncChronoDisplays()
   bindEvents()
   installMarkerCancelHardDelegation()
@@ -9562,7 +9882,7 @@ function getPremixSongs() {
     render?.();
   };
   setTimerModeFromApp = function(mode) {
-    const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive';
+    const next = normalizeDirectorTimerMode(mode);
     if (state.timerMode === 'countdown' && next !== 'countdown') {
       try { state.timerTargetSec = readTimerTargetSecondsFromModal?.() || state.timerTargetSec || 0; } catch(e) {}
     }
@@ -10067,7 +10387,7 @@ function getPremixSongs() {
   getTimerElapsedSec = function(){
     const max = 99 * 3600 + 59 * 60 + 59;
     const running = !!state.timerRunning;
-    const mode = String(state.timerMode || 'progressive') === 'countdown' ? 'countdown' : 'progressive';
+    const mode = normalizeDirectorTimerMode(state.timerMode || 'progressive');
     if (!running) {
       if (mode === 'countdown') return Math.max(0, Math.min(max, Math.floor(Number(state.timerDisplaySec ?? state.timerTargetSec) || 0)));
       return Math.max(0, Math.min(max, Math.floor(Number(state.timerDisplaySec ?? state.timerAccumulatedSec) || 0)));
@@ -10111,7 +10431,7 @@ function getPremixSongs() {
     syncChronoDisplays?.(); refreshChronoRenderLoop?.(); render?.();
   };
   setTimerModeFromApp = function(mode){
-    const next = String(mode || '').toLowerCase() === 'countdown' ? 'countdown' : 'progressive';
+    const next = normalizeDirectorTimerMode(mode);
     if (state.timerMode === 'countdown' && next !== 'countdown') {
       try { state.timerTargetSec = readTimerTargetSecondsFromModal?.() || state.timerTargetSec || 0; } catch(e) {}
     }
@@ -12668,7 +12988,7 @@ function getPremixSongs() {
       const isTimer = t === 'timer_toggle' || t === 'timer_start' || t === 'timer_stop' || t === 'timer_stop_reset' || t === 'timer_reset' || t === 'timer_set_mode' || t === 'timer_config';
       if (isTimer) {
         const data = payload && typeof payload === 'object' ? { ...payload } : {};
-        const mode = String(data.timerMode || data.mode || state.timerMode || 'progressive').toLowerCase() === 'countdown' ? 'countdown' : 'progressive';
+        const mode = normalizeDirectorTimerMode(data.timerMode || data.mode || state.timerMode || 'progressive');
         const value = timerValue75();
         data.timerMode = mode;
         data.mode = mode;
@@ -13303,4 +13623,425 @@ function getPremixSongs() {
   }
 
   window.vshookFix90ClearBlueSelectionWhilePlaying = clearBlueSelection90;
+})();
+
+
+/* VS_HOOK_FIX103_NATIVE_TP_MEDIA_AND_AUTO_SYNC
+   TP1 via extensão: imagem/vídeo são renderizados por URL HTTP da extensão, não como texto. */
+(function(){
+  if (window.__VSHOOK_FIX103_NATIVE_TP_MEDIA_DIRECTOR__) return;
+  window.__VSHOOK_FIX103_NATIVE_TP_MEDIA_DIRECTOR__ = true;
+  const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const up = (v) => (typeof upperText === 'function' ? upperText(v) : String(v || '').toUpperCase());
+  const mediaKind = (type, path) => {
+    const t = String(type || '').toLowerCase();
+    const p = String(path || '').toLowerCase().split('?')[0];
+    if (t.includes('image') || /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(p)) return 'image';
+    if (t.includes('video') || /\.(mp4|mov|m4v|webm|mkv|avi)$/.test(p)) return 'video';
+    return 'text';
+  };
+  const mediaAllowsText = (type) => {
+    const t = String(type || 'text').toLowerCase().replace(/[\s-]+/g,'_');
+    return !t || t === 'text' || t === 'lyrics' || t === 'empty' || t === 'empty_item' || t === 'emptyitem' || t === 'text_plain' || t === 'text/plain';
+  };
+  const bridgeUrl = (path) => { try { return typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl(path) : path; } catch(e) { return path; } };
+  function setTpFromBridge103(data){
+    if (!data || typeof data !== 'object' || !state) return;
+    const tp = data.tp1 && typeof data.tp1 === 'object' ? data.tp1 : {};
+    const mediaType = String(data.tp1MediaType || data.telepromptTp1MediaType || tp.mediaType || tp.telepromptType || state.tp1MediaType || 'text').toLowerCase();
+    const mediaPath = String(data.tp1MediaPath || data.telepromptTp1MediaPath || tp.mediaPath || tp.path || state.tp1MediaPath || '').trim();
+    state.tp1MediaType = mediaType;
+    state.telepromptTp1MediaType = mediaType;
+    state.tp1MediaPath = mediaPath;
+    state.telepromptTp1MediaPath = mediaPath;
+    state.tp1MediaCurrentTime = Number(data.tp1MediaCurrentTime ?? tp.mediaCurrentTime ?? state.tp1MediaCurrentTime ?? 0) || 0;
+    state.tp1MediaOffset = Number(data.tp1MediaOffset ?? tp.mediaOffset ?? state.tp1MediaOffset ?? 0) || 0;
+    state.tp1MediaPlayrate = Number(data.tp1MediaPlayrate ?? tp.mediaPlayrate ?? state.tp1MediaPlayrate ?? 1) || 1;
+    state.tp1SongName = String(data.tp1SongName || data.telepromptTp1SongName || data.tp1Song || tp.songName || tp.song || state.tp1SongName || '');
+    state.tp1LyricsText = mediaAllowsText(mediaType) ? String(data.tp1LyricsText || data.tp1Lyrics || data.telepromptTp1Lyrics || data.telepromptTp1Text || tp.lyricsText || tp.lyrics || tp.text || state.tp1LyricsText || '') : '';
+    state.tp1UpdatedAt = data.tp1UpdatedAt || tp.updatedAt || state.tp1UpdatedAt || null;
+  }
+  if (typeof syncFromBridge === 'function' && !syncFromBridge.__fix103TpMediaWrapped) {
+    const prev = syncFromBridge;
+    syncFromBridge = function(data){
+      const result = prev(data);
+      try { setTpFromBridge103(data); } catch(e) {}
+      return result;
+    };
+    syncFromBridge.__fix103TpMediaWrapped = true;
+  }
+  function tpTitle(){ return String(state?.tp1SongName || state?.telepromptTp1SongName || state?.currentSongName || state?.playingSongName || state?.songName || 'TELEPROMPT 1').trim() || 'TELEPROMPT 1'; }
+  function tpPath(){ return String(state?.tp1MediaPath || state?.telepromptTp1MediaPath || '').trim(); }
+  function tpType(){ return String(state?.tp1MediaType || state?.telepromptTp1MediaType || 'text').toLowerCase(); }
+  function tpText(){ return mediaAllowsText(tpType()) ? String(state?.tp1LyricsText || state?.tp1Lyrics || state?.telepromptTp1Lyrics || state?.telepromptTp1Text || '').trim() : ''; }
+  function tpMediaUrl(path){ return path ? bridgeUrl('/media?slot=1&path=' + encodeURIComponent(path)) : ''; }
+  function progress103(){ try { const d = Number(state.playbackDurationSec || state.currentSongDurationSec || 0); const r = Number(state.playbackRemainingSec || state.currentSongRemainingSec); if (d > 0 && Number.isFinite(r)) return Math.max(0, Math.min(100, ((d-r)/d)*100)); } catch(e){} return 0; }
+  function renderTpBody103(){
+    const path = tpPath();
+    const kind = mediaKind(tpType(), path);
+    if (kind === 'image') {
+      const src = tpMediaUrl(path);
+      return src ? `<div class="tpMediaStageFix103"><img class="tpMediaImageFix103" data-tp-media="image" src="${esc(src)}" alt="TP1" /></div>` : `<div class="lyricsTextView tpLyricsTextFix103">MÍDIA TP1 SEM CAMINHO</div>`;
+    }
+    if (kind === 'video') {
+      const src = tpMediaUrl(path);
+      const cur = Number(state?.tp1MediaCurrentTime || 0) || 0;
+      return src ? `<div class="tpMediaStageFix103"><video class="tpMediaVideoFix103" data-tp-media="video" data-tp-current-time="${esc(cur)}" src="${esc(src)}" autoplay muted playsinline webkit-playsinline preload="auto"></video></div>` : `<div class="lyricsTextView tpLyricsTextFix103">VÍDEO TP1 SEM CAMINHO</div>`;
+    }
+    const text = tpText() || 'SEM CONTEÚDO NO TP1';
+    return `<div class="lyricsTextView tpLyricsTextFix103" data-lyrics-text-view data-lyrics-source="${esc(text)}">${typeof lyricsTextToHtml === 'function' ? lyricsTextToHtml(text) : esc(text)}</div>`;
+  }
+  function syncTpMediaDom103(){
+    const v = document.querySelector('video[data-tp-media="video"]');
+    if (v) {
+      const wanted = Number(state?.tp1MediaCurrentTime || v.getAttribute('data-tp-current-time') || 0) || 0;
+      try { if (Number.isFinite(wanted) && Math.abs((v.currentTime || 0) - wanted) > 0.45) v.currentTime = wanted; } catch(e) {}
+      try { v.muted = true; const p = v.play?.(); if (p && p.catch) p.catch(()=>{}); } catch(e) {}
+    }
+    const titleNode = document.querySelector('[data-lyrics-title]');
+    if (titleNode) titleNode.textContent = up(tpTitle());
+    const fill = document.querySelector('[data-lyrics-progress-fill]');
+    if (fill) fill.style.width = `${Math.round(progress103()*10)/10}%`;
+  }
+  if (typeof renderLyricsPanel === 'function') {
+    renderLyricsPanel = function(){
+      if (!state.lyricsPanelOpen) return '';
+      const title = up(tpTitle());
+      const progress = Math.round(progress103()*10)/10;
+      return `<div class="lyricsScreen telepromptOnlyScreen directorTp1OnlyScreen tpMediaScreenFix103" style="--tp-text-color:${esc((window.__vshookDirectorTpColorFix12 && window.__vshookDirectorTpColorFix12()) || '#f8fafc')};--tp-font:${esc((window.__vshookDirectorTpFontFix12 && window.__vshookDirectorTpFontFix12()) || 'Inter, Arial, sans-serif')}">
+        <div class="lyricsTopBar lyricsTopBarTpFix12">
+          <div class="lyricsNowPlaying lyricsNowPlayingTpFix12">
+            <div class="lyricsNowPlayingTitle lyricsNowPlayingTitleFix12" data-lyrics-title>${esc(title)}</div>
+            <div class="lyricsProgressTrack lyricsProgressTrackFix12"><div class="lyricsProgressFill" data-lyrics-progress-fill style="width:${progress}%"></div></div>
+          </div>
+          <button class="lyricsBackButton lyricsBlueButton lyricsBackButtonFix12" data-action="close-lyrics-panel">&gt;&gt;</button>
+        </div>
+        <div class="lyricsBody lyricsBodyTpFix12 tpMediaBodyFix103">${renderTpBody103()}</div>
+      </div>`;
+    };
+  }
+  if (typeof syncLyricsPanelDom === 'function') {
+    const prevSyncDom = syncLyricsPanelDom;
+    syncLyricsPanelDom = function(){ try { prevSyncDom(); } catch(e) {} syncTpMediaDom103(); };
+  }
+  setInterval(syncTpMediaDom103, 500);
+})();
+
+/* VS_HOOK_FIX_STOP_TRANSPORT_ONLY_FINAL
+   Stop do Diretor não pode enviar música, índice, posição, fila ou alvo para a extensão.
+   O problema aparecia depois de reorganizar o repertório porque o Stop carregava índice/posição antigos
+   e a extensão interpretava como seek. Stop agora é transporte puro. */
+(function(){
+  if (window.__vshookFixStopTransportOnlyFinalInstalled) return;
+  window.__vshookFixStopTransportOnlyFinalInstalled = true;
+
+  function isDirectorStopCommand(type, payload){
+    const t = String(type || '').toLowerCase();
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const source = String(p.role || p.clientRole || p.appRole || p.source || p.mode || '').toLowerCase();
+    const isDirector = !source || source.includes('director') || source.includes('diretor') || t.startsWith('director_');
+    const wantsStop = t === 'director_stop_no_seek' || t === 'play_stop' || t === 'stop' ||
+      (t.includes('stop') && !t.includes('timer')) ||
+      p.forceStop === true || p.desiredPlaying === false || String(p.desiredState || '').toLowerCase() === 'stopped';
+    return isDirector && wantsStop;
+  }
+
+  function makeDirectorTransportOnlyStopPayload(payload, sourceTab){
+    const p = payload && typeof payload === 'object' ? payload : {};
+    return {
+      role: 'director',
+      clientRole: 'director',
+      appRole: 'director',
+      source: 'director',
+      mode: 'director',
+      activeTab: sourceTab || p.activeTab || p.page || (typeof state === 'object' && state ? state.activeTab : '') || 'playlist',
+      desiredPlaying: false,
+      desiredState: 'stopped',
+      forcePlay: false,
+      forceStop: true,
+      noSeek: true,
+      preserveCursor: true,
+      transportOnly: true,
+      stopTransportOnly: true,
+      ignoreSelection: true,
+      ignoreTarget: true,
+      issuedAtMs: Date.now(),
+      clientCommandId: p.clientCommandId || `director-stop-transport-only-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+    };
+  }
+
+  const previousPostCommandStopFinal = typeof postCommand === 'function' ? postCommand : null;
+  if (previousPostCommandStopFinal && !previousPostCommandStopFinal.__stopTransportOnlyFinalWrapped) {
+    postCommand = function(type, payload = {}){
+      if (isDirectorStopCommand(type, payload)) {
+        return previousPostCommandStopFinal.call(this, 'director_stop_no_seek', makeDirectorTransportOnlyStopPayload(payload, payload && payload.activeTab));
+      }
+      return previousPostCommandStopFinal.apply(this, arguments);
+    };
+    postCommand.__stopTransportOnlyFinalWrapped = true;
+  }
+
+  const previousPostPlaybackToggleStopFinal = typeof postPlaybackToggleCommand === 'function' ? postPlaybackToggleCommand : null;
+  if (previousPostPlaybackToggleStopFinal && !previousPostPlaybackToggleStopFinal.__stopTransportOnlyFinalWrapped) {
+    postPlaybackToggleCommand = function(targetId, sourceTab, desiredPlaying, extraPayload){
+      if (!desiredPlaying) {
+        try { if (typeof directorStopRetryTimer !== 'undefined' && directorStopRetryTimer) clearTimeout(directorStopRetryTimer); } catch(e) {}
+        const merged = extraPayload && typeof extraPayload === 'object' ? { ...extraPayload } : {};
+        merged.activeTab = sourceTab || merged.activeTab || (typeof state === 'object' && state ? state.activeTab : '') || 'playlist';
+        return postCommand('director_stop_no_seek', makeDirectorTransportOnlyStopPayload(merged, merged.activeTab));
+      }
+      return previousPostPlaybackToggleStopFinal.apply(this, arguments);
+    };
+    postPlaybackToggleCommand.__stopTransportOnlyFinalWrapped = true;
+  }
+})();
+
+
+
+/* VS_HOOK_TIMER_DIRECTOR_CONTROL_FINAL
+   Timer do Diretor: progressivo, regressivo e horário local enviados ao Lua/extensão.
+   Não cria camada visual nova; apenas usa o modal/botão existente. */
+function normalizeDirectorTimerMode(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if (raw === 'local_time' || raw === 'localtime' || raw === 'local' || raw === 'horario_local' || raw === 'hora_local' || raw === 'clock' || raw === 'relogio') return 'local_time';
+  if (raw === 'countdown' || raw === 'regressive' || raw === 'regressivo' || raw === 'down') return 'countdown';
+  return 'progressive';
+}
+function getDirectorDeviceLocalTimeParts() {
+  const d = new Date();
+  return { h: d.getHours(), m: d.getMinutes(), s: d.getSeconds() };
+}
+function getDirectorDeviceLocalTimeSec() {
+  const t = getDirectorDeviceLocalTimeParts();
+  return Math.max(0, Math.min(99 * 3600 + 59 * 60 + 59, t.h * 3600 + t.m * 60 + t.s));
+}
+function getDirectorDeviceLocalTimeText() {
+  const t = getDirectorDeviceLocalTimeParts();
+  return `${String(t.h).padStart(2, '0')}:${String(t.m).padStart(2, '0')}:${String(t.s).padStart(2, '0')}`;
+}
+function getDirectorTimerSnapshot(extra = {}) {
+  const mode = normalizeDirectorTimerMode(extra.timerMode || extra.mode || state.timerMode || 'progressive');
+  let target = Number(extra.timerTargetSec ?? extra.targetSec ?? extra.seconds ?? state.timerTargetSec ?? 0) || 0;
+  target = Math.max(0, Math.min(99 * 3600 + 59 * 60 + 59, Math.floor(target)));
+  const localSec = getDirectorDeviceLocalTimeSec();
+  const localText = getDirectorDeviceLocalTimeText();
+  let display = mode === 'local_time' ? localSec : 0;
+  try { if (mode !== 'local_time' && typeof getTimerElapsedSec === 'function') display = Math.floor(Number(getTimerElapsedSec()) || 0); } catch (_) {}
+  if (mode === 'countdown' && !state.timerRunning) display = target;
+  if (mode === 'progressive' && !state.timerRunning) display = Math.max(0, Math.floor(Number(state.timerDisplaySec ?? state.timerAccumulatedSec ?? 0) || 0));
+  return {
+    timerMode: mode,
+    mode,
+    timerType: mode,
+    timerTargetSec: mode === 'countdown' ? target : 0,
+    targetSec: mode === 'countdown' ? target : 0,
+    seconds: mode === 'countdown' ? target : 0,
+    timerCountdownStartSec: mode === 'countdown' ? target : 0,
+    countdownSec: mode === 'countdown' ? target : 0,
+    countdownSeconds: mode === 'countdown' ? target : 0,
+    timerDisplaySec: display,
+    timerValueSec: display,
+    timerElapsedSec: mode === 'countdown' ? Math.max(0, target - display) : display,
+    elapsedSec: mode === 'countdown' ? Math.max(0, target - display) : display,
+    timerAccumulatedSec: mode === 'local_time' ? 0 : (mode === 'countdown' ? Math.max(0, target - display) : display),
+    timerProgressiveSec: mode === 'progressive' ? display : 0,
+    progressiveSec: mode === 'progressive' ? display : 0,
+    timerLocalTimeSec: localSec,
+    localTimeSec: localSec,
+    timerLocalTimeText: localText,
+    localTimeText: localText,
+    appDeviceLocalTime: localText,
+    appDeviceLocalTimeSec: localSec,
+    deviceEpochMs: Date.now(),
+    timezoneOffsetMin: new Date().getTimezoneOffset(),
+    source: 'director',
+    appRole: 'director',
+    clientRole: 'director',
+    role: 'director'
+  };
+}
+(function installDirectorTimerFinalPatch(){
+  if (window.__vshookDirectorTimerFinalPatchApplied) return;
+  window.__vshookDirectorTimerFinalPatchApplied = true;
+  try { state.timerMode = normalizeDirectorTimerMode(state.timerMode || 'progressive'); } catch (_) {}
+
+  const DIRECTOR_TIMER_COUNTDOWN_STORAGE_KEY = 'vshook.director.timer.countdownSec.v1';
+  const DIRECTOR_TIMER_MAX_SECONDS = 99 * 3600 + 59 * 60 + 59;
+  function clampDirectorCountdownSeconds(value) {
+    const n = Math.floor(Number(value) || 0);
+    return Math.max(0, Math.min(DIRECTOR_TIMER_MAX_SECONDS, n));
+  }
+  function loadDirectorCountdownTargetSec() {
+    try {
+      const raw = window.localStorage ? window.localStorage.getItem(DIRECTOR_TIMER_COUNTDOWN_STORAGE_KEY) : '';
+      return clampDirectorCountdownSeconds(raw || 0);
+    } catch (_) {
+      return 0;
+    }
+  }
+  function saveDirectorCountdownTargetSec(value) {
+    const safe = clampDirectorCountdownSeconds(value);
+    state.timerTargetSec = safe;
+    try {
+      if (window.localStorage) window.localStorage.setItem(DIRECTOR_TIMER_COUNTDOWN_STORAGE_KEY, String(safe));
+    } catch (_) {}
+    return safe;
+  }
+  if (!Number.isFinite(Number(state.timerTargetSec)) || Number(state.timerTargetSec) <= 0) {
+    const savedCountdown = loadDirectorCountdownTargetSec();
+    if (savedCountdown > 0) state.timerTargetSec = savedCountdown;
+  }
+
+
+  const previousGetTimerElapsedFinal = typeof getTimerElapsedSec === 'function' ? getTimerElapsedSec : null;
+  getTimerElapsedSec = function() {
+    try {
+      state.timerMode = normalizeDirectorTimerMode(state.timerMode || 'progressive');
+      if (state.timerMode === 'local_time') return getDirectorDeviceLocalTimeSec();
+    } catch (_) {}
+    return previousGetTimerElapsedFinal ? previousGetTimerElapsedFinal.apply(this, arguments) : 0;
+  };
+
+  openTimerModal = function() {
+    state.timerMode = normalizeDirectorTimerMode(state.timerMode || 'progressive');
+    state.showTimerModal = true;
+    try { syncChronoDisplays?.(); } catch (_) {}
+    render?.();
+    return true;
+  };
+
+  setTimerModeFromApp = function(mode) {
+    const next = normalizeDirectorTimerMode(mode);
+    if (state.timerMode === 'countdown' && next !== 'countdown') {
+      try { saveDirectorCountdownTargetSec(readTimerTargetSecondsFromModal?.() ?? state.timerTargetSec ?? 0); } catch (_) {}
+    }
+    if (next === 'countdown') {
+      try {
+        const fromInputs = readTimerTargetSecondsFromModal?.();
+        const saved = loadDirectorCountdownTargetSec();
+        state.timerTargetSec = clampDirectorCountdownSeconds((Number(fromInputs) > 0 ? fromInputs : (Number(state.timerTargetSec) > 0 ? state.timerTargetSec : saved)));
+      } catch (_) {
+        state.timerTargetSec = clampDirectorCountdownSeconds(Number(state.timerTargetSec) > 0 ? state.timerTargetSec : loadDirectorCountdownTargetSec());
+      }
+    }
+    state.timerMode = next;
+    if (next === 'local_time') {
+      state.timerDisplaySec = getDirectorDeviceLocalTimeSec();
+    } else if (next === 'progressive') {
+      state.timerDisplaySec = state.timerRunning ? getTimerElapsedSec() : 0;
+    } else if (!state.timerRunning) {
+      state.timerDisplaySec = Number(state.timerTargetSec) || 0;
+    }
+    const snap = getDirectorTimerSnapshot({ timerMode: next });
+    postCommand('timer_set_mode', { ...snap, timerRunning: !!state.timerRunning, running: !!state.timerRunning, action: 'set_mode', timerAction: 'set_mode' });
+    try { syncChronoDisplays?.(); } catch (_) {}
+    render?.();
+    return true;
+  };
+
+  confirmTimerModal = function() {
+    state.timerMode = normalizeDirectorTimerMode(state.timerMode || 'progressive');
+    if (state.timerMode === 'countdown') {
+      try { saveDirectorCountdownTargetSec(readTimerTargetSecondsFromModal?.() ?? state.timerTargetSec ?? 0); } catch (_) { state.timerTargetSec = clampDirectorCountdownSeconds(Number(state.timerTargetSec) || 0); }
+    }
+
+    const wasRunning = !!state.timerRunning;
+    if (wasRunning && state.timerMode !== 'local_time') {
+      const snapStop = getDirectorTimerSnapshot();
+      state.timerRunning = false;
+      state.timerStartedAt = 0;
+      state.timerStartedAtMs = 0;
+      state.timerAccumulatedSec = 0;
+      state.timerElapsedSec = 0;
+      state.timerDisplaySec = state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0;
+      state.showTimerModal = false;
+      postCommand('timer_stop_reset', { ...snapStop, timerRunning: false, running: false, action: 'stop_reset', timerAction: 'stop_reset' });
+      try { syncChronoDisplays?.(); refreshChronoRenderLoop?.(); } catch (_) {}
+      render?.();
+      return true;
+    }
+
+    const now = Date.now();
+    state.timerRunning = state.timerMode !== 'local_time';
+    state.timerStartedAt = state.timerMode === 'local_time' ? 0 : now;
+    state.timerStartedAtMs = state.timerMode === 'local_time' ? 0 : now;
+    state.timerAccumulatedSec = 0;
+    state.timerElapsedSec = 0;
+    state.timerDisplaySec = state.timerMode === 'local_time'
+      ? getDirectorDeviceLocalTimeSec()
+      : (state.timerMode === 'countdown' ? (Number(state.timerTargetSec) || 0) : 0);
+    state.showTimerModal = false;
+    const snapStart = getDirectorTimerSnapshot();
+    postCommand('timer_set_mode', { ...snapStart, timerRunning: !!state.timerRunning || state.timerMode === 'local_time', running: !!state.timerRunning || state.timerMode === 'local_time', action: 'set_mode', timerAction: 'set_mode' });
+    postCommand('timer_start', { ...snapStart, timerRunning: !!state.timerRunning || state.timerMode === 'local_time', running: !!state.timerRunning || state.timerMode === 'local_time', action: 'start', timerAction: 'start', startedAt: now, timerStartedAt: now, timerStartedAtMs: now });
+    try { syncChronoDisplays?.(); refreshChronoRenderLoop?.(); } catch (_) {}
+    render?.();
+    return true;
+  };
+})();
+
+
+/* VS_HOOK_FIX_TOTAL_LOCK_DIRECTOR_HEARTBEAT_PERSIST
+   Mantém o sinal real do App Diretor vivo na extensão enquanto o app está autenticado.
+   Isso fecha a brecha de fechar/reabrir o Lua ou trocar projeto e perder a tela de bloqueio. */
+(function(){
+  if (window.__vshookFixTotalLockDirectorHeartbeatPersist) return;
+  window.__vshookFixTotalLockDirectorHeartbeatPersist = true;
+  let lastHeartbeatAt = 0;
+  function canHeartbeat(){
+    try {
+      if (window.__vshookDirectorLogoutInProgress) return false;
+      if (typeof needsAuthGate === 'function' && needsAuthGate()) return false;
+      if (state && state.authEnabled && !state.authAuthenticated) return false;
+      return true;
+    } catch(e) { return true; }
+  }
+  function bridgeUrl(path){
+    try { return typeof vshookBridgeUrl === 'function' ? vshookBridgeUrl(path) : path; }
+    catch(e) { return path; }
+  }
+  function sendDirectorAlive(force){
+    if (!canHeartbeat()) return;
+    const t = Date.now();
+    if (!force && (t - lastHeartbeatAt) < 1800) return;
+    lastHeartbeatAt = t;
+    try {
+      window.__vshookDirectorHeartbeatBlockedUntil = 0;
+      if (state) {
+        state.appActive = true;
+        state.directorAppActive = true;
+        state.directorActive = true;
+      }
+      fetch(bridgeUrl('/command'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          type: 'director_heartbeat',
+          payload: {
+            role: 'director', clientRole: 'director', appRole: 'director', source: 'director',
+            appActive: true, directorAppActive: true, directorActive: true,
+            authAuthenticated: true, desiredState: 'authenticated', sessionHash: 'director-active',
+            issuedAtMs: t,
+            clientCommandId: `director-heartbeat-${t}-${Math.random().toString(16).slice(2, 8)}`
+          }
+        })
+      }).catch(function(){});
+    } catch(e) {}
+  }
+  const prevSendHeartbeat = typeof sendAppHeartbeat === 'function' ? sendAppHeartbeat : null;
+  if (prevSendHeartbeat && !prevSendHeartbeat.__vshookTotalLockHeartbeatWrapped) {
+    sendAppHeartbeat = function(){
+      try { prevSendHeartbeat.apply(this, arguments); } catch(e) {}
+      sendDirectorAlive(false);
+    };
+    sendAppHeartbeat.__vshookTotalLockHeartbeatWrapped = true;
+  }
+  window.addEventListener('focus', function(){ sendDirectorAlive(true); }, { passive:true });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) sendDirectorAlive(true); }, { passive:true });
+  document.addEventListener('pointerdown', function(){ sendDirectorAlive(true); }, { passive:true, capture:true });
+  document.addEventListener('touchstart', function(){ sendDirectorAlive(true); }, { passive:true, capture:true });
+  setInterval(function(){ sendDirectorAlive(false); }, 1800);
+  setTimeout(function(){ sendDirectorAlive(true); }, 80);
+  setTimeout(function(){ sendDirectorAlive(true); }, 600);
 })();
