@@ -10,7 +10,7 @@ echo O workflow dispara com tags:
 echo   v*
 echo   hook-update-*
 echo.
-echo Para essa versão, use: v2.1.0
+echo Para essa versão, use: v2.8.0
 echo O "C" é só visual dentro do Hook Center.
 echo.
 
@@ -23,7 +23,7 @@ if "%COMMIT_MSG%"=="" (
 )
 
 echo.
-set /p TAG_VERSION=Digite a tag da versão, exemplo v2.1.0: 
+set /p TAG_VERSION=Digite a tag da versão, exemplo v2.8.0: 
 if "%TAG_VERSION%"=="" (
   echo.
   echo ERRO: tag vazia.

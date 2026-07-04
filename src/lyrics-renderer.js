@@ -48,6 +48,7 @@ let settings = {
   mediaScale: 1,
   previewEnabled: true,
   previewScale: 1,
+  alwaysOnTop: false,
   clearMode: false
 };
 let technicalNoticeSettings = {
@@ -101,6 +102,14 @@ function clampScale(value, fallback = 1, max = 1.25) {
   return Math.max(0.35, Math.min(max, n));
 }
 
+function updateNameSafeWidth() {
+  const safeSongScale = clampScale(settings.songNameScale, 1, 3);
+  const margin = window.innerWidth <= 520 ? 12 : 24;
+  const available = Math.max(80, window.innerWidth - margin);
+  const unscaledWidth = Math.max(60, Math.floor(available / Math.max(0.35, safeSongScale)));
+  document.documentElement.style.setProperty('--lyrics-name-safe-width', `${unscaledWidth}px`);
+}
+
 function normalizeMediaScale(value, fallback = 1) {
   const n = Number(value);
   const base = Number.isFinite(n) ? n : fallback;
@@ -150,7 +159,39 @@ function applyClockScaleToFit(requestedScale = settings.clockScale) {
 
   document.documentElement.style.setProperty('--lyrics-clock-scale', String(finalScale));
   document.documentElement.style.setProperty('--lyrics-clock-letter-spacing', clockLetterSpacingFromScale(finalScale));
+  scheduleOverlayLayoutMetrics();
   return finalScale;
+}
+
+let overlayMetricsRaf = null;
+function visibleOverlayHeight(el) {
+  if (!el) return 0;
+  const text = String(el.textContent || '').trim();
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return 0;
+  if (!text && (el === songNameEl || el === queueNameEl)) return 0;
+  const rect = el.getBoundingClientRect();
+  return Math.max(0, Math.ceil(rect.height || el.offsetHeight || 0));
+}
+
+function updateOverlayLayoutMetrics() {
+  const root = document.documentElement;
+  const clockHeight = visibleOverlayHeight(timerEl);
+  const songHeight = visibleOverlayHeight(songNameEl);
+  const queueHeight = visibleOverlayHeight(queueNameEl);
+  if (clockHeight > 0) root.style.setProperty('--lyrics-clock-real-height', `${clockHeight}px`);
+  if (songHeight > 0) root.style.setProperty('--lyrics-song-real-height', `${songHeight}px`);
+  if (queueHeight > 0) root.style.setProperty('--lyrics-queue-real-height', `${queueHeight}px`);
+}
+
+function scheduleOverlayLayoutMetrics() {
+  if (overlayMetricsRaf) cancelAnimationFrame(overlayMetricsRaf);
+  overlayMetricsRaf = requestAnimationFrame(() => {
+    overlayMetricsRaf = null;
+    updateOverlayLayoutMetrics();
+  });
+  setTimeout(updateOverlayLayoutMetrics, 80);
+  setTimeout(updateOverlayLayoutMetrics, 240);
 }
 
 function showCloseButtonTemporarily(duration = 5000) {
@@ -194,10 +235,13 @@ function applySettings(next = {}) {
   const safeMediaScale = normalizeMediaScale(settings.mediaScale, 1);
   document.documentElement.style.setProperty('--lyrics-text-scale', String(safeTextScale));
   document.documentElement.style.setProperty('--lyrics-song-scale', String(safeSongScale));
+  updateNameSafeWidth();
+  scheduleOverlayNameFit();
   applyClockScaleToFit(safeClockScale);
   applyMediaScaleToElements(safeMediaScale);
   document.documentElement.style.setProperty('--lyrics-preview-scale', String(clampScale(settings.previewScale, 1, 1)));
-  scheduleMarqueeRefresh(document); 
+  scheduleMarqueeRefresh(document);
+  scheduleOverlayLayoutMetrics();
   const clearMode = settings.clearMode === true;
   const windowBorderEnabled = clearMode ? false : (settings.windowBorderEnabled ?? settings.borderEnabled ?? true);
   const clockBorderEnabled = clearMode ? false : (settings.clockBorderEnabled ?? settings.borderEnabled ?? true);
@@ -226,6 +270,7 @@ function applySettings(next = {}) {
   document.body.classList.toggle('clock-bottom', clockPosition === 'bottom');
   document.body.classList.toggle('clock-top', clockPosition !== 'bottom');
   forceClockAboveTechnicalNotice(document.body.classList.contains('notice-active'));
+  scheduleOverlayLayoutMetrics();
   updateFontFit();
 }
 
@@ -352,6 +397,7 @@ function updateTimerVisual() {
       timerEl.textContent = formatTimer(getLocalTimerSeconds());
     }
     applyClockScaleToFit(settings.clockScale);
+    scheduleOverlayLayoutMetrics();
   }
 }
 
@@ -370,6 +416,78 @@ function marqueeHtml(text, className = '') {
   const value = escapePreviewHtml(clean);
   const baseClass = className ? `${className} ` : '';
   return `<span class="${baseClass}lyrics-marquee-wrap"><span class="lyrics-marquee-track"><span>${value}</span><span aria-hidden="true">${value}</span></span><span class="lyrics-static-text">${value}</span></span>`;
+}
+
+// VS_HOOK_FIX_TP_NAMES_SCALE_NOT_MARQUEE
+// Nome da música atual e nome da fila não usam letreiro: o tamanho da fonte é reduzido
+// proporcionalmente à janela, no mesmo conceito do relógio.
+function nameFitHtml(text, className = '') {
+  const clean = String(text || '').trim();
+  const value = escapePreviewHtml(clean);
+  const baseClass = className ? `${className} ` : '';
+  return `<span class="${baseClass}lyrics-name-fit">${value}</span>`;
+}
+
+let overlayNameFitRaf = null;
+function clampPx(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
+}
+
+function measureNameTextWidth(text, fontSizePx, fontFamily, fontWeight) {
+  const value = String(text || '').trim();
+  if (!value) return 0;
+  const canvas = measureNameTextWidth.canvas || (measureNameTextWidth.canvas = document.createElement('canvas'));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return value.length * fontSizePx * 0.62;
+  ctx.font = `${fontWeight || 900} ${fontSizePx}px ${fontFamily || 'Arial, sans-serif'}`;
+  const measured = ctx.measureText(value).width || 0;
+  return measured || (value.length * fontSizePx * 0.62);
+}
+
+function responsiveBaseNameFont(kind) {
+  const safeScale = clampScale(settings.songNameScale, 1, 3);
+  const vw = Math.max(1, Number(window.innerWidth) || 1);
+  if (kind === 'queue') {
+    return clampPx(vw * 0.0165, 14, 27) * safeScale;
+  }
+  return clampPx(vw * 0.022, 18, 34) * safeScale;
+}
+
+function fitNameFontForElement(el, kind) {
+  if (!el) return 0;
+  const text = String(el.textContent || '').trim();
+  if (!text) return 0;
+  const computed = window.getComputedStyle(el);
+  const baseFont = responsiveBaseNameFont(kind);
+  const horizontalPadding = kind === 'queue' ? 16 : 20;
+  const safeMargin = (window.innerWidth <= 520 || window.innerHeight <= 360) ? 14 : 32;
+  const available = Math.max(30, (Number(window.innerWidth) || 0) - safeMargin - horizontalPadding);
+  const family = computed.fontFamily || (kind === 'queue' ? settings.queueNameFontFamily : settings.songNameFontFamily) || settings.fontFamily || 'Arial, sans-serif';
+  const weight = computed.fontWeight || 900;
+  const measured = measureNameTextWidth(text, baseFont, family, weight);
+  if (!measured || measured <= available) return baseFont;
+  const fitted = baseFont * (available / measured) * 0.985;
+  return Math.max(8, Math.min(baseFont, fitted));
+}
+
+function fitOverlayNamesToWindow() {
+  const songFont = fitNameFontForElement(songNameEl, 'song');
+  const queueFont = fitNameFontForElement(queueNameEl, 'queue');
+  if (songFont > 0) document.documentElement.style.setProperty('--lyrics-song-fit-font-size', `${songFont.toFixed(2)}px`);
+  if (queueFont > 0) document.documentElement.style.setProperty('--lyrics-queue-fit-font-size', `${queueFont.toFixed(2)}px`);
+  updateNameSafeWidth();
+  scheduleOverlayLayoutMetrics();
+}
+
+function scheduleOverlayNameFit() {
+  if (overlayNameFitRaf) cancelAnimationFrame(overlayNameFitRaf);
+  overlayNameFitRaf = requestAnimationFrame(() => {
+    overlayNameFitRaf = null;
+    fitOverlayNamesToWindow();
+  });
+  [80, 220, 520, 1000].forEach((delay) => setTimeout(fitOverlayNamesToWindow, delay));
 }
 
 function previewWrappedHtml(text, kind = 'song') {
@@ -410,9 +528,10 @@ function refreshMarqueeOverflow(root = document) {
   if (!root || !root.querySelectorAll) return;
   const items = root.querySelectorAll('.lyrics-marquee-wrap');
   items.forEach((wrap) => {
-    const holder = wrap.closest('.lyrics-preview-title, .lyrics-preview-song');
+    const holder = wrap.closest('.lyrics-preview-title, .lyrics-preview-song, .lyrics-song-name, .lyrics-queue-name');
     if (!holder) {
       wrap.classList.remove('is-overflowing');
+      wrap.classList.remove('preview-marquee-force');
       return;
     }
 
@@ -435,7 +554,8 @@ function refreshMarqueeOverflow(root = document) {
     const fontSize = parseFloat(style.fontSize || '0') || (holder.classList.contains('lyrics-preview-title') ? 28 : 18);
     const approxWidth = textValue.length * fontSize * 0.64;
     const isTitle = holder.classList.contains('lyrics-preview-title');
-    const candidateByLength = textValue.length >= (isTitle ? 10 : 14);
+    const isTopName = holder.classList.contains('lyrics-song-name') || holder.classList.contains('lyrics-queue-name');
+    const candidateByLength = textValue.length >= (isTitle ? 10 : (isTopName ? 18 : 14));
     const overflowing = (boxWidth > 0 && (rawWidth > boxWidth + 2 || approxWidth > boxWidth + 2)) || candidateByLength;
     wrap.classList.toggle('is-overflowing', overflowing);
     wrap.classList.toggle('preview-marquee-force', overflowing);
@@ -494,16 +614,22 @@ function updateSongNameVisual(value, queuedValue) {
   const queueText = settings.queueNameEnabled === false ? '' : String(queuedValue || '').trim();
   const key = `${text}
 ${queueText}`;
-  if (key === lastSongName) return;
+  if (key === lastSongName) {
+    updateNameSafeWidth();
+    scheduleOverlayNameFit();
+    scheduleOverlayLayoutMetrics();
+    return;
+  }
   lastSongName = key;
   if (songNameEl) {
-    songNameEl.innerHTML = text ? marqueeHtml(text) : '';
+    songNameEl.innerHTML = text ? nameFitHtml(text) : '';
   }
   if (queueNameEl) {
-    queueNameEl.innerHTML = queueText ? marqueeHtml(queueText, 'lyrics-queue-marquee') : '';
+    queueNameEl.innerHTML = queueText ? nameFitHtml(queueText, 'lyrics-queue-name-fit') : '';
   }
   document.body.classList.toggle('queue-enabled', !!queueText);
-  scheduleMarqueeRefresh(document);
+  scheduleOverlayNameFit();
+  scheduleOverlayLayoutMetrics();
 }
 
 function updateFontFit() {
@@ -983,9 +1109,13 @@ async function init() {
     videoEl.addEventListener('canplay', applyPendingVideoSync);
   }
   window.addEventListener('resize', () => {
+    updateNameSafeWidth();
+    scheduleOverlayNameFit();
     updateFontFit();
     applyClockScaleToFit(settings.clockScale);
     applyMediaScaleToElements(settings.mediaScale);
+    scheduleMarqueeRefresh(document);
+    scheduleOverlayLayoutMetrics();
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -1002,4 +1132,4 @@ async function init() {
 init();
 
 // VS_HOOK_FIX_ALL_TP_NAMES_MARQUEE_RESIZE
-window.addEventListener('resize', () => scheduleMarqueeRefresh(document), { passive: true });
+window.addEventListener('resize', () => { updateNameSafeWidth(); scheduleOverlayNameFit(); scheduleOverlayLayoutMetrics(); }, { passive: true });

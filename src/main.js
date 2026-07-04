@@ -1652,6 +1652,7 @@ function getLyricsDefaults() {
     mediaScale: 1,
     previewEnabled: true,
     previewScale: 1,
+    alwaysOnTop: false,
     clearMode: false
   };
 }
@@ -1732,6 +1733,24 @@ function getLyricsSettings(slot = 1) {
   return getLyricsAllSettings()[id];
 }
 
+function applyLyricsWindowPinState(slot = 1, alwaysOnTop = false) {
+  const id = normalizeLyricsSlot(slot);
+  const win = lyricsWindows.get(id);
+  if (!win || win.isDestroyed()) return false;
+  const enabled = alwaysOnTop === true;
+  try {
+    win.setAlwaysOnTop(enabled, enabled ? 'screen-saver' : 'normal');
+  } catch (_) {
+    try { win.setAlwaysOnTop(enabled); } catch (__) {}
+  }
+  try {
+    if (process.platform === 'darwin' && typeof win.setVisibleOnAllWorkspaces === 'function') {
+      win.setVisibleOnAllWorkspaces(enabled, { visibleOnFullScreen: enabled });
+    }
+  } catch (_) {}
+  return enabled;
+}
+
 
 function normalizeLyricsScreenPosition(value, fallback = 'top') {
   const v = String(value || '').trim().toLowerCase();
@@ -1784,8 +1803,10 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1, 1);
   if (typeof settings.previewEnabled === 'boolean') next.previewEnabled = settings.previewEnabled;
   if (settings.previewScale !== undefined) next.previewScale = clampLyricsScale(settings.previewScale, next.previewScale || 1, 1);
+  if (typeof settings.alwaysOnTop === 'boolean') next.alwaysOnTop = settings.alwaysOnTop;
   if (typeof settings.clearMode === 'boolean') next.clearMode = settings.clearMode;
   all[id] = next;
+  applyLyricsWindowPinState(id, next.alwaysOnTop === true);
   store.set('lyrics', all);
   const win = lyricsWindows.get(id);
   if (win && !win.isDestroyed()) win.webContents.send('lyrics-settings-updated', { slot: id, settings: next });
@@ -2090,15 +2111,18 @@ function nativeItemIdCandidates(item = {}) {
 }
 
 function nativeItemMatchesIdOrRange(item = {}, idValue = '', startValue = 0, endValue = 0) {
-  const id = String(idValue || '').trim();
-  if (id && nativeItemIdCandidates(item).includes(id)) return true;
+  // FIX TP QUEUE LUA: a fila vinda do Lua precisa casar primeiro por posição.
+  // Em repertórios com blocos/índices visuais, o id/sourceNumber pode bater na
+  // música de baixo antes de o TP olhar o start/end correto.
   const start = Number(startValue || 0);
   const end = Number(endValue || 0);
   if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-    const itemStart = Number(item.start ?? item.startPos ?? item.selectedStartPos ?? 0);
-    const itemEnd = Number(item.end ?? item.endPos ?? item.selectedEndPos ?? 0);
-    return Math.abs(itemStart - start) <= 0.01 && Math.abs(itemEnd - end) <= 0.01;
+    const itemStart = Number(item.start ?? item.startPos ?? item.selectedStartPos ?? item.queuedStartPos ?? 0);
+    const itemEnd = Number(item.end ?? item.endPos ?? item.selectedEndPos ?? item.queuedEndPos ?? 0);
+    if (Math.abs(itemStart - start) <= 0.01 && Math.abs(itemEnd - end) <= 0.01) return true;
   }
+  const id = String(idValue || '').trim();
+  if (id && nativeItemIdCandidates(item).includes(id)) return true;
   return false;
 }
 
@@ -2392,13 +2416,15 @@ function createLyricsWindow(slot = 1) {
   const win = new BrowserWindow({
     width: 980,
     height: 560,
-    minWidth: 640,
-    minHeight: 360,
+    // Janela do Teleprompt precisa aceitar formatos extremos, inclusive 9:16 vertical.
+    minWidth: 180,
+    minHeight: 180,
     backgroundColor: '#00000000',
     title: 'Teleprompt',
     icon: getAppIconPath(),
     frame: false,
-    thickFrame: false,
+    // Mantem handles nativos de redimensionamento em janela sem moldura, especialmente no Windows.
+    thickFrame: true,
     transparent: true,
     roundedCorners: false,
     focusable: true,
@@ -2418,6 +2444,9 @@ function createLyricsWindow(slot = 1) {
   });
 
   lyricsWindows.set(id, win);
+  applyLyricsWindowPinState(id, getLyricsSettings(id).alwaysOnTop === true);
+  try { win.setResizable(true); } catch (_) {}
+  try { win.setMinimumSize(180, 180); } catch (_) {}
   try { win.setIgnoreMouseEvents(false); } catch (_) {}
   win.loadFile(path.join(__dirname, 'lyrics.html'), { query: { slot: String(id) } });
   win.once('ready-to-show', () => {

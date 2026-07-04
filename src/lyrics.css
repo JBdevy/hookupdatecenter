@@ -2161,3 +2161,381 @@ body.queue-bottom.clock-bottom.song-enabled.song-bottom:not(.clock-hidden) .lyri
 .lyrics-preview-empty .lyrics-preview-wrap-text {
   text-align: center !important;
 }
+
+
+/* VS_HOOK_FIX_TP_RESIZE_916_QUEUE_SAFE
+   - Teleprompt aceita janela estreita/vertical sem cortar imagem/vídeo 9:16.
+   - Fila atual fica fora do contorno da letra, mesmo com música atual em cima e fila embaixo. */
+:root {
+  --lyrics-edge-offset: clamp(4px, .9vh, 12px);
+  --lyrics-overlay-gap: clamp(8px, 1.45vh, 20px);
+  --lyrics-queue-safe-gap: clamp(12px, 2.1vh, 30px);
+  --lyrics-clock-real-height: calc((clamp(34px, 5.4vw, 76px) + 24px) * var(--lyrics-clock-scale));
+  --lyrics-song-real-height: calc((clamp(20px, 2.5vw, 34px) + 8px) * var(--lyrics-song-scale));
+  --lyrics-queue-real-height: calc((clamp(16px, 1.85vw, 30px) + 10px) * var(--lyrics-song-scale));
+}
+
+html,
+body,
+.lyrics-stage,
+.lyrics-media {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+.lyrics-media,
+body.media-active .lyrics-media,
+body.clear-mode .lyrics-media {
+  position: fixed !important;
+  inset: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+  background: #000 !important;
+  contain: layout paint size !important;
+}
+
+.lyrics-image,
+.lyrics-video,
+body.media-active .lyrics-image,
+body.media-active .lyrics-video,
+body.clear-mode .lyrics-image,
+body.clear-mode .lyrics-video {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  object-fit: contain !important;
+  object-position: center center !important;
+  transform: translateZ(0) scale(var(--lyrics-media-scale, 1)) !important;
+  transform-origin: center center !important;
+  background: #000 !important;
+}
+
+body.media-active .lyrics-stage,
+body.clear-mode .lyrics-stage {
+  background: #000 !important;
+}
+
+.lyrics-song-name,
+.lyrics-queue-name {
+  max-width: calc(100vw - 24px) !important;
+  line-height: 1.08 !important;
+  padding: 3px 10px !important;
+  background: rgba(0,0,0,.78) !important;
+}
+
+.lyrics-queue-name {
+  font-size: clamp(16px, 1.85vw, 30px) !important;
+  transform: translateX(-50%) scale(var(--lyrics-song-scale)) !important;
+}
+
+body.queue-top .lyrics-queue-name {
+  top: var(--lyrics-edge-offset) !important;
+  bottom: auto !important;
+  transform-origin: top center !important;
+}
+body.queue-bottom .lyrics-queue-name {
+  top: auto !important;
+  bottom: var(--lyrics-edge-offset) !important;
+  transform-origin: bottom center !important;
+}
+
+body.queue-top.clock-top:not(.clock-hidden) .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-top.song-enabled.song-top .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-song-real-height) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-top.clock-top.song-enabled.song-top:not(.clock-hidden) .lyrics-queue-name {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-song-real-height) + (var(--lyrics-overlay-gap) * 2)) !important;
+}
+body.queue-bottom.clock-bottom:not(.clock-hidden) .lyrics-queue-name {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-bottom.song-enabled.song-bottom .lyrics-queue-name {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-song-real-height) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-bottom.clock-bottom.song-enabled.song-bottom:not(.clock-hidden) .lyrics-queue-name {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-song-real-height) + (var(--lyrics-overlay-gap) * 2)) !important;
+}
+
+/* Reserva real para a fila: sem isso a fila embaixo invade o contorno da letra. */
+body.queue-enabled.queue-top:not(.preview-active):not(.clear-mode) .lyrics-text {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap)) !important;
+}
+body.queue-enabled.queue-bottom:not(.preview-active):not(.clear-mode) .lyrics-text {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap)) !important;
+}
+body.queue-enabled.queue-top.clock-top:not(.clock-hidden):not(.preview-active):not(.clear-mode) .lyrics-text {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-enabled.queue-bottom.clock-bottom:not(.clock-hidden):not(.preview-active):not(.clear-mode) .lyrics-text {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-enabled.queue-top.song-enabled.song-top:not(.preview-active):not(.clear-mode) .lyrics-text {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-song-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-enabled.queue-bottom.song-enabled.song-bottom:not(.preview-active):not(.clear-mode) .lyrics-text {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-song-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + var(--lyrics-overlay-gap)) !important;
+}
+body.queue-enabled.queue-top.clock-top.song-enabled.song-top:not(.clock-hidden):not(.preview-active):not(.clear-mode) .lyrics-text {
+  top: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-song-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + (var(--lyrics-overlay-gap) * 2)) !important;
+}
+body.queue-enabled.queue-bottom.clock-bottom.song-enabled.song-bottom:not(.clock-hidden):not(.preview-active):not(.clear-mode) .lyrics-text {
+  bottom: calc(var(--lyrics-edge-offset) + var(--lyrics-clock-real-height) + var(--lyrics-song-real-height) + var(--lyrics-queue-real-height) + var(--lyrics-queue-safe-gap) + (var(--lyrics-overlay-gap) * 2)) !important;
+}
+
+@media (orientation: portrait), (max-width: 520px) {
+  :root {
+    --lyrics-edge-offset: clamp(3px, .6vh, 8px);
+    --lyrics-overlay-gap: clamp(6px, 1vh, 14px);
+    --lyrics-queue-safe-gap: clamp(10px, 1.5vh, 22px);
+  }
+  .lyrics-timer {
+    font-size: clamp(24px, 7.5vw, 62px) !important;
+    padding: 4px 10px !important;
+  }
+  .lyrics-song-name,
+  .lyrics-queue-name {
+    max-width: calc(100vw - 14px) !important;
+  }
+  .lyrics-text {
+    left: clamp(10px, 4vw, 44px) !important;
+    right: clamp(10px, 4vw, 44px) !important;
+    padding-left: clamp(10px, 4vw, 34px) !important;
+    padding-right: clamp(10px, 4vw, 34px) !important;
+  }
+}
+
+@media (max-width: 320px), (max-height: 260px) {
+  .lyrics-text {
+    left: 8px !important;
+    right: 8px !important;
+    padding: 8px 10px !important;
+  }
+  .lyrics-timer {
+    font-size: clamp(18px, 8vw, 34px) !important;
+    padding: 2px 6px !important;
+  }
+}
+
+
+/* VS_HOOK_FIX_TP_NAME_RESIZE_AND_PIN
+   Nomes da música atual/fila não estouram nem cortam ao redimensionar janela.
+   A largura é calculada no renderer já compensando a escala do nome. */
+:root {
+  --lyrics-name-safe-width: calc(100vw - 24px);
+}
+.lyrics-song-name,
+.lyrics-queue-name {
+  box-sizing: border-box !important;
+  width: auto !important;
+  max-width: var(--lyrics-name-safe-width) !important;
+  min-width: 0 !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: clip !important;
+  line-height: 1.14 !important;
+  padding: 4px 10px !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap,
+.lyrics-queue-name .lyrics-marquee-wrap {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+.lyrics-song-name .lyrics-marquee-track,
+.lyrics-queue-name .lyrics-marquee-track {
+  max-width: none !important;
+}
+@media (orientation: portrait), (max-width: 520px) {
+  .lyrics-song-name,
+  .lyrics-queue-name {
+    max-width: var(--lyrics-name-safe-width) !important;
+    padding: 3px 7px !important;
+    line-height: 1.16 !important;
+  }
+}
+
+
+/* VS_HOOK_FIX_TP_PIN_VISIBLE_AND_NAME_RESIZE_2
+   Opção de fixar fica visível na aba Teleprompt; nome atual/fila rolam em letreiro
+   ao redimensionar, em vez de cortar. */
+.lyrics-pin-quick {
+  min-height: 38px !important;
+  padding: 8px 12px !important;
+  border: 1px solid rgba(250,204,21,.45) !important;
+  background: rgba(250,204,21,.10) !important;
+  color: #f8fafc !important;
+  border-radius: 10px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+}
+.lyrics-pin-quick input {
+  accent-color: #facc15 !important;
+}
+.lyrics-song-name,
+.lyrics-queue-name {
+  width: var(--lyrics-name-safe-width) !important;
+  max-width: var(--lyrics-name-safe-width) !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+  contain: paint !important;
+}
+.lyrics-song-name {
+  transform: translateX(-50%) scale(var(--lyrics-song-scale, 1)) !important;
+  transform-origin: top center !important;
+}
+body.song-bottom .lyrics-song-name {
+  transform-origin: bottom center !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap,
+.lyrics-queue-name .lyrics-marquee-wrap {
+  position: relative !important;
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  contain: paint !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap .lyrics-static-text,
+.lyrics-queue-name .lyrics-marquee-wrap .lyrics-static-text {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap .lyrics-marquee-track,
+.lyrics-queue-name .lyrics-marquee-wrap .lyrics-marquee-track {
+  display: none !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap.is-overflowing .lyrics-static-text,
+.lyrics-queue-name .lyrics-marquee-wrap.is-overflowing .lyrics-static-text {
+  display: none !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track,
+.lyrics-queue-name .lyrics-marquee-wrap.is-overflowing .lyrics-marquee-track {
+  display: inline-flex !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: max-content !important;
+  max-width: none !important;
+  gap: 4em !important;
+  white-space: nowrap !important;
+  will-change: transform !important;
+  animation: lyricsTopNameMarquee 10s linear infinite !important;
+}
+.lyrics-song-name .lyrics-marquee-track > span,
+.lyrics-queue-name .lyrics-marquee-track > span {
+  flex: 0 0 auto !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+}
+@keyframes lyricsTopNameMarquee {
+  0%, 10% { transform: translateX(0); }
+  90%, 100% { transform: translateX(calc(-50% - 2em)); }
+}
+@media (max-width: 420px), (max-height: 260px) {
+  .lyrics-song-name, .lyrics-queue-name {
+    padding-left: 5px !important;
+    padding-right: 5px !important;
+  }
+}
+
+
+/* VS_HOOK_FIX_TP_NAMES_SCALE_NOT_MARQUEE_FINAL
+   Nome da música atual e nome da fila reduzem a fonte proporcionalmente à janela.
+   Sem letreiro/rolagem horizontal nesses nomes. */
+:root {
+  --lyrics-song-fit-font-size: clamp(18px, 2.2vw, 34px);
+  --lyrics-queue-fit-font-size: clamp(14px, 1.65vw, 27px);
+}
+.lyrics-song-name,
+.lyrics-queue-name {
+  width: auto !important;
+  max-width: calc(100vw - 18px) !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  contain: none !important;
+}
+.lyrics-song-name {
+  font-size: var(--lyrics-song-fit-font-size) !important;
+  transform: translateX(-50%) !important;
+  transform-origin: top center !important;
+}
+body.song-bottom .lyrics-song-name,
+body.clock-bottom.song-bottom:not(.clock-hidden) .lyrics-song-name {
+  transform: translateX(-50%) !important;
+  transform-origin: bottom center !important;
+}
+.lyrics-queue-name {
+  font-size: var(--lyrics-queue-fit-font-size) !important;
+  transform: translateX(-50%) !important;
+}
+.lyrics-song-name .lyrics-name-fit,
+.lyrics-queue-name .lyrics-name-fit {
+  display: block !important;
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  animation: none !important;
+  transform: none !important;
+}
+.lyrics-song-name .lyrics-marquee-wrap,
+.lyrics-queue-name .lyrics-marquee-wrap,
+.lyrics-song-name .lyrics-marquee-track,
+.lyrics-queue-name .lyrics-marquee-track,
+.lyrics-song-name .lyrics-marquee-text,
+.lyrics-queue-name .lyrics-marquee-text {
+  animation: none !important;
+  transform: none !important;
+}
+.lyrics-song-name .lyrics-marquee-track,
+.lyrics-queue-name .lyrics-marquee-track {
+  display: none !important;
+}
+.lyrics-song-name .lyrics-static-text,
+.lyrics-queue-name .lyrics-static-text {
+  display: block !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+@media (max-width: 420px), (max-height: 260px) {
+  .lyrics-song-name, .lyrics-queue-name {
+    max-width: calc(100vw - 10px) !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+}

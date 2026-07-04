@@ -606,6 +606,11 @@ function normalizeLyricsScreenPosition(value, fallback = 'top') {
   return fallback;
 }
 
+function setCheckedIfExists(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.checked = value === true;
+}
+
 function applyLyricsSettingsToForm(settings = {}) {
   const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
   const isSlotMap = hasOwn(settings, 1) || hasOwn(settings, '1') || hasOwn(settings, 2) || hasOwn(settings, '2');
@@ -644,6 +649,7 @@ function applyLyricsSettingsToForm(settings = {}) {
     const mediaScale = $(`#lyricsMediaScale${slot}`);
     const previewScale = $(`#lyricsPreviewScale${slot}`);
     const previewEnabled = $(`#lyricsPreviewEnabled${slot}`);
+    const alwaysOnTop = $(`#lyricsAlwaysOnTop${slot}`);
     const clearModeButton = $(`#lyricsClearModeButton${slot}`);
     if (textColor) textColor.value = data.textColor || '#ffea00';
     if (clockColor) clockColor.value = data.clockColor || '#00ff55';
@@ -676,6 +682,8 @@ function applyLyricsSettingsToForm(settings = {}) {
     if (mediaScale) mediaScale.value = String(Math.round((Number(data.mediaScale || 1) || 1) * 100));
     if (previewScale) previewScale.value = String(Math.round((Number(data.previewScale || 1) || 1) * 100));
     if (previewEnabled) previewEnabled.checked = data.previewEnabled !== false;
+    if (alwaysOnTop) alwaysOnTop.checked = data.alwaysOnTop === true;
+    setCheckedIfExists(`lyricsAlwaysOnTopQuick${slot}`, data.alwaysOnTop === true);
     if (clearModeButton) {
       const active = data.clearMode === true;
       clearModeButton.classList.toggle('active', active);
@@ -752,6 +760,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     mediaScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsMediaScale${id}`)?.value || 100) / 100))),
     previewEnabled: $(`#lyricsPreviewEnabled${id}`)?.checked !== false,
     previewScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsPreviewScale${id}`)?.value || 100) / 100))),
+    alwaysOnTop: ($(`#lyricsAlwaysOnTop${id}`)?.checked === true) || ($(`#lyricsAlwaysOnTopQuick${id}`)?.checked === true),
     clearMode: $(`#lyricsClearModeButton${id}`)?.getAttribute('aria-pressed') === 'true'
   };
   const saved = await window.hookUpdateCenter.saveLyricsSettings(payload);
@@ -915,6 +924,7 @@ function setupLyricsAutoApply() {
       `lyricsMediaScale${slot}`,
       `lyricsPreviewScale${slot}`,
       `lyricsPreviewEnabled${slot}`,
+      `lyricsAlwaysOnTop${slot}`,
       `lyricsClearModeButton${slot}`
     ];
     ids.forEach((id) => {
@@ -1782,3 +1792,29 @@ async function init() {
 init().catch((error) => {
   showModal({ title: 'Erro ao iniciar', message: friendlyError(error, 'Não foi possível iniciar o Hook Center.'), type: 'error' });
 });
+
+
+  // VS_HOOK_FIX_PIN_QUICK_LISTENERS
+  [1, 2].forEach((slot) => {
+    const quick = $(`#lyricsAlwaysOnTopQuick${slot}`);
+    if (!quick) return;
+    quick.addEventListener('change', async () => {
+      const main = $(`#lyricsAlwaysOnTop${slot}`);
+      if (main) main.checked = quick.checked === true;
+      try {
+        await saveLyricsSettingsFromForm(slot);
+      } catch (error) {
+        setStatus(error.message || `Não foi possível fixar a janela ${slot}.`, 'error');
+      }
+    });
+  });
+
+  // VS_HOOK_FIX_PIN_MAIN_LISTENERS
+  [1, 2].forEach((slot) => {
+    const main = $(`#lyricsAlwaysOnTop${slot}`);
+    if (!main) return;
+    main.addEventListener('change', () => {
+      const quick = $(`#lyricsAlwaysOnTopQuick${slot}`);
+      if (quick) quick.checked = main.checked === true;
+    });
+  });

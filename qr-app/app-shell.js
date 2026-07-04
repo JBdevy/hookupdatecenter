@@ -102,7 +102,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
     </div>
-    <div class="vshook-app-version">Versão 2.7 app</div>
+    <div class="vshook-app-version">Versão 2.8 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {
@@ -224,7 +224,7 @@ async function enterApp(project, mode, options = {}) {
   loadModeStyles(mode)
 
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=2-0-app-premix-lista-sem-rodape-1781928700'
+  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=2-8-tp-preview-mac-resize-fixar'
   document.body.appendChild(script)
 }
 
