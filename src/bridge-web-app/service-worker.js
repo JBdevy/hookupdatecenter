@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-2-0-40-tp-fila-nativos';
+const CACHE_NAME = 'vshook-mobile-2-9-fasttap-b';
 const APP_ASSETS = [
   './',
   './index.html',

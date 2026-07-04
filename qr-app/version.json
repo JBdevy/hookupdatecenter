@@ -1,12 +1,14 @@
 {
-  "version": "2.8.0",
-  "title": "VS Hook Mobile 2.8.0 - Teleprompt e Preview Mac",
+  "version": "2.9.0",
+  "title": "VS Hook Mobile 2.9.0 - Teleprompt e Preview Mac",
   "releasedAt": "2026-07-04T00:00:00-03:00",
-  "build": "2.8.0",
-  "notes": "Hook Center/Teleprompt com Preview no macOS, janela fixável, mídia 9:16 sem corte e nomes proporcionais ao redimensionamento.",
-  "cacheBust": "2.8.0-tp-preview-mac-resize-fixar",
-  "label": "2.8 Teleprompt e Preview Mac",
-  "updateId": "2.8.0-tp-preview-mac-resize-fixar",
+  "build": "2.9.0",
+  "notes": "Hook Center/Teleprompt com Preview no macOS, janela fixável, mídia 9:16 sem corte e nomes proporcionais ao redimensionamento. Render scheduler no App Diretor para reduzir renders em cascata. Fast Tap B no App Diretor: toque em pointerup/touchend, sem trava de 320ms no segundo toque real, poll reduzido e render scheduler B.",
+  "cacheBust": "2.9.0-fasttap-b",
+  "label": "2.9 Teleprompt e Preview Mac",
+  "updateId": "2.9.0-fasttap-b",
   "minBridgeVersion": "1.0.0",
-  "cacheVersion": "2.8.0"
+  "cacheVersion": "2.9.0",
+  "renderFix": "fasttap-b",
+  "touchFix": "fasttap-b"
 }

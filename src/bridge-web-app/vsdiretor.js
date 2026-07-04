@@ -2044,7 +2044,7 @@ function bindPremixGlobalMenuButton(el) {
   let lastRunAt = 0
   const run = (event) => {
     const now = Date.now()
-    if (now - lastRunAt < 500) {
+    if (now - lastRunAt < 90) {
       event?.preventDefault?.()
       event?.stopPropagation?.()
       event?.stopImmediatePropagation?.()
@@ -2062,7 +2062,7 @@ function bindPremixMenuButton(el) {
   let lastRunAt = 0
   const run = (event) => {
     const now = Date.now()
-    if (now - lastRunAt < 500) {
+    if (now - lastRunAt < 90) {
       event?.preventDefault?.()
       event?.stopPropagation?.()
       event?.stopImmediatePropagation?.()
@@ -4603,10 +4603,13 @@ function getDirectorTapPoint(event) {
 function bindDirectorTapAction(el, actionKey, handler, options = {}) {
   if (!el || typeof handler !== 'function') return
   const key = String(actionKey || Math.random())
-  const holdMs = Math.max(850, Number(options.holdMs) || 1050)
+  const holdMs = Math.max(420, Number(options.holdMs) || 650)
   const moveLimit = Math.max(8, Number(options.moveLimit) || 16)
   let startX = null
   let startY = null
+  let lastPhysicalAt = 0
+  let lastPhysicalSource = ''
+  let suppressSyntheticClickUntil = 0
 
   const rememberStart = (event) => {
     const point = getDirectorTapPoint(event)
@@ -4630,14 +4633,32 @@ function bindDirectorTapAction(el, actionKey, handler, options = {}) {
     }
     if (event?.button != null && event.button !== 0) return
     if ((source === 'pointerup' || source === 'touchend') && movedTooMuch(event)) return
+
     const now = Date.now()
-    const last = Number(directorTapDedupeState.get(key) || 0)
-    if (last > 0 && now - last < 320) {
-      event?.preventDefault?.()
-      event?.stopPropagation?.()
-      event?.stopImmediatePropagation?.()
-      return
+    const isPhysical = source === 'pointerup' || source === 'touchend'
+
+    // FIX B: a trava antiga de 320ms matava o segundo toque real.
+    // Agora só descartamos o evento duplicado gerado pelo mesmo toque
+    // (pointerup + touchend/click). Outro toque real, mesmo rápido, passa.
+    if (isPhysical) {
+      if (lastPhysicalAt > 0 && now - lastPhysicalAt < 70 && lastPhysicalSource !== source) {
+        event?.preventDefault?.()
+        event?.stopPropagation?.()
+        event?.stopImmediatePropagation?.()
+        return
+      }
+      lastPhysicalAt = now
+      lastPhysicalSource = source
+      suppressSyntheticClickUntil = now + 360
+    } else if (source === 'click') {
+      if (suppressSyntheticClickUntil && now < suppressSyntheticClickUntil) {
+        event?.preventDefault?.()
+        event?.stopPropagation?.()
+        event?.stopImmediatePropagation?.()
+        return
+      }
     }
+
     directorTapDedupeState.set(key, now)
     event?.preventDefault?.()
     event?.stopPropagation?.()
@@ -4696,6 +4717,179 @@ function bindReliableTapAction(el, actionKey, handler) {
   bindDirectorTapAction(el, actionKey, handler, { holdMs: 1050, hashGuard: true })
 }
 
+
+
+// VS_HOOK_DIRECTOR_BRUTAL_FAST_TAP_B
+// Delegação em capture para responder no pointerup/touchend antes dos handlers antigos.
+// Resolve o atraso de botões que ainda estavam presos no click sintético do WebView
+// e impede que o segundo toque real seja confundido com duplicidade.
+let __vshookFastTapStart = null
+let __vshookFastTapLastSig = ''
+let __vshookFastTapLastAt = 0
+let __vshookFastTapSuppressClickUntil = 0
+function __vshookFastTapPoint(event) {
+  const touch = event?.changedTouches?.[0] || event?.touches?.[0]
+  if (touch) return { x: Number(touch.clientX) || 0, y: Number(touch.clientY) || 0 }
+  return { x: Number(event?.clientX) || 0, y: Number(event?.clientY) || 0 }
+}
+function __vshookFastTapSignature(target) {
+  try {
+    const action = target?.closest?.('[data-action]')?.getAttribute('data-action') || ''
+    const row = target?.closest?.('[data-song-id],[data-region-id],[data-marker-id]')
+    const rowId = row?.getAttribute?.('data-song-id') || row?.getAttribute?.('data-region-id') || row?.getAttribute?.('data-marker-id') || ''
+    return `${action}|${rowId}`
+  } catch (_) { return '' }
+}
+function __vshookRenderFastNow() {
+  try {
+    if (typeof render === 'function' && typeof render.now === 'function') return render.now()
+    if (typeof render === 'function') return render()
+  } catch (error) {}
+}
+function __vshookCallFastTapHandler(action, el, event) {
+  switch (action) {
+    case 'toggle-settings': return handleToggleSettingsMenu?.(event), true
+    case 'open-gear': event?.preventDefault?.(); event?.stopPropagation?.(); openGearModal?.(); return true
+    case 'close-gear': closeGearModal?.(); return true
+    case 'open-recados': openRecadosModal?.(); return true
+    case 'recados-close': closeRecadosModal?.(); return true
+    case 'open-project-tabs': openProjectTabsModal?.(); return true
+    case 'close-project-tabs': closeProjectTabsModal?.(); return true
+    case 'confirm-project-tabs': confirmProjectTabsModal?.(); return true
+    case 'go-playlist': openPlaylist?.(); return true
+    case 'go-regions': openRegions?.(); return true
+    case 'open-markers': openMarkersPanel?.(); return true
+    case 'close-markers': closeMarkersPanel?.(); return true
+    case 'open-mixer': openMixerModal?.('tracks'); return true
+    case 'close-mixer': closeMixerModal?.(true); return true
+    case 'close-mixer-volume': closeMixerVolumeModal?.(true); return true
+    case 'open-bpm': openBpmModal?.(event); return true
+    case 'close-bpm': closeBpmModal?.(true); return true
+    case 'open-tuner': openTunerModal?.(event); return true
+    case 'close-tuner': closeTunerModal?.(true); return true
+    case 'open-lyrics-panel': openLyricsPanel?.(event); return true
+    case 'close-lyrics-panel': closeLyricsPanel?.(event); return true
+    case 'play': handlePlayToggle?.(event); return true
+    case 'autoplay': handleAutoplayToggle?.(event); return true
+    case 'auto-bloco': handleAutoBlocoToggle?.(event); return true
+    case 'loop': handleLoopToggle?.(event); return true
+    case 'marker-cancel': handleMarkerCancel?.(event); return true
+    case 'theme-light': setTheme?.('light'); return true
+    case 'theme-dark': setTheme?.('dark'); return true
+    case 'toggle-protection': toggleDirectorTransportProtection?.(event); return true
+    case 'cycle-rgb-mode': cycleRgbMode?.(event); return true
+    case 'toggle-select': handleSelectAction?.(event); return true
+    case 'copy-playlist-names': handleCopyPlaylistNames?.(event); return true
+    case 'edit-done': handleEditDone?.(event); return true
+    case 'delete-confirm': handleDeleteConfirm?.(event); return true
+    case 'delete-cancel': handleDeleteCancel?.(event); return true
+    case 'delete-selected': handleDeleteSelectedPlaylistItems?.(event); return true
+    case 'all': handleSelectAll?.(event); return true
+    case 'add-list': handleOpenCreatePlaylist?.(event); return true
+    case 'add-exist': handleOpenAddExisting?.(event); return true
+    case 'close-create': handleCloseCreatePlaylist?.(event); return true
+    case 'confirm-create': handleConfirmCreatePlaylist?.(event); return true
+    case 'close-existing': handleCloseAddExisting?.(event); return true
+    case 'confirm-existing': handleConfirmAddExisting?.(event); return true
+    case 'close-playlist-switch': closePlaylistSwitchModal?.(event); return true
+    case 'confirm-playlist-switch': handleConfirmPlaylistSwitch?.(event); return true
+    case 'close-rename': handleCloseRenameModal?.(event); return true
+    case 'confirm-rename': handleConfirmRenameModal?.(event); return true
+    case 'lyrics-edit': startLyricsEdit?.(event); return true
+    case 'lyrics-confirm': confirmLyricsEdit?.(event); return true
+    case 'lyrics-cancel': cancelLyricsEdit?.(event); return true
+    case 'bpm-plus': handleBpmAdjust?.(1, event); return true
+    case 'bpm-minus': handleBpmAdjust?.(-1, event); return true
+    case 'tuner-reset': handleTunerReset?.(event); return true
+    case 'mixer-view-tracks': setMixerView?.('tracks'); return true
+    case 'mixer-view-groups': setMixerView?.('groups'); return true
+    case 'mixer-view-master': setMixerView?.('master'); return true
+    case 'mixer-volume-reset': handleMixerVolumeReset?.(event, state.mixerVolumeView, state.mixerSelectedId); return true
+    case 'premix-onoff': handlePremixOnOffToggle?.(event); return true
+    case 'premix-global-reset': handlePremixGlobalReset?.(event); return true
+    case 'premix-play': handlePremixPlaySelected?.(event); return true
+    case 'premix-back': backPremixSongList?.(event); return true
+    case 'premix-view-tracks': setPremixTrackView?.('tracks'); return true
+    case 'premix-view-groups': setPremixTrackView?.('groups'); return true
+    case 'close-premix': closePremixModal?.(true); return true
+    case 'close-premix-volume': closePremixVolumeModal?.(true); return true
+    case 'premix-volume-reset': handlePremixVolumeReset?.(event, el?.getAttribute?.('data-premix-view') || state.premixTrackView, el?.getAttribute?.('data-premix-track-id') || state.premixSelectedTrackId); return true
+    default: return false
+  }
+}
+function installDirectorFastTapDelegation() {
+  if (window.__vshookDirectorFastTapDelegationB === '1') return
+  window.__vshookDirectorFastTapDelegationB = '1'
+  const interactiveSelector = '[data-action],[data-song-id],[data-region-id],[data-marker-id],[data-project-tab-index],[data-switch-playlist-id],[data-existing-playlist-id]'
+  const shouldIgnoreTarget = (target) => {
+    try {
+      if (!target?.closest) return true
+      if (target.closest('input[type="range"],textarea,input:not([type="button"]):not([type="submit"]),select')) return true
+      return false
+    } catch (_) { return true }
+  }
+  const start = (event) => {
+    const p = __vshookFastTapPoint(event)
+    __vshookFastTapStart = { x: p.x, y: p.y, target: event.target }
+  }
+  const run = (event, source) => {
+    const target = event.target
+    if (shouldIgnoreTarget(target)) return
+    const hit = target?.closest?.(interactiveSelector)
+    if (!hit) return
+    const p = __vshookFastTapPoint(event)
+    const s = __vshookFastTapStart
+    if (s && (Math.abs(p.x - s.x) > 18 || Math.abs(p.y - s.y) > 18)) return
+    const sig = __vshookFastTapSignature(target)
+    const now = Date.now()
+    if (source !== 'click') {
+      if (__vshookFastTapLastSig === sig && now - __vshookFastTapLastAt < 70) {
+        event.preventDefault?.(); event.stopPropagation?.(); event.stopImmediatePropagation?.(); return
+      }
+      __vshookFastTapLastSig = sig
+      __vshookFastTapLastAt = now
+      __vshookFastTapSuppressClickUntil = now + 380
+    } else if (__vshookFastTapLastSig === sig && now < __vshookFastTapSuppressClickUntil) {
+      event.preventDefault?.(); event.stopPropagation?.(); event.stopImmediatePropagation?.(); return
+    }
+
+    const actionEl = target.closest('[data-action]')
+    const action = actionEl?.getAttribute?.('data-action') || ''
+    let handled = false
+    if (action) handled = __vshookCallFastTapHandler(action, actionEl, event)
+    if (!handled) {
+      const project = target.closest('[data-project-tab-index]')
+      if (project && state.showProjectTabsModal) { selectProjectTabInModal?.(project.getAttribute('data-project-tab-index')); handled = true }
+    }
+    if (!handled) {
+      const sw = target.closest('[data-switch-playlist-id]')
+      if (sw) { state.selectedSwitchPlaylistId = sw.getAttribute('data-switch-playlist-id'); __vshookRenderFastNow(); handled = true }
+    }
+    if (!handled) {
+      const ex = target.closest('[data-existing-playlist-id]')
+      if (ex) { state.selectedExistingPlaylistId = ex.getAttribute('data-existing-playlist-id'); __vshookRenderFastNow(); handled = true }
+    }
+    if (!handled && !state.editMode && !state.deleteMode) {
+      const marker = target.closest('[data-marker-id]')
+      const song = target.closest('[data-song-id]')
+      const region = target.closest('[data-region-id]')
+      if (marker) { selectMarker?.(marker.getAttribute('data-marker-id')); handled = true }
+      else if (song) { selectPlaylistSong?.(song.getAttribute('data-song-id')); handled = true }
+      else if (region) { selectRegion?.(region.getAttribute('data-region-id')); handled = true }
+    }
+    if (handled) {
+      markDirectorLocalInput?.(650)
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      event.stopImmediatePropagation?.()
+    }
+  }
+  document.addEventListener('pointerdown', start, { capture: true, passive: true })
+  document.addEventListener('touchstart', start, { capture: true, passive: true })
+  document.addEventListener('pointerup', (event) => run(event, 'pointerup'), { capture: true, passive: false })
+  document.addEventListener('touchend', (event) => run(event, 'touchend'), { capture: true, passive: false })
+  document.addEventListener('click', (event) => run(event, 'click'), true)
+}
 
 function bindPlayTapAction(el, handler) {
   bindDirectorTapAction(el, 'play', handler, { holdMs: 1200 })
@@ -8269,16 +8463,16 @@ function bindEvents() {
   })
   bindReliableTapAction(document.querySelector('[data-action="toggle-settings"]'), 'toggle-settings', handleToggleSettingsMenu)
   bindReliableTapAction(document.querySelector('[data-action="open-project-tabs"]'), 'open-project-tabs', openProjectTabsModal)
-  document.querySelector('[data-action="open-recados"]')?.addEventListener('click', openRecadosModal)
-  document.querySelector('[data-action="open-gear"]')?.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); openGearModal() })
-  document.querySelector('[data-action="close-gear"]')?.addEventListener('click', closeGearModal)
+  bindImmediateTapAction(document.querySelector('[data-action="open-recados"]'), 'open-recados', openRecadosModal)
+  bindImmediateTapAction(document.querySelector('[data-action="open-gear"]'), 'open-gear', (event) => { event.preventDefault(); event.stopPropagation(); openGearModal() })
+  bindModalCloseAction(document.querySelector('[data-action="close-gear"]'), 'close-gear', closeGearModal)
   document.querySelector('[data-action="back-project-selector"]')?.addEventListener('click', backToVSHookProjectSelector)
-  document.querySelector('[data-action="close-project-tabs"]')?.addEventListener('click', closeProjectTabsModal)
+  bindModalCloseAction(document.querySelector('[data-action="close-project-tabs"]'), 'close-project-tabs', closeProjectTabsModal)
   document.querySelector('[data-action="recados-send"]')?.addEventListener('click', sendDirectorRecado)
   document.querySelector('[data-action="recados-cancel"]')?.addEventListener('click', cancelDirectorRecado)
-  document.querySelector('[data-action="recados-close"]')?.addEventListener('click', closeRecadosModal)
+  bindModalCloseAction(document.querySelector('[data-action="recados-close"]'), 'recados-close', closeRecadosModal)
   document.getElementById('recadosDirectorTextarea')?.addEventListener('input', handleRecadosInputChange)
-  document.querySelector('[data-action="confirm-project-tabs"]')?.addEventListener('click', confirmProjectTabsModal)
+  bindImmediateTapAction(document.querySelector('[data-action="confirm-project-tabs"]'), 'confirm-project-tabs', confirmProjectTabsModal)
   document.querySelector('[data-close-project-tabs]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeProjectTabsModal() })
   document.querySelector('[data-close-recados]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeRecadosModal() })
   document.querySelectorAll('[data-project-tab-index]').forEach((el) => el.addEventListener('click', () => selectProjectTabInModal(el.getAttribute('data-project-tab-index'))))
@@ -8395,7 +8589,7 @@ function bindEvents() {
   document.querySelector('[data-action="create-block"]')?.addEventListener('click', () => postCommand('create_block'))
   bindReliableTapAction(document.querySelector('[data-action="auto-bloco"]'), 'auto-bloco', handleAutoBlocoToggle)
   bindReliableTapAction(document.querySelector('[data-action="open-lyrics-panel"]'), 'open-lyrics-panel', openLyricsPanel)
-  document.querySelector('[data-action="close-lyrics-panel"]')?.addEventListener('click', closeLyricsPanel)
+  bindModalCloseAction(document.querySelector('[data-action="close-lyrics-panel"]'), 'close-lyrics-panel', closeLyricsPanel)
   document.querySelector('[data-action="lyrics-edit"]')?.addEventListener('click', startLyricsEdit)
   document.querySelector('[data-action="lyrics-confirm"]')?.addEventListener('click', confirmLyricsEdit)
   document.querySelector('[data-action="lyrics-cancel"]')?.addEventListener('click', cancelLyricsEdit)
@@ -8665,7 +8859,7 @@ function syncBridgePopupDom() {
   else appShell.insertAdjacentElement('afterbegin', next)
 }
 
-function render() {
+function __vshookRenderImmediate() {
 
   if (state.lyricsPanelOpen && document.querySelector('.lyricsScreen')) {
     const existingLyricsEditing = !!document.querySelector('.lyricsScreenEditing')
@@ -8884,6 +9078,78 @@ function render() {
 }
 
 
+
+// VS_HOOK_RENDER_SCHEDULER_B_OPTIMIZATION
+// 1 render por frame, com flush imediato opcional para interações locais.
+let __vshookDirectorRenderFirstDone = false
+let __vshookDirectorRenderQueued = false
+let __vshookDirectorRenderRaf = 0
+let __vshookDirectorRenderInProgress = false
+let __vshookDirectorRenderLastArgs = null
+function __vshookDirectorFlushRender() {
+  __vshookDirectorRenderRaf = 0
+  if (!__vshookDirectorRenderQueued) return
+  if (__vshookDirectorRenderInProgress) {
+    requestRender()
+    return
+  }
+  const args = __vshookDirectorRenderLastArgs || []
+  __vshookDirectorRenderQueued = false
+  __vshookDirectorRenderLastArgs = null
+  __vshookDirectorRenderInProgress = true
+  try {
+    return __vshookRenderImmediate.apply(this, args)
+  } finally {
+    __vshookDirectorRenderInProgress = false
+  }
+}
+function requestRender() {
+  __vshookDirectorRenderLastArgs = Array.prototype.slice.call(arguments)
+  if (!__vshookDirectorRenderFirstDone) {
+    __vshookDirectorRenderFirstDone = true
+    if (__vshookDirectorRenderInProgress) {
+      __vshookDirectorRenderQueued = true
+      return
+    }
+    __vshookDirectorRenderInProgress = true
+    try {
+      return __vshookRenderImmediate.apply(this, __vshookDirectorRenderLastArgs || [])
+    } finally {
+      __vshookDirectorRenderInProgress = false
+      __vshookDirectorRenderLastArgs = null
+    }
+  }
+  __vshookDirectorRenderQueued = true
+  if (__vshookDirectorRenderRaf) return
+  const raf = window.requestAnimationFrame || function(cb){ return window.setTimeout(cb, 16) }
+  __vshookDirectorRenderRaf = raf(__vshookDirectorFlushRender)
+}
+requestRender.now = function() {
+  __vshookDirectorRenderQueued = false
+  __vshookDirectorRenderLastArgs = Array.prototype.slice.call(arguments)
+  if (__vshookDirectorRenderRaf) {
+    try {
+      if (window.cancelAnimationFrame) window.cancelAnimationFrame(__vshookDirectorRenderRaf)
+      else clearTimeout(__vshookDirectorRenderRaf)
+    } catch (_) {}
+    __vshookDirectorRenderRaf = 0
+  }
+  if (__vshookDirectorRenderInProgress) return
+  __vshookDirectorRenderInProgress = true
+  try {
+    return __vshookRenderImmediate.apply(this, __vshookDirectorRenderLastArgs || [])
+  } finally {
+    __vshookDirectorRenderInProgress = false
+    __vshookDirectorRenderLastArgs = null
+  }
+}
+function render() {
+  return requestRender.apply(this, arguments)
+}
+render.now = requestRender.now
+
+
+
 function updateBorderEffect() {
   normalizeRgbModeState()
   const container = document.querySelector('.container')
@@ -8988,7 +9254,7 @@ function startApp() {
       updateBorderEffect()
     }
   }, 180)
-  bridgeTimer = setInterval(pollBridge, 250)
+  bridgeTimer = setInterval(pollBridge, 750)
   playbackRenderTimer = setInterval(() => {
     try {
       syncDirectorChronoDom()
