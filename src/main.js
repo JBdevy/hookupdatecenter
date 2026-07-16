@@ -2507,6 +2507,7 @@ function createLyricsWindow(slot = 1) {
     return { ok: true, slot: id, opened: false, closed: true };
   }
 
+  const isMac = process.platform === 'darwin';
   const win = new BrowserWindow({
     width: 980,
     height: 560,
@@ -2517,9 +2518,13 @@ function createLyricsWindow(slot = 1) {
     // monitores. O Teleprompt usa fundo preto, então fica opaco em todas as
     // plataformas para manter a imagem estável em telas múltiplas.
     backgroundColor: '#000000',
+    opacity: 1,
     title: 'Teleprompt',
     icon: getAppIconPath(),
-    frame: false,
+    // No macOS, manter um NSWindow opaco e esconder somente a barra evita que
+    // a camada frameless seja recomposta como transparente ao cruzar monitores.
+    frame: isMac,
+    ...(isMac ? { titleBarStyle: 'hidden' } : {}),
     // Mantem handles nativos de redimensionamento em janela sem moldura, especialmente no Windows.
     thickFrame: true,
     transparent: false,
@@ -2541,17 +2546,33 @@ function createLyricsWindow(slot = 1) {
   });
 
   lyricsWindows.set(id, win);
+  const enforceOpaqueWindow = () => {
+    if (win.isDestroyed()) return;
+    try { win.setOpacity(1); } catch (_) {}
+    try { win.setBackgroundColor('#000000'); } catch (_) {}
+    if (isMac) {
+      try { win.setVibrancy(null); } catch (_) {}
+      try { win.setHasShadow(false); } catch (_) {}
+      try { win.setWindowButtonVisibility(false); } catch (_) {}
+    }
+  };
+  enforceOpaqueWindow();
   applyLyricsWindowPinState(id, getLyricsSettings(id).alwaysOnTop === true);
   try { win.setResizable(true); } catch (_) {}
   try { win.setMinimumSize(180, 180); } catch (_) {}
   try { win.setIgnoreMouseEvents(false); } catch (_) {}
   win.loadFile(path.join(__dirname, 'lyrics.html'), { query: { slot: String(id) } });
   win.once('ready-to-show', () => {
+    enforceOpaqueWindow();
     try { win.setIgnoreMouseEvents(false); } catch (_) {}
     win.show();
     try { win.focus(); } catch (_) {}
     broadcastLyricsWindowsState();
   });
+  // Reafirma a composição opaca enquanto/depois que o macOS transfere a
+  // janela para outra tela (inclusive entre telas com escalas diferentes).
+  win.on('move', enforceOpaqueWindow);
+  win.webContents.on('did-finish-load', enforceOpaqueWindow);
   win.on('enter-full-screen', () => { win.__vshookFullScreen = true; });
   win.on('leave-full-screen', () => { win.__vshookFullScreen = false; });
   win.on('closed', () => {
