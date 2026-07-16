@@ -40,13 +40,23 @@ echo(%VERSION%| findstr /r /x "[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" >nul
 if errorlevel 1 goto versao_invalida
 
 set "TAG_VERSION=v%VERSION%"
+set "TAG_EXISTS_LOCAL=0"
+set "TAG_EXISTS_REMOTE=0"
 
-git fetch --tags origin
-if errorlevel 1 goto erro
+git show-ref --verify --quiet "refs/tags/%TAG_VERSION%"
+if not errorlevel 1 set "TAG_EXISTS_LOCAL=1"
 
-git rev-parse -q --verify "refs/tags/%TAG_VERSION%" >nul 2>&1
-if not errorlevel 1 goto tag_existente
+git ls-remote --exit-code --tags origin "refs/tags/%TAG_VERSION%" >nul 2>&1
+set "REMOTE_TAG_CHECK=%errorlevel%"
+if "%REMOTE_TAG_CHECK%"=="0" set "TAG_EXISTS_REMOTE=1"
+if "%REMOTE_TAG_CHECK%"=="2" goto tag_check_concluido
+if not "%REMOTE_TAG_CHECK%"=="0" goto erro_consulta_tag
 
+:tag_check_concluido
+if "%TAG_EXISTS_LOCAL%"=="1" goto tag_existente
+if "%TAG_EXISTS_REMOTE%"=="1" goto tag_existente
+
+:versao_confirmada
 set "COMMIT_MSG="
 set /p "COMMIT_MSG=Digite a mensagem do commit: "
 if not defined COMMIT_MSG goto commit_vazio
@@ -138,10 +148,35 @@ goto pedir_versao
 
 :tag_existente
 echo.
-echo ERRO: a tag %TAG_VERSION% ja existe.
-echo Digite uma versao nova.
+echo ATENCAO: a tag %TAG_VERSION% ja existe.
+if "%TAG_EXISTS_LOCAL%"=="1" echo Ela existe localmente.
+if "%TAG_EXISTS_REMOTE%"=="1" echo Ela existe no GitHub.
 echo.
-goto pedir_versao
+choice /c SN /n /m "Deseja excluir essa tag para recria-la? [S/N]: "
+if errorlevel 2 goto pedir_versao
+
+if "%TAG_EXISTS_LOCAL%"=="1" goto excluir_tag_local
+goto verificar_exclusao_tag_remota
+
+:excluir_tag_local
+git tag -d "%TAG_VERSION%"
+if errorlevel 1 goto erro
+
+:verificar_exclusao_tag_remota
+if "%TAG_EXISTS_REMOTE%"=="1" goto excluir_tag_remota
+goto tag_excluida
+
+:excluir_tag_remota
+echo.
+echo Excluindo %TAG_VERSION% do GitHub...
+git push origin --delete "%TAG_VERSION%"
+if errorlevel 1 goto erro
+
+:tag_excluida
+echo.
+echo Tag %TAG_VERSION% excluida. Ela sera criada novamente no novo commit.
+echo.
+goto versao_confirmada
 
 :commit_vazio
 echo.
@@ -174,6 +209,12 @@ exit /b 1
 
 :erro_repositorio
 echo ERRO: esta pasta nao e um repositorio Git valido.
+pause
+exit /b 1
+
+:erro_consulta_tag
+echo ERRO: nao foi possivel consultar as tags no GitHub.
+echo Verifique a internet e o acesso ao repositorio origin.
 pause
 exit /b 1
 

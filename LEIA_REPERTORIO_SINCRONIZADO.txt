@@ -1,9 +1,0 @@
-CORREÇÃO — REPERTÓRIO DO APP IGUAL AO LUA
-
-- O App não aplica mais uma segunda ordenação local sobre o repertório.
-- A lista usa exatamente a ordem publicada pela extensão e salva pelo Lua.
-- O botão NUMBER continua alterando somente a numeração exibida.
-- O botão 0-9/9-0 continua independente do NUMBER.
-- Ao ordenar um repertório pelo App, a extensão altera o PLAYLISTS_DB_V3 real.
-- Os blocos permanecem nas mesmas posições e apenas as músicas são reorganizadas.
-- Ao reabrir o Lua, o repertório permanece com a mesma ordem vista no App.

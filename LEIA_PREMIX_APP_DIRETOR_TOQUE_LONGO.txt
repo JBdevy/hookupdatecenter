@@ -1,6 +1,0 @@
-PREMIX APP DIRETOR
-
-- Segure uma música por 1 segundo para abrir.
-- Tela cheia com painel de transporte, Play, Stop e Voltar.
-- Lista os itens que começam dentro da música, na ordem das tracks.
-- Cada item possui fader de volume e botão M.

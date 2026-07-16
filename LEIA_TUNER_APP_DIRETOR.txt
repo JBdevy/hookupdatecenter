@@ -1,9 +1,0 @@
-TUNER — APP DIRETOR
-
-- Tela Tuner ocupa a tela inteira.
-- Aberto em Repertórios: usa a lista do repertório atual, mantendo os blocos.
-- Aberto em Músicas: usa a lista completa da aba Músicas.
-- Blocos aparecem apenas como separadores, sem controles.
-- Cada música possui botão menos à esquerda, valor em semitons e botão mais à direita.
-- Limite de -12 a +12 semitons.
-- O comando é enviado para a lógica Tuner já existente na extensão.

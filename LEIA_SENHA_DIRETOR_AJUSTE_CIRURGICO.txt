@@ -1,9 +1,0 @@
-AJUSTE CIRÚRGICO — SENHA DO APP DIRETOR
-
-- A sessão já autorizada no celular continua salva normalmente.
-- O app não pede senha de novo a cada abertura.
-- Depois de “Retomar Acesso no PC”/logout, a sessão é removida como antes.
-- Nessa tela de novo login, a senha é validada contra o último hash válido recebido do VS Hook.
-- Estado incompleto do Bridge não permite mais entrar com qualquer senha.
-- Não existe tela “Verificando a senha...”.
-- Toda a área do campo de senha abre o teclado.

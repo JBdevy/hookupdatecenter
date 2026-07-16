@@ -1,7 +1,0 @@
-AJUSTES — HOOK CENTER / APP DIRETOR
-
-- Ao entrar no Diretor com o transporte parado, o front limpa imediatamente a fila visual enquanto a extensão limpa o cache nativo.
-- O Stop do Diretor sinaliza limpeza da fila e a Hook Center também mantém a fila vazia no estado intermediário.
-- A seleção de repertório agora envia ID e nome completos para a extensão.
-- A Hook Center mantém o repertório novo no overlay até a extensão confirmar o estado definitivo.
-- Cache do aplicativo atualizado.

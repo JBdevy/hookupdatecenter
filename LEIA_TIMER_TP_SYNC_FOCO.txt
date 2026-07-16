@@ -1,3 +1,0 @@
-Ajustes 2026-07-11:
-- Teleprompt mostra e pisca o cronometro regressivo negativo apos 00:00:00.
-- Estado autoritativo do timer vem da extensao, incluindo valores negativos.

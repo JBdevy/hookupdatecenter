@@ -1,6 +1,0 @@
-APP DIRETOR - TELEPROMPT
-
-- Ao selecionar TP/2, sair para Repertórios e abrir o TP novamente, o app volta no TP/2.
-- O mesmo vale para TP/1.
-- A seleção também é preservada no armazenamento local do aparelho.
-- Abertura por botão TP e por swipe respeita a última seleção.

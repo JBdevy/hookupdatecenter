@@ -1,8 +1,0 @@
-AJUSTES APP DIRETOR
-
-- AUTO STOP em Config envia estado persistente para a extensao.
-- Parts troca automaticamente para a musica tocando quando ocorre a mudanca de musica.
-- Swipe de navegacao funciona somente sobre o painel Tocando Agora / Fila de Espera.
-- Tuner recebeu arredondamento leve nos elementos internos.
-- Loop iniciado no comeco da regiao mostra o nome da musica no painel e pisca.
-- O letreiro do repertorio mantem a fase e nao reinicia a cada clique/renderizacao.

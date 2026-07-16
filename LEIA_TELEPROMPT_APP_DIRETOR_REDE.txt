@@ -1,7 +1,0 @@
-TELEPROMPT NO APP DIRETOR
-
-- Botão TP abre uma tela inteira à esquerda da tela de Repertórios.
-- Swipe para a direita no painel de transporte abre o TP; swipe para a esquerda volta.
-- TP/1 e TP/2 alternam texto, imagem e vídeo das pistas TELEPROMPT1 e TELEPROMPT2.
-- Imagem e vídeo usam object-fit: contain sobre fundo preto, sem cortar conteúdo 16:9.
-- Hook Center encaminha /media para a extensão com suporte a Range Requests.
