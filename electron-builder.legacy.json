@@ -1,6 +1,9 @@
 {
   "appId": "com.hookdeveloper.hookcenter.legacy",
   "productName": "Hook Center Legacy",
+  "extraMetadata": {
+    "hookCenterVariant": "legacy"
+  },
   "asar": true,
   "directories": {
     "output": "dist-legacy"

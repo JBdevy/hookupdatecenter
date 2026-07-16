@@ -9,6 +9,7 @@ const { pathToFileURL } = require('url');
 const http = require('http');
 const { createBridgeServer, getLanIp, getAllLanIps, ensureJsonFile } = require('./bridge-server');
 const { createQrSvg } = require('./qr-svg');
+const appPackage = require('../package.json');
 
 const store = new Store({
   defaults: {
@@ -1047,9 +1048,13 @@ function normalizeHookCenterUpdate(raw) {
     macos: raw.macosUrl || raw.macosInstallerUrl || raw.macUrl || raw.dmgUrl,
     'macos-legacy': raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url || raw.macosLegacyInstallerUrl
   };
-  const downloadUrl = ensureAbsoluteUrl(raw.downloadUrl || platformUrls[platformKey] || '');
+  // O link específico da variante tem prioridade sobre o campo genérico.
+  // Assim, mesmo que uma resposta antiga traga downloadUrl do macOS normal,
+  // a build Legacy continua usando macosLegacyUrl.
+  const downloadUrl = ensureAbsoluteUrl(platformUrls[platformKey] || raw.downloadUrl || '');
   return {
     product: 'hook-center',
+    platformKey,
     updateId: raw.updateId || raw.version || null,
     version: raw.version || '',
     title: raw.title || 'Nova versão do Hook Center disponível',
@@ -1066,7 +1071,11 @@ function normalizeHookCenterUpdate(raw) {
 async function checkHookCenterUpdates(manual = false) {
   const raw = await fetchJsonForUpdateSoft(HOOK_CENTER_API_URL, { cache: 'no-store' });
   const fetchedUpdate = normalizeHookCenterUpdate(raw);
-  const cachedUpdate = store.get('hookCenterLatest') || null;
+  const platformKey = getHookCenterPlatformKey();
+  const cachedCandidate = store.get('hookCenterLatest') || null;
+  // Versões anteriores podiam salvar no cache da Legacy o instalador normal.
+  // Não reutiliza cache sem variante conhecida ou de outra plataforma.
+  const cachedUpdate = cachedCandidate?.platformKey === platformKey ? cachedCandidate : null;
   const update = fetchedUpdate || cachedUpdate || null;
   const currentVersion = app.getVersion();
   const hasUpdate = !!(update?.version && update.downloadUrl && compareVersions(update.version, currentVersion) > 0);
@@ -2686,7 +2695,11 @@ function getPlatformKey() {
 }
 
 function isHookCenterLegacyBuild() {
-  return process.platform === 'darwin' && /legacy/i.test(app.getName() || '');
+  if (process.platform !== 'darwin') return false;
+  const configuredVariant = String(appPackage.hookCenterVariant || '').trim().toLowerCase();
+  if (configuredVariant === 'legacy') return true;
+  // Compatibilidade com builds antigas que ainda não possuem o marcador.
+  return /legacy/i.test(`${app.getName() || ''} ${process.execPath || ''}`);
 }
 
 function getHookCenterPlatformKey() {
