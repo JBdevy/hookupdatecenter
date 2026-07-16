@@ -1,0 +1,10 @@
+PREMIX NO APP DIRETOR - REGIÃO PAI E FILHOS
+
+- O pertencimento dos itens segue o Lua: o item pertence à música onde o início dele cai.
+- Ao abrir o Premix de uma região pai, a lista é dividida por cada música filha.
+- O cabeçalho de cada filha seleciona aquela música e posiciona o cursor para tocar a partir dela.
+- Cada filha possui um container próprio com apenas os itens que começam dentro do seu intervalo.
+- Em cada linha, o nome da pista aparece primeiro e maior; o nome do item aparece abaixo e menor.
+
+CORREÇÃO V4
+O clique no cabeçalho usa a posição exata da seção. O Play do Premix também inicia nessa posição exata, sem resolver o marker como outra região.

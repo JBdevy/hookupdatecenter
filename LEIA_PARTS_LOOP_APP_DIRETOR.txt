@@ -1,0 +1,5 @@
+Ajustes no App Diretor:
+- Parts alterna entre markers da música tocando e da fila.
+- O botão selecionado fica azul.
+- Loop ativo pisca em amarelo.
+- O painel de transporte troca FILA DE ESPERA por EM LOOP e mostra o primeiro limite do trecho.

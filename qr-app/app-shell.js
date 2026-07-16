@@ -5,10 +5,124 @@ const VSHOOK_SAVED_PROBE_TIMEOUT_MS = 650
 const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
+const VSHOOK_ASSET_VERSION = '3-0-queue-musician-layout-v84'
 let vshookDiscoveredProjects = []
 let vshookBridgeBrowserMode = false
 let vshookDiscoveryRunId = 0
 let vshookProjectsRefreshRunId = 0
+let vshookDirectorDeviceMode = 'phone'
+let vshookDirectorTabletStableViewport = null
+let vshookDirectorTabletViewportRestoreTimer = 0
+
+function normalizeDirectorDeviceMode(value) {
+  return String(value || '').toLowerCase() === 'tablet' ? 'tablet' : 'phone'
+}
+
+function applyDirectorDeviceMode(value) {
+  vshookDirectorDeviceMode = normalizeDirectorDeviceMode(value)
+  document.documentElement.dataset.directorDevice = vshookDirectorDeviceMode
+  document.body?.classList.toggle('vshook-director-tablet', vshookDirectorDeviceMode === 'tablet')
+  try {
+    localStorage.setItem('vshook_director_device_mode', vshookDirectorDeviceMode)
+  } catch (error) {}
+  updateDirectorTabletWebViewport()
+}
+
+function updateDirectorTabletWebViewport() {
+  const root = document.documentElement
+  if (root.classList.contains('directorSearchPortraitMode')
+    || root.classList.contains('directorSearchViewportRestoring')
+    || root.classList.contains('directorTabletKeyboardOpen')
+    || root.classList.contains('directorTabletViewportRestoring')) return
+  if (vshookDirectorDeviceMode !== 'tablet') {
+    ;['--tablet-screen-width', '--tablet-screen-height', '--tablet-ui-width', '--tablet-ui-height', '--tablet-ui-scale'].forEach((name) => root.style.removeProperty(name))
+    return
+  }
+  const portrait = window.matchMedia?.('(orientation: portrait)')?.matches
+  const visibleWidth = Math.max(1, Math.floor(window.visualViewport?.width || window.innerWidth || 360))
+  const visibleHeight = Math.max(1, Math.floor(window.visualViewport?.height || window.innerHeight || 640))
+  vshookDirectorTabletStableViewport = { width: visibleWidth, height: visibleHeight, portrait: !!portrait }
+  applyDirectorTabletWebViewport(vshookDirectorTabletStableViewport)
+}
+
+function applyDirectorTabletWebViewport(viewport) {
+  if (!viewport || vshookDirectorDeviceMode !== 'tablet') return
+  const root = document.documentElement
+  const visibleWidth = Math.max(1, Math.floor(viewport.width || 360))
+  const visibleHeight = Math.max(1, Math.floor(viewport.height || 640))
+  const portrait = viewport.portrait === true
+  const logicalWidth = portrait ? visibleHeight : visibleWidth
+  const logicalHeight = portrait ? visibleWidth : visibleHeight
+  const scale = Math.max(0.35, Math.min(1, logicalWidth / 900, logicalHeight / 500))
+  root.style.setProperty('--tablet-screen-width', `${logicalWidth}px`)
+  root.style.setProperty('--tablet-screen-height', `${logicalHeight}px`)
+  root.style.setProperty('--tablet-ui-width', `${Math.ceil(logicalWidth / scale)}px`)
+  root.style.setProperty('--tablet-ui-height', `${Math.ceil(logicalHeight / scale)}px`)
+  root.style.setProperty('--tablet-ui-scale', String(scale))
+}
+
+function lockDirectorTabletPageScroll() {
+  try { document.documentElement.scrollTop = 0 } catch (error) {}
+  try { document.body.scrollTop = 0 } catch (error) {}
+  try { window.scrollTo(0, 0) } catch (error) {}
+}
+
+function hasDirectorTabletViewportRecovered() {
+  if (!vshookDirectorTabletStableViewport) return true
+  const stable = vshookDirectorTabletStableViewport
+  const portrait = !!(window.matchMedia && window.matchMedia('(orientation: portrait)').matches)
+  const viewport = window.visualViewport
+  const visibleWidth = Math.max(1, Math.floor((viewport && viewport.width) || window.innerWidth || 360))
+  const visibleHeight = Math.max(1, Math.floor((viewport && viewport.height) || window.innerHeight || 640))
+  return portrait === stable.portrait
+    && visibleWidth >= Math.floor(stable.width * 0.85)
+    && visibleHeight >= Math.floor(stable.height * 0.82)
+}
+
+function waitForDirectorTabletViewportRestore() {
+  const root = document.documentElement
+  applyDirectorTabletWebViewport(vshookDirectorTabletStableViewport)
+  lockDirectorTabletPageScroll()
+  if (hasDirectorTabletViewportRecovered()) {
+    vshookDirectorTabletViewportRestoreTimer = 0
+    root.classList.remove('directorTabletViewportRestoring')
+    updateDirectorTabletWebViewport()
+    window.dispatchEvent(new Event('vshooktabletviewportrestored'))
+    return
+  }
+  vshookDirectorTabletViewportRestoreTimer = window.setTimeout(waitForDirectorTabletViewportRestore, 80)
+}
+
+function setDirectorTabletKeyboardOpen(open) {
+  const root = document.documentElement
+  if (vshookDirectorTabletViewportRestoreTimer) {
+    window.clearTimeout(vshookDirectorTabletViewportRestoreTimer)
+    vshookDirectorTabletViewportRestoreTimer = 0
+  }
+  if (open) {
+    if (vshookDirectorDeviceMode !== 'tablet') return
+    if (!vshookDirectorTabletStableViewport) updateDirectorTabletWebViewport()
+    root.classList.remove('directorTabletViewportRestoring')
+    root.classList.add('directorTabletKeyboardOpen')
+    return
+  }
+  root.classList.remove('directorTabletKeyboardOpen')
+  if (vshookDirectorDeviceMode !== 'tablet') {
+    root.classList.remove('directorTabletViewportRestoring')
+    updateDirectorTabletWebViewport()
+    return
+  }
+  root.classList.add('directorTabletViewportRestoring')
+  applyDirectorTabletWebViewport(vshookDirectorTabletStableViewport)
+  lockDirectorTabletPageScroll()
+  vshookDirectorTabletViewportRestoreTimer = window.setTimeout(waitForDirectorTabletViewportRestore, 80)
+}
+
+window.updateDirectorTabletWebViewport = updateDirectorTabletWebViewport
+window.setDirectorTabletKeyboardOpen = setDirectorTabletKeyboardOpen
+
+window.addEventListener('resize', updateDirectorTabletWebViewport)
+window.visualViewport?.addEventListener?.('resize', updateDirectorTabletWebViewport)
 
 function vshookEscape(value) {
   return String(value ?? '')
@@ -40,6 +154,10 @@ function isVSHookRealProject(project) {
 }
 
 function setShell(html) {
+  // A escolha de dispositivo/projeto ainda faz parte da entrada. No tablet ela
+  // permanece no eixo natural do aparelho; a interface horizontal começa só
+  // depois que um projeto é aberto.
+  document.documentElement.classList.toggle('directorShellPortraitMode', vshookDirectorDeviceMode === 'tablet')
   appRoot.innerHTML = `<div class="vshook-shell"><div class="vshook-shell-card">${html}</div></div>`
 }
 
@@ -102,11 +220,11 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
     </div>
-    <div class="vshook-app-version">Versão 2.9 app</div>
+    <div class="vshook-app-version">Versão 3.0 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {
-    renderProjects(vshookDiscoveredProjects)
+    renderDirectorDeviceSelection()
   })
 
   document.getElementById('chooseMusicianBtn')?.addEventListener('click', () => {
@@ -119,6 +237,45 @@ function renderModeFirst(projects) {
     if (selected) enterApp(selected, 'recados', { skipProjectSwitch: true })
   })
 
+}
+
+function renderDirectorDeviceSelection() {
+  setShell(`
+    ${getLogoHtml()}
+    <h1 class="vshook-shell-title">Modo Diretor</h1>
+    <p class="vshook-shell-subtitle">Escolha em qual dispositivo vai usar o Diretor.</p>
+    <div class="vshook-device-list">
+      <button class="vshook-device-button" id="chooseDirectorPhoneBtn">
+        <svg class="vshook-device-icon vshook-device-icon-phone" viewBox="0 0 48 64" aria-hidden="true">
+          <rect x="7" y="2" width="34" height="60" rx="7"></rect>
+          <path d="M19 8h10"></path>
+          <circle cx="24" cy="55" r="2"></circle>
+        </svg>
+        <span>Celular</span>
+      </button>
+      <button class="vshook-device-button" id="chooseDirectorTabletBtn">
+        <svg class="vshook-device-icon vshook-device-icon-tablet" viewBox="0 0 72 50" aria-hidden="true">
+          <rect x="2" y="4" width="68" height="42" rx="6"></rect>
+          <circle cx="64" cy="25" r="2"></circle>
+        </svg>
+        <span>Tablet</span>
+      </button>
+    </div>
+    <button class="vshook-back-button" id="backModeBtn">Voltar</button>
+  `)
+
+  document.getElementById('chooseDirectorPhoneBtn')?.addEventListener('click', () => {
+    applyDirectorDeviceMode('phone')
+    renderProjects(vshookDiscoveredProjects)
+  })
+  document.getElementById('chooseDirectorTabletBtn')?.addEventListener('click', () => {
+    applyDirectorDeviceMode('tablet')
+    renderProjects(vshookDiscoveredProjects)
+  })
+  document.getElementById('backModeBtn')?.addEventListener('click', () => {
+    applyDirectorDeviceMode('phone')
+    renderModeFirst(vshookDiscoveredProjects)
+  })
 }
 
 
@@ -177,7 +334,7 @@ function renderProjects(projects, options = {}) {
     })
   })
 
-  document.getElementById('backModeBtn')?.addEventListener('click', () => renderModeFirst(vshookDiscoveredProjects))
+  document.getElementById('backModeBtn')?.addEventListener('click', renderDirectorDeviceSelection)
   document.getElementById('refreshProjectsBtn')?.addEventListener('click', refreshProjectSelector)
 }
 
@@ -188,10 +345,10 @@ function renderModeSelection(project) {
 
 function loadModeStyles(mode) {
   document.querySelectorAll('[data-vshook-mode-style]').forEach((el) => el.remove())
-  const cssFile = mode === 'recados' ? './recados-app.css' : (mode === 'musician' ? './musicos-app.css' : './stylediretor-app.css')
+  const cssFile = mode === 'recados' ? './recados-app.css' : './stylediretor-app.css'
   const link = document.createElement('link')
   link.rel = 'stylesheet'
-  link.href = cssFile
+  link.href = `${cssFile}?v=${VSHOOK_ASSET_VERSION}`
   link.setAttribute('data-vshook-mode-style', mode)
   document.head.appendChild(link)
 }
@@ -204,6 +361,15 @@ async function enterApp(project, mode, options = {}) {
     localStorage.setItem('vshook_director_url', project.directorUrl)
     localStorage.setItem('vshook_musicians_url', project.musiciansUrl)
   } catch (error) {}
+
+  if (mode === 'director') {
+    document.documentElement.classList.remove('directorShellPortraitMode')
+    applyDirectorDeviceMode(vshookDirectorDeviceMode)
+  } else {
+    document.documentElement.classList.remove('directorShellPortraitMode')
+    document.documentElement.removeAttribute('data-director-device')
+    document.body?.classList.remove('vshook-director-tablet')
+  }
 
   const tabIndex = Number(project.projectTabIndex)
   const shouldSwitchProjectTab = mode === 'director' && !options.skipProjectSwitch
@@ -223,8 +389,10 @@ async function enterApp(project, mode, options = {}) {
   appRoot.innerHTML = ''
   loadModeStyles(mode)
 
+  document.querySelectorAll('[data-vshook-mode-script]').forEach((el) => el.remove())
   const script = document.createElement('script')
-  script.src = (mode === 'recados' ? './recados.js' : (mode === 'musician' ? './vsmusicos.js' : './vsdiretor.js')) + '?v=2-9-fasttap-b'
+  script.src = `${mode === 'recados' ? './recados.js' : './vsdiretor.js'}?v=${VSHOOK_ASSET_VERSION}`
+  script.setAttribute('data-vshook-mode-script', mode)
   document.body.appendChild(script)
 }
 
@@ -679,7 +847,7 @@ window.vshookExitToProjectSelector = function () {
   try {
     localStorage.removeItem('vshook_selected_project')
     localStorage.removeItem('vshook_selected_mode')
-    localStorage.removeItem('vshook_access_session')
+    // Mantém vshook_access_session para voltar ao Diretor sem pedir a senha novamente.
   } catch (error) {}
   window.location.reload()
 }

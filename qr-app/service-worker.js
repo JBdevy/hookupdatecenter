@@ -1,16 +1,14 @@
-const CACHE_NAME = 'vshook-mobile-2-9-fasttap-b';
+const CACHE_NAME = 'vshook-mobile-3.0-queue-musician-layout-v84';
 const APP_ASSETS = [
   './',
   './index.html',
   './app-shell.js',
+  './app-shell.css',
   './stylediretor.css',
   './stylediretor-app.css',
   './vsdiretor.js',
   './vsdiretor.webmanifest',
   './musicos.html',
-  './musicos.css',
-  './musicos-app.css',
-  './vsmusicos.js',
   './musicos.webmanifest',
   './recados.html',
   './recados.js',
@@ -54,7 +52,8 @@ self.addEventListener('fetch', (event) => {
     '/state', '/state.json',
     '/lyrics', '/lyrics.json',
     '/command', '/technical-notice', '/recados-notice',
-    '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg'
+    '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg',
+    '/media', '/tp-media', '/teleprompt-media'
   ];
 
   if (apiPaths.includes(url.pathname)) {

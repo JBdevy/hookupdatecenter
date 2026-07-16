@@ -8,5 +8,10 @@
     "allowNavigation": [
       "*"
     ]
+  },
+  "plugins": {
+    "Keyboard": {
+      "resize": "none"
+    }
   }
 }

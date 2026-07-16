@@ -13,6 +13,8 @@ const mediaLayerEl = document.getElementById('lyricsMediaLayer');
 const previewOverlayEl = document.getElementById('lyricsPreviewOverlay');
 const imageEl = document.getElementById('lyricsImage');
 const videoEl = document.getElementById('lyricsVideo');
+const contentProgressEl = document.getElementById('lyricsContentProgress');
+const contentProgressFillEl = document.getElementById('lyricsContentProgressFill');
 const closeButton = document.getElementById('closeLyricsButton');
 const technicalNoticeEl = document.getElementById('technicalNotice');
 const params = new URLSearchParams(window.location.search);
@@ -27,6 +29,7 @@ let settings = {
   rgbWindowBorderEnabled: false,
   rgbClockBorderEnabled: false,
   rgbTextBoxBorderEnabled: false,
+  textCase: 'uppercase',
   fontFamily: 'Arial',
   textScale: 1,
   borderEnabled: true,
@@ -43,6 +46,9 @@ let settings = {
   songNameFontFamily: 'Arial',
   songNameScale: 1,
   songNamePosition: 'top',
+  progressEnabled: false,
+  progressPosition: 'bottom',
+  progressColor: '#ffea00',
   clockPosition: 'top',
   clockScale: 1,
   mediaScale: 1,
@@ -79,10 +85,24 @@ let timerMode = 'progressive';
 let timerTargetSec = 0;
 let timerDisplayText = '';
 let timerLocalTimeText = '';
+let timerExpired = false;
+let timerRemoteDisplaySec = Number.NaN;
+let timerRemoteDisplayUpdatedAtMs = 0;
 let closingLyricsWindow = false;
 let lastTechnicalNoticeKey = '';
 let technicalNoticeFlashTimer = null;
 let closeButtonHideTimer = null;
+let contentProgressState = {
+  key: '',
+  elapsed: 0,
+  sourceElapsed: 0,
+  backwardDriftCount: 0,
+  duration: 0,
+  playing: false,
+  sampledAt: 0,
+  visible: false
+};
+let contentProgressRaf = 0;
 
 function normalizeColor(value, fallback) {
   return /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? value : fallback;
@@ -164,6 +184,24 @@ function applyClockScaleToFit(requestedScale = settings.clockScale) {
 }
 
 let overlayMetricsRaf = null;
+
+function resolvedCssLength(variableName, fallback = 0) {
+  if (!document.body) return fallback;
+  const probe = document.createElement('div');
+  probe.setAttribute('aria-hidden', 'true');
+  probe.style.position = 'fixed';
+  probe.style.left = '-10000px';
+  probe.style.top = '-10000px';
+  probe.style.width = `var(${variableName})`;
+  probe.style.height = '1px';
+  probe.style.pointerEvents = 'none';
+  probe.style.visibility = 'hidden';
+  document.body.appendChild(probe);
+  const value = Number(probe.getBoundingClientRect().width) || fallback;
+  probe.remove();
+  return value;
+}
+
 function visibleOverlayHeight(el) {
   if (!el) return 0;
   const text = String(el.textContent || '').trim();
@@ -171,7 +209,35 @@ function visibleOverlayHeight(el) {
   if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return 0;
   if (!text && (el === songNameEl || el === queueNameEl)) return 0;
   const rect = el.getBoundingClientRect();
-  return Math.max(0, Math.ceil(rect.height || el.offsetHeight || 0));
+  const fontSize = Number.parseFloat(style.fontSize) || 0;
+  const parsedLineHeight = Number.parseFloat(style.lineHeight);
+  const lineHeight = Number.isFinite(parsedLineHeight) ? parsedLineHeight : (fontSize * 1.14);
+  const verticalChrome = (Number.parseFloat(style.paddingTop) || 0)
+    + (Number.parseFloat(style.paddingBottom) || 0)
+    + (Number.parseFloat(style.borderTopWidth) || 0)
+    + (Number.parseFloat(style.borderBottomWidth) || 0);
+  // offsetHeight pode ficar momentaneamente zerado na primeira pintura da fila.
+  // A estimativa tipográfica impede que os dois nomes recebam o mesmo offset.
+  const intrinsicHeight = text ? Math.ceil(lineHeight + verticalChrome) : 0;
+  return Math.max(0, Math.ceil(rect.height || 0), Math.ceil(el.offsetHeight || 0), Math.ceil(el.scrollHeight || 0), intrinsicHeight);
+}
+
+function applyMeasuredOverlayPlacement(el, position, offset) {
+  if (!el) return;
+  const safeOffset = `${Math.max(0, Number(offset) || 0)}px`;
+  if (position === 'bottom') {
+    el.style.setProperty('top', 'auto', 'important');
+    el.style.setProperty('bottom', safeOffset, 'important');
+  } else {
+    el.style.setProperty('top', safeOffset, 'important');
+    el.style.setProperty('bottom', 'auto', 'important');
+  }
+}
+
+function clearMeasuredOverlayPlacement(el) {
+  if (!el) return;
+  el.style.removeProperty('top');
+  el.style.removeProperty('bottom');
 }
 
 function updateOverlayLayoutMetrics() {
@@ -182,6 +248,86 @@ function updateOverlayLayoutMetrics() {
   if (clockHeight > 0) root.style.setProperty('--lyrics-clock-real-height', `${clockHeight}px`);
   if (songHeight > 0) root.style.setProperty('--lyrics-song-real-height', `${songHeight}px`);
   if (queueHeight > 0) root.style.setProperty('--lyrics-queue-real-height', `${queueHeight}px`);
+
+  // A posição final usa a altura realmente desenhada de cada elemento. Em uma
+  // tela retrato, vw deixa o relógio muito mais alto que a estimativa antiga e
+  // fazia as bordas do texto/nome entrarem por baixo dele.
+  const edge = Math.max(3, resolvedCssLength('--lyrics-edge-offset', 6));
+  const gap = Math.max(8, resolvedCssLength('--lyrics-overlay-gap', 8));
+  const clockPosition = normalizeScreenPosition(settings.clockPosition, 'top');
+  const songPosition = normalizeScreenPosition(settings.songNamePosition, 'top');
+  const queuePosition = normalizeScreenPosition(settings.queueNamePosition, 'top');
+  const clockVisible = clockHeight > 0 && !document.body.classList.contains('clock-hidden');
+  const songVisible = songHeight > 0 && document.body.classList.contains('song-enabled');
+  const queueVisible = queueHeight > 0 && document.body.classList.contains('queue-enabled');
+
+  const offsets = {
+    clockTop: edge,
+    clockBottom: edge,
+    songTop: edge,
+    songBottom: edge,
+    queueTop: edge,
+    queueBottom: edge
+  };
+
+  let topCursor = edge;
+  let topUsed = false;
+  const placeTop = (key, height) => {
+    offsets[key] = topCursor;
+    topCursor += height + gap;
+    topUsed = true;
+  };
+  // No topo: relógio, música atual e fila, nesta ordem.
+  if (clockVisible && clockPosition === 'top') placeTop('clockTop', clockHeight);
+  if (songVisible && songPosition === 'top') placeTop('songTop', songHeight);
+  if (queueVisible && queuePosition === 'top') placeTop('queueTop', queueHeight);
+
+  let bottomCursor = edge;
+  let bottomUsed = false;
+  let bottomQueueWasPlaced = false;
+  const placeBottom = (key, height) => {
+    offsets[key] = bottomCursor;
+    bottomCursor += height + gap;
+    bottomUsed = true;
+  };
+  // No rodapé a leitura visual continua música atual -> fila. Como os offsets
+  // nascem de baixo, o relógio vem primeiro, depois a fila e por último a música.
+  if (clockVisible && clockPosition === 'bottom') placeBottom('clockBottom', clockHeight);
+  if (queueVisible && queuePosition === 'bottom') {
+    placeBottom('queueBottom', queueHeight);
+    bottomQueueWasPlaced = true;
+  }
+  if (songVisible && songPosition === 'bottom') {
+    // Quando os dois nomes ficam no rodapé, reserva uma distância própria entre
+    // eles. A fila deve aparecer visualmente ABAIXO do nome atual, nunca atrás.
+    if (bottomQueueWasPlaced) bottomCursor += Math.max(0, 16 - gap);
+    placeBottom('songBottom', songHeight);
+  }
+
+  root.style.setProperty('--lyrics-layout-clock-top', `${offsets.clockTop}px`);
+  root.style.setProperty('--lyrics-layout-clock-bottom', `${offsets.clockBottom}px`);
+  root.style.setProperty('--lyrics-layout-song-top', `${offsets.songTop}px`);
+  root.style.setProperty('--lyrics-layout-song-bottom', `${offsets.songBottom}px`);
+  root.style.setProperty('--lyrics-layout-queue-top', `${offsets.queueTop}px`);
+  root.style.setProperty('--lyrics-layout-queue-bottom', `${offsets.queueBottom}px`);
+  root.style.setProperty('--lyrics-layout-text-top', topUsed ? `${topCursor}px` : 'clamp(24px, 5vh, 58px)');
+  root.style.setProperty('--lyrics-layout-text-bottom', bottomUsed ? `${bottomCursor}px` : 'clamp(24px, 5vh, 58px)');
+
+  // Há muitas combinações de posição e escala no TP. Aplicar os offsets medidos
+  // diretamente evita que uma regra CSS antiga prevaleça em uma largura/altura
+  // específica e faça o nome da fila nascer atrás do nome da música atual.
+  const overlayTemporarilyReplaced = document.body.classList.contains('preview-active')
+    || document.body.classList.contains('notice-active');
+  if (overlayTemporarilyReplaced) {
+    clearMeasuredOverlayPlacement(timerEl);
+    clearMeasuredOverlayPlacement(songNameEl);
+    clearMeasuredOverlayPlacement(queueNameEl);
+  } else {
+    if (clockVisible) applyMeasuredOverlayPlacement(timerEl, clockPosition, clockPosition === 'bottom' ? offsets.clockBottom : offsets.clockTop);
+    if (songVisible) applyMeasuredOverlayPlacement(songNameEl, songPosition, songPosition === 'bottom' ? offsets.songBottom : offsets.songTop);
+    if (queueVisible) applyMeasuredOverlayPlacement(queueNameEl, queuePosition, queuePosition === 'bottom' ? offsets.queueBottom : offsets.queueTop);
+  }
+  document.body.classList.add('lyrics-layout-ready');
 }
 
 function scheduleOverlayLayoutMetrics() {
@@ -222,9 +368,14 @@ function applySettings(next = {}) {
   document.documentElement.style.setProperty('--lyrics-text-box-color', normalizeColor(settings.textBoxColor || settings.textColor, '#ffea00'));
   document.documentElement.style.setProperty('--lyrics-clock-color', normalizeColor(settings.clockColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-border-color', normalizeColor(settings.borderColor || settings.clockColor, '#00ff55'));
+  document.documentElement.style.setProperty(
+    '--lyrics-text-transform',
+    settings.textCase === 'lowercase' ? 'lowercase' : (settings.textCase === 'original' ? 'none' : 'uppercase')
+  );
   document.documentElement.style.setProperty('--lyrics-font', `${settings.fontFamily || 'Arial'}, sans-serif`);
   document.documentElement.style.setProperty('--lyrics-song-color', normalizeColor(settings.songNameColor || settings.clockColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-queue-color', normalizeColor(settings.queueNameColor || '#ffea00', '#ffea00'));
+  document.documentElement.style.setProperty('--lyrics-progress-color', normalizeColor(settings.progressColor || '#ffea00', '#ffea00'));
   document.documentElement.style.setProperty('--lyrics-song-font', `${settings.songNameFontFamily || settings.fontFamily || 'Arial'}, sans-serif`);
   document.documentElement.style.setProperty('--lyrics-queue-font', `${settings.queueNameFontFamily || settings.songNameFontFamily || settings.fontFamily || 'Arial'}, sans-serif`);
   const queueDepth = Math.max(0, Math.min(240, Math.round(Number(settings.queueNameDepth ?? 80) || 80)));
@@ -264,6 +415,10 @@ function applySettings(next = {}) {
   document.body.classList.toggle('song-bottom', songPosition === 'bottom');
   document.body.classList.toggle('queue-top', queuePosition !== 'bottom');
   document.body.classList.toggle('queue-bottom', queuePosition === 'bottom');
+  const progressPosition = normalizeScreenPosition(settings.progressPosition, 'bottom');
+  document.body.classList.toggle('progress-enabled', settings.progressEnabled === true);
+  document.body.classList.toggle('progress-top', progressPosition === 'top');
+  document.body.classList.toggle('progress-bottom', progressPosition !== 'top');
   // Compatibilidade com configuracoes antigas: agora o nome da musica tem posicao propria na tela.
   document.body.classList.toggle('song-above-clock', false);
   document.body.classList.toggle('song-below-clock', false);
@@ -272,6 +427,7 @@ function applySettings(next = {}) {
   forceClockAboveTechnicalNotice(document.body.classList.contains('notice-active'));
   scheduleOverlayLayoutMetrics();
   updateFontFit();
+  renderContentProgress();
 }
 
 function applyTechnicalNoticeSettings(next = {}) {
@@ -358,12 +514,14 @@ function updateTechnicalNoticeVisual(notice = activeTechnicalNotice) {
   }
 }
 
-function formatTimer(sec) {
-  const total = Math.max(0, Math.floor(Number(sec) || 0));
+function formatTimer(sec, forceNegative = false) {
+  const raw = Number(sec);
+  const negative = forceNegative || Object.is(raw, -0) || (Number.isFinite(raw) && raw < 0);
+  const total = Math.max(0, Math.floor(Math.abs(Number.isFinite(raw) ? raw : 0)));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  return `${String(h).padStart(2, '0')} : ${String(m).padStart(2, '0')} : ${String(s).padStart(2, '0')}`;
+  return `${negative ? '- ' : ''}${String(h).padStart(2, '0')} : ${String(m).padStart(2, '0')} : ${String(s).padStart(2, '0')}`;
 }
 
 function getElapsedTimerSeconds() {
@@ -372,13 +530,36 @@ function getElapsedTimerSeconds() {
   return timerAccumulatedSec + Math.max(0, live);
 }
 
+function getCountdownRemainingRaw() {
+  return timerTargetSec - getElapsedTimerSeconds();
+}
+
+function isTimerCountdownOverrun() {
+  return timerMode === 'countdown' && timerRunning && (timerExpired || getCountdownRemainingRaw() <= 0);
+}
+
 function getLocalTimerSeconds() {
+  // Usa primeiro o valor visual autoritativo publicado pela extensao.
+  // Isso evita o Teleprompt reconstruir o regressivo com uma base antiga
+  // e ficar preso em 00:00:00 quando o cronometro entra no negativo.
+  if (Number.isFinite(timerRemoteDisplaySec) && timerRemoteDisplayUpdatedAtMs > 0) {
+    let value = timerRemoteDisplaySec;
+    if (timerRunning) {
+      const live = Math.max(0, (Date.now() - timerRemoteDisplayUpdatedAtMs) / 1000);
+      value += timerMode === 'countdown' ? -live : live;
+    }
+    if (timerMode === 'countdown') {
+      if (value > 0) return Math.ceil(value);
+      return -Math.floor(Math.abs(value));
+    }
+    return Math.max(0, value);
+  }
+
   const elapsed = getElapsedTimerSeconds();
   if (timerMode === 'countdown') {
-    const remaining = Math.max(0, timerTargetSec - elapsed);
-    // Regressivo no TP precisa arredondar para cima.
-    // Assim 02:00:00 não vira 01:59:59 no primeiro frame.
-    return remaining > 0 ? Math.ceil(remaining) : 0;
+    const remaining = timerTargetSec - elapsed;
+    if (remaining > 0) return Math.ceil(remaining);
+    return -Math.floor(Math.abs(remaining));
   }
   return elapsed;
 }
@@ -386,15 +567,27 @@ function getLocalTimerSeconds() {
 function formatBrowserLocalTime() {
   const now = new Date();
   const pad = (value) => String(value).padStart(2, '0');
-  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return `${pad(now.getHours())} : ${pad(now.getMinutes())} : ${pad(now.getSeconds())}`;
+}
+
+// Mantem o horario local com exatamente o mesmo padrao visual dos outros modos
+// do relogio: dois digitos e espacos ao redor dos separadores.
+function formatLocalTimeLikeTimer(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,2})\s*:\s*(\d{1,2})\s*:\s*(\d{1,2})$/);
+  if (!match) return formatBrowserLocalTime();
+  const pad = (part) => String(Math.max(0, Number(part) || 0)).padStart(2, '0').slice(-2);
+  return `${pad(match[1])} : ${pad(match[2])} : ${pad(match[3])}`;
 }
 
 function updateTimerVisual() {
   if (timerEl) {
+    const overrun = isTimerCountdownOverrun();
+    timerEl.classList.toggle('timer-overrun-blink', overrun);
     if (timerMode === 'local_time') {
-      timerEl.textContent = timerDisplayText || timerLocalTimeText || formatBrowserLocalTime();
+      timerEl.textContent = formatLocalTimeLikeTimer(timerDisplayText || timerLocalTimeText);
     } else {
-      timerEl.textContent = formatTimer(getLocalTimerSeconds());
+      timerEl.textContent = formatTimer(getLocalTimerSeconds(), overrun);
     }
     applyClockScaleToFit(settings.clockScale);
     scheduleOverlayLayoutMetrics();
@@ -599,9 +792,12 @@ function renderPreviewOverlay(preview) {
     const songRows = songs.map((song) => {
       const songName = String(song?.name || '').trim();
       if (!songName) return '';
-      const playingClass = song?.playing ? ' playing' : '';
-      const queuedClass = song?.queued ? ' queued' : '';
-      return `<div class="lyrics-preview-song${playingClass}${queuedClass}">${previewWrappedHtml(songName, 'song')}</div>`;
+      const isPlaying = song?.playing === true;
+      const isQueued = song?.queued === true;
+      const playingClass = isPlaying ? ' playing' : '';
+      const queuedClass = isQueued ? ' queued' : '';
+      const highlightedName = (isPlaying || isQueued) ? `[ ${songName} ]` : songName;
+      return `<div class="lyrics-preview-song${playingClass}${queuedClass}">${previewWrappedHtml(highlightedName, 'song')}</div>`;
     }).join('') || `<div class="lyrics-preview-song lyrics-preview-song-empty">Sem músicas</div>`;
     return `<section class="lyrics-preview-card"><div class="lyrics-preview-title">${previewWrappedHtml(name || 'BLOCO', 'title')}</div><div class="lyrics-preview-song-list">${songRows}</div></section>`;
   }).join('');
@@ -707,13 +903,127 @@ function getMediaPayload(state = {}) {
     url: src,
     path: rawPath,
     currentTime: Math.max(0, Number(media.currentTime || state.mediaCurrentTime || 0)),
+    offset: Math.max(0, Number(media.offset || state.mediaOffset || 0)),
     playrate: Number(media.playrate || state.mediaPlayrate || 1) || 1,
     itemGuid: String(media.itemGuid || state.itemGuid || ''),
     itemStart: Number(media.itemStart || state.itemStart || 0),
     itemEnd: Number(media.itemEnd || state.itemEnd || 0),
     itemLength: Number(media.itemLength || state.itemLength || 0),
+    projectPosition: Number.isFinite(Number(media.position ?? state.position ?? state.projectPosition))
+      ? Number(media.position ?? state.position ?? state.projectPosition)
+      : Number.NaN,
     text: String(state.overlayText || state.text || state.lyrics || state.lyricsText || '')
   };
+}
+
+function stopContentProgressAnimation() {
+  if (!contentProgressRaf) return;
+  cancelAnimationFrame(contentProgressRaf);
+  contentProgressRaf = 0;
+}
+
+function getLiveContentProgressElapsed() {
+  const duration = Math.max(0, Number(contentProgressState.duration) || 0);
+  let elapsed = Math.max(0, Number(contentProgressState.elapsed) || 0);
+  if (contentProgressState.playing && contentProgressState.sampledAt > 0) {
+    elapsed += Math.max(0, (performance.now() - contentProgressState.sampledAt) / 1000);
+  }
+  return duration > 0 ? Math.min(duration, elapsed) : 0;
+}
+
+function renderContentProgress() {
+  if (!contentProgressEl || !contentProgressFillEl) return;
+  const enabled = settings.progressEnabled === true;
+  const noticeActive = document.body.classList.contains('notice-active');
+  // A opcao "Mostrar progresso" reserva a faixa mesmo quando o cursor ainda
+  // nao esta sobre um item. Antes a barra inteira era escondida se a duracao
+  // ainda nao tivesse chegado do bridge, parecendo que a configuracao nao
+  // funcionava. Preview e aviso tecnico continuam suprimindo a faixa.
+  const visible = enabled && !noticeActive && contentProgressState.visible === true;
+  contentProgressEl.classList.toggle('hidden', !visible);
+  if (!visible) {
+    contentProgressFillEl.style.width = '0%';
+    stopContentProgressAnimation();
+    return;
+  }
+
+  if (!(contentProgressState.duration > 0)) {
+    contentProgressFillEl.style.width = '0%';
+    stopContentProgressAnimation();
+    return;
+  }
+
+  const ratio = Math.max(0, Math.min(1, getLiveContentProgressElapsed() / contentProgressState.duration));
+  contentProgressFillEl.style.width = `${(ratio * 100).toFixed(3)}%`;
+
+  if (contentProgressState.playing && ratio < 1) {
+    if (!contentProgressRaf) {
+      contentProgressRaf = requestAnimationFrame(() => {
+        contentProgressRaf = 0;
+        renderContentProgress();
+      });
+    }
+  } else {
+    stopContentProgressAnimation();
+  }
+}
+
+function updateContentProgressFromState(state = {}, suppressed = false) {
+  const media = getMediaPayload(state);
+  const itemStart = Number(media.itemStart);
+  const itemEnd = Number(media.itemEnd);
+  const explicitLength = Number(media.itemLength);
+  const duration = explicitLength > 0
+    ? explicitLength
+    : (Number.isFinite(itemStart) && Number.isFinite(itemEnd) ? Math.max(0, itemEnd - itemStart) : 0);
+
+  let elapsed = 0;
+  if (Number.isFinite(media.projectPosition) && Number.isFinite(itemStart)) {
+    elapsed = media.projectPosition - itemStart;
+  } else if (media.type === 'video' || media.type === 'image') {
+    const playrate = Math.max(0.0001, Math.abs(Number(media.playrate) || 1));
+    elapsed = (Math.max(0, Number(media.currentTime) || 0) - Math.max(0, Number(media.offset) || 0)) / playrate;
+  }
+
+  const key = [media.itemGuid, media.itemStart, media.itemEnd, media.type, media.path || media.url, media.text].join('|');
+  const sourceElapsed = Math.max(0, Math.min(duration, Number(elapsed) || 0));
+  let visualElapsed = sourceElapsed;
+  let backwardDriftCount = 0;
+  const sameItem = key === contentProgressState.key && duration > 0 && contentProgressState.duration > 0;
+  if (sameItem && state.playing === true && contentProgressState.playing === true) {
+    const previousLiveElapsed = getLiveContentProgressElapsed();
+    const sourceMoved = Math.abs(sourceElapsed - (Number(contentProgressState.sourceElapsed) || 0)) > 0.001;
+    if (!sourceMoved) {
+      // O bridge pode repetir a mesma amostra em vários polls. Mantém o avanço
+      // local em vez de voltar para essa amostra antiga a cada 120 ms.
+      visualElapsed = previousLiveElapsed;
+      backwardDriftCount = Number(contentProgressState.backwardDriftCount) || 0;
+    } else {
+      const drift = sourceElapsed - previousLiveElapsed;
+      // Pequenas diferenças são apenas atraso entre as duas leituras. Um salto
+      // maior continua sendo tratado imediatamente como seek real.
+      if (drift < -0.32 && drift >= -0.55) {
+        backwardDriftCount = (Number(contentProgressState.backwardDriftCount) || 0) + 1;
+        visualElapsed = backwardDriftCount >= 2 ? sourceElapsed : previousLiveElapsed;
+        if (backwardDriftCount >= 2) backwardDriftCount = 0;
+      } else {
+        visualElapsed = Math.abs(drift) <= 0.55
+          ? Math.max(previousLiveElapsed, sourceElapsed)
+          : sourceElapsed;
+      }
+    }
+  }
+  contentProgressState = {
+    key,
+    elapsed: Math.max(0, Math.min(duration, visualElapsed)),
+    sourceElapsed,
+    backwardDriftCount,
+    duration,
+    playing: state.playing === true,
+    sampledAt: performance.now(),
+    visible: suppressed !== true
+  };
+  renderContentProgress();
 }
 
 
@@ -909,6 +1219,7 @@ async function pollState() {
     } else {
       renderTelepromptState(state);
     }
+    updateContentProgressFromState(state, previewActive);
 
     const nextRunning = !!state.timerRunning;
     const nextAccumulated = Number(state.timerAccumulatedSec || 0);
@@ -921,12 +1232,22 @@ async function pollState() {
     const nextTarget = Math.max(0, Math.min(359999, Number(state.timerTargetSec || state.timerCountdownStartSec || 0)));
     const nextDisplayText = String(state.timerDisplayText || '').trim();
     const nextLocalTimeText = String(state.timerLocalTimeText || '').trim();
+    const nextDisplaySec = Number(state.timerDisplaySec);
+    const nextExpired = state.timerExpired === true || state.timerOverrun === true || state.timerNegative === true ||
+      String(nextDisplayText || '').trim().startsWith('-') ||
+      (nextMode === 'countdown' && nextRunning && Number.isFinite(nextDisplaySec) && nextDisplaySec <= 0);
 
-    if (nextMode !== timerMode || Math.abs(nextTarget - timerTargetSec) > 0.5 || nextDisplayText !== timerDisplayText || nextLocalTimeText !== timerLocalTimeText) {
+    if (Number.isFinite(nextDisplaySec)) {
+      timerRemoteDisplaySec = nextDisplaySec;
+      timerRemoteDisplayUpdatedAtMs = Date.now();
+    }
+
+    if (nextMode !== timerMode || Math.abs(nextTarget - timerTargetSec) > 0.5 || nextDisplayText !== timerDisplayText || nextLocalTimeText !== timerLocalTimeText || nextExpired !== timerExpired) {
       timerMode = nextMode;
       timerTargetSec = nextTarget;
       timerDisplayText = nextDisplayText;
       timerLocalTimeText = nextLocalTimeText;
+      timerExpired = nextExpired;
       updateTimerVisual();
     }
 

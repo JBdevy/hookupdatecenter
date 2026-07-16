@@ -6,6 +6,176 @@ let currentYoutubeWatchUrl = "";
 let pendingConfirmResolve = null;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
+let selectedToolsPanel = 'rename';
+let combinedDownloadInProgress = false;
+let combinedDownloadReady = { vsHook: false, hookCenter: false };
+let selectedLyricsConfigSlot = 1;
+const selectedLyricsPresets = { 1: 'night', 2: 'night' };
+let recadosHubSelectedSlot = 'global';
+let recadosHubGlobalDraft = '';
+let recadosHubTemplates = ['', '', ''];
+let recadosHubEditingTemplate = false;
+let recadosHubPinned = false;
+let recadosHubNoticeActive = false;
+let recadosHubExpiresAt = 0;
+let recadosHubRemainingMs = 0;
+let recadosHubCountdownTimer = 0;
+
+function setLyricsConfigSlot(slot) {
+  selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
+
+  $$('[data-lyrics-config-slot]').forEach((button) => {
+    const active = Number(button.dataset.lyricsConfigSlot) === selectedLyricsConfigSlot;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+
+  $$('[data-lyrics-config-panel]').forEach((panel) => {
+    const active = Number(panel.dataset.lyricsConfigPanel) === selectedLyricsConfigSlot;
+    panel.classList.toggle('active', active);
+  });
+}
+
+async function applyLyricsPreset(slot, preset) {
+  const id = Number(slot) === 2 ? 2 : 1;
+  const isDay = preset === 'day';
+  selectedLyricsPresets[id] = isDay ? 'day' : 'night';
+  const colors = isDay
+    ? { text: '#ffffff', textBox: '#ffffff', clock: '#ffffff', border: '#ffffff', song: '#ffffff', queue: '#ffffff', progress: '#ffffff' }
+    : { text: '#ffea00', textBox: '#ffea00', clock: '#00ff55', border: '#00ff55', song: '#00ff55', queue: '#ffea00', progress: '#ffea00' };
+  const fieldMap = {
+    text: `#lyricsTextColor${id}`,
+    textBox: `#lyricsTextBoxColor${id}`,
+    clock: `#lyricsClockColor${id}`,
+    border: `#lyricsBorderColor${id}`,
+    song: `#lyricsSongNameColor${id}`,
+    queue: `#lyricsQueueNameColor${id}`,
+    progress: `#lyricsProgressColor${id}`
+  };
+  Object.entries(fieldMap).forEach(([key, selector]) => {
+    const input = $(selector);
+    if (input) input.value = colors[key];
+  });
+  await saveLyricsSettingsFromForm(id);
+  $$(`[data-lyrics-preset-slot="${id}"]`).forEach((button) => {
+    button.classList.toggle('preset-selected', button.dataset.lyricsPreset === selectedLyricsPresets[id]);
+  });
+}
+
+function openTechnicalNoticeModal() {
+  $('#technicalNoticeModal')?.classList.remove('hidden');
+  $('#closeTechnicalNoticeModalButton')?.focus();
+}
+
+function closeTechnicalNoticeModal() {
+  $('#technicalNoticeModal')?.classList.add('hidden');
+}
+
+async function openRecadosModal() {
+  try { applyTechnicalNoticeSettingsToForm(await window.hookUpdateCenter.getTechnicalNoticeSettings()); } catch (_) {}
+  syncHubRecadosModal();
+  ensureHubRecadosCountdown();
+  if (recadosHubNoticeActive) updateHubRecadosCountdown();
+  else $('#recadosModalStatus').textContent = '';
+  $('#recadosModal')?.classList.remove('hidden');
+  $('#recadosDraftInput')?.focus();
+}
+
+function closeRecadosModal() {
+  const input = $('#recadosDraftInput');
+  if (input) {
+    if (recadosHubSelectedSlot === 'global') recadosHubGlobalDraft = input.value;
+    else if (recadosHubEditingTemplate) recadosHubTemplates[Number(recadosHubSelectedSlot)] = input.value;
+  }
+  $('#recadosModal')?.classList.add('hidden');
+}
+
+async function exitRecadosModal() {
+  try {
+    await window.hookUpdateCenter.cancelRecadosNotice();
+    recadosHubNoticeActive = false;
+    recadosHubExpiresAt = 0;
+    recadosHubRemainingMs = 0;
+    recadosHubPinned = false;
+  } catch (_) {}
+  closeRecadosModal();
+}
+
+function updateHubRecadosCountdown() {
+  if (!recadosHubNoticeActive) return;
+  const remainingMs = recadosHubPinned
+    ? Math.max(0, Number(recadosHubRemainingMs || 0))
+    : Math.max(0, Number(recadosHubExpiresAt || 0) - Date.now());
+  const status = $('#recadosModalStatus');
+  if (!status) return;
+  if (remainingMs <= 0) {
+    recadosHubNoticeActive = false;
+    status.textContent = 'RECADO EXPIRADO';
+    return;
+  }
+  status.textContent = `RECADO ATIVO: ${Math.ceil(remainingMs / 1000)}s`;
+}
+
+function ensureHubRecadosCountdown() {
+  if (!recadosHubCountdownTimer) recadosHubCountdownTimer = window.setInterval(updateHubRecadosCountdown, 250);
+}
+
+function syncHubRecadosModal() {
+  const input = $('#recadosDraftInput');
+  const selectedIsGlobal = recadosHubSelectedSlot === 'global';
+  const selectedIndex = selectedIsGlobal ? -1 : Number(recadosHubSelectedSlot);
+  if (input) {
+    const value = selectedIsGlobal ? recadosHubGlobalDraft : (recadosHubTemplates[selectedIndex] || '');
+    if (document.activeElement !== input || input.value !== value) input.value = value;
+    input.readOnly = !selectedIsGlobal && !recadosHubEditingTemplate;
+    input.placeholder = selectedIsGlobal ? 'Digite o recado técnico...' : `Conteúdo do Recado ${selectedIndex + 1}`;
+  }
+  $$('[data-recados-slot]').forEach((button) => button.classList.toggle('active', button.dataset.recadosSlot === String(recadosHubSelectedSlot)));
+  const edit = $('#editRecadosTemplateButton');
+  if (edit) {
+    edit.classList.toggle('hidden', selectedIsGlobal);
+    edit.classList.toggle('saving', recadosHubEditingTemplate);
+    edit.textContent = recadosHubEditingTemplate ? 'SALVAR' : 'EDITAR';
+  }
+  const pin = $('#toggleRecadosPinButton');
+  if (pin) {
+    pin.classList.toggle('active', recadosHubPinned);
+    pin.setAttribute('aria-pressed', recadosHubPinned ? 'true' : 'false');
+    pin.textContent = recadosHubPinned ? 'FIXADO' : 'FIXAR';
+  }
+}
+
+function selectHubRecadosSlot(slot) {
+  const input = $('#recadosDraftInput');
+  if (input) {
+    if (recadosHubSelectedSlot === 'global') recadosHubGlobalDraft = input.value;
+    else if (recadosHubEditingTemplate) recadosHubTemplates[Number(recadosHubSelectedSlot)] = input.value;
+  }
+  recadosHubSelectedSlot = slot === 'global' ? 'global' : Math.max(0, Math.min(2, Number(slot)));
+  recadosHubEditingTemplate = false;
+  $('#recadosModalStatus').textContent = '';
+  syncHubRecadosModal();
+}
+
+async function toggleHubRecadosTemplateEdit() {
+  if (recadosHubSelectedSlot === 'global') return;
+  const input = $('#recadosDraftInput');
+  if (!recadosHubEditingTemplate) {
+    recadosHubEditingTemplate = true;
+    syncHubRecadosModal();
+    input?.focus();
+    return;
+  }
+  recadosHubTemplates[Number(recadosHubSelectedSlot)] = String(input?.value || '').trim();
+  try {
+    await saveTechnicalNoticeSettingsFromForm();
+    recadosHubEditingTemplate = false;
+    $('#recadosModalStatus').textContent = 'RECADO SALVO';
+  } catch (error) {
+    $('#recadosModalStatus').textContent = friendlyError(error, 'Não foi possível salvar o recado.');
+  }
+  syncHubRecadosModal();
+}
 
 function cleanErrorMessage(error) {
   let message = String(error?.message || error || 'Erro inesperado.');
@@ -134,6 +304,25 @@ async function showDownloadDescriptionNotice() {
   });
 }
 
+async function ensureLicenseActiveForDownload() {
+  if (state?.license?.active === true) return true;
+
+  const shouldActivate = await confirmModal({
+    title: 'Ativação necessária',
+    message: 'Faça sua ativação primeiro para baixar as atualizações do VS Hook.',
+    type: 'info',
+    okText: 'Fazer ativação',
+    cancelText: 'Cancelar'
+  });
+
+  if (shouldActivate) {
+    setView('license');
+    $('#cpfInput')?.focus();
+  }
+
+  return false;
+}
+
 function openVideoModal() {
   if (!currentYoutubeWatchUrl) {
     showModal({
@@ -196,6 +385,15 @@ function resetVsHookProgress() {
   $('#statusInstallButton')?.classList.add('hidden');
 }
 
+function setHomeDownloadButtonProgress(progress, active) {
+  const button = $('#downloadButton');
+  if (!button) return;
+  const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+  button.style.setProperty('--download-progress', `${safeProgress}%`);
+  button.classList.toggle('download-progress-active', active === true);
+  if (active === true) button.textContent = `Baixando ${safeProgress}%`;
+}
+
 function updateVsHookProgress(progress) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   ['#progressBar', '#statusProgressBar'].forEach((selector) => {
@@ -206,7 +404,8 @@ function updateVsHookProgress(progress) {
     const el = $(selector);
     if (el) el.textContent = `${safeProgress}%`;
   });
-  if (safeProgress >= 100) {
+  if (combinedDownloadInProgress) setHomeDownloadButtonProgress(safeProgress, true);
+  if (safeProgress >= 100 && !combinedDownloadInProgress) {
     $('#installButton')?.classList.remove('hidden');
     $('#statusInstallButton')?.classList.remove('hidden');
   }
@@ -214,6 +413,7 @@ function updateVsHookProgress(progress) {
 
 async function startVsHookDownload(updateOverride = null) {
   try {
+    if (!(await ensureLicenseActiveForDownload())) return;
     if (!(await showDownloadDescriptionNotice())) return;
     if (!(await ensureDeviceName())) return;
     setProgressVisible(true);
@@ -233,6 +433,103 @@ async function startVsHookDownload(updateOverride = null) {
       button.textContent = button.dataset.originalText || 'Baixar';
       delete button.dataset.originalText;
     });
+  }
+}
+
+async function startCombinedUpdateDownload() {
+  const downloadVsHook = !!state?.latestUpdate;
+  const downloadHookCenter = state?.hookCenterUpdateAvailable === true;
+  if (!downloadVsHook && !downloadHookCenter) {
+    showModal({ title: 'Atualizações', message: 'Nenhuma atualização disponível no momento.', type: 'info' });
+    return;
+  }
+
+  if (!(await ensureLicenseActiveForDownload())) return;
+  if (downloadVsHook && !(await showDownloadDescriptionNotice())) return;
+  if (!(await ensureDeviceName())) return;
+
+  const button = $('#downloadButton');
+  combinedDownloadInProgress = true;
+  combinedDownloadReady = { vsHook: false, hookCenter: false };
+  $('#homeProgressArea')?.classList.add('hidden');
+  resetVsHookProgress();
+  if (button) {
+    button.disabled = true;
+    setHomeDownloadButtonProgress(0, true);
+  }
+
+  let completedAny = false;
+  try {
+    if (downloadVsHook) {
+      await window.hookUpdateCenter.downloadUpdate();
+      combinedDownloadReady.vsHook = true;
+      completedAny = true;
+    }
+    if (downloadHookCenter) {
+      resetVsHookProgress();
+      setHomeDownloadButtonProgress(0, true);
+      await window.hookUpdateCenter.downloadHookCenterUpdate();
+      combinedDownloadReady.hookCenter = true;
+      completedAny = true;
+    }
+  } catch (error) {
+    showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar todas as atualizações.'), type: 'error' });
+  } finally {
+    combinedDownloadInProgress = false;
+    if (button) {
+      button.disabled = false;
+      button.classList.remove('download-progress-active');
+      button.style.removeProperty('--download-progress');
+      button.textContent = 'Baixar';
+    }
+    if (completedAny) {
+      updateVsHookProgress(100);
+      const installButton = $('#installButton');
+      if (installButton) {
+        installButton.textContent = combinedDownloadReady.vsHook && combinedDownloadReady.hookCenter
+          ? 'Instalar atualizações'
+          : (combinedDownloadReady.hookCenter ? 'Instalar Hook Center' : 'Instalar');
+        installButton.classList.remove('hidden');
+      }
+    }
+  }
+}
+
+async function installCombinedDownloadedUpdates() {
+  const installVsHook = combinedDownloadReady.vsHook;
+  const installHookCenter = combinedDownloadReady.hookCenter;
+  if (!installVsHook && !installHookCenter) return;
+
+  const products = [installVsHook ? 'VS Hook' : '', installHookCenter ? 'Hook Center' : ''].filter(Boolean).join(' e ');
+  const confirmed = await confirmModal({
+    title: 'Instalar atualizações',
+    message: installVsHook
+      ? `Feche o REAPER antes de continuar. O Hook Center vai instalar ${products}.`
+      : `O Hook Center vai instalar ${products}.`,
+    type: 'info',
+    okText: 'Instalar',
+    cancelText: 'Cancelar'
+  });
+  if (!confirmed) return;
+
+  try {
+    let vsHookResult = null;
+    if (installVsHook) vsHookResult = await window.hookUpdateCenter.installUpdate();
+    if (installHookCenter) {
+      await window.hookUpdateCenter.installDownloadedHookCenterUpdate();
+      if (state?.platform === 'darwin') {
+        showModal({ title: 'Atualizações prontas', message: 'O VS Hook foi atualizado e o instalador do Hook Center foi aberto.', type: 'success' });
+      }
+      return;
+    }
+
+    renderState(await window.hookUpdateCenter.getState());
+    setProgressVisible(false);
+    resetVsHookProgress();
+    combinedDownloadReady = { vsHook: false, hookCenter: false };
+    showModal({ title: 'Instalação concluída', message: `${vsHookResult?.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
+  } catch (error) {
+    showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar as atualizações.'), type: 'error' });
   }
 }
 
@@ -382,17 +679,41 @@ function renderHookRenamePreview(preview = null) {
     return;
   }
 
-  const hiddenCount = total - (preview.operations?.length || 0);
-  list.innerHTML = `
-    ${(preview.operations || []).map((item) => `
-      <div class="hook-rename-preview-item">
-        <div>
-          <span>${escapeHtml(item.fromName || '')}</span>
-          <strong>${escapeHtml(item.toName || '')}</strong>
-        </div>
-        <small>${escapeHtml(item.relativeFolder || '.')}</small>
+  const operations = Array.isArray(preview.operations) ? preview.operations : [];
+  const hiddenCount = total - operations.length;
+  const renderPreviewItem = (item, grouped = false) => `
+    <div class="hook-rename-preview-item${grouped ? ' grouped' : ''}">
+      <div>
+        <span>${escapeHtml(item.fromName || '')}</span>
+        <strong>${escapeHtml(item.toName || '')}</strong>
       </div>
-    `).join('')}
+      ${grouped ? '' : `<small>${escapeHtml(item.relativeFolder || '.')}</small>`}
+    </div>
+  `;
+  let operationsHtml = operations.map((item) => renderPreviewItem(item)).join('');
+
+  if (folders > 1) {
+    const folderColors = ['#ffd21f', '#25d9ff', '#ff5ea8', '#ff8a2a', '#5dff72', '#b77cff'];
+    const groups = new Map();
+    operations.forEach((item) => {
+      const folderName = String(item.relativeFolder || item.folderName || 'Pasta').trim() || 'Pasta';
+      if (!groups.has(folderName)) groups.set(folderName, []);
+      groups.get(folderName).push(item);
+    });
+    operationsHtml = Array.from(groups.entries()).map(([folderName, items], index) => `
+      <section class="hook-rename-folder-region" style="--hook-folder-color: ${folderColors[index % folderColors.length]}">
+        <header class="hook-rename-folder-header">
+          <strong>${escapeHtml(folderName)}</strong>
+        </header>
+        <div class="hook-rename-folder-items">
+          ${items.map((item) => renderPreviewItem(item, true)).join('')}
+        </div>
+      </section>
+    `).join('');
+  }
+
+  list.innerHTML = `
+    ${operationsHtml}
     ${hiddenCount > 0 ? `<p class="muted hook-rename-preview-limit">Mais ${hiddenCount} arquivo(s) não aparecem na lista para manter a tela leve.</p>` : ''}
   `;
   updateHookRenameControls();
@@ -546,6 +867,27 @@ function setupHookRename() {
   updateHookRenameControls();
 }
 
+function setToolsPanel(panelName = 'rename') {
+  const allowed = ['rename', 'upcoming1', 'upcoming2', 'upcoming3'];
+  selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
+  $$('[data-tools-panel]').forEach((button) => {
+    const active = button.dataset.toolsPanel === selectedToolsPanel;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  $$('[data-tools-panel-content]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.toolsPanelContent === selectedToolsPanel);
+  });
+  if (selectedToolsPanel === 'rename') updateHookRenameControls();
+}
+
+function setupToolsSubmenu() {
+  $$('[data-tools-panel]').forEach((button) => {
+    button.addEventListener('click', () => setToolsPanel(button.dataset.toolsPanel));
+  });
+  setToolsPanel(selectedToolsPanel);
+}
+
 function setView(viewName) {
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
   $$('.view').forEach((view) => view.classList.remove('active'));
@@ -619,6 +961,10 @@ function applyLyricsSettingsToForm(settings = {}) {
   slots.forEach((slot) => {
     const data = all[slot] || all[String(slot)] || {};
     if (!data || typeof data !== 'object') return;
+    selectedLyricsPresets[slot] = data.preset === 'day' ? 'day' : 'night';
+    $$(`[data-lyrics-preset-slot="${slot}"]`).forEach((button) => {
+      button.classList.toggle('preset-selected', button.dataset.lyricsPreset === selectedLyricsPresets[slot]);
+    });
     const textColor = $(`#lyricsTextColor${slot}`);
     const clockColor = $(`#lyricsClockColor${slot}`);
     const textBoxColor = $(`#lyricsTextBoxColor${slot}`);
@@ -627,6 +973,7 @@ function applyLyricsSettingsToForm(settings = {}) {
     const rgbWindowBorderEnabled = $(`#lyricsRgbWindowBorderEnabled${slot}`);
     const rgbClockBorderEnabled = $(`#lyricsRgbClockBorderEnabled${slot}`);
     const rgbTextBoxBorderEnabled = $(`#lyricsRgbTextBoxBorderEnabled${slot}`);
+    const textCase = $(`#lyricsTextCase${slot}`);
     const fontFamily = $(`#lyricsFontFamily${slot}`);
     const textScale = $(`#lyricsTextScale${slot}`);
     const borderEnabled = $(`#lyricsBorderEnabled${slot}`);
@@ -643,6 +990,9 @@ function applyLyricsSettingsToForm(settings = {}) {
     const songNameFontFamily = $(`#lyricsSongNameFontFamily${slot}`);
     const songNameScale = $(`#lyricsSongNameScale${slot}`);
     const songNamePosition = $(`#lyricsSongNamePosition${slot}`);
+    const progressEnabled = $(`#lyricsProgressEnabled${slot}`);
+    const progressPosition = $(`#lyricsProgressPosition${slot}`);
+    const progressColor = $(`#lyricsProgressColor${slot}`);
     const queueNamePosition = $(`#lyricsQueueNamePosition${slot}`);
     const clockPosition = $(`#lyricsClockPosition${slot}`);
     const clockScale = $(`#lyricsClockScale${slot}`);
@@ -660,6 +1010,11 @@ function applyLyricsSettingsToForm(settings = {}) {
     if (rgbWindowBorderEnabled) rgbWindowBorderEnabled.checked = (data.rgbWindowBorderEnabled ?? legacyRgb) === true;
     if (rgbClockBorderEnabled) rgbClockBorderEnabled.checked = data.rgbClockBorderEnabled === true;
     if (rgbTextBoxBorderEnabled) rgbTextBoxBorderEnabled.checked = data.rgbTextBoxBorderEnabled === true;
+    if (textCase) {
+      textCase.value = data.textCase === 'lowercase'
+        ? 'lowercase'
+        : (data.textCase === 'original' ? 'original' : 'uppercase');
+    }
     if (fontFamily) fontFamily.value = data.fontFamily || 'Arial';
     if (textScale) textScale.value = String(Math.round((Number(data.textScale || 1) || 1) * 100));
     if (borderEnabled) borderEnabled.checked = data.borderEnabled !== false;
@@ -676,6 +1031,9 @@ function applyLyricsSettingsToForm(settings = {}) {
     if (songNameFontFamily) songNameFontFamily.value = data.songNameFontFamily || data.fontFamily || 'Arial';
     if (songNameScale) songNameScale.value = String(Math.round((Number(data.songNameScale || 1) || 1) * 100));
     if (songNamePosition) songNamePosition.value = normalizeLyricsScreenPosition(data.songNamePosition, 'top');
+    if (progressEnabled) progressEnabled.checked = data.progressEnabled === true;
+    if (progressPosition) progressPosition.value = normalizeLyricsScreenPosition(data.progressPosition, 'bottom');
+    if (progressColor) progressColor.value = data.progressColor || '#ffea00';
     if (queueNamePosition) queueNamePosition.value = normalizeLyricsScreenPosition(data.queueNamePosition, 'top');
     if (clockPosition) clockPosition.value = data.clockPosition === 'bottom' ? 'bottom' : 'top';
     if (clockScale) clockScale.value = String(Math.round((Number(data.clockScale || 1) || 1) * 100));
@@ -715,6 +1073,8 @@ function applyTechnicalNoticeSettingsToForm(settings = {}) {
   if (emojiPreview) emojiPreview.textContent = emoji;
   if (emojiButton) emojiButton.setAttribute('aria-label', `Emoji do recado: ${emoji}`);
   if (recadosPassword) recadosPassword.value = String(settings.recadosPassword || '');
+  recadosHubTemplates = [0, 1, 2].map((index) => String(settings.recadosTemplates?.[index] || ''));
+  if (recadosHubSelectedSlot !== 'global' && !recadosHubEditingTemplate) syncHubRecadosModal();
 }
 
 async function refreshLyricsSettings() {
@@ -730,6 +1090,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
   const id = Number(slot) === 2 ? 2 : 1;
   const payload = {
     slot: id,
+    preset: selectedLyricsPresets[id] === 'day' ? 'day' : 'night',
     textColor: $(`#lyricsTextColor${id}`)?.value || '#ffea00',
     clockColor: $(`#lyricsClockColor${id}`)?.value || '#00ff55',
     textBoxColor: $(`#lyricsTextBoxColor${id}`)?.value || $(`#lyricsTextColor${id}`)?.value || '#ffea00',
@@ -738,6 +1099,9 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     rgbWindowBorderEnabled: $(`#lyricsRgbWindowBorderEnabled${id}`)?.checked === true,
     rgbClockBorderEnabled: $(`#lyricsRgbClockBorderEnabled${id}`)?.checked === true,
     rgbTextBoxBorderEnabled: $(`#lyricsRgbTextBoxBorderEnabled${id}`)?.checked === true,
+    textCase: ['lowercase', 'original'].includes($(`#lyricsTextCase${id}`)?.value)
+      ? $(`#lyricsTextCase${id}`).value
+      : 'uppercase',
     fontFamily: $(`#lyricsFontFamily${id}`)?.value || 'Arial',
     textScale: Math.max(0.5, Math.min(1.25, (Number($(`#lyricsTextScale${id}`)?.value || 100) / 100))),
     borderEnabled: $(`#lyricsWindowBorderEnabled${id}`)?.checked !== false,
@@ -755,6 +1119,9 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     songNameFontFamily: $(`#lyricsSongNameFontFamily${id}`)?.value || $(`#lyricsFontFamily${id}`)?.value || 'Arial',
     songNameScale: Math.max(0.5, Math.min(3, (Number($(`#lyricsSongNameScale${id}`)?.value || 100) / 100))),
     songNamePosition: normalizeLyricsScreenPosition($(`#lyricsSongNamePosition${id}`)?.value, 'top'),
+    progressEnabled: $(`#lyricsProgressEnabled${id}`)?.checked === true,
+    progressPosition: normalizeLyricsScreenPosition($(`#lyricsProgressPosition${id}`)?.value, 'bottom'),
+    progressColor: $(`#lyricsProgressColor${id}`)?.value || '#ffea00',
     clockPosition: $(`#lyricsClockPosition${id}`)?.value === 'bottom' ? 'bottom' : 'top',
     clockScale: Math.max(0.5, Math.min(2.5, (Number($(`#lyricsClockScale${id}`)?.value || 100) / 100))),
     mediaScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsMediaScale${id}`)?.value || 100) / 100))),
@@ -778,7 +1145,8 @@ async function saveTechnicalNoticeSettingsFromForm() {
     window2Enabled: $('#technicalNoticeWindow2Enabled')?.checked !== false,
     emojiEnabled: $('#technicalNoticeEmojiEnabled')?.checked !== false,
     emoji: ($('#technicalNoticeEmoji')?.value || '⚠️').trim().slice(0, 8) || '⚠️',
-    recadosPassword: ($('#technicalNoticeRecadosPassword')?.value || '').trim()
+    recadosPassword: ($('#technicalNoticeRecadosPassword')?.value || '').trim(),
+    recadosTemplates: recadosHubTemplates.map((text) => String(text || '').trim())
   };
   const saved = await window.hookUpdateCenter.saveTechnicalNoticeSettings(payload);
   applyTechnicalNoticeSettingsToForm(saved);
@@ -903,6 +1271,7 @@ function setupLyricsAutoApply() {
       `lyricsRgbWindowBorderEnabled${slot}`,
       `lyricsRgbClockBorderEnabled${slot}`,
       `lyricsRgbTextBoxBorderEnabled${slot}`,
+      `lyricsTextCase${slot}`,
       `lyricsFontFamily${slot}`,
       `lyricsTextScale${slot}`,
       `lyricsBorderEnabled${slot}`,
@@ -919,6 +1288,9 @@ function setupLyricsAutoApply() {
       `lyricsSongNameFontFamily${slot}`,
       `lyricsSongNameScale${slot}`,
       `lyricsSongNamePosition${slot}`,
+      `lyricsProgressEnabled${slot}`,
+      `lyricsProgressPosition${slot}`,
+      `lyricsProgressColor${slot}`,
       `lyricsClockPosition${slot}`,
       `lyricsClockScale${slot}`,
       `lyricsMediaScale${slot}`,
@@ -1176,11 +1548,7 @@ function formatHookCenterDisplayVersion(version) {
 function renderState(nextState) {
   state = nextState;
   updateLyricsWindowButtons();
-  const isMac = state.platform === 'darwin';
-  const macLabel = state.arch === 'arm64' ? 'macOS Apple Silicon' : 'macOS Intel';
-
-  $('#platformLabel').textContent = isMac ? macLabel : 'Windows 10/11';
-  $('#currentVersion').textContent = formatHookCenterDisplayVersion(state.currentVersion);
+  $('#currentVersion').textContent = formatHookCenterDisplayVersion(state.statusDisplayVersion || state.currentVersion);
   const installedVersionLabel = state.installedVsHookVersion ? `v${String(state.installedVsHookVersion).replace(/^v/i, '')}` : '--';
   const installedVersionEl = $('#installedVsHookVersion');
   if (installedVersionEl) installedVersionEl.textContent = installedVersionLabel;
@@ -1197,38 +1565,21 @@ function renderState(nextState) {
   $('#updateStatus').textContent = statusTestUpdate ? 'Atualização de cliente teste disponível' : 'Sem atualização de cliente teste';
 
   const hc = state.hookCenterLatest || {};
-  const hcText = $('#hookCenterUpdateText');
-  const hcButton = $('#hookCenterUpdateButton');
-  const hcActions = $('#hookCenterUpdateActions');
-  const hcLearnCard = $('#hookCenterLearnCard');
   const hcLearnButton = $('#hookCenterLearnButton');
   const hasTutorial = !!(hc.tutorialUrl || hc.learnUrl || hc.videoUrl);
-  if (hcLearnCard) hcLearnCard.classList.remove('hidden');
   if (hcLearnButton) {
+    hcLearnButton.classList.toggle('hidden', !hasTutorial);
     hcLearnButton.disabled = !hasTutorial;
-    hcLearnButton.textContent = 'Assistir agora';
+    hcLearnButton.textContent = 'Quero aprender tudo sobre o VS Hook';
     hcLearnButton.removeAttribute('title');
   }
-  if (hcText && hcButton) {
-    if (state.hookCenterUpdateAvailable) {
-      hcText.textContent = `Nova versão disponível: ${hc.version || ''}. ${hc.notes || ''}`.trim();
-      hcButton.classList.remove('hidden');
-      hcActions?.classList.remove('hidden');
-    } else if (hc.version) {
-      hcText.textContent = `Hook Center atualizado. Última versão publicada: ${hc.version}.`;
-      hcButton.classList.add('hidden');
-      hcActions?.classList.add('hidden');
-    } else {
-      hcText.textContent = 'Nenhuma atualização do Hook Center publicada.';
-      hcButton.classList.add('hidden');
-      hcActions?.classList.add('hidden');
-    }
-  }
-
   const hasLatest = !!state.latestUpdate;
+  const hasHookCenterUpdate = state.hookCenterUpdateAvailable === true;
+  const hasHomeUpdate = hasLatest || hasHookCenterUpdate;
   const hasStatusTestUpdate = !!statusTestUpdate;
-  $('#noUpdateCard').classList.toggle('hidden', hasLatest);
-  $('#updateCard').classList.toggle('hidden', !hasLatest);
+  $('#noUpdateCard').classList.toggle('hidden', hasHomeUpdate);
+  $('#updateCard').classList.toggle('hidden', !hasHomeUpdate);
+  $('#installedVsHookVersionLine')?.classList.toggle('hidden', !hasLatest);
   $('#statusNoUpdateInstallCard')?.classList.toggle('hidden', hasStatusTestUpdate);
   $('#statusUpdateInstallCard')?.classList.toggle('hidden', !hasStatusTestUpdate);
 
@@ -1237,14 +1588,19 @@ function renderState(nextState) {
     // A descrição da atualização do VS Hook fica exclusivamente no card separado de cima.
     // Remove do DOM qualquer descrição herdada que ainda exista dentro dos cards do VS Hook.
     document.querySelectorAll('#updateCard .description, #updateCard [data-update-description], #updateCard .changelog, #noUpdateCard .description, #statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
-    const displayTitle = update.title || `VS Hook ${update.version || ''}`;
-    const displayVersion = update.version ? `v${update.version}` : 'VS Hook';
+    const vsHookTitle = update.title || `VS Hook ${update.version || ''}`;
+    const displayTitle = hasHookCenterUpdate ? `${vsHookTitle} + Hook Center` : vsHookTitle;
+    const displayVersion = hasHookCenterUpdate ? '2 ATUALIZAÇÕES' : (update.version ? `v${update.version}` : 'VS Hook');
     $('#updateTitle').textContent = displayTitle;
     $('#versionBadge').textContent = displayVersion;
     const homeDescriptionCard = $('#updateDescriptionCard');
     const homeDescription = $('#updateDescription');
     if (homeDescriptionCard && homeDescription) {
-      const descriptionText = String(update.description || '').trim() || 'Sem descrição disponível.';
+      const vsHookDescription = String(update.description || '').trim() || 'Atualização do VS Hook disponível.';
+      const hookCenterDescription = hasHookCenterUpdate
+        ? `Hook Center ${hc.version || ''}: ${String(hc.notes || '').trim() || 'nova versão disponível.'}`
+        : '';
+      const descriptionText = hookCenterDescription ? `${vsHookDescription}\n\n${hookCenterDescription}` : vsHookDescription;
       homeDescription.textContent = descriptionText;
       homeDescriptionCard.classList.remove('hidden');
       homeDescriptionCard.setAttribute('aria-hidden', 'false');
@@ -1253,10 +1609,28 @@ function renderState(nextState) {
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
     $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
-    $('#videoModalTitle').textContent = displayTitle;
+    $('#videoModalTitle').textContent = vsHookTitle;
 
     // A descrição/changelog da atualização do VS Hook fica exclusivamente no card amarelo separado.
     // Não renderiza lista dentro do card principal para evitar duplicidade e liberar espaço.
+    const changelogListEl = $('#changelogList');
+    if (changelogListEl) {
+      changelogListEl.innerHTML = '';
+      changelogListEl.classList.add('hidden');
+      changelogListEl.setAttribute('aria-hidden', 'true');
+    }
+  } else if (hasHookCenterUpdate) {
+    $('#updateTitle').textContent = hc.title || 'Atualização do Hook Center';
+    $('#versionBadge').textContent = hc.version ? `v${hc.version}` : 'HOOK CENTER';
+    const homeDescriptionCard = $('#updateDescriptionCard');
+    const homeDescription = $('#updateDescription');
+    if (homeDescriptionCard && homeDescription) {
+      homeDescription.textContent = String(hc.notes || '').trim() || 'Nova versão do Hook Center disponível.';
+      homeDescriptionCard.classList.remove('hidden');
+      homeDescriptionCard.setAttribute('aria-hidden', 'false');
+    }
+    currentYoutubeWatchUrl = '';
+    $('#videoBox')?.classList.add('hidden');
     const changelogListEl = $('#changelogList');
     if (changelogListEl) {
       changelogListEl.innerHTML = '';
@@ -1271,6 +1645,12 @@ function renderState(nextState) {
     }
     const homeDescription = $('#updateDescription');
     if (homeDescription) homeDescription.textContent = '';
+  }
+
+  const homeDownloadButton = $('#downloadButton');
+  if (homeDownloadButton && !combinedDownloadInProgress) {
+    homeDownloadButton.disabled = !hasHomeUpdate;
+    homeDownloadButton.textContent = 'Baixar';
   }
 
   if (hasStatusTestUpdate) {
@@ -1407,6 +1787,7 @@ function renderPreviousUpdates(updates) {
       }
 
       try {
+        if (!(await ensureLicenseActiveForDownload())) return;
         if (!(await showDownloadDescriptionNotice())) return;
         setView('home');
         setProgressVisible(true);
@@ -1458,6 +1839,21 @@ function setupSidebarToggle() {
 
 async function init() {
   setupSidebarToggle();
+  $$('[data-lyrics-config-slot]').forEach((button) => {
+    button.addEventListener('click', () => setLyricsConfigSlot(button.dataset.lyricsConfigSlot));
+  });
+  setLyricsConfigSlot(selectedLyricsConfigSlot);
+  [1, 2].forEach((slot) => {
+    $$(`[data-lyrics-preset-slot="${slot}"]`).forEach((button) => {
+      button.classList.toggle('preset-selected', button.dataset.lyricsPreset === selectedLyricsPresets[slot]);
+    });
+  });
+  $$('.lyrics-preset-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try { await applyLyricsPreset(button.dataset.lyricsPresetSlot, button.dataset.lyricsPreset); }
+      catch (error) { showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível aplicar o preset.'), type: 'error' }); }
+    });
+  });
   await refreshState();
 
   $('#modalOkButton').addEventListener('click', () => {
@@ -1476,9 +1872,73 @@ async function init() {
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
   $('#supportQrModal')?.addEventListener('click', (event) => { if (event.target.id === 'supportQrModal') closeSupportQrModal(); });
   $('#supportQrCloseButton')?.addEventListener('click', closeSupportQrModal);
+  $('#openTechnicalNoticeModalButton')?.addEventListener('click', openTechnicalNoticeModal);
+  $('#openRecadosModalButton')?.addEventListener('click', openRecadosModal);
+  $('#closeTechnicalNoticeModalButton')?.addEventListener('click', closeTechnicalNoticeModal);
+  $('#closeTechnicalNoticeModalSecondaryButton')?.addEventListener('click', closeTechnicalNoticeModal);
+  $('#closeRecadosModalButton')?.addEventListener('click', closeRecadosModal);
+  $('#closeRecadosModalSecondaryButton')?.addEventListener('click', exitRecadosModal);
+  $('#technicalNoticeModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'technicalNoticeModal') closeTechnicalNoticeModal();
+  });
+  $('#recadosModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'recadosModal') closeRecadosModal();
+  });
+  $$('[data-recados-slot]').forEach((button) => {
+    button.addEventListener('click', () => selectHubRecadosSlot(button.dataset.recadosSlot));
+  });
+  $('#editRecadosTemplateButton')?.addEventListener('click', toggleHubRecadosTemplateEdit);
+  $('#toggleRecadosPinButton')?.addEventListener('click', async () => {
+    const input = $('#recadosDraftInput');
+    if (input) {
+      if (recadosHubSelectedSlot === 'global') recadosHubGlobalDraft = input.value;
+      else if (recadosHubEditingTemplate) recadosHubTemplates[Number(recadosHubSelectedSlot)] = input.value;
+    }
+    const nextPinned = !recadosHubPinned;
+    try {
+      if (recadosHubNoticeActive) {
+        const result = await window.hookUpdateCenter.setRecadosNoticePinned({ pinned: nextPinned });
+        recadosHubExpiresAt = Number(result?.notice?.expiresAt || 0);
+        recadosHubRemainingMs = Math.max(0, Number(result?.notice?.pausedRemainingMs || 0));
+      }
+      recadosHubPinned = nextPinned;
+      if (recadosHubNoticeActive) updateHubRecadosCountdown();
+      else $('#recadosModalStatus').textContent = '';
+    } catch (error) {
+      $('#recadosModalStatus').textContent = friendlyError(error, 'Não foi possível alterar o recado.');
+    }
+    syncHubRecadosModal();
+  });
+  $('#sendRecadosButton')?.addEventListener('click', async () => {
+    const text = String($('#recadosDraftInput')?.value || '').trim();
+    if (!text) { $('#recadosModalStatus').textContent = 'Digite um recado antes de enviar.'; return; }
+    try {
+      const result = await window.hookUpdateCenter.sendRecadosNotice({ text, pinned: recadosHubPinned });
+      recadosHubNoticeActive = result?.ignoredDuePriority !== true;
+      recadosHubExpiresAt = Number(result?.notice?.expiresAt || 0);
+      recadosHubRemainingMs = Math.max(0, Number(result?.notice?.pausedRemainingMs || 0));
+      if (result?.ignoredDuePriority) $('#recadosModalStatus').textContent = 'DIRETOR EM PRIORIDADE';
+      else updateHubRecadosCountdown();
+    } catch (error) {
+      $('#recadosModalStatus').textContent = friendlyError(error, 'Não foi possível enviar o recado.');
+    }
+  });
+  $('#cancelRecadosButton')?.addEventListener('click', async () => {
+    try {
+      const result = await window.hookUpdateCenter.cancelRecadosNotice();
+      recadosHubNoticeActive = false;
+      recadosHubExpiresAt = 0;
+      recadosHubRemainingMs = 0;
+      $('#recadosModalStatus').textContent = result?.ignoredDuePriority ? 'DIRETOR EM PRIORIDADE' : 'RECADO REMOVIDO';
+    } catch (error) {
+      $('#recadosModalStatus').textContent = friendlyError(error, 'Não foi possível retirar o recado.');
+    }
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      if (!$('#supportQrModal')?.classList.contains('hidden')) closeSupportQrModal();
+      if (!$('#technicalNoticeModal')?.classList.contains('hidden')) closeTechnicalNoticeModal();
+      else if (!$('#recadosModal')?.classList.contains('hidden')) closeRecadosModal();
+      else if (!$('#supportQrModal')?.classList.contains('hidden')) closeSupportQrModal();
       else if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
       else hideModal();
     }
@@ -1509,6 +1969,7 @@ async function init() {
     }
   };
 
+  setupToolsSubmenu();
   setupHookRename();
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
@@ -1569,7 +2030,7 @@ async function init() {
   $('#saveTechnicalNoticeSettingsButton')?.addEventListener('click', async () => {
     try {
       await saveTechnicalNoticeSettingsFromForm();
-      showModal({ title: 'Avisos técnicos', message: 'A aparência dos avisos técnicos foi salva.', type: 'success' });
+      closeTechnicalNoticeModal();
     } catch (error) {
       showModal({ title: 'Avisos técnicos', message: friendlyError(error, 'Não foi possível salvar a aparência dos avisos técnicos.'), type: 'error' });
     }
@@ -1578,7 +2039,7 @@ async function init() {
     try {
       const result = await exportTelepromptBackupFromForm();
       if (result?.cancelled) return;
-      showModal({ title: 'Backup do Teleprompt', message: 'Backup exportado com as configurações das duas janelas.', type: 'success' });
+      showModal({ title: 'Backup do Teleprompt', message: 'Backup exportado com as duas janelas, presets, avisos técnicos e recados salvos.', type: 'success' });
     } catch (error) {
       showModal({ title: 'Backup do Teleprompt', message: friendlyError(error, 'Não foi possível exportar o backup do Teleprompt.'), type: 'error' });
     }
@@ -1623,18 +2084,14 @@ async function init() {
   }
 
   $('#checkButton')?.addEventListener('click', () => {
-    runManualUpdateCheck($('#checkButton'), 'Conferir atualização');
+    runManualUpdateCheck($('#checkButton'), 'Verificar atualização');
   });
 
   $('#statusCheckUpdateButton')?.addEventListener('click', () => {
     runManualUpdateCheck($('#statusCheckUpdateButton'), 'Verificar atualização');
   });
 
-  $('#laterButton').addEventListener('click', () => {
-    window.close();
-  });
-
-  $('#downloadButton').addEventListener('click', () => startVsHookDownload());
+  $('#downloadButton').addEventListener('click', startCombinedUpdateDownload);
   $('#statusDownloadButton')?.addEventListener('click', () => {
     const testUpdate = isTestClientUpdate(state?.testClientUpdate) ? state.testClientUpdate : null;
     if (!testUpdate) {
@@ -1643,7 +2100,7 @@ async function init() {
     }
     startVsHookDownload(testUpdate);
   });
-  $('#installButton').addEventListener('click', installVsHookDownloadedUpdate);
+  $('#installButton').addEventListener('click', installCombinedDownloadedUpdates);
   $('#statusInstallButton')?.addEventListener('click', installVsHookDownloadedUpdate);
 
   $('#hookCenterLearnButton')?.addEventListener('click', async () => {
@@ -1652,40 +2109,25 @@ async function init() {
     try {
       await window.hookUpdateCenter.openExternal(url);
     } catch (error) {
-      showModal({ title: 'Teleprompt', message: friendlyError(error, 'Não foi possível abrir o vídeo.'), type: 'error' });
-    }
-  });
-
-  $('#hookCenterUpdateButton')?.addEventListener('click', async () => {
-    if (!(await ensureDeviceName())) return;
-    const confirmed = await confirmModal({
-      title: 'Atualizar Hook Center',
-      message: state?.platform === 'darwin'
-        ? 'O DMG será baixado e aberto. Depois arraste o Hook Center para Aplicativos.'
-        : 'O instalador será baixado e executado. O Hook Center vai fechar para instalar a nova versão.',
-      type: 'info',
-      okText: 'Atualizar',
-      cancelText: 'Cancelar'
-    });
-    if (!confirmed) return;
-    try {
-      $('#hookCenterUpdateButton').disabled = true;
-      $('#hookCenterUpdateButton').textContent = 'Baixando...';
-      const result = await window.hookUpdateCenter.installHookCenterUpdate();
-      if (state?.platform === 'darwin') {
-        showModal({ title: 'DMG baixado', message: 'O instalador do Hook Center foi aberto. Instale por cima da versão atual.', type: 'success' });
-      }
-    } catch (error) {
-      showModal({ title: 'Erro ao atualizar Hook Center', message: friendlyError(error, 'Não foi possível atualizar o Hook Center.'), type: 'error' });
-    } finally {
-      $('#hookCenterUpdateButton').disabled = false;
-      $('#hookCenterUpdateButton').textContent = 'Atualizar Hook Center';
+      showModal({ title: 'VS Hook', message: friendlyError(error, 'Não foi possível abrir o conteúdo.'), type: 'error' });
     }
   });
 
   $('#activateButton').addEventListener('click', async () => {
     try {
-      if (!(await ensureDeviceName())) return;
+      const deviceNameInput = $('#deviceNameInlineInput');
+      const deviceName = String(deviceNameInput?.value || '').trim();
+      if (!deviceName) {
+        if (deviceNameInput) {
+          deviceNameInput.classList.add('input-required-error');
+          deviceNameInput.focus();
+        }
+        $('#licenseMessage').textContent = 'Digite o nome deste dispositivo para ativar a licença.';
+        return;
+      }
+      deviceNameInput?.classList.remove('input-required-error');
+      const savedName = await window.hookUpdateCenter.setDeviceName({ deviceName });
+      if (savedName?.state) state = savedName.state;
       $('#activateButton').disabled = true;
       $('#activateButton').textContent = 'Ativando...';
       $('#licenseMessage').textContent = 'Verificando dados...';
@@ -1804,7 +2246,7 @@ init().catch((error) => {
       try {
         await saveLyricsSettingsFromForm(slot);
       } catch (error) {
-        setStatus(error.message || `Não foi possível fixar a janela ${slot}.`, 'error');
+        setStatus(friendlyError(error, `Não foi possível fixar a janela ${slot}.`), 'error');
       }
     });
   });

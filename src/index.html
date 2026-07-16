@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <header class="sidebar top-menu-bar">
       <div class="brand">
         <img src="../assets/logo.png" class="logo-hook" alt="Hook Center" />
         <div>
@@ -17,7 +17,7 @@
         </div>
       </div>
 
-      <nav>
+      <nav aria-label="Menu principal">
         <button class="nav-item active" data-view="home">Atualização</button>
         <button class="nav-item" data-view="previous">Atualizações anteriores</button>
         <button class="nav-item" data-view="license">Ativação</button>
@@ -29,22 +29,16 @@
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
       </nav>
 
-      <div class="sidebar-footer">
-        <span id="platformLabel">Sistema</span>
-      </div>
-    </aside>
+    </header>
 
     <main class="content">
       <section id="homeView" class="view active">
-        <div class="hero-card">
-          <div>
-            <p class="eyebrow">VS Hook</p>
-            <h1>Central de atualizações</h1>
-            <p class="muted">Verifique novidades e baixe atualizações do VS Hook quando precisar.</p>
-            <p class="installed-version-line hero-installed-version">Versão do VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
-          </div>
-          <button id="checkButton" class="primary-button">Conferir atualização</button>
+        <div class="hero-card home-compact-header">
+          <h1>Hook Center</h1>
+          <p class="home-header-installed-version">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
+          <button id="checkButton" class="primary-button">Verificar atualização</button>
         </div>
+        <button id="hookCenterLearnButton" class="primary-button home-learn-pulse-button hidden" type="button">Quero aprender tudo sobre o VS Hook</button>
         <div id="updateDescriptionCard" class="card update-description-card hidden" aria-hidden="true">
           <p class="eyebrow">Descrição da atualização</p>
           <div id="updateDescription" class="update-description-text">--</div>
@@ -54,7 +48,7 @@
           <div class="update-column script-update-column">
             <div id="noUpdateCard" class="card hidden">
               <h2>Nenhuma publicação carregada</h2>
-              <p class="muted">Clique em conferir atualização para buscar a versão mais recente disponível.</p>
+              <p class="muted">Clique em verificar atualização para buscar a versão mais recente disponível.</p>
             </div>
 
             <div id="updateCard" class="card hidden">
@@ -65,8 +59,6 @@
                 </div>
                 <span id="versionBadge" class="badge">v0.0.0</span>
               </div>
-              <p class="installed-version-line">Versão do VS Hook instalada: <strong id="installedVsHookVersion">--</strong></p>
-
               <div id="videoBox" class="video-box video-preview">
                 <button id="openVideoModalButton" class="video-play-button" type="button">
                   <span class="play-icon">▶</span>
@@ -79,7 +71,6 @@
               <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar</button>
                 <button id="installButton" class="primary-button hidden" type="button">Instalar</button>
-                <button id="laterButton" class="secondary-button">Fechar para tray</button>
               </div>
               <div id="homeProgressArea" class="inline-progress-area hidden">
                 <div class="progress-shell">
@@ -88,26 +79,6 @@
                 <div class="progress-row">
                   <span id="progressText">0%</span>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="update-column hookcenter-update-column">
-            <div class="card hidden" id="hookCenterLearnCard">
-              <p class="eyebrow">Hook Center</p>
-              <h2>Quero aprender tudo sobre o Teleprompt</h2>
-              <p class="muted">Veja o material completo de uso do Teleprompt.</p>
-              <div class="actions" id="hookCenterLearnActions">
-                <button id="hookCenterLearnButton" class="primary-button" type="button">Assistir agora</button>
-              </div>
-            </div>
-
-            <div class="card" id="hookCenterUpdateCard">
-              <p class="eyebrow">Hook Center</p>
-              <h2>Atualização do Hook Center</h2>
-              <p class="muted" id="hookCenterUpdateText">Verificando atualização do Hook Center...</p>
-              <div class="actions hidden" id="hookCenterUpdateActions">
-                <button id="hookCenterUpdateButton" class="primary-button hidden" type="button">Atualizar Hook Center</button>
               </div>
             </div>
           </div>
@@ -134,14 +105,6 @@
       </section>
 
       <section id="licenseView" class="view">
-        <div class="hero-card">
-          <div>
-            <p class="eyebrow">Licença VS Hook</p>
-            <h1>Ativação por documento + e-mail</h1>
-            <p class="muted">Use o CPF ou CNPJ e o e-mail informados na compra para ativar o VS Hook.</p>
-          </div>
-        </div>
-
         <div class="card">
           <h2>Ativar VS Hook</h2>
 
@@ -279,90 +242,131 @@
 
       <section id="lyricsView" class="view">
         <div class="hero-card bridge-hero">
-          <div>
-            <p class="eyebrow">Teleprompt</p>
-            <h1>Teleprompt externo</h1>
-            <p class="muted">Abra uma ou duas telas de letra e personalize a aparência de cada uma.</p>
-          </div>
-          <div class="actions">
-            <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Teleprompt 1</button>
-            <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Teleprompt 2</button>
-            <label class="settings-check lyrics-pin-quick">
-              <input id="lyricsAlwaysOnTopQuick1" type="checkbox" />
-              Fixar janela 1
-            </label>
-            <label class="settings-check lyrics-pin-quick">
-              <input id="lyricsAlwaysOnTopQuick2" type="checkbox" />
-              Fixar janela 2
-            </label>
-            <button id="importLyricsBackupButton" class="secondary-button" type="button">Import Backup</button>
-            <button id="exportLyricsBackupButton" class="secondary-button" type="button">Export Backup</button>
+          <div class="lyrics-top-controls">
+            <div class="lyrics-window-quick-actions lyrics-window-quick-actions-left">
+              <button id="openLyricsOneButton" class="primary-button" type="button">Abrir Teleprompt 1</button>
+              <label class="settings-check lyrics-pin-quick lyrics-pin-icon" title="Fixar Teleprompt 1" aria-label="Fixar Teleprompt 1">
+                <input id="lyricsAlwaysOnTopQuick1" type="checkbox" />
+                <span aria-hidden="true">📌</span>
+              </label>
+            </div>
+            <div class="lyrics-central-actions">
+              <button id="openTechnicalNoticeModalButton" class="secondary-button technical-notice-open-button" type="button">Avisos técnicos</button>
+              <button id="openRecadosModalButton" class="secondary-button technical-notice-open-button" type="button">Recados</button>
+            </div>
+            <div class="lyrics-window-quick-actions lyrics-window-quick-actions-right">
+              <label class="settings-check lyrics-pin-quick lyrics-pin-icon" title="Fixar Teleprompt 2" aria-label="Fixar Teleprompt 2">
+                <input id="lyricsAlwaysOnTopQuick2" type="checkbox" />
+                <span aria-hidden="true">📌</span>
+              </label>
+              <button id="openLyricsTwoButton" class="secondary-button" type="button">Abrir Teleprompt 2</button>
+            </div>
           </div>
         </div>
 
-        <div class="card lyrics-window-card technical-notice-settings-card">
-          <div class="technical-notice-header">
-            <h2>Avisos técnicos</h2>
-            <p class="muted">Ajuste recados, destino e emoji.</p>
+        <div id="technicalNoticeModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="technicalNoticeModalTitle">
+          <div class="hook-modal technical-notice-modal">
+            <button id="closeTechnicalNoticeModalButton" class="technical-notice-modal-close" type="button" aria-label="Fechar avisos técnicos">×</button>
+            <div class="technical-notice-header">
+              <h2 id="technicalNoticeModalTitle">Avisos técnicos</h2>
+              <p class="muted">Ajuste recados, destino e emoji.</p>
+            </div>
+            <div class="lyrics-settings-grid technical-notice-grid">
+              <label>
+                Cor do aviso
+                <input id="technicalNoticeTextColor" type="color" value="#ffea00" />
+              </label>
+              <label>
+                Cor do pisca
+                <input id="technicalNoticeFlashColor" type="color" value="#ff0000" />
+              </label>
+              <label>
+                Fonte do aviso
+                <select id="technicalNoticeFontFamily">
+                  <option value="Arial">Arial</option>
+                  <option value="Segoe UI">Segoe UI</option>
+                  <option value="Verdana">Verdana</option>
+                  <option value="Tahoma">Tahoma</option>
+                  <option value="Georgia">Georgia</option>
+                  <option value="Trebuchet MS">Trebuchet MS</option>
+                  <option value="Impact">Impact</option>
+                </select>
+              </label>
+              <label class="settings-check">
+                <input id="technicalNoticeWindow1Enabled" type="checkbox" checked />
+                Janela 1
+              </label>
+              <label class="settings-check">
+                <input id="technicalNoticeWindow2Enabled" type="checkbox" checked />
+                Janela 2
+              </label>
+              <label class="settings-check">
+                <input id="technicalNoticeEmojiEnabled" type="checkbox" checked />
+                Emoji
+              </label>
+              <label class="emoji-picker-label">
+                Emoji do recado
+                <input id="technicalNoticeEmoji" type="hidden" value="⚠️" />
+                <button id="technicalNoticeEmojiPickerButton" class="emoji-picker-button" type="button" aria-expanded="false">
+                  <span id="technicalNoticeEmojiPreview">⚠️</span>
+                  <span>Escolher emoji</span>
+                </button>
+                <div id="technicalNoticeEmojiPicker" class="emoji-picker-popover hidden" role="listbox" aria-label="Escolher emoji do recado"></div>
+              </label>
+              <label>
+                Senha do app Recados
+                <input id="technicalNoticeRecadosPassword" type="password" placeholder="Opcional" autocomplete="new-password" />
+              </label>
+            </div>
+            <div class="modal-actions technical-notice-modal-actions">
+              <button id="closeTechnicalNoticeModalSecondaryButton" class="secondary-button modal-button" type="button">Fechar</button>
+              <button id="saveTechnicalNoticeSettingsButton" class="primary-button modal-button" type="button">Salvar avisos</button>
+            </div>
           </div>
-          <div class="lyrics-settings-grid technical-notice-grid">
-            <label>
-              Cor do aviso
-              <input id="technicalNoticeTextColor" type="color" value="#ffea00" />
-            </label>
-            <label>
-              Cor do pisca
-              <input id="technicalNoticeFlashColor" type="color" value="#ff0000" />
-            </label>
-            <label>
-              Fonte do aviso
-              <select id="technicalNoticeFontFamily">
-                <option value="Arial">Arial</option>
-                <option value="Segoe UI">Segoe UI</option>
-                <option value="Verdana">Verdana</option>
-                <option value="Tahoma">Tahoma</option>
-                <option value="Georgia">Georgia</option>
-                <option value="Trebuchet MS">Trebuchet MS</option>
-                <option value="Impact">Impact</option>
-              </select>
-            </label>
-            <label class="settings-check">
-              <input id="technicalNoticeWindow1Enabled" type="checkbox" checked />
-              Janela 1
-            </label>
-            <label class="settings-check">
-              <input id="technicalNoticeWindow2Enabled" type="checkbox" checked />
-              Janela 2
-            </label>
-            <label class="settings-check">
-              <input id="technicalNoticeEmojiEnabled" type="checkbox" checked />
-              Emoji
-            </label>
-            <label class="emoji-picker-label">
-              Emoji do recado
-              <input id="technicalNoticeEmoji" type="hidden" value="⚠️" />
-              <button id="technicalNoticeEmojiPickerButton" class="emoji-picker-button" type="button" aria-expanded="false">
-                <span id="technicalNoticeEmojiPreview">⚠️</span>
-                <span>Escolher emoji</span>
-              </button>
-              <div id="technicalNoticeEmojiPicker" class="emoji-picker-popover hidden" role="listbox" aria-label="Escolher emoji do recado"></div>
-            </label>
-            <label>
-              Senha do app Recados
-              <input id="technicalNoticeRecadosPassword" type="password" placeholder="Opcional" autocomplete="new-password" />
-            </label>
+        </div>
+
+        <div id="recadosModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="recadosModalTitle">
+          <div class="hook-modal recados-modal">
+            <div class="recados-center-app">
+              <h2 id="recadosModalTitle" class="sr-only">Recados</h2>
+              <div class="recados-center-top">
+                <button id="sendRecadosButton" class="recados-center-send" type="button">ENVIAR</button>
+                <button id="cancelRecadosButton" class="recados-center-cancel" type="button">RETIRAR</button>
+              </div>
+              <button id="toggleRecadosPinButton" class="recados-center-pin" type="button" aria-pressed="false">FIXAR</button>
+              <div class="recados-center-slots">
+                <button class="recados-center-slot" type="button" data-recados-slot="0">RECADO 1</button>
+                <button class="recados-center-slot" type="button" data-recados-slot="1">RECADO 2</button>
+                <button class="recados-center-slot" type="button" data-recados-slot="2">RECADO 3</button>
+                <button class="recados-center-slot recados-center-global active" type="button" data-recados-slot="global">GLOBAL</button>
+              </div>
+              <textarea id="recadosDraftInput" class="recados-center-text" maxlength="500" autocomplete="off" autocapitalize="sentences" autocorrect="off" spellcheck="false" placeholder="Digite o recado técnico..."></textarea>
+              <button id="editRecadosTemplateButton" class="recados-center-edit hidden" type="button">EDITAR</button>
+              <div id="recadosModalStatus" class="recados-center-status" aria-live="polite"></div>
+              <button id="closeRecadosModalSecondaryButton" class="recados-center-exit" type="button">SAIR</button>
+            </div>
           </div>
-          <div class="actions lyrics-actions">
-            <button id="saveTechnicalNoticeSettingsButton" class="primary-button" type="button">Aplicar avisos técnicos</button>
+        </div>
+
+        <div class="lyrics-config-selector" role="tablist" aria-label="Configuração do Teleprompt">
+          <button id="lyricsConfigTab1" class="lyrics-config-tab active" type="button" role="tab" aria-selected="true" data-lyrics-config-slot="1">Config Teleprompt 1</button>
+          <div class="lyrics-backup-actions">
+            <button id="exportLyricsBackupButton" class="secondary-button" type="button">Export Backup</button>
+            <button id="importLyricsBackupButton" class="secondary-button" type="button">Import Backup</button>
           </div>
+          <button id="lyricsConfigTab2" class="lyrics-config-tab" type="button" role="tab" aria-selected="false" data-lyrics-config-slot="2">Config Teleprompt 2</button>
         </div>
 
         <div class="lyrics-window-grid">
-          <div class="card lyrics-window-card">
+          <div id="lyricsWindowConfig1" class="card lyrics-window-card lyrics-config-panel active" data-lyrics-config-panel="1" role="tabpanel">
             <div class="lyrics-window-header">
               <div>
                 <h2>Janela 1</h2>
                 <p class="muted">Configurações em tempo real.</p>
+              </div>
+              <div class="lyrics-preset-actions">
+                <button class="secondary-button lyrics-preset-button" type="button" data-lyrics-preset="night" data-lyrics-preset-slot="1">Noite</button>
+                <button class="secondary-button lyrics-preset-button" type="button" data-lyrics-preset="day" data-lyrics-preset-slot="1">Dia</button>
               </div>
               <button id="lyricsClearModeButton1" class="secondary-button clear-mode-button" type="button" aria-pressed="false">Modo Clear</button>
             </div>
@@ -393,6 +397,10 @@
                   <label>
                     Cor do nome da fila
                     <input id="lyricsQueueNameColor1" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor do progresso
+                    <input id="lyricsProgressColor1" type="color" value="#ffea00" />
                   </label>
                 </div>
               </section>
@@ -430,6 +438,14 @@
               <section class="lyrics-group">
                 <h3 class="lyrics-group-title">Fontes e posição</h3>
                 <div class="lyrics-group-grid">
+                  <label>
+                    Caixa da letra
+                    <select id="lyricsTextCase1">
+                      <option value="original">Padrão (como foi escrito)</option>
+                      <option value="uppercase">CAIXA ALTA</option>
+                      <option value="lowercase">caixa baixa</option>
+                    </select>
+                  </label>
                   <label>
                     Fonte da letra
                     <select id="lyricsFontFamily1">
@@ -487,6 +503,13 @@
                       <option value="bottom">Em baixo</option>
                     </select>
                   </label>
+                  <label>
+                    Posição do progresso
+                    <select id="lyricsProgressPosition1">
+                      <option value="top">Em cima</option>
+                      <option value="bottom" selected>Em baixo</option>
+                    </select>
+                  </label>
                 </div>
               </section>
 
@@ -534,6 +557,10 @@
                     Mostrar Preview nesta janela
                   </label>
                   <label class="settings-check">
+                    <input id="lyricsProgressEnabled1" type="checkbox" />
+                    Mostrar progresso da letra
+                  </label>
+                  <label class="settings-check">
                     <input id="lyricsAlwaysOnTop1" type="checkbox" />
                     Fixar esta janela sempre em cima
                   </label>
@@ -546,11 +573,15 @@
             </div>
           </div>
 
-          <div class="card lyrics-window-card">
+          <div id="lyricsWindowConfig2" class="card lyrics-window-card lyrics-config-panel" data-lyrics-config-panel="2" role="tabpanel">
             <div class="lyrics-window-header">
               <div>
                 <h2>Janela 2</h2>
                 <p class="muted">Configurações em tempo real.</p>
+              </div>
+              <div class="lyrics-preset-actions">
+                <button class="secondary-button lyrics-preset-button" type="button" data-lyrics-preset="night" data-lyrics-preset-slot="2">Noite</button>
+                <button class="secondary-button lyrics-preset-button" type="button" data-lyrics-preset="day" data-lyrics-preset-slot="2">Dia</button>
               </div>
               <button id="lyricsClearModeButton2" class="secondary-button clear-mode-button" type="button" aria-pressed="false">Modo Clear</button>
             </div>
@@ -581,6 +612,10 @@
                   <label>
                     Cor do nome da fila
                     <input id="lyricsQueueNameColor2" type="color" value="#ffea00" />
+                  </label>
+                  <label>
+                    Cor do progresso
+                    <input id="lyricsProgressColor2" type="color" value="#ffea00" />
                   </label>
                 </div>
               </section>
@@ -618,6 +653,14 @@
               <section class="lyrics-group">
                 <h3 class="lyrics-group-title">Fontes e posição</h3>
                 <div class="lyrics-group-grid">
+                  <label>
+                    Caixa da letra
+                    <select id="lyricsTextCase2">
+                      <option value="original">Padrão (como foi escrito)</option>
+                      <option value="uppercase">CAIXA ALTA</option>
+                      <option value="lowercase">caixa baixa</option>
+                    </select>
+                  </label>
                   <label>
                     Fonte da letra
                     <select id="lyricsFontFamily2">
@@ -675,6 +718,13 @@
                       <option value="bottom">Em baixo</option>
                     </select>
                   </label>
+                  <label>
+                    Posição do progresso
+                    <select id="lyricsProgressPosition2">
+                      <option value="top">Em cima</option>
+                      <option value="bottom" selected>Em baixo</option>
+                    </select>
+                  </label>
                 </div>
               </section>
 
@@ -722,6 +772,10 @@
                     Mostrar Preview nesta janela
                   </label>
                   <label class="settings-check">
+                    <input id="lyricsProgressEnabled2" type="checkbox" />
+                    Mostrar progresso da letra
+                  </label>
+                  <label class="settings-check">
                     <input id="lyricsAlwaysOnTop2" type="checkbox" />
                     Fixar esta janela sempre em cima
                   </label>
@@ -738,7 +792,15 @@
 
 
       <section id="toolsView" class="view">
-        <div class="hero-card tools-hero">
+        <nav class="tools-submenu" aria-label="Menu de ferramentas" role="tablist">
+          <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming1">Em Breve</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming2">Em Breve</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming3">Em Breve</button>
+        </nav>
+
+        <div id="toolsRenamePanel" class="tools-panel tools-rename-panel active" data-tools-panel-content="rename" role="tabpanel">
+          <div class="hero-card tools-hero">
           <div>
             <p class="eyebrow">Ferramentas</p>
             <h1>Hook Rename</h1>
@@ -748,9 +810,9 @@
             <button id="hookRenameSelectFolderButton" class="primary-button" type="button">Escolher pasta</button>
             <button id="hookRenameSelectManyFoldersButton" class="secondary-button" type="button">Escolher multipastas</button>
           </div>
-        </div>
+          </div>
 
-        <div class="tools-grid">
+          <div class="tools-grid">
           <div class="card hook-rename-card">
             <div class="tool-card-header">
               <div>
@@ -823,6 +885,17 @@
               <p class="muted">Escolha uma pasta e clique em gerar prévia.</p>
             </div>
           </div>
+          </div>
+        </div>
+
+        <div id="toolsUpcomingPanel1" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming1" role="tabpanel">
+          <h1>EM BREVE</h1>
+        </div>
+        <div id="toolsUpcomingPanel2" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming2" role="tabpanel">
+          <h1>EM BREVE</h1>
+        </div>
+        <div id="toolsUpcomingPanel3" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming3" role="tabpanel">
+          <h1>EM BREVE</h1>
         </div>
       </section>
 

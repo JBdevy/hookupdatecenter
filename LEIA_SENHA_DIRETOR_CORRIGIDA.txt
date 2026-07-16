@@ -1,0 +1,9 @@
+CORRECAO DA SENHA DO APP DIRETOR
+
+- O App Diretor nao entra enquanto o Bridge ainda nao informou a configuracao de senha.
+- Se existe senha no Lua, ela e obrigatoria antes de avisar a extensao e assumir o REAPER.
+- A autenticacao antiga salva no localStorage foi removida.
+- Ao abrir o Diretor novamente, a senha deve ser digitada novamente.
+- A area inteira do campo de senha abre o teclado.
+- Tocar fora do campo fecha o teclado.
+- O botao do olho continua independente.

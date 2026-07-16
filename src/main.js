@@ -15,6 +15,7 @@ const store = new Store({
     currentVersion: app.getVersion(),
     hookCenterLatest: null,
     hookCenterUpdateAvailable: false,
+    downloadedHookCenterUpdate: null,
     bridgeAppLatest: null,
     bridgeAppUpdateAvailable: false,
     bridgeAppInstalled: null,
@@ -49,6 +50,7 @@ const store = new Store({
     lyrics: {
       textColor: '#ffea00',
       clockColor: '#00ff55',
+      textCase: 'uppercase',
       fontFamily: 'Arial',
       clockEnabled: true
     }
@@ -67,13 +69,17 @@ let bridgeWatchTimer = null;
 const lyricsWindows = new Map();
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
-const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
+const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
+const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
 const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getHookCenterPlatformKey()}`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
+const LICENSE_OFFLINE_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
+const LICENSE_OFFLINE_WARNING_MS = 3 * 24 * 60 * 60 * 1000;
+const LICENSE_CLOCK_ROLLBACK_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
 
 const LICENSE_PRODUCT = 'VSLIVE';
 const LICENSE_SECRET_A = 'JBKeys_VSLIVE_CORE';
@@ -244,7 +250,8 @@ async function getLatestUpdateApiUrl(options = {}) {
     params.set('scope', 'official');
   }
 
-  return `${UPDATE_API_URL_BASE}?${params.toString()}`;
+  const baseUrl = options.includeTestClient === true ? TEST_UPDATE_API_URL_BASE : UPDATE_API_URL_BASE;
+  return `${baseUrl}?${params.toString()}`;
 }
 
 function getInstalledVsHookVersion() {
@@ -1071,7 +1078,7 @@ async function checkHookCenterUpdates(manual = false) {
   return { ok: true, hasUpdate, update, offline: !fetchedUpdate, state: getAppState() };
 }
 
-async function downloadAndInstallHookCenterUpdate() {
+async function downloadHookCenterUpdateInstaller() {
   const checked = await checkHookCenterUpdates(true);
   const update = checked.update || store.get('hookCenterLatest');
   if (!update?.downloadUrl) throw new Error('Atualização do Hook Center indisponível para este sistema.');
@@ -1088,6 +1095,24 @@ async function downloadAndInstallHookCenterUpdate() {
     if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
   });
 
+  const downloaded = {
+    version: update.version,
+    updateId: update.updateId || update.version,
+    path: dest,
+    platform: process.platform,
+    downloadedAt: new Date().toISOString()
+  };
+  store.set('downloadedHookCenterUpdate', downloaded);
+  return { ok: true, downloaded };
+}
+
+async function installDownloadedHookCenterUpdate() {
+  const downloaded = store.get('downloadedHookCenterUpdate') || {};
+  const dest = String(downloaded.path || '');
+  if (!dest || !fs.existsSync(dest)) {
+    throw new Error('O instalador da atualização do Hook Center não foi encontrado. Baixe novamente.');
+  }
+
   if (process.platform === 'win32') {
     spawn(dest, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
     app.isQuiting = true;
@@ -1098,6 +1123,11 @@ async function downloadAndInstallHookCenterUpdate() {
   await shell.openPath(dest);
   shell.showItemInFolder(dest);
   return { ok: true, action: 'dmg-opened' };
+}
+
+async function downloadAndInstallHookCenterUpdate() {
+  await downloadHookCenterUpdateInstaller();
+  return installDownloadedHookCenterUpdate();
 }
 
 
@@ -1129,8 +1159,8 @@ function bridgeAppNeedsUpdate(update) {
 
 async function checkBridgeAppUpdates(manual = false) {
   // App QR não é mais atualizado pelo backend.
-  // A versão servida pelo QR agora vem sempre embutida no build atual do Hook Center.
-  const installedPath = ensureExternalBridgeWebApp();
+  // A versão servida pelo QR agora vem sempre de qr-app/.
+  const installedPath = getBridgeWebAppDir();
   store.set('bridgeAppLatest', null);
   store.set('bridgeAppUpdateAvailable', false);
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
@@ -1163,69 +1193,10 @@ function runProcess(command, args = [], options = {}) {
   });
 }
 
-async function extractZip(zipPath, destinationDir) {
-  fs.rmSync(destinationDir, { recursive: true, force: true });
-  fs.mkdirSync(destinationDir, { recursive: true });
-
-  if (process.platform === 'win32') {
-    await runProcess('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass',
-      '-Command',
-      `Expand-Archive -LiteralPath ${JSON.stringify(zipPath)} -DestinationPath ${JSON.stringify(destinationDir)} -Force`
-    ]);
-    return;
-  }
-
-  await runProcess('/usr/bin/unzip', ['-oq', zipPath, '-d', destinationDir]);
-}
-
-function findBridgeAppRoot(extractDir) {
-  if (isBridgeWebAppDirValid(extractDir)) return extractDir;
-  const entries = fs.readdirSync(extractDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-  if (entries.length === 1) {
-    const onlyDir = path.join(extractDir, entries[0].name);
-    if (isBridgeWebAppDirValid(onlyDir)) return onlyDir;
-  }
-  for (const entry of entries) {
-    const candidate = path.join(extractDir, entry.name);
-    if (isBridgeWebAppDirValid(candidate)) return candidate;
-  }
-  return '';
-}
-
-function installExtractedBridgeApp(appRoot, update) {
-  if (!isBridgeWebAppDirValid(appRoot)) throw new Error('ZIP do App QR inválido: index.html não encontrado.');
-
-  const externalDir = getExternalBridgeWebAppDir();
-  const parentDir = path.dirname(externalDir);
-  const installDir = path.join(parentDir, `qr-app-installing-${Date.now()}`);
-  const backupDir = path.join(parentDir, `qr-app-backup-${Date.now()}`);
-
-  fs.mkdirSync(parentDir, { recursive: true });
-  fs.rmSync(installDir, { recursive: true, force: true });
-  copyDirectoryRecursive(appRoot, installDir);
-  fs.writeFileSync(path.join(installDir, 'version.json'), JSON.stringify({
-    product: 'bridge-app',
-    version: update.version || '',
-    updateId: update.updateId || update.version || '',
-    title: update.title || '',
-    notes: update.notes || '',
-    sourceUrl: update.downloadUrl || '',
-    installedAt: new Date().toISOString()
-  }, null, 2), 'utf8');
-
-  fs.rmSync(backupDir, { recursive: true, force: true });
-  if (fs.existsSync(externalDir)) fs.renameSync(externalDir, backupDir);
-  fs.renameSync(installDir, externalDir);
-  fs.rmSync(backupDir, { recursive: true, force: true });
-
-  return externalDir;
-}
-
 async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
   // Mantido apenas para compatibilidade com IPC/renderer antigo.
-  // Não baixa mais ZIP do App QR: o conteúdo é sincronizado do qr-app embutido no Hook Center.
-  const installedPath = ensureExternalBridgeWebApp();
+  // Não baixa mais ZIP do App QR: o QR Code usa diretamente o qr-app embutido no Hook Center.
+  const installedPath = getBridgeWebAppDir();
   store.set('bridgeAppLatest', null);
   store.set('bridgeAppUpdateAvailable', false);
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
@@ -1244,6 +1215,26 @@ async function checkAndInstallBridgeAppUpdate() {
 
 async function checkLicenseStatus(manual = false) {
   const license = store.get('license') || {};
+  const now = Date.now();
+  const lastClockAt = Date.parse(license.lastLocalClockAt || '') || 0;
+  if (license.active === true && lastClockAt > 0 && (now + LICENSE_CLOCK_ROLLBACK_TOLERANCE_MS) < lastClockAt) {
+    removeLocalLicense();
+    const revoked = {
+      ...license,
+      active: false,
+      message: 'Licença removida porque a data ou hora deste computador foi retrocedida.',
+      reason: 'clock_rollback',
+      offlineWarningStartedAt: ''
+    };
+    store.set('license', revoked);
+    publishLicenseOfflineStatus(revoked);
+    notifyLicense(revoked.message);
+    if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
+    return { ok: false, active: false, error: 'clock_rollback', state: getAppState() };
+  }
+  if (license.active === true && (!lastClockAt || now > lastClockAt)) {
+    store.set('license', { ...license, lastLocalClockAt: new Date(now).toISOString() });
+  }
   const docParts = splitDocument(license.document || license.cpf || license.cnpj);
   const cpf = docParts.cpf;
   const cnpj = docParts.cnpj;
@@ -1276,10 +1267,14 @@ async function checkLicenseStatus(manual = false) {
       message: result.message || result.warning || '',
       warning: result.warning || '',
       reason: result.reason || '',
-      lastStatusAt: new Date().toISOString()
+      lastStatusAt: new Date().toISOString(),
+      lastOnlineValidationAt: new Date().toISOString(),
+      offlineWarningStartedAt: '',
+      lastLocalClockAt: new Date().toISOString()
     };
 
     store.set('license', nextLicense);
+    publishLicenseOfflineStatus(nextLicense);
 
     if (active) {
       const licenseAlreadySaved = protectedLicenseShardsExist();
@@ -1307,6 +1302,25 @@ async function checkLicenseStatus(manual = false) {
 
     return { ok: true, active, result, state: getAppState() };
   } catch (error) {
+    const currentLicense = store.get('license') || {};
+    if (currentLicense.active === true) {
+      const lastOnlineAt = Date.parse(currentLicense.lastOnlineValidationAt || currentLicense.lastStatusAt || '') || Date.now();
+      const warningStartedAt = Date.parse(currentLicense.offlineWarningStartedAt || '') || 0;
+      let nextLicense = currentLicense;
+      if ((Date.now() - lastOnlineAt) >= LICENSE_OFFLINE_GRACE_MS && !warningStartedAt) {
+        nextLicense = { ...currentLicense, offlineWarningStartedAt: new Date().toISOString() };
+        store.set('license', nextLicense);
+        notifyLicense('Conecte-se à internet para verificar a licença. Sem validação, o acesso ao VS Hook será removido em 3 dias.');
+      }
+      const status = publishLicenseOfflineStatus(nextLicense);
+      if (status.expired) {
+        removeLocalLicense();
+        const revoked = { ...nextLicense, active: false, message: 'Licença removida após 3 dias sem validação online.', offlineWarningStartedAt: '' };
+        store.set('license', revoked);
+        publishLicenseOfflineStatus(revoked);
+        notifyLicense('A licença foi removida porque não houve validação online no prazo. Conecte-se à internet e ative novamente.');
+      }
+    }
     if (manual) dialog.showErrorBox('Erro ao verificar licença', error.message);
     return { ok: false, error: error.message, state: getAppState() };
   }
@@ -1352,6 +1366,34 @@ function resolveBridgeScriptsDir(config) {
   return fallback;
 }
 
+function getLicenseOfflineStatus(license = store.get('license') || {}) {
+  const now = Date.now();
+  const active = license.active === true;
+  const lastOnlineAt = Date.parse(license.lastOnlineValidationAt || license.lastStatusAt || '') || 0;
+  const warningStartedAt = Date.parse(license.offlineWarningStartedAt || '') || 0;
+  const graceElapsed = active && lastOnlineAt > 0 && (now - lastOnlineAt) >= LICENSE_OFFLINE_GRACE_MS;
+  const deadlineAt = warningStartedAt ? warningStartedAt + LICENSE_OFFLINE_WARNING_MS : 0;
+  return {
+    active,
+    warning: active && graceElapsed,
+    expired: active && warningStartedAt > 0 && now >= deadlineAt,
+    lastOnlineValidationAt: lastOnlineAt ? new Date(lastOnlineAt).toISOString() : null,
+    warningStartedAt: warningStartedAt ? new Date(warningStartedAt).toISOString() : null,
+    deadlineAt: deadlineAt ? new Date(deadlineAt).toISOString() : null,
+    message: 'Conecte-se à internet para verificar a licença. Sem validação, o acesso ao VS Hook será removido em 3 dias.'
+  };
+}
+
+function publishLicenseOfflineStatus(license = store.get('license') || {}) {
+  const payload = { ...getLicenseOfflineStatus(license), updatedAt: new Date().toISOString() };
+  try {
+    const config = bridgeConfig || readBridgeConfig();
+    const target = path.join(resolveBridgeScriptsDir(config), 'vshook_license_status.json');
+    fs.writeFileSync(target, JSON.stringify(payload, null, 2), 'utf8');
+  } catch (_) {}
+  return payload;
+}
+
 function getBridgeFallbackState(extra = {}) {
   return {
     bridgeVersion: 1,
@@ -1380,29 +1422,13 @@ function getBridgeFallbackState(extra = {}) {
 
 
 function getEditableBridgeWebAppDir() {
-  // Pasta usada no desenvolvimento com npm start.
-  // Assim você edita Hook center/qr-app/ e o celular já lê essa versão,
-  // sem precisar mexer em src/bridge-web-app nem reinstalar o Hook Center.
+  // Fonte única do App QR, usada no desenvolvimento e no build empacotado.
+  // Assim o QR Code sempre lê Hook center/qr-app/ sem depender de cópias em src/.
   return path.join(__dirname, '..', 'qr-app');
 }
 
 function getBundledBridgeWebAppDir() {
-  // Em build empacotado, qr-app/ também entra no pacote e vira a base
-  // copiada para ProgramData/Users Shared quando a pasta externa ainda não existe.
-  const editableOrBundledDir = getEditableBridgeWebAppDir();
-  if (isBridgeWebAppDirValid(editableOrBundledDir)) return editableOrBundledDir;
-  return path.join(__dirname, 'bridge-web-app');
-}
-
-function getExternalBridgeWebAppDir() {
-  if (process.platform === 'win32') {
-    const programData = process.env.PROGRAMDATA || process.env.ProgramData || 'C:\\ProgramData';
-    return path.join(programData, 'HookDeveloper', 'HookCenter', 'qr-app');
-  }
-  if (process.platform === 'darwin') {
-    return '/Users/Shared/HookDeveloper/HookCenter/qr-app';
-  }
-  return path.join(os.homedir(), '.hookdeveloper', 'hookcenter', 'qr-app');
+  return getEditableBridgeWebAppDir();
 }
 
 function getFallbackBridgeWebAppDir() {
@@ -1438,79 +1464,22 @@ function readBridgeWebAppVersion(dir) {
   }
 }
 
-function bridgeExternalAppNeedsBundledSync(externalDir, bundledDir) {
-  if (!isBridgeWebAppDirValid(externalDir)) return true;
-  const bundledVersion = readBridgeWebAppVersion(bundledDir);
-  const externalVersion = readBridgeWebAppVersion(externalDir);
-  if (!bundledVersion) return false;
-  return bundledVersion !== externalVersion;
-}
-
-function copyDirectoryRecursive(sourceDir, targetDir) {
-  const stat = fs.statSync(sourceDir);
-  if (!stat.isDirectory()) throw new Error('Origem do app QR não é uma pasta.');
-  fs.mkdirSync(targetDir, { recursive: true });
-  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-    const sourcePath = path.join(sourceDir, entry.name);
-    const targetPath = path.join(targetDir, entry.name);
-    if (entry.isDirectory()) {
-      copyDirectoryRecursive(sourcePath, targetPath);
-    } else if (entry.isFile()) {
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      fs.copyFileSync(sourcePath, targetPath);
-    }
-  }
-}
-
-function ensureExternalBridgeWebApp() {
-  const externalDir = getExternalBridgeWebAppDir();
-  const bundledDir = getBundledBridgeWebAppDir();
-
-  if (isBridgeWebAppDirValid(bundledDir) && bridgeExternalAppNeedsBundledSync(externalDir, bundledDir)) {
-    try {
-      fs.rmSync(externalDir, { recursive: true, force: true });
-      fs.mkdirSync(path.dirname(externalDir), { recursive: true });
-      copyDirectoryRecursive(bundledDir, externalDir);
-      const versionFile = path.join(externalDir, 'version.json');
-      if (!fs.existsSync(versionFile)) {
-        fs.writeFileSync(versionFile, JSON.stringify({ version: app.getVersion(), bundled: true, installedAt: new Date().toISOString() }, null, 2), 'utf8');
-      }
-      store.set('bridgeAppInstalled', {
-        version: readBridgeWebAppVersion(externalDir) || app.getVersion(),
-        updateId: readBridgeWebAppVersion(externalDir) || app.getVersion(),
-        title: 'App QR embutido no Hook Center',
-        notes: 'Sincronizado automaticamente a partir do build do Hook Center.',
-        path: externalDir,
-        installedAt: new Date().toISOString()
-      });
-      return externalDir;
-    } catch (error) {
-      console.warn('[Hook Center] Não foi possível preparar App QR externo:', error?.message || error);
-      return bundledDir;
-    }
-  }
-
-  if (isBridgeWebAppDirValid(externalDir)) return externalDir;
-  if (isBridgeWebAppDirValid(bundledDir)) return bundledDir;
-
+function getBridgeWebAppDir() {
+  // O QR Code serve sempre a fonte única qr-app/.
+  // No desenvolvimento isso aponta para Hook center/qr-app; no app empacotado,
+  // aponta para o qr-app embutido no pacote.
+  const appDir = getBundledBridgeWebAppDir();
+  if (isBridgeWebAppDirValid(appDir)) return appDir;
   return getFallbackBridgeWebAppDir();
 }
 
-function getBridgeWebAppDir() {
-  // Durante npm start, serve diretamente Hook center/qr-app/.
-  // Isso permite testar alteração de tela/layout pelo QR sem copiar para ProgramData.
-  const editableDir = getEditableBridgeWebAppDir();
-  if (!app.isPackaged && isBridgeWebAppDirValid(editableDir)) {
-    return editableDir;
-  }
-
-  // No app instalado, usa a pasta atualizável externa.
-  return ensureExternalBridgeWebApp();
+function getBridgeAppCacheVersion() {
+  return encodeURIComponent(readBridgeWebAppVersion(getBridgeWebAppDir()) || app.getVersion() || Date.now());
 }
 
-function getBridgeAppCacheVersion() {
-  const installed = store.get('bridgeAppInstalled') || {};
-  return encodeURIComponent(installed.updateId || installed.version || app.getVersion() || Date.now());
+function isVsHookLicenseActiveForBridge() {
+  const license = store.get('license') || {};
+  return license.active === true;
 }
 
 function buildBridgeServers(config) {
@@ -1526,6 +1495,8 @@ function buildBridgeServers(config) {
       appDir: bridgeWebAppDir,
       sharedDir,
       getTechnicalNoticeSettings,
+      saveTechnicalNoticeSettings,
+      isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
         clearButtonSide: 'right',
@@ -1544,6 +1515,8 @@ function buildBridgeServers(config) {
       appDir: bridgeWebAppDir,
       sharedDir,
       getTechnicalNoticeSettings,
+      saveTechnicalNoticeSettings,
+      isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState(),
       routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
     })
@@ -1622,6 +1595,7 @@ function getBridgeState() {
 
 function getLyricsDefaults() {
   return {
+    preset: 'night',
     textColor: '#ffea00',
     textBoxColor: '#ffea00',
     clockColor: '#00ff55',
@@ -1630,6 +1604,7 @@ function getLyricsDefaults() {
     rgbWindowBorderEnabled: false,
     rgbClockBorderEnabled: false,
     rgbTextBoxBorderEnabled: false,
+    textCase: 'uppercase',
     fontFamily: 'Arial',
     textScale: 1,
     borderEnabled: true,
@@ -1647,6 +1622,9 @@ function getLyricsDefaults() {
     songNameFontFamily: 'Arial',
     songNameScale: 1,
     songNamePosition: 'top',
+    progressEnabled: false,
+    progressPosition: 'bottom',
+    progressColor: '#ffea00',
     clockPosition: 'top',
     clockScale: 1,
     mediaScale: 1,
@@ -1685,7 +1663,8 @@ function getTechnicalNoticeDefaults() {
     recadosAuthEnabled: false,
     recadosAuthHash: '',
     technicalNoticeAuthEnabled: false,
-    technicalNoticeAuthHash: ''
+    technicalNoticeAuthHash: '',
+    recadosTemplates: ['', '', '']
   };
 }
 
@@ -1707,12 +1686,83 @@ function saveTechnicalNoticeSettings(settings = {}) {
     const cleanEmoji = settings.emoji.trim().replace(/[\r\n\t]+/g, '').slice(0, 8);
     next.emoji = cleanEmoji || '⚠️';
   }
+  if (Array.isArray(settings.recadosTemplates)) {
+    next.recadosTemplates = [0, 1, 2].map((index) => String(settings.recadosTemplates[index] || '').trim().slice(0, 500));
+  }
   store.set('technicalNoticeSettings', next);
   for (const win of lyricsWindows.values()) {
     if (win && !win.isDestroyed()) win.webContents.send('technical-notice-settings-updated', next);
   }
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('technical-notice-settings-updated', next);
   return next;
+}
+
+function getTechnicalNoticeFilePath() {
+  return path.join(resolveBridgeScriptsDir(readBridgeConfig()), 'vshook_technical_notice.json');
+}
+
+function getStoredTechnicalNotice() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(getTechnicalNoticeFilePath(), 'utf8'));
+    const expiresAt = Number(raw?.expiresAt || 0);
+    if (!raw?.text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+    return raw;
+  } catch (_) {
+    return null;
+  }
+}
+
+function sendRecadosNotice(payload = {}) {
+  const text = String(payload.text || '').trim().slice(0, 500);
+  if (!text) throw new Error('Digite um recado antes de enviar.');
+  const active = getStoredTechnicalNotice();
+  if (active && Number(active.priority || 0) > 4) return { ok: true, ignoredDuePriority: true, notice: active };
+  const now = Date.now();
+  const pinned = payload.pinned === true;
+  const durationMs = 20000;
+  const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + durationMs;
+  const notice = {
+    id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
+    text,
+    message: text,
+    source: 'recados',
+    priority: 4,
+    createdAt: new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+    durationMs,
+    pausedRemainingMs: pinned ? durationMs : 0,
+    expiresAt,
+    expiresAtIso: new Date(expiresAt).toISOString(),
+    pinned
+  };
+  fs.mkdirSync(path.dirname(getTechnicalNoticeFilePath()), { recursive: true });
+  fs.writeFileSync(getTechnicalNoticeFilePath(), JSON.stringify(notice, null, 2), 'utf8');
+  return { ok: true, notice };
+}
+
+function cancelRecadosNotice() {
+  const active = getStoredTechnicalNotice();
+  if (active && Number(active.priority || 0) > 4) return { ok: true, ignoredDuePriority: true, notice: active };
+  fs.mkdirSync(path.dirname(getTechnicalNoticeFilePath()), { recursive: true });
+  fs.writeFileSync(getTechnicalNoticeFilePath(), JSON.stringify({ id: '', text: '', message: '', source: '', priority: 0, cancelledAt: new Date().toISOString(), expiresAt: 0 }, null, 2), 'utf8');
+  return { ok: true, cancelled: true };
+}
+
+function setRecadosNoticePinned(payload = {}) {
+  const active = getStoredTechnicalNotice();
+  if (!active) throw new Error('Nenhum recado ativo.');
+  if (Number(active.priority || 0) > 4) return { ok: true, ignoredDuePriority: true, notice: active };
+  const now = Date.now();
+  const pinned = payload.pinned === true;
+  const configuredDurationMs = Math.max(1000, Math.floor(Number(active.durationMs || 0)) || 20000);
+  const pausedRemainingMs = pinned
+    ? Math.max(0, Math.floor(Number(active.expiresAt || now) - now))
+    : Math.max(0, Math.floor(Number(active.pausedRemainingMs || 0)) || configuredDurationMs);
+  const durationMs = pinned ? configuredDurationMs : pausedRemainingMs;
+  const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + pausedRemainingMs;
+  const notice = { ...active, pinned, durationMs, pausedRemainingMs: pinned ? pausedRemainingMs : 0, updatedAt: new Date(now).toISOString(), expiresAt, expiresAtIso: new Date(expiresAt).toISOString() };
+  fs.writeFileSync(getTechnicalNoticeFilePath(), JSON.stringify(notice, null, 2), 'utf8');
+  return { ok: true, notice };
 }
 
 function normalizeLyricsSlot(slot = 1) {
@@ -1770,10 +1820,12 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact'];
   const all = getLyricsAllSettings();
   const next = { ...all[id] };
+  if (settings.preset === 'day' || settings.preset === 'night') next.preset = settings.preset;
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
   if (typeof settings.clockColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.clockColor)) next.clockColor = settings.clockColor;
   if (typeof settings.textBoxColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textBoxColor)) next.textBoxColor = settings.textBoxColor;
   if (typeof settings.borderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.borderColor)) next.borderColor = settings.borderColor;
+  if (settings.textCase === 'uppercase' || settings.textCase === 'lowercase' || settings.textCase === 'original') next.textCase = settings.textCase;
   if (allowedFonts.includes(settings.fontFamily)) next.fontFamily = settings.fontFamily;
   if (settings.textScale !== undefined) next.textScale = clampLyricsScale(settings.textScale, next.textScale || 1);
   if (typeof settings.rgbBorderEnabled === 'boolean') next.rgbBorderEnabled = settings.rgbBorderEnabled;
@@ -1798,6 +1850,9 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (allowedFonts.includes(settings.songNameFontFamily)) next.songNameFontFamily = settings.songNameFontFamily;
   if (settings.songNameScale !== undefined) next.songNameScale = clampLyricsScale(settings.songNameScale, next.songNameScale || 1, 3);
   if (settings.songNamePosition !== undefined) next.songNamePosition = normalizeLyricsScreenPosition(settings.songNamePosition, next.songNamePosition || 'top');
+  if (typeof settings.progressEnabled === 'boolean') next.progressEnabled = settings.progressEnabled;
+  if (settings.progressPosition !== undefined) next.progressPosition = normalizeLyricsScreenPosition(settings.progressPosition, next.progressPosition || 'bottom');
+  if (typeof settings.progressColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.progressColor)) next.progressColor = settings.progressColor;
   if (settings.clockPosition === 'top' || settings.clockPosition === 'bottom') next.clockPosition = settings.clockPosition;
   if (settings.clockScale !== undefined) next.clockScale = clampLyricsScale(settings.clockScale, next.clockScale || 1, 2.5);
   if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1, 1);
@@ -1877,7 +1932,7 @@ function pickImportedSlotSettings(source = {}, slot = 1) {
 
 function sourceLooksLikeSingleLyricsSettings(source = {}) {
   if (!source || typeof source !== 'object') return false;
-  return ['textColor', 'clockColor', 'fontFamily', 'textScale', 'songNameEnabled', 'clearMode'].some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  return ['textColor', 'clockColor', 'fontFamily', 'textScale', 'songNameEnabled', 'progressEnabled', 'progressPosition', 'progressColor', 'clearMode'].some((key) => Object.prototype.hasOwnProperty.call(source, key));
 }
 
 async function importLyricsBackup() {
@@ -2264,6 +2319,31 @@ function buildNativePreviewOverlay(nativeState = {}) {
   };
 }
 
+function normalizeNativeTimerPayload(source) {
+  const root = source && typeof source === 'object' ? source : {};
+  const nested = root.timer && typeof root.timer === 'object' ? root.timer : {};
+  const pick = (...values) => values.find((value) => value !== undefined && value !== null && value !== '');
+  const displaySecRaw = pick(root.timerDisplaySec, nested.displaySec, 0);
+  const displayText = String(pick(root.timerDisplayText, nested.displayText, root.timerLocalTimeText, nested.localTimeText, '') || '');
+  const expired = Boolean(
+    root.timerExpired || root.timerOverrun || root.timerNegative ||
+    nested.expired || nested.overrun || nested.negative ||
+    displayText.trim().startsWith('-') || Number(displaySecRaw) < 0
+  );
+  return {
+    running: Boolean(pick(root.timerRunning, root.timerActive, nested.running, nested.active, false)),
+    startedAt: Number(pick(root.timerStartedAt, root.timerStartedAtMs, nested.startedAt, nested.startedAtMs, 0)) || 0,
+    accumulatedSec: Number(pick(root.timerAccumulatedSec, nested.accumulatedSec, 0)) || 0,
+    mode: String(pick(root.timerMode, root.timerType, nested.mode, nested.type, 'progressive') || 'progressive'),
+    targetSec: Number(pick(root.timerTargetSec, root.timerCountdownStartSec, nested.targetSec, 0)) || 0,
+    displaySec: Number(displaySecRaw) || 0,
+    expired,
+    overrunSec: Number(pick(root.timerOverrunSec, nested.overrunSec, 0)) || 0,
+    displayText,
+    localTimeText: String(pick(root.timerLocalTimeText, nested.localTimeText, '') || '')
+  };
+}
+
 function normalizeNativeTelepromptState(nativeState, slot) {
   if (!nativeState || typeof nativeState !== 'object') return null;
   const id = normalizeLyricsSlot(slot);
@@ -2271,6 +2351,7 @@ function normalizeNativeTelepromptState(nativeState, slot) {
   const prefix = id === 2 ? 'tp2' : 'tp1';
   const telePrefix = id === 2 ? 'telepromptTp2' : 'telepromptTp1';
   const raw = tp && typeof tp === 'object' ? tp : {};
+  const projectPosition = Number(raw.position ?? raw.projectPosition ?? nativeState.position ?? nativeState.playPosition ?? 0) || 0;
   const mediaPath = String(raw.mediaPath || raw.path || nativeState[`${prefix}MediaPath`] || nativeState[`${telePrefix}MediaPath`] || '');
   const nativeMediaType = normalizeLyricsMediaType(raw.telepromptType || raw.mediaType || raw.type || nativeState[`${prefix}MediaType`] || nativeState[`${telePrefix}MediaType`] || '');
   const rawMediaUrl = String(raw.mediaUrl || raw.url || nativeState[`${prefix}MediaUrl`] || nativeState[`${telePrefix}MediaUrl`] || '');
@@ -2281,6 +2362,7 @@ function normalizeNativeTelepromptState(nativeState, slot) {
   const mediaUrl = getNativeTelepromptMediaUrl(rawMediaUrl, mediaPath);
   const previewOverlay = buildNativePreviewOverlay(nativeState);
   const nativeQueuedSongName = previewOverlay ? String(previewOverlay.queuedSongName || '') : getNativeQueuedSongName(nativeState);
+  const nativeTimer = normalizeNativeTimerPayload(nativeState);
   // FIX109: se houver texto e mídia no mesmo ponto, texto fica sobreposto.
   const textValue = String(raw.overlayText || raw.text || raw.lyrics || raw.lyricsText || nativeState[`${prefix}LyricsText`] || nativeState[`${prefix}Lyrics`] || nativeState[`${telePrefix}Lyrics`] || nativeState[`${telePrefix}Text`] || '');
   const songValue = String(raw.song || raw.songName || raw.currentSongName || raw.musicName || nativeState[`${prefix}SongName`] || nativeState[`${telePrefix}SongName`] || nativeState.currentSongName || nativeState.playingSongName || nativeState.songName || '');
@@ -2312,20 +2394,25 @@ function normalizeNativeTelepromptState(nativeState, slot) {
     mediaOffset: media.offset,
     mediaPlayrate: media.playrate,
     media,
+    position: projectPosition,
     itemGuid: media.itemGuid,
     itemStart: media.itemStart,
     itemEnd: media.itemEnd,
     itemLength: media.itemLength,
-    timerRunning: Boolean(nativeState.timerRunning),
-    timerStartedAt: Number(nativeState.timerStartedAt || nativeState.timerStartedAtMs || 0),
-    timerAccumulatedSec: Number(nativeState.timerAccumulatedSec || 0),
-    timerMode: String(nativeState.timerMode || nativeState.timerType || 'progressive'),
-    timerType: String(nativeState.timerMode || nativeState.timerType || 'progressive'),
-    timerTargetSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
-    timerCountdownStartSec: Number(nativeState.timerTargetSec || nativeState.timerCountdownStartSec || 0),
-    timerDisplaySec: Number(nativeState.timerDisplaySec || 0),
-    timerDisplayText: String(nativeState.timerDisplayText || nativeState.timerLocalTimeText || ''),
-    timerLocalTimeText: String(nativeState.timerLocalTimeText || ''),
+    timerRunning: nativeTimer.running,
+    timerStartedAt: nativeTimer.startedAt,
+    timerAccumulatedSec: nativeTimer.accumulatedSec,
+    timerMode: nativeTimer.mode,
+    timerType: nativeTimer.mode,
+    timerTargetSec: nativeTimer.targetSec,
+    timerCountdownStartSec: nativeTimer.targetSec,
+    timerDisplaySec: nativeTimer.displaySec,
+    timerExpired: nativeTimer.expired,
+    timerOverrun: nativeTimer.expired,
+    timerNegative: nativeTimer.expired,
+    timerOverrunSec: nativeTimer.overrunSec,
+    timerDisplayText: nativeTimer.displayText,
+    timerLocalTimeText: nativeTimer.localTimeText,
     playing: Boolean(raw.playing || nativeState.playing || nativeState.isPlaying),
     updatedAt: raw.updatedAt || nativeState[`${prefix}UpdatedAt`] || nativeState.updatedAt || null,
     previewOverlay,
@@ -2344,6 +2431,7 @@ async function getLyricsState(slot = 1) {
   const data = readJsonFileSafe(getLyricsStatePath(id), {});
   const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
   const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
+  const fallbackTimer = normalizeNativeTimerPayload(timerSource);
   const mediaPath = String(data.mediaPath || data.path || '');
   const dataMediaUrl = String(data.mediaUrl || '');
   const dataMediaType = normalizeLyricsMediaType(data.telepromptType || data.mediaType || data.type);
@@ -2369,6 +2457,7 @@ async function getLyricsState(slot = 1) {
     itemEnd: Number(data.itemEnd || 0),
     itemLength: Number(data.itemLength || 0)
   };
+  const projectPosition = Number(data.position ?? data.projectPosition ?? bridgeState.position ?? bridgeState.playPosition ?? 0) || 0;
   return {
     slot: id,
     text: textValue,
@@ -2382,20 +2471,25 @@ async function getLyricsState(slot = 1) {
     mediaOffset: media.offset,
     mediaPlayrate: media.playrate,
     media,
+    position: projectPosition,
     itemGuid: media.itemGuid,
     itemStart: media.itemStart,
     itemEnd: media.itemEnd,
     itemLength: media.itemLength,
-    timerRunning: Boolean(timerSource.timerRunning),
-    timerStartedAt: Number(timerSource.timerStartedAt || timerSource.timerStartedAtMs || 0),
-    timerAccumulatedSec: Number(timerSource.timerAccumulatedSec || 0),
-    timerMode: String(timerSource.timerMode || timerSource.timerType || 'progressive'),
-    timerType: String(timerSource.timerMode || timerSource.timerType || 'progressive'),
-    timerTargetSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
-    timerCountdownStartSec: Number(timerSource.timerTargetSec || timerSource.timerCountdownStartSec || 0),
-    timerDisplaySec: Number(timerSource.timerDisplaySec || 0),
-    timerDisplayText: String(timerSource.timerDisplayText || timerSource.timerLocalTimeText || ''),
-    timerLocalTimeText: String(timerSource.timerLocalTimeText || ''),
+    timerRunning: fallbackTimer.running,
+    timerStartedAt: fallbackTimer.startedAt,
+    timerAccumulatedSec: fallbackTimer.accumulatedSec,
+    timerMode: fallbackTimer.mode,
+    timerType: fallbackTimer.mode,
+    timerTargetSec: fallbackTimer.targetSec,
+    timerCountdownStartSec: fallbackTimer.targetSec,
+    timerDisplaySec: fallbackTimer.displaySec,
+    timerExpired: fallbackTimer.expired,
+    timerOverrun: fallbackTimer.expired,
+    timerNegative: fallbackTimer.expired,
+    timerOverrunSec: fallbackTimer.overrunSec,
+    timerDisplayText: fallbackTimer.displayText,
+    timerLocalTimeText: fallbackTimer.localTimeText,
     playing: Boolean(data.playing || bridgeState.playing || bridgeState.isPlaying),
     updatedAt: data.updatedAt || bridgeState.updatedAt || null,
     previewOverlay: null,
@@ -2419,13 +2513,16 @@ function createLyricsWindow(slot = 1) {
     // Janela do Teleprompt precisa aceitar formatos extremos, inclusive 9:16 vertical.
     minWidth: 180,
     minHeight: 180,
-    backgroundColor: '#00000000',
+    // Janelas transparentes sem moldura podem falhar ao recompor entre
+    // monitores. O Teleprompt usa fundo preto, então fica opaco em todas as
+    // plataformas para manter a imagem estável em telas múltiplas.
+    backgroundColor: '#000000',
     title: 'Teleprompt',
     icon: getAppIconPath(),
     frame: false,
     // Mantem handles nativos de redimensionamento em janela sem moldura, especialmente no Windows.
     thickFrame: true,
-    transparent: true,
+    transparent: false,
     roundedCorners: false,
     focusable: true,
     movable: true,
@@ -2512,14 +2609,24 @@ function toggleLyricsWindowFullscreen(win) {
 }
 
 function getAppState() {
+  const hookCenterBinaryVersion = app.getVersion();
+  const installedVsHookVersion = getInstalledVsHookVersion();
   return {
-    currentVersion: app.getVersion(),
+    // A versão binária continua separada e é a única usada para decidir se o
+    // instalador da Hook Center precisa ser baixado novamente.
+    currentVersion: hookCenterBinaryVersion,
+    hookCenterBinaryVersion,
+    // No Status, a Central acompanha a versão do pacote VS Hook efetivamente
+    // instalado a partir da publicação do backend, mesmo quando esse pacote
+    // não traz um novo instalador da Hook Center.
+    statusDisplayVersion: installedVsHookVersion || hookCenterBinaryVersion,
     lastCheck: store.get('lastCheck'),
     updateAvailable: store.get('updateAvailable'),
     latestUpdate: store.get('latestUpdate'),
     testClientUpdate: store.get('testClientUpdate'),
     hookCenterLatest: store.get('hookCenterLatest'),
     hookCenterUpdateAvailable: store.get('hookCenterUpdateAvailable'),
+    downloadedHookCenterUpdate: store.get('downloadedHookCenterUpdate'),
     bridgeAppLatest: store.get('bridgeAppLatest'),
     bridgeAppUpdateAvailable: store.get('bridgeAppUpdateAvailable'),
     bridgeAppInstalled: store.get('bridgeAppInstalled'),
@@ -2527,7 +2634,7 @@ function getAppState() {
     lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
     downloadedFiles: store.get('downloadedFiles'),
     installedManifest: store.get('installedManifest'),
-    installedVsHookVersion: getInstalledVsHookVersion(),
+    installedVsHookVersion,
     license: store.get('license'),
     machineId: (store.get('license') || {}).machineId || '',
     deviceName: getStoredDeviceName(),
@@ -3205,6 +3312,8 @@ ipcMain.handle('check-updates', async () => {
 });
 ipcMain.handle('check-hook-center-update', () => checkHookCenterUpdates(true));
 ipcMain.handle('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());
+ipcMain.handle('download-hook-center-update', () => downloadHookCenterUpdateInstaller());
+ipcMain.handle('install-downloaded-hook-center-update', () => installDownloadedHookCenterUpdate());
 ipcMain.handle('check-bridge-app-update', () => checkBridgeAppUpdates(true));
 ipcMain.handle('install-bridge-app-update', () => downloadAndInstallBridgeAppUpdate());
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
@@ -3217,6 +3326,9 @@ ipcMain.handle('get-lyrics-settings', (_event, slot) => slot ? getLyricsSettings
 ipcMain.handle('save-lyrics-settings', (_event, payload) => saveLyricsSettings(payload || {}, payload?.slot));
 ipcMain.handle('get-technical-notice-settings', () => getTechnicalNoticeSettings());
 ipcMain.handle('save-technical-notice-settings', (_event, payload) => saveTechnicalNoticeSettings(payload || {}));
+ipcMain.handle('send-recados-notice', (_event, payload) => sendRecadosNotice(payload || {}));
+ipcMain.handle('cancel-recados-notice', () => cancelRecadosNotice());
+ipcMain.handle('set-recados-notice-pinned', (_event, payload) => setRecadosNoticePinned(payload || {}));
 ipcMain.handle('export-lyrics-backup', () => exportLyricsBackup());
 ipcMain.handle('import-lyrics-backup', () => importLyricsBackup());
 ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot));
@@ -3287,6 +3399,9 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   if (!email || !email.includes('@')) {
     throw new Error('Digite o e-mail usado na compra.');
   }
+  if (!computerName) {
+    throw new Error('Digite o nome deste dispositivo antes de ativar a licença.');
+  }
 
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
@@ -3318,6 +3433,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   };
 
   store.set('license', nextLicense);
+  publishLicenseOfflineStatus({ ...nextLicense, lastOnlineValidationAt: new Date().toISOString(), offlineWarningStartedAt: '' });
   rebuildTrayMenu();
 
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
@@ -3333,7 +3449,6 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   if (!isValidWindow(mainWindow)) createWindow();
   if (!tray) createTray();
-  ensureExternalBridgeWebApp();
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });

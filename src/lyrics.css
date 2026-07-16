@@ -4,13 +4,55 @@
   --lyrics-clock-color: #00ff55;
   --lyrics-border-color: #00ff55;
   --lyrics-font: Arial, sans-serif;
+  --lyrics-text-transform: uppercase;
   --lyrics-clock-scale: 1;
   --lyrics-clock-letter-spacing: .12em;
   --lyrics-media-scale: 1;
   --lyrics-preview-scale: 1;
+  --lyrics-progress-color: #ffea00;
   --notice-text-color: #ffea00;
   --notice-flash-color: #ff0000;
   --notice-font: Arial, sans-serif;
+}
+
+.lyrics-content-progress {
+  position: fixed;
+  left: clamp(18px, 3.2vw, 52px);
+  right: clamp(18px, 3.2vw, 52px);
+  bottom: clamp(10px, 1.5vh, 16px);
+  height: clamp(13px, 1.8vh, 18px);
+  z-index: 2147483635;
+  overflow: hidden;
+  pointer-events: none;
+  padding: 1px;
+  border: 1px solid rgba(255,255,255,.36);
+  border-radius: 999px;
+  background: rgba(0,0,0,.74);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.88), 0 4px 14px rgba(0,0,0,.78);
+}
+
+body.progress-top .lyrics-content-progress {
+  top: clamp(10px, 1.5vh, 16px);
+  bottom: auto;
+}
+
+body.progress-bottom .lyrics-content-progress {
+  top: auto;
+  bottom: clamp(10px, 1.5vh, 16px);
+}
+
+.lyrics-content-progress.hidden,
+body.notice-active .lyrics-content-progress {
+  display: none;
+}
+
+.lyrics-content-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--lyrics-progress-color);
+  border-radius: 999px;
+  box-shadow: 0 0 12px var(--lyrics-progress-color);
+  will-change: width;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -156,6 +198,7 @@ body.border-hidden::before {
   text-align: center;
   color: var(--lyrics-text-color);
   font-family: var(--lyrics-font);
+  text-transform: var(--lyrics-text-transform, uppercase);
   font-weight: 800;
   line-height: 1.12;
   white-space: pre-wrap;
@@ -2538,4 +2581,101 @@ body.clock-bottom.song-bottom:not(.clock-hidden) .lyrics-song-name {
     padding-left: 4px !important;
     padding-right: 4px !important;
   }
+}
+
+
+/* VS_HOOK_TP_PREVIEW_PLAYING_QUEUE_BRACKETS_UNDERLINE
+   No Preview do Teleprompt, a musica tocando e a musica na fila recebem
+   colchetes no texto e uma linha de sublinhado feita com underscores. */
+.lyrics-preview-song.playing::after,
+.lyrics-preview-song.queued::after {
+  content: "______________";
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin-top: -0.12em;
+  color: currentColor;
+  font-family: inherit;
+  font-size: 0.78em;
+  font-weight: 900;
+  line-height: 0.62;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-align: left;
+  pointer-events: none;
+}
+
+/* VS_HOOK_TELEPROMPT_TIMER_OVERRUN_20260711 */
+@keyframes vshookTelepromptTimerOverrunBlink {
+  0%, 46% { opacity: 1; filter: brightness(1.22); }
+  47%, 100% { opacity: .24; filter: brightness(.72); }
+}
+
+.lyrics-timer.timer-overrun-blink {
+  animation: vshookTelepromptTimerOverrunBlink .82s steps(2, end) infinite !important;
+}
+
+/* Faixa própria do progresso: preserva o espaço entre a barra, os nomes,
+   o relógio e o contorno principal sem alterar a escala escolhida. */
+:root {
+  --lyrics-progress-stack-shift: clamp(34px, 5vh, 50px);
+}
+
+body.progress-enabled.progress-top:not(.preview-active):not(.notice-active) .lyrics-text,
+body.progress-enabled.progress-top.clock-top:not(.clock-hidden):not(.preview-active):not(.notice-active) .lyrics-timer,
+body.progress-enabled.progress-top.song-top:not(.preview-active):not(.notice-active) .lyrics-song-name,
+body.progress-enabled.progress-top.queue-top:not(.preview-active):not(.notice-active) .lyrics-queue-name {
+  margin-top: var(--lyrics-progress-stack-shift) !important;
+}
+
+body.progress-enabled.progress-bottom:not(.preview-active):not(.notice-active) .lyrics-text,
+body.progress-enabled.progress-bottom.clock-bottom:not(.clock-hidden):not(.preview-active):not(.notice-active) .lyrics-timer,
+body.progress-enabled.progress-bottom.song-bottom:not(.preview-active):not(.notice-active) .lyrics-song-name,
+body.progress-enabled.progress-bottom.queue-bottom:not(.preview-active):not(.notice-active) .lyrics-queue-name {
+  margin-bottom: var(--lyrics-progress-stack-shift) !important;
+}
+
+/* VS_HOOK_TELEPROMPT_MEASURED_PORTRAIT_STACK_20260716
+   O renderer mede as caixas já com fonte/escala reais. Isso mantém os contornos
+   separados em monitores retrato e fixa a fila sempre abaixo da música atual. */
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).clock-top:not(.clock-hidden) .lyrics-timer {
+  top: var(--lyrics-layout-clock-top) !important;
+  bottom: auto !important;
+  transform-origin: top center !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).clock-bottom:not(.clock-hidden) .lyrics-timer {
+  top: auto !important;
+  bottom: var(--lyrics-layout-clock-bottom) !important;
+  transform-origin: bottom center !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).song-top .lyrics-song-name {
+  top: var(--lyrics-layout-song-top) !important;
+  bottom: auto !important;
+  transform-origin: top center !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).song-bottom .lyrics-song-name {
+  top: auto !important;
+  bottom: var(--lyrics-layout-song-bottom) !important;
+  transform-origin: bottom center !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).queue-top .lyrics-queue-name {
+  top: var(--lyrics-layout-queue-top) !important;
+  bottom: auto !important;
+  transform-origin: top center !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).queue-bottom .lyrics-queue-name {
+  top: auto !important;
+  bottom: var(--lyrics-layout-queue-bottom) !important;
+  transform-origin: bottom center !important;
+}
+/* Com música atual e fila no rodapé, a posição do nome atual deriva
+   diretamente da caixa real da fila. Isso garante a ordem: música, depois fila. */
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active).song-enabled.queue-enabled.song-bottom.queue-bottom .lyrics-song-name {
+  top: auto !important;
+  bottom: calc(var(--lyrics-layout-queue-bottom) + var(--lyrics-queue-real-height) + max(16px, var(--lyrics-overlay-gap))) !important;
+}
+body.lyrics-layout-ready:not(.preview-active):not(.notice-active):not(.clear-mode) .lyrics-text {
+  top: var(--lyrics-layout-text-top) !important;
+  bottom: var(--lyrics-layout-text-bottom) !important;
 }

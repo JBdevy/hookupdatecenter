@@ -1,6 +1,6 @@
 {
   "name": "vs-hook-mobile",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "description": "VS Hook Mobile - Android/iOS",
   "scripts": {
@@ -16,7 +16,8 @@
     "@capacitor/app": "^6.0.1",
     "@capacitor/core": "^6.2.0",
     "@capacitor/status-bar": "^6.0.1",
-    "@capacitor/ios": "^6.2.0"
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/keyboard": "^6.0.4"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.2.0",

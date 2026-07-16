@@ -1,14 +1,14 @@
-Esta pasta é o App QR servido pelo Hook Center em modo dev.
+Esta pasta é a fonte única do App QR servido pelo Hook Center.
 
 Uso local:
 - rode npm start na pasta Hook center;
 - edite os arquivos dentro de qr-app/;
-- o QR/local server vai ler esta pasta diretamente durante o npm start.
+- o QR/local server vai ler esta pasta diretamente.
 
-Para atualizar pelo backend:
-- compacte o CONTEÚDO desta pasta qr-app, mantendo index.html na raiz do ZIP;
-- envie esse ZIP na seção App QR do backend.
+Build estático:
+- rode npm run build nesta pasta para regenerar dist/;
+- o build do Hook Center inclui qr-app/ no pacote.
 
 No cliente instalado:
-- Windows: C:\ProgramData\HookDeveloper\HookCenter\qr-app\
-- macOS: /Users/Shared/HookDeveloper/HookCenter/qr-app/
+- o QR Code usa o qr-app embutido no Hook Center instalado;
+- o App QR não é mais baixado ou atualizado pelo backend.

@@ -95,6 +95,10 @@ button, input {
   font-weight: bold;
   font-size: 18px;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .menuButton {
   border: 1px solid #4b5563;
@@ -190,6 +194,62 @@ button, input {
   margin-bottom: 6px;
   padding-left: 2px;
 }
+.playbackQueueHeader {
+  border: 1px solid #263244;
+  border-radius: 8px;
+  background: #0a1018;
+  margin: 0 0 8px;
+  overflow: hidden;
+}
+.playbackQueueTrack {
+  height: 5px;
+  background: #111827;
+  overflow: hidden;
+}
+.playbackQueueFill {
+  height: 100%;
+  width: 0%;
+  transition: width 220ms linear;
+}
+.playbackQueueFillNow {
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.35);
+}
+.playbackQueueFillNext {
+  background: linear-gradient(90deg, #facc15 0%, #ca8a04 100%);
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.28);
+}
+.playbackQueueTrackEmpty .playbackQueueFill {
+  width: 0% !important;
+}
+.playbackQueueLine {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 5px 9px;
+}
+.playbackQueueNow {
+  border-bottom: 1px solid #1b2634;
+}
+.playbackQueueLabel {
+  color: #94a3b8;
+  font-size: 9.5px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.playbackQueueTitle {
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playbackQueueNext .playbackQueueTitle {
+  color: #facc15;
+}
 .listBox {
   border: 1px solid #364152;
   border-radius: 8px;
@@ -210,6 +270,36 @@ button, input {
   cursor: pointer;
   overflow: hidden;
 }
+.item.numberedItem {
+  padding: 0 12px 0 0;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+}
+.rowNumberCol {
+  align-self: stretch;
+  min-width: 38px;
+  border-right: 1px solid #273244;
+  background: rgba(15, 23, 42, 0.72);
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 900;
+  position: relative;
+  z-index: 1;
+}
+.rowNumberText {
+  line-height: 1;
+}
+.numberedItem .leftCol {
+  padding: 8px 0 8px 10px;
+}
+.numberedItem .rightCol {
+  padding: 8px 0 8px 8px;
+}
+.numberedItem.blockItem .rowNumberText {
+  opacity: 0;
+}
 .progressBar {
   position: absolute;
   left: 0;
@@ -218,6 +308,67 @@ button, input {
   opacity: 1;
   background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
   box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.28), 0 0 10px rgba(34, 197, 94, 0.22);
+}
+.playingRowProgressBar {
+  z-index: 0;
+  transition: width 220ms linear;
+}
+.partsOverlay {
+  position: fixed;
+  inset: 8px;
+  z-index: 1600;
+  display: flex;
+  pointer-events: auto;
+}
+.partsPanel {
+  width: 100%;
+  height: 100%;
+  border: 2px solid #facc15;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.26), 0 18px 42px rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  animation: partsPanelIn 180ms ease-out both;
+}
+.partsPanelTop {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 7px;
+  border-bottom: 1px solid #273244;
+}
+.partsPanelTitle {
+  color: #facc15;
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+.partsPanelClose {
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #475569;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.partsOverlayContent {
+  padding: 9px 10px 10px;
+}
+@keyframes partsPanelIn {
+  from { opacity: 0; transform: translateX(26px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 .leftCol {
   text-align: left;
@@ -5172,8 +5323,15 @@ body.boot-loading {
 .contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky{display:none!important}
 @media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers>*{height:44px!important;min-height:44px!important;font-size:17px!important}.tabRow .headerNavButtons{width:84px!important}.tabRow .markersNavButtonHeader{flex-basis:84px!important;width:84px!important;min-width:84px!important}.tabRow{padding-right:88px!important}}
 
-/* v118: corrige scroll do Diretor após clique imediato.
-   A lista precisa manter pan-y; o comando é disparado só quando o toque termina sem arrastar. */
+
+/* v113 QR: Diretor markers padrão final, botão >> amarelo e sem rótulos entre status/lista */
+.controlsStickyPanel .controlsRowMarkers{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)!important;gap:8px!important;width:100%!important;max-width:100%!important;align-items:stretch!important;justify-content:stretch!important;}
+.controlsStickyPanel .controlsRowMarkers > button,.controlsStickyPanel .controlsRowMarkers > .btn,.controlsStickyPanel .controlsRowMarkers > .btnLoopActive,.controlsStickyPanel .controlsRowMarkers > .btnPlayActive,.controlsStickyPanel .controlsRowMarkers > .btnStopActive,.controlsStickyPanel .controlsRowMarkers > .markersInlineBackButton{width:100%!important;max-width:none!important;min-width:0!important;height:46px!important;min-height:46px!important;padding:0 10px!important;font-size:18px!important;border-radius:12px!important;display:flex!important;align-items:center!important;justify-content:center!important;}
+.tabRow .markerOpenYellowButton,.tabRow .markersNavButtonHeader.markerOpenYellowButton,.markerOpenYellowButton{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 0 1px rgba(250,204,21,.35),0 0 12px rgba(250,204,21,.22)!important;}
+.contentPanel .sectionLabel,.controlsStickyPanel .sectionLabelSticky,.sectionLabelSticky{display:none!important;}
+@media(max-width:380px){.controlsStickyPanel .controlsRowMarkers{gap:7px!important}.controlsStickyPanel .controlsRowMarkers > button,.controlsStickyPanel .controlsRowMarkers > .btn,.controlsStickyPanel .controlsRowMarkers > .btnLoopActive,.controlsStickyPanel .controlsRowMarkers > .btnPlayActive,.controlsStickyPanel .controlsRowMarkers > .btnStopActive,.controlsStickyPanel .controlsRowMarkers > .markersInlineBackButton{height:44px!important;min-height:44px!important;font-size:17px!important}}
+
+/* v118: corrige scroll do Diretor após clique imediato. */
 .listBox,
 .item,
 .item.numberedItem,
@@ -5357,20 +5515,6 @@ body.boot-loading {
     max-height: 44px !important;
     font-size: 15px !important;
   }
-}
-
-
-.vshook-project-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.vshook-project-actions .vshook-back-button,
-.vshook-project-actions .vshook-secondary-button {
-  width: 100%;
-  margin: 0;
 }
 
 
@@ -6092,16 +6236,6 @@ body.boot-loading {
   color:var(--block-outline-color, #d97706)!important;
 }
 
-/* VSHOOK_PATCH_DIRECTOR_MARKERS_PARTS_ANIMATION_20260627 */
-.markerContentPanel.markerPanelSlideIn,
-.markerListBox.markerPanelSlideIn{
-  animation:lyricsSlideIn .18s ease-out!important;
-  will-change:transform;
-}
-.markerRowLabel{
-  letter-spacing:.02em;
-}
-
 
 /* VS_HOOK_FIX14_MIXER_PREMIX_COMPACT */
 .mixerModalBoxFull .mixerViewTabsTriple{flex:0 0 auto!important;gap:6px!important;padding:4px 0 8px!important}
@@ -6135,3 +6269,1656 @@ button,
 .mixerRowsBox {
   -webkit-overflow-scrolling: touch;
 }
+
+
+/* VS_HOOK_FIX103_NATIVE_TP_MEDIA */
+.tpMediaBodyFix103{display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;padding:0!important;}
+.tpMediaStageFix103{width:100%;height:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#05070b;}
+.tpMediaImageFix103,.tpMediaVideoFix103{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;background:#05070b;}
+.tpMediaScreenFix103 .lyricsBody{overflow:hidden;}
+.tpLyricsTextFix103{color:var(--tp-text-color,#f8fafc);font-family:var(--tp-font,Inter,Arial,sans-serif);}
+
+/* VS_HOOK_TIMER_COUNTDOWN_INPUTS */
+.timerModalPreview,
+.timerModalPreview[data-chrono-display] {
+  border-color: #22c55e !important;
+  color: #86efac !important;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18), 0 0 18px rgba(34, 197, 94, 0.18) !important;
+}
+
+.timerCountdownInputs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.timerCountdownInputs label {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 42px;
+  padding: 0 8px;
+  border: 1px solid #1f3a2b;
+  border-radius: 8px;
+  background: #06140d;
+}
+
+.timerCountdownInputs span {
+  color: #86efac;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.timerCountdownInputs input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.timerActionButtonsSingle {
+  grid-template-columns: 1fr !important;
+}
+
+/* VS_HOOK_PARTS_STABLE_PANEL */
+.partsOverlay {
+  inset: 0 !important;
+  padding: 8px !important;
+  background: #0b1118 !important;
+}
+
+.partsPanel {
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* VS_HOOK_PARTS_LOCAL_ARM */
+[data-marker-id].partsMarkerLocalSelected {
+  background: linear-gradient(180deg, #facc15 0%, #d97706 100%) !important;
+  border-color: #fde047 !important;
+  color: #111827 !important;
+  box-shadow: inset 0 0 0 1px rgba(253, 224, 71, 0.42), 0 0 14px rgba(250, 204, 21, 0.24) !important;
+}
+
+[data-marker-id].partsMarkerLocalSelected .text,
+[data-marker-id].partsMarkerLocalSelected .timeText,
+[data-marker-id].partsMarkerLocalSelected .selectedBlueText,
+[data-marker-id].partsMarkerLocalSelected .selectedBlueTimeText {
+  color: #111827 !important;
+}
+
+[data-marker-id].partsMarkerArmed {
+  background: linear-gradient(180deg, #22c55e 0%, #15803d 100%) !important;
+  border-color: #86efac !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.5), 0 0 18px rgba(34, 197, 94, 0.35) !important;
+}
+
+[data-marker-id].partsMarkerArmed .text,
+[data-marker-id].partsMarkerArmed .timeText,
+[data-marker-id].partsMarkerArmed .selectedBlueText,
+[data-marker-id].partsMarkerArmed .selectedBlueTimeText {
+  color: #ffffff !important;
+}
+.container {
+  position: relative;
+}
+
+.topMenuFlyout {
+  position: absolute;
+  top: 39px;
+  right: 42px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: min(176px, 42vw);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, .98);
+  box-shadow: 0 20px 40px rgba(0,0,0,.48), 0 0 0 1px rgba(148,163,184,.14);
+}
+
+.topMenuFlyoutBtn {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 54px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid #475569;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+}
+
+.topMenuFlyoutBtn:active {
+  transform: translateY(1px);
+  filter: brightness(1.14);
+}
+
+.topMenuFlyoutBtnTuner {
+  border-color: #22c55e;
+  background: #06351f;
+  color: #bbf7d0;
+}
+
+.topMenuFlyoutBtnRecados {
+  border-color: #facc15;
+  background: #3a2f13;
+  color: #fef3c7;
+}
+
+.topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+  border-color: #22c55e;
+  background: #14532d;
+  color: #dcfce7;
+}
+
+.topMenuFlyoutBtnCopy {
+  border-color: #facc15;
+  background: #eab308;
+  color: #111827;
+}
+
+.mixerContentPanel .mixerListBox {
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 8px !important;
+  margin-bottom: 0 !important;
+}
+
+.mixerContentPanel .mixerRowsBox {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  border-bottom: none !important;
+}
+
+.mixerVolumeModalBox {
+  max-width: 360px;
+}
+
+.mixerVolumeTitle {
+  font-size: 18px;
+  line-height: 1.16;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixerVolumePercent {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 10px 0 12px;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  background: #05070a;
+  color: #facc15;
+  font-size: 28px;
+  font-weight: 900;
+}
+
+.mixerVolumeSlider {
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  accent-color: #facc15;
+  touch-action: pan-x;
+}
+
+.app .mixerContentPanel {
+  padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .listBox.mixerListBox {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .mixerRowsBox {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .mixerRow {
+  grid-template-columns: 10px 28px minmax(0, 1fr) 58px 42px 42px !important;
+}
+
+.app .mixerContentPanel .mixerMeter {
+  display: none !important;
+}
+
+
+/* v2.9 - Diretor: AT/BL independente + cores originais + progresso inferior */
+.app .item.queuedYellow:not(.blockItem) {
+  background: #e9c74a !important;
+  border-color: #18212c !important;
+  box-shadow: none !important;
+}
+
+.app .item.playing:not(.blockItem),
+.app .item.playing.selectedBlue:not(.blockItem),
+.app .item.playing.selectedPink:not(.blockItem),
+.app .item.playing.queuedYellow:not(.blockItem) {
+  background: #b91c1c !important;
+  border-color: #ef4444 !important;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36) !important;
+}
+
+/* Nome, número e tempo das linhas tocando/fila em preto. */
+.app .item.queuedYellow:not(.blockItem) .leftCol,
+.app .item.queuedYellow:not(.blockItem) .rightCol,
+.app .item.queuedYellow:not(.blockItem) .leftCol *,
+.app .item.queuedYellow:not(.blockItem) .rightCol *,
+.app .item.playing:not(.blockItem) .leftCol,
+.app .item.playing:not(.blockItem) .rightCol,
+.app .item.playing:not(.blockItem) .leftCol *,
+.app .item.playing:not(.blockItem) .rightCol * {
+  color: #050505 !important;
+  text-shadow: none !important;
+}
+
+.app .item .playingRowProgressBar {
+  top: auto !important;
+  bottom: 0 !important;
+  height: 6px !important;
+  min-height: 6px !important;
+  background: #22c55e !important;
+  box-shadow: 0 -1px 6px rgba(34,197,94,.36) !important;
+  border-radius: 0 4px 4px 0 !important;
+  opacity: 1 !important;
+  pointer-events: none !important;
+}
+
+/* Painel entre a lista e os botões: tocando agora em verde. */
+.app .playbackQueueNow .playbackQueueTitle {
+  color: #22c55e !important;
+}
+
+/* v2.9 - coluna de números separada + barras de lista e transporte */
+/* A marcação da música começa somente depois da coluna lateral de números. */
+.app .item.numberedItem.queuedYellow:not(.blockItem),
+.app .item.numberedItem.playing:not(.blockItem),
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem),
+.app .item.numberedItem.playing.selectedPink:not(.blockItem),
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app .item.numberedItem.queuedYellow:not(.blockItem)::before,
+.app .item.numberedItem.playing:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedPink:not(.blockItem)::before,
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem)::before {
+  content: "";
+  position: absolute;
+  left: 38px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.app .item.numberedItem.queuedYellow:not(.blockItem)::before {
+  background: #e9c74a;
+}
+
+.app .item.numberedItem.playing:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedPink:not(.blockItem)::before,
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem)::before {
+  background: #b91c1c;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36);
+}
+
+.app .item.numberedItem .rowNumberCol {
+  z-index: 3;
+}
+
+.app .item.numberedItem .leftCol,
+.app .item.numberedItem .rightCol {
+  position: relative;
+  z-index: 1;
+}
+
+/* Trilho da barra fica restrito à área da música, sem passar por baixo dos números. */
+.app .item.numberedItem .rowProgressTrack {
+  position: absolute;
+  left: 38px;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.app .item.numberedItem .rowProgressTrack .progressBar {
+  position: absolute !important;
+  left: 0 !important;
+  right: auto !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  border-radius: 999px !important;
+  pointer-events: none !important;
+}
+
+.app .item.numberedItem .playingRowProgressBar {
+  background: #22c55e !important;
+  box-shadow: 0 0 6px rgba(34,197,94,.42) !important;
+}
+
+/* Barra amarela regressiva na música que está na fila de espera. */
+.app .item.numberedItem .queuedRowRegressBar {
+  background: #facc15 !important;
+  box-shadow: 0 0 6px rgba(250,204,21,.42) !important;
+}
+
+/* Pontas arredondadas nas duas barras do painel de transporte. */
+.app .playbackQueueTrack,
+.app .playbackQueueFill {
+  border-radius: 999px !important;
+}
+
+
+
+/* v2.9 - correção final: coluna numérica isolada e fila em laranja */
+/* A borda inferior da linha nunca herda o vermelho/amarelo da marcação. */
+.app .item.numberedItem.playing:not(.blockItem),
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem),
+.app .item.numberedItem.playing.selectedPink:not(.blockItem),
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem),
+.app .item.numberedItem.queuedYellow:not(.blockItem) {
+  border-bottom-color: #18212c !important;
+}
+
+
+/* Regresso da fila em laranja, tanto na lista quanto no painel de transporte. */
+.app .item.numberedItem .queuedRowRegressBar,
+.app .playbackQueueFillNext {
+  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
+  box-shadow: 0 0 7px rgba(249,115,22,.52) !important;
+}
+
+
+/* v2.9 - a coluna numérica preserva a cor original recebida da música/bloco.
+   Os estados tocando e fila alteram apenas nome e tempo. */
+.app .item.numberedItem .rowNumberCol,
+.app .item.numberedItem .rowNumberText {
+  text-shadow: none;
+}
+
+/* v2.9 - barras com ponta esquerda reta e somente a direita arredondada */
+.app .item.numberedItem .rowProgressTrack,
+.app .item.numberedItem .rowProgressTrack .progressBar,
+.app .playbackQueueTrack,
+.app .playbackQueueFill {
+  border-radius: 0 999px 999px 0 !important;
+}
+
+
+/* VS Hook 2.9 - Tuner em tela cheia no App Diretor */
+.tunerFullScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  height: var(--app-vh, 100dvh);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  background: #070b12;
+  color: #f8fafc;
+  overflow: hidden;
+}
+
+.tunerFullHeader {
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #364152;
+  background: #101722;
+}
+
+.tunerFullHeading { min-width: 0; }
+.tunerFullTitle {
+  color: #facc15;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 1000;
+  letter-spacing: .05em;
+}
+.tunerFullSubtitle {
+  margin-top: 5px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 68vw;
+}
+.tunerFullCloseBtn {
+  flex: 0 0 auto;
+  min-width: 88px;
+  height: 42px;
+  border: 1px solid #facc15;
+  background: #2f2608;
+  color: #fde68a;
+  font-weight: 1000;
+  font-size: 12px;
+}
+
+.tunerFullTransportHeader {
+  min-height: 62px;
+}
+.tunerFullTransportActions {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
+}
+.tunerFullTransportActions > button {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  min-height: 46px;
+  margin: 0;
+  padding: 0 5px;
+  font-size: 13px;
+  font-weight: 1000;
+}
+.tunerFullTransportActions .tunerFullCloseBtn {
+  min-width: 0;
+}
+
+.tunerFullList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  border-radius: 0 !important;
+  background: #090f18 !important;
+  overscroll-behavior: contain;
+}
+
+.app .tunerFullRow.item.numberedItem {
+  min-height: 54px;
+  padding: 0;
+  grid-template-columns: 38px 46px minmax(0, 1fr) 62px 46px;
+  gap: 0;
+  cursor: default;
+}
+
+.app .tunerFullRow .rowNumberCol {
+  grid-column: 1;
+}
+.app .tunerFullRow .tunerMinusBtn { grid-column: 2; }
+.app .tunerFullRow .tunerFullSongName { grid-column: 3; }
+.app .tunerFullRow .tunerFullValue { grid-column: 4; }
+.app .tunerFullRow .tunerPlusBtn { grid-column: 5; }
+
+.app .tunerFullRow .leftCol.tunerFullSongName {
+  min-width: 0;
+  padding: 8px 8px;
+  position: relative;
+  z-index: 2;
+}
+.app .tunerFullRow .leftCol.tunerFullSongName > span {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 900;
+}
+
+.tunerStepBtn {
+  width: 38px;
+  height: 38px;
+  align-self: center;
+  justify-self: center;
+  padding: 0;
+  border: 1px solid #64748b;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 25px;
+  line-height: 1;
+  font-weight: 1000;
+  position: relative;
+  z-index: 3;
+  touch-action: manipulation;
+}
+.tunerStepBtn:active { background: #facc15; color: #111827; }
+.tunerStepBtn:disabled { opacity: .32; }
+
+.tunerFullValue {
+  height: 36px;
+  align-self: center;
+  margin: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #465367;
+  background: #020617;
+  color: #facc15;
+  font-size: 18px;
+  font-weight: 1000;
+  position: relative;
+  z-index: 3;
+  white-space: nowrap;
+}
+.tunerFullValue small { font-size: 9px; margin-left: 2px; color: #cbd5e1; }
+
+.app .tunerFullBlockRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr);
+  min-height: 42px;
+}
+.app .tunerFullBlockRow .leftCol {
+  grid-column: 2;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.app .tunerFullBlockRow .leftCol > span {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 1000;
+}
+
+.app .tunerFullParentRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr);
+}
+.app .tunerFullParentRow .leftCol.tunerFullSongName {
+  grid-column: 2;
+  padding-left: 10px;
+}
+
+/* No Tuner, a marcação tocando/fila começa depois da coluna numérica e não cobre os controles. */
+.app .tunerFullRow.item.numberedItem.playing:not(.blockItem)::before,
+.app .tunerFullRow.item.numberedItem.queuedYellow:not(.blockItem)::before {
+  left: 38px;
+}
+
+@media (max-width: 430px) {
+  .app .tunerFullRow.item.numberedItem {
+    grid-template-columns: 34px 42px minmax(0, 1fr) 56px 42px;
+  }
+  .app .tunerFullRow .rowNumberCol { min-width: 34px; }
+  .tunerStepBtn { width: 34px; height: 36px; font-size: 23px; }
+  .tunerFullValue { margin: 0 2px; font-size: 16px; }
+  .tunerFullSubtitle { max-width: 60vw; }
+}
+
+
+/* VS Hook 2.9 - Tuner: nome completo de bloco e coluna Number/0-9 */
+.app .tunerFullBlockRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr) !important;
+  height: auto !important;
+  min-height: 42px !important;
+  overflow: visible !important;
+}
+.app .tunerFullBlockRow .leftCol.tunerFullBlockName {
+  grid-column: 2 / -1 !important;
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+  padding: 8px 12px !important;
+}
+.app .tunerFullBlockRow .leftCol.tunerFullBlockName > span {
+  display: block !important;
+  width: 100% !important;
+  max-width: none !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+  line-height: 1.25 !important;
+}
+
+
+/* Parts: alternância entre markers da música tocando e da fila. */
+.partsSongSwitchRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;margin:7px 0 8px;flex:0 0 auto}
+.partsSongSwitchBtn{height:38px;min-width:0;padding:0 9px;border:1px solid #475569;border-radius:8px;background:#111827;color:#e5e7eb;font-size:11px;font-weight:1000;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.partsSongSwitchBtn:disabled{opacity:.42;cursor:default}
+.partsSongSwitchBtnActive{background:#1d4ed8!important;border-color:#60a5fa!important;color:#ffffff!important;box-shadow:0 0 0 1px rgba(96,165,250,.28),0 0 14px rgba(37,99,235,.32)!important}
+
+/* Loop ativo: pisca em amarelo no botão superior e no botão da tela Parts. */
+.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s steps(2,end) infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
+@keyframes directorLoopBlink{0%,100%{filter:brightness(1);opacity:1}50%{filter:brightness(.64);opacity:.58}}
+.playbackQueueLoop .playbackQueueLabel,.playbackQueueLoop .playbackQueueTitle{color:#facc15!important}
+
+
+/* VS Hook 2.9 - acabamento Tuner, loop de regiao e swipe restrito ao transporte */
+.tunerFullHeader,
+.tunerFullList {
+  border-radius: 10px !important;
+}
+.tunerFullCloseBtn,
+.tunerStepBtn,
+.tunerFullValue {
+  border-radius: 8px !important;
+}
+.app .tunerFullRow.item.numberedItem {
+  border-radius: 7px !important;
+  overflow: hidden !important;
+}
+.playbackQueueLoopRegion {
+  animation: directorLoopPanelBlink .72s steps(2,end) infinite !important;
+}
+@keyframes directorLoopPanelBlink {
+  0%,100% { opacity: 1; filter: brightness(1); }
+  50% { opacity: .58; filter: brightness(.72); }
+}
+
+/* VS_HOOK_DIRECTOR_CONFIG_LIGHT_TIMER_OVERRUN_20260711 */
+.app .btnConfigOffRed {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  font-weight: 900;
+}
+
+.app[data-theme="light"] {
+  background: #c8cdd3 !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] .container,
+.app[data-theme="light"] .controlsStickyPanel {
+  background: linear-gradient(180deg, #d8dde2 0%, #cfd4da 100%) !important;
+}
+
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .bridgeStatusCard,
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .playlistOption,
+.app[data-theme="light"] .playbackQueueHeader,
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .timerModalPreview {
+  background: #e0e4e8 !important;
+}
+
+.app[data-theme="light"] .btn,
+.app[data-theme="light"] .menuButton,
+.app[data-theme="light"] .settingsToggleBtn,
+.app[data-theme="light"] .modalCancelBtn,
+.app[data-theme="light"] .settingsBorderModeButton,
+.app[data-theme="light"] .topSettingsBtn {
+  background: #c9ced4 !important;
+  color: #111827 !important;
+  border-color: #aeb5bd !important;
+}
+
+.app[data-theme="light"] .btnConfigOffRed {
+  background: #991b1b !important;
+  border-color: #f87171 !important;
+  color: #ffffff !important;
+}
+
+@keyframes vshookDirectorTimerOverrunBlink {
+  0%, 46% { opacity: 1; filter: brightness(1.18); }
+  47%, 100% { opacity: .28; filter: brightness(.78); }
+}
+
+.app .timerOverrunBlink {
+  animation: vshookDirectorTimerOverrunBlink .82s steps(2, end) infinite !important;
+}
+
+/* Complemento do tema claro: cinza, sem superfícies brancas. */
+.app[data-theme="light"] .numberCol,
+.app[data-theme="light"] .numberCol span,
+.app[data-theme="light"] .blockItem .numberCol,
+.app[data-theme="light"] .blockItem .numberCol span,
+.app[data-theme="light"] .modalInput,
+.app[data-theme="light"] .timerCountdownInputs input,
+.app[data-theme="light"] .topTimerBtn {
+  background: #d4d9de !important;
+}
+
+.app[data-theme="light"] .topTimerBtn {
+  color: #15803d !important;
+  border-color: #16a34a !important;
+}
+
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink),
+.app[data-theme="light"] .tunerSongRow,
+.app[data-theme="light"] .mixerRow {
+  background-color: rgba(224, 228, 232, .72) !important;
+}
+
+
+/* VS_HOOK_DIRECTOR_LIGHT_POLISH_AND_TIMER_INPUTS_20260711 */
+.app .btnConfigOnGreen {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #4ade80 !important;
+  background: #15803d !important;
+  color: #ffffff !important;
+  font-weight: 900 !important;
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, .18), 0 0 12px rgba(21, 128, 61, .24) !important;
+}
+
+/* Tema claro em cinza: contraste consistente sem usar fundo branco. */
+.app[data-theme="light"] {
+  background: #bfc5cc !important;
+  color: #101820 !important;
+}
+.app[data-theme="light"] .container,
+.app[data-theme="light"] .controlsStickyPanel,
+.app[data-theme="light"] .partsPanel,
+.app[data-theme="light"] .tunerFullScreen,
+.app[data-theme="light"] .mixerModalBoxFull,
+.app[data-theme="light"] .premixModalBoxFull {
+  background: linear-gradient(180deg, #d8dde2 0%, #cbd1d7 100%) !important;
+  color: #101820 !important;
+}
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .playbackQueueHeader,
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .topMenuFlyout,
+.app[data-theme="light"] .tunerFullHeader,
+.app[data-theme="light"] .tunerFullList,
+.app[data-theme="light"] .mixerRowsBox,
+.app[data-theme="light"] .timerModalPreview {
+  background: #d9dee3 !important;
+  border-color: #8f99a4 !important;
+  color: #101820 !important;
+  box-shadow: 0 6px 18px rgba(31, 41, 55, .10) !important;
+}
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .topPlaylistTicker,
+.app[data-theme="light"] .topPlaylistTickerTrack,
+.app[data-theme="light"] .topPlaylistTickerTrack > span,
+.app[data-theme="light"] .playlistOptionText,
+.app[data-theme="light"] .playlistOptionTicker,
+.app[data-theme="light"] .playlistOptionTickerTrack,
+.app[data-theme="light"] .playlistOptionTickerTrack > span,
+.app[data-theme="light"] .modalTitle,
+.app[data-theme="light"] .modalInfoText,
+.app[data-theme="light"] .settingsCategoryTitle,
+.app[data-theme="light"] .sectionLabel,
+.app[data-theme="light"] .middleInfoText,
+.app[data-theme="light"] .regionsTopLabel,
+.app[data-theme="light"] .tunerFullTitle,
+.app[data-theme="light"] .tunerFullSubtitle,
+.app[data-theme="light"] .emptyBox {
+  color: #0b1118 !important;
+  text-shadow: none !important;
+}
+.app[data-theme="light"] .topPlaylistButton {
+  background: #cbd1d7 !important;
+  border-color: #89939e !important;
+}
+.app[data-theme="light"] .topTimerBtn {
+  background: #cbd1d7 !important;
+  color: #166534 !important;
+  border-color: #22c55e !important;
+}
+.app[data-theme="light"] .topSettingsBtn {
+  background: #747f8b !important;
+  color: #ffffff !important;
+  border-color: #5f6b77 !important;
+}
+.app[data-theme="light"] .topMenuBtn {
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .topMenuFlyoutBtn {
+  background: #c4cad0 !important;
+  color: #0b1118 !important;
+  border-color: #87929d !important;
+}
+.app[data-theme="light"] .topMenuFlyoutBtnActive,
+.app[data-theme="light"] .topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+  background: #15803d !important;
+  color: #ffffff !important;
+  border-color: #4ade80 !important;
+}
+
+/* Botões semânticos mantêm suas cores no tema claro. */
+.app[data-theme="light"] button.btn.btnPlayActive,
+.app[data-theme="light"] button.modalOkBtnWide.btnPlayActive {
+  background: #15803d !important;
+  border-color: #4ade80 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] button.btn.btnStopActive,
+.app[data-theme="light"] button.modalOkBtnWide.btnStopActive,
+.app[data-theme="light"] button.btnConfigOffRed {
+  background: #b91c1c !important;
+  border-color: #f87171 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] button.btnConfigOnGreen {
+  background: #15803d !important;
+  border-color: #4ade80 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .btnAutoplayActive {
+  color: #111827 !important;
+}
+
+/* Lista e transporte: leitura escura em todas as superfícies claras. */
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink),
+.app[data-theme="light"] .tunerFullRow,
+.app[data-theme="light"] .mixerRow,
+.app[data-theme="light"] .premixSongCard {
+  background: rgba(216, 221, 226, .92) !important;
+  border-color: #a2abb4 !important;
+}
+.app[data-theme="light"] .playbackQueueLine {
+  border-color: #a7b0b9 !important;
+}
+.app[data-theme="light"] .playbackQueueLabel {
+  color: #374151 !important;
+}
+.app[data-theme="light"] .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueNow .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueNext .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueLoop .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueLoop .playbackQueueLabel {
+  color: #0b1118 !important;
+  text-shadow: none !important;
+}
+.app[data-theme="light"] .playbackQueueTrack {
+  background: #aeb6bf !important;
+}
+.app[data-theme="light"] .rowLabelText,
+.app[data-theme="light"] .text,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .blockText,
+.app[data-theme="light"] .blockTimeText,
+.app[data-theme="light"] .marqueeStatic,
+.app[data-theme="light"] .marqueeTrack,
+.app[data-theme="light"] .marqueeSegment,
+.app[data-theme="light"] .tunerFullSongName,
+.app[data-theme="light"] .tunerFullBlockName {
+  text-shadow: none !important;
+}
+
+/* Repertórios e projetos ficam visualmente separados no modal. */
+.app[data-theme="light"] .playlistSelectList {
+  gap: 9px !important;
+  padding: 2px !important;
+}
+.app[data-theme="light"] .playlistOption,
+.app[data-theme="light"] .playlistOptionActive {
+  background: #c9cfd5 !important;
+  color: #0b1118 !important;
+  border: 2px solid #87919b !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.20), 0 3px 8px rgba(31,41,55,.10) !important;
+}
+.app[data-theme="light"] .playlistOptionActive {
+  background: #b8d6c0 !important;
+  border-color: #15803d !important;
+}
+.app[data-theme="light"] .playlistOptionTime {
+  color: #7c2d12 !important;
+}
+
+/* Modais, campos e Tuner adaptados ao cinza claro. */
+.app[data-theme="light"] .modalOverlay {
+  background: rgba(31, 41, 55, .46) !important;
+}
+.app[data-theme="light"] .modalInput,
+.app[data-theme="light"] .timerCountdownInputs label,
+.app[data-theme="light"] .timerCountdownInputs input,
+.app[data-theme="light"] .tunerFullValue,
+.app[data-theme="light"] .tunerStepBtn {
+  background: #c8ced4 !important;
+  color: #0b1118 !important;
+  border-color: #87919b !important;
+}
+.app[data-theme="light"] .timerCountdownInputs span {
+  color: #166534 !important;
+}
+.app[data-theme="light"] .timerModalPreview {
+  background: #c8ced4 !important;
+  color: #166534 !important;
+  border-color: #22c55e !important;
+}
+.app[data-theme="light"] .tunerStepBtn:active {
+  background: #facc15 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .partsSongSwitchBtn {
+  background: #c4cad0 !important;
+  color: #0b1118 !important;
+  border-color: #87919b !important;
+}
+.app[data-theme="light"] .partsSongSwitchBtnActive {
+  background: #1d4ed8 !important;
+  color: #ffffff !important;
+  border-color: #60a5fa !important;
+}
+
+/* Inputs de H/M/S com dois dígitos, sem setas e com seleção de aplicativo de alarme. */
+.timerCountdownInputs input[data-timer-countdown-input] {
+  max-width: 3ch !important;
+  font-variant-numeric: tabular-nums;
+  caret-color: #22c55e;
+}
+.timerCountdownInputs input[data-timer-countdown-input]::selection {
+  background: rgba(34, 197, 94, .32);
+}
+
+@media (max-width: 430px) {
+  .app[data-theme="light"] .playbackQueueLine {
+    grid-template-columns: 82px minmax(0, 1fr) !important;
+    gap: 6px !important;
+  }
+  .app[data-theme="light"] .playbackQueueLabel { font-size: 9px !important; }
+  .app[data-theme="light"] .playbackQueueTitle { font-size: 11.5px !important; }
+  .timerCountdownInputs { gap: 7px !important; }
+  .timerCountdownInputs label { padding: 0 6px !important; }
+}
+
+/* VS_HOOK_TIMER_INPUT_SECOND_DIGIT_VISIBILITY_20260711_V2
+   Em WebView móvel, o cursor no fim do campo podia cobrir visualmente o segundo dígito. */
+.timerCountdownInputs label {
+  grid-template-columns: 18px minmax(44px, 1fr) !important;
+}
+.timerCountdownInputs input[data-timer-countdown-input] {
+  box-sizing: border-box !important;
+  width: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  height: 30px !important;
+  justify-self: center !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  line-height: normal !important;
+  letter-spacing: 0 !important;
+  text-indent: 0 !important;
+  text-align: center !important;
+  overflow: visible !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: currentColor !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  position: relative !important;
+  z-index: 2 !important;
+}
+.timerCountdownInputs input[data-timer-countdown-input]::selection {
+  background: transparent !important;
+}
+
+
+/* VS_HOOK_DIRECTOR_TELEPROMPT_NETWORK_V1 */
+.directorTpOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1750;
+  padding: 8px;
+  background: #0b1118;
+  display: flex;
+  overflow: hidden;
+}
+.directorTpPanel {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 2px solid var(--app-border-color, #facc15);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  box-shadow: 0 0 0 1px var(--app-border-glow, rgba(250,204,21,.24));
+  animation: directorTpPanelIn 180ms ease-out both;
+}
+@keyframes directorTpPanelIn {
+  from { opacity: 0; transform: translateX(-28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.directorTpContent {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+}
+.directorTpContent > .playbackQueueHeader {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.directorTpControls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.directorTpTab {
+  min-width: 0;
+  height: 42px;
+  border: 1px solid #475569;
+  border-radius: 9px;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 1000;
+  letter-spacing: .025em;
+}
+.directorTpTabActive {
+  border-color: #fde047 !important;
+  background: linear-gradient(180deg, #facc15 0%, #d97706 100%) !important;
+  color: #111827 !important;
+  box-shadow: 0 0 14px rgba(250, 204, 21, .24);
+}
+.directorTpBack {
+  border-color: #64748b;
+  background: #111827;
+}
+.directorTpViewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  background: #000;
+  isolation: isolate;
+}
+.directorTpImage,
+.directorTpVideo {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: #000 !important;
+  border: 0;
+  outline: 0;
+  border-radius: 0;
+  pointer-events: none;
+}
+.directorTpVideo::-webkit-media-controls,
+.directorTpVideo::-webkit-media-controls-panel,
+.directorTpVideo::-webkit-media-controls-play-button,
+.directorTpVideo::-webkit-media-controls-start-playback-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+}
+.directorTpText {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(18px, 5vw, 44px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: center;
+  color: #fff;
+  font-size: clamp(26px, 7.2vw, 58px);
+  font-weight: 900;
+  line-height: 1.14;
+  text-shadow: 0 2px 4px #000, 0 0 9px #000, 0 0 18px rgba(0,0,0,.92);
+  -webkit-overflow-scrolling: touch;
+}
+.directorTpTextOverlay {
+  background: rgba(0, 0, 0, .12);
+}
+.directorTpTextOnly {
+  background: #000;
+}
+.directorTpEmpty {
+  z-index: 5;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-align: center;
+  padding: 20px;
+}
+.directorTpHidden {
+  display: none !important;
+}
+.app[data-theme="light"] .directorTpOverlay {
+  background: #cbd0d6;
+}
+.app[data-theme="light"] .directorTpPanel {
+  background: linear-gradient(180deg, #e5e7eb 0%, #cfd4da 100%);
+}
+.app[data-theme="light"] .directorTpTab:not(.directorTpTabActive) {
+  border-color: #94a3b8;
+  background: #d7dce2;
+  color: #111827;
+}
+.app[data-theme="light"] .directorTpBack {
+  background: #c5cbd2;
+  color: #111827;
+}
+@media (max-width: 480px) {
+  .directorTpOverlay { padding: 6px; }
+  .directorTpContent { padding: 7px; gap: 7px; }
+  .directorTpTab { height: 40px; font-size: 12px; }
+  .directorTpText { padding: 16px; font-size: clamp(24px, 7.6vw, 44px); }
+}
+@media (max-height: 600px) {
+  .directorTpContent { padding: 6px; gap: 5px; }
+  .directorTpTab { height: 36px; }
+  .directorTpText { font-size: clamp(21px, 6vw, 38px); }
+}
+
+
+/* 2.9 - Premix por toque longo: tela cheia com itens da música */
+.premixFullScreen{position:fixed;inset:0;z-index:10040;width:100%;height:var(--app-vh,100dvh);box-sizing:border-box;padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));background:#05070b;overflow:hidden}
+.premixFullPanel{height:100%;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px;box-sizing:border-box;border:1px solid #334155;border-radius:14px;background:#0b1018;box-shadow:0 18px 45px rgba(0,0,0,.45)}
+.premixFullPanel>.playbackQueueHeader{flex:0 0 auto;margin:0!important}
+.premixFullControls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;flex:0 0 auto}
+.premixFullControls>button{height:42px!important;min-height:42px!important;border-radius:10px!important;font-weight:1000!important}
+.premixFullBack{background:#1f2937!important;border-color:#64748b!important;color:#f8fafc!important}
+.premixTransportCurrent{box-shadow:0 0 0 2px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.28)!important}
+.premixFullHeading{flex:0 0 auto;display:flex;align-items:center;gap:10px;min-width:0;padding:2px 4px}
+.premixFullTitle{flex:0 0 auto;color:#facc15;font-weight:1000;font-size:13px;letter-spacing:.08em}
+.premixFullSongName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-weight:1000;font-size:14px}
+.premixFullList{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;border:1px solid #273449!important;border-radius:12px!important;background:#070b11!important;overflow-y:auto!important;overscroll-behavior:contain}
+.premixFullRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,40vw) 42px;align-items:center;gap:9px;min-height:70px;padding:10px;border-bottom:1px solid #1e293b;background:#0d131d;box-sizing:border-box}
+.premixFullRow:last-child{border-bottom:0}
+.premixFullItemMain{min-width:0;display:flex;flex-direction:column;gap:4px}
+.premixFullItemName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-weight:1000;font-size:14px}
+.premixFullTrackName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8;font-weight:800;font-size:11px}
+.premixFullSliderWrap{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) 52px;align-items:center;gap:7px}
+.premixFullSlider{width:100%;min-width:0;height:36px;accent-color:#facc15;touch-action:pan-x}
+.premixFullDb{color:#facc15;font-weight:1000;font-size:10.5px;text-align:right;white-space:nowrap}
+.premixFullMute{width:40px;height:38px;border-radius:9px;border:1px solid #64748b;background:#111827;color:#f8fafc;font-weight:1000;font-size:15px}
+.premixFullMuteActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important;box-shadow:0 0 14px rgba(220,38,38,.28)}
+.premixFullEmpty{margin:12px!important}
+.app[data-theme="light"] .premixFullScreen{background:#cbd5e1}
+.app[data-theme="light"] .premixFullPanel{background:#e5e7eb;border-color:#94a3b8;box-shadow:0 16px 36px rgba(15,23,42,.18)}
+.app[data-theme="light"] .premixFullBack{background:#d1d5db!important;border-color:#64748b!important;color:#111827!important}
+.app[data-theme="light"] .premixFullSongName{color:#111827}
+.app[data-theme="light"] .premixFullList{background:#dbe1e8!important;border-color:#94a3b8!important}
+.app[data-theme="light"] .premixFullRow{background:#f8fafc;border-bottom-color:#cbd5e1}
+.app[data-theme="light"] .premixFullItemName{color:#111827}
+.app[data-theme="light"] .premixFullTrackName{color:#475569}
+.app[data-theme="light"] .premixFullMute:not(.premixFullMuteActive){background:#e2e8f0;color:#111827;border-color:#64748b}
+@media(max-width:560px){
+  .premixFullRow{grid-template-columns:minmax(0,1fr) 42px;gap:7px;min-height:86px}
+  .premixFullSliderWrap{grid-column:1/3;grid-row:2;width:100%}
+  .premixFullMute{grid-column:2;grid-row:1}
+  .premixFullControls{grid-template-columns:1fr 1fr}
+}
+
+/* PREMIX: família pai/filhos e hierarquia pista > item */
+.premixFullTrackName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#f8fafc!important;
+  font-weight:1000!important;
+  font-size:14px!important;
+}
+.premixFullItemName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#94a3b8!important;
+  font-weight:800!important;
+  font-size:11px!important;
+}
+.premixFamilySection{
+  margin:8px;
+  overflow:hidden;
+  border:1px solid #334155;
+  border-radius:12px;
+  background:#0b1018;
+  box-shadow:0 8px 20px rgba(0,0,0,.16);
+}
+.premixFamilySectionSelected{
+  border-color:#3b82f6;
+  box-shadow:0 0 0 1px rgba(59,130,246,.28),0 8px 20px rgba(0,0,0,.18);
+}
+.premixFamilySongButton{
+  width:100%;
+  min-width:0;
+  min-height:44px;
+  display:grid;
+  grid-template-columns:38px minmax(0,1fr);
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border:0;
+  border-bottom:1px solid #273449;
+  border-radius:0;
+  background:#111827;
+  color:#f8fafc;
+  text-align:left;
+  box-sizing:border-box;
+}
+.premixFamilySongButton:active{filter:brightness(1.15)}
+.premixFamilySongButtonSelected{
+  background:#1d4ed8!important;
+  color:#fff!important;
+  border-bottom-color:#60a5fa!important;
+}
+.premixFamilySongIndex{
+  color:#facc15;
+  font-weight:1000;
+  font-size:12px;
+  text-align:center;
+}
+.premixFamilySongButtonSelected .premixFamilySongIndex{color:#fff}
+.premixFamilySongName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:inherit;
+  font-weight:1000;
+  font-size:13px;
+}
+.premixFamilyItems{
+  overflow:hidden;
+  background:#070b11;
+}
+.premixFamilyItems .premixFullRow:last-child{border-bottom:0}
+.premixFamilyEmpty{
+  padding:16px 12px;
+  color:#94a3b8;
+  font-size:11px;
+  font-weight:900;
+  text-align:center;
+}
+.app[data-theme="light"] .premixFullTrackName{color:#111827!important}
+.app[data-theme="light"] .premixFullItemName{color:#475569!important}
+.app[data-theme="light"] .premixFamilySection{
+  background:#f8fafc;
+  border-color:#94a3b8;
+  box-shadow:0 6px 16px rgba(15,23,42,.10);
+}
+.app[data-theme="light"] .premixFamilySectionSelected{
+  border-color:#2563eb;
+  box-shadow:0 0 0 1px rgba(37,99,235,.22),0 6px 16px rgba(15,23,42,.12);
+}
+.app[data-theme="light"] .premixFamilySongButton{
+  background:#e2e8f0;
+  color:#111827;
+  border-bottom-color:#cbd5e1;
+}
+.app[data-theme="light"] .premixFamilySongButtonSelected{
+  background:#2563eb!important;
+  color:#fff!important;
+}
+.app[data-theme="light"] .premixFamilyItems{background:#eef2f7}
+.app[data-theme="light"] .premixFamilyEmpty{color:#475569}
+@media(max-width:520px){
+  .premixFamilySection{margin:6px}
+  .premixFamilySongButton{grid-template-columns:32px minmax(0,1fr);padding:7px 8px}
+  .premixFamilySongName{font-size:12px}
+}
+
+/* 2.9 Diretor: recados integrados e sobreposição no Teleprompt */
+.directorTpTechnicalNotice {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(24px, 7vh, 74px) clamp(20px, 7vw, 72px);
+  pointer-events: none;
+  overflow: hidden;
+  background: #000;
+  color: var(--director-notice-text, #ffea00);
+  font-family: var(--director-notice-font, Arial, sans-serif);
+  font-size: clamp(30px, 7.8vw, 72px);
+  line-height: 1.08;
+  font-weight: 1000;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+  text-shadow: 0 .06em .06em rgba(0,0,0,.98), 0 0 28px rgba(0,0,0,.9);
+}
+.directorTpTechnicalNoticeFlash {
+  animation: directorTpTechnicalNoticeFlash 1.05s steps(1, end) 1;
+}
+@keyframes directorTpTechnicalNoticeFlash {
+  0%, 16.66% { background: var(--director-notice-flash, #ff0000); }
+  16.67%, 33.33% { background: #000; }
+  33.34%, 50% { background: var(--director-notice-flash, #ff0000); }
+  50.01%, 66.66% { background: #000; }
+  66.67%, 83.33% { background: var(--director-notice-flash, #ff0000); }
+  83.34%, 100% { background: #000; }
+}
+
+/* VS_HOOK_PARTS_ARMED_REGRESS_V1
+   O marker engatilhado permanece estático e mostra o tempo restante do
+   trecho atual em uma barra amarela fina na base da tira. */
+.markerListBox [data-marker-id].partsMarkerArmed,
+.markerListBox [data-marker-id].partsMarkerArmed.markerBlink {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+.markerListBox [data-marker-id] .partsArmedRegressTrack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.markerListBox [data-marker-id] .partsArmedRegressBar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+  min-height: 100%;
+  width: 0;
+  background: #facc15;
+  box-shadow: 0 0 7px rgba(250, 204, 21, 0.7);
+  transition: width 650ms linear;
+  pointer-events: none;
+}
+
+
+
+/* VS_HOOK_PARTS_TRANSPORT_SAME_SIZE_V1
+   O painel de transporte do Parts nao pode ser comprimido pela altura minima da lista. */
+.partsOverlayContent > .playbackQueueHeader {
+  flex: 0 0 72px !important;
+  min-height: 72px !important;
+  max-height: 72px !important;
+  width: 100% !important;
+  margin: 0 0 8px !important;
+}
+.partsOverlayContent > .controlsRowMarkers,
+.partsOverlayContent > .partsSongSwitchRow {
+  flex: 0 0 auto !important;
+}
+.partsOverlayContent > .markerListBox {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* Recados do Diretor: raiz única e editor nativo isolado. */
+.directorRecadosRoot {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 10080;
+  width: 100%;
+  height: var(--recados-app-height, 100vh);
+  padding: calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0,1fr) auto auto auto;
+  gap: 10px;
+  overflow: hidden;
+  background: #05070a;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  box-sizing: border-box;
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+.directorRecadosRoot .recadosTop { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.directorRecadosRoot .recadosSendButton,
+.directorRecadosRoot .recadosCancelButton,
+.directorRecadosRoot .recadosExitButton {
+  min-height:56px; border:0; border-radius:14px; font-size:18px; font-weight:900; letter-spacing:.04em; color:#07110a;
+}
+.directorRecadosRoot .recadosSendButton { background:#facc15; }
+.directorRecadosRoot .recadosCancelButton,
+.directorRecadosRoot .recadosExitButton { background:#cbd5e1; }
+.directorRecadosRoot .recadosExitButton { width:100%; }
+.directorRecadosRoot .recadosPinButton { min-height:42px; border:1px solid #475569; border-radius:12px; background:#0f172a; color:#e2e8f0; font-size:15px; font-weight:900; letter-spacing:.05em; }
+.directorRecadosRoot .recadosPinButtonActive { background:#15803d; border-color:#4ade80; color:#fff; box-shadow:0 0 18px rgba(74,222,128,.34); }
+.directorRecadosRoot button:disabled { opacity:.65; }
+.directorRecadosRoot .recadosSlots { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); column-gap:5px; row-gap:5px; }
+.directorRecadosRoot .recadosSlotButton,
+.directorRecadosRoot .recadosEditButton {
+  width:100%; min-height:42px; border:1px solid #475569; border-radius:12px; background:#0f172a;
+  color:#e2e8f0; font-weight:900; letter-spacing:.05em;
+}
+.directorRecadosRoot .recadosSlotButtonActive { background:#facc15; border-color:#fde68a; color:#07110a; box-shadow:0 0 14px rgba(250,204,21,.3); }
+.directorRecadosRoot .recadosGlobalButton { grid-column:1 / -1; margin-top:0; }
+.directorRecadosRoot .recadosEditButton { background:#1d4ed8; border-color:#60a5fa; color:#fff; }
+.directorRecadosRoot .recadosSaveButton { background:#15803d; border-color:#4ade80; }
+.directorRecadosRoot .recadosTextInput {
+  display:block; width:100%; height:100%; min-width:0; min-height:0; margin:0; padding:16px;
+  border:1px solid rgba(250,204,21,.32); border-radius:18px; resize:none; overflow-y:auto; overflow-x:hidden;
+  background:#020617; color:#fff; outline:none; box-shadow:none;
+  font-family:Arial,sans-serif; font-size:20px; line-height:1.35; -webkit-appearance:none; appearance:none;
+  -webkit-user-select:text !important; user-select:text !important; -webkit-overflow-scrolling:touch;
+}
+.directorRecadosRoot .recadosTextInput:focus { border-color:rgba(250,204,21,.78); }
+.directorRecadosRoot .recadosTextInput[readonly] { color:#e2e8f0; background:#0f172a; cursor:default; }
+.directorRecadosRoot .recadosStatus {
+  min-height:28px; display:flex; align-items:center; justify-content:center; color:#facc15;
+  text-align:center; font-size:14px; font-weight:900; letter-spacing:.06em;
+}
+@media (max-width:480px) {
+  .directorRecadosRoot { gap:8px; padding-left:8px; padding-right:8px; }
+  .directorRecadosRoot .recadosTop { gap:8px; }
+  .directorRecadosRoot .recadosTextInput { font-size:18px; padding:13px; }
+  .directorRecadosRoot .recadosSlotButton, .directorRecadosRoot .recadosEditButton, .directorRecadosRoot .recadosPinButton { min-height:38px; }
+  .directorRecadosRoot .recadosSendButton, .directorRecadosRoot .recadosCancelButton, .directorRecadosRoot .recadosExitButton { min-height:52px; }
+}
+
+
+/* Config do Diretor: ações finais maiores, separadas e mais abaixo. */
+.settingsModalBox .settingsExitButtons {
+  display: grid !important;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) !important;
+  gap: 18px !important;
+  width: 100% !important;
+  margin-top: 30px !important;
+  justify-content: stretch !important;
+}
+.settingsModalBox .settingsExitButtons > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 56px !important;
+  min-height: 56px !important;
+  padding: 0 18px !important;
+  font-size: 16px !important;
+  border-radius: 12px !important;
+}
+.settingsModalBox .settingsExitButton { justify-self: start !important; }
+.settingsModalBox .settingsCloseButton { justify-self: end !important; }
+
+/* Recados dentro do Diretor no Android: mesmo gesto nativo do app Recados normal. */
+html.directorRecadosTouchMode,
+body.directorRecadosTouchMode,
+body.directorRecadosTouchMode #app {
+  touch-action: auto !important;
+  overscroll-behavior: auto !important;
+}
+.directorRecadosRoot {
+  touch-action: auto !important;
+}
+.directorRecadosRoot .recadosTextInput {
+  touch-action: auto !important;
+  overscroll-behavior: auto !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+/* VS_HOOK_PARTS_SONG_START_OUTLINE_20260712
+   Destaca somente a Parts sintética que representa o início da música.
+   O pseudo-elemento preserva o contorno mesmo quando a linha é selecionada/armada. */
+[data-marker-id].partsSongStartPart::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: 8;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  pointer-events: none;
+}
+
+[data-marker-id].partsSongStartPlaying::after {
+  border-color: rgba(134, 239, 172, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.18), 0 0 10px rgba(34, 197, 94, 0.24);
+}
+
+[data-marker-id].partsSongStartQueued::after {
+  border-color: rgba(253, 230, 138, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(253, 230, 138, 0.12), 0 0 9px rgba(234, 179, 8, 0.16);
+}
+
+[data-marker-id].partsSongStartStopped::after {
+  border-color: rgba(196, 181, 253, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.16), 0 0 10px rgba(139, 92, 246, 0.22);
+}
+
+/* Meters vivos: alimentados somente enquanto Mixer ou Premix estiver visível. */
+.trackMeter {
+  display: grid;
+  grid-template-rows: repeat(2, 3px);
+  gap: 2px;
+  width: 100%;
+  min-width: 48px;
+  margin-top: 5px;
+  pointer-events: none;
+}
+
+.trackMeterLane {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #020617;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, .22);
+}
+
+.trackMeterBar {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #22c55e;
+  box-shadow: 0 0 5px rgba(34, 197, 94, .46);
+  transition: width 70ms linear, background-color 70ms linear;
+}
+
+.trackMeterWarn .trackMeterBar {
+  background: #facc15;
+  box-shadow: 0 0 5px rgba(250, 204, 21, .5);
+}
+
+.trackMeterOver .trackMeterBar {
+  background: #ef4444;
+  box-shadow: 0 0 7px rgba(239, 68, 68, .68);
+}
+
+.app[data-theme="light"] .trackMeterLane {
+  background: #cbd5e1;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .24);
+}
+
+/* VS Hook - gaveta visual sincronizada pelo Lua */
+.item.drawerFamilyMember > .drawerOutlineSides,
+.item.drawerFamilyMember > .drawerOutlineTop,
+.item.drawerFamilyMember > .drawerOutlineBottom,
+.item.hashChildItem > .drawerChildSymbol {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 5;
+}
+.item.drawerFamilyMember.drawerOutlineEnabled > .drawerOutlineSides {
+  display: block;
+  inset: 0;
+  border-left: 2px solid var(--drawer-outline-color, #fff02e);
+  border-right: 2px solid var(--drawer-outline-color, #fff02e);
+}
+.item.drawerFamilyTop.drawerOutlineEnabled > .drawerOutlineTop,
+.item.drawerFamilyBottom.drawerOutlineEnabled > .drawerOutlineBottom {
+  display: block;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background:
+    linear-gradient(var(--drawer-outline-color, #fff02e), var(--drawer-outline-color, #fff02e)) left center / 38px 2px no-repeat,
+    linear-gradient(var(--drawer-outline-color, #fff02e), var(--drawer-outline-color, #fff02e)) right center / 38px 2px no-repeat;
+}
+.item.drawerFamilyTop.drawerOutlineEnabled > .drawerOutlineTop { top: 0; }
+.item.drawerFamilyBottom.drawerOutlineEnabled > .drawerOutlineBottom { bottom: 0; }
+.item.hashChildItem.drawerSymbolEnabled > .drawerChildSymbol {
+  display: block;
+  left: 45px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--drawer-symbol-color, #fff02e);
+}
+.item.hashChildItem.drawerSymbolEnabled.numberedItem > .leftCol { padding-left: 22px; }
+.item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .drawerChildSymbol { left: 8px; }
+.item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .leftCol { padding-left: 18px; }

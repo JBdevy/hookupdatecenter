@@ -1,0 +1,7 @@
+CORREÇÃO DA SESSÃO DO APP DIRETOR
+
+- Não foi criada outra tela de login.
+- Continua sendo usada a tela de senha original do App Diretor.
+- A sessão salva só continua válida enquanto o hash configurado no Lua for o mesmo.
+- Quando a senha muda no Lua, a sessão antiga é descartada e a tela original pede a senha nova.
+- Retomar Acesso no PC continua sem pedir a senha novamente quando ela não mudou.

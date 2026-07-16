@@ -95,6 +95,10 @@ button, input {
   font-weight: bold;
   font-size: 18px;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .menuButton {
   border: 1px solid #4b5563;
@@ -183,12 +187,80 @@ button, input {
   background: #ca8a04;
   color: #111827;
 }
+.btnAutoUnavailable {
+  border-color: #374151 !important;
+  background: #171d27 !important;
+  color: #64748b !important;
+  box-shadow: none !important;
+  opacity: .62;
+}
 .sectionLabel {
   color: #d1d5db;
   font-weight: bold;
   font-size: 14px;
   margin-bottom: 6px;
   padding-left: 2px;
+}
+.playbackQueueHeader {
+  border: 1px solid #263244;
+  border-radius: 8px;
+  background: #0a1018;
+  margin: 0 0 8px;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.transportSeekHoldTarget{touch-action:none!important;-webkit-touch-callout:none!important}
+.playbackQueueTrack {
+  height: 5px;
+  background: #111827;
+  overflow: hidden;
+}
+.playbackQueueFill {
+  height: 100%;
+  width: 0%;
+  transition: width 220ms linear;
+}
+.playbackQueueFillNow {
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.35);
+}
+.playbackQueueFillNext {
+  background: linear-gradient(90deg, #facc15 0%, #ca8a04 100%);
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.28);
+}
+.playbackQueueTrackEmpty .playbackQueueFill {
+  width: 0% !important;
+}
+.playbackQueueLine {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 5px 9px;
+}
+.playbackQueueNow {
+  border-bottom: 1px solid #1b2634;
+}
+.playbackQueueLabel {
+  color: #94a3b8;
+  font-size: 9.5px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.playbackQueueTitle {
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playbackQueueNext .playbackQueueTitle {
+  color: #facc15;
 }
 .listBox {
   border: 1px solid #364152;
@@ -210,6 +282,36 @@ button, input {
   cursor: pointer;
   overflow: hidden;
 }
+.item.numberedItem {
+  padding: 0 12px 0 0;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+}
+.rowNumberCol {
+  align-self: stretch;
+  min-width: 38px;
+  border-right: 1px solid #273244;
+  background: rgba(15, 23, 42, 0.72);
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 900;
+  position: relative;
+  z-index: 1;
+}
+.rowNumberText {
+  line-height: 1;
+}
+.numberedItem .leftCol {
+  padding: 8px 0 8px 10px;
+}
+.numberedItem .rightCol {
+  padding: 8px 0 8px 8px;
+}
+.numberedItem.blockItem .rowNumberText {
+  opacity: 0;
+}
 .progressBar {
   position: absolute;
   left: 0;
@@ -218,6 +320,67 @@ button, input {
   opacity: 1;
   background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
   box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.28), 0 0 10px rgba(34, 197, 94, 0.22);
+}
+.playingRowProgressBar {
+  z-index: 0;
+  transition: width 220ms linear;
+}
+.partsOverlay {
+  position: fixed;
+  inset: 8px;
+  z-index: 1600;
+  display: flex;
+  pointer-events: auto;
+}
+.partsPanel {
+  width: 100%;
+  height: 100%;
+  border: 2px solid #facc15;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.26), 0 18px 42px rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  animation: partsPanelIn 180ms ease-out both;
+}
+.partsPanelTop {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 7px;
+  border-bottom: 1px solid #273244;
+}
+.partsPanelTitle {
+  color: #facc15;
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+.partsPanelClose {
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #475569;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.partsOverlayContent {
+  padding: 9px 10px 10px;
+}
+@keyframes partsPanelIn {
+  from { opacity: 0; transform: translateX(26px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 .leftCol {
   text-align: left;
@@ -1186,6 +1349,33 @@ button, input {
 
 .settingsModalBox {
   max-width: 340px;
+}
+
+.directorStopPausePersistentPopup {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 10240;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  min-width: 220px;
+  max-width: 82vw;
+  padding: 15px 22px;
+  border: 2px solid #facc15;
+  border-radius: 14px;
+  background: #991b1b;
+  color: #fff;
+  box-shadow: 0 18px 42px rgba(0,0,0,.52), 0 0 18px rgba(239,68,68,.62);
+  text-align: center;
+  font-size: 18px;
+  font-weight: 1000;
+  letter-spacing: .045em;
+  animation: directorStopPausePersistentBlink .72s steps(2,end) infinite;
+}
+
+@keyframes directorStopPausePersistentBlink {
+  0%, 49% { opacity: 1; filter: brightness(1.16); }
+  50%, 100% { opacity: .38; filter: brightness(.78); }
 }
 
 .bridgeStatusCard {
@@ -2449,6 +2639,7 @@ body.boot-loading {
   filter: blur(14px);
   animation: bootGlowPulse 1.5s ease-in-out infinite;
   z-index: 1;
+  pointer-events: none;
 }
 
 .appBootLoaderText {
@@ -2607,6 +2798,8 @@ body.boot-loading {
   display: grid;
   gap: 10px;
   margin-top: 10px;
+  position: relative;
+  z-index: 3;
 }
 
 .authGateInput {
@@ -2617,11 +2810,16 @@ body.boot-loading {
   background: #0b1118;
   color: #fff;
   padding: 0 14px;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
 }
 
 
 .authGatePassWrap {
   position: relative;
+  display: block;
   width: 100%;
 }
 
@@ -2647,6 +2845,7 @@ body.boot-loading {
   padding: 0;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  z-index: 2;
 }
 
 .authGatePassToggle:hover {
@@ -6118,3 +6317,2150 @@ button,
 .mixerRowsBox {
   -webkit-overflow-scrolling: touch;
 }
+
+
+/* VS_HOOK_FIX103_NATIVE_TP_MEDIA */
+.tpMediaBodyFix103{display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;padding:0!important;}
+.tpMediaStageFix103{width:100%;height:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#05070b;}
+.tpMediaImageFix103,.tpMediaVideoFix103{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;background:#05070b;}
+.tpMediaScreenFix103 .lyricsBody{overflow:hidden;}
+.tpLyricsTextFix103{color:var(--tp-text-color,#f8fafc);font-family:var(--tp-font,Inter,Arial,sans-serif);}
+
+/* VS_HOOK_TIMER_COUNTDOWN_INPUTS */
+.timerModalPreview,
+.timerModalPreview[data-chrono-display] {
+  border-color: #22c55e !important;
+  color: #86efac !important;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18), 0 0 18px rgba(34, 197, 94, 0.18) !important;
+}
+
+.timerCountdownInputs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.timerCountdownInputs label {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 42px;
+  padding: 0 8px;
+  border: 1px solid #1f3a2b;
+  border-radius: 8px;
+  background: #06140d;
+}
+
+.timerCountdownInputs span {
+  color: #86efac;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.timerCountdownInputs input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.timerActionButtonsSingle {
+  grid-template-columns: 1fr !important;
+}
+
+/* VS_HOOK_PARTS_STABLE_PANEL */
+.partsOverlay {
+  inset: 0 !important;
+  padding: 8px !important;
+  background: #0b1118 !important;
+}
+
+.partsPanel {
+  animation: none !important;
+  box-shadow: none !important;
+}
+
+/* VS_HOOK_PARTS_LOCAL_ARM */
+[data-marker-id].partsMarkerLocalSelected {
+  background: linear-gradient(180deg, #facc15 0%, #d97706 100%) !important;
+  border-color: #fde047 !important;
+  color: #111827 !important;
+  box-shadow: inset 0 0 0 1px rgba(253, 224, 71, 0.42), 0 0 14px rgba(250, 204, 21, 0.24) !important;
+}
+
+[data-marker-id].partsMarkerLocalSelected .text,
+[data-marker-id].partsMarkerLocalSelected .timeText,
+[data-marker-id].partsMarkerLocalSelected .selectedBlueText,
+[data-marker-id].partsMarkerLocalSelected .selectedBlueTimeText {
+  color: #111827 !important;
+}
+
+[data-marker-id].partsMarkerArmed {
+  background: linear-gradient(180deg, #22c55e 0%, #15803d 100%) !important;
+  border-color: #86efac !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.5), 0 0 18px rgba(34, 197, 94, 0.35) !important;
+}
+
+[data-marker-id].partsMarkerArmed .text,
+[data-marker-id].partsMarkerArmed .timeText,
+[data-marker-id].partsMarkerArmed .selectedBlueText,
+[data-marker-id].partsMarkerArmed .selectedBlueTimeText {
+  color: #ffffff !important;
+}
+.container {
+  position: relative;
+}
+
+.topMenuFlyout {
+  position: absolute;
+  top: 39px;
+  right: 42px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: min(176px, 42vw);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, .98);
+  box-shadow: 0 20px 40px rgba(0,0,0,.48), 0 0 0 1px rgba(148,163,184,.14);
+}
+
+.topMenuFlyoutBtn {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 54px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid #475569;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+}
+
+.topMenuFlyoutBtn:active {
+  transform: translateY(1px);
+  filter: brightness(1.14);
+}
+
+.topMenuFlyoutBtnTuner {
+  border-color: #22c55e;
+  background: #06351f;
+  color: #bbf7d0;
+}
+
+.topMenuFlyoutBtnRecados {
+  border-color: #facc15;
+  background: #3a2f13;
+  color: #fef3c7;
+}
+
+.topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+  border-color: #22c55e;
+  background: #14532d;
+  color: #dcfce7;
+}
+
+.mixerContentPanel .mixerListBox {
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 8px !important;
+  margin-bottom: 0 !important;
+}
+
+.mixerContentPanel .mixerRowsBox {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  border-bottom: none !important;
+}
+
+.mixerVolumeModalBox {
+  max-width: 360px;
+}
+
+.mixerVolumeTitle {
+  font-size: 18px;
+  line-height: 1.16;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixerVolumePercent {
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 10px 0 12px;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  background: #05070a;
+  color: #facc15;
+  font-size: 28px;
+  font-weight: 900;
+}
+
+.mixerVolumeSlider {
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  accent-color: #facc15;
+  touch-action: pan-x;
+}
+
+.app .mixerContentPanel {
+  padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .listBox.mixerListBox {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  padding-bottom: 0 !important;
+  scroll-padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .mixerRowsBox {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.app .mixerContentPanel .mixerRow {
+  grid-template-columns: 10px 28px minmax(0, 1fr) 58px 42px 42px !important;
+}
+
+.app .mixerContentPanel .mixerMeter {
+  display: none !important;
+}
+
+
+/* v2.9 - Diretor: AT/BL independente + cores originais + progresso inferior */
+.app .item.queuedYellow:not(.blockItem) {
+  background: #e9c74a !important;
+  border-color: #18212c !important;
+  box-shadow: none !important;
+}
+
+.app .item.playing:not(.blockItem),
+.app .item.playing.selectedBlue:not(.blockItem),
+.app .item.playing.selectedPink:not(.blockItem),
+.app .item.playing.queuedYellow:not(.blockItem) {
+  background: #b91c1c !important;
+  border-color: #ef4444 !important;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36) !important;
+}
+
+/* Nome, número e tempo das linhas tocando/fila em preto. */
+.app .item.queuedYellow:not(.blockItem) .leftCol,
+.app .item.queuedYellow:not(.blockItem) .rightCol,
+.app .item.queuedYellow:not(.blockItem) .leftCol *,
+.app .item.queuedYellow:not(.blockItem) .rightCol *,
+.app .item.playing:not(.blockItem) .leftCol,
+.app .item.playing:not(.blockItem) .rightCol,
+.app .item.playing:not(.blockItem) .leftCol *,
+.app .item.playing:not(.blockItem) .rightCol * {
+  color: #050505 !important;
+  text-shadow: none !important;
+}
+
+.app .item .playingRowProgressBar {
+  top: auto !important;
+  bottom: 0 !important;
+  height: 6px !important;
+  min-height: 6px !important;
+  background: #22c55e !important;
+  box-shadow: 0 -1px 6px rgba(34,197,94,.36) !important;
+  border-radius: 0 4px 4px 0 !important;
+  opacity: 1 !important;
+  pointer-events: none !important;
+}
+
+/* Painel entre a lista e os botões: tocando agora em verde. */
+.app .playbackQueueNow .playbackQueueTitle {
+  color: #22c55e !important;
+}
+
+/* v2.9 - coluna de números separada + barras de lista e transporte */
+/* A marcação da música começa somente depois da coluna lateral de números. */
+.app .item.numberedItem.queuedYellow:not(.blockItem),
+.app .item.numberedItem.playing:not(.blockItem),
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem),
+.app .item.numberedItem.playing.selectedPink:not(.blockItem),
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app .item.numberedItem.queuedYellow:not(.blockItem)::before,
+.app .item.numberedItem.playing:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedPink:not(.blockItem)::before,
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem)::before {
+  content: "";
+  position: absolute;
+  left: 38px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.app .item.numberedItem.queuedYellow:not(.blockItem)::before {
+  background: #e9c74a;
+}
+
+.app .item.numberedItem.playing:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem)::before,
+.app .item.numberedItem.playing.selectedPink:not(.blockItem)::before,
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem)::before {
+  background: #b91c1c;
+  box-shadow: inset 0 0 0 1px rgba(248,113,113,.36);
+}
+
+.app .item.numberedItem .rowNumberCol {
+  z-index: 3;
+}
+
+.app .item.numberedItem .leftCol,
+.app .item.numberedItem .rightCol {
+  position: relative;
+  z-index: 1;
+}
+
+/* Trilho da barra fica restrito à área da música, sem passar por baixo dos números. */
+.app .item.numberedItem .rowProgressTrack {
+  position: absolute;
+  left: 38px;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.app .item.numberedItem .rowProgressTrack .progressBar {
+  position: absolute !important;
+  left: 0 !important;
+  right: auto !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  border-radius: 999px !important;
+  pointer-events: none !important;
+}
+
+.app .item.numberedItem .playingRowProgressBar {
+  background: #22c55e !important;
+  box-shadow: 0 0 6px rgba(34,197,94,.42) !important;
+}
+
+/* Barra amarela regressiva na música que está na fila de espera. */
+.app .item.numberedItem .queuedRowRegressBar {
+  background: #facc15 !important;
+  box-shadow: 0 0 6px rgba(250,204,21,.42) !important;
+}
+
+/* Pontas arredondadas nas duas barras do painel de transporte. */
+.app .playbackQueueTrack,
+.app .playbackQueueFill {
+  border-radius: 999px !important;
+}
+
+
+
+/* v2.9 - correção final: coluna numérica isolada e fila em laranja */
+/* A borda inferior da linha nunca herda o vermelho/amarelo da marcação. */
+.app .item.numberedItem.playing:not(.blockItem),
+.app .item.numberedItem.playing.selectedBlue:not(.blockItem),
+.app .item.numberedItem.playing.selectedPink:not(.blockItem),
+.app .item.numberedItem.playing.queuedYellow:not(.blockItem),
+.app .item.numberedItem.queuedYellow:not(.blockItem) {
+  border-bottom-color: #18212c !important;
+}
+
+
+/* Regresso da fila em laranja, tanto na lista quanto no painel de transporte. */
+.app .item.numberedItem .queuedRowRegressBar,
+.app .playbackQueueFillNext {
+  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
+  box-shadow: 0 0 7px rgba(249,115,22,.52) !important;
+}
+
+
+/* v2.9 - a coluna numérica preserva a cor original recebida da música/bloco.
+   Os estados tocando e fila alteram apenas nome e tempo. */
+.app .item.numberedItem .rowNumberCol,
+.app .item.numberedItem .rowNumberText {
+  text-shadow: none;
+}
+
+/* v2.9 - barras com ponta esquerda reta e somente a direita arredondada */
+.app .item.numberedItem .rowProgressTrack,
+.app .item.numberedItem .rowProgressTrack .progressBar,
+.app .playbackQueueTrack,
+.app .playbackQueueFill {
+  border-radius: 0 999px 999px 0 !important;
+}
+
+
+/* VS Hook 2.9 - Tuner em tela cheia no App Diretor */
+.tunerFullScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  height: var(--app-vh, 100dvh);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  background: #070b12;
+  color: #f8fafc;
+  overflow: hidden;
+}
+
+.tunerFullHeader {
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #364152;
+  background: #101722;
+}
+
+.tunerFullHeading { min-width: 0; }
+.tunerFullTitle {
+  color: #facc15;
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 1000;
+  letter-spacing: .05em;
+}
+.tunerFullSubtitle {
+  margin-top: 5px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 68vw;
+}
+.tunerFullCloseBtn {
+  flex: 0 0 auto;
+  min-width: 88px;
+  height: 42px;
+  border: 1px solid #facc15;
+  background: #2f2608;
+  color: #fde68a;
+  font-weight: 1000;
+  font-size: 12px;
+}
+
+.tunerFullTransportHeader {
+  min-height: 62px;
+}
+.tunerFullTransportActions {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
+}
+.tunerFullTransportActions > button {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  min-height: 46px;
+  margin: 0;
+  padding: 0 5px;
+  font-size: 13px;
+  font-weight: 1000;
+}
+.tunerFullTransportActions .tunerFullCloseBtn {
+  min-width: 0;
+}
+
+.tunerFullList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  border-radius: 0 !important;
+  background: #090f18 !important;
+  overscroll-behavior: contain;
+}
+
+.app .tunerFullRow.item.numberedItem {
+  min-height: 54px;
+  padding: 0;
+  grid-template-columns: 38px 46px minmax(0, 1fr) 62px 46px;
+  gap: 0;
+  cursor: default;
+}
+
+.app .tunerFullRow .rowNumberCol {
+  grid-column: 1;
+}
+.app .tunerFullRow .tunerMinusBtn { grid-column: 2; }
+.app .tunerFullRow .tunerFullSongName { grid-column: 3; }
+.app .tunerFullRow .tunerFullValue { grid-column: 4; }
+.app .tunerFullRow .tunerPlusBtn { grid-column: 5; }
+
+.app .tunerFullRow .leftCol.tunerFullSongName {
+  min-width: 0;
+  padding: 8px 8px;
+  position: relative;
+  z-index: 2;
+}
+.app .tunerFullRow .leftCol.tunerFullSongName > span {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 900;
+}
+
+.tunerStepBtn {
+  width: 38px;
+  height: 38px;
+  align-self: center;
+  justify-self: center;
+  padding: 0;
+  border: 1px solid #64748b;
+  background: #111827;
+  color: #f8fafc;
+  font-size: 25px;
+  line-height: 1;
+  font-weight: 1000;
+  position: relative;
+  z-index: 3;
+  touch-action: manipulation;
+}
+.tunerStepBtn:active { background: #facc15; color: #111827; }
+.tunerStepBtn:disabled { opacity: .32; }
+
+.tunerFullValue {
+  height: 36px;
+  align-self: center;
+  margin: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #465367;
+  background: #020617;
+  color: #facc15;
+  font-size: 18px;
+  font-weight: 1000;
+  position: relative;
+  z-index: 3;
+  white-space: nowrap;
+}
+.tunerFullValue small { font-size: 9px; margin-left: 2px; color: #cbd5e1; }
+
+.app .tunerFullBlockRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr);
+  min-height: 42px;
+}
+.app .tunerFullBlockRow .leftCol {
+  grid-column: 2;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.app .tunerFullBlockRow .leftCol > span {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 1000;
+}
+
+.app .tunerFullParentRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr);
+}
+.app .tunerFullParentRow .leftCol.tunerFullSongName {
+  grid-column: 2;
+  padding-left: 10px;
+}
+
+/* No Tuner, a marcação tocando/fila começa depois da coluna numérica e não cobre os controles. */
+.app .tunerFullRow.item.numberedItem.playing:not(.blockItem)::before,
+.app .tunerFullRow.item.numberedItem.queuedYellow:not(.blockItem)::before {
+  left: 38px;
+}
+
+@media (max-width: 430px) {
+  .app .tunerFullRow.item.numberedItem {
+    grid-template-columns: 34px 42px minmax(0, 1fr) 56px 42px;
+  }
+  .app .tunerFullRow .rowNumberCol { min-width: 34px; }
+  .tunerStepBtn { width: 34px; height: 36px; font-size: 23px; }
+  .tunerFullValue { margin: 0 2px; font-size: 16px; }
+  .tunerFullSubtitle { max-width: 60vw; }
+}
+
+
+/* VS Hook 2.9 - Tuner: nome completo de bloco e coluna Number/0-9 */
+.app .tunerFullBlockRow.item.numberedItem {
+  grid-template-columns: 38px minmax(0, 1fr) !important;
+  height: auto !important;
+  min-height: 42px !important;
+  overflow: visible !important;
+}
+.app .tunerFullBlockRow .leftCol.tunerFullBlockName {
+  grid-column: 2 / -1 !important;
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+  padding: 8px 12px !important;
+}
+.app .tunerFullBlockRow .leftCol.tunerFullBlockName > span {
+  display: block !important;
+  width: 100% !important;
+  max-width: none !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+  line-height: 1.25 !important;
+}
+
+
+/* Parts: alternância entre markers da música tocando e da fila. */
+.partsSongSwitchRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;margin:7px 0 8px;flex:0 0 auto}
+.partsSongSwitchBtn{height:38px;min-width:0;padding:0 9px;border:1px solid #475569;border-radius:8px;background:#111827;color:#e5e7eb;font-size:11px;font-weight:1000;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.partsSongSwitchBtn:disabled{opacity:.42;cursor:default}
+.partsSongSwitchBtnActive{background:#1d4ed8!important;border-color:#60a5fa!important;color:#ffffff!important;box-shadow:0 0 0 1px rgba(96,165,250,.28),0 0 14px rgba(37,99,235,.32)!important}
+
+/* Loop ativo: pisca em amarelo no botão superior e no botão da tela Parts. */
+.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s steps(2,end) infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
+@keyframes directorLoopBlink{0%,100%{filter:brightness(1);opacity:1}50%{filter:brightness(.64);opacity:.58}}
+.playbackQueueLoop .playbackQueueLabel,.playbackQueueLoop .playbackQueueTitle{color:#facc15!important}
+
+
+/* VS Hook 2.9 - acabamento Tuner, loop de regiao e swipe restrito ao transporte */
+.tunerFullHeader,
+.tunerFullList {
+  border-radius: 10px !important;
+}
+.tunerFullCloseBtn,
+.tunerStepBtn,
+.tunerFullValue {
+  border-radius: 8px !important;
+}
+.app .tunerFullRow.item.numberedItem {
+  border-radius: 7px !important;
+  overflow: hidden !important;
+}
+.playbackQueueLoopRegion {
+  animation: directorLoopPanelBlink .72s steps(2,end) infinite !important;
+}
+@keyframes directorLoopPanelBlink {
+  0%,100% { opacity: 1; filter: brightness(1); }
+  50% { opacity: .58; filter: brightness(.72); }
+}
+
+/* VS_HOOK_DIRECTOR_CONFIG_LIGHT_TIMER_OVERRUN_20260711 */
+.app .btnConfigOffRed {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  font-weight: 900;
+}
+
+.app[data-theme="light"] {
+  background: #c8cdd3 !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] .container,
+.app[data-theme="light"] .controlsStickyPanel {
+  background: linear-gradient(180deg, #d8dde2 0%, #cfd4da 100%) !important;
+}
+
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .bridgeStatusCard,
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .playlistOption,
+.app[data-theme="light"] .playbackQueueHeader,
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .timerModalPreview {
+  background: #e0e4e8 !important;
+}
+
+.app[data-theme="light"] .btn,
+.app[data-theme="light"] .menuButton,
+.app[data-theme="light"] .settingsToggleBtn,
+.app[data-theme="light"] .modalCancelBtn,
+.app[data-theme="light"] .settingsBorderModeButton,
+.app[data-theme="light"] .topSettingsBtn {
+  background: #c9ced4 !important;
+  color: #111827 !important;
+  border-color: #aeb5bd !important;
+}
+
+.app[data-theme="light"] .btnConfigOffRed {
+  background: #991b1b !important;
+  border-color: #f87171 !important;
+  color: #ffffff !important;
+}
+
+@keyframes vshookDirectorTimerOverrunBlink {
+  0%, 46% { opacity: 1; filter: brightness(1.18); }
+  47%, 100% { opacity: .28; filter: brightness(.78); }
+}
+
+.app .timerOverrunBlink {
+  animation: vshookDirectorTimerOverrunBlink .82s steps(2, end) infinite !important;
+}
+
+/* Complemento do tema claro: cinza, sem superfícies brancas. */
+.app[data-theme="light"] .numberCol,
+.app[data-theme="light"] .numberCol span,
+.app[data-theme="light"] .blockItem .numberCol,
+.app[data-theme="light"] .blockItem .numberCol span,
+.app[data-theme="light"] .modalInput,
+.app[data-theme="light"] .timerCountdownInputs input,
+.app[data-theme="light"] .topTimerBtn {
+  background: #d4d9de !important;
+}
+
+.app[data-theme="light"] .topTimerBtn {
+  color: #15803d !important;
+  border-color: #16a34a !important;
+}
+
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink),
+.app[data-theme="light"] .tunerSongRow,
+.app[data-theme="light"] .mixerRow {
+  background-color: rgba(224, 228, 232, .72) !important;
+}
+
+
+/* VS_HOOK_DIRECTOR_LIGHT_POLISH_AND_TIMER_INPUTS_20260711 */
+.app .btnConfigOnGreen {
+  height: 36px;
+  border-radius: 7px;
+  border: 1px solid #4ade80 !important;
+  background: #15803d !important;
+  color: #ffffff !important;
+  font-weight: 900 !important;
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, .18), 0 0 12px rgba(21, 128, 61, .24) !important;
+}
+
+/* Tema claro em cinza: contraste consistente sem usar fundo branco. */
+.app[data-theme="light"] {
+  background: #bfc5cc !important;
+  color: #101820 !important;
+}
+.app[data-theme="light"] .container,
+.app[data-theme="light"] .controlsStickyPanel,
+.app[data-theme="light"] .partsPanel,
+.app[data-theme="light"] .tunerFullScreen,
+.app[data-theme="light"] .mixerModalBoxFull,
+.app[data-theme="light"] .premixModalBoxFull {
+  background: linear-gradient(180deg, #d8dde2 0%, #cbd1d7 100%) !important;
+  color: #101820 !important;
+}
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .playbackQueueHeader,
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .topMenuFlyout,
+.app[data-theme="light"] .tunerFullHeader,
+.app[data-theme="light"] .tunerFullList,
+.app[data-theme="light"] .mixerRowsBox,
+.app[data-theme="light"] .timerModalPreview {
+  background: #d9dee3 !important;
+  border-color: #8f99a4 !important;
+  color: #101820 !important;
+  box-shadow: 0 6px 18px rgba(31, 41, 55, .10) !important;
+}
+.app[data-theme="light"] .topPlaylistButton,
+.app[data-theme="light"] .topPlaylistTicker,
+.app[data-theme="light"] .topPlaylistTickerTrack,
+.app[data-theme="light"] .topPlaylistTickerTrack > span,
+.app[data-theme="light"] .playlistOptionText,
+.app[data-theme="light"] .playlistOptionTicker,
+.app[data-theme="light"] .playlistOptionTickerTrack,
+.app[data-theme="light"] .playlistOptionTickerTrack > span,
+.app[data-theme="light"] .modalTitle,
+.app[data-theme="light"] .modalInfoText,
+.app[data-theme="light"] .settingsCategoryTitle,
+.app[data-theme="light"] .sectionLabel,
+.app[data-theme="light"] .middleInfoText,
+.app[data-theme="light"] .regionsTopLabel,
+.app[data-theme="light"] .tunerFullTitle,
+.app[data-theme="light"] .tunerFullSubtitle,
+.app[data-theme="light"] .emptyBox {
+  color: #0b1118 !important;
+  text-shadow: none !important;
+}
+.app[data-theme="light"] .topPlaylistButton {
+  background: #cbd1d7 !important;
+  border-color: #89939e !important;
+}
+.app[data-theme="light"] .topTimerBtn {
+  background: #cbd1d7 !important;
+  color: #166534 !important;
+  border-color: #22c55e !important;
+}
+.app[data-theme="light"] .topSettingsBtn {
+  background: #747f8b !important;
+  color: #ffffff !important;
+  border-color: #5f6b77 !important;
+}
+.app[data-theme="light"] .topMenuBtn {
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .topMenuFlyoutBtn {
+  background: #c4cad0 !important;
+  color: #0b1118 !important;
+  border-color: #87929d !important;
+}
+.app[data-theme="light"] .topMenuFlyoutBtnActive,
+.app[data-theme="light"] .topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+  background: #15803d !important;
+  color: #ffffff !important;
+  border-color: #4ade80 !important;
+}
+
+/* Botões semânticos mantêm suas cores no tema claro. */
+.app[data-theme="light"] button.btn.btnPlayActive,
+.app[data-theme="light"] button.modalOkBtnWide.btnPlayActive {
+  background: #15803d !important;
+  border-color: #4ade80 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] button.btn.btnStopActive,
+.app[data-theme="light"] button.modalOkBtnWide.btnStopActive,
+.app[data-theme="light"] button.btnConfigOffRed {
+  background: #b91c1c !important;
+  border-color: #f87171 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] button.btnConfigOnGreen {
+  background: #15803d !important;
+  border-color: #4ade80 !important;
+  color: #ffffff !important;
+}
+.app[data-theme="light"] .btnAutoplayActive {
+  color: #111827 !important;
+}
+
+/* Lista e transporte: leitura escura em todas as superfícies claras. */
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink),
+.app[data-theme="light"] .tunerFullRow,
+.app[data-theme="light"] .mixerRow,
+.app[data-theme="light"] .premixSongCard {
+  background: rgba(216, 221, 226, .92) !important;
+  border-color: #a2abb4 !important;
+}
+.app[data-theme="light"] .playbackQueueLine {
+  border-color: #a7b0b9 !important;
+}
+.app[data-theme="light"] .playbackQueueLabel {
+  color: #374151 !important;
+}
+.app[data-theme="light"] .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueNow .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueNext .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueLoop .playbackQueueTitle,
+.app[data-theme="light"] .playbackQueueLoop .playbackQueueLabel {
+  color: #0b1118 !important;
+  text-shadow: none !important;
+}
+.app[data-theme="light"] .playbackQueueTrack {
+  background: #aeb6bf !important;
+}
+.app[data-theme="light"] .rowLabelText,
+.app[data-theme="light"] .text,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .blockText,
+.app[data-theme="light"] .blockTimeText,
+.app[data-theme="light"] .marqueeStatic,
+.app[data-theme="light"] .marqueeTrack,
+.app[data-theme="light"] .marqueeSegment,
+.app[data-theme="light"] .tunerFullSongName,
+.app[data-theme="light"] .tunerFullBlockName {
+  text-shadow: none !important;
+}
+
+/* Repertórios e projetos ficam visualmente separados no modal. */
+.app[data-theme="light"] .playlistSelectList {
+  gap: 9px !important;
+  padding: 2px !important;
+}
+.app[data-theme="light"] .playlistOption,
+.app[data-theme="light"] .playlistOptionActive {
+  background: #c9cfd5 !important;
+  color: #0b1118 !important;
+  border: 2px solid #87919b !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.20), 0 3px 8px rgba(31,41,55,.10) !important;
+}
+.app[data-theme="light"] .playlistOptionActive {
+  background: #b8d6c0 !important;
+  border-color: #15803d !important;
+}
+.app[data-theme="light"] .playlistOptionTime {
+  color: #7c2d12 !important;
+}
+
+/* Modais, campos e Tuner adaptados ao cinza claro. */
+.app[data-theme="light"] .modalOverlay {
+  background: rgba(31, 41, 55, .46) !important;
+}
+.app[data-theme="light"] .modalInput,
+.app[data-theme="light"] .timerCountdownInputs label,
+.app[data-theme="light"] .timerCountdownInputs input,
+.app[data-theme="light"] .tunerFullValue,
+.app[data-theme="light"] .tunerStepBtn {
+  background: #c8ced4 !important;
+  color: #0b1118 !important;
+  border-color: #87919b !important;
+}
+.app[data-theme="light"] .timerCountdownInputs span {
+  color: #166534 !important;
+}
+.app[data-theme="light"] .timerModalPreview {
+  background: #c8ced4 !important;
+  color: #166534 !important;
+  border-color: #22c55e !important;
+}
+.app[data-theme="light"] .tunerStepBtn:active {
+  background: #facc15 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .partsSongSwitchBtn {
+  background: #c4cad0 !important;
+  color: #0b1118 !important;
+  border-color: #87919b !important;
+}
+.app[data-theme="light"] .partsSongSwitchBtnActive {
+  background: #1d4ed8 !important;
+  color: #ffffff !important;
+  border-color: #60a5fa !important;
+}
+
+/* Inputs de H/M/S com dois dígitos, sem setas e com seleção de aplicativo de alarme. */
+.timerCountdownInputs input[data-timer-countdown-input] {
+  max-width: 3ch !important;
+  font-variant-numeric: tabular-nums;
+  caret-color: #22c55e;
+}
+.timerCountdownInputs input[data-timer-countdown-input]::selection {
+  background: rgba(34, 197, 94, .32);
+}
+
+@media (max-width: 430px) {
+  .app[data-theme="light"] .playbackQueueLine {
+    grid-template-columns: 82px minmax(0, 1fr) !important;
+    gap: 6px !important;
+  }
+  .app[data-theme="light"] .playbackQueueLabel { font-size: 9px !important; }
+  .app[data-theme="light"] .playbackQueueTitle { font-size: 11.5px !important; }
+  .timerCountdownInputs { gap: 7px !important; }
+  .timerCountdownInputs label { padding: 0 6px !important; }
+}
+
+/* VS_HOOK_TIMER_INPUT_SECOND_DIGIT_VISIBILITY_20260711_V2
+   Em WebView móvel, o cursor no fim do campo podia cobrir visualmente o segundo dígito. */
+.timerCountdownInputs label {
+  grid-template-columns: 18px minmax(44px, 1fr) !important;
+}
+.timerCountdownInputs input[data-timer-countdown-input] {
+  box-sizing: border-box !important;
+  width: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  height: 30px !important;
+  justify-self: center !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  line-height: normal !important;
+  letter-spacing: 0 !important;
+  text-indent: 0 !important;
+  text-align: center !important;
+  overflow: visible !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: currentColor !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  position: relative !important;
+  z-index: 2 !important;
+}
+.timerCountdownInputs input[data-timer-countdown-input]::selection {
+  background: transparent !important;
+}
+
+
+/* VS_HOOK_DIRECTOR_TELEPROMPT_NETWORK_V1 */
+.directorTpOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1750;
+  padding: 8px;
+  background: #0b1118;
+  display: flex;
+  overflow: hidden;
+}
+.directorTpPanel {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 2px solid var(--app-border-color, #facc15);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0e1722 0%, #0b1118 100%);
+  box-shadow: 0 0 0 1px var(--app-border-glow, rgba(250,204,21,.24));
+  animation: directorTpPanelIn 180ms ease-out both;
+}
+@keyframes directorTpPanelIn {
+  from { opacity: 0; transform: translateX(-28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.directorTpContent {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+}
+.directorTpContent > .playbackQueueHeader {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.directorTpControls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.directorTpTab {
+  min-width: 0;
+  height: 42px;
+  border: 1px solid #475569;
+  border-radius: 9px;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 1000;
+  letter-spacing: .025em;
+}
+.directorTpTabActive {
+  border-color: #fde047 !important;
+  background: linear-gradient(180deg, #facc15 0%, #d97706 100%) !important;
+  color: #111827 !important;
+  box-shadow: 0 0 14px rgba(250, 204, 21, .24);
+}
+.directorTpBack {
+  border-color: #64748b;
+  background: #111827;
+}
+.directorTpViewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  background: #000;
+  isolation: isolate;
+}
+.directorTpImage,
+.directorTpVideo {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: #000 !important;
+  border: 0;
+  outline: 0;
+  border-radius: 0;
+  pointer-events: none;
+}
+.directorTpVideo::-webkit-media-controls,
+.directorTpVideo::-webkit-media-controls-panel,
+.directorTpVideo::-webkit-media-controls-play-button,
+.directorTpVideo::-webkit-media-controls-start-playback-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+}
+.directorTpText {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(18px, 5vw, 44px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: center;
+  color: var(--teleprompt-text-color, #fff);
+  font-size: clamp(26px, 7.2vw, 58px);
+  font-weight: 900;
+  line-height: 1.14;
+  text-shadow: 0 2px 4px #000, 0 0 9px #000, 0 0 18px rgba(0,0,0,.92);
+  -webkit-overflow-scrolling: touch;
+}
+.directorTpTextOverlay {
+  background: rgba(0, 0, 0, .12);
+}
+.directorTpTextOnly {
+  background: #000;
+}
+.directorTpEmpty {
+  z-index: 5;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-align: center;
+  padding: 20px;
+}
+.directorTpHidden {
+  display: none !important;
+}
+.app[data-theme="light"] .directorTpOverlay {
+  background: #cbd0d6;
+}
+.app[data-theme="light"] .directorTpPanel {
+  background: linear-gradient(180deg, #e5e7eb 0%, #cfd4da 100%);
+}
+.app[data-theme="light"] .directorTpTab:not(.directorTpTabActive) {
+  border-color: #94a3b8;
+  background: #d7dce2;
+  color: #111827;
+}
+.app[data-theme="light"] .directorTpBack {
+  background: #c5cbd2;
+  color: #111827;
+}
+@media (max-width: 480px) {
+  .directorTpOverlay { padding: 6px; }
+  .directorTpContent { padding: 7px; gap: 7px; }
+  .directorTpTab { height: 40px; font-size: 12px; }
+  .directorTpText { padding: 16px; font-size: clamp(24px, 7.6vw, 44px); }
+}
+@media (max-height: 600px) {
+  .directorTpContent { padding: 6px; gap: 5px; }
+  .directorTpTab { height: 36px; }
+  .directorTpText { font-size: clamp(21px, 6vw, 38px); }
+}
+
+
+/* 2.9 - Premix por toque longo: tela cheia com itens da música */
+.premixFullScreen{position:fixed;inset:0;z-index:10040;width:100%;height:var(--app-vh,100dvh);box-sizing:border-box;padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));background:#05070b;overflow:hidden}
+
+/* Diretor Tablet: barra lateral e representação gráfica fixa no topo. */
+html[data-director-device="tablet"] .app:not(.musicianMonitor){position:relative;padding-left:76px!important;padding-right:76px!important;display:flex!important;flex-direction:column!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container{width:100%!important;height:auto!important;min-height:0!important;flex:1 1 auto!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.contentPanel,
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.tabletMainSplit{flex:1 1 0!important;min-height:0!important;height:auto!important;overflow:hidden!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .contentPanel>.listBox{flex:1 1 0!important;min-height:0!important;height:auto!important}
+.tabletDirectorSidebar{position:absolute;z-index:10070;left:8px;top:8px;bottom:8px;width:60px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 10px 28px rgba(0,0,0,.34);display:flex;flex-direction:column;align-items:center;padding:8px 6px;gap:6px}
+.tabletDirectorSidebarRight{left:auto;right:8px}
+.tabletDirectorSidebarSingle{padding:4px 6px;gap:3px}
+.tabletDirectorSidebarSingle .tabletSidebarButton{width:46px;height:34px;min-height:34px}
+.tabletDirectorSidebarSingle .tabletSidebarVerticalMedium{flex-basis:60px;height:60px;min-height:60px;padding-top:4px;padding-bottom:4px;font-size:6.5px}
+.tabletDirectorSidebarSingle .tabletSidebarVerticalLong{flex-basis:74px;height:74px;min-height:74px;padding-top:4px;padding-bottom:4px;font-size:6.5px}
+.tabletDirectorSidebarSingle .tabletSidebarSpacer{display:none}
+.tabletDirectorSidebarSingle [data-action="tablet-recados"]{margin-bottom:6px}
+.tabletPreviewButtonGroup{width:46px;height:auto;min-height:70px;flex:1 1 auto;display:flex;flex-direction:column;gap:3px}
+.tabletPreviewButton{flex:1 1 0;min-width:0;width:100%;min-height:0;padding:0;border:1px solid #475569;border-radius:5px;background:#172033;color:#f8fafc;font-size:8px;font-weight:1000;line-height:1}
+.tabletPreviewButtonActive{background:#15803d;border-color:#4ade80;color:#fff;box-shadow:0 0 8px rgba(34,197,94,.35)}
+.tabletSidebarByButton{flex:0 0 72px!important;width:46px!important;height:72px!important;min-height:72px!important;color:#fff!important;font-size:18px;font-weight:1000;letter-spacing:.02em}
+.tabletSidebarByButtonOff{background:#b00000!important;border-color:#ff2a2a!important;box-shadow:0 0 8px rgba(239,68,68,.22)!important}
+.tabletSidebarByButtonOn{background:#facc15!important;border-color:#fff176!important;color:#111827!important;box-shadow:0 0 11px rgba(250,204,21,.52)!important;animation:tabletBypassYellowBlink .72s steps(2,end) infinite!important}
+@keyframes tabletBypassYellowBlink{0%,100%{background:#facc15;border-color:#fff176;box-shadow:0 0 12px rgba(250,204,21,.62)}50%{background:#6b5204;border-color:#b8960a;box-shadow:0 0 3px rgba(250,204,21,.18)}}
+.tabletSongToolsModal{width:min(76%,700px)!important;max-width:700px!important;height:320px!important;max-height:calc(100vh - 56px)!important;padding:18px 22px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;overflow-y:auto!important}
+.tabletSongToolsOptions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:12px;margin:12px 0 14px;flex:0 0 auto}
+.tabletSongToolOption{min-width:0;height:64px;border:1px solid #475569;border-radius:12px;background:#172033;color:#f8fafc;font-size:14px;font-weight:1000;padding:0 6px}
+.tabletSongToolOptionActive{background:#15803d;border-color:#4ade80;color:#fff;box-shadow:0 0 10px rgba(34,197,94,.28)}
+.tabletSongToolResetOption{background:#facc15!important;border-color:#fde047!important;color:#111827!important;box-shadow:0 0 10px rgba(250,204,21,.24)}
+.tabletResetConfirmBtn{background:#facc15!important;border-color:#fde047!important;color:#111827!important}
+.tabletSongToolsParentModal .tabletSongToolsOptions{grid-template-columns:repeat(2,minmax(0,1fr))}
+.tabletSongToolsParentModal .tabletSongToolResetOption{width:100%;height:64px}
+.tabletSongToolsParentModal{height:250px!important}
+.tabletSongToolsParentModal .tabletSongToolsActions{grid-template-columns:1fr 1fr!important}
+.tabletSongToolsActions{display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important}
+html[data-director-device="phone"] .tabletSongToolsModal{width:min(92vw,520px)!important;max-width:520px!important;height:300px!important}
+html[data-director-device="phone"] .tabletSongToolsOptions{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+html[data-director-device="phone"] .tabletSongToolsModal:not(.tabletSongToolsParentModal) .tabletSongToolResetOption{grid-column:1 / -1;width:100%}
+html[data-director-device="phone"] .tabletMultiLoopsModal{width:min(92vw,560px)!important;max-width:560px!important}
+html[data-director-device="phone"] .tabletMultiLoopTracksModal{width:min(94vw,620px)!important}
+.tabletMultiLoopsModal{width:min(76%,700px)!important;max-width:700px!important;height:340px!important;max-height:calc(100vh - 56px)!important;padding:18px 22px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;overflow-y:auto!important}
+.tabletMultiLoopsSong{text-align:center;color:#facc15;font-size:12px;font-weight:1000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:2px 0 12px}
+.tabletMultiLoopsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:center;gap:12px;flex:0 0 auto;width:100%;margin:12px 0}
+.tabletMultiLoopToggle{height:54px;border:1px solid #ef4444;border-radius:10px;background:#7f1d1d;color:#fff;font-size:13px;font-weight:1000}
+.tabletMultiLoopToggle:disabled{opacity:1;filter:none;background:#7f1d1d;border-color:#ef4444;color:#fff}
+.tabletMultiLoopToggleActive{background:#15803d;border-color:#4ade80;box-shadow:0 0 10px rgba(34,197,94,.25)}
+.tabletMultiLoopsHint{margin:10px 0 2px;color:#94a3b8;text-align:center;font-size:9px;font-weight:900}
+.tabletMultiLoopsActions{display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important}
+.tabletMultiLoopTracksModal{width:min(90vw,620px)!important;max-width:620px!important;height:min(82vh,430px)!important;display:flex!important;flex-direction:column!important}
+.tabletMultiLoopFadeControl{display:grid;grid-template-columns:52px minmax(60px,1fr) 52px;align-items:center;gap:10px;margin:5px 0 10px}
+.tabletMultiLoopFadeControl>button{height:38px!important;min-height:38px!important}
+.tabletMultiLoopFadeControl>strong{text-align:center;color:#facc15;font-size:20px}
+.tabletMultiLoopTracksList{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid #263244;border-radius:10px;background:#080d14}
+.tabletMultiLoopTrackRow{display:grid;grid-template-columns:minmax(0,1fr) 82px 40px 40px;align-items:center;gap:6px;min-height:44px;padding:4px 7px;border-bottom:1px solid #263244}
+.tabletMultiLoopTrackRow:last-child{border-bottom:0}
+.tabletMultiLoopTrackName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-size:11px;font-weight:900}
+.tabletMultiLoopTrackToggle{height:32px;border:1px solid #475569;border-radius:7px;background:#172033;color:#f8fafc;font-size:10px;font-weight:1000;padding:0 3px}
+.tabletMultiLoopTrackToggle.active{background:#15803d;border-color:#4ade80}.tabletMultiLoopTrackToggle.active.mute{background:#b91c1c;border-color:#f87171}.tabletMultiLoopTrackToggle.active.solo{background:#ca8a04;border-color:#fde047;color:#111827}
+.tabletMultiLoopAutoLimitModal{width:min(90vw,620px)!important;max-width:620px!important;min-height:310px!important;padding:24px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;gap:16px!important}
+.tabletMultiLoopAutoLimitTrack{text-align:center;color:#facc15;font-size:15px;font-weight:1000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tabletMultiLoopAutoLimitInfo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:10px;color:#cbd5e1;font-size:10px;font-weight:900;text-align:center}
+.tabletMultiLoopAutoLimitInfo strong{color:#facc15;font-size:12px}
+.tabletMultiLoopAutoLimitSlider{width:100%;height:34px;margin:2px 0 0;accent-color:#facc15;touch-action:none;cursor:pointer}
+.tabletMultiLoopAutoLimitSlider::-webkit-slider-runnable-track{height:8px;border:1px solid #475569;border-radius:999px;background:#172033}
+.tabletMultiLoopAutoLimitSlider::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;margin-top:-9px;border:2px solid #fef08a;border-radius:50%;background:#facc15;box-shadow:0 0 12px rgba(250,204,21,.4)}
+.tabletMultiLoopAutoLimitSlider::-moz-range-track{height:8px;border:1px solid #475569;border-radius:999px;background:#172033}
+.tabletMultiLoopAutoLimitSlider::-moz-range-thumb{width:22px;height:22px;border:2px solid #fef08a;border-radius:50%;background:#facc15;box-shadow:0 0 12px rgba(250,204,21,.4)}
+.tabletMultiLoopAutoLimitScale{display:flex;justify-content:space-between;margin-top:-13px;color:#94a3b8;font-size:9px;font-weight:900}
+html[data-director-device="phone"] .tabletMultiLoopAutoLimitModal{width:min(92vw,540px)!important;min-height:280px!important}
+@media (max-height:430px){
+  .tabletDirectorSidebarSingle{padding:3px 6px;gap:2px}
+  .tabletDirectorSidebarSingle .tabletSidebarButton{height:28px;min-height:28px}
+  .tabletDirectorSidebarSingle .tabletSidebarButton svg{width:20px;height:20px}
+  .tabletDirectorSidebarSingle .tabletSidebarVerticalMedium{flex-basis:52px;height:52px;min-height:52px;padding-top:4px;padding-bottom:4px;font-size:5.5px}
+  .tabletDirectorSidebarSingle .tabletSidebarVerticalLong{flex-basis:64px;height:64px;min-height:64px;padding-top:4px;padding-bottom:4px;font-size:5.5px}
+  .tabletDirectorSidebarSingle [data-action="tablet-recados"]{margin-bottom:4px}
+  .tabletDirectorSidebarSingle .tabletPreviewButtonGroup{height:auto;min-height:50px;flex:1 1 auto;gap:2px}
+  .tabletDirectorSidebarSingle .tabletPreviewButton{font-size:7px}
+}
+.tabletSidebarButton{width:46px;height:46px;min-height:46px;padding:0;border:1px solid #475569;border-radius:10px;background:#172033;color:#facc15;display:flex;align-items:center;justify-content:center;box-shadow:none}
+.tabletSidebarButton svg{width:24px;height:24px;fill:currentColor;stroke:none}
+.tabletSidebarButton .tabletGridIconRight{transform:scaleX(-1);transform-origin:center}
+.tabletSidebarButton .tabletPlaylistIcon{fill:none;stroke:currentColor;stroke-width:3;stroke-linecap:round}
+.tabletSidebarButton .tabletPlaylistIconRight{transform:scaleX(-1);transform-origin:center}
+.tabletSidebarButton .tabletPartsIcon{transform:scaleX(-1);transform-origin:center}
+.tabletSidebarButton .tabletSettingsIcon{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round}
+.tabletSidebarSpacer{flex:1 1 auto;min-height:8px}
+.tabletMenuIcon{display:block;font-size:24px;font-weight:1000;line-height:1;transform:translateY(-2px)}
+.tabletSidebarTpButton{font-size:15px;font-weight:1000;letter-spacing:-.04em}
+.tabletSidebarNavButton{font-size:11px;font-weight:1000;letter-spacing:-.02em}
+.tabletSidebarVerticalButton{position:relative;box-sizing:border-box;flex:0 0 62px;height:62px;min-height:62px;padding:7px 0;overflow:hidden;font-size:7.2px;font-weight:1000;line-height:1;letter-spacing:0}
+.tabletSidebarVerticalMedium{flex-basis:78px;height:78px;min-height:78px}
+.tabletSidebarVerticalLong{flex-basis:104px;height:104px;min-height:104px}
+.tabletSidebarVerticalLabel{position:absolute;left:50%;top:50%;display:block;width:1em;max-height:calc(100% - 14px);margin:0;overflow:hidden;white-space:normal;overflow-wrap:anywhere;word-break:break-all;text-align:center;letter-spacing:0;line-height:1;transform:translate(-50%,-50%)}
+.tabletDirectorSidebarLeft .tabletSidebarButton{flex:1 1 0!important;width:46px!important;height:auto!important;min-height:0!important;font-size:11px!important}
+.tabletDirectorSidebarLeft [data-action="tablet-recados"]{margin-bottom:0!important}
+.tabletDirectorSidebarRight>[data-action="tablet-transport-panel"],
+.tabletDirectorSidebarRight>[data-action="tablet-playlists"]{flex:0 0 48px!important;width:46px!important;height:48px!important;min-height:48px!important}
+.tabletDirectorSidebarRight>[data-action="tablet-playlists"]{flex-basis:72px!important;height:72px!important;min-height:72px!important}
+.tabletDirectorSidebarRight>[data-action="tablet-transport-panel"] svg,
+.tabletDirectorSidebarRight>[data-action="tablet-playlists"] svg{width:28px!important;height:28px!important}
+.tabletSidebarListButton{font-size:11.5px!important;font-weight:1000!important;letter-spacing:0!important;color:#facc15!important}
+.tabletSidebarListButton .tabletSidebarVerticalLabel{max-height:calc(100% - 8px)!important;line-height:1!important}
+.tabletSidebarVerticalButton[data-action="go-playlist"]:not(.tabletSidebarButtonActive){background:#17345f;border-color:#2f69aa;color:#93c5fd}
+.tabletSidebarVerticalButton[data-action="go-regions"]:not(.tabletSidebarButtonActive){background:#164936;border-color:#2c8a63;color:#86efac}
+.tabletSidebarVerticalButton[data-action="tablet-search"]:not(.tabletSidebarButtonActive){background:#283452;border-color:#536b9d;color:#bfdbfe}
+.tabletSidebarVerticalButton[data-action="tablet-teleprompt"]:not(.tabletSidebarButtonActive){background:#402060;border-color:#7540a3;color:#d8b4fe}
+.tabletSidebarVerticalButton[data-action="project-selector"]:not(.tabletSidebarButtonActive){background:#153f4a;border-color:#28798b;color:#a5f3fc}
+.tabletSidebarVerticalButton[data-action="tablet-parts-split"]:not(.tabletSidebarButtonActive){background:#5a3015;border-color:#a65c27;color:#fdba74}
+.tabletSidebarVerticalButton[data-action="tablet-tuner-split"]:not(.tabletSidebarButtonActive){background:#124747;border-color:#238383;color:#99f6e4}
+.tabletSidebarVerticalButton[data-action="tablet-mixer"]:not(.tabletSidebarButtonActive){background:#542044;border-color:#963b78;color:#f9a8d4}
+.tabletSidebarVerticalButton[data-action="tablet-recados"]:not(.tabletSidebarButtonActive){background:#592326;border-color:#a54348;color:#fca5a5}
+.tabletSidebarVerticalButton[data-action="settings"]:not(.tabletSidebarButtonActive){background:#303846;border-color:#667085;color:#e2e8f0}
+.tabletSidebarButton:active{transform:translateY(1px);filter:brightness(1.18)}
+.tabletSidebarButtonActive{border-color:#facc15;background:#44340a;color:#fde047;box-shadow:0 0 0 1px rgba(250,204,21,.18),0 0 14px rgba(250,204,21,.18)}
+.tabletDirectorTopBar{position:sticky;z-index:10065;top:0;width:100%;height:50px;min-height:50px;flex:0 0 50px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px;margin:0;padding:5px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 7px 20px rgba(0,0,0,.28);box-sizing:border-box}
+.app[data-theme="light"] .tabletDirectorTopBar,
+.app[data-theme="light"] .tabletDirectorSidebar{background:linear-gradient(180deg,#d8dde2 0%,#cfd4da 100%)}
+.tabletTopBarButton{width:100%;height:38px;min-width:0;min-height:38px;margin:0;padding:0 5px;border:1px solid #475569;border-radius:9px;color:#f8fafc;font-size:12px;font-weight:1000;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 3px 8px rgba(0,0,0,.22)}
+.tabletTopBarRepertorios,.tabletTopBarMusicas{background:#facc15;border-color:#fde047;color:#050505}
+.tabletTopBarTuner,.tabletTopBarMixer,.tabletTopBarParts{background:#c90000;border-color:#ff2a2a;color:#fff}
+.tabletTopBarButtonActive{border-color:#4ade80!important;background:#22c55e!important;color:#fff!important;box-shadow:0 0 0 1px rgba(34,197,94,.24),0 0 12px rgba(34,197,94,.3)!important}
+.tabletTopBarButton:active{filter:brightness(1.18)}
+.tabletSearchScreen{position:absolute;z-index:10055;left:76px;right:76px;top:50px;bottom:0;display:flex;min-width:0;min-height:0;padding:8px;box-sizing:border-box;background:rgba(5,7,11,.98)}
+.tabletSearchPanel{display:flex;flex:1 1 auto;min-width:0;min-height:0;flex-direction:column;padding:12px;border:1px solid #475569;border-radius:12px;background:#0b1220;box-shadow:0 14px 32px rgba(0,0,0,.34)}
+.tabletSearchHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
+.tabletSearchTitle{color:#facc15;font-size:18px;font-weight:1000;letter-spacing:.08em}
+.tabletSearchClose{width:132px;height:38px!important;min-height:38px!important}
+.tabletSearchInputRow{display:grid;grid-template-columns:minmax(0,1fr) 52px;align-items:center;gap:8px;margin-bottom:10px}
+.tabletSearchInput{width:100%;height:44px;min-width:0;box-sizing:border-box;padding:0 14px;border:1px solid #64748b;border-radius:10px;outline:none;background:#05070b;color:#fff;font-size:16px;font-weight:900;text-transform:uppercase;-webkit-appearance:none;appearance:none}
+.tabletSearchInput:focus{border-color:#facc15;box-shadow:0 0 0 2px rgba(250,204,21,.18)}
+.tabletSearchInput::-webkit-search-cancel-button{filter:invert(1);opacity:.82}
+.tabletSearchCount{display:flex;align-items:center;justify-content:center;height:42px;border:1px solid #475569;border-radius:9px;background:#172033;color:#facc15;font-size:14px;font-weight:1000}
+.tabletSearchResults{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;border:1px solid #263244;border-radius:10px;background:#080d14;touch-action:pan-y}
+.tabletSearchResult{display:grid;width:100%;min-height:50px;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:6px 10px;border:0;border-bottom:1px solid #263244;background:#101722;color:#f8fafc;text-align:left}
+.tabletSearchResult:last-child{border-bottom:0}
+.tabletSearchResult:active{background:#1e3a5f}
+.tabletSearchResultMain,.tabletSearchResultSide{display:flex;min-width:0;flex-direction:column;gap:2px}
+.tabletSearchResultName{overflow:hidden;color:#f8fafc;font-size:12px;font-weight:1000;white-space:nowrap;text-overflow:ellipsis}
+.tabletSearchResultParent{overflow:hidden;color:#67e8f9;font-size:8.5px;font-weight:900;white-space:nowrap;text-overflow:ellipsis}
+.tabletSearchResultSide{align-items:flex-end}
+.tabletSearchResultDestination{color:#94a3b8;font-size:8px;font-weight:900}
+.tabletSearchResultTime{color:#facc15;font-size:10px;font-weight:1000}
+.tabletSearchEmpty{display:flex;align-items:center;justify-content:center;min-height:100%;padding:20px;box-sizing:border-box;color:#94a3b8;font-size:12px;font-weight:900;text-align:center}
+.app[data-theme="light"] .tabletSearchScreen{background:rgba(226,232,240,.98)}
+.app[data-theme="light"] .tabletSearchPanel{border-color:#94a3b8;background:#e2e8f0}
+.app[data-theme="light"] .tabletSearchInput{border-color:#64748b;background:#fff;color:#111827}
+.app[data-theme="light"] .tabletSearchInput::-webkit-search-cancel-button{filter:none}
+.app[data-theme="light"] .tabletSearchCount{background:#cbd5e1;color:#111827}
+.app[data-theme="light"] .tabletSearchResults{border-color:#94a3b8;background:#d7dee7}
+.app[data-theme="light"] .tabletSearchResult{border-color:#aab4c1;background:#f8fafc;color:#111827}
+.app[data-theme="light"] .tabletSearchResultName{color:#111827}
+.app[data-theme="light"] .tabletSearchResultDestination{color:#475569}
+.app[data-theme="light"] .btnAutoUnavailable{border-color:#94a3b8!important;background:#cbd5e1!important;color:#64748b!important}
+html[data-director-device="phone"] .tabletSearchScreen{position:fixed;z-index:10080;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto}
+html[data-director-device="phone"] .tabletSearchPanel{width:100%;height:100%;min-height:0;padding:10px;box-sizing:border-box;touch-action:auto}
+html[data-director-device="phone"] .tabletSearchHeader{margin-bottom:10px}
+html[data-director-device="phone"] .tabletSearchClose{width:112px;height:44px!important;min-height:44px!important}
+html[data-director-device="phone"] .tabletSearchInput{height:50px;font-size:17px;touch-action:auto}
+html[data-director-device="phone"] .tabletSearchCount{height:48px}
+html[data-director-device="phone"] .tabletSearchResults{touch-action:pan-y;-webkit-overflow-scrolling:touch}
+html[data-director-device="phone"] .tabletSearchResult{min-height:56px}
+html[data-director-device="phone"] .tabletSearchResultName{font-size:13px}
+html[data-director-device="phone"] .app[data-theme="light"] .tabletSearchScreen{background:#e2e8f0}
+html[data-director-device="tablet"].directorSearchPortraitMode,
+html[data-director-device="tablet"].directorSearchPortraitMode body,
+html[data-director-device="tablet"].directorSearchPortraitMode #app{touch-action:auto!important;overscroll-behavior:auto!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .app:not(.musicianMonitor){width:100%!important;height:100%!important;min-height:0!important;padding:0!important;transform:none!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .app>.tabletDirectorSidebar,
+html[data-director-device="tablet"].directorSearchPortraitMode .app>.tabletDirectorTopBar,
+html[data-director-device="tablet"].directorSearchPortraitMode .app>.container{display:none!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchScreen{position:fixed;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchPanel{width:100%;height:100%;min-height:0;padding:10px;border:0;border-radius:0;box-shadow:none;box-sizing:border-box;touch-action:auto!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchHeader{margin-bottom:10px}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchTitle{font-size:22px}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchClose{width:120px;height:44px!important;min-height:44px!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchInput{height:50px;font-size:18px;touch-action:auto!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchCount{height:48px}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResults{touch-action:pan-y!important;-webkit-overflow-scrolling:touch}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResult{min-height:58px}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResultName{font-size:14px}
+.app[data-theme="light"] .tabletSearchScreen{background:rgba(226,232,240,.98)}
+html[data-director-device="tablet"] .app .controlsRowDirectorMain.controlsRowDirectorMainTablet{grid-template-columns:repeat(4,minmax(0,1fr)) minmax(42px,.68fr)!important;gap:3px!important}
+html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>button{width:100%!important;min-width:0!important;max-width:100%!important;padding-left:1px!important;padding-right:1px!important;font-size:11px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important}
+html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>[data-action="stop-break"]{font-size:10.5px!important}
+html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>[data-action="live"]{font-size:10.5px!important}
+.tabletTransportPanel{position:relative;z-index:60;left:auto;right:auto;top:auto;width:100%;flex:0 0 auto;margin:4px 0 0;padding:4px;border:1px solid #7c3aed;border-radius:10px;background:#0b1220;box-shadow:0 6px 16px rgba(0,0,0,.32),0 0 0 1px rgba(167,139,250,.16);display:flex;flex-direction:column;gap:3px;overflow:hidden}
+.tabletTransportPanelOpening{animation:tabletTransportSlideUp .22s cubic-bezier(.2,.8,.2,1) both}
+.tabletTransportPanel .transportSeekRegionTitle{padding:3px 7px;font-size:9px}
+.tabletTransportPanel .transportSeekWaveButton{height:52px}
+.tabletTransportPanel .transportSeekWaveBars{top:7px;bottom:6px}
+.tabletTransportPanel .transportSeekMetaText{font-size:9px}
+.tabletTransportPanelEmpty .transportSeekRegionTitle{color:#cbd5e1;background:#374151}
+.tabletTransportWaveDisabled{cursor:default;opacity:.52;filter:saturate(.35)}
+.tabletTransportMeta{padding:0 2px}
+@keyframes tabletTransportSlideUp{from{opacity:0;max-height:0;padding-top:0;padding-bottom:0;margin-top:0}to{opacity:1;max-height:112px;padding-top:4px;padding-bottom:4px;margin-top:4px}}
+html[data-director-device="tablet"] .playlistModalBox{width:min(82%,780px)!important;max-width:780px!important;padding:20px!important}
+html[data-director-device="tablet"] .settingsModalBox{width:min(76%,700px)!important;max-width:700px!important;padding:22px!important}
+html[data-director-device="tablet"] .modalOverlay{z-index:10060!important}
+html[data-director-device="tablet"] .directorPopup{left:calc(50% - 34px)!important;top:50%!important;z-index:10150!important}
+html[data-director-device="tablet"] .directorStopPausePersistentPopup{left:50%!important;top:50%!important;z-index:10240!important}
+html[data-director-device="tablet"] .settingsModalBox{max-height:calc(100vh - 28px)!important;overflow-y:auto!important}
+html[data-director-device="tablet"] .modalOverlay:has(.settingsModalBox) .modalSpacer{flex-basis:0!important}
+html[data-director-device="tablet"] .projectModalBox{width:min(84%,820px)!important;max-width:820px!important;padding:22px!important;max-height:calc(100vh - 78px)!important;overflow-y:auto!important}
+html[data-director-device="tablet"] .modalOverlay:has(.projectModalBox) .modalSpacer{flex:0 0 48px!important}
+html[data-director-device="tablet"] .tabletCenteredModalOverlay{left:76px!important;right:76px!important;width:auto!important}
+html[data-director-device="tablet"] .playlistModalBox .playlistSelectList{max-height:330px!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+html[data-director-device="tablet"] .playlistModalBox .playlistSelectList{touch-action:pan-y!important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-gutter:stable}
+html[data-director-device="tablet"] .playlistModalBox .playlistOption{touch-action:pan-y!important;user-select:none;-webkit-user-select:none}
+.playlistModalActionButtons{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px!important;align-items:center}
+.playlistModalActionButtons>button{width:100%!important;min-width:0!important;padding-left:7px!important;padding-right:7px!important}
+.tabletPlaylistOpenButton{background:#14532d!important;border-color:#22c55e!important;color:#fff!important}
+.tabletPlaylistCopyButton{background:#facc15!important;border-color:#fde047!important;color:#111827!important}
+.tabletPlaylistOpenButton:disabled,
+.tabletPlaylistCopyButton:disabled{opacity:.45;filter:grayscale(.5)}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topSettingsBtn,
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topMenuBtn{display:none!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topStatusRow{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topPlaylistButton,
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topTimerBtn{width:100%!important;min-width:0!important;max-width:none!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.headerRow{display:none!important}
+html[data-director-device="tablet"] .directorTpOverlay{left:76px!important;right:76px!important;width:auto!important}
+html[data-director-device="tablet"] .directorTpOverlay{top:50px!important;height:auto!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTrack{height:3px!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLine{min-height:22px!important;padding:2px 7px!important;gap:7px!important;grid-template-columns:90px minmax(0,1fr)!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLabel{font-size:9px!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueName,html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTime{font-size:10px!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink){background:#c40000!important;border-color:#ff2a2a!important;box-shadow:inset 0 0 0 1px rgba(255,80,80,.34)!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .leftCol span{color:#fff!important;text-decoration:line-through!important;text-shadow:none!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .rightCol span{color:#fff!important;text-decoration:none!important;text-shadow:none!important}
+html[data-director-device="tablet"] .tabletMainSplit{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:8px;flex:1 1 auto;min-height:0;overflow:hidden}
+html[data-director-device="tablet"] .tabletMainSplitPrimary,
+html[data-director-device="tablet"] .tabletMainSplitParts{display:flex;min-width:0;min-height:0;overflow:hidden}
+html[data-director-device="tablet"] .tabletMainSplitParts{padding-left:8px;border-left:1px solid #475569}
+html[data-director-device="tablet"] .tabletMainSplitPrimary>.contentPanel,
+html[data-director-device="tablet"] .tabletMainSplitParts>.contentPanel{width:100%;min-width:0}
+html[data-director-device="tablet"] .tabletTunerContent{width:100%;min-width:0}
+html[data-director-device="tablet"] .tabletTunerTopSpacer{flex:0 0 auto}
+html[data-director-device="tablet"] .tabletTunerList{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;padding:0!important;overscroll-behavior:none;scrollbar-width:none}
+html[data-director-device="tablet"] .tabletTunerList::-webkit-scrollbar{display:none}
+html[data-director-device="tablet"] .tabletTunerRow{position:absolute;left:0;right:0;min-height:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:1px 5px;border-bottom:1px solid #263244;background:#0b1118;overflow:hidden}
+html[data-director-device="tablet"] .tabletTunerControls{display:grid;grid-template-columns:38px 54px 38px;align-items:center;gap:5px}
+html[data-director-device="tablet"] .tabletTunerControls .tunerStepBtn,html[data-director-device="tablet"] .tabletTunerZero{width:100%;height:32px;min-height:32px;border:1px solid #475569;border-radius:8px;background:#172033;color:#facc15;font-weight:1000;font-size:15px}
+html[data-director-device="tablet"] .tabletTunerZero{font-size:12px;background:#111827;color:#f8fafc}
+html[data-director-device="tablet"] .tabletTunerBlockRow{background:transparent}
+html[data-director-device="tablet"] .tabletTunerUnifiedContent{width:100%;min-width:0}
+html[data-director-device="tablet"] .tabletTunerUnifiedTop{width:100%;padding-right:0;box-sizing:border-box}
+html[data-director-device="tablet"] .tabletTunerUnifiedList{width:100%;min-width:0}
+html[data-director-device="tablet"] .item.numberedItem.tabletTunerUnifiedItem{grid-template-columns:38px minmax(0,1fr) auto 150px!important;padding-right:0!important}
+html[data-director-device="tablet"] .tabletTunerUnifiedItem>.rightCol{padding-right:12px!important}
+html[data-director-device="tablet"] .tabletTunerUnifiedItem>.tabletTunerInlineControls{grid-column:4;align-self:stretch;display:grid;grid-template-columns:38px 52px 38px;align-items:center;justify-content:center;gap:5px;min-width:0;padding:2px 4px;border-left:0;background:transparent;box-sizing:border-box;position:relative;z-index:4}
+html[data-director-device="tablet"] .tabletTunerUnifiedItem>.tabletTunerInlineControlsEmpty{background:transparent}
+html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn,html[data-director-device="tablet"] .tabletTunerInlineControls .tabletTunerZero{width:100%;height:36px;min-height:36px;padding:0;border:1px solid #475569;border-radius:7px;background:#172033;color:#facc15;font-weight:1000;line-height:1}
+html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn{font-size:17px}
+html[data-director-device="tablet"] .tabletTunerInlineControls .tabletTunerZero{font-size:11px;background:#111827;color:#f8fafc}
+@media (orientation:portrait){html[data-director-platform="android"][data-director-device="tablet"] .container .listBox,html[data-director-platform="android"][data-director-device="tablet"] .container .listBox .item,html[data-director-platform="android"][data-director-device="tablet"] .container .listBox [data-action="select-item"]{touch-action:none!important}}
+@media (orientation:portrait){html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox,html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox .item,html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox [data-action="select-item"]{touch-action:none!important}}
+html[data-director-platform="ios"][data-director-device="tablet"] .container .contentPanel>.listBox{padding-bottom:76px!important;scroll-padding-bottom:76px!important;-webkit-overflow-scrolling:touch!important}
+html[data-director-device="tablet"] .tabletPartsControls{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important;margin-bottom:8px}
+html[data-director-device="tablet"] .tabletPartsListFrame{position:relative;flex:1 1 auto;min-height:0;padding:0 5px 5px;border-left:2px solid #7c3aed;border-right:2px solid #7c3aed;border-bottom:2px solid #7c3aed;border-radius:9px;display:flex;flex-direction:column;overflow:hidden;background:rgba(11,18,32,.42);box-shadow:0 6px 16px rgba(0,0,0,.3)}
+html[data-director-device="tablet"] .tabletPartsListFrame:has(.tabletPartsOwner[data-parts-owner-source="queued"]){border-color:#facc15}
+html[data-director-device="tablet"] .tabletPartsListFrame:has(.tabletPartsOwner[data-parts-owner-source="playing"]){border-color:#22c55e}
+html[data-director-device="tablet"] .tabletPartsOwner{flex:0 0 auto;margin:0 -5px 7px;border:1px solid #7c3aed;border-radius:7px 7px 0 0;overflow:hidden;background:#0b1220;box-shadow:0 5px 14px rgba(0,0,0,.3)}
+html[data-director-device="tablet"] .tabletPartsOwnerTitle{height:38px;padding:0 9px;background:#6d28d9;color:#fff;display:flex;align-items:center;justify-content:space-between;gap:8px}
+html[data-director-device="tablet"] .tabletPartsOwnerTitle strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:1000}
+html[data-director-device="tablet"] .tabletPartsOwnerTitle span{flex:0 0 auto;padding:3px 6px;border:1px solid rgba(255,255,255,.34);border-radius:999px;background:rgba(0,0,0,.2);font-size:8px;font-weight:1000;letter-spacing:.04em}
+html[data-director-device="tablet"] .tabletPartsOwner[data-parts-owner-source="queued"]{border-color:#facc15}
+html[data-director-device="tablet"] .tabletPartsOwner[data-parts-owner-source="queued"] .tabletPartsOwnerTitle{background:#9a6700}
+html[data-director-device="tablet"] .tabletPartsOwner[data-parts-owner-source="playing"]{border-color:#22c55e}
+html[data-director-device="tablet"] .tabletPartsOwner[data-parts-owner-source="playing"] .tabletPartsOwnerTitle{background:#166534}
+html[data-director-device="tablet"] .tabletPartsOwnerEmpty{height:46px;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;font-weight:1000;letter-spacing:.04em}
+html[data-director-device="tablet"] .tabletPartsContent .markerListBox{min-height:0}
+html[data-director-device="tablet"] .tabletPartsContent [data-marker-id].partsMarkerLocalSelected{background:linear-gradient(180deg,#facc15 0%,#d97706 100%)!important;border-color:#fde047!important;color:#111827!important;box-shadow:inset 0 0 0 1px rgba(253,224,71,.42),0 0 14px rgba(250,204,21,.24)!important}
+html[data-director-device="tablet"] .tabletPartsContent [data-marker-id].partsMarkerLocalSelected *{color:#111827!important}
+html[data-director-device="tablet"] .tabletPartsContent [data-marker-id].partsMarkerArmed{background:linear-gradient(180deg,#22c55e 0%,#15803d 100%)!important;border-color:#86efac!important;color:#fff!important;box-shadow:inset 0 0 0 1px rgba(134,239,172,.5),0 0 18px rgba(34,197,94,.35)!important}
+html[data-director-device="tablet"] .tabletPartsContent [data-marker-id].partsMarkerArmed *{color:#fff!important}
+html[data-director-device="tablet"] .tabletPartsContent .partsCancelArmed{background:#991b1b!important;border-color:#ef4444!important;color:#fff!important;box-shadow:0 0 14px rgba(239,68,68,.4)!important}
+.tabletPlayHoldModal{width:min(92%,430px)!important;max-width:430px!important;padding:18px!important}
+html[data-director-device="tablet"] .tabletPlayHoldModal{width:min(72%,620px)!important;max-width:620px!important;padding:22px!important}
+.tabletFadeoutToggle,
+.tabletChooseTracksButton{width:100%;height:48px;min-height:48px;margin-bottom:14px;font-weight:1000}
+.tabletFadeoutTimeControl{display:grid;grid-template-columns:72px minmax(0,1fr) 72px;align-items:center;gap:12px;margin:0 0 14px}
+.tabletFadeoutTimeControl>button{height:48px;min-height:48px;font-size:25px;font-weight:1000}
+.tabletFadeoutTimeControl>strong{height:48px;display:flex;align-items:center;justify-content:center;border:1px solid #475569;border-radius:10px;background:#080d14;color:#facc15;font-size:20px}
+.tabletPlayModeToggles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
+.tabletPlayModeToggles>button{width:100%;min-width:0;height:48px;min-height:48px;padding:0 6px;font-size:11px;font-weight:1000}
+.tabletPlayModeToggles>button:last-child:nth-child(odd){grid-column:1/-1}
+.tabletFadeoutTracksModal{height:min(76vh,540px);display:flex;flex-direction:column;min-height:0}
+.tabletFadeoutTrackSummary{flex:0 0 auto;margin:0 0 9px;color:#facc15;text-align:center;font-size:11px;font-weight:1000;letter-spacing:.04em}
+.tabletFadeoutTracksList{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;border:1px solid #334155;border-radius:10px;background:#070b11}
+.tabletFadeoutTrackRow{width:100%;min-height:42px;display:grid;grid-template-columns:28px 34px minmax(0,1fr);align-items:center;gap:7px;padding:5px 9px;border:0;border-bottom:1px solid #1e293b;border-radius:0;background:#0d131d;color:#f8fafc;text-align:left}
+.tabletFadeoutTrackRow:last-child{border-bottom:0}
+.tabletFadeoutTrackRow.tabletFadeoutTrackSelected{background:#12351f;color:#fff}
+.tabletFadeoutTrackCheck{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid #64748b;border-radius:6px;background:#080d14;color:#fff;font-size:15px;font-weight:1000}
+.tabletFadeoutTrackSelected .tabletFadeoutTrackCheck{border-color:#4ade80;background:#16a34a}
+.tabletFadeoutTrackNumber{color:#94a3b8;text-align:center;font-size:10px;font-weight:900}
+.tabletFadeoutTrackName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:900}
+.tabletFadeoutTrackActions{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+.tabletFadeoutTrackActions>button{height:40px;min-height:40px}
+.tabletFadeoutTracksModal>.modalButtons{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+@keyframes tabletFadeoutStopPulse{0%,100%{border-color:#ef4444;box-shadow:0 0 0 rgba(239,68,68,0);filter:brightness(1)}50%{border-color:#fecaca;box-shadow:0 0 18px rgba(239,68,68,.9);filter:brightness(1.34)}}
+.app[data-theme] button.btn.tabletFadeoutStopBlink{animation:tabletFadeoutStopPulse .62s ease-in-out infinite!important;color:#fff!important}
+.app[data-theme] button.btn.tabletStopBreakPlaying{background:#dc2626!important;border-color:#f87171!important;color:#fff!important;box-shadow:0 0 12px rgba(220,38,38,.35)!important}
+.app[data-theme] button.btn.tabletFadeoutRegress{background:linear-gradient(90deg,#dc2626 0 var(--fadeout-remaining,100%),#3b1115 var(--fadeout-remaining,100%) 100%)!important;border-color:#f87171!important;color:#fff!important;transition:background-size .12s linear!important}
+html[data-director-device="tablet"] .directorTpImage,
+html[data-director-device="tablet"] .directorTpVideo{object-fit:contain!important;background:#000!important}
+html[data-director-device="tablet"] .directorTpImage.directorTpMediaWide169,
+html[data-director-device="tablet"] .directorTpVideo.directorTpMediaWide169{object-fit:cover!important;background:transparent!important}
+html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:76px!important;width:auto!important}
+.premixFullPanel{height:100%;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px;box-sizing:border-box;border:1px solid #334155;border-radius:14px;background:#0b1018;box-shadow:0 18px 45px rgba(0,0,0,.45)}
+.premixFullPanel>.playbackQueueHeader{flex:0 0 auto;margin:0!important}
+.premixFullControls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px;flex:0 0 auto}
+.premixFullControls>button{height:42px!important;min-height:42px!important;border-radius:10px!important;font-weight:1000!important}
+.premixFullBack{background:#1f2937!important;border-color:#64748b!important;color:#f8fafc!important}
+.premixTransportCurrent{box-shadow:0 0 0 2px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.28)!important}
+.premixFullHeading{flex:0 0 auto;display:flex;align-items:center;gap:10px;min-width:0;padding:2px 4px}
+.premixFullTitle{flex:0 0 auto;color:#facc15;font-weight:1000;font-size:13px;letter-spacing:.08em}
+.premixFullSongName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-weight:1000;font-size:14px}
+.premixFullList{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;border:1px solid #273449!important;border-radius:12px!important;background:#070b11!important;overflow-y:auto!important;overscroll-behavior:contain}
+.premixFullRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,40vw) 42px;align-items:center;gap:9px;min-height:70px;padding:10px;border-bottom:1px solid #1e293b;background:#0d131d;box-sizing:border-box}
+.premixFullRow:last-child{border-bottom:0}
+.premixFullItemMain{min-width:0;display:flex;flex-direction:column;gap:4px}
+.premixFullItemName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-weight:1000;font-size:14px}
+.premixFullTrackName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8;font-weight:800;font-size:11px}
+.premixFullSliderWrap{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) 52px;align-items:center;gap:7px}
+.premixFullSlider{width:100%;min-width:0;height:36px;accent-color:#facc15;touch-action:pan-x}
+.premixFullDb{color:#facc15;font-weight:1000;font-size:10.5px;text-align:right;white-space:nowrap}
+.premixFullMute{width:40px;height:38px;border-radius:9px;border:1px solid #64748b;background:#111827;color:#f8fafc;font-weight:1000;font-size:15px}
+.premixFullMuteActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important;box-shadow:0 0 14px rgba(220,38,38,.28)}
+.premixFullEmpty{margin:12px!important}
+.app[data-theme="light"] .premixFullScreen{background:#cbd5e1}
+.app[data-theme="light"] .premixFullPanel{background:#e5e7eb;border-color:#94a3b8;box-shadow:0 16px 36px rgba(15,23,42,.18)}
+.app[data-theme="light"] .premixFullBack{background:#d1d5db!important;border-color:#64748b!important;color:#111827!important}
+.app[data-theme="light"] .premixFullSongName{color:#111827}
+.app[data-theme="light"] .premixFullList{background:#dbe1e8!important;border-color:#94a3b8!important}
+.app[data-theme="light"] .premixFullRow{background:#f8fafc;border-bottom-color:#cbd5e1}
+.app[data-theme="light"] .premixFullItemName{color:#111827}
+.app[data-theme="light"] .premixFullTrackName{color:#475569}
+.app[data-theme="light"] .premixFullMute:not(.premixFullMuteActive){background:#e2e8f0;color:#111827;border-color:#64748b}
+@media(max-width:560px){
+  .premixFullRow{grid-template-columns:minmax(0,1fr) 42px;gap:7px;min-height:86px}
+  .premixFullSliderWrap{grid-column:1/3;grid-row:2;width:100%}
+  .premixFullMute{grid-column:2;grid-row:1}
+  .premixFullControls{grid-template-columns:1fr 1fr}
+}
+
+/* PREMIX: família pai/filhos e hierarquia pista > item */
+.premixFullTrackName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#f8fafc!important;
+  font-weight:1000!important;
+  font-size:14px!important;
+}
+.premixFullItemName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#94a3b8!important;
+  font-weight:800!important;
+  font-size:11px!important;
+}
+.premixFamilySection{
+  margin:8px;
+  overflow:hidden;
+  border:1px solid #334155;
+  border-radius:12px;
+  background:#0b1018;
+  box-shadow:0 8px 20px rgba(0,0,0,.16);
+}
+.premixFamilySectionSelected{
+  border-color:#3b82f6;
+  box-shadow:0 0 0 1px rgba(59,130,246,.28),0 8px 20px rgba(0,0,0,.18);
+}
+.premixFamilySongButton{
+  width:100%;
+  min-width:0;
+  min-height:44px;
+  display:grid;
+  grid-template-columns:38px minmax(0,1fr);
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border:0;
+  border-bottom:1px solid #273449;
+  border-radius:0;
+  background:#111827;
+  color:#f8fafc;
+  text-align:left;
+  box-sizing:border-box;
+}
+.premixFamilySongButton:active{filter:brightness(1.15)}
+.premixFamilySongButtonSelected{
+  background:#1d4ed8!important;
+  color:#fff!important;
+  border-bottom-color:#60a5fa!important;
+}
+.premixFamilySongIndex{
+  color:#facc15;
+  font-weight:1000;
+  font-size:12px;
+  text-align:center;
+}
+.premixFamilySongButtonSelected .premixFamilySongIndex{color:#fff}
+.premixFamilySongName{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:inherit;
+  font-weight:1000;
+  font-size:13px;
+}
+.premixFamilyItems{
+  overflow:hidden;
+  background:#070b11;
+}
+.premixFamilyItems .premixFullRow:last-child{border-bottom:0}
+.premixFamilyEmpty{
+  padding:16px 12px;
+  color:#94a3b8;
+  font-size:11px;
+  font-weight:900;
+  text-align:center;
+}
+.app[data-theme="light"] .premixFullTrackName{color:#111827!important}
+.app[data-theme="light"] .premixFullItemName{color:#475569!important}
+.app[data-theme="light"] .premixFamilySection{
+  background:#f8fafc;
+  border-color:#94a3b8;
+  box-shadow:0 6px 16px rgba(15,23,42,.10);
+}
+.app[data-theme="light"] .premixFamilySectionSelected{
+  border-color:#2563eb;
+  box-shadow:0 0 0 1px rgba(37,99,235,.22),0 6px 16px rgba(15,23,42,.12);
+}
+.app[data-theme="light"] .premixFamilySongButton{
+  background:#e2e8f0;
+  color:#111827;
+  border-bottom-color:#cbd5e1;
+}
+.app[data-theme="light"] .premixFamilySongButtonSelected{
+  background:#2563eb!important;
+  color:#fff!important;
+}
+.app[data-theme="light"] .premixFamilyItems{background:#eef2f7}
+.app[data-theme="light"] .premixFamilyEmpty{color:#475569}
+@media(max-width:520px){
+  .premixFamilySection{margin:6px}
+  .premixFamilySongButton{grid-template-columns:32px minmax(0,1fr);padding:7px 8px}
+  .premixFamilySongName{font-size:12px}
+}
+
+/* 2.9 Diretor: recados integrados e sobreposição no Teleprompt */
+.directorTpTechnicalNotice {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(24px, 7vh, 74px) clamp(20px, 7vw, 72px);
+  pointer-events: none;
+  overflow: hidden;
+  background: #000;
+  color: var(--director-notice-text, #ffea00);
+  font-family: var(--director-notice-font, Arial, sans-serif);
+  font-size: clamp(30px, 7.8vw, 72px);
+  line-height: 1.08;
+  font-weight: 1000;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+  text-shadow: 0 .06em .06em rgba(0,0,0,.98), 0 0 28px rgba(0,0,0,.9);
+}
+.directorTpTechnicalNoticeFlash {
+  animation: directorTpTechnicalNoticeFlash 1.05s steps(1, end) 1;
+}
+@keyframes directorTpTechnicalNoticeFlash {
+  0%, 16.66% { background: var(--director-notice-flash, #ff0000); }
+  16.67%, 33.33% { background: #000; }
+  33.34%, 50% { background: var(--director-notice-flash, #ff0000); }
+  50.01%, 66.66% { background: #000; }
+  66.67%, 83.33% { background: var(--director-notice-flash, #ff0000); }
+  83.34%, 100% { background: #000; }
+}
+
+/* VS_HOOK_PARTS_ARMED_REGRESS_V1
+   O marker engatilhado permanece estático e mostra o tempo restante do
+   trecho atual em uma barra amarela fina na base da tira. */
+.markerListBox [data-marker-id].partsMarkerArmed,
+.markerListBox [data-marker-id].partsMarkerArmed.markerBlink {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
+.markerListBox [data-marker-id] .partsArmedRegressTrack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  z-index: 6;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.markerListBox [data-marker-id] .partsArmedRegressBar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+  min-height: 100%;
+  width: 0;
+  background: #facc15;
+  box-shadow: 0 0 7px rgba(250, 204, 21, 0.7);
+  transition: width 650ms linear;
+  pointer-events: none;
+}
+
+
+
+/* VS_HOOK_PARTS_TRANSPORT_SAME_SIZE_V1
+   O painel de transporte do Parts nao pode ser comprimido pela altura minima da lista. */
+.partsOverlayContent > .playbackQueueHeader {
+  flex: 0 0 72px !important;
+  min-height: 72px !important;
+  max-height: 72px !important;
+  width: 100% !important;
+  margin: 0 0 8px !important;
+}
+.partsOverlayContent > .controlsRowMarkers,
+.partsOverlayContent > .partsSongSwitchRow {
+  flex: 0 0 auto !important;
+}
+.partsOverlayContent > .markerListBox {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* Recados do Diretor: raiz única e editor nativo isolado. */
+.directorRecadosRoot {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 10080;
+  width: 100%;
+  height: var(--recados-app-height, 100vh);
+  padding: calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0,1fr) auto auto auto;
+  gap: 10px;
+  overflow: hidden;
+  background: #05070a;
+  color: #fff;
+  font-family: Arial, sans-serif;
+  box-sizing: border-box;
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+.directorRecadosRoot .recadosTop { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.directorRecadosRoot .recadosSendButton,
+.directorRecadosRoot .recadosCancelButton,
+.directorRecadosRoot .recadosExitButton {
+  min-height:56px; border:0; border-radius:14px; font-size:18px; font-weight:900; letter-spacing:.04em; color:#07110a;
+}
+.directorRecadosRoot .recadosSendButton { background:#facc15; }
+.directorRecadosRoot .recadosCancelButton,
+.directorRecadosRoot .recadosExitButton { background:#cbd5e1; }
+.directorRecadosRoot .recadosExitButton { width:100%; }
+.directorRecadosRoot .recadosPinButton { min-height:42px; border:1px solid #475569; border-radius:12px; background:#0f172a; color:#e2e8f0; font-size:15px; font-weight:900; letter-spacing:.05em; }
+.directorRecadosRoot .recadosPinButtonActive { background:#15803d; border-color:#4ade80; color:#fff; box-shadow:0 0 18px rgba(74,222,128,.34); }
+.directorRecadosRoot button:disabled { opacity:.65; }
+.directorRecadosRoot .recadosSlots { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); column-gap:5px; row-gap:5px; }
+.directorRecadosRoot .recadosSlotButton,
+.directorRecadosRoot .recadosEditButton {
+  width:100%; min-height:42px; border:1px solid #475569; border-radius:12px; background:#0f172a;
+  color:#e2e8f0; font-weight:900; letter-spacing:.05em;
+}
+.directorRecadosRoot .recadosSlotButtonActive { background:#facc15; border-color:#fde68a; color:#07110a; box-shadow:0 0 14px rgba(250,204,21,.3); }
+.directorRecadosRoot .recadosGlobalButton { grid-column:1 / -1; margin-top:0; }
+.directorRecadosRoot .recadosEditButton { background:#1d4ed8; border-color:#60a5fa; color:#fff; }
+.directorRecadosRoot .recadosSaveButton { background:#15803d; border-color:#4ade80; }
+.directorRecadosRoot .recadosTextInput {
+  display:block; width:100%; height:100%; min-width:0; min-height:0; margin:0; padding:16px;
+  border:1px solid rgba(250,204,21,.32); border-radius:18px; resize:none; overflow-y:auto; overflow-x:hidden;
+  background:#020617; color:#fff; outline:none; box-shadow:none;
+  font-family:Arial,sans-serif; font-size:20px; line-height:1.35; -webkit-appearance:none; appearance:none;
+  -webkit-user-select:text !important; user-select:text !important; -webkit-overflow-scrolling:touch;
+}
+.directorRecadosRoot .recadosTextInput:focus { border-color:rgba(250,204,21,.78); }
+.directorRecadosRoot .recadosTextInput[readonly] { color:#e2e8f0; background:#0f172a; cursor:default; }
+.directorRecadosRoot .recadosStatus {
+  min-height:28px; display:flex; align-items:center; justify-content:center; color:#facc15;
+  text-align:center; font-size:14px; font-weight:900; letter-spacing:.06em;
+}
+
+html[data-director-device="tablet"].directorRecadosPortraitMode .directorRecadosRoot {
+  inset:0;
+  width:100%;
+  max-width:none;
+  transform:none;
+  border:0;
+  box-shadow:none;
+}
+@media (max-width:480px) {
+  .directorRecadosRoot { gap:8px; padding-left:8px; padding-right:8px; }
+  .directorRecadosRoot .recadosTop { gap:8px; }
+  .directorRecadosRoot .recadosTextInput { font-size:18px; padding:13px; }
+  .directorRecadosRoot .recadosSlotButton, .directorRecadosRoot .recadosEditButton, .directorRecadosRoot .recadosPinButton { min-height:38px; }
+  .directorRecadosRoot .recadosSendButton, .directorRecadosRoot .recadosCancelButton, .directorRecadosRoot .recadosExitButton { min-height:52px; }
+}
+
+
+/* Config do Diretor: ações finais maiores, separadas e mais abaixo. */
+.settingsModalBox .settingsExitButtons {
+  display: grid !important;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) !important;
+  gap: 18px !important;
+  width: 100% !important;
+  margin-top: 30px !important;
+  justify-content: stretch !important;
+}
+.settingsModalBox .settingsExitButtons > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 56px !important;
+  min-height: 56px !important;
+  padding: 0 18px !important;
+  font-size: 16px !important;
+  border-radius: 12px !important;
+}
+.settingsModalBox .settingsExitButton { justify-self: start !important; }
+.settingsModalBox .settingsCloseButton { justify-self: end !important; }
+
+/* Config do Diretor no tablet: cabe inteiro abaixo da barra superior. */
+html[data-director-device="tablet"] .settingsModalBox {
+  padding: 10px 16px !important;
+  max-height: calc(100vh - 76px) !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer,
+html[data-director-device="tablet"] .modalOverlay:has(.settingsModalBox) .modalSpacer {
+  flex: 0 0 48px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .modalTitle {
+  margin-bottom: 5px !important;
+  font-size: 16px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsCategory {
+  margin: 0 0 5px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsCategoryTitle {
+  margin: 0 0 3px !important;
+  font-size: 11px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsThemeGrid {
+  gap: 7px !important;
+  margin: 4px 0 !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsWideGrid {
+  gap: 7px !important;
+  margin: 0 0 5px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsNumberGrid {
+  margin-top: 4px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsThemeGrid > button,
+html[data-director-device="tablet"] .settingsModalBox .settingsWideGrid > button {
+  height: 34px !important;
+  min-height: 34px !important;
+  font-size: 12px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsExitButtons {
+  gap: 12px !important;
+  margin-top: 7px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .settingsExitButtons > button {
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 12px !important;
+  font-size: 13px !important;
+  border-radius: 9px !important;
+}
+
+/* Recados dentro do Diretor no Android: mesmo gesto nativo do app Recados normal. */
+html.directorRecadosTouchMode,
+body.directorRecadosTouchMode,
+body.directorRecadosTouchMode #app {
+  touch-action: auto !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+.directorRecadosRoot {
+  touch-action: auto !important;
+  overscroll-behavior: none !important;
+}
+.directorRecadosRoot .recadosTextInput {
+  touch-action: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+/* VS_HOOK_PARTS_SONG_START_OUTLINE_20260712
+   Destaca somente a Parts sintética que representa o início da música.
+   O pseudo-elemento preserva o contorno mesmo quando a linha é selecionada/armada. */
+[data-marker-id].partsSongStartPart::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: 8;
+  border: 2px solid transparent;
+  border-radius: 7px;
+  pointer-events: none;
+}
+
+[data-marker-id].partsSongStartPlaying::after {
+  border-color: rgba(134, 239, 172, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.18), 0 0 10px rgba(34, 197, 94, 0.24);
+}
+
+[data-marker-id].partsSongStartQueued::after {
+  border-color: rgba(253, 230, 138, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(253, 230, 138, 0.12), 0 0 9px rgba(234, 179, 8, 0.16);
+}
+
+[data-marker-id].partsSongStartStopped::after {
+  border-color: rgba(196, 181, 253, 0.94);
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.16), 0 0 10px rgba(139, 92, 246, 0.22);
+}
+
+/* Aparência do texto recebido pelo Teleprompt. A preferência é independente
+   do tema e não altera avisos técnicos nem outros textos do aplicativo. */
+.app[data-teleprompt-font="system"] .directorTpText {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.app[data-teleprompt-font="arial"] .directorTpText {
+  font-family: Arial, Helvetica, sans-serif;
+}
+.app[data-teleprompt-font="serif"] .directorTpText {
+  font-family: Georgia, "Times New Roman", serif;
+}
+.app[data-teleprompt-font="mono"] .directorTpText {
+  font-family: Consolas, "Courier New", monospace;
+}
+.app[data-teleprompt-color="white"] .directorTpText { color: #ffffff; }
+.app[data-teleprompt-color="yellow"] .directorTpText { color: #fde047; }
+.app[data-teleprompt-color="cyan"] .directorTpText { color: #67e8f9; }
+.app[data-teleprompt-color="green"] .directorTpText { color: #86efac; }
+
+.settingsTelepromptCategory {
+  margin-top: 8px;
+}
+.telepromptSettingsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin: 4px 0 8px;
+}
+.telepromptColorSettingsTitle {
+  margin-top: 3px;
+}
+.settingsModalBox .telepromptSettingsOption {
+  min-width: 0;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 4px !important;
+  border: 1px solid #475569 !important;
+  background: #111827 !important;
+  color: #f8fafc !important;
+  font-size: 10px !important;
+  overflow: hidden;
+}
+.settingsModalBox .telepromptSettingsOptionActive {
+  border-color: #4ade80 !important;
+  box-shadow: inset 0 0 0 1px #22c55e, 0 0 8px rgba(34, 197, 94, .28) !important;
+}
+.telepromptFontPreview-system {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+}
+.telepromptFontPreview-arial {
+  font-family: Arial, Helvetica, sans-serif !important;
+}
+.telepromptFontPreview-serif {
+  font-family: Georgia, "Times New Roman", serif !important;
+}
+.telepromptFontPreview-mono {
+  font-family: Consolas, "Courier New", monospace !important;
+}
+.settingsModalBox .telepromptColorOption {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+}
+.settingsModalBox .telepromptMoreColorsButton {
+  width: 100%;
+  height: 34px !important;
+  min-height: 34px !important;
+  margin: 0 0 8px;
+  border-color: #facc15 !important;
+  background: #1f2937 !important;
+  color: #facc15 !important;
+  font-size: 12px !important;
+  font-weight: 1000 !important;
+}
+.settingsModalBox .telepromptMoreColorsButtonActive {
+  background: #854d0e !important;
+  color: #fff !important;
+}
+.telepromptExtraColorsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0 0 8px;
+  padding: 7px;
+  border: 1px solid #475569;
+  border-radius: 10px;
+  background: #080d17;
+}
+.telepromptExtraColorsGridHidden {
+  display: none !important;
+}
+.settingsModalBox .telepromptExtraColorOption {
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 0 2px !important;
+  gap: 3px !important;
+  font-size: 8px !important;
+}
+.settingsModalBox .telepromptExtraColorOption .telepromptColorSwatch {
+  width: 9px;
+  height: 9px;
+  flex-basis: 9px;
+}
+.telepromptColorSwatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border: 1px solid rgba(255, 255, 255, .8);
+  border-radius: 50%;
+  background: var(--teleprompt-option-color);
+  box-shadow: 0 0 5px rgba(255, 255, 255, .35);
+}
+
+@media (max-width: 380px) {
+  .settingsModalBox .telepromptSettingsOption {
+    font-size: 9px !important;
+  }
+  .settingsModalBox .telepromptColorOption {
+    gap: 2px !important;
+  }
+}
+
+html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsGrid {
+  margin: 3px 0 5px !important;
+  gap: 7px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption {
+  height: 32px !important;
+  min-height: 32px !important;
+  font-size: 11px !important;
+}
+
+/* Meters vivos: alimentados somente enquanto Mixer ou Premix estiver visível. */
+.trackMeter {
+  display: grid;
+  grid-template-rows: repeat(2, 3px);
+  gap: 2px;
+  width: 100%;
+  min-width: 48px;
+  margin-top: 5px;
+  pointer-events: none;
+}
+
+.trackMeterLane {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #020617;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, .22);
+}
+
+.trackMeterBar {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #22c55e;
+  box-shadow: 0 0 5px rgba(34, 197, 94, .46);
+  transition: width 70ms linear, background-color 70ms linear;
+}
+
+.trackMeterWarn .trackMeterBar {
+  background: #facc15;
+  box-shadow: 0 0 5px rgba(250, 204, 21, .5);
+}
+
+.trackMeterOver .trackMeterBar {
+  background: #ef4444;
+  box-shadow: 0 0 7px rgba(239, 68, 68, .68);
+}
+
+.app[data-theme="light"] .trackMeterLane {
+  background: #cbd5e1;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .24);
+}
+
+/* VS Hook - gaveta visual sincronizada pelo Lua */
+.item.drawerFamilyMember > .drawerOutlineSides,
+.item.drawerFamilyMember > .drawerOutlineTop,
+.item.drawerFamilyMember > .drawerOutlineBottom,
+.item.hashChildItem > .drawerChildSymbol {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 5;
+}
+.item.drawerFamilyMember.drawerOutlineEnabled > .drawerOutlineSides {
+  display: block;
+  inset: 0;
+  border-left: 2px solid var(--drawer-outline-color, #fff02e);
+  border-right: 2px solid var(--drawer-outline-color, #fff02e);
+}
+.item.drawerFamilyTop.drawerOutlineEnabled > .drawerOutlineTop,
+.item.drawerFamilyBottom.drawerOutlineEnabled > .drawerOutlineBottom {
+  display: block;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background:
+    linear-gradient(var(--drawer-outline-color, #fff02e), var(--drawer-outline-color, #fff02e)) left center / 38px 2px no-repeat,
+    linear-gradient(var(--drawer-outline-color, #fff02e), var(--drawer-outline-color, #fff02e)) right center / 38px 2px no-repeat;
+}
+.item.drawerFamilyTop.drawerOutlineEnabled > .drawerOutlineTop { top: 0; }
+.item.drawerFamilyBottom.drawerOutlineEnabled > .drawerOutlineBottom { bottom: 0; }
+.item.hashChildItem.drawerSymbolEnabled > .drawerChildSymbol {
+  display: block;
+  left: 45px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--drawer-symbol-color, #fff02e);
+}
+.item.hashChildItem.drawerSymbolEnabled.numberedItem > .leftCol { padding-left: 22px; }
+.item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .drawerChildSymbol { left: 8px; }
+.item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .leftCol { padding-left: 18px; }

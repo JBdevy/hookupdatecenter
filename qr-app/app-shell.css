@@ -1,0 +1,210 @@
+* { box-sizing: border-box; }
+html, body, #app {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+  background: #0b1118;
+  color: #f8fafc;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+button, input { font: inherit; }
+.vshook-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 18px;
+  background: radial-gradient(circle at top, rgba(249,195,42,.14), transparent 38%), #0b1118;
+}
+.vshook-shell-card {
+  width: min(480px, 100%);
+  background: rgba(13,17,24,.94);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 28px;
+  padding: 30px 24px;
+  text-align: center;
+  box-shadow: 0 24px 90px rgba(0,0,0,.42);
+}
+.vshook-shell-logo { width: 74px; height: 74px; border-radius: 20px; margin-bottom: 18px; }
+.vshook-shell-title { margin: 0; font-size: 30px; letter-spacing: -.03em; }
+.vshook-shell-subtitle { margin: 12px 0 22px; color: #aab2c0; font-size: 16px; line-height: 1.45; }
+.vshook-project-list, .vshook-mode-list { display: grid; gap: 12px; margin-top: 18px; }
+.vshook-mode-list { margin-top: 22px; }
+.vshook-device-list { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:22px; }
+.vshook-device-button {
+  min-width:0; min-height:132px; padding:18px 12px; border:1px solid rgba(250,204,21,.48); border-radius:20px;
+  background:linear-gradient(180deg,rgba(250,204,21,.16),rgba(180,83,9,.16)); color:#f8fafc;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; font-size:18px; font-weight:900;
+}
+.vshook-device-button:active { transform:translateY(1px); filter:brightness(1.14); }
+.vshook-device-icon { width:58px; height:58px; fill:none; stroke:#facc15; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.vshook-device-icon-phone { width:44px; }
+.vshook-device-icon-tablet { width:68px; }
+.vshook-project-button, .vshook-mode-button, .vshook-secondary-button {
+  width: 100%; border: 0; border-radius: 18px; padding: 16px 18px; font-size: 17px; font-weight: 800;
+}
+.vshook-project-button, .vshook-mode-button { background: linear-gradient(135deg,#f7c948,#f59e0b); color:#111827; }
+.vshook-secondary-button { margin-top:14px; background:rgba(255,255,255,.08); color:#f8fafc; border:1px solid rgba(255,255,255,.10); }
+.vshook-shell-status { color:#aab2c0; font-size:15px; line-height:1.45; margin:18px 0 0; }
+.vshook-error { color:#ff7676; font-size:14px; line-height:1.4; margin:0 0 14px; }
+.vshook-back-button {
+  width:100%; min-height:48px; margin-top:20px; border-radius:16px; border:1px solid rgba(250,204,21,.55);
+  background:linear-gradient(180deg,rgba(250,204,21,.18),rgba(180,83,9,.20)); color:#fde68a; font-size:16px; font-weight:900;
+}
+.vshook-manual-ip-box { margin-top:18px; padding-top:16px; border-top:1px solid rgba(255,255,255,.10); }
+.vshook-manual-ip-input {
+  width:100%; min-height:50px; padding:13px 14px; border-radius:16px; border:1px solid rgba(255,255,255,.16);
+  background:rgba(255,255,255,.07); color:#f8fafc; font-size:16px; font-weight:700; text-align:center; outline:none;
+}
+.vshook-manual-ip-input:focus { border-color:#f7c948; box-shadow:0 0 0 3px rgba(247,201,72,.14); }
+.vshook-manual-ip-input::placeholder { color:rgba(226,232,240,.58); }
+.vshook-project-actions { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
+.vshook-project-actions .vshook-back-button, .vshook-project-actions .vshook-secondary-button { width:100%; margin:0; }
+.vshook-app-version { margin-top:18px; color:#94a3b8; font-size:14px; font-weight:800; text-align:center; }
+
+/* Base do Diretor Tablet. Os próximos layouts podem usar
+   html[data-director-device="tablet"] ou body.vshook-director-tablet. */
+html[data-director-device="tablet"],
+html[data-director-device="tablet"] body {
+  overflow:hidden;
+}
+
+html[data-director-device="tablet"] #app {
+  width:var(--tablet-ui-width, 100%);
+  height:var(--tablet-ui-height, 100%);
+  min-height:0;
+  transform-origin:top left;
+  transform:scale(var(--tablet-ui-scale, 1));
+}
+
+@media (orientation: portrait) {
+  html[data-director-device="tablet"] {
+    width:100%;
+    height:100%;
+    min-height:0;
+    overflow:hidden;
+  }
+
+  html[data-director-device="tablet"] body {
+    position:fixed;
+    left:0;
+    top:0;
+    width:var(--tablet-screen-width, 100vh);
+    height:var(--tablet-screen-height, 100vw);
+    min-height:0;
+    overflow:hidden;
+    transform-origin:top left;
+    transform:rotate(90deg) translateY(-100%);
+  }
+
+  html[data-director-device="tablet"] #app {
+    width:var(--tablet-ui-width, 100%);
+    height:var(--tablet-ui-height, 100%);
+    min-height:0;
+    overflow:hidden;
+  }
+
+  html[data-director-device="tablet"] .vshook-shell {
+    width:100%;
+    height:100%;
+    min-height:100%;
+  }
+}
+
+/* Recados aberto dentro do Diretor Tablet volta ao eixo vertical do aparelho. */
+html[data-director-device="tablet"].directorRecadosPortraitMode,
+html[data-director-device="tablet"].directorRecadosPortraitMode body {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden !important;
+  overscroll-behavior:none;
+}
+
+html[data-director-device="tablet"].directorRecadosPortraitMode {
+  position:fixed;
+  inset:0;
+}
+
+html[data-director-device="tablet"].directorRecadosPortraitMode body {
+  position:fixed;
+  inset:0;
+  transform:none;
+}
+
+html[data-director-device="tablet"].directorRecadosPortraitMode #app {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+  transform:none;
+}
+
+/* Enquanto o teclado fecha, a prancheta tablet conserva a escala anterior.
+   A página externa fica fixa para o Safari não criar uma segunda área rolável. */
+html[data-director-device="tablet"].directorTabletKeyboardOpen,
+html[data-director-device="tablet"].directorTabletViewportRestoring {
+  position:fixed;
+  inset:0;
+  overflow:hidden !important;
+  overscroll-behavior:none;
+}
+
+html[data-director-device="tablet"].directorTabletKeyboardOpen body,
+html[data-director-device="tablet"].directorTabletKeyboardOpen #app,
+html[data-director-device="tablet"].directorTabletViewportRestoring body,
+html[data-director-device="tablet"].directorTabletViewportRestoring #app {
+  overflow:hidden !important;
+  overscroll-behavior:none;
+}
+
+/* A busca do Diretor Tablet também usa o eixo físico vertical no modo web. */
+html[data-director-device="tablet"].directorSearchPortraitMode,
+html[data-director-device="tablet"].directorSearchPortraitMode body {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+}
+
+html[data-director-device="tablet"].directorSearchPortraitMode body {
+  position:fixed;
+  inset:0;
+  transform:none;
+}
+
+html[data-director-device="tablet"].directorSearchPortraitMode #app {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+  transform:none;
+}
+
+/* Entrada do Diretor (login e escolha de projeto): sempre no retrato físico.
+   O layout tablet horizontal só é usado depois de abrir o projeto. */
+html[data-director-device="tablet"].directorShellPortraitMode,
+html[data-director-device="tablet"].directorShellPortraitMode body,
+html[data-director-device="tablet"].directorLoginPortraitMode,
+html[data-director-device="tablet"].directorLoginPortraitMode body {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+}
+
+html[data-director-device="tablet"].directorShellPortraitMode body,
+html[data-director-device="tablet"].directorLoginPortraitMode body {
+  position:fixed;
+  inset:0;
+  transform:none;
+}
+
+html[data-director-device="tablet"].directorShellPortraitMode #app,
+html[data-director-device="tablet"].directorLoginPortraitMode #app {
+  width:100%;
+  height:100%;
+  min-height:0;
+  overflow:hidden;
+  transform:none;
+}

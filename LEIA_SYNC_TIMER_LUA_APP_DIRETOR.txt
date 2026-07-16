@@ -1,0 +1,6 @@
+SYNC DO CRONOMETRO LUA -> APP DIRETOR
+
+- Ao entrar no App Diretor, modo, estado ativo/pausado, alvo e valor atual passam a vir do estado vivo da extensao.
+- O app nao deixa mais o modo antigo salvo no celular sobrescrever o estado do PC.
+- A continuacao local usa o valor visual recebido do PC como ancora, sem depender de o relogio do celular estar exatamente igual ao relogio do computador.
+- Cronometro regressivo negativo continua preservado.

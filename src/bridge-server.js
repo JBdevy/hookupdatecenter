@@ -8,7 +8,7 @@ const { createQrSvg } = require('./qr-svg')
 const PROJECT_STALE_MS = 20000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
 const TECHNICAL_NOTICE_DURATION_MS = 20000
-const DIRECTOR_NOTICE_DURATION_MS = 15000
+const DIRECTOR_NOTICE_DURATION_MS = 20000
 const TECHNICAL_NOTICE_MAX_LEN = 500
 
 function parseDateMs(value) {
@@ -245,10 +245,51 @@ const readJsonShortCacheByFile = new Map()
 const READ_JSON_CACHE_TTL_MS = 60
 
 const NATIVE_BRIDGE_PORT = Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830)
-const NATIVE_BRIDGE_CACHE_TTL_MS = 20 // VSHOOK_BRIDGE_SERVER_FIX18_NO_STALE_MIXER_PREMIX
+const NATIVE_BRIDGE_CACHE_TTL_MS = 180 // evita martelar o REAPER enquanto o Diretor esta aberto
+const NATIVE_BRIDGE_BACKGROUND_POLL_MS = 250
 let nativeBridgeStateCache = null
 let nativeBridgeStateCacheAt = 0
 let nativeBridgeRefreshInFlight = false
+
+
+function proxyNativeBridgeMedia(req, res, targetPath) {
+  const headers = {}
+  if (req.headers.range) headers.Range = req.headers.range
+  if (req.headers['user-agent']) headers['User-Agent'] = req.headers['user-agent']
+  const nativeReq = http.request({
+    hostname: '127.0.0.1',
+    port: NATIVE_BRIDGE_PORT,
+    path: targetPath,
+    method: 'GET',
+    headers,
+    timeout: 30000,
+  }, (nativeRes) => {
+    const responseHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Range',
+      'Cache-Control': 'no-store',
+    }
+    for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
+      const value = nativeRes.headers[name]
+      if (value !== undefined) responseHeaders[name] = value
+    }
+    res.writeHead(nativeRes.statusCode || 502, responseHeaders)
+    nativeRes.pipe(res)
+  })
+  nativeReq.on('timeout', () => nativeReq.destroy(new Error('native_media_timeout')))
+  nativeReq.on('error', () => {
+    if (res.headersSent) {
+      try { res.end() } catch (_) {}
+      return
+    }
+    sendJson(res, 502, { ok: false, error: 'Mídia do Teleprompt indisponível.', nativeBridge: false })
+  })
+  res.on('close', () => {
+    if (!nativeReq.destroyed) nativeReq.destroy()
+  })
+  nativeReq.end()
+}
 
 function requestNativeBridgeJson(pathname, options = {}) {
   const method = options.method || 'GET'
@@ -424,8 +465,8 @@ function normalizeNoticeSource(value) {
 
 function getTechnicalNoticePriority(source) {
   const normalized = normalizeNoticeSource(source)
+  if (normalized === 'recados') return 4
   if (normalized === 'director') return 3
-  if (normalized === 'recados') return 2
   return 1
 }
 
@@ -453,6 +494,8 @@ function normalizeTechnicalNotice(raw) {
     updatedAt: raw.updatedAt || raw.createdAt || null,
     expiresAt,
     expiresAtIso: raw.expiresAtIso || new Date(expiresAt).toISOString(),
+    pinned: raw.pinned === true,
+    pausedRemainingMs: Math.max(0, Math.floor(Number(raw.pausedRemainingMs || 0))),
   }
 }
 
@@ -613,7 +656,7 @@ res.writeHead(statusCode, {
     'Keep-Alive': 'timeout=120, max=1000',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type,Range',
   })
   res.end(JSON.stringify(data))
 }
@@ -724,16 +767,29 @@ function isDirectorTransportStopCommand(type, payload = {}) {
   if (isQueueCommandTypeNoTransport(commandType)) return false
   const source = String(payload.role || payload.clientRole || payload.appRole || payload.source || payload.mode || '').toLowerCase()
   const isDirector = !source || source.includes('director') || source.includes('diretor') || commandType.startsWith('director_') || commandType.startsWith('transport_')
-  const explicitStopType = commandType === 'transport_stop_no_seek' || commandType === 'director_stop_no_seek' || commandType === 'play_stop_no_seek' || commandType === 'play_stop' || commandType === 'stop' ||
-    (commandType.includes('stop') && !commandType.includes('timer'))
+  // Somente ordens reais de transporte entram aqui. Reconhecer qualquer nome
+  // contendo "stop" tambem capturava controles como stop_pause_mode_set e
+  // manual_stop_fadeout_set_enabled, impedindo que os estados fossem salvos.
+  const explicitStopType = commandType === 'transport_stop_no_seek' ||
+    commandType === 'director_stop_no_seek' ||
+    commandType === 'play_stop_no_seek' ||
+    commandType === 'director_stop_break' ||
+    commandType === 'stop_break' ||
+    commandType === 'play_stop' ||
+    commandType === 'stop'
   return isDirector && explicitStopType
 }
 
 function makeNativeTransportOnlyStopCommand(type, payload = {}) {
+  const commandType = String(type || '').toLowerCase()
+  const stopBreak = commandType === 'director_stop_break' || commandType === 'stop_break' || payload.stopBreak === true || payload.ignoreFadeout === true
+  const nativeStopType = stopBreak ? 'director_stop_break' : 'director_stop_no_seek'
+  const stopBreakFields = stopBreak ? { stopBreak: true, ignoreFadeout: true } : {}
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    type: 'director_stop_no_seek',
+    type: nativeStopType,
     payload: {
+      ...stopBreakFields,
       role: 'director',
       clientRole: 'director',
       appRole: 'director',
@@ -755,6 +811,7 @@ function makeNativeTransportOnlyStopCommand(type, payload = {}) {
       clientCommandId: payload.clientCommandId || `director-stop-transport-only-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       issuedAtMs: Date.now(),
     },
+    ...stopBreakFields,
     role: 'director',
     clientRole: 'director',
     appRole: 'director',
@@ -1067,6 +1124,50 @@ function createBridgeServer(options) {
   const lyricsFile = path.join(sharedDir, 'vshook_song_lyrics.json')
   const routes = normalizeRoutes(options.routes)
   const getHookCenterTechnicalNoticeSettings = typeof options.getTechnicalNoticeSettings === 'function' ? options.getTechnicalNoticeSettings : null
+  const saveHookCenterTechnicalNoticeSettings = typeof options.saveTechnicalNoticeSettings === 'function' ? options.saveTechnicalNoticeSettings : null
+  const getLicenseActive = typeof options.isLicenseActive === 'function' ? options.isLicenseActive : () => true
+
+  function isBridgeLicenseActive() {
+    try {
+      return getLicenseActive() === true
+    } catch (_) {
+      return false
+    }
+  }
+
+
+  function getHookCenterTechnicalNoticePublicSettings() {
+    if (!getHookCenterTechnicalNoticeSettings) return {
+      textColor: '#ffea00',
+      flashColor: '#ff0000',
+      fontFamily: 'Arial',
+      emojiEnabled: true,
+      emoji: '⚠️',
+    }
+    try {
+      const settings = getHookCenterTechnicalNoticeSettings() || {}
+      const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact']
+      const color = (value, fallback) => /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? String(value) : fallback
+      const fontFamily = allowedFonts.includes(String(settings.fontFamily || '')) ? String(settings.fontFamily) : 'Arial'
+      const emoji = String(settings.emoji || '⚠️').trim().replace(/[\r\n\t]+/g, '').slice(0, 8) || '⚠️'
+      return {
+        textColor: color(settings.textColor, '#ffea00'),
+        flashColor: color(settings.flashColor, '#ff0000'),
+        fontFamily,
+        emojiEnabled: settings.emojiEnabled !== false,
+        emoji,
+        recadosTemplates: [0, 1, 2].map((index) => String(settings.recadosTemplates?.[index] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN)),
+      }
+    } catch (_) {
+      return {
+        textColor: '#ffea00',
+        flashColor: '#ff0000',
+        fontFamily: 'Arial',
+        emojiEnabled: true,
+        emoji: '⚠️',
+      }
+    }
+  }
 
   function getHookCenterRecadosAuthState() {
     if (!getHookCenterTechnicalNoticeSettings) return {}
@@ -1088,13 +1189,16 @@ function createBridgeServer(options) {
 
   function mergeHookCenterRecadosAuth(state) {
     const auth = getHookCenterRecadosAuthState()
-    if (!auth || !auth.recadosAuthEnabled) return state || {}
+    const publicSettings = getHookCenterTechnicalNoticePublicSettings()
     return {
       ...(state || {}),
-      recadosAuthEnabled: true,
-      technicalNoticeAuthEnabled: true,
-      recadosAuthHash: auth.recadosAuthHash || '',
-      technicalNoticeAuthHash: auth.technicalNoticeAuthHash || auth.recadosAuthHash || '',
+      technicalNoticeSettings: publicSettings,
+      ...(auth && auth.recadosAuthEnabled ? {
+        recadosAuthEnabled: true,
+        technicalNoticeAuthEnabled: true,
+        recadosAuthHash: auth.recadosAuthHash || '',
+        technicalNoticeAuthHash: auth.technicalNoticeAuthHash || auth.recadosAuthHash || '',
+      } : {}),
     }
   }
 
@@ -1119,14 +1223,45 @@ function createBridgeServer(options) {
     markers: [],
   }
 
+  function buildLicenseLockedState() {
+    return mergeTelepromptTp1State({
+      ...fallbackState,
+      connected: false,
+      nativeBridge: false,
+      nativeBridgeRequired: true,
+      licenseRequired: true,
+      licenseActive: false,
+      bridgeMode: 'license_required',
+      updatedAt: new Date().toISOString(),
+      currentPlaylistName: '',
+      activePlaylistId: null,
+      playing: false,
+      playingId: null,
+      queuedSongId: null,
+      selectedRegionId: null,
+      selectedRegionIds: [],
+      selectedPlaylistSongId: null,
+      selectedPlaylistSongIds: [],
+      selectedMarkerId: null,
+      regions: [],
+      playlists: [],
+      markers: [],
+    }, sharedDir)
+  }
+
   const liveCommandOverlay = {
     currentPage: null,
     currentPageUntil: 0,
     queuedSongId: undefined,
     queuedSongUntil: 0,
+    activePlaylistId: undefined,
+    activePlaylistName: '',
+    activePlaylistUntil: 0,
   }
 
   function readEffectiveState() {
+    if (!isBridgeLicenseActive()) return buildLicenseLockedState()
+
     // Native Bridge EXT ONLY: a Hook Center nao monta nem le repertorio do JSON antigo.
     // A extensao reaper_vshook e a unica fonte de repertorios/blocos/musicas/markers/playback.
     const nativeState = getFreshNativeBridgeState()
@@ -1178,11 +1313,16 @@ function createBridgeServer(options) {
       const id = normalizeCommandId(payload.id || payload.selectedRegionId || payload.songId || payload.regionId)
       liveCommandOverlay.queuedSongId = id
       liveCommandOverlay.queuedSongUntil = now + 5000
-    } else if (commandType === 'play_toggle' || commandType === 'play_start' || commandType === 'play_stop') {
-      // Depois de Play/Stop pelo Diretor, não deixa uma fila velha voltar no app
-      // dos músicos enquanto o Lua ainda está escrevendo o próximo JSON.
+    } else if (isDirectorTransportStopCommand(commandType, payload) || commandType === 'play_toggle' || commandType === 'play_start' || commandType === 'play_stop') {
+      // Stop do Diretor limpa a fila também no estado intermediário da Hook Center.
       liveCommandOverlay.queuedSongId = null
-      liveCommandOverlay.queuedSongUntil = now + 1800
+      liveCommandOverlay.queuedSongUntil = now + 5000
+    }
+
+    if (commandType === 'select_playlist' || commandType === 'playlist_select' || commandType === 'set_playlist' || commandType === 'set_active_playlist') {
+      liveCommandOverlay.activePlaylistId = normalizeCommandId(payload.playlistId || payload.activePlaylistId || payload.targetId || payload.id)
+      liveCommandOverlay.activePlaylistName = String(payload.playlistName || payload.activePlaylistName || payload.currentPlaylistName || payload.name || '')
+      liveCommandOverlay.activePlaylistUntil = now + 12000
     }
   }
 
@@ -1194,12 +1334,60 @@ function createBridgeServer(options) {
     }
     if (now < Number(liveCommandOverlay.queuedSongUntil || 0)) {
       out.queuedSongId = liveCommandOverlay.queuedSongId === undefined ? out.queuedSongId : liveCommandOverlay.queuedSongId
+      out.queuedPlaylistSongId = liveCommandOverlay.queuedSongId === undefined ? out.queuedPlaylistSongId : liveCommandOverlay.queuedSongId
+    }
+    if (now < Number(liveCommandOverlay.activePlaylistUntil || 0)) {
+      if (liveCommandOverlay.activePlaylistId !== undefined && liveCommandOverlay.activePlaylistId !== '') {
+        out.activePlaylistId = liveCommandOverlay.activePlaylistId
+        const numericId = Number(liveCommandOverlay.activePlaylistId)
+        if (Number.isFinite(numericId) && numericId > 0) out.currentPlaylistIndex = numericId
+      }
+      if (liveCommandOverlay.activePlaylistName) {
+        out.currentPlaylistName = liveCommandOverlay.activePlaylistName
+        out.activePlaylistName = liveCommandOverlay.activePlaylistName
+      }
     }
     return out
   }
 
 
   function buildDiscoveryPayload() {
+    if (!isBridgeLicenseActive()) {
+      const ip = getLanIp()
+      return {
+        ok: false,
+        app: 'VS Hook',
+        appName,
+        bridgeVersion: 1,
+        connected: false,
+        nativeBridge: false,
+        nativeBridgeRequired: true,
+        licenseRequired: true,
+        licenseActive: false,
+        bridgeMode: 'license_required',
+        projects: [],
+        openProjects: [],
+        activeProject: null,
+        projectName: '',
+        projectPath: '',
+        host: ip,
+        publicBridgeHost,
+        lanHost: ip,
+        hosts: getAllLanIps().map(item => item.ip),
+        networkInterfaces: getAllLanIps(),
+        port,
+        localUrl: `http://127.0.0.1:${port}`,
+        lanUrl: `http://${ip}:${port}`,
+        lanUrls: getAllLanIps().map(item => `http://${item.ip}:${port}`),
+        publicUrl: `http://${publicBridgeHost}:${port}`,
+        browserUrl: `http://${ip}:${port}/`,
+        browserUrls: getAllLanIps().map(item => `http://${item.ip}:${port}/`),
+        playing: false,
+        updatedAt: new Date().toISOString(),
+        stateUpdatedAt: new Date().toISOString(),
+      }
+    }
+
     const state = applyLiveCommandOverlay(readEffectiveState())
     const ip = getLanIp()
     const projectPayload = buildProjectPayload(state)
@@ -1242,7 +1430,7 @@ function createBridgeServer(options) {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type,Range',
       })
       res.end()
       return
@@ -1287,9 +1475,42 @@ function createBridgeServer(options) {
       return
     }
 
+    if ((req.method === 'GET' || req.method === 'HEAD') && (parsedUrl.pathname === '/media' || parsedUrl.pathname === '/tp-media' || parsedUrl.pathname === '/teleprompt-media')) {
+      proxyNativeBridgeMedia(req, res, `${parsedUrl.pathname}${parsedUrl.search || ''}`)
+      return
+    }
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/meters' || parsedUrl.pathname === '/meters.json')) {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 200, { ok: false, active: false, licenseRequired: true, tracks: [], master: null })
+        return
+      }
+      requestNativeBridgeJson('/meters', { timeoutMs: 450 }).then((result) => {
+        if (result.ok && result.data && typeof result.data === 'object') {
+          sendJson(res, 200, result.data)
+          return
+        }
+        sendJson(res, 503, { ok: false, active: false, tracks: [], master: null })
+      }).catch(() => {
+        sendJson(res, 503, { ok: false, active: false, tracks: [], master: null })
+      })
+      return
+    }
+
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
+      if (!isBridgeLicenseActive()) {
+        const state = {
+          ...mergeHookCenterRecadosAuth(readEffectiveState()),
+          technicalNotice: readActiveTechnicalNotice(noticeFile),
+        }
+        sendJson(res, 200, buildPublicStatePayload(state))
+        return
+      }
       refreshNativeBridgeState().catch(() => {}).finally(() => {
-        const rawState = mergeHookCenterRecadosAuth(readEffectiveState())
+        const rawState = {
+          ...mergeHookCenterRecadosAuth(readEffectiveState()),
+          technicalNotice: readActiveTechnicalNotice(noticeFile),
+        }
         const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
         sendJson(res, 200, buildPublicStatePayload(state))
       })
@@ -1297,6 +1518,18 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/projects' || parsedUrl.pathname === '/projects.json')) {
+      if (!isBridgeLicenseActive()) {
+        const state = mergeHookCenterRecadosAuth(readEffectiveState())
+        sendJson(res, 200, {
+        ok: false,
+        appName,
+        licenseRequired: true,
+        licenseActive: false,
+        ...buildPublicProjectPayload(state),
+        updatedAt: state.updatedAt || null,
+        })
+        return
+      }
       refreshNativeBridgeState().catch(() => {}).finally(() => {
         const state = applyLiveCommandOverlay(mergeHookCenterRecadosAuth(readEffectiveState()))
         sendJson(res, 200, {
@@ -1305,6 +1538,46 @@ function createBridgeServer(options) {
         ...buildPublicProjectPayload(state),
         updatedAt: state.updatedAt || null,
         })
+      })
+      return
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/recados-templates') {
+      const settings = getHookCenterTechnicalNoticeSettings ? (getHookCenterTechnicalNoticeSettings() || {}) : {}
+      const templates = [0, 1, 2].map((index) => String(settings.recadosTemplates?.[index] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN))
+      sendJson(res, 200, { ok: true, templates })
+      return
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/recados-templates') {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk.toString('utf8') })
+      req.on('end', () => {
+        try {
+          const parsed = body ? JSON.parse(body) : {}
+          const state = mergeHookCenterRecadosAuth(readEffectiveState())
+          const source = normalizeNoticeSource(parsed.source || 'recados')
+          if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
+            sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
+            return
+          }
+          if (!saveHookCenterTechnicalNoticeSettings || !getHookCenterTechnicalNoticeSettings) {
+            sendJson(res, 503, { ok: false, error: 'Hook Center indisponível.' })
+            return
+          }
+          const index = Math.trunc(Number(parsed.index))
+          if (index < 0 || index > 2) {
+            sendJson(res, 400, { ok: false, error: 'Recado inválido.' })
+            return
+          }
+          const current = getHookCenterTechnicalNoticeSettings() || {}
+          const templates = [0, 1, 2].map((slot) => String(current.recadosTemplates?.[slot] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN))
+          templates[index] = String(parsed.text || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
+          const saved = saveHookCenterTechnicalNoticeSettings({ recadosTemplates: templates }) || {}
+          sendJson(res, 200, { ok: true, templates: [0, 1, 2].map((slot) => String(saved.recadosTemplates?.[slot] || '')) })
+        } catch (_) {
+          sendJson(res, 400, { ok: false, error: 'JSON inválido' })
+        }
       })
       return
     }
@@ -1351,6 +1624,42 @@ function createBridgeServer(options) {
             return
           }
 
+          if (action === 'pin' || action === 'unpin') {
+            if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
+              sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
+              return
+            }
+            const activeNotice = readActiveTechnicalNotice(noticeFile)
+            if (!activeNotice) {
+              sendJson(res, 404, { ok: false, error: 'Nenhum recado ativo.' })
+              return
+            }
+            if (activeNotice.priority > priority) {
+              sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
+              return
+            }
+            const now = Date.now()
+            const pinned = action === 'pin'
+            const configuredDurationMs = Math.max(1000, Math.floor(Number(activeNotice.durationMs || 0)) || getTechnicalNoticeDurationMs(source, parsed))
+            const pausedRemainingMs = pinned
+              ? Math.max(0, Math.floor(Number(activeNotice.expiresAt || now) - now))
+              : Math.max(0, Math.floor(Number(activeNotice.pausedRemainingMs || 0)) || configuredDurationMs)
+            const durationMs = pinned ? configuredDurationMs : pausedRemainingMs
+            const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + pausedRemainingMs
+            const notice = {
+              ...activeNotice,
+              pinned,
+              durationMs,
+              pausedRemainingMs: pinned ? pausedRemainingMs : 0,
+              updatedAt: new Date(now).toISOString(),
+              expiresAt,
+              expiresAtIso: new Date(expiresAt).toISOString()
+            }
+            writeJson(noticeFile, notice)
+            sendJson(res, 200, { ok: true, notice, now })
+            return
+          }
+
           const text = String(parsed.text || parsed.message || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
 
           if (!text) {
@@ -1369,7 +1678,9 @@ function createBridgeServer(options) {
           }
 
           const now = Date.now()
+          const pinned = parsed.pinned === true
           const durationMs = getTechnicalNoticeDurationMs(source, parsed)
+          const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + durationMs
           const notice = {
             id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
             text,
@@ -1379,8 +1690,10 @@ function createBridgeServer(options) {
             createdAt: new Date(now).toISOString(),
             updatedAt: new Date(now).toISOString(),
             durationMs,
-            expiresAt: now + durationMs,
-            expiresAtIso: new Date(now + durationMs).toISOString(),
+            pausedRemainingMs: pinned ? durationMs : 0,
+            expiresAt,
+            expiresAtIso: new Date(expiresAt).toISOString(),
+            pinned,
           }
           writeJson(noticeFile, notice)
           sendJson(res, 200, { ok: true, notice, now })
@@ -1460,6 +1773,18 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/command') {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 403, {
+          ok: false,
+          error: 'VS Hook sem licença ativa.',
+          licenseRequired: true,
+          licenseActive: false,
+          nativeBridge: false,
+          nativeBridgeRequired: true,
+        })
+        return
+      }
+
       let body = ''
       let tooLarge = false
       req.on('data', (chunk) => {
@@ -1553,9 +1878,12 @@ function createBridgeServer(options) {
     res.end('404')
   })
 
-  const nativePollTimer = setInterval(() => { refreshNativeBridgeState().catch(() => {}) }, 60)
+  const nativePollTimer = setInterval(() => {
+    if (!isBridgeLicenseActive()) return
+    refreshNativeBridgeState().catch(() => {})
+  }, NATIVE_BRIDGE_BACKGROUND_POLL_MS)
   if (nativePollTimer.unref) nativePollTimer.unref()
-  refreshNativeBridgeState().catch(() => {})
+  if (isBridgeLicenseActive()) refreshNativeBridgeState().catch(() => {})
 
   // Evita queda por inatividade em conexões longas do APK.
   server.keepAliveTimeout = 120000
@@ -1620,7 +1948,7 @@ function createAliasServer(options) {
 
     if (!targetPort) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end('Host não configurado no VS Hook Bridge.')
+      res.end('O aplicativo VS Hook está temporariamente indisponível. Reinicie a conexão no Hook Center e tente novamente.')
       return
     }
 

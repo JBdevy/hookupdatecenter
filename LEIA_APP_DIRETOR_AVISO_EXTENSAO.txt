@@ -1,0 +1,8 @@
+CORREÇÃO — APP DIRETOR AVISA A EXTENSÃO
+
+- Ao autenticar, o Diretor envia director_enter imediatamente.
+- A sessão só é marcada como anunciada depois que o Bridge confirma HTTP 200 ou o estado retorna directorActive=true.
+- Se a primeira tentativa falhar, o app tenta novamente nos polls seguintes.
+- Ao voltar do segundo plano, recuperar foco, reabrir a página ou recuperar a rede, envia presença imediatamente.
+- O heartbeat inclui sessionActive, authenticated, directorActive e appActive.
+- O comando de retomada do PC continua impedindo que um heartbeat antigo roube o controle novamente.
