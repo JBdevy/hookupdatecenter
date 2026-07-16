@@ -1408,7 +1408,15 @@ async function init() {
 
     window.addEventListener('blur', () => { dragState = null; });
   };
-  setupManualWindowDrag();
+  const useNativeMacWindowDrag = window.hookUpdateCenter.platform === 'darwin';
+  if (useNativeMacWindowDrag) {
+    // O macOS precisa transferir a NSWindow entre as telas por arraste nativo.
+    // setPosition com screenX/screenY mistura espaços de coordenadas quando os
+    // monitores usam escalas diferentes e pode deixar a janela fora da tela.
+    document.documentElement.classList.add('macos-native-window-drag');
+  } else {
+    setupManualWindowDrag();
+  }
   if (videoEl) {
     const applyPendingVideoSync = () => {
       if (pendingVideoSeek !== null) {

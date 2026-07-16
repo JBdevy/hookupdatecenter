@@ -3402,6 +3402,9 @@ ipcMain.handle('get-current-window-bounds', (event) => {
 });
 
 ipcMain.on('move-current-window', (event, payload = {}) => {
+  // No macOS o renderer usa -webkit-app-region: drag para o sistema preservar
+  // corretamente a janela ao atravessar monitores e Spaces.
+  if (process.platform === 'darwin') return;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return;
   const x = Math.round(Number(payload.x));

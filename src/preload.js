@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('hookUpdateCenter', {
+  platform: process.platform,
   getState: () => ipcRenderer.invoke('get-state'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   downloadUpdate: (payload) => ipcRenderer.invoke('download-update', payload),

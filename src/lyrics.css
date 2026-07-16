@@ -2679,3 +2679,23 @@ body.lyrics-layout-ready:not(.preview-active):not(.notice-active):not(.clear-mod
   top: var(--lyrics-layout-text-top) !important;
   bottom: var(--lyrics-layout-text-bottom) !important;
 }
+
+/* VS_HOOK_MACOS_NATIVE_MULTI_DISPLAY_DRAG_20260716
+   No macOS, o sistema move a NSWindow diretamente entre monitores. Isso evita
+   converter screenX/screenY em setPosition ao cruzar telas com DPI diferente. */
+html.macos-native-window-drag .lyrics-drag-zone {
+  display: block !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  z-index: 2147483646 !important;
+  background: rgba(0, 0, 0, 0.001) !important;
+  pointer-events: auto !important;
+  -webkit-app-region: drag !important;
+}
+
+html.macos-native-window-drag .close-button,
+html.macos-native-window-drag .close-button * {
+  -webkit-app-region: no-drag !important;
+}
