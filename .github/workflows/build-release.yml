@@ -154,6 +154,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Normal e Legacy geram o mesmo nome latest-mac.yml. Publicar apenas
+          # o manifesto normal evita disputa/404 por dois assets de mesmo nome.
           files: |
             artifacts/**/Hook-Center-*-Windows.exe
             artifacts/**/Hook-Center-*-Windows.exe.blockmap
@@ -162,7 +164,7 @@ jobs:
             artifacts/**/Hook-Center-*-macOS.dmg.blockmap
             artifacts/**/Hook-Center-*-macOS.zip
             artifacts/**/Hook-Center-*-macOS.zip.blockmap
-            artifacts/**/latest-mac.yml
+            artifacts/hook-update-center-macos-dmg/latest-mac.yml
             artifacts/**/Hook-Center-Legacy-*-macOS10.dmg
             artifacts/**/Hook-Center-Legacy-*-macOS10.dmg.blockmap
             artifacts/**/Hook-Center-Legacy-*-macOS10.zip
