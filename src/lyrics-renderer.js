@@ -1425,15 +1425,9 @@ async function init() {
       dragState = null;
     });
   };
-  const useNativeMacWindowDrag = window.hookUpdateCenter.platform === 'darwin' && !legacyMacWindow;
-  if (useNativeMacWindowDrag) {
-    // O macOS precisa transferir a NSWindow entre as telas por arraste nativo.
-    // setPosition com screenX/screenY mistura espaços de coordenadas quando os
-    // monitores usam escalas diferentes e pode deixar a janela fora da tela.
-    document.documentElement.classList.add('macos-native-window-drag');
-  } else {
-    setupManualWindowDrag(legacyMacWindow);
-  }
+  // A Hook Center normal mantém o arraste manual original do renderer. Apenas
+  // a Legacy usa o cursor em DIP calculado no processo principal.
+  setupManualWindowDrag(legacyMacWindow);
   if (videoEl) {
     const applyPendingVideoSync = () => {
       if (pendingVideoSeek !== null) {

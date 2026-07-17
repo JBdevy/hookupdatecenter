@@ -2519,32 +2519,31 @@ function createLyricsWindow(slot = 1) {
 
   const isMac = process.platform === 'darwin';
   const isLegacyMac = isHookCenterLegacyBuild();
+  const isStandardMac = isMac && !isLegacyMac;
   const win = new BrowserWindow({
     width: 980,
     height: 560,
     // Janela do Teleprompt precisa aceitar formatos extremos, inclusive 9:16 vertical.
     minWidth: 180,
     minHeight: 180,
-    // Janelas transparentes sem moldura podem falhar ao recompor entre
-    // monitores. O Teleprompt usa fundo preto, então fica opaco em todas as
-    // plataformas para manter a imagem estável em telas múltiplas.
-    backgroundColor: '#000000',
+    // A versão normal preserva a janela original, transparente e sem moldura.
+    // O modo opaco/nativo é aplicado somente à variante macOS Legacy.
+    backgroundColor: isStandardMac ? '#00000000' : '#000000',
     opacity: 1,
     title: 'Teleprompt',
     icon: getAppIconPath(),
-    // No macOS, manter um NSWindow opaco e esconder somente a barra evita que
-    // a camada frameless seja recomposta como transparente ao cruzar monitores.
-    frame: isMac,
-    ...(isMac ? { titleBarStyle: 'hidden' } : {}),
+    // Somente a Legacy usa a moldura nativa completa para compatibilidade com
+    // AppKit antigo. Normal macOS e Windows mantêm a janela sem moldura.
+    frame: isLegacyMac,
     // Mantem handles nativos de redimensionamento em janela sem moldura, especialmente no Windows.
     thickFrame: true,
-    transparent: false,
-    roundedCorners: false,
+    transparent: isStandardMac,
+    roundedCorners: isLegacyMac,
     focusable: true,
     movable: true,
     resizable: true,
     useContentSize: true,
-    hasShadow: false,
+    hasShadow: isLegacyMac,
     acceptFirstMouse: true,
     autoHideMenuBar: true,
     show: false,
@@ -2552,7 +2551,10 @@ function createLyricsWindow(slot = 1) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false
+      webSecurity: false,
+      // Somente o Legacy desativa a suspensão de quadros durante a troca de
+      // monitor. A versão normal preserva o comportamento anterior.
+      ...(isLegacyMac ? { backgroundThrottling: false } : {})
     }
   });
 
@@ -2560,13 +2562,17 @@ function createLyricsWindow(slot = 1) {
   const lyricsWebContentsId = win.webContents.id;
   const enforceOpaqueWindow = () => {
     if (win.isDestroyed()) return;
+    if (isLegacyMac) {
+      // Preserve a NSWindow Legacy com os padrões nativos. Alterar alpha,
+      // sombra ou botões durante o movimento pode recriar sua camada Cocoa.
+      try { win.webContents.invalidate(); } catch (_) {}
+      return;
+    }
+    // A versão normal do macOS volta ao comportamento anterior, sem mutações
+    // de opacidade, fundo, sombra ou botões nativos.
+    if (isStandardMac) return;
     try { win.setOpacity(1); } catch (_) {}
     try { win.setBackgroundColor('#000000'); } catch (_) {}
-    if (isMac) {
-      try { win.setVibrancy(null); } catch (_) {}
-      try { win.setHasShadow(false); } catch (_) {}
-      try { win.setWindowButtonVisibility(false); } catch (_) {}
-    }
   };
   enforceOpaqueWindow();
   applyLyricsWindowPinState(id, getLyricsSettings(id).alwaysOnTop === true);
@@ -2583,14 +2589,26 @@ function createLyricsWindow(slot = 1) {
     try { win.focus(); } catch (_) {}
     broadcastLyricsWindowsState();
   });
-  // Reafirma a composição opaca enquanto/depois que o macOS transfere a
-  // janela para outra tela (inclusive entre telas com escalas diferentes).
-  win.on('move', enforceOpaqueWindow);
+  // No Legacy, deixa a NSWindow nativa intacta e solicita apenas uma nova
+  // pintura depois do movimento. A versão normal não recebe esse listener.
+  let legacyRepaintTimer = null;
+  if (isLegacyMac) {
+    win.on('move', () => {
+      if (legacyRepaintTimer) clearTimeout(legacyRepaintTimer);
+      legacyRepaintTimer = setTimeout(() => {
+        if (win.isDestroyed()) return;
+        try { win.webContents.invalidate(); } catch (_) {}
+      }, 80);
+    });
+  } else if (!isStandardMac) {
+    win.on('move', enforceOpaqueWindow);
+  }
   win.webContents.on('did-finish-load', enforceOpaqueWindow);
   win.webContents.once('destroyed', () => legacyWindowDragSessions.delete(lyricsWebContentsId));
   win.on('enter-full-screen', () => { win.__vshookFullScreen = true; });
   win.on('leave-full-screen', () => { win.__vshookFullScreen = false; });
   win.on('closed', () => {
+    if (legacyRepaintTimer) clearTimeout(legacyRepaintTimer);
     legacyWindowDragSessions.delete(lyricsWebContentsId);
     lyricsWindows.delete(id);
     setImmediate(() => broadcastLyricsWindowsState());
@@ -3408,18 +3426,51 @@ ipcMain.handle('get-current-window-bounds', (event) => {
   return { ok: true, bounds: win.getBounds() };
 });
 
+function finishLegacyWindowDrag(session) {
+  const win = session?.win;
+  if (!win || win.isDestroyed()) return;
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const area = display?.workArea || display?.bounds;
+    const bounds = win.getBounds();
+
+    if (area) {
+      // Garante que a janela não termine fora da área visível quando as telas
+      // possuem origem, resolução ou escala diferentes.
+      const maxX = area.x + Math.max(0, area.width - bounds.width);
+      const maxY = area.y + Math.max(0, area.height - bounds.height);
+      const x = Math.max(area.x, Math.min(maxX, bounds.x));
+      const y = Math.max(area.y, Math.min(maxY, bounds.y));
+      if (x !== bounds.x || y !== bounds.y) {
+        win.setBounds({ ...bounds, x, y }, false);
+      }
+    }
+
+    try { win.webContents.setBackgroundThrottling(false); } catch (_) {}
+    try { win.webContents.invalidate(); } catch (_) {}
+    try { win.show(); } catch (_) {}
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      try { win.webContents.invalidate(); } catch (_) {}
+    }, 120);
+  } catch (_) {}
+}
+
 ipcMain.handle('begin-current-window-cursor-drag', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed() || process.platform !== 'darwin' || !isHookCenterLegacyBuild()) return { ok: false };
   try {
     const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
     const [windowX, windowY] = win.getPosition();
     legacyWindowDragSessions.set(event.sender.id, {
       win,
       cursorX: cursor.x,
       cursorY: cursor.y,
       windowX,
-      windowY
+      windowY,
+      displayId: display?.id
     });
     return { ok: true };
   } catch (_) {
@@ -3436,17 +3487,25 @@ ipcMain.on('move-current-window-with-cursor', (event) => {
     const x = Math.round(session.windowX + (cursor.x - session.cursorX));
     const y = Math.round(session.windowY + (cursor.y - session.cursorY));
     session.win.setPosition(x, y, false);
+    const display = screen.getDisplayNearestPoint(cursor);
+    if (display && display.id !== session.displayId) {
+      session.displayId = display.id;
+      // Avisa o Chromium que a NSWindow mudou de backing screen/DPI.
+      try { session.win.webContents.invalidate(); } catch (_) {}
+    }
   } catch (_) {}
 });
 
 ipcMain.on('end-current-window-cursor-drag', (event) => {
+  const session = legacyWindowDragSessions.get(event.sender.id);
   legacyWindowDragSessions.delete(event.sender.id);
+  finishLegacyWindowDrag(session);
 });
 
 ipcMain.on('move-current-window', (event, payload = {}) => {
-  // No macOS o renderer usa -webkit-app-region: drag para o sistema preservar
-  // corretamente a janela ao atravessar monitores e Spaces.
-  if (process.platform === 'darwin') return;
+  // A versão normal do macOS mantém o arraste manual original. A Legacy usa o
+  // canal baseado no cursor em DIP e não deve entrar neste caminho.
+  if (process.platform === 'darwin' && isHookCenterLegacyBuild()) return;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return;
   const x = Math.round(Number(payload.x));
