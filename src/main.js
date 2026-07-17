@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -68,6 +68,7 @@ let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
 const lyricsWindows = new Map();
+const legacyWindowDragSessions = new Map();
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
@@ -2517,6 +2518,7 @@ function createLyricsWindow(slot = 1) {
   }
 
   const isMac = process.platform === 'darwin';
+  const isLegacyMac = isHookCenterLegacyBuild();
   const win = new BrowserWindow({
     width: 980,
     height: 560,
@@ -2555,6 +2557,7 @@ function createLyricsWindow(slot = 1) {
   });
 
   lyricsWindows.set(id, win);
+  const lyricsWebContentsId = win.webContents.id;
   const enforceOpaqueWindow = () => {
     if (win.isDestroyed()) return;
     try { win.setOpacity(1); } catch (_) {}
@@ -2570,7 +2573,9 @@ function createLyricsWindow(slot = 1) {
   try { win.setResizable(true); } catch (_) {}
   try { win.setMinimumSize(180, 180); } catch (_) {}
   try { win.setIgnoreMouseEvents(false); } catch (_) {}
-  win.loadFile(path.join(__dirname, 'lyrics.html'), { query: { slot: String(id) } });
+  win.loadFile(path.join(__dirname, 'lyrics.html'), {
+    query: { slot: String(id), legacy: isLegacyMac ? '1' : '0' }
+  });
   win.once('ready-to-show', () => {
     enforceOpaqueWindow();
     try { win.setIgnoreMouseEvents(false); } catch (_) {}
@@ -2582,9 +2587,11 @@ function createLyricsWindow(slot = 1) {
   // janela para outra tela (inclusive entre telas com escalas diferentes).
   win.on('move', enforceOpaqueWindow);
   win.webContents.on('did-finish-load', enforceOpaqueWindow);
+  win.webContents.once('destroyed', () => legacyWindowDragSessions.delete(lyricsWebContentsId));
   win.on('enter-full-screen', () => { win.__vshookFullScreen = true; });
   win.on('leave-full-screen', () => { win.__vshookFullScreen = false; });
   win.on('closed', () => {
+    legacyWindowDragSessions.delete(lyricsWebContentsId);
     lyricsWindows.delete(id);
     setImmediate(() => broadcastLyricsWindowsState());
   });
@@ -3399,6 +3406,41 @@ ipcMain.handle('get-current-window-bounds', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return { ok: false };
   return { ok: true, bounds: win.getBounds() };
+});
+
+ipcMain.handle('begin-current-window-cursor-drag', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed() || process.platform !== 'darwin' || !isHookCenterLegacyBuild()) return { ok: false };
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const [windowX, windowY] = win.getPosition();
+    legacyWindowDragSessions.set(event.sender.id, {
+      win,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      windowX,
+      windowY
+    });
+    return { ok: true };
+  } catch (_) {
+    legacyWindowDragSessions.delete(event.sender.id);
+    return { ok: false };
+  }
+});
+
+ipcMain.on('move-current-window-with-cursor', (event) => {
+  const session = legacyWindowDragSessions.get(event.sender.id);
+  if (!session || !session.win || session.win.isDestroyed()) return;
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const x = Math.round(session.windowX + (cursor.x - session.cursorX));
+    const y = Math.round(session.windowY + (cursor.y - session.cursorY));
+    session.win.setPosition(x, y, false);
+  } catch (_) {}
+});
+
+ipcMain.on('end-current-window-cursor-drag', (event) => {
+  legacyWindowDragSessions.delete(event.sender.id);
 });
 
 ipcMain.on('move-current-window', (event, payload = {}) => {

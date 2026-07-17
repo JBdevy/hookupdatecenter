@@ -19,6 +19,7 @@ const closeButton = document.getElementById('closeLyricsButton');
 const technicalNoticeEl = document.getElementById('technicalNotice');
 const params = new URLSearchParams(window.location.search);
 const lyricsSlot = Number(params.get('slot')) === 2 ? 2 : 1;
+const legacyMacWindow = window.hookUpdateCenter.platform === 'darwin' && params.get('legacy') === '1';
 
 let settings = {
   textColor: '#ffea00',
@@ -1297,7 +1298,7 @@ async function init() {
     closeButton.addEventListener('click', closeLyrics, true);
   }
 
-  const setupManualWindowDrag = () => {
+  const setupManualWindowDrag = (useMainProcessCursor = false) => {
     let dragState = null;
     const isCloseTarget = (target) => Boolean(target && target.closest && target.closest('#closeLyricsButton'));
 
@@ -1305,6 +1306,13 @@ async function init() {
       if ((event.button !== undefined && event.button !== 0) || isCloseTarget(event.target) || Number(event.detail || 0) >= 2) return;
       event.preventDefault();
       try {
+        if (useMainProcessCursor) {
+          const response = await window.hookUpdateCenter.beginCurrentWindowCursorDrag?.();
+          if (!response || !response.ok) return;
+          dragState = { pointerId: event.pointerId, mainProcessCursor: true };
+          try { document.body.setPointerCapture?.(event.pointerId); } catch (_) {}
+          return;
+        }
         const response = await window.hookUpdateCenter.getCurrentWindowBounds?.();
         if (!response || !response.ok || !response.bounds) return;
         dragState = {
@@ -1323,6 +1331,10 @@ async function init() {
     const moveDrag = (event) => {
       if (!dragState || (dragState.pointerId !== undefined && event.pointerId !== dragState.pointerId)) return;
       event.preventDefault();
+      if (dragState.mainProcessCursor) {
+        window.hookUpdateCenter.moveCurrentWindowWithCursor?.();
+        return;
+      }
       const nextX = dragState.startX + ((Number(event.screenX) || 0) - dragState.startScreenX);
       const nextY = dragState.startY + ((Number(event.screenY) || 0) - dragState.startScreenY);
       window.hookUpdateCenter.moveCurrentWindow?.({ x: nextX, y: nextY });
@@ -1332,6 +1344,7 @@ async function init() {
       if (!dragState) return;
       if (event && dragState.pointerId !== undefined && event.pointerId !== dragState.pointerId) return;
       try { document.body.releasePointerCapture?.(dragState.pointerId); } catch (_) {}
+      if (dragState.mainProcessCursor) window.hookUpdateCenter.endCurrentWindowCursorDrag?.();
       dragState = null;
     };
 
@@ -1349,6 +1362,7 @@ async function init() {
     const requestFullscreenToggle = async () => {
       if (fullscreenToggleBusy) return;
       fullscreenToggleBusy = true;
+      if (dragState?.mainProcessCursor) window.hookUpdateCenter.endCurrentWindowCursorDrag?.();
       dragState = null;
       try {
         await window.hookUpdateCenter.toggleCurrentWindowFullscreen?.();
@@ -1406,16 +1420,19 @@ async function init() {
       requestFullscreenToggle();
     }, true);
 
-    window.addEventListener('blur', () => { dragState = null; });
+    window.addEventListener('blur', () => {
+      if (dragState?.mainProcessCursor) window.hookUpdateCenter.endCurrentWindowCursorDrag?.();
+      dragState = null;
+    });
   };
-  const useNativeMacWindowDrag = window.hookUpdateCenter.platform === 'darwin';
+  const useNativeMacWindowDrag = window.hookUpdateCenter.platform === 'darwin' && !legacyMacWindow;
   if (useNativeMacWindowDrag) {
     // O macOS precisa transferir a NSWindow entre as telas por arraste nativo.
     // setPosition com screenX/screenY mistura espaços de coordenadas quando os
     // monitores usam escalas diferentes e pode deixar a janela fora da tela.
     document.documentElement.classList.add('macos-native-window-drag');
   } else {
-    setupManualWindowDrag();
+    setupManualWindowDrag(legacyMacWindow);
   }
   if (videoEl) {
     const applyPendingVideoSync = () => {
