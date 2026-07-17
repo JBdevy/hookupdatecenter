@@ -20,6 +20,8 @@ let recadosHubNoticeActive = false;
 let recadosHubExpiresAt = 0;
 let recadosHubRemainingMs = 0;
 let recadosHubCountdownTimer = 0;
+let updateDescriptionFitFrame = 0;
+let updateDescriptionResizeObserver = null;
 
 function setLyricsConfigSlot(slot) {
   selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
@@ -1545,6 +1547,51 @@ function formatHookCenterDisplayVersion(version) {
   return `v${base} C`;
 }
 
+function updateDescriptionFits(element) {
+  return element.scrollHeight <= element.clientHeight + 1
+    && element.scrollWidth <= element.clientWidth + 1;
+}
+
+function fitUpdateDescriptionText() {
+  if (updateDescriptionFitFrame) cancelAnimationFrame(updateDescriptionFitFrame);
+  updateDescriptionFitFrame = requestAnimationFrame(() => {
+    updateDescriptionFitFrame = 0;
+    const card = $('#updateDescriptionCard');
+    const description = $('#updateDescription');
+    if (!card || !description || card.classList.contains('hidden') || !description.textContent) {
+      description?.style.removeProperty('font-size');
+      return;
+    }
+
+    const maximumFontSize = 18;
+    const minimumFontSize = 1;
+    description.style.setProperty('font-size', `${maximumFontSize}px`, 'important');
+    if (updateDescriptionFits(description)) return;
+
+    let lower = minimumFontSize;
+    let upper = maximumFontSize;
+    for (let index = 0; index < 12; index += 1) {
+      const candidate = (lower + upper) / 2;
+      description.style.setProperty('font-size', `${candidate}px`, 'important');
+      if (updateDescriptionFits(description)) lower = candidate;
+      else upper = candidate;
+    }
+
+    const fittedSize = Math.max(minimumFontSize, Math.floor(lower * 10) / 10);
+    description.style.setProperty('font-size', `${fittedSize}px`, 'important');
+  });
+}
+
+function showBackendUpdateDescription(value) {
+  const card = $('#updateDescriptionCard');
+  const description = $('#updateDescription');
+  if (!card || !description) return;
+  description.textContent = String(value || '').trim();
+  card.classList.remove('hidden');
+  card.setAttribute('aria-hidden', 'false');
+  fitUpdateDescriptionText();
+}
+
 function renderState(nextState) {
   state = nextState;
   updateLyricsWindowButtons();
@@ -1596,14 +1643,9 @@ function renderState(nextState) {
     const homeDescriptionCard = $('#updateDescriptionCard');
     const homeDescription = $('#updateDescription');
     if (homeDescriptionCard && homeDescription) {
-      const vsHookDescription = String(update.description || '').trim() || 'Atualização do VS Hook disponível.';
-      const hookCenterDescription = hasHookCenterUpdate
-        ? `Hook Center ${hc.version || ''}: ${String(hc.notes || '').trim() || 'nova versão disponível.'}`
-        : '';
-      const descriptionText = hookCenterDescription ? `${vsHookDescription}\n\n${hookCenterDescription}` : vsHookDescription;
-      homeDescription.textContent = descriptionText;
-      homeDescriptionCard.classList.remove('hidden');
-      homeDescriptionCard.setAttribute('aria-hidden', 'false');
+      // Exibe somente a descrição publicada para o pacote VS Hook no backend.
+      // Não acrescenta título, versão, changelog ou dados da atualização da Hook Center.
+      showBackendUpdateDescription(update.description);
     }
 
     const rawYoutubeUrl = update.youtubeUrl || '';
@@ -1625,9 +1667,7 @@ function renderState(nextState) {
     const homeDescriptionCard = $('#updateDescriptionCard');
     const homeDescription = $('#updateDescription');
     if (homeDescriptionCard && homeDescription) {
-      homeDescription.textContent = String(hc.notes || '').trim() || 'Nova versão do Hook Center disponível.';
-      homeDescriptionCard.classList.remove('hidden');
-      homeDescriptionCard.setAttribute('aria-hidden', 'false');
+      showBackendUpdateDescription(hc.notes);
     }
     currentYoutubeWatchUrl = '';
     $('#videoBox')?.classList.add('hidden');
@@ -1644,7 +1684,10 @@ function renderState(nextState) {
       homeDescriptionCard.setAttribute('aria-hidden', 'true');
     }
     const homeDescription = $('#updateDescription');
-    if (homeDescription) homeDescription.textContent = '';
+    if (homeDescription) {
+      homeDescription.textContent = '';
+      homeDescription.style.removeProperty('font-size');
+    }
   }
 
   const homeDownloadButton = $('#downloadButton');
@@ -1839,6 +1882,12 @@ function setupSidebarToggle() {
 
 async function init() {
   setupSidebarToggle();
+  window.addEventListener('resize', fitUpdateDescriptionText);
+  const updateDescriptionCard = $('#updateDescriptionCard');
+  if (updateDescriptionCard && typeof ResizeObserver === 'function') {
+    updateDescriptionResizeObserver = new ResizeObserver(fitUpdateDescriptionText);
+    updateDescriptionResizeObserver.observe(updateDescriptionCard);
+  }
   $$('[data-lyrics-config-slot]').forEach((button) => {
     button.addEventListener('click', () => setLyricsConfigSlot(button.dataset.lyricsConfigSlot));
   });

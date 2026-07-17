@@ -6407,6 +6407,23 @@ body.previous-mode .content > .view.active {
   .recados-center-app { height: calc(100vh - 46px); }
 }
 
+/* A descrição usa apenas o texto do backend e reduz a fonte para caber no campo. */
+#homeView #updateDescriptionCard.update-description-card:not(.hidden) {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+
+#homeView #updateDescriptionCard #updateDescription.update-description-text {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+}
+
 @media (max-width: 680px) {
   #lyricsView .lyrics-top-controls {
     grid-template-columns: 1fr;
