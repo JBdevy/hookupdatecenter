@@ -1351,7 +1351,9 @@ async function init() {
           startScreenX: Number(event.screenX) || 0,
           startScreenY: Number(event.screenY) || 0,
           startX: Number(response.bounds.x) || 0,
-          startY: Number(response.bounds.y) || 0
+          startY: Number(response.bounds.y) || 0,
+          pendingMaximizedRestore: response.maximized === true,
+          preparingMaximizedRestore: false
         };
         try { document.body.setPointerCapture?.(event.pointerId); } catch (_) {}
       } catch (_) {
@@ -1359,15 +1361,42 @@ async function init() {
       }
     };
 
-    const moveDrag = (event) => {
+    const moveDrag = async (event) => {
       if (!dragState || (dragState.pointerId !== undefined && event.pointerId !== dragState.pointerId)) return;
       event.preventDefault();
       if (dragState.mainProcessCursor) {
         window.hookUpdateCenter.moveCurrentWindowWithCursor?.();
         return;
       }
-      const nextX = dragState.startX + ((Number(event.screenX) || 0) - dragState.startScreenX);
-      const nextY = dragState.startY + ((Number(event.screenY) || 0) - dragState.startScreenY);
+
+      const activeDrag = dragState;
+      const screenX = Number(event.screenX) || 0;
+      const screenY = Number(event.screenY) || 0;
+      if (activeDrag.pendingMaximizedRestore) {
+        const distanceX = screenX - activeDrag.startScreenX;
+        const distanceY = screenY - activeDrag.startScreenY;
+        // Um clique ou o primeiro clique de um duplo clique não restaura a
+        // janela. A restauração só acontece quando o usuário realmente arrasta.
+        if (Math.hypot(distanceX, distanceY) < 5 || activeDrag.preparingMaximizedRestore) return;
+        activeDrag.preparingMaximizedRestore = true;
+        try {
+          const response = await window.hookUpdateCenter.prepareCurrentWindowDrag?.();
+          if (dragState !== activeDrag) return;
+          activeDrag.preparingMaximizedRestore = false;
+          if (!response || !response.ok || !response.bounds) return;
+          activeDrag.pendingMaximizedRestore = false;
+          activeDrag.startScreenX = screenX;
+          activeDrag.startScreenY = screenY;
+          activeDrag.startX = Number(response.bounds.x) || 0;
+          activeDrag.startY = Number(response.bounds.y) || 0;
+        } catch (_) {
+          if (dragState === activeDrag) activeDrag.preparingMaximizedRestore = false;
+        }
+        return;
+      }
+
+      const nextX = activeDrag.startX + (screenX - activeDrag.startScreenX);
+      const nextY = activeDrag.startY + (screenY - activeDrag.startScreenY);
       window.hookUpdateCenter.moveCurrentWindow?.({ x: nextX, y: nextY });
     };
 

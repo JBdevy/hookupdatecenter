@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   closeCurrentWindow: () => ipcRenderer.invoke('close-current-window'),
   toggleCurrentWindowFullscreen: () => ipcRenderer.invoke('toggle-current-window-fullscreen'),
   getCurrentWindowBounds: () => ipcRenderer.invoke('get-current-window-bounds'),
+  prepareCurrentWindowDrag: () => ipcRenderer.invoke('prepare-current-window-drag'),
   beginCurrentWindowCursorDrag: () => ipcRenderer.invoke('begin-current-window-cursor-drag'),
   moveCurrentWindowWithCursor: () => ipcRenderer.send('move-current-window-with-cursor'),
   endCurrentWindowCursorDrag: () => ipcRenderer.send('end-current-window-cursor-drag'),

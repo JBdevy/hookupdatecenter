@@ -2543,6 +2543,10 @@ function createLyricsWindow(slot = 1) {
     focusable: true,
     movable: true,
     resizable: true,
+    maximizable: true,
+    // No macOS, "expandir" deve manter o Teleprompt como uma janela comum.
+    // Isso também faz o botão verde da Legacy maximizar, sem criar outro Space.
+    fullscreenable: !isMac,
     useContentSize: true,
     hasShadow: isLegacyMac,
     acceptFirstMouse: true,
@@ -2606,6 +2610,8 @@ function createLyricsWindow(slot = 1) {
   }
   win.webContents.on('did-finish-load', enforceOpaqueWindow);
   win.webContents.once('destroyed', () => legacyWindowDragSessions.delete(lyricsWebContentsId));
+  win.on('maximize', () => { win.__vshookMaximized = true; });
+  win.on('unmaximize', () => { win.__vshookMaximized = false; });
   win.on('enter-full-screen', () => { win.__vshookFullScreen = true; });
   win.on('leave-full-screen', () => { win.__vshookFullScreen = false; });
   win.on('closed', () => {
@@ -2633,6 +2639,55 @@ function broadcastLyricsWindowsState() {
   return windowsState;
 }
 
+function isLyricsWindowMaximized(win) {
+  if (!win || win.isDestroyed()) return false;
+  try {
+    if (win.isMaximized()) return true;
+  } catch (_) {}
+  return win.__vshookMaximized === true;
+}
+
+function restoreMaximizedLyricsWindowForDrag(win, cursorPoint = null) {
+  if (!win || win.isDestroyed()) return { restored: false, bounds: null };
+
+  let currentBounds = null;
+  try { currentBounds = win.getBounds(); } catch (_) {}
+  if (process.platform !== 'darwin' || !isLyricsWindowMaximized(win)) {
+    return { restored: false, bounds: currentBounds };
+  }
+  if (!currentBounds) {
+    win.__vshookMaximized = false;
+    try { win.unmaximize(); } catch (_) {}
+    try { currentBounds = win.getBounds(); } catch (_) {}
+    return { restored: true, bounds: currentBounds };
+  }
+
+  let normalBounds = currentBounds;
+  try { normalBounds = win.getNormalBounds(); } catch (_) {}
+  let cursor = cursorPoint;
+  try { cursor = cursor || screen.getCursorScreenPoint(); } catch (_) {}
+
+  const currentWidth = Math.max(1, Number(currentBounds?.width) || 1);
+  const currentHeight = Math.max(1, Number(currentBounds?.height) || 1);
+  const relativeX = Math.max(0, Math.min(1, (Number(cursor?.x) - Number(currentBounds?.x)) / currentWidth));
+  const relativeY = Math.max(0, Math.min(1, (Number(cursor?.y) - Number(currentBounds?.y)) / currentHeight));
+  const restoredBounds = {
+    width: Math.max(1, Number(normalBounds?.width) || currentWidth),
+    height: Math.max(1, Number(normalBounds?.height) || currentHeight),
+    x: Number(normalBounds?.x) || 0,
+    y: Number(normalBounds?.y) || 0
+  };
+  if (Number.isFinite(relativeX) && Number.isFinite(relativeY)) {
+    restoredBounds.x = Math.round(Number(cursor.x) - (restoredBounds.width * relativeX));
+    restoredBounds.y = Math.round(Number(cursor.y) - (restoredBounds.height * relativeY));
+  }
+  win.__vshookMaximized = false;
+  try { win.unmaximize(); } catch (_) {}
+  try { win.setBounds(restoredBounds, false); } catch (_) {}
+  try { currentBounds = win.getBounds(); } catch (_) { currentBounds = restoredBounds; }
+  return { restored: true, bounds: currentBounds };
+}
+
 function toggleLyricsWindowFullscreen(win) {
   if (!win || win.isDestroyed()) return { ok: false };
 
@@ -2645,10 +2700,35 @@ function toggleLyricsWindowFullscreen(win) {
   })();
   const isFullScreen = isReallyFullScreen || isSimpleFullScreen || win.__vshookFullScreen === true;
 
+  if (process.platform === 'darwin') {
+    // Fullscreen e simple fullscreen tiram a janela do estado normal; o modo
+    // nativo ainda pode criar outro Space. O Teleprompt usa zoom/maximize.
+    if (isFullScreen) {
+      win.__vshookFullScreen = false;
+      try { win.setFullScreen(false); } catch (_) {}
+      try { if (win.setSimpleFullScreen) win.setSimpleFullScreen(false); } catch (_) {}
+      return { ok: true, fullScreen: false, maximized: false };
+    }
+
+    if (isLyricsWindowMaximized(win)) {
+      win.__vshookMaximized = false;
+      try { win.unmaximize(); } catch (_) { return { ok: false }; }
+      return { ok: true, fullScreen: false, maximized: false };
+    }
+
+    win.__vshookMaximized = true;
+    try {
+      win.maximize();
+    } catch (_) {
+      win.__vshookMaximized = false;
+      return { ok: false };
+    }
+    return { ok: true, fullScreen: false, maximized: true };
+  }
+
   if (isFullScreen) {
     win.__vshookFullScreen = false;
     try { win.setFullScreen(false); } catch (_) {}
-    try { if (win.setSimpleFullScreen) win.setSimpleFullScreen(false); } catch (_) {}
 
     const restoreBounds = win.__vshookBeforeFullScreenBounds || null;
     if (restoreBounds && Number.isFinite(Number(restoreBounds.width)) && Number.isFinite(Number(restoreBounds.height))) {
@@ -2664,13 +2744,7 @@ function toggleLyricsWindowFullscreen(win) {
 
   try { win.__vshookBeforeFullScreenBounds = win.getBounds(); } catch (_) { win.__vshookBeforeFullScreenBounds = null; }
   win.__vshookFullScreen = true;
-  if (process.platform === 'darwin' && typeof win.setSimpleFullScreen === 'function') {
-    // O modo simples ocupa a tela atual sem criar outro Space, sendo mais
-    // previsível em monitor externo e instalações com OpenCore.
-    try { win.setSimpleFullScreen(true); } catch (_) { try { win.setFullScreen(true); } catch (__) {} }
-  } else {
-    try { win.setFullScreen(true); } catch (_) {}
-  }
+  try { win.setFullScreen(true); } catch (_) {}
   return { ok: true, fullScreen: true };
 }
 
@@ -3434,7 +3508,24 @@ ipcMain.handle('toggle-current-window-fullscreen', (event) => {
 ipcMain.handle('get-current-window-bounds', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return { ok: false };
-  return { ok: true, bounds: win.getBounds() };
+  return {
+    ok: true,
+    bounds: win.getBounds(),
+    maximized: process.platform === 'darwin' && isLyricsWindowMaximized(win)
+  };
+});
+
+ipcMain.handle('prepare-current-window-drag', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed() || process.platform !== 'darwin' || isHookCenterLegacyBuild()) {
+    return { ok: false };
+  }
+  try {
+    const result = restoreMaximizedLyricsWindowForDrag(win, screen.getCursorScreenPoint());
+    return { ok: true, ...result };
+  } catch (_) {
+    return { ok: false };
+  }
 });
 
 function finishLegacyWindowDrag(session) {
@@ -3481,7 +3572,8 @@ ipcMain.handle('begin-current-window-cursor-drag', (event) => {
       cursorY: cursor.y,
       windowX,
       windowY,
-      displayId: display?.id
+      displayId: display?.id,
+      maximized: isLyricsWindowMaximized(win)
     });
     return { ok: true };
   } catch (_) {
@@ -3495,6 +3587,24 @@ ipcMain.on('move-current-window-with-cursor', (event) => {
   if (!session || !session.win || session.win.isDestroyed()) return;
   try {
     const cursor = screen.getCursorScreenPoint();
+    if (session.maximized) {
+      const distanceX = cursor.x - session.cursorX;
+      const distanceY = cursor.y - session.cursorY;
+      // Não restaura no primeiro clique: só depois de um movimento real. Isso
+      // preserva o duplo clique para maximizar/restaurar.
+      if (Math.hypot(distanceX, distanceY) < 5) return;
+      const restored = restoreMaximizedLyricsWindowForDrag(session.win, cursor);
+      if (!restored.bounds) return;
+      session.windowX = restored.bounds.x;
+      session.windowY = restored.bounds.y;
+      session.cursorX = cursor.x;
+      session.cursorY = cursor.y;
+      session.maximized = false;
+      const restoredDisplay = screen.getDisplayNearestPoint(cursor);
+      session.displayId = restoredDisplay?.id;
+      try { session.win.webContents.invalidate(); } catch (_) {}
+      return;
+    }
     const x = Math.round(session.windowX + (cursor.x - session.cursorX));
     const y = Math.round(session.windowY + (cursor.y - session.cursorY));
     session.win.setPosition(x, y, false);
