@@ -2336,7 +2336,7 @@ function normalizeNativeTimerPayload(source) {
   const displayText = String(pick(root.timerDisplayText, nested.displayText, root.timerLocalTimeText, nested.localTimeText, '') || '');
   const expired = Boolean(
     root.timerExpired || root.timerOverrun || root.timerNegative ||
-    nested.expired || nested.overrun || nested.negative ||
+    root.timerCountdownExpired || nested.expired || nested.overrun || nested.negative || nested.countdownExpired ||
     displayText.trim().startsWith('-') || Number(displaySecRaw) < 0
   );
   return {
@@ -2350,6 +2350,39 @@ function normalizeNativeTimerPayload(source) {
     overrunSec: Number(pick(root.timerOverrunSec, nested.overrunSec, 0)) || 0,
     displayText,
     localTimeText: String(pick(root.timerLocalTimeText, nested.localTimeText, '') || '')
+  };
+}
+
+function shouldPreferFreshLuaTimerOnMac(filePath, source) {
+  if (process.platform !== 'darwin' || !source || typeof source !== 'object') return false;
+  if (String(source.source || '').trim().toLowerCase() !== 'vs_hook_lua') return false;
+  if (typeof source.timerRunning !== 'boolean' || !Number.isFinite(Number(source.timerDisplaySec))) return false;
+  try {
+    const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
+    return ageMs >= 0 && ageMs <= 2500;
+  } catch (_) {
+    return false;
+  }
+}
+
+function mergeTimerPayload(target, source) {
+  const timer = normalizeNativeTimerPayload(source);
+  return {
+    ...target,
+    timerRunning: timer.running,
+    timerStartedAt: timer.startedAt,
+    timerAccumulatedSec: timer.accumulatedSec,
+    timerMode: timer.mode,
+    timerType: timer.mode,
+    timerTargetSec: timer.targetSec,
+    timerCountdownStartSec: timer.targetSec,
+    timerDisplaySec: timer.displaySec,
+    timerExpired: timer.expired,
+    timerOverrun: timer.expired,
+    timerNegative: timer.expired,
+    timerOverrunSec: timer.overrunSec,
+    timerDisplayText: timer.displayText,
+    timerLocalTimeText: timer.localTimeText
   };
 }
 
@@ -2433,11 +2466,20 @@ function normalizeNativeTelepromptState(nativeState, slot) {
 
 async function getLyricsState(slot = 1) {
   const id = normalizeLyricsSlot(slot);
+  const lyricsStatePath = getLyricsStatePath(id);
+  const data = readJsonFileSafe(lyricsStatePath, {});
   const nativeState = await requestNativeBridgeStateForLyrics();
   const nativeTpState = normalizeNativeTelepromptState(nativeState, id);
-  if (nativeTpState) return nativeTpState;
+  if (nativeTpState) {
+    // No macOS, a API nativa do timer pode ficar indisponível mesmo com o TP
+    // nativo respondendo. O Lua já publica seu cronômetro no arquivo do TP a
+    // cada 0,5 s; quando esse arquivo está fresco, ele é a fonte autoritativa
+    // somente para os campos do timer. O restante continua vindo da extensão.
+    return shouldPreferFreshLuaTimerOnMac(lyricsStatePath, data)
+      ? mergeTimerPayload(nativeTpState, data)
+      : nativeTpState;
+  }
 
-  const data = readJsonFileSafe(getLyricsStatePath(id), {});
   const bridgeState = readJsonFileSafe(getBridgeStatePath(), {});
   const timerSource = (typeof data.timerRunning === 'boolean' || Number(data.timerStartedAt || 0) || Number(data.timerAccumulatedSec || 0)) ? data : bridgeState;
   const fallbackTimer = normalizeNativeTimerPayload(timerSource);
