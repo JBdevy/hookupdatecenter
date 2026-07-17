@@ -73,7 +73,6 @@ const legacyWindowDragSessions = new Map();
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
 const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
-const HOOK_CENTER_API_URL = `${BACKEND_URL}/api/hookcenter/latest?platform=${getHookCenterPlatformKey()}`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
@@ -1070,7 +1069,7 @@ function normalizeHookCenterUpdate(raw) {
 }
 
 async function checkHookCenterUpdates(manual = false) {
-  const raw = await fetchJsonForUpdateSoft(HOOK_CENTER_API_URL, { cache: 'no-store' });
+  const raw = await fetchJsonForUpdateSoft(getHookCenterApiUrl(), { cache: 'no-store' });
   const fetchedUpdate = normalizeHookCenterUpdate(raw);
   const platformKey = getHookCenterPlatformKey();
   const cachedCandidate = store.get('hookCenterLatest') || null;
@@ -2806,15 +2805,21 @@ function getPlatformKey() {
 
 function isHookCenterLegacyBuild() {
   if (process.platform !== 'darwin') return false;
+  const legacyMarkerPath = path.join(process.resourcesPath || '', 'hook-center-legacy.marker');
+  if (legacyMarkerPath && fs.existsSync(legacyMarkerPath)) return true;
   const configuredVariant = String(appPackage.hookCenterVariant || '').trim().toLowerCase();
   if (configuredVariant === 'legacy') return true;
-  // Compatibilidade com builds antigas que ainda não possuem o marcador.
+  // Compatibilidade com builds antigas que ainda não possuem o marcador físico.
   return /legacy/i.test(`${app.getName() || ''} ${process.execPath || ''}`);
 }
 
 function getHookCenterPlatformKey() {
   if (isHookCenterLegacyBuild()) return 'macos-legacy';
   return getPlatformKey();
+}
+
+function getHookCenterApiUrl() {
+  return `${BACKEND_URL}/api/hookcenter/latest?platform=${encodeURIComponent(getHookCenterPlatformKey())}`;
 }
 
 function getPlatformFiles(update) {

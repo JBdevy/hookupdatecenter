@@ -15,6 +15,12 @@
     "package.json",
     "installer/**/*"
   ],
+  "extraResources": [
+    {
+      "from": "build/hook-center-legacy.marker",
+      "to": "hook-center-legacy.marker"
+    }
+  ],
   "mac": {
     "target": [
       "dmg",
