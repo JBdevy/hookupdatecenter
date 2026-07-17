@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '3.0-drawer-style-sync-v83'
+  const VERSION = '3.0.2-queue-musician-layout-v88'
   const POLL_MS = 650
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -224,6 +224,8 @@
     pendingLoopUntil: 0,
     pendingMultiLoopBypass: null,
     pendingMultiLoopBypassUntil: 0,
+    tabletMultiLoopBypassWarningKey: '',
+    tabletMultiLoopBypassWarningLastPosition: null,
     tabletPartCountdownKey: '',
     tabletPartCountdownLastPosition: null,
     playlistSelectionClearedUntil: 0,
@@ -2488,6 +2490,12 @@
     return data?.autoStopEnabled !== false && data?.autostopEnabled !== false
   }
 
+  function getNormalStopEnabled(data = state.snapshot) {
+    if (typeof data?.normalStopEnabled === 'boolean') return data.normalStopEnabled
+    if (typeof data?.normal_stop_enabled === 'boolean') return data.normal_stop_enabled
+    return true
+  }
+
   function getStopPauseModeEnabled(data = state.snapshot) {
     if (state.pendingStopPauseMode !== null && now() < state.pendingStopPauseModeUntil) return !!state.pendingStopPauseMode
     return data?.stopPauseModeEnabled === true || data?.editModeStopPauseEnabled === true || data?.stopPauseEnabled === true
@@ -3338,6 +3346,7 @@
         syncPartsTakeoverFromSnapshot(state.snapshot)
         syncPartsMarkerStateFromSnapshot(state.snapshot)
         processTabletPartCountdownPopup(state.snapshot)
+        processTabletMultiLoopBypassWarning(state.snapshot)
         syncDirectorRecadosFromSnapshot(state.snapshot)
       }
       scheduleRender()
@@ -3620,8 +3629,16 @@
       const drawerFamilyTop = !!(entry.hashParent && nextEntry && isHashChild(nextEntry.item) && nextEntry.parentKey === hashParentKey)
       const drawerFamilyChild = isHashChild(item) && !!entry.parentKey
       const drawerFamilyBottom = !!(drawerFamilyChild && (!nextEntry || !isHashChild(nextEntry.item) || nextEntry.parentKey !== entry.parentKey))
-      const drawerClasses = [drawerFamilyTop || drawerFamilyChild ? 'drawerFamilyMember' : '', drawerFamilyTop ? 'drawerFamilyTop' : '', drawerFamilyBottom ? 'drawerFamilyBottom' : '', drawerVisual.outlineEnabled ? 'drawerOutlineEnabled' : '', drawerFamilyChild && drawerVisual.symbolEnabled ? 'drawerSymbolEnabled' : ''].filter(Boolean).join(' ')
-      const drawerStyleAttr = (drawerFamilyTop || drawerFamilyChild) ? ` style="--drawer-outline-color:${drawerVisual.outlineColor};--drawer-symbol-color:${drawerVisual.symbolColor}"` : ''
+      const drawerClasses = [
+        drawerFamilyTop || drawerFamilyChild ? 'drawerFamilyMember' : '',
+        drawerFamilyTop ? 'drawerFamilyTop' : '',
+        drawerFamilyBottom ? 'drawerFamilyBottom' : '',
+        drawerVisual.outlineEnabled ? 'drawerOutlineEnabled' : '',
+        drawerFamilyChild && drawerVisual.symbolEnabled ? 'drawerSymbolEnabled' : ''
+      ].filter(Boolean).join(' ')
+      const drawerStyleAttr = (drawerFamilyTop || drawerFamilyChild)
+        ? ` style="--drawer-outline-color:${drawerVisual.outlineColor};--drawer-symbol-color:${drawerVisual.symbolColor}"`
+        : ''
       const armedRegress = markerArmed ? getPartsArmedRegressPercent(state.snapshot) : 0
       const rowProgress = markerArmed
         ? `<div class="partsArmedRegressTrack"><div class="partsArmedRegressBar" style="width:${armedRegress}%"></div></div>`
@@ -3656,6 +3673,48 @@
       return state.pendingMultiLoopBypass === true
     }
     return data?.multiloops?.bypassActive === true
+  }
+
+  function syncTabletMultiLoopBypassDom(data = state.snapshot) {
+    const button = root.querySelector('[data-action="multiloop-bypass"]')
+    if (!button) return
+    const active = getMultiLoopBypassActive(data)
+    button.classList.toggle('tabletSidebarByButtonOn', active)
+    button.classList.toggle('tabletSidebarByButtonOff', !active)
+    button.setAttribute('aria-pressed', active ? 'true' : 'false')
+  }
+
+  function processTabletMultiLoopBypassWarning(data = state.snapshot) {
+    const tabletMode = document.documentElement.dataset.directorDevice === 'tablet'
+    const active = getMultiLoopBypassActive(data)
+    if (!tabletMode || !active || !isPlaying(data)) {
+      state.tabletMultiLoopBypassWarningKey = ''
+      state.tabletMultiLoopBypassWarningLastPosition = null
+      return
+    }
+
+    const playPos = getCurrentPlaybackPosition(data)
+    const warningKey = String(data?.multiloops?.bypassWarningKey || '')
+    const warningStart = firstFiniteNumber([
+      data?.multiloops?.bypassWarningStartPos,
+      data?.multiloops?.bypassWarningStart,
+    ])
+    if (playPos === null || !warningKey || warningStart === null) {
+      state.tabletMultiLoopBypassWarningKey = ''
+      state.tabletMultiLoopBypassWarningLastPosition = playPos
+      return
+    }
+
+    const previousPos = Number(state.tabletMultiLoopBypassWarningLastPosition)
+    if (Number.isFinite(previousPos) && playPos < previousPos - 0.05) {
+      state.tabletMultiLoopBypassWarningKey = ''
+    }
+    state.tabletMultiLoopBypassWarningLastPosition = playPos
+
+    const remaining = warningStart - playPos
+    if (remaining < -0.05 || remaining > 4.05 || warningKey === state.tabletMultiLoopBypassWarningKey) return
+    state.tabletMultiLoopBypassWarningKey = warningKey
+    showPopup('ESSE LOOP NÃO SERÁ ARMADO. SE QUISER, DESATIVE O BY.', 'error', 3200)
   }
 
   function getLoopRange(data = state.snapshot) {
@@ -3821,14 +3880,24 @@
 
   function prepareAutoplayQueue() {
     if (!getAutoplayEnabled() || !isPlaying()) return
+    const currentQueuedId = getQueuedId()
+    // A fila manual pode ter sido escolhida no Lua antes de o Diretor assumir
+    // o controle. O Auto do front nunca deve substituir esse alvo ao entrar.
+    if (currentQueuedId && state.snapshot?.queuedManual === true) return
     const candidate = getAutoplayQueueCandidate()
     if (!candidate?.item) return
     const id = getId(candidate.item)
-    if (!id || getQueuedId() === id) return
+    if (!id || currentQueuedId === id) return
     state.queuedSongId = id
     state.optimisticQueueClearedUntil = 0
     const command = candidate.type === 'regions' ? 'queue_region_song' : 'queue_playlist_song'
-    postCommand(command, selectedPayload(id, candidate.type))
+    postCommand(command, {
+      ...selectedPayload(id, candidate.type),
+      autoQueue: true,
+      auto: true,
+      manual: false,
+      queuedManual: false,
+    })
   }
 
   function syncAutoplayQueueOnPlayingChange() {
@@ -6019,6 +6088,7 @@
       state.renderForceRequested = false
       syncTrackMeterPolling()
       syncMainControlButtonsDom()
+      syncTabletMultiLoopBypassDom()
       syncMixerRowsDom()
       if (!forceRender && (transportTouchId !== null || androidTabletScrollList || androidTabletScrollFrame)) {
         syncPlaybackProgressDom()
@@ -7061,9 +7131,13 @@
       const stoppedTab = partsTakeover?.tab || state.activeTab
       const queuedId = getQueuedId()
       const autoBlocoTargetId = getAutoBlocoTargetId()
+      const normalStopEnabled = getNormalStopEnabled(state.snapshot)
+      // Fila/Auto Bloco sempre vencem o Normal Stop. O modo puro so vale
+      // quando nao existe nenhuma musica aguardando para o proximo Play.
       const nextSelectionId = queuedId || autoBlocoTargetId
       const stopTargetTab = nextSelectionId ? state.activeTab : stoppedTab
-      const stopPayload = { activeTab: stopTargetTab, page: stopTargetTab, targetId: nextSelectionId || stoppedId, selectedRegionId: nextSelectionId || stoppedId, selectedPlaylistSongId: nextSelectionId || stoppedId, noSeek: true, preserveCursor: true, transportOnly: true, clearQueue: true, clearQueuedSong: true, autoBlocoTargetSongId: autoBlocoTargetId }
+      const stopSelectionId = nextSelectionId || (normalStopEnabled ? '' : stoppedId)
+      const stopPayload = { activeTab: stopTargetTab, page: stopTargetTab, targetId: stopSelectionId, selectedRegionId: stopSelectionId, selectedPlaylistSongId: stopSelectionId, noSeek: true, preserveCursor: true, transportOnly: true, normalStopEnabled, clearQueue: true, clearQueuedSong: true, autoBlocoTargetSongId: autoBlocoTargetId }
 
       if (fadeoutRunning) {
         state.tabletFadeoutRuntimeActive = false
@@ -7109,7 +7183,7 @@
           state.regionSelectionClearedUntil = now() + 5000
           postCommand('select_playlist_song', selectedPayload(nextSelectionId, 'playlist'))
         }
-      } else if (stoppedId) {
+      } else if (!normalStopEnabled && stoppedId) {
         // Nao ha outra musica na fila: preserva a selecao da musica que parou.
         // Havendo queuedId ou AutoBloco, o bloco acima continua com a logica antiga.
         if (stoppedTab === 'regions') {
@@ -8081,6 +8155,11 @@
         const next = !getMultiLoopBypassActive()
         state.pendingMultiLoopBypass = next
         state.pendingMultiLoopBypassUntil = now() + 5000
+        if (!next) {
+          state.tabletMultiLoopBypassWarningKey = ''
+          state.tabletMultiLoopBypassWarningLastPosition = null
+        }
+        syncTabletMultiLoopBypassDom()
         postCommand('multiloop_bypass_set', {
           enabled: next,
           desiredState: next ? 'on' : 'off',

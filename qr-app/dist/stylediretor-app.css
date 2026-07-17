@@ -7530,8 +7530,8 @@ html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .conte
 .tabletPreviewButtonActive{background:#15803d;border-color:#4ade80;color:#fff;box-shadow:0 0 8px rgba(34,197,94,.35)}
 .tabletSidebarByButton{flex:0 0 72px!important;width:46px!important;height:72px!important;min-height:72px!important;color:#fff!important;font-size:18px;font-weight:1000;letter-spacing:.02em}
 .tabletSidebarByButtonOff{background:#b00000!important;border-color:#ff2a2a!important;box-shadow:0 0 8px rgba(239,68,68,.22)!important}
-.tabletSidebarByButtonOn{background:#facc15!important;border-color:#fff176!important;color:#111827!important;box-shadow:0 0 11px rgba(250,204,21,.52)!important;animation:tabletBypassYellowBlink .72s steps(2,end) infinite!important}
-@keyframes tabletBypassYellowBlink{0%,100%{background:#facc15;border-color:#fff176;box-shadow:0 0 12px rgba(250,204,21,.62)}50%{background:#6b5204;border-color:#b8960a;box-shadow:0 0 3px rgba(250,204,21,.18)}}
+.tabletSidebarByButtonOn{background:#facc15!important;border-color:#fff176!important;color:#111827!important;box-shadow:0 0 11px rgba(250,204,21,.52)!important;animation:tabletBypassYellowBlink .72s steps(2,end) infinite!important;will-change:opacity}
+@keyframes tabletBypassYellowBlink{0%,100%{opacity:1}50%{opacity:.28}}
 .tabletSongToolsModal{width:min(76%,700px)!important;max-width:700px!important;height:320px!important;max-height:calc(100vh - 56px)!important;padding:18px 22px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;overflow-y:auto!important}
 .tabletSongToolsOptions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:12px;margin:12px 0 14px;flex:0 0 auto}
 .tabletSongToolOption{min-width:0;height:64px;border:1px solid #475569;border-radius:12px;background:#172033;color:#f8fafc;font-size:14px;font-weight:1000;padding:0 6px}
@@ -8464,3 +8464,43 @@ html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption 
 .item.hashChildItem.drawerSymbolEnabled.numberedItem > .leftCol { padding-left: 22px; }
 .item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .drawerChildSymbol { left: 8px; }
 .item.hashChildItem.drawerSymbolEnabled:not(.numberedItem) > .leftCol { padding-left: 18px; }
+
+/* O monitor dos músicos usa a mesma lista do Diretor, mas sem a coluna de
+   números. O trilho precisa sair do fluxo do grid para não deslocar nome e
+   duração quando a reprodução/fila aparece. */
+.musicianMonitor .item:not(.numberedItem) > .rowProgressTrack {
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0 !important;
+  width: auto !important;
+  height: 6px !important;
+  min-height: 6px !important;
+  z-index: 2 !important;
+  overflow: hidden !important;
+  border-radius: 0 999px 999px 0 !important;
+  pointer-events: none !important;
+}
+
+.musicianMonitor .item:not(.numberedItem) > .rowProgressTrack > .progressBar {
+  position: absolute !important;
+  left: 0 !important;
+  right: auto !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  border-radius: 0 999px 999px 0 !important;
+  pointer-events: none !important;
+}
+
+.musicianMonitor .item:not(.numberedItem) > .rowProgressTrack > .playingRowProgressBar {
+  background: #22c55e !important;
+  box-shadow: 0 0 6px rgba(34, 197, 94, .42) !important;
+}
+
+.musicianMonitor .item:not(.numberedItem) > .queuedRowRegressTrack > .queuedRowRegressBar {
+  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
+  box-shadow: 0 0 7px rgba(249, 115, 22, .52) !important;
+}

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-3.0-drawer-style-sync-v83';
+const CACHE_NAME = 'vshook-mobile-3.0.2-queue-musician-layout-v88';
 const APP_ASSETS = [
   './',
   './index.html',
