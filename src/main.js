@@ -2526,9 +2526,10 @@ function createLyricsWindow(slot = 1) {
     // Janela do Teleprompt precisa aceitar formatos extremos, inclusive 9:16 vertical.
     minWidth: 180,
     minHeight: 180,
-    // A versão normal preserva a janela original, transparente e sem moldura.
-    // O modo opaco/nativo é aplicado somente à variante macOS Legacy.
-    backgroundColor: isStandardMac ? '#00000000' : '#000000',
+    // O conteúdo do Teleprompt já possui fundo preto. Mantê-lo opaco evita a
+    // camada transparente do Chromium, que pode desaparecer em monitores
+    // externos com drivers gráficos modificados pelo OpenCore.
+    backgroundColor: '#000000',
     opacity: 1,
     title: 'Teleprompt',
     icon: getAppIconPath(),
@@ -2537,7 +2538,7 @@ function createLyricsWindow(slot = 1) {
     frame: isLegacyMac,
     // Mantem handles nativos de redimensionamento em janela sem moldura, especialmente no Windows.
     thickFrame: true,
-    transparent: isStandardMac,
+    transparent: false,
     roundedCorners: isLegacyMac,
     focusable: true,
     movable: true,
@@ -2638,7 +2639,11 @@ function toggleLyricsWindowFullscreen(win) {
   const isReallyFullScreen = (() => {
     try { return win.isFullScreen(); } catch (_) { return false; }
   })();
-  const isFullScreen = isReallyFullScreen || win.__vshookFullScreen === true;
+  const isSimpleFullScreen = (() => {
+    if (process.platform !== 'darwin' || typeof win.isSimpleFullScreen !== 'function') return false;
+    try { return win.isSimpleFullScreen(); } catch (_) { return false; }
+  })();
+  const isFullScreen = isReallyFullScreen || isSimpleFullScreen || win.__vshookFullScreen === true;
 
   if (isFullScreen) {
     win.__vshookFullScreen = false;
@@ -2659,7 +2664,13 @@ function toggleLyricsWindowFullscreen(win) {
 
   try { win.__vshookBeforeFullScreenBounds = win.getBounds(); } catch (_) { win.__vshookBeforeFullScreenBounds = null; }
   win.__vshookFullScreen = true;
-  try { win.setFullScreen(true); } catch (_) {}
+  if (process.platform === 'darwin' && typeof win.setSimpleFullScreen === 'function') {
+    // O modo simples ocupa a tela atual sem criar outro Space, sendo mais
+    // previsível em monitor externo e instalações com OpenCore.
+    try { win.setSimpleFullScreen(true); } catch (_) { try { win.setFullScreen(true); } catch (__) {} }
+  } else {
+    try { win.setFullScreen(true); } catch (_) {}
+  }
   return { ok: true, fullScreen: true };
 }
 

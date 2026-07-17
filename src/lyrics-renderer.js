@@ -1300,10 +1300,41 @@ async function init() {
 
   const setupManualWindowDrag = (useMainProcessCursor = false) => {
     let dragState = null;
+    let lastPrimaryPointerDownAt = 0;
+    let lastSecondaryPointerDownAt = 0;
+    const useMacPointerGestureFallback = window.hookUpdateCenter.platform === 'darwin';
     const isCloseTarget = (target) => Boolean(target && target.closest && target.closest('#closeLyricsButton'));
 
     const beginDrag = async (event) => {
-      if ((event.button !== undefined && event.button !== 0) || isCloseTarget(event.target) || Number(event.detail || 0) >= 2) return;
+      if (isCloseTarget(event.target)) return;
+      const button = Number(event.button);
+      const now = Date.now();
+      if (button === 2) {
+        if (useMacPointerGestureFallback && lastSecondaryPointerDownAt > 0 && (now - lastSecondaryPointerDownAt) <= 420) {
+          stopGestureEvent(event);
+          lastSecondaryPointerDownAt = 0;
+          lastRightClickAt = 0;
+          if (dragState?.mainProcessCursor) window.hookUpdateCenter.endCurrentWindowCursorDrag?.();
+          dragState = null;
+          window.hookUpdateCenter.closeCurrentWindow?.();
+          return;
+        }
+        if (useMacPointerGestureFallback) lastSecondaryPointerDownAt = now;
+        return;
+      }
+      if (button !== 0) return;
+      const pointerDoubleClick = useMacPointerGestureFallback && (Number(event.detail || 0) >= 2 || (
+        lastPrimaryPointerDownAt > 0 && (now - lastPrimaryPointerDownAt) <= 420
+      ));
+      if (pointerDoubleClick) {
+        stopGestureEvent(event);
+        lastPrimaryPointerDownAt = 0;
+        lastLeftClickAt = 0;
+        lastLeftDoubleClickHandledAt = now;
+        requestFullscreenToggle();
+        return;
+      }
+      if (useMacPointerGestureFallback) lastPrimaryPointerDownAt = now;
       event.preventDefault();
       try {
         if (useMainProcessCursor) {
@@ -1383,6 +1414,7 @@ async function init() {
       if (button === 2) {
         if ((now - lastRightClickAt) <= 420) {
           stopGestureEvent(event);
+          if (dragState?.mainProcessCursor) window.hookUpdateCenter.endCurrentWindowCursorDrag?.();
           dragState = null;
           window.hookUpdateCenter.closeCurrentWindow?.();
           return;
