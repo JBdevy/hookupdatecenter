@@ -2405,11 +2405,15 @@
 
   function getSelectedPlaylistId(data = state.snapshot) {
     if (now() < Number(state.playlistSelectionClearedUntil || 0)) return ''
+    const readyId = getStoppedReadyVisualId(data)
+    if (readyId && state.activeTab !== 'regions') return readyId
     return String(state.selectedPlaylistSongId || data?.selectedPlaylistSongId || '')
   }
 
   function getSelectedRegionId(data = state.snapshot) {
     if (now() < Number(state.regionSelectionClearedUntil || 0)) return ''
+    const readyId = getStoppedReadyVisualId(data)
+    if (readyId && state.activeTab === 'regions') return readyId
     return String(state.selectedRegionId || data?.selectedRegionId || '')
   }
 
@@ -2465,8 +2469,39 @@
   }
 
   function getQueuedId(data = state.snapshot) {
+    if (!isPlaying(data) && !isPaused(data)) return ''
     if (state.optimisticQueueClearedUntil && now() < state.optimisticQueueClearedUntil) return ''
-    return String(state.queuedSongId || data?.queuedSongId || data?.queueSongId || '')
+    const queuedId = String(state.queuedSongId || data?.queuedSongId || data?.queueSongId || '')
+    if (isAutoBlocoBoundaryVisualTarget(queuedId, data)) return ''
+    return queuedId
+  }
+
+  function isAutoBlocoBoundaryVisualTarget(queuedId, data = state.snapshot) {
+    const targetId = String(queuedId || '')
+    if (!targetId || !getAutoBlocoEnabled(data) || !isPlaying(data)) return false
+
+    const items = getPlaylistItems(data)
+    if (!Array.isArray(items) || !items.length) return false
+
+    let playingId = String(getPlayingId(data) || '')
+    let playingIndex = items.findIndex((item) => String(getId(item) || '') === playingId)
+    if (playingIndex < 0) {
+      const playingChild = getPlayingHashChild(data)
+      const parentId = getHashFamilyParentId(playingChild)
+      if (parentId) playingIndex = items.findIndex((item) => String(getId(item) || '') === String(parentId))
+    }
+    const queuedIndex = items.findIndex((item) => String(getId(item) || '') === targetId)
+    if (playingIndex < 0 || queuedIndex <= playingIndex) return false
+
+    for (let index = playingIndex + 1; index <= queuedIndex; index += 1) {
+      if (isBlock(items[index])) return true
+    }
+    return false
+  }
+
+  function getStoppedReadyVisualId(data = state.snapshot) {
+    if (isPlaying(data) || isPaused(data)) return ''
+    return String(getAutoBlocoTargetId(data) || state.queuedSongId || data?.queuedSongId || data?.queueSongId || '')
   }
 
   function getAutoplayEnabled(data = state.snapshot) {
@@ -3466,8 +3501,8 @@
     if (type === 'marker' && id && state.partsArmedMarkerId === id && now() < state.partsArmedMarkerUntil) classes.push('partsMarkerArmed')
     else if (type === 'marker' && id && state.partsLocalSelectedMarkerId === id) classes.push('partsMarkerLocalSelected')
     if (rowRepresentsPlayingSong(item, data)) classes.push('playing')
-    else if (id && queuedId && id === queuedId) classes.push('queuedYellow')
     else if (!isPlaying(data) && id && ((selectedId && id === selectedId) || (familySelectedId && id === familySelectedId))) classes.push(isBlock(item) ? 'selectedPink' : 'selectedBlue')
+    else if (id && queuedId && id === queuedId) classes.push('queuedYellow')
     return classes.join(' ')
   }
 
@@ -3480,18 +3515,18 @@
     const selectedId = type === 'playlist' ? getSelectedPlaylistId(data) : getSelectedRegionId(data)
     const childSelectedId = isHashChild(item) ? String(state.selectedRegionId || '') : ''
     if (id && id === playingId) classes.push('playing')
-    else if (id && id === queuedId) classes.push('queuedYellow')
     else if (!isPlaying(data) && id && (id === selectedId || id === childSelectedId)) classes.push(isBlock(item) ? 'selectedPink' : 'selectedBlue')
+    else if (id && id === queuedId) classes.push('queuedYellow')
     return classes.join(' ')
   }
 
   function tunerTextClass(type, item, data = state.snapshot) {
     const id = String(getId(item) || '')
     if (id && id === getPlayingId(data)) return 'playingText'
-    if (id && id === getQueuedId(data)) return 'queuedYellowText'
     const selectedId = type === 'playlist' ? getSelectedPlaylistId(data) : getSelectedRegionId(data)
     const childSelectedId = isHashChild(item) ? String(state.selectedRegionId || '') : ''
     if (!isPlaying(data) && id && (id === selectedId || id === childSelectedId)) return isBlock(item) ? 'selectedPinkText' : 'selectedBlueText'
+    if (id && id === getQueuedId(data)) return 'queuedYellowText'
     return 'text'
   }
 
@@ -3503,8 +3538,8 @@
     const selectedId = type === 'playlist' ? getSelectedPlaylistId(data) : type === 'region' ? getSelectedRegionId(data) : getSelectedMarkerId(data)
     const familySelectedId = isHashChild(item) ? String(state.selectedRegionId || '') : ''
     if (rowRepresentsPlayingSong(item, data)) return 'playingText'
-    if (id && queuedId && id === queuedId) return 'queuedYellowText'
     if (!isPlaying(data) && id && ((selectedId && id === selectedId) || (familySelectedId && id === familySelectedId))) return isBlock(item) ? 'selectedPinkText' : 'selectedBlueText'
+    if (id && queuedId && id === queuedId) return 'queuedYellowText'
     return 'text'
   }
 
@@ -3842,7 +3877,9 @@
   }
 
   function getQueuedSongName(data = state.snapshot) {
+    if (!isPlaying(data) && !isPaused(data)) return ''
     if (state.optimisticQueueClearedUntil && now() < state.optimisticQueueClearedUntil) return ''
+    if (!getQueuedId(data)) return ''
     const localQueuedId = String(state.queuedSongId || '')
     const bridgeQueuedId = String(data?.queuedSongId || data?.queueSongId || '')
     if (localQueuedId && localQueuedId !== bridgeQueuedId) return upperText(findSongNameById(localQueuedId, data))

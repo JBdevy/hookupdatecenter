@@ -6484,9 +6484,9 @@ button,
 }
 
 .topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
-  border-color: #22c55e;
-  background: #14532d;
-  color: #dcfce7;
+  border-color: #fde047;
+  background: #facc15;
+  color: #111827;
 }
 
 .mixerContentPanel .mixerListBox {
@@ -7156,11 +7156,15 @@ button,
   color: #0b1118 !important;
   border-color: #87929d !important;
 }
-.app[data-theme="light"] .topMenuFlyoutBtnActive,
-.app[data-theme="light"] .topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+.app[data-theme="light"] .topMenuFlyoutBtnActive {
   background: #15803d !important;
   color: #ffffff !important;
   border-color: #4ade80 !important;
+}
+.app[data-theme="light"] .topMenuFlyoutBtnAtbl.topMenuFlyoutBtnActive {
+  background: #facc15 !important;
+  color: #111827 !important;
+  border-color: #fde047 !important;
 }
 
 /* Botões semânticos mantêm suas cores no tema claro. */
