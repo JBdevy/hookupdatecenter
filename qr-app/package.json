@@ -1,6 +1,6 @@
 {
   "name": "vs-hook-mobile",
-  "version": "3.0.2",
+  "version": "3.0.4",
   "private": true,
   "description": "VS Hook Mobile - Android/iOS",
   "scripts": {

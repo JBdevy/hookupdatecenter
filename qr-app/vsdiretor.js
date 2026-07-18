@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '3.0.2-queue-musician-layout-v88'
+  const VERSION = '3.0.4-exact-app-queue-numeric-names-v93'
   const POLL_MS = 650
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -6868,6 +6868,16 @@
       const end = Number(item.endPos ?? item.end_pos ?? item.rgnend ?? item.regionEnd)
       if (Number.isFinite(start)) payload.selectedStartPos = start
       if (Number.isFinite(end)) payload.selectedEndPos = end
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) payload.queueExactPosition = true
+      if (tab === 'playlist') {
+        const playlistOrder = Number(item.playlistOrder ?? item.order ?? item.playlistItemIndex ?? item.playlistSongIndex ?? item.index)
+        if (Number.isFinite(playlistOrder) && playlistOrder > 0) {
+          payload.playlistOrder = Math.trunc(playlistOrder)
+          payload.playlistItemIndex = Math.trunc(playlistOrder)
+        }
+        const playlistEntryId = item.playlistEntryId ?? item.playlist_entry_id
+        if (playlistEntryId != null && String(playlistEntryId)) payload.playlistEntryId = String(playlistEntryId)
+      }
       if (item.source_number != null) payload.source_number = item.source_number
       if (item.sourceNumber != null) payload.sourceNumber = item.sourceNumber
     }
