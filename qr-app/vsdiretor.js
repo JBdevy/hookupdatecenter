@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '3.0.4-exact-app-queue-numeric-names-v93'
+  const VERSION = '3.0.6-auto-transport-multiloop-v97'
   const POLL_MS = 650
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -230,6 +230,8 @@
     tabletPartCountdownLastPosition: null,
     playlistSelectionClearedUntil: 0,
     regionSelectionClearedUntil: 0,
+    playlistSelectionLocalUntil: 0,
+    regionSelectionLocalUntil: 0,
   }
 
   const mixerToggleHold = new Map()
@@ -2088,13 +2090,20 @@
     return ((safe - zeroRatio) / (1 - zeroRatio)) * 12
   }
 
+  function nativeMixerRatioToDb(ratio) {
+    const safe = clampRatio(ratio, 0.75)
+    if (safe <= 0) return Number.NEGATIVE_INFINITY
+    return (safe * 72) - 60
+  }
+
   function getMixerDbValue(item) {
     const id = getMixerPrimaryId(item)
     const hold = id ? mixerVolumeHold.get(id) : null
-    if (hold && now() <= Number(hold.until || 0)) return mixerRatioToDb(hold.ratio)
-    const direct = Number(item?.db)
-    if (Number.isFinite(direct) && Math.abs(direct) > 1.5) return direct
-    return mixerRatioToDb(item?.volumeRatio ?? item?.volume ?? item?.ratio ?? 0.75)
+    if (hold && now() <= Number(hold.until || 0)) return nativeMixerRatioToDb(hold.ratio)
+    const directRaw = item?.db ?? item?.volumeDb ?? item?.volume_db
+    const direct = Number(directRaw)
+    if (directRaw !== null && directRaw !== undefined && directRaw !== '' && Number.isFinite(direct)) return direct
+    return nativeMixerRatioToDb(item?.volumeRatio ?? item?.volume ?? item?.ratio ?? 0.75)
   }
 
   function formatMixerDb(item) {
@@ -2147,7 +2156,7 @@
   }
 
   function getMixerZeroDbRatio() {
-    return 0.76
+    return 60 / 72
   }
 
   function getPremixSongs(data = state.snapshot) {
@@ -2405,6 +2414,7 @@
 
   function getSelectedPlaylistId(data = state.snapshot) {
     if (now() < Number(state.playlistSelectionClearedUntil || 0)) return ''
+    if (state.selectedPlaylistSongId && now() < Number(state.playlistSelectionLocalUntil || 0)) return String(state.selectedPlaylistSongId)
     const readyId = getStoppedReadyVisualId(data)
     if (readyId && state.activeTab !== 'regions') return readyId
     return String(state.selectedPlaylistSongId || data?.selectedPlaylistSongId || '')
@@ -2412,6 +2422,7 @@
 
   function getSelectedRegionId(data = state.snapshot) {
     if (now() < Number(state.regionSelectionClearedUntil || 0)) return ''
+    if (state.selectedRegionId && now() < Number(state.regionSelectionLocalUntil || 0)) return String(state.selectedRegionId)
     const readyId = getStoppedReadyVisualId(data)
     if (readyId && state.activeTab === 'regions') return readyId
     return String(state.selectedRegionId || data?.selectedRegionId || '')
@@ -3870,10 +3881,20 @@
   }
 
   function getNowPlayingName(data = state.snapshot) {
+    // O Play recém-clicado é a fonte imediata do painel. Um estado otimista
+    // antigo de Stop não pode deixar "Tocando agora" vazio até o Bridge responder.
+    if (state.optimisticPlayingId && now() < state.optimisticPlayingUntil) {
+      const optimisticName = upperText(findSongNameById(state.optimisticPlayingId, data))
+      if (optimisticName) return optimisticName
+    }
     if (state.optimisticStoppedUntil && now() < state.optimisticStoppedUntil) return ''
+    const playingId = getPlayingId(data)
+    const bridgePlayingId = data?.playingId != null ? String(data.playingId) : ''
+    const localName = upperText(findSongNameById(playingId, data))
+    if (state.optimisticPlayingId && now() < state.optimisticPlayingUntil && playingId && playingId !== bridgePlayingId) return localName
     const direct = data?.currentSongName || data?.playingSongName || data?.playingName || data?.currentRegionName || data?.activeSongName
     if (String(direct || '').trim()) return upperText(direct)
-    return upperText(findSongNameById(getPlayingId(data), data))
+    return localName
   }
 
   function getQueuedSongName(data = state.snapshot) {
@@ -6127,7 +6148,7 @@
       syncMainControlButtonsDom()
       syncTabletMultiLoopBypassDom()
       syncMixerRowsDom()
-      if (!forceRender && (transportTouchId !== null || androidTabletScrollList || androidTabletScrollFrame)) {
+      if (!forceRender && (transportTouchId !== null || androidTabletScrollList)) {
         syncPlaybackProgressDom()
         syncTimerDom()
         return
@@ -6811,6 +6832,8 @@
     if (changingMusicListTab) {
       state.selectedPlaylistSongId = ''
       state.selectedRegionId = ''
+      state.playlistSelectionLocalUntil = 0
+      state.regionSelectionLocalUntil = 0
       state.playlistSelectionClearedUntil = now() + 5000
       state.regionSelectionClearedUntil = now() + 5000
     }
@@ -6998,11 +7021,15 @@
       if (type === 'playlist') {
         state.selectedPlaylistSongId = id
         state.selectedRegionId = ''
+        state.playlistSelectionLocalUntil = now() + 5000
+        state.regionSelectionLocalUntil = 0
         state.playlistSelectionClearedUntil = 0
         state.regionSelectionClearedUntil = now() + 5000
       } else {
         state.selectedRegionId = id
         state.selectedPlaylistSongId = ''
+        state.regionSelectionLocalUntil = now() + 5000
+        state.playlistSelectionLocalUntil = 0
         state.regionSelectionClearedUntil = 0
         state.playlistSelectionClearedUntil = now() + 5000
       }
@@ -7088,6 +7115,8 @@
         if (alreadySelected && !forceSelect) {
           state.selectedPlaylistSongId = ''
           state.selectedRegionId = ''
+          state.playlistSelectionLocalUntil = 0
+          state.regionSelectionLocalUntil = 0
           focusOpenTabletTransportPanel('', 'playlist', 'selected')
           state.playlistSelectionClearedUntil = now() + 5000
           state.regionSelectionClearedUntil = now() + 5000
@@ -7101,6 +7130,8 @@
         }
         state.selectedPlaylistSongId = id
         state.selectedRegionId = ''
+        state.playlistSelectionLocalUntil = now() + 5000
+        state.regionSelectionLocalUntil = 0
         focusPartsSongSource('selected')
         focusOpenTabletTransportPanel(id, 'playlist', 'selected')
         state.playlistSelectionClearedUntil = 0
@@ -7143,6 +7174,8 @@
         if (alreadySelected && !forceSelect) {
           state.selectedRegionId = ''
           state.selectedPlaylistSongId = ''
+          state.regionSelectionLocalUntil = 0
+          state.playlistSelectionLocalUntil = 0
           focusOpenTabletTransportPanel('', 'regions', 'selected')
           state.regionSelectionClearedUntil = now() + 5000
           state.playlistSelectionClearedUntil = now() + 5000
@@ -7156,6 +7189,8 @@
         }
         state.selectedRegionId = id
         state.selectedPlaylistSongId = ''
+        state.regionSelectionLocalUntil = now() + 5000
+        state.playlistSelectionLocalUntil = 0
         focusPartsSongSource('selected')
         focusOpenTabletTransportPanel(id, 'regions', 'selected')
         state.regionSelectionClearedUntil = 0
@@ -7264,6 +7299,9 @@
     } else {
       clearPartsTakeover()
       clearPartsArmedOwner()
+      state.optimisticStoppedId = ''
+      state.optimisticStoppedTab = ''
+      state.optimisticStoppedUntil = 0
       const id = state.activeTab === 'regions' ? (state.selectedRegionId || getSelectedRegionId()) : (state.selectedPlaylistSongId || getSelectedPlaylistId())
       if (id) {
         state.optimisticPlayingId = getImmediateFamilyPlayingId(id)
@@ -9083,15 +9121,6 @@
 
   var androidTabletScrollList = null
   var androidTabletScrollX = 0
-  var androidTabletScrollAt = 0
-  var androidTabletScrollVelocity = 0
-  var androidTabletScrollFrame = 0
-
-  function stopAndroidTabletScroll() {
-    if (androidTabletScrollFrame) window.cancelAnimationFrame(androidTabletScrollFrame)
-    androidTabletScrollFrame = 0
-  }
-
   function handleAndroidTabletScrollStart(event) {
     var platform = document.documentElement.dataset.directorPlatform
     if ((platform !== 'android' && platform !== 'ios') || document.documentElement.dataset.directorDevice !== 'tablet' || window.innerHeight <= window.innerWidth) return
@@ -9099,11 +9128,8 @@
     var target = event.target
     var list = target && target.closest ? target.closest('.listBox') : null
     if (!touch || !list || !list.closest('.container') || !list.closest('.contentPanel')) return
-    stopAndroidTabletScroll()
     androidTabletScrollList = list
     androidTabletScrollX = Number(touch.clientX) || 0
-    androidTabletScrollAt = now()
-    androidTabletScrollVelocity = 0
   }
 
   function handleAndroidTabletScrollMove(event) {
@@ -9111,38 +9137,16 @@
     var touch = event.touches && event.touches[0]
     if (!touch) return
     var x = Number(touch.clientX) || 0
-    var currentAt = now()
-    var elapsed = Math.max(1, currentAt - androidTabletScrollAt)
     var delta = x - androidTabletScrollX
     if (Math.abs(delta) < 0.5) return
     androidTabletScrollList.scrollTop += delta
-    androidTabletScrollVelocity = androidTabletScrollVelocity * 0.35 + Math.max(-4, Math.min(4, delta / elapsed)) * 0.65
     androidTabletScrollX = x
-    androidTabletScrollAt = currentAt
     state.ignoreTapUntil = now() + 200
     event.preventDefault()
   }
 
   function handleAndroidTabletScrollEnd() {
-    var list = androidTabletScrollList
-    var velocity = androidTabletScrollVelocity
     androidTabletScrollList = null
-    if (!list || Math.abs(velocity) < 0.04) return
-    var previousAt = now()
-    function step() {
-      var currentAt = now()
-      var elapsed = Math.min(32, Math.max(1, currentAt - previousAt))
-      var before = list.scrollTop
-      previousAt = currentAt
-      list.scrollTop += velocity * elapsed
-      velocity *= Math.pow(0.985, elapsed / 16.67)
-      if (Math.abs(velocity) < 0.008 || list.scrollTop === before) {
-        androidTabletScrollFrame = 0
-        return
-      }
-      androidTabletScrollFrame = window.requestAnimationFrame(step)
-    }
-    androidTabletScrollFrame = window.requestAnimationFrame(step)
   }
 
   const HASH_DRAWER_DOUBLE_TAP_MS = 360

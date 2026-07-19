@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-3.0.4-exact-app-queue-numeric-names-v93';
+const CACHE_NAME = 'vshook-mobile-3.0.6-auto-transport-multiloop-v97';
 const APP_ASSETS = [
   './',
   './index.html',

@@ -67,7 +67,10 @@
   ; sem reinstalar o Electron inteiro.
   CreateDirectory "$R9\HookDeveloper\HookCenter"
   CreateDirectory "$R9\HookDeveloper\HookCenter\qr-app"
-  ExecWait 'icacls "$R9\HookDeveloper\HookCenter" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
+  ; nsExec mantém o processo de console oculto. ExecWait abria uma janela de CMD
+  ; durante a instalação mesmo quando o icacls concluía normalmente.
+  nsExec::ExecToLog 'icacls "$R9\HookDeveloper\HookCenter" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
+  Pop $R7
 
   ; Limpa nomes antigos para não deixar lixo da nomes antigos.
   Delete "$R8\VS Hook APP\VS Hook Pro.lua"
