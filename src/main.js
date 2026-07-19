@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -60,6 +60,8 @@ const store = new Store({
 
 let mainWindow = null;
 let tray = null;
+let appIsQuitting = false;
+let quitCleanupStarted = false;
 let checkTimer = null;
 let updateReminderTimer = null;
 let bridgeServers = [];
@@ -140,7 +142,7 @@ function createWindow() {
   const win = mainWindow;
 
   win.on('close', (event) => {
-    if (!app.isQuiting) {
+    if (!appIsQuitting) {
       event.preventDefault();
       if (!win.isDestroyed()) win.hide();
     }
@@ -199,7 +201,7 @@ function rebuildTrayMenu() {
     { label: 'Conferir atualização agora', click: () => checkForUpdates(true) },
     { label: 'Verificar licença agora', click: () => checkLicenseStatus(true) },
     { type: 'separator' },
-    { label: 'Sair', click: () => { app.isQuiting = true; app.quit(); } }
+    { label: 'Sair', click: () => { appIsQuitting = true; app.quit(); } }
   ]);
   tray.setContextMenu(menu);
 }
@@ -414,49 +416,56 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function writeFileWithPrivilegeIfNeeded(filePath, content) {
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, 'utf8');
-    return;
-  } catch (error) {
-    if (process.platform !== 'darwin') throw error;
+function applyLicenseFileChanges({ writes = [], removes = [] } = {}) {
+  const pendingWrites = [];
+  const pendingRemoves = [];
+
+  for (const entry of writes) {
+    const filePath = String(entry?.filePath || '');
+    if (!filePath) continue;
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, String(entry?.content ?? ''), 'utf8');
+    } catch (error) {
+      if (process.platform !== 'darwin') throw error;
+      pendingWrites.push({ filePath, content: String(entry?.content ?? '') });
+    }
   }
 
-  const encoded = Buffer.from(content, 'utf8').toString('base64');
-  const dir = path.dirname(filePath);
-  const command = [
-    'mkdir -p', shellQuote(dir),
-    '&&',
-    'printf', shellQuote(encoded),
-    '| base64 -D >', shellQuote(filePath),
-    '&& chmod 644', shellQuote(filePath)
-  ].join(' ');
+  for (const value of removes) {
+    const filePath = String(value || '');
+    if (!filePath) continue;
+    try {
+      fs.rmSync(filePath, { force: true });
+      if (fs.existsSync(filePath)) pendingRemoves.push(filePath);
+    } catch (_) {
+      if (process.platform === 'darwin') pendingRemoves.push(filePath);
+    }
+  }
+
+  if (process.platform !== 'darwin' || (!pendingWrites.length && !pendingRemoves.length)) return;
+
+  const commands = ['set -e'];
+  const directories = [...new Set(pendingWrites.map((entry) => path.dirname(entry.filePath)))];
+  for (const dir of directories) {
+    commands.push(`/bin/mkdir -p ${shellQuote(dir)}`);
+  }
+  for (const entry of pendingWrites) {
+    const encoded = Buffer.from(entry.content, 'utf8').toString('base64');
+    commands.push(`/usr/bin/printf %s ${shellQuote(encoded)} | /usr/bin/base64 -D > ${shellQuote(entry.filePath)}`);
+    commands.push(`/bin/chmod 644 ${shellQuote(entry.filePath)}`);
+  }
+  for (const filePath of [...new Set(pendingRemoves)]) {
+    commands.push(`/bin/rm -f ${shellQuote(filePath)}`);
+  }
 
   try {
     execFileSync('osascript', [
       '-e',
-      `do shell script ${JSON.stringify(command)} with administrator privileges`
+      `do shell script ${JSON.stringify(commands.join('\n'))} with administrator privileges`
     ], { stdio: 'ignore' });
   } catch (_) {
     throw new Error('Não foi possível concluir a operação. Tente novamente.');
-  }
-}
-
-function removeFileWithPrivilegeIfNeeded(filePath) {
-  try {
-    fs.rmSync(filePath, { force: true });
-    if (!fs.existsSync(filePath)) return;
-  } catch (_) {}
-
-  if (process.platform === 'darwin') {
-    try {
-      const command = `rm -f ${shellQuote(filePath)}`;
-      execFileSync('osascript', [
-        '-e',
-        `do shell script ${JSON.stringify(command)} with administrator privileges`
-      ], { stdio: 'ignore' });
-    } catch (_) {}
   }
 }
 
@@ -675,17 +684,19 @@ function saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, p
   } catch (error) {
     if (process.platform !== 'darwin') throw error;
   }
-  for (let i = 0; i < LICENSE_SHARD_FILES.length; i += 1) {
-    const shardPath = path.join(licenseDir, LICENSE_SHARD_FILES[i]);
-    writeFileWithPrivilegeIfNeeded(shardPath, `${parts[i]}\n`);
-    hideLicenseShardOnWindows(shardPath);
-  }
+  const shardWrites = LICENSE_SHARD_FILES.map((fileName, index) => ({
+    filePath: path.join(licenseDir, fileName),
+    content: `${parts[index]}\n`
+  }));
+  applyLicenseFileChanges({
+    writes: shardWrites,
+    // Remove os formatos antigos junto com os três fragmentos. No macOS, toda
+    // a operação usa uma única autorização administrativa do osascript.
+    removes: [getSharedLicensePath(), ...getLegacyLicensePaths()]
+  });
 
-  // Remove o arquivo antigo em texto simples para não manter duas licenças no computador.
-  removeFileWithPrivilegeIfNeeded(getSharedLicensePath());
-
-  for (const legacyPath of getLegacyLicensePaths()) {
-    try { fs.rmSync(legacyPath, { force: true }); } catch (_) {}
+  for (const entry of shardWrites) {
+    hideLicenseShardOnWindows(entry.filePath);
   }
 
   return licenseDir;
@@ -693,15 +704,13 @@ function saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, p
 
 function removeLocalLicense() {
   const licenseDir = getSharedLicenseDir();
-  removeFileWithPrivilegeIfNeeded(getSharedLicensePath());
-
-  for (const fileName of LICENSE_SHARD_FILES) {
-    removeFileWithPrivilegeIfNeeded(path.join(licenseDir, fileName));
-  }
-
-  for (const legacyPath of getLegacyLicensePaths()) {
-    try { fs.rmSync(legacyPath, { force: true }); } catch (_) {}
-  }
+  applyLicenseFileChanges({
+    removes: [
+      getSharedLicensePath(),
+      ...LICENSE_SHARD_FILES.map((fileName) => path.join(licenseDir, fileName)),
+      ...getLegacyLicensePaths()
+    ]
+  });
 
   return licenseDir;
 }
@@ -1124,7 +1133,7 @@ async function installDownloadedHookCenterUpdate() {
 
   if (process.platform === 'win32') {
     spawn(dest, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-    app.isQuiting = true;
+    appIsQuitting = true;
     app.quit();
     return { ok: true, action: 'installer-started' };
   }
@@ -3711,8 +3720,35 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   return { ok: true, license: nextLicense, result, state: getAppState() };
 });
 
+function prepareForAppQuit() {
+  appIsQuitting = true;
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+
+  for (const win of lyricsWindows.values()) {
+    try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
+  }
+  lyricsWindows.clear();
+  stopBridgeServers();
+  if (checkTimer) clearInterval(checkTimer);
+  if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
+  if (updateReminderTimer) clearInterval(updateReminderTimer);
+  checkTimer = null;
+  bridgeWatchTimer = null;
+  updateReminderTimer = null;
+}
+
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+
+  if (process.platform === 'darwin') {
+    // O macOS avisa antes de desligar ou reiniciar. Marcar a saída aqui evita
+    // que o handler da janela transforme o encerramento do sistema em "ocultar".
+    powerMonitor.on('shutdown', () => {
+      prepareForAppQuit();
+      app.quit();
+    });
+  }
 
   app.setLoginItemSettings({ openAtLogin: true });
   store.set('autoStart', true);
@@ -3755,13 +3791,6 @@ app.on('activate', () => {
   showMainWindow();
 });
 
-app.on('window-all-closed', (event) => {
-  event.preventDefault();
-});
-
 app.on('before-quit', () => {
-  for (const win of lyricsWindows.values()) { try { if (win && !win.isDestroyed()) win.close(); } catch (_) {} }
-  stopBridgeServers();
-  if (checkTimer) clearInterval(checkTimer);
-  if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
+  prepareForAppQuit();
 });
