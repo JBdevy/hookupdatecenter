@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '3.0.6-auto-transport-multiloop-v97'
+  const VERSION = '3.0.8-auto-transport-multiloop-v98'
   const POLL_MS = 650
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -45,6 +45,7 @@
     markerSelectionClearedUntil: 0,
     selectedPremixSongId: '',
     queuedSongId: '',
+    queuedManualVisualId: '',
     optimisticQueueClearedUntil: 0,
     optimisticPlayingId: '',
     optimisticPlayingUntil: 0,
@@ -2491,6 +2492,15 @@
     const targetId = String(queuedId || '')
     if (!targetId || !getAutoBlocoEnabled(data) || !isPlaying(data)) return false
 
+    // O AT/BL esconde somente o alvo automatico da virada de bloco. Uma fila
+    // escolhida manualmente pelo usuario continua amarela, inclusive quando a
+    // musica clicada esta dentro do proximo bloco.
+    const localQueueActive = String(state.queuedSongId || '') === targetId
+    const manualQueue = localQueueActive
+      ? String(state.queuedManualVisualId || '') === targetId
+      : data?.queuedManual === true
+    if (manualQueue) return false
+
     const items = getPlaylistItems(data)
     if (!Array.isArray(items) || !items.length) return false
 
@@ -3635,11 +3645,15 @@
       const rcls = timeClass(type, item)
       const markedBlack = cls.split(/\s+/).some((name) => name === 'playing' || name === 'queuedYellow' || name === 'selectedBlue')
       const liveVisual = !markedBlack && cls.split(/\s+/).includes('liveExecutedItem')
-      const itemBaseColorStyle = itemColorStyle(item, type)
-      // No tema claro, a aba Músicas e repertórios sem blocos usam preto.
+      const directorPlaylistWithoutBlocks = !IS_MUSICIAN_MONITOR && type === 'playlist' && !playlistHasBlocks && !isBlockRow
+      const itemBaseColorStyle = directorPlaylistWithoutBlocks
+        ? ' style="color:#facc15!important"'
+        : itemColorStyle(item, type)
+      // Sem nenhum bloco, o Repertório do Diretor usa amarelo como cor padrão.
+      // No tema claro, as demais listas sem uma cor própria usam preto.
       // Em repertórios com blocos, nome e duração preservam a cor herdada do bloco.
       // Linhas tocando, em fila ou selecionadas continuam com texto preto.
-      const forceBlackInLightTheme = getAppTheme() === 'light' && (type !== 'playlist' || !playlistHasBlocks)
+      const forceBlackInLightTheme = getAppTheme() === 'light' && !directorPlaylistWithoutBlocks && (type !== 'playlist' || !playlistHasBlocks)
       const colorStyle = markedBlack
         ? ' style="color:#050505!important"'
         : liveVisual
@@ -3947,6 +3961,7 @@
     const id = getId(candidate.item)
     if (!id || currentQueuedId === id) return
     state.queuedSongId = id
+    state.queuedManualVisualId = ''
     state.optimisticQueueClearedUntil = 0
     const command = candidate.type === 'regions' ? 'queue_region_song' : 'queue_playlist_song'
     postCommand(command, {
@@ -3958,6 +3973,34 @@
     })
   }
 
+  function clearConsumedQueueVisualOnPlayingChange(playingId, data = state.snapshot) {
+    const queuedId = String(state.queuedSongId || data?.queuedSongId || data?.queueSongId || '')
+    if (!queuedId || !playingId) return false
+
+    const queuedItem = getSongItemById(queuedId, data)
+    const queuedStart = firstFiniteNumber([
+      queuedItem?.startPos, queuedItem?.start_pos, queuedItem?.pos,
+      data?.queuedStartPos, data?.queueStartPos,
+    ])
+    const queuedEnd = firstFiniteNumber([
+      queuedItem?.endPos, queuedItem?.end_pos,
+      data?.queuedEndPos, data?.queueEndPos,
+    ])
+    const playingStart = firstFiniteNumber([data?.currentSongStart, data?.playbackStartPos, data?.songStartPos])
+    const playingEnd = firstFiniteNumber([data?.currentSongEnd, data?.playbackEndPos, data?.songEndPos])
+    const sameBounds = queuedStart !== null && queuedEnd !== null && playingStart !== null && playingEnd !== null
+      && Math.abs(queuedStart - playingStart) <= 0.002
+      && Math.abs(queuedEnd - playingEnd) <= 0.002
+    if (queuedId !== String(playingId) && !sameBounds) return false
+
+    // A extensao ja consumiu a fila real. Limpa imediatamente o cache visual
+    // para o app nao reapresentar a propria musica como fila entre snapshots.
+    state.queuedSongId = ''
+    state.queuedManualVisualId = ''
+    state.optimisticQueueClearedUntil = now() + 1500
+    return true
+  }
+
   function syncAutoplayQueueOnPlayingChange() {
     const playingId = getPlayingId()
     if (!playingId || !isPlaying()) {
@@ -3966,6 +4009,7 @@
     }
     if (state.lastAutoplayPlayingId === playingId) return
     state.lastAutoplayPlayingId = playingId
+    clearConsumedQueueVisualOnPlayingChange(playingId, state.snapshot)
     focusOpenTabletTransportPanel(playingId, resolveSongTabById(playingId), 'playing')
 
     // Quando a musica da fila assume a reproducao, Parts volta automaticamente
@@ -6148,7 +6192,7 @@
       syncMainControlButtonsDom()
       syncTabletMultiLoopBypassDom()
       syncMixerRowsDom()
-      if (!forceRender && (transportTouchId !== null || androidTabletScrollList)) {
+      if (!forceRender && transportTouchId !== null) {
         syncPlaybackProgressDom()
         syncTimerDom()
         return
@@ -7007,10 +7051,12 @@
         }
         if (getQueuedId() === id) {
           state.queuedSongId = ''
+          state.queuedManualVisualId = ''
           state.optimisticQueueClearedUntil = now() + 5000
           postCommand('clear_queue', { ...childPayload, clearQueue: true, clearQueuedSong: true })
         } else {
           state.queuedSongId = id
+          state.queuedManualVisualId = id
           state.optimisticQueueClearedUntil = 0
           focusPartsSongSource('queued')
           postCommand('queue_region_song', { ...childPayload, queued: true, queueExactPosition: true })
@@ -7088,6 +7134,7 @@
         if (getPlayingId() === id || itemFamilyContainsPlayingSong(selectedItem)) {
           if (getQueuedId() === id) {
             state.queuedSongId = ''
+            state.queuedManualVisualId = ''
             state.optimisticQueueClearedUntil = now() + 5000
             postCommand('clear_queue', selectedPayload(id, 'playlist'))
           }
@@ -7098,6 +7145,7 @@
         }
         if (getQueuedId() === id) {
           state.queuedSongId = ''
+          state.queuedManualVisualId = ''
           state.optimisticQueueClearedUntil = now() + 5000
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
@@ -7106,6 +7154,7 @@
           return
         }
         state.queuedSongId = id
+        state.queuedManualVisualId = id
         state.optimisticQueueClearedUntil = 0
         focusPartsSongSource('queued')
         focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
@@ -7147,6 +7196,7 @@
         if (getPlayingId() === id || itemFamilyContainsPlayingSong(selectedItem)) {
           if (getQueuedId() === id) {
             state.queuedSongId = ''
+            state.queuedManualVisualId = ''
             state.optimisticQueueClearedUntil = now() + 5000
             postCommand('clear_queue', selectedPayload(id, 'regions'))
           }
@@ -7157,6 +7207,7 @@
         }
         if (getQueuedId() === id) {
           state.queuedSongId = ''
+          state.queuedManualVisualId = ''
           state.optimisticQueueClearedUntil = now() + 5000
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
@@ -7165,6 +7216,7 @@
           return
         }
         state.queuedSongId = id
+        state.queuedManualVisualId = id
         state.optimisticQueueClearedUntil = 0
         focusPartsSongSource('queued')
         focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
@@ -9119,36 +9171,6 @@
     applyCountdownTarget(readCountdownInputs(), { render: false })
   }
 
-  var androidTabletScrollList = null
-  var androidTabletScrollX = 0
-  function handleAndroidTabletScrollStart(event) {
-    var platform = document.documentElement.dataset.directorPlatform
-    if ((platform !== 'android' && platform !== 'ios') || document.documentElement.dataset.directorDevice !== 'tablet' || window.innerHeight <= window.innerWidth) return
-    var touch = event.touches && event.touches[0]
-    var target = event.target
-    var list = target && target.closest ? target.closest('.listBox') : null
-    if (!touch || !list || !list.closest('.container') || !list.closest('.contentPanel')) return
-    androidTabletScrollList = list
-    androidTabletScrollX = Number(touch.clientX) || 0
-  }
-
-  function handleAndroidTabletScrollMove(event) {
-    if (!androidTabletScrollList) return
-    var touch = event.touches && event.touches[0]
-    if (!touch) return
-    var x = Number(touch.clientX) || 0
-    var delta = x - androidTabletScrollX
-    if (Math.abs(delta) < 0.5) return
-    androidTabletScrollList.scrollTop += delta
-    androidTabletScrollX = x
-    state.ignoreTapUntil = now() + 200
-    event.preventDefault()
-  }
-
-  function handleAndroidTabletScrollEnd() {
-    androidTabletScrollList = null
-  }
-
   const HASH_DRAWER_DOUBLE_TAP_MS = 360
   const HASH_DRAWER_MOVE_TOLERANCE_PX = 14
   let hashDrawerPointerId = null
@@ -9247,10 +9269,6 @@
     document.addEventListener('touchstart', handleHashParentTouchStart, { passive: true })
     document.addEventListener('touchmove', handleHashParentTouchMove, { passive: true })
     document.addEventListener('touchend', handleHashParentDoubleTouch, { passive: false })
-    document.addEventListener('touchstart', handleAndroidTabletScrollStart, { passive: true })
-    document.addEventListener('touchmove', handleAndroidTabletScrollMove, { passive: false })
-    document.addEventListener('touchend', handleAndroidTabletScrollEnd, { passive: true })
-    document.addEventListener('touchcancel', handleAndroidTabletScrollEnd, { passive: true })
     document.addEventListener('pointerdown', handleAuthFieldPointerDown, true)
         document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
     document.addEventListener('focusin', handleTimerCountdownFocus, true)

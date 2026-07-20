@@ -13,7 +13,7 @@ button, input { font: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 28px 18px;
+  padding: max(28px, env(safe-area-inset-top, 0px)) max(18px, env(safe-area-inset-right, 0px)) max(28px, env(safe-area-inset-bottom, 0px)) max(18px, env(safe-area-inset-left, 0px));
   background: radial-gradient(circle at top, rgba(249,195,42,.14), transparent 38%), #0b1118;
 }
 .vshook-shell-card {
@@ -87,21 +87,20 @@ html[data-director-device="tablet"] #app {
 
   html[data-director-device="tablet"] body {
     position:fixed;
-    left:0;
-    top:0;
-    width:var(--tablet-screen-width, 100vh);
-    height:var(--tablet-screen-height, 100vw);
+    inset:0;
+    width:100%;
+    height:100%;
     min-height:0;
     overflow:hidden;
-    transform-origin:top left;
-    transform:rotate(90deg) translateY(-100%);
+    transform:none;
   }
 
   html[data-director-device="tablet"] #app {
-    width:var(--tablet-ui-width, 100%);
-    height:var(--tablet-ui-height, 100%);
+    width:100%;
+    height:100%;
     min-height:0;
     overflow:hidden;
+    transform:none;
   }
 
   html[data-director-device="tablet"] .vshook-shell {
@@ -109,6 +108,47 @@ html[data-director-device="tablet"] #app {
     height:100%;
     min-height:100%;
   }
+}
+
+.vshook-tablet-orientation-overlay[hidden] { display:none !important; }
+.vshook-tablet-orientation-overlay {
+  position:fixed;
+  inset:0;
+  z-index:2147483647;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:max(18px,env(safe-area-inset-top,0px)) max(18px,env(safe-area-inset-right,0px)) max(18px,env(safe-area-inset-bottom,0px)) max(18px,env(safe-area-inset-left,0px));
+  overflow-y:auto;
+  background:radial-gradient(circle at top,rgba(249,195,42,.16),transparent 42%),#0b1118;
+}
+.vshook-tablet-orientation-card {
+  width:min(460px,100%);
+  margin:auto;
+  padding:26px 22px;
+  border:1px solid rgba(250,204,21,.48);
+  border-radius:24px;
+  background:rgba(13,17,24,.98);
+  text-align:center;
+  box-shadow:0 24px 90px rgba(0,0,0,.52);
+}
+html[data-director-device="tablet"].directorTabletOrientationBlocked,
+html[data-director-device="tablet"].directorTabletOrientationBlocked body {
+  width:100%;
+  height:100%;
+  overflow:hidden !important;
+}
+html[data-director-device="tablet"].directorTabletOrientationBlocked body {
+  position:fixed;
+  inset:0;
+  transform:none !important;
+}
+html[data-director-device="tablet"].directorTabletOrientationBlocked #app {
+  width:100%;
+  height:100%;
+  visibility:hidden;
+  pointer-events:none;
+  transform:none !important;
 }
 
 /* Recados aberto dentro do Diretor Tablet volta ao eixo vertical do aparelho. */
@@ -207,4 +247,48 @@ html[data-director-device="tablet"].directorLoginPortraitMode #app {
   min-height:0;
   overflow:hidden;
   transform:none;
+}
+
+/* Entrada responsiva do modo Tablet em celulares usados na horizontal. */
+html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell,
+html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell {
+  height:100%;
+  min-height:100%;
+  align-items:flex-start;
+  overflow-x:hidden;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+}
+html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell-card,
+html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell-card {
+  margin:auto;
+}
+
+@media (orientation:landscape) and (max-height:560px) {
+  html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell,
+  html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell {
+    padding:max(6px,env(safe-area-inset-top,0px)) max(10px,env(safe-area-inset-right,0px)) max(6px,env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));
+  }
+  html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell-card,
+  html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell-card {
+    width:min(680px,100%);
+    padding:10px 16px;
+    border-radius:16px;
+  }
+  .vshook-project-shell-card .vshook-shell-logo { width:36px; height:36px; border-radius:10px; margin-bottom:3px; }
+  .vshook-project-shell-card .vshook-shell-title { font-size:21px; }
+  .vshook-project-shell-card .vshook-shell-subtitle { margin:3px 0 7px; font-size:13px; line-height:1.25; }
+  .vshook-project-shell-card .vshook-project-list {
+    gap:6px;
+    margin-top:7px;
+    max-height:calc(100vh - 205px);
+    max-height:clamp(74px,calc(100dvh - 205px),210px);
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+  .vshook-project-shell-card .vshook-project-button { min-height:38px; padding:8px 12px; border-radius:12px; font-size:14px; }
+  .vshook-project-shell-card .vshook-shell-status { margin-top:7px; font-size:12px; line-height:1.25; }
+  .vshook-project-shell-card .vshook-project-actions { gap:8px; margin-top:7px; }
+  .vshook-project-shell-card .vshook-project-actions button { min-height:38px; padding:7px 12px; border-radius:12px; font-size:14px; }
 }
