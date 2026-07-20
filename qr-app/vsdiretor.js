@@ -7317,7 +7317,7 @@
           state.regionSelectionClearedUntil = now() + 5000
           postCommand('select_playlist_song', selectedPayload(nextSelectionId, 'playlist'))
         }
-      } else if (!normalStopEnabled && stoppedId) {
+      } else if (stoppedId) {
         // Nao ha outra musica na fila: preserva a selecao da musica que parou.
         // Havendo queuedId ou AutoBloco, o bloco acima continua com a logica antiga.
         if (stoppedTab === 'regions') {
@@ -7325,13 +7325,11 @@
           state.selectedPlaylistSongId = ''
           state.regionSelectionClearedUntil = 0
           state.playlistSelectionClearedUntil = now() + 5000
-          postCommand('select_region', selectedPayload(stoppedId, 'regions'))
         } else {
           state.selectedPlaylistSongId = stoppedId
           state.selectedRegionId = ''
           state.playlistSelectionClearedUntil = 0
           state.regionSelectionClearedUntil = now() + 5000
-          postCommand('select_playlist_song', selectedPayload(stoppedId, 'playlist'))
         }
       }
       state.queuedSongId = ''
