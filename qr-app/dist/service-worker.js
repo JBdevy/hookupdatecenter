@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-3.0.6-auto-transport-multiloop-v97';
+const CACHE_NAME = 'vshook-mobile-3.0.9-tablet-runtime-orientation-v104';
 const APP_ASSETS = [
   './',
   './index.html',

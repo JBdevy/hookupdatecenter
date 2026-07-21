@@ -5,7 +5,7 @@ const VSHOOK_SAVED_PROBE_TIMEOUT_MS = 650
 const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '3-0-2-atbl-boundary-visual-v91'
+const VSHOOK_ASSET_VERSION = '3-0-8-tablet-runtime-orientation-v103'
 let vshookDiscoveredProjects = []
 let vshookBridgeBrowserMode = false
 let vshookDiscoveryRunId = 0
@@ -13,6 +13,8 @@ let vshookProjectsRefreshRunId = 0
 let vshookDirectorDeviceMode = 'phone'
 let vshookDirectorTabletStableViewport = null
 let vshookDirectorTabletViewportRestoreTimer = 0
+let vshookDirectorTabletLandscapeContinuation = null
+let vshookDirectorAppActive = false
 
 function normalizeDirectorDeviceMode(value) {
   return String(value || '').toLowerCase() === 'tablet' ? 'tablet' : 'phone'
@@ -26,6 +28,80 @@ function applyDirectorDeviceMode(value) {
     localStorage.setItem('vshook_director_device_mode', vshookDirectorDeviceMode)
   } catch (error) {}
   updateDirectorTabletWebViewport()
+  updateDirectorTabletOrientationGuard()
+}
+
+function isDirectorTabletLandscape() {
+  if (window.matchMedia) return window.matchMedia('(orientation: landscape)').matches
+  return Number(window.innerWidth || 0) > Number(window.innerHeight || 0)
+}
+
+function continueDirectorTabletAfterRotation() {
+  if (!vshookDirectorTabletLandscapeContinuation || !isDirectorTabletLandscape()) return
+  const continuation = vshookDirectorTabletLandscapeContinuation
+  vshookDirectorTabletLandscapeContinuation = null
+  continuation()
+}
+
+function renderDirectorTabletOrientationRequired() {
+  setShell(`
+    ${getLogoHtml()}
+    <h1 class="vshook-shell-title">Desbloqueie a rotação</h1>
+    <p class="vshook-shell-subtitle">Para usar o modo Tablet, desbloqueie a rotação do dispositivo e vire a tela para a posição horizontal.</p>
+    <p class="vshook-shell-status">No navegador, o VS Hook continua automaticamente assim que detectar a tela horizontal.</p>
+    <button class="vshook-mode-button" id="retryTabletOrientationBtn">Já desbloqueei</button>
+    <button class="vshook-back-button" id="backTabletOrientationBtn">Voltar</button>
+  `)
+
+  document.getElementById('retryTabletOrientationBtn')?.addEventListener('click', continueDirectorTabletAfterRotation)
+  document.getElementById('backTabletOrientationBtn')?.addEventListener('click', () => {
+    vshookDirectorTabletLandscapeContinuation = null
+    applyDirectorDeviceMode('phone')
+    renderDirectorDeviceSelection()
+  })
+}
+
+function requireDirectorTabletLandscape(continuation) {
+  applyDirectorDeviceMode('tablet')
+  if (isDirectorTabletLandscape()) {
+    vshookDirectorTabletLandscapeContinuation = null
+    continuation?.()
+    return true
+  }
+  vshookDirectorTabletLandscapeContinuation = continuation
+  renderDirectorTabletOrientationRequired()
+  return false
+}
+
+function ensureDirectorTabletOrientationOverlay() {
+  let overlay = document.getElementById('vshookTabletOrientationOverlay')
+  if (overlay) return overlay
+  overlay = document.createElement('div')
+  overlay.id = 'vshookTabletOrientationOverlay'
+  overlay.className = 'vshook-tablet-orientation-overlay'
+  overlay.hidden = true
+  overlay.innerHTML = `
+    <div class="vshook-tablet-orientation-card" role="status" aria-live="polite">
+      ${getLogoHtml()}
+      <h1 class="vshook-shell-title">Vire para horizontal</h1>
+      <p class="vshook-shell-subtitle">O modo Tablet continua aberto. Desbloqueie a rotação e vire o dispositivo novamente para a posição horizontal.</p>
+      <button class="vshook-mode-button" id="retryTabletRuntimeOrientationBtn">Já virei</button>
+    </div>
+  `
+  document.body.appendChild(overlay)
+  document.getElementById('retryTabletRuntimeOrientationBtn')?.addEventListener('click', updateDirectorTabletOrientationGuard)
+  return overlay
+}
+
+function updateDirectorTabletOrientationGuard() {
+  const blocked = vshookDirectorAppActive
+    && vshookDirectorDeviceMode === 'tablet'
+    && !isDirectorTabletLandscape()
+  document.documentElement.classList.toggle('directorTabletOrientationBlocked', blocked)
+  const current = document.getElementById('vshookTabletOrientationOverlay')
+  if (!blocked && !current) return
+  const overlay = current || ensureDirectorTabletOrientationOverlay()
+  overlay.hidden = !blocked
 }
 
 function updateDirectorTabletWebViewport() {
@@ -35,7 +111,7 @@ function updateDirectorTabletWebViewport() {
     || root.classList.contains('directorTabletKeyboardOpen')
     || root.classList.contains('directorTabletViewportRestoring')) return
   if (vshookDirectorDeviceMode !== 'tablet') {
-    ;['--tablet-screen-width', '--tablet-screen-height', '--tablet-ui-width', '--tablet-ui-height', '--tablet-ui-scale'].forEach((name) => root.style.removeProperty(name))
+    ;['--tablet-screen-width', '--tablet-screen-height', '--tablet-ui-width', '--tablet-ui-height', '--tablet-ui-scale', '--tablet-safe-top', '--tablet-safe-right', '--tablet-safe-bottom', '--tablet-safe-left'].forEach((name) => root.style.removeProperty(name))
     return
   }
   const portrait = window.matchMedia?.('(orientation: portrait)')?.matches
@@ -54,11 +130,34 @@ function applyDirectorTabletWebViewport(viewport) {
   const logicalWidth = portrait ? visibleHeight : visibleWidth
   const logicalHeight = portrait ? visibleWidth : visibleHeight
   const scale = Math.max(0.35, Math.min(1, logicalWidth / 900, logicalHeight / 500))
+  const safeArea = readDirectorSafeAreaInsets()
   root.style.setProperty('--tablet-screen-width', `${logicalWidth}px`)
   root.style.setProperty('--tablet-screen-height', `${logicalHeight}px`)
   root.style.setProperty('--tablet-ui-width', `${Math.ceil(logicalWidth / scale)}px`)
   root.style.setProperty('--tablet-ui-height', `${Math.ceil(logicalHeight / scale)}px`)
   root.style.setProperty('--tablet-ui-scale', String(scale))
+  root.style.setProperty('--tablet-safe-top', `${safeArea.top / scale}px`)
+  root.style.setProperty('--tablet-safe-right', `${safeArea.right / scale}px`)
+  root.style.setProperty('--tablet-safe-bottom', `${safeArea.bottom / scale}px`)
+  root.style.setProperty('--tablet-safe-left', `${safeArea.left / scale}px`)
+}
+
+function readDirectorSafeAreaInsets() {
+  let probe = document.getElementById('vshookSafeAreaProbe')
+  if (!probe) {
+    probe = document.createElement('div')
+    probe.id = 'vshookSafeAreaProbe'
+    probe.setAttribute('aria-hidden', 'true')
+    probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;inset:0 auto auto 0;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)'
+    document.body.appendChild(probe)
+  }
+  const style = window.getComputedStyle(probe)
+  return {
+    top: Number.parseFloat(style.paddingTop) || 0,
+    right: Number.parseFloat(style.paddingRight) || 0,
+    bottom: Number.parseFloat(style.paddingBottom) || 0,
+    left: Number.parseFloat(style.paddingLeft) || 0,
+  }
 }
 
 function lockDirectorTabletPageScroll() {
@@ -123,6 +222,17 @@ window.setDirectorTabletKeyboardOpen = setDirectorTabletKeyboardOpen
 
 window.addEventListener('resize', updateDirectorTabletWebViewport)
 window.visualViewport?.addEventListener?.('resize', updateDirectorTabletWebViewport)
+window.addEventListener('resize', continueDirectorTabletAfterRotation)
+window.visualViewport?.addEventListener?.('resize', continueDirectorTabletAfterRotation)
+window.addEventListener('resize', updateDirectorTabletOrientationGuard)
+window.visualViewport?.addEventListener?.('resize', updateDirectorTabletOrientationGuard)
+window.addEventListener('orientationchange', () => {
+  updateDirectorTabletOrientationGuard()
+  window.setTimeout(() => {
+    continueDirectorTabletAfterRotation()
+    updateDirectorTabletOrientationGuard()
+  }, 80)
+})
 
 function vshookEscape(value) {
   return String(value ?? '')
@@ -153,12 +263,15 @@ function isVSHookRealProject(project) {
   return true
 }
 
-function setShell(html) {
+function setShell(html, cardClass = '') {
   // A escolha de dispositivo/projeto ainda faz parte da entrada. No tablet ela
   // permanece no eixo natural do aparelho; a interface horizontal começa só
   // depois que um projeto é aberto.
+  vshookDirectorAppActive = false
   document.documentElement.classList.toggle('directorShellPortraitMode', vshookDirectorDeviceMode === 'tablet')
-  appRoot.innerHTML = `<div class="vshook-shell"><div class="vshook-shell-card">${html}</div></div>`
+  updateDirectorTabletOrientationGuard()
+  const safeCardClass = String(cardClass || '').replace(/[^a-zA-Z0-9_-]/g, '')
+  appRoot.innerHTML = `<div class="vshook-shell"><div class="vshook-shell-card${safeCardClass ? ` ${safeCardClass}` : ''}">${html}</div></div>`
 }
 
 function getLogoHtml() {
@@ -220,7 +333,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
     </div>
-    <div class="vshook-app-version">Versão 3.0.6 app</div>
+    <div class="vshook-app-version">Versão 3.0.9 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {
@@ -269,8 +382,7 @@ function renderDirectorDeviceSelection() {
     renderProjects(vshookDiscoveredProjects)
   })
   document.getElementById('chooseDirectorTabletBtn')?.addEventListener('click', () => {
-    applyDirectorDeviceMode('tablet')
-    renderProjects(vshookDiscoveredProjects)
+    requireDirectorTabletLandscape(() => renderProjects(vshookDiscoveredProjects))
   })
   document.getElementById('backModeBtn')?.addEventListener('click', () => {
     applyDirectorDeviceMode('phone')
@@ -324,13 +436,18 @@ function renderProjects(projects, options = {}) {
       <button class="vshook-back-button" id="backModeBtn">Voltar</button>
       <button class="vshook-secondary-button" id="refreshProjectsBtn" ${loading ? 'disabled' : ''}>${loading ? 'Atualizando...' : 'Atualizar'}</button>
     </div>
-  `)
+  `, 'vshook-project-shell-card')
 
   document.querySelectorAll('[data-project-index]').forEach((button) => {
     button.addEventListener('click', () => {
       const index = Number(button.getAttribute('data-project-index'))
       const selected = list[index]
-      if (selected) enterApp(selected, 'director')
+      if (!selected) return
+      if (vshookDirectorDeviceMode === 'tablet') {
+        requireDirectorTabletLandscape(() => enterApp(selected, 'director'))
+      } else {
+        enterApp(selected, 'director')
+      }
     })
   })
 
@@ -363,12 +480,15 @@ async function enterApp(project, mode, options = {}) {
   } catch (error) {}
 
   if (mode === 'director') {
+    vshookDirectorAppActive = true
     document.documentElement.classList.remove('directorShellPortraitMode')
     applyDirectorDeviceMode(vshookDirectorDeviceMode)
   } else {
+    vshookDirectorAppActive = false
     document.documentElement.classList.remove('directorShellPortraitMode')
     document.documentElement.removeAttribute('data-director-device')
     document.body?.classList.remove('vshook-director-tablet')
+    updateDirectorTabletOrientationGuard()
   }
 
   const tabIndex = Number(project.projectTabIndex)

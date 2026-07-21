@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '3.0.8-auto-transport-multiloop-v98'
+  const VERSION = '3.0.9-auto-transport-multiloop-v99'
   const POLL_MS = 650
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -179,6 +179,7 @@
     partsTakeoverSongId: '',
     partsTakeoverTab: '',
     partsTakeoverPreviousPlayingId: '',
+    partsLastPlayingId: '',
     showTransportSeekModal: readLocal('vshook_director_grid_open', '0') === '1',
     tabletTransportOpening: false,
     tabletPlaylistPendingId: '',
@@ -1409,8 +1410,25 @@
   function getEffectivePartsSongSource(data = state.snapshot) {
     const preferred = state.partsMarkerSongSource === 'queued' ? 'queued' : state.partsMarkerSongSource === 'selected' ? 'selected' : 'playing'
     const preferredTarget = getPartsSongTarget(preferred, data)
+    if (preferred === 'selected' && preferredTarget.available && isPlaying(data)) {
+      const playingTarget = getPartsSongTarget('playing', data)
+      const sameId = playingTarget.available && String(playingTarget.id || '') === String(preferredTarget.id || '')
+      const sameBounds = playingTarget.available && Number.isFinite(Number(playingTarget.start)) && Number.isFinite(Number(playingTarget.end))
+        && Math.abs(Number(playingTarget.start) - Number(preferredTarget.start)) <= 0.002
+        && Math.abs(Number(playingTarget.end) - Number(preferredTarget.end)) <= 0.002
+      // A musica selecionada acabou de receber Play. A origem efetiva da Parts
+      // passa a ser "tocando" imediatamente para o botao da musica atual ficar
+      // ativo, sem depender de um toque posterior para atualizar o visual.
+      if (sameId || sameBounds) return 'playing'
+    }
     if (preferredTarget.available) return preferred
-    for (const fallback of ['selected', 'queued', 'playing']) {
+    // Quando a fila acabou de assumir o transporte, o snapshot pode ja ter
+    // limpado queuedSongId antes de o estado visual trocar de fonte. Nesse
+    // intervalo, prioriza a musica realmente tocando em vez da selecao antiga.
+    const fallbacks = preferred === 'queued' && isPlaying(data)
+      ? ['playing', 'selected', 'queued']
+      : ['selected', 'queued', 'playing']
+    for (const fallback of fallbacks) {
       if (fallback !== preferred && getPartsSongTarget(fallback, data).available) return fallback
     }
     return preferred
@@ -3398,6 +3416,7 @@
         ensureDirectorSessionClaimed()
         syncNativeFamilyDrawers()
         syncQueueWhenQueuedSongStarts()
+        syncPartsSourceOnPlayingChange(state.snapshot)
         syncAutoplayQueueOnPlayingChange()
         syncPartsTakeoverFromSnapshot(state.snapshot)
         syncPartsMarkerStateFromSnapshot(state.snapshot)
@@ -4001,6 +4020,24 @@
     return true
   }
 
+  function syncPartsSourceOnPlayingChange(data = state.snapshot) {
+    const playingId = String(getPlayingId(data) || '')
+    if (!playingId || !isPlaying(data)) {
+      state.partsLastPlayingId = ''
+      return false
+    }
+    if (state.partsLastPlayingId === playingId) return false
+
+    state.partsLastPlayingId = playingId
+    state.partsMarkerSongSource = 'playing'
+    state.partsLocalSelectedMarkerId = ''
+    state.partsArmedMarkerId = ''
+    state.partsArmedMarkerUntil = 0
+    clearPartsArmedOwner()
+    if (isPartsInterfaceVisible()) scheduleRender(true)
+    return true
+  }
+
   function syncAutoplayQueueOnPlayingChange() {
     const playingId = getPlayingId()
     if (!playingId || !isPlaying()) {
@@ -4014,7 +4051,7 @@
 
     // Quando a musica da fila assume a reproducao, Parts volta automaticamente
     // para o botao da musica atual e passa a mostrar os markers dela.
-    if (state.showMarkersOverlay || state.activeTab === 'markers') {
+    if (state.showMarkersOverlay || state.activeTab === 'markers' || state.tabletPartsSplit) {
       state.partsMarkerSongSource = 'playing'
       state.partsLocalSelectedMarkerId = ''
       state.partsArmedMarkerId = ''
@@ -6525,6 +6562,34 @@
     }
   }
 
+  function getPartsContentRenderSignature(data = state.snapshot || {}) {
+    if (!isPartsInterfaceVisible()) return ''
+    const source = getEffectivePartsSongSource(data)
+    const target = getPartsSongTarget(source, data)
+    const rows = partsTargetIsParent(data) ? [] : getPartsMarkers(data)
+    return JSON.stringify({
+      transportPlaying: isPlaying(data),
+      playingId: getPlayingId(data),
+      queuedId: getQueuedId(data),
+      source,
+      target: [target?.id || '', target?.name || '', target?.start ?? '', target?.end ?? '', target?.available === true],
+      parent: partsTargetIsParent(data),
+      selectedMarker: state.partsLocalSelectedMarkerId || '',
+      armedMarker: state.partsArmedMarkerId || '',
+      takeover: state.partsTakeoverSongId || '',
+      rows: rows.map((item) => [
+        item?.id ?? item?.sourceNumber ?? item?.source_number ?? item?.number ?? '',
+        item?.partsDisplayName ?? item?.name ?? '',
+        item?.pos ?? item?.position ?? item?.markerPos ?? item?.startPos ?? item?.start_pos ?? '',
+        item?.endPos ?? item?.end_pos ?? item?.rgnend ?? '',
+        item?.color ?? item?.colorHex ?? item?.color_hex ?? '',
+        item?.partsPrefix ?? '',
+        item?.partsSongStart === true,
+        item?.partsSongSource ?? '',
+      ]),
+    })
+  }
+
   function compactRenderState() {
     const d = state.snapshot || {}
     const partsOpen = state.showMarkersOverlay
@@ -6535,6 +6600,7 @@
       tabletTunerSplit: state.tabletTunerSplit,
       playlist: d.activePlaylistId,
       playing: getPlayingId(d),
+      transportPlaying: isPlaying(d),
       fadeoutActive: state.tabletFadeoutRuntimeActive,
       queued: getQueuedId(d),
       playingName: getNowPlayingName(d),
@@ -6546,6 +6612,7 @@
       partsEffectiveSource: getEffectivePartsSongSource(d),
       partsPlayingTarget: getPartsSongTarget('playing', d).id,
       partsQueuedTarget: getPartsSongTarget('queued', d).id,
+      partsContent: getPartsContentRenderSignature(d),
       loopActive: getLoopActive(d),
       loopRange: [getLoopRange(d).start, getLoopRange(d).end],
       loopName: getLoopDisplayName(d),
@@ -7357,7 +7424,12 @@
         state.optimisticPlayingId = getImmediateFamilyPlayingId(id)
         state.optimisticPlayingUntil = now() + 4000
         state.lastAutoplayPlayingId = state.optimisticPlayingId
+        state.partsLastPlayingId = state.optimisticPlayingId
       }
+      state.partsMarkerSongSource = 'playing'
+      state.partsLocalSelectedMarkerId = ''
+      state.partsArmedMarkerId = ''
+      state.partsArmedMarkerUntil = 0
       setPendingTransportPlaying(true)
       postCommand('director_play_no_seek', { activeTab: state.activeTab, page: state.activeTab, targetId: id || '', songId: id || '', selectedRegionId: id || '', selectedPlaylistSongId: id || '', noSeek: true, preserveCursor: true, transportOnly: true })
       prepareAutoplayQueue()

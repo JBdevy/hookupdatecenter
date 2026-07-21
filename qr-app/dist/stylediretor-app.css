@@ -31,6 +31,13 @@ button, input {
   box-sizing: border-box;
   overflow: hidden;
 }
+html[data-director-device="phone"] .app:not(.musicianMonitor) {
+  padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
+  height: 100%;
+  min-height: 0;
+}
 .container {
   padding: 10px;
   border-width: 2px;
@@ -7516,13 +7523,13 @@ button,
 .premixFullScreen{position:fixed;inset:0;z-index:10040;width:100%;height:var(--app-vh,100dvh);box-sizing:border-box;padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));background:#05070b;overflow:hidden}
 
 /* Diretor Tablet: barra lateral e representação gráfica fixa no topo. */
-html[data-director-device="tablet"] .app:not(.musicianMonitor){position:relative;padding-left:76px!important;padding-right:76px!important;display:flex!important;flex-direction:column!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor){position:relative;padding:max(8px,var(--tablet-safe-top,env(safe-area-inset-top,0px))) calc(76px + var(--tablet-safe-right,env(safe-area-inset-right,0px))) max(8px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px))) calc(76px + var(--tablet-safe-left,env(safe-area-inset-left,0px)))!important;display:flex!important;flex-direction:column!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container{width:100%!important;height:auto!important;min-height:0!important;flex:1 1 auto!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.contentPanel,
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.tabletMainSplit{flex:1 1 0!important;min-height:0!important;height:auto!important;overflow:hidden!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .contentPanel>.listBox{flex:1 1 0!important;min-height:0!important;height:auto!important}
-.tabletDirectorSidebar{position:absolute;z-index:10070;left:8px;top:8px;bottom:8px;width:60px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 10px 28px rgba(0,0,0,.34);display:flex;flex-direction:column;align-items:center;padding:8px 6px;gap:6px}
-.tabletDirectorSidebarRight{left:auto;right:8px}
+.tabletDirectorSidebar{position:absolute;z-index:10070;left:max(8px,var(--tablet-safe-left,env(safe-area-inset-left,0px)));top:max(8px,var(--tablet-safe-top,env(safe-area-inset-top,0px)));bottom:max(8px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px)));width:60px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 10px 28px rgba(0,0,0,.34);display:flex;flex-direction:column;align-items:center;padding:8px 6px;gap:6px}
+.tabletDirectorSidebarRight{left:auto;right:max(8px,var(--tablet-safe-right,env(safe-area-inset-right,0px)))}
 .tabletDirectorSidebarSingle{padding:4px 6px;gap:3px}
 .tabletDirectorSidebarSingle .tabletSidebarButton{width:46px;height:34px;min-height:34px}
 .tabletDirectorSidebarSingle .tabletSidebarVerticalMedium{flex-basis:60px;height:60px;min-height:60px;padding-top:4px;padding-bottom:4px;font-size:6.5px}
@@ -7635,7 +7642,7 @@ html[data-director-device="phone"] .tabletMultiLoopAutoLimitModal{width:min(92vw
 .tabletTopBarTuner,.tabletTopBarMixer,.tabletTopBarParts{background:#c90000;border-color:#ff2a2a;color:#fff}
 .tabletTopBarButtonActive{border-color:#4ade80!important;background:#22c55e!important;color:#fff!important;box-shadow:0 0 0 1px rgba(34,197,94,.24),0 0 12px rgba(34,197,94,.3)!important}
 .tabletTopBarButton:active{filter:brightness(1.18)}
-.tabletSearchScreen{position:absolute;z-index:10055;left:76px;right:76px;top:50px;bottom:0;display:flex;min-width:0;min-height:0;padding:8px;box-sizing:border-box;background:rgba(5,7,11,.98)}
+.tabletSearchScreen{position:absolute;z-index:10055;left:calc(76px + var(--tablet-safe-left,env(safe-area-inset-left,0px)));right:calc(76px + var(--tablet-safe-right,env(safe-area-inset-right,0px)));top:50px;bottom:0;display:flex;min-width:0;min-height:0;padding:8px;box-sizing:border-box;background:rgba(5,7,11,.98)}
 .tabletSearchPanel{display:flex;flex:1 1 auto;min-width:0;min-height:0;flex-direction:column;padding:12px;border:1px solid #475569;border-radius:12px;background:#0b1220;box-shadow:0 14px 32px rgba(0,0,0,.34)}
 .tabletSearchHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
 .tabletSearchTitle{color:#facc15;font-size:18px;font-weight:1000;letter-spacing:.08em}
@@ -7767,8 +7774,6 @@ html[data-director-device="tablet"] .tabletTunerUnifiedItem>.tabletTunerInlineCo
 html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn,html[data-director-device="tablet"] .tabletTunerInlineControls .tabletTunerZero{width:100%;height:36px;min-height:36px;padding:0;border:1px solid #475569;border-radius:7px;background:#172033;color:#facc15;font-weight:1000;line-height:1}
 html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn{font-size:17px}
 html[data-director-device="tablet"] .tabletTunerInlineControls .tabletTunerZero{font-size:11px;background:#111827;color:#f8fafc}
-@media (orientation:portrait){html[data-director-platform="android"][data-director-device="tablet"] .container .listBox,html[data-director-platform="android"][data-director-device="tablet"] .container .listBox .item,html[data-director-platform="android"][data-director-device="tablet"] .container .listBox [data-action="select-item"]{touch-action:none!important}}
-@media (orientation:portrait){html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox,html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox .item,html[data-director-platform="ios"][data-director-device="tablet"] .container .listBox [data-action="select-item"]{touch-action:none!important}}
 html[data-director-platform="ios"][data-director-device="tablet"] .container .contentPanel>.listBox{padding-bottom:76px!important;scroll-padding-bottom:76px!important;-webkit-overflow-scrolling:touch!important}
 html[data-director-device="tablet"] .tabletPartsControls{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important;margin-bottom:8px}
 html[data-director-device="tablet"] .tabletPartsListFrame{position:relative;flex:1 1 auto;min-height:0;padding:0 5px 5px;border-left:2px solid #7c3aed;border-right:2px solid #7c3aed;border-bottom:2px solid #7c3aed;border-radius:9px;display:flex;flex-direction:column;overflow:hidden;background:rgba(11,18,32,.42);box-shadow:0 6px 16px rgba(0,0,0,.3)}
