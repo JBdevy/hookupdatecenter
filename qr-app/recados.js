@@ -37,6 +37,26 @@ function simpleHash(str) {
   return n.toString(16).toUpperCase().padStart(8, '0')
 }
 
+function formatRecadosError(error, fallback) {
+  const message = String(error?.message || '').trim()
+  const normalized = message.toLocaleLowerCase('pt-BR')
+  if (error?.name === 'AbortError' || normalized.includes('abort')) {
+    return 'O ENVIO DEMOROU DEMAIS. VERIFIQUE A CONEXÃO E TENTE NOVAMENTE.'
+  }
+  if (
+    normalized.includes('failed to fetch') ||
+    normalized.includes('fetch failed') ||
+    normalized.includes('load failed') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('network request failed') ||
+    normalized.includes('internet connection appears to be offline')
+  ) {
+    return 'NÃO FOI POSSÍVEL CONECTAR AO VS HOOK. VERIFIQUE A REDE E TENTE NOVAMENTE.'
+  }
+  return String(message || fallback || 'NÃO FOI POSSÍVEL CONCLUIR A OPERAÇÃO.')
+    .toLocaleUpperCase('pt-BR')
+}
+
 function getNoticeHashFromState(data) {
   const candidates = [
     data?.recadosAuthHash,
@@ -54,6 +74,54 @@ function getNoticeHashFromState(data) {
 }
 
 const NOTICE_DURATION_MS = 20000
+const EMBEDDED_DIRECTOR_MODE = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('embedded') === 'director'
+  } catch (error) {
+    return false
+  }
+})()
+const DIRECTOR_RECADO_SESSION_KEY = 'vshook_director_recados_session_hash'
+
+function getDirectorAuthHashFromState(data) {
+  const candidates = [
+    data?.directorAuthHash,
+    data?.authHash,
+    data?.accessAuthHash,
+    data?.directorPasswordHash,
+    data?.appDirectorAuthHash,
+  ]
+  for (const value of candidates) {
+    const text = String(value || '').trim().toUpperCase()
+    if (text) return text
+  }
+  return ''
+}
+
+function readDirectorRecadoSessionHash() {
+  try {
+    return String(sessionStorage.getItem(DIRECTOR_RECADO_SESSION_KEY) || '').trim().toUpperCase()
+  } catch (error) {
+    return ''
+  }
+}
+
+function getRecadosRequestIdentity() {
+  if (EMBEDDED_DIRECTOR_MODE) {
+    return {
+      source: 'director',
+      sessionHash: String(state.directorSessionHash || '').trim().toUpperCase(),
+    }
+  }
+  return {
+    source: 'recados',
+    passwordHash: simpleHash(state.password || ''),
+  }
+}
+
+function withRecadosRequestIdentity(payload) {
+  return Object.assign({}, payload || {}, getRecadosRequestIdentity())
+}
 
 const state = {
   connected: false,
@@ -67,15 +135,90 @@ const state = {
   globalDraft: '',
   selectedSlot: 'global',
   templates: ['', '', ''],
+  templateImages: ['', '', ''],
   editingTemplate: false,
   status: '',
   sending: false,
-  noticeExpiresAt: 0,
+  noticeLocalDeadlineMs: 0,
   noticeId: '',
   noticeRemainingMs: 0,
+  noticeLocalStarted: false,
   pinned: false,
   lastView: '',
   editorFocused: false,
+  directorSessionHash: readDirectorRecadoSessionHash(),
+}
+
+function clampNoticeDuration(value, fallback = NOTICE_DURATION_MS) {
+  const duration = Number(value)
+  return Math.max(
+    0,
+    Math.min(
+      NOTICE_DURATION_MS,
+      Number.isFinite(duration) ? duration : fallback))
+}
+
+function beginLocalNoticeClock(pinned, durationMs = NOTICE_DURATION_MS) {
+  const duration = clampNoticeDuration(durationMs)
+  state.noticeLocalStarted = true
+  state.pinned = pinned === true
+  state.noticeRemainingMs = state.pinned ? duration : 0
+  state.noticeLocalDeadlineMs = state.pinned
+    ? 0
+    : Date.now() + duration
+}
+
+function clearLocalNoticeClock() {
+  state.noticeLocalDeadlineMs = 0
+  state.noticeRemainingMs = 0
+  state.noticeLocalStarted = false
+  state.noticeId = ''
+  state.pinned = false
+}
+
+function getRemoteInitialRemainingMs(notice, serverNow) {
+  const pinned = notice?.pinned === true
+  const paused = Number(notice?.pausedRemainingMs || 0)
+  if (pinned && paused > 0) {
+    return clampNoticeDuration(paused)
+  }
+  const expiresAt = Number(notice?.expiresAt || 0)
+  const now = Number(serverNow)
+  if (expiresAt > 0 && Number.isFinite(now) && now > 0) {
+    return clampNoticeDuration(expiresAt - now)
+  }
+  return clampNoticeDuration(
+    notice?.durationMs, NOTICE_DURATION_MS)
+}
+
+function syncLocalNoticeIdentity(notice, serverNow) {
+  const nextId = String(notice?.id || '')
+  if (!nextId) return
+  const nextPinned = notice?.pinned === true
+  const isNewNotice = nextId !== state.noticeId
+  const pinStateChanged = nextPinned !== state.pinned
+  if (isNewNotice) {
+    state.noticeId = nextId
+    beginLocalNoticeClock(
+      nextPinned,
+      getRemoteInitialRemainingMs(notice, serverNow))
+    return
+  }
+  if (pinStateChanged) {
+    const localRemaining = state.pinned
+      ? clampNoticeDuration(state.noticeRemainingMs)
+      : clampNoticeDuration(
+          state.noticeLocalDeadlineMs - Date.now())
+    state.pinned = nextPinned
+    if (nextPinned) {
+      state.noticeRemainingMs = localRemaining
+      state.noticeLocalDeadlineMs = 0
+    } else {
+      state.noticeRemainingMs = 0
+      state.noticeLocalDeadlineMs =
+        Date.now() + localRemaining
+    }
+  }
 }
 
 function getViewName() {
@@ -87,14 +230,15 @@ function getViewName() {
 
 function getRemainingSeconds() {
   if (state.pinned) return Math.max(0, Math.ceil(Number(state.noticeRemainingMs || 0) / 1000))
-  const remainingMs = Math.max(0, Number(state.noticeExpiresAt || 0) - Date.now())
+  const remainingMs = Math.max(
+    0, Number(state.noticeLocalDeadlineMs || 0) - Date.now())
   return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0
 }
 
 function getStatusText() {
   const remaining = getRemainingSeconds()
   if (remaining > 0) return `RECADO ATIVO: ${remaining}s`
-  if (Number(state.noticeExpiresAt || 0) > 0 && state.status === 'RECADO ATIVO') return 'RECADO EXPIRADO'
+  if (state.noticeLocalStarted && state.status === 'RECADO ATIVO') return 'RECADO EXPIRADO'
   return state.status || ''
 }
 
@@ -161,25 +305,41 @@ function syncFromBridge(data) {
   state.loading = false
   state.projectName = String(data.projectName || data.currentProjectName || '')
   const bridgeTemplates = data?.technicalNoticeSettings?.recadosTemplates
-  if (Array.isArray(bridgeTemplates)) applyTemplates(bridgeTemplates)
-  state.authHash = getNoticeHashFromState(data)
-  state.authRequired = Boolean(data.recadosAuthEnabled === true || data.technicalNoticeAuthEnabled === true || data.noticeAuthEnabled === true || state.authHash || data.recadosPassword || data.technicalNoticePassword || data.noticePassword)
-  if (!state.authRequired) state.authenticated = true
-  if (state.authRequired && state.authenticated && state.authHash && simpleHash(state.password) !== state.authHash) {
-    state.authenticated = false
+  const bridgeImages = data?.technicalNoticeSettings?.recadosImages
+  const templateImagesChanged = Array.isArray(bridgeTemplates)
+    ? applyTemplates(bridgeTemplates, bridgeImages)
+    : false
+  if (EMBEDDED_DIRECTOR_MODE) {
+    state.directorSessionHash = readDirectorRecadoSessionHash() || getDirectorAuthHashFromState(data)
+    state.authHash = ''
+    state.authRequired = false
+    state.authenticated = true
+  } else {
+    state.authHash = getNoticeHashFromState(data)
+    state.authRequired = Boolean(data.recadosAuthEnabled === true || data.technicalNoticeAuthEnabled === true || data.noticeAuthEnabled === true || state.authHash || data.recadosPassword || data.technicalNoticePassword || data.noticePassword)
+    if (!state.authRequired) state.authenticated = true
+    if (state.authRequired && state.authenticated && state.authHash && simpleHash(state.password) !== state.authHash) {
+      state.authenticated = false
+    }
   }
   const nextView = getViewName()
   if (previousView !== nextView) render(true)
+  else if (templateImagesChanged && nextView === 'editor') render(true)
   else syncEditorDom()
 }
 
-function applyTemplates(templates) {
+function applyTemplates(templates, images) {
+  const previousImages = state.templateImages.join('\u0000')
   state.templates = [0, 1, 2].map((index) => String(templates?.[index] || '').slice(0, 500))
+  if (Array.isArray(images)) {
+    state.templateImages = [0, 1, 2].map((index) => String(images[index] || ''))
+  }
   if (state.selectedSlot !== 'global' && !state.editingTemplate) {
     state.draft = state.templates[Number(state.selectedSlot)] || ''
     const input = document.getElementById('recadosTextInput')
     if (input && !state.editorFocused && document.activeElement !== input && input.value !== state.draft) input.value = state.draft
   }
+  return previousImages !== state.templateImages.join('\u0000')
 }
 
 async function pollRecadosTemplates() {
@@ -189,7 +349,10 @@ async function pollRecadosTemplates() {
     const response = await fetch(vshookBridgeUrl('/recados-templates'), { cache: 'no-store' })
     if (!response.ok) return
     const data = await response.json()
-    if (Array.isArray(data.templates)) applyTemplates(data.templates)
+    if (Array.isArray(data.templates) &&
+        applyTemplates(data.templates, data.images)) {
+      render(true)
+    }
   } catch (_) {}
 }
 
@@ -201,18 +364,17 @@ async function pollTechnicalNotice() {
     if (!response.ok) return
     const data = await response.json()
     const notice = data && data.notice ? data.notice : null
-    if (!notice || String(notice.source || '').toLowerCase() !== 'recados') {
+    const expectedSource = EMBEDDED_DIRECTOR_MODE ? 'director' : 'recados'
+    if (!notice || String(notice.source || '').toLowerCase() !== expectedSource) {
       if (getRemainingSeconds() <= 0) {
-        state.noticeExpiresAt = 0
         state.noticeId = ''
       }
       syncEditorDom()
       return
     }
-    state.noticeExpiresAt = Number(notice.expiresAt || 0)
-    state.noticeId = String(notice.id || '')
-    state.noticeRemainingMs = Math.max(0, Number(notice.pausedRemainingMs || 0))
-    state.pinned = notice.pinned === true
+    // O servidor informa apenas qual recado está ativo. A contagem visual é
+    // iniciada uma única vez e, depois disso, corre inteiramente neste app.
+    syncLocalNoticeIdentity(notice, data?.now)
     syncEditorDom()
   } catch (error) {}
 }
@@ -254,6 +416,133 @@ function captureRecadosDraft() {
   if (input) state.draft = input.value
 }
 
+function getSelectedRecadoImage() {
+  if (state.selectedSlot === 'global') return ''
+  return String(state.templateImages[Number(state.selectedSlot)] || '')
+}
+
+function getRecadoImageUrl(imagePath) {
+  const value = String(imagePath || '').trim()
+  return value
+    ? vshookBridgeUrl(`/media?path=${encodeURIComponent(value)}`)
+    : ''
+}
+
+function readImageFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !String(file.type || '').startsWith('image/')) {
+      reject(new Error('Escolha um arquivo de imagem.'))
+      return
+    }
+    if (Number(file.size || 0) > 25 * 1024 * 1024) {
+      reject(new Error('A imagem deve ter no máximo 25 MB.'))
+      return
+    }
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'))
+    reader.onload = () => {
+      const image = new Image()
+      image.onerror = () => reject(new Error('Imagem inválida.'))
+      image.onload = () => {
+        const maxSide = 1600
+        const scale = Math.min(
+          1,
+          maxSide / Math.max(1, Number(image.naturalWidth || image.width || 1)),
+          maxSide / Math.max(1, Number(image.naturalHeight || image.height || 1)))
+        const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale))
+        const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const context = canvas.getContext('2d', { alpha: false })
+        if (!context) {
+          reject(new Error('Não foi possível preparar a imagem.'))
+          return
+        }
+        context.fillStyle = '#000'
+        context.fillRect(0, 0, width, height)
+        context.drawImage(image, 0, 0, width, height)
+        resolve(canvas.toDataURL('image/jpeg', 0.74))
+      }
+      image.src = String(reader.result || '')
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+async function saveRecadoImage(imageDataUrl) {
+  if (state.selectedSlot === 'global' || state.sending) return
+  state.sending = true
+  setStatus('SALVANDO IMAGEM...')
+  try {
+    const response = await fetch(vshookBridgeUrl('/recados-templates'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withRecadosRequestIdentity({
+        index: Number(state.selectedSlot),
+        updateImage: true,
+        imageDataUrl,
+      })),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok || result.ok === false) {
+      throw new Error(result.error || 'Falha ao salvar a imagem')
+    }
+    applyTemplates(result.templates, result.images)
+    state.status = 'IMAGEM SALVA'
+    render(true)
+  } catch (error) {
+    state.status = formatRecadosError(
+      error, 'ERRO AO SALVAR A IMAGEM')
+  } finally {
+    state.sending = false
+    syncEditorDom()
+  }
+}
+
+async function chooseRecadoImage(event) {
+  const file = event?.target?.files?.[0]
+  if (!file) return
+  try {
+    const imageDataUrl = await readImageFileAsDataUrl(file)
+    await saveRecadoImage(imageDataUrl)
+  } catch (error) {
+    setStatus(formatRecadosError(error, 'IMAGEM INVÁLIDA'))
+  } finally {
+    if (event?.target) event.target.value = ''
+  }
+}
+
+async function removeRecadoImage() {
+  if (state.selectedSlot === 'global' || state.sending) return
+  state.sending = true
+  setStatus('REMOVENDO IMAGEM...')
+  try {
+    const response = await fetch(vshookBridgeUrl('/recados-templates'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withRecadosRequestIdentity({
+        index: Number(state.selectedSlot),
+        updateImage: true,
+        imagePath: '',
+      })),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok || result.ok === false) {
+      throw new Error(result.error || 'Falha ao remover a imagem')
+    }
+    applyTemplates(result.templates, result.images)
+    state.status = 'IMAGEM REMOVIDA'
+    render(true)
+  } catch (error) {
+    state.status = formatRecadosError(
+      error, 'ERRO AO REMOVER A IMAGEM')
+  } finally {
+    state.sending = false
+    syncEditorDom()
+  }
+}
+
 function selectRecadoSlot(slot) {
   captureRecadosDraft()
   const next = slot === 'global' ? 'global' : Math.max(0, Math.min(2, Number(slot)))
@@ -282,16 +571,20 @@ async function toggleTemplateEdit() {
     const response = await fetch(vshookBridgeUrl('/recados-templates'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ index: Number(state.selectedSlot), text, passwordHash: simpleHash(state.password || '') }),
+      body: JSON.stringify(withRecadosRequestIdentity({
+        index: Number(state.selectedSlot),
+        text,
+        updateText: true,
+      })),
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok || result.ok === false) throw new Error(result.error || 'Falha ao salvar')
-    applyTemplates(result.templates)
+    applyTemplates(result.templates, result.images)
     state.editingTemplate = false
     state.status = 'RECADO SALVO'
     render(true)
   } catch (error) {
-    state.status = String(error?.message || 'ERRO AO SALVAR').toLocaleUpperCase('pt-BR')
+    state.status = formatRecadosError(error, 'ERRO AO SALVAR')
   } finally {
     state.sending = false
     syncEditorDom()
@@ -302,8 +595,9 @@ async function sendRecado() {
   const input = document.getElementById('recadosTextInput')
   if (input) state.draft = input.value
   const text = String(state.draft || '').trim()
-  if (!text || state.sending) {
-    setStatus(text ? state.status : 'DIGITE UM RECADO')
+  const imagePath = getSelectedRecadoImage()
+  if ((!text && !imagePath) || state.sending) {
+    setStatus((text || imagePath) ? state.status : 'DIGITE UM RECADO OU ESCOLHA UMA IMAGEM')
     return
   }
   state.sending = true
@@ -313,27 +607,27 @@ async function sendRecado() {
     const response = await fetch(vshookBridgeUrl('/technical-notice'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source: 'recados',
-        text,
+      body: JSON.stringify(withRecadosRequestIdentity({
+        text: imagePath ? '' : text,
+        imagePath,
         pinned: state.pinned === true,
-        passwordHash: simpleHash(state.password || ''),
-      }),
+        durationMs: NOTICE_DURATION_MS,
+      })),
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok || result.ok === false) throw new Error(result.error || 'Falha ao enviar')
     if (result.ignoredDuePriority) {
-      state.noticeExpiresAt = 0
+      clearLocalNoticeClock()
       state.status = 'DIRETOR EM PRIORIDADE'
     } else {
-      state.noticeExpiresAt = Number(result?.notice?.expiresAt || 0) || (Date.now() + NOTICE_DURATION_MS)
       state.noticeId = String(result?.notice?.id || '')
-      state.noticeRemainingMs = Math.max(0, Number(result?.notice?.pausedRemainingMs || 0))
-      state.pinned = result?.notice?.pinned === true
+      beginLocalNoticeClock(
+        result?.notice?.pinned === true,
+        NOTICE_DURATION_MS)
       state.status = 'RECADO ATIVO'
     }
   } catch (error) {
-    state.status = String(error?.message || 'ERRO AO ENVIAR').toLocaleUpperCase('pt-BR')
+    state.status = formatRecadosError(error, 'ERRO AO ENVIAR')
   } finally {
     state.sending = false
     syncEditorDom()
@@ -350,25 +644,22 @@ async function cancelRecado(options = {}) {
     const response = await fetch(vshookBridgeUrl('/technical-notice'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(withRecadosRequestIdentity({
         action: 'cancel',
-        source: 'recados',
-        passwordHash: simpleHash(state.password || ''),
-      }),
+      })),
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok || result.ok === false) throw new Error(result.error || 'Falha ao cancelar')
     if (result.ignoredDuePriority) {
       if (!silent) state.status = 'DIRETOR EM PRIORIDADE'
     } else {
-      state.noticeExpiresAt = 0
-      state.noticeId = ''
-      state.noticeRemainingMs = 0
-      state.pinned = false
+      clearLocalNoticeClock()
       if (!silent) state.status = 'RECADO REMOVIDO'
     }
   } catch (error) {
-    if (!silent) state.status = String(error?.message || 'ERRO AO CANCELAR').toLocaleUpperCase('pt-BR')
+    if (!silent) {
+      state.status = formatRecadosError(error, 'ERRO AO CANCELAR')
+    }
   } finally {
     state.sending = false
     syncEditorDom()
@@ -382,6 +673,12 @@ async function exitRecadosApp() {
 }
 
 function backToModeSelector() {
+  if (EMBEDDED_DIRECTOR_MODE) {
+    try {
+      window.parent.postMessage({ type: 'vshook-recados-close' }, window.location.origin)
+    } catch (error) {}
+    return
+  }
   try {
     localStorage.removeItem('vshook_selected_mode')
   } catch (error) {}
@@ -397,12 +694,14 @@ function renderAuth() {
 }
 
 function renderEditor() {
-  const slotButtons = [0, 1, 2].map((slot) => `<button class="recadosSlotButton ${state.selectedSlot === slot ? 'recadosSlotButtonActive' : ''}" data-action="select-slot" data-slot="${slot}">RECADO ${slot + 1}</button>`).join('')
+  const slotButtons = [0, 1, 2].map((slot) => `<button class="recadosSlotButton ${state.selectedSlot === slot ? 'recadosSlotButtonActive' : ''}" data-action="select-slot" data-slot="${slot}">RECADO ${slot + 1}${state.templateImages[slot] ? ' · IMG' : ''}</button>`).join('')
   const globalButton = `<button class="recadosSlotButton recadosGlobalButton ${state.selectedSlot === 'global' ? 'recadosSlotButtonActive' : ''}" data-action="select-slot" data-slot="global">GLOBAL</button>`
   const editButton = state.selectedSlot === 'global' ? '' : `<button class="recadosEditButton ${state.editingTemplate ? 'recadosSaveButton' : ''}" data-action="edit-template">${state.editingTemplate ? 'SALVAR' : 'EDITAR'}</button>`
   const readonly = state.selectedSlot !== 'global' && !state.editingTemplate ? 'readonly' : ''
   const placeholder = state.selectedSlot === 'global' ? 'Digite o recado técnico...' : `Conteúdo do Recado ${Number(state.selectedSlot) + 1}`
-  return `<div class="recadosApp"><div class="recadosTop"><button class="recadosSendButton" data-action="send" ${state.sending ? 'disabled' : ''}>${state.sending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="recadosCancelButton" data-action="cancel">RETIRAR</button></div><button class="recadosPinButton ${state.pinned ? 'recadosPinButtonActive' : ''}" data-action="pin" aria-pressed="${state.pinned ? 'true' : 'false'}">${state.pinned ? 'FIXADO' : 'FIXAR'}</button><div class="recadosSlots">${slotButtons}${globalButton}</div><textarea id="recadosTextInput" class="recadosTextInput" maxlength="500" autocomplete="off" autocapitalize="sentences" autocorrect="off" spellcheck="false" enterkeyhint="enter" data-gramm="false" placeholder="${escapeHtml(placeholder)}" ${readonly}>${escapeHtml(state.draft)}</textarea>${editButton}<div id="recadosStatus" class="recadosStatus">${escapeHtml(getStatusText())}</div><button class="recadosExitButton" data-action="exit">SAIR</button></div>`
+  const imagePath = getSelectedRecadoImage()
+  const imagePanel = state.selectedSlot === 'global' ? '' : `<div class="recadosImagePanel">${imagePath ? `<img class="recadosImagePreview" src="${escapeHtml(getRecadoImageUrl(imagePath))}" alt="Imagem do Recado ${Number(state.selectedSlot) + 1}" />` : `<div class="recadosImageEmpty">SEM IMAGEM</div>`}<div class="recadosImageActions"><button class="recadosImageButton" data-action="choose-image">${imagePath ? 'TROCAR IMAGEM' : 'ESCOLHER IMAGEM'}</button>${imagePath ? `<button class="recadosImageRemoveButton" data-action="remove-image">REMOVER IMAGEM</button>` : ''}</div><input id="recadosImageInput" class="recadosImageInput" type="file" accept="image/*" /></div>`
+  return `<div class="recadosApp"><div class="recadosTop"><button class="recadosSendButton" data-action="send" ${state.sending ? 'disabled' : ''}>${state.sending ? 'ENVIANDO...' : 'ENVIAR'}</button><button class="recadosCancelButton" data-action="cancel">RETIRAR</button></div><button class="recadosPinButton ${state.pinned ? 'recadosPinButtonActive' : ''}" data-action="pin" aria-pressed="${state.pinned ? 'true' : 'false'}">${state.pinned ? 'FIXADO' : 'FIXAR'}</button><div class="recadosSlots">${slotButtons}${globalButton}</div><div class="recadosContentArea"><textarea id="recadosTextInput" class="recadosTextInput" maxlength="500" autocomplete="off" autocapitalize="sentences" autocorrect="off" spellcheck="false" enterkeyhint="enter" data-gramm="false" placeholder="${escapeHtml(placeholder)}" ${readonly}>${escapeHtml(state.draft)}</textarea>${imagePanel}</div>${editButton}<div id="recadosStatus" class="recadosStatus">${escapeHtml(getStatusText())}</div><button class="recadosExitButton" data-action="exit">SAIR</button></div>`
 }
 
 async function toggleRecadosPin() {
@@ -416,17 +715,32 @@ async function toggleRecadosPin() {
   }
   state.sending = true
   setStatus('ATUALIZANDO...')
+  const localRemainingBeforeToggle = state.pinned
+    ? clampNoticeDuration(state.noticeRemainingMs)
+    : clampNoticeDuration(
+        state.noticeLocalDeadlineMs - Date.now())
   try {
     const response = await fetch(vshookBridgeUrl('/technical-notice'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: pinned ? 'pin' : 'unpin', source: 'recados', passwordHash: simpleHash(state.password || '') }),
+      body: JSON.stringify(withRecadosRequestIdentity({ action: pinned ? 'pin' : 'unpin' })),
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok || result.ok === false) throw new Error(result.error || 'Falha ao atualizar')
-    if (result.ignoredDuePriority) { state.status = 'DIRETOR EM PRIORIDADE' }
-    else { state.pinned = result?.notice?.pinned === true; state.noticeExpiresAt = Number(result?.notice?.expiresAt || 0); state.noticeRemainingMs = Math.max(0, Number(result?.notice?.pausedRemainingMs || 0)); state.status = 'RECADO ATIVO' }
+    if (result.ignoredDuePriority) {
+      state.status = 'DIRETOR EM PRIORIDADE'
+    } else {
+      const nextPinned = result?.notice?.pinned === true
+      state.pinned = nextPinned
+      state.noticeLocalStarted = true
+      state.noticeRemainingMs =
+        nextPinned ? localRemainingBeforeToggle : 0
+      state.noticeLocalDeadlineMs = nextPinned
+        ? 0
+        : Date.now() + localRemainingBeforeToggle
+      state.status = 'RECADO ATIVO'
+    }
   } catch (error) {
-    state.status = String(error?.message || 'ERRO AO ATUALIZAR').toLocaleUpperCase('pt-BR')
+    state.status = formatRecadosError(error, 'ERRO AO ATUALIZAR')
   } finally {
     state.sending = false
     render(true)
@@ -447,6 +761,11 @@ function bindEvents() {
   document.querySelector('[data-action="pin"]')?.addEventListener('click', toggleRecadosPin)
   document.querySelector('[data-action="exit"]')?.addEventListener('click', exitRecadosApp)
   document.querySelector('[data-action="edit-template"]')?.addEventListener('click', toggleTemplateEdit)
+  document.querySelector('[data-action="choose-image"]')?.addEventListener('click', () => {
+    document.getElementById('recadosImageInput')?.click()
+  })
+  document.querySelector('[data-action="remove-image"]')?.addEventListener('click', removeRecadoImage)
+  document.getElementById('recadosImageInput')?.addEventListener('change', chooseRecadoImage)
   document.querySelectorAll('[data-action="select-slot"]').forEach((button) => {
     let holdTimer = 0
     const select = () => selectRecadoSlot(button.getAttribute('data-slot'))
@@ -500,6 +819,7 @@ function render(force = false) {
 
 let recadosRefreshTimer = 0
 let recadosRefreshRunning = false
+let recadosVisualTimer = 0
 
 function setRecadosAppHeight() {
   if (state.editorFocused || document.activeElement?.id === 'recadosTextInput') return
@@ -513,12 +833,23 @@ async function refreshRecadosData() {
   try {
     await pollBridge()
     if (!state.editorFocused && document.activeElement?.id !== 'recadosTextInput') {
-      await pollTechnicalNotice()
-      await pollRecadosTemplates()
+      await Promise.all([
+        pollTechnicalNotice(),
+        pollRecadosTemplates(),
+      ])
     }
   } finally {
     recadosRefreshRunning = false
   }
+}
+
+function scheduleRecadosVisualRefresh() {
+  if (recadosVisualTimer) window.clearTimeout(recadosVisualTimer)
+  recadosVisualTimer = window.setTimeout(() => {
+    recadosVisualTimer = 0
+    if (getViewName() === 'editor') syncEditorDom()
+    scheduleRecadosVisualRefresh()
+  }, 100)
 }
 
 function scheduleRecadosRefresh() {
@@ -538,6 +869,7 @@ function startRecadosApp() {
   render(true)
   refreshRecadosData()
   scheduleRecadosRefresh()
+  scheduleRecadosVisualRefresh()
 }
 
 if (document.readyState === 'loading') {

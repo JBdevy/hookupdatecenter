@@ -25,10 +25,8 @@ npm run build:mac
 A notarização só roda quando `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` e `APPLE_TEAM_ID` estiverem definidos.
 Sem essas variáveis, o app será apenas assinado.
 
-## Legacy macOS 10.13+
-```bash
-npm run build:mac:legacy
-```
+O build `build:mac` gera o aplicativo universal único, compatível com
+macOS 10.13 ou superior. Não existe mais uma variante Legacy.
 
 ## Build sem assinatura
 ```bash

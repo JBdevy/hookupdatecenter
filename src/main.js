@@ -26,6 +26,8 @@ const store = new Store({
     lastNotifiedUpdateId: null,
     downloadedFiles: null,
     installedManifest: null,
+    installedPackages: {},
+    activeInstalledPackageIdentity: '',
     license: {
       cpf: '',
       cnpj: '',
@@ -88,6 +90,9 @@ const LICENSE_PRODUCT = 'VSLIVE';
 const LICENSE_SECRET_A = 'JBKeys_VSLIVE_CORE';
 const LICENSE_SECRET_B = 'VSLIVE_2026_ONLINE';
 const LICENSE_SECRET_C = 'JBK_ADMIN_OFFLINE';
+const SIGNED_LICENSE_FILE = process.platform === 'win32'
+  ? 'vshook_license_v3.token'
+  : '.vshook_license_v3.token';
 
 function getAppIconPath() {
   const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
@@ -520,6 +525,66 @@ async function getMachineId() {
   return machineId;
 }
 
+let cachedDeviceFingerprint = '';
+async function getDeviceFingerprint() {
+  if (cachedDeviceFingerprint) return cachedDeviceFingerprint;
+  let anchor = '';
+  if (process.platform === 'win32') anchor = await getWindowsAnchor();
+  if (process.platform === 'darwin') anchor = await getMacAnchor();
+  if (!anchor) anchor = normalizeMachineId(os.hostname() || 'UNKNOWNHOST');
+  cachedDeviceFingerprint = crypto.createHash('sha256')
+    .update(`VSHOOK_DEVICE_V1|${process.platform}|${normalizeMachineId(anchor)}`)
+    .digest('hex')
+    .toUpperCase();
+  return cachedDeviceFingerprint;
+}
+
+function getSharedSignedLicensePath() {
+  return path.join(path.dirname(getSharedMachineIdPath()), SIGNED_LICENSE_FILE);
+}
+
+function saveSignedLicenseToken(token, { required = false } = {}) {
+  const clean = String(token || '').trim();
+  if (!clean) {
+    if (required) {
+      throw new Error('O backend ainda não forneceu a nova licença assinada. Configure a chave privada de assinatura antes de distribuir esta versão.');
+    }
+    return false;
+  }
+  if (clean.length > 16384 || clean.split('.').length !== 3) {
+    throw new Error('A licença assinada recebida é inválida.');
+  }
+  const target = getSharedSignedLicensePath();
+  const temp = `${target}.tmp-${process.pid}`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(temp, `${clean}\n`, { encoding: 'utf8', mode: 0o600 });
+  if (process.platform === 'win32' && fs.existsSync(target)) {
+    try {
+      execFileSync('attrib.exe', ['-h', target], {
+        windowsHide: true,
+        stdio: 'ignore'
+      });
+    } catch (_) {}
+  }
+  try { fs.rmSync(target, { force: true }); } catch (_) {}
+  fs.renameSync(temp, target);
+  hideLicenseShardOnWindows(target);
+  return true;
+}
+
+function removeSignedLicenseToken() {
+  const target = getSharedSignedLicensePath();
+  if (process.platform === 'win32' && fs.existsSync(target)) {
+    try {
+      execFileSync('attrib.exe', ['-h', target], {
+        windowsHide: true,
+        stdio: 'ignore'
+      });
+    } catch (_) {}
+  }
+  try { fs.rmSync(target, { force: true }); } catch (_) {}
+}
+
 
 function getStoredDeviceName() {
   return String(store.get('deviceName') || '').trim()
@@ -537,10 +602,12 @@ async function loginLicenseDevices(email) {
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const cleanEmail = normalizeEmail(email || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.')
+  const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/login`, {
     method: 'POST',
-    body: JSON.stringify({ email: cleanEmail, machineId, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({ email: cleanEmail, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   })
+  if (result.active) saveSignedLicenseToken(result.licenseToken)
   const nextLicense = {
     ...license,
     email: result.email || cleanEmail,
@@ -566,9 +633,10 @@ async function removeLicenseDevice(removeMachineId, emailOverride = '') {
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const cleanEmail = normalizeEmail(emailOverride || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
+  const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/remove-device`, {
     method: 'POST',
-    body: JSON.stringify({ email: cleanEmail, machineId, removeMachineId, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({ email: cleanEmail, machineId, removeMachineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   })
   const nextLicense = {
     ...license,
@@ -588,6 +656,8 @@ async function removeLicenseDevice(removeMachineId, emailOverride = '') {
     nextLicense.active = false;
     nextLicense.message = result.message || 'Este computador foi removido da licença.';
     removeLocalLicense();
+  } else if (nextLicense.active) {
+    saveSignedLicenseToken(result.licenseToken);
   }
   store.set('license', nextLicense)
   rebuildTrayMenu();
@@ -711,6 +781,7 @@ function removeLocalLicense() {
       ...getLegacyLicensePaths()
     ]
   });
+  removeSignedLicenseToken();
 
   return licenseDir;
 }
@@ -820,6 +891,7 @@ function pickFirst(...values) {
 function normalizeUpdate(raw) {
   if (!raw) return null;
   const source = raw.update || raw.latest || raw;
+  if (source.published === false) return null;
 
   const files = source.files || {};
   const windows = source.windows || files.windows || files.win32 || {};
@@ -857,6 +929,7 @@ function normalizeUpdate(raw) {
       ? source.changelog
       : String(source.description || '').split('\n').map((line) => line.trim()).filter(Boolean),
     publishedAt: platformMeta.changedAt || source.publishedAt || source.createdAt || null,
+    current: source.current === true,
     platforms,
     changed: source.changed || files.changed || {},
     files: {
@@ -865,7 +938,8 @@ function normalizeUpdate(raw) {
         estableLua: pickFirst(windows.estableLua, windows.estableLuaUrl, windows.stableLua, windows.stableLuaUrl, windows.vsHookEstableLua, windows.vsHookEstableLuaUrl, windows.estable, windows.stable, windows.estableUrl, windows.stableUrl, windows.basicLua, windows.basicLuaUrl, windows.vsHookBasicLua, windows.vsHookBasicLuaUrl, windows.basic, windows.basicUrl, source.estableLua, source.estableLuaUrl, source.stableLua, source.stableLuaUrl, source.vsHookEstableLua, source.vsHookEstableLuaUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
         lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(windows.hookLyricsLua, windows.hookLyricsLuaUrl, windows.lyricsLua, windows.lyricsLuaUrl, windows.hookLyrics, windows.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
-        vshookDll: pickFirst(windows.vshookDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
+        vshookDll: pickFirst(windows.vshookDll, windows.vshookExtDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
+        installer: pickFirst(windows.installer, windows.exe, windows.url, source.windowsInstallerUrl, source.windowsUrl),
         jsApiDll: pickFirst(windows.jsApiDll, windows.jsApiDllUrl, windows.reaperJsApiDll, windows.reaperJsApiDllUrl, windows.jsapi, windows.jsapiUrl, windows.reaper_js_ReaScriptAPI64, windows.reaper_js_ReaScriptAPI64_url),
         logoPng: pickFirst(windows.logoPng, windows.logoPngUrl, windows.loadingLogo, windows.loadingLogoUrl, windows.logohookPng, windows.logohookPngUrl, windows.logo, windows.logoUrl, source.logoPng, source.logoPngUrl)
       },
@@ -874,7 +948,8 @@ function normalizeUpdate(raw) {
         estableLua: pickFirst(macos.estableLua, macos.estableLuaUrl, macos.stableLua, macos.stableLuaUrl, macos.vsHookEstableLua, macos.vsHookEstableLuaUrl, macos.estable, macos.stable, macos.estableUrl, macos.stableUrl, macos.basicLua, macos.basicLuaUrl, macos.vsHookBasicLua, macos.vsHookBasicLuaUrl, macos.basic, macos.basicUrl, source.estableLua, source.estableLuaUrl, source.stableLua, source.stableLuaUrl, source.vsHookEstableLua, source.vsHookEstableLuaUrl, source.basicLua, source.basicLuaUrl, source.vsHookBasicLua, source.vsHookBasicLuaUrl),
         lua: pickFirst(macos.lua, macos.luaUrl, macos.vsHookLua, macos.vsHookLuaUrl, macos.script, macos.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(macos.hookLyricsLua, macos.hookLyricsLuaUrl, macos.lyricsLua, macos.lyricsLuaUrl, macos.hookLyrics, macos.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
-        vshookDylib: pickFirst(macos.vshookDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
+        vshookDylib: pickFirst(macos.vshookDylib, macos.vshookExtDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
+        installer: pickFirst(macos.installer, macos.dmg, macos.url, source.macosInstallerUrl, source.macosUrl),
         jsApiDylib: pickFirst(macos.jsApiDylib, macos.jsApiDylibUrl, macos.reaperJsApiDylib, macos.reaperJsApiDylibUrl, macos.jsapi, macos.jsapiUrl, macos.universalJsApiDylib, macos.universalJsApiDylibUrl),
         jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.armJsApiDylib, macos.armJsApiDylibUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
         jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.intelJsApiDylib, macos.intelJsApiDylibUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url),
@@ -888,10 +963,15 @@ function normalizeUpdate(raw) {
 function updateMatchesCurrentPlatform(update) {
   const platformKey = getPlatformKey();
   const changed = update?.changed || update?.files?.changed || {};
+  // Registros antigos podem declarar changed=true mesmo trazendo a extensão
+  // anterior (reaper_vshook). Eles não são compatíveis com a Hook Center 1.0,
+  // que instala exclusivamente reaper_VSHookExt.
+  const installable = hasInstallableFiles(update);
+  if (!installable) return false;
   if (Object.prototype.hasOwnProperty.call(changed, platformKey)) {
-    return Boolean(changed[platformKey]);
+    return Boolean(changed[platformKey]) && installable;
   }
-  return hasInstallableFiles(update);
+  return installable;
 }
 
 function normalizeUpdatesList(raw) {
@@ -959,7 +1039,7 @@ function filterPreviousUpdates(updates, currentUpdate) {
   const seen = new Set();
   return (updates || []).filter((update) => {
     if (!update) return false;
-    if (currentUpdate && isSameCurrentUpdate(update, currentUpdate)) return false;
+    if (currentUpdate && isSameCurrentUpdate(update, currentUpdate)) update.current = true;
 
     const identity = [
       normalizeUpdateIdentityValue(getPlatformUpdateId(update)),
@@ -982,23 +1062,36 @@ async function getPreviousUpdates() {
     `${BACKEND_URL}/api/public/updates?limit=50&platform=${getPlatformKey()}`
   ];
 
+  const cachedUpdates = listCachedUpdateManifests().map(cachedManifestToUpdate).filter(Boolean);
   let lastError = null;
-  const currentUpdate = await getCurrentPublishedUpdateForHistory();
+  const currentUpdate = cachedUpdates.length > 0
+    ? normalizeUpdate(store.get('latestUpdate'))
+    : await getCurrentPublishedUpdateForHistory();
+  const endpointsToTry = cachedUpdates.length > 0 ? endpoints.slice(0, 1) : endpoints;
 
-  for (const url of endpoints) {
+  for (const url of endpointsToTry) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const raw = await fetchJson(url, { cache: 'no-store' });
-      const updates = filterPreviousUpdates(normalizeUpdatesList(raw), currentUpdate);
-      return { ok: true, updates };
+      const raw = await fetchJson(url, { cache: 'no-store', signal: controller.signal });
+      const remoteUpdates = normalizeUpdatesList(raw);
+      if (currentUpdate && !remoteUpdates.some((update) => isSameCurrentUpdate(update, currentUpdate))) {
+        remoteUpdates.unshift({ ...currentUpdate, current: true });
+      }
+      const updates = decorateUpdatesWithCache(filterPreviousUpdates([...remoteUpdates, ...cachedUpdates], currentUpdate));
+      return { ok: true, updates, offline: false };
     } catch (error) {
       lastError = error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   return {
-    ok: false,
+    ok: cachedUpdates.length > 0,
     error: lastError?.message || 'Não foi possível carregar as atualizações anteriores.',
-    updates: []
+    offline: true,
+    updates: decorateUpdatesWithCache(filterPreviousUpdates(cachedUpdates, currentUpdate))
   };
 }
 
@@ -1259,6 +1352,7 @@ async function checkLicenseStatus(manual = false) {
   const document = docParts.document;
   const email = normalizeEmail(license.email);
   const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const deviceFingerprint = await getDeviceFingerprint();
 
   if (!email || !machineId) {
     return { ok: false, message: 'Licença ainda não ativada.', state: getAppState() };
@@ -1267,7 +1361,7 @@ async function checkLicenseStatus(manual = false) {
   try {
     const result = await fetchJson(`${BACKEND_URL}/api/license/status`, {
       method: 'POST',
-      body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform, computerName: getStoredDeviceName() })
+      body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
     });
 
     const active = result.active !== false && result.ok !== false;
@@ -1295,6 +1389,7 @@ async function checkLicenseStatus(manual = false) {
     publishLicenseOfflineStatus(nextLicense);
 
     if (active) {
+      saveSignedLicenseToken(result.licenseToken, { required: manual });
       const licenseAlreadySaved = protectedLicenseShardsExist();
       const shouldPersistProtectedLicense = process.platform !== 'darwin' || (manual && !licenseAlreadySaved);
 
@@ -1362,6 +1457,8 @@ function readBridgeConfig() {
     scriptsDir: getDefaultReaperScriptsDir(),
     directorPort: 47831,
     musiciansPort: 47832,
+    preferredNetworkIp: '',
+    preferredNetworkName: '',
     autoStart: true
   };
   return { ...defaults, ...stored, scriptsDir: stored.scriptsDir || defaults.scriptsDir };
@@ -1369,6 +1466,31 @@ function readBridgeConfig() {
 
 function saveBridgeConfig(config) {
   store.set('bridge', { ...readBridgeConfig(), ...config });
+}
+
+function getSelectedBridgeNetwork(config = readBridgeConfig()) {
+  const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const preferredIp = String(config?.preferredNetworkIp || '').trim();
+  const preferredName = String(config?.preferredNetworkName || '').trim();
+  const selected = networks.find((item) => preferredIp && item.ip === preferredIp)
+    || networks.find((item) => preferredName && item.name === preferredName)
+    || networks[0]
+    || { name: 'Local', ip: '127.0.0.1', score: 0 };
+  return { selected, networks };
+}
+
+async function selectBridgeNetwork(payload = {}) {
+  const requestedIp = String(payload.ip || payload.preferredNetworkIp || '').trim();
+  const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const selected = networks.find((item) => item.ip === requestedIp);
+  if (!selected) {
+    throw new Error('A rede escolhida não está mais disponível neste computador.');
+  }
+  saveBridgeConfig({
+    preferredNetworkIp: selected.ip,
+    preferredNetworkName: selected.name
+  });
+  return startBridgeServers();
 }
 
 function resolveBridgeScriptsDir(config) {
@@ -1503,13 +1625,14 @@ function isVsHookLicenseActiveForBridge() {
 function buildBridgeServers(config) {
   const sharedDir = resolveBridgeScriptsDir(config);
   const bridgeWebAppDir = getBridgeWebAppDir();
+  const { selected } = getSelectedBridgeNetwork(config);
 
   return [
     createBridgeServer({
       appName: 'Diretor',
       host: '0.0.0.0',
       port: Number(config.directorPort) || 47831,
-      publicBridgeHost: getLanIp(),
+      publicBridgeHost: selected.ip,
       appDir: bridgeWebAppDir,
       sharedDir,
       getTechnicalNoticeSettings,
@@ -1529,7 +1652,7 @@ function buildBridgeServers(config) {
       appName: 'Músicos',
       host: '0.0.0.0',
       port: Number(config.musiciansPort) || 47832,
-      publicBridgeHost: getLanIp(),
+      publicBridgeHost: selected.ip,
       appDir: bridgeWebAppDir,
       sharedDir,
       getTechnicalNoticeSettings,
@@ -1588,14 +1711,17 @@ async function ensureBridgeServersRunning() {
 
 function getBridgeState() {
   const config = bridgeConfig || readBridgeConfig();
-  const lanIp = getLanIp();
-  const allLanIps = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const { selected, networks: allLanIps } = getSelectedBridgeNetwork(config);
+  const lanIp = selected.ip;
   const directorPort = Number(config.directorPort) || 47831;
   const musiciansPort = Number(config.musiciansPort) || 47832;
   return {
     running: bridgeServers.length > 0,
     lanIp,
     lanIps: allLanIps,
+    selectedNetwork: selected,
+    selectedNetworkIp: selected.ip,
+    selectedNetworkName: selected.name,
     scriptsDir: resolveBridgeScriptsDir(config),
     directorPort,
     musiciansPort,
@@ -2788,7 +2914,11 @@ function getAppState() {
     lastNotifiedUpdateId: store.get('lastNotifiedUpdateId'),
     downloadedFiles: store.get('downloadedFiles'),
     installedManifest: store.get('installedManifest'),
+    installedPackages: store.get('installedPackages') || {},
     installedVsHookVersion,
+    currentPackageInstalled: isUpdatePackageInstalled(getCurrentUpdatePackage()),
+    currentPackageCached: Boolean(findCachedUpdateManifest(getCurrentUpdatePackage())),
+    updateCacheDirectory: getOfflineUpdateCacheRoot(),
     license: store.get('license'),
     machineId: (store.get('license') || {}).machineId || '',
     deviceName: getStoredDeviceName(),
@@ -2862,31 +2992,26 @@ function entriesChangedSinceLastInstall(update, entries) {
 }
 
 function buildPayloadEntries(files) {
-  const betaLuaUrl = ensureAbsoluteUrl(files.betaLua || files.proLua || files.lua);
-  const estableLuaUrl = ensureAbsoluteUrl(files.estableLua || files.stableLua || files.basicLua);
+  const isCurrentExtensionUrl = (value, expectedName) => {
+    const url = ensureAbsoluteUrl(value);
+    if (!url) return '';
+    try {
+      const filename = decodeURIComponent(new URL(url).pathname.split('/').pop() || '').toLowerCase();
+      return filename === expectedName.toLowerCase() ? url : '';
+    } catch (_) {
+      return '';
+    }
+  };
 
   if (process.platform === 'win32') {
     return [
-      { key: 'betaLua', url: betaLuaUrl, filename: 'VS Hook Beta.lua' },
-      { key: 'estableLua', url: estableLuaUrl, filename: 'VS Hook Estable.lua' },
-      { key: 'vshookDll', url: ensureAbsoluteUrl(files.vshookDll), filename: 'reaper_vshook.dll' },
-      { key: 'jsApiDll', url: ensureAbsoluteUrl(files.jsApiDll), filename: 'reaper_js_ReaScriptAPI64.dll' }
+      { key: 'vshookDll', url: isCurrentExtensionUrl(files.vshookDll || files.vshookExtDll, 'reaper_VSHookExt.dll'), filename: 'reaper_VSHookExt.dll' }
     ].filter((entry) => !!entry.url);
   }
 
   if (process.platform === 'darwin') {
-    const isAppleSilicon = process.arch === 'arm64';
-    const jsApiUrl = ensureAbsoluteUrl(
-      isAppleSilicon
-        ? (files.armJsApiDylib || files.jsApiArmDylib || files.jsApiDylib)
-        : (files.intelJsApiDylib || files.jsApiIntelDylib || files.jsApiDylib)
-    );
-
     return [
-      { key: 'betaLua', url: betaLuaUrl, filename: 'VS Hook Beta.lua' },
-      { key: 'estableLua', url: estableLuaUrl, filename: 'VS Hook Estable.lua' },
-      { key: 'vshookDylib', url: ensureAbsoluteUrl(files.vshookDylib), filename: 'reaper_vshook.dylib' },
-      { key: 'jsApiDylib', url: jsApiUrl, filename: 'reaper_js_ReaScriptAPI.dylib' }
+      { key: 'vshookDylib', url: isCurrentExtensionUrl(files.vshookDylib || files.vshookExtDylib, 'reaper_VSHookExt.dylib'), filename: 'reaper_VSHookExt.dylib' }
     ].filter((entry) => !!entry.url);
   }
 
@@ -2941,6 +3066,357 @@ async function downloadFile(url, destPath, onProgress) {
   });
 
   onProgress(100);
+}
+
+function getOfflineUpdateCacheRoot() {
+  const root = path.join(app.getPath('userData'), 'offline-updates', getPlatformKey());
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(root, 0o700); } catch (_) {}
+  }
+  return root;
+}
+
+function safeUpdateCacheSegment(value, fallback = 'update') {
+  const safe = String(value || '')
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72);
+  return safe || fallback;
+}
+
+function getUpdatePackageIdentity(update) {
+  const normalized = normalizeUpdate(update) || update || {};
+  return String(getPlatformUpdateId(normalized) || normalized.updateId || normalized.version || '').trim();
+}
+
+function getUpdateCacheKey(update) {
+  const normalized = normalizeUpdate(update) || update || {};
+  const version = safeUpdateCacheSegment(normalized.version || 'sem-versao');
+  const identity = getUpdatePackageIdentity(normalized) || JSON.stringify(getPlatformFiles(normalized));
+  const suffix = crypto.createHash('sha256').update(String(identity)).digest('hex').slice(0, 12);
+  return `${version}-${suffix}`;
+}
+
+function getCachedManifestPath(cacheKey) {
+  return path.join(getOfflineUpdateCacheRoot(), safeUpdateCacheSegment(cacheKey), 'manifest.json');
+}
+
+function readCachedManifestFile(manifestPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (!parsed || parsed.platform !== getPlatformKey() || !parsed.cacheKey) return null;
+    const cacheDir = path.dirname(manifestPath);
+    const files = parsed.files || {};
+    const allFilesExist = Object.values(files).every((entry) => {
+      const filename = String(entry?.filename || '');
+      return filename && path.basename(filename) === filename && fs.existsSync(path.join(cacheDir, filename));
+    });
+    if (!allFilesExist || Object.keys(files).length === 0) return null;
+    return { ...parsed, cacheDir, manifestPath };
+  } catch (_) {
+    return null;
+  }
+}
+
+function listCachedUpdateManifests() {
+  const root = getOfflineUpdateCacheRoot();
+  try {
+    if (!fs.existsSync(root)) return [];
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readCachedManifestFile(path.join(root, entry.name, 'manifest.json')))
+      .filter(Boolean)
+      .sort((a, b) => String(b.cachedAt || '').localeCompare(String(a.cachedAt || '')));
+  } catch (_) {
+    return [];
+  }
+}
+
+function cachedManifestToUpdate(manifest) {
+  const normalized = normalizeUpdate(manifest?.update);
+  if (!normalized) return null;
+  return {
+    ...normalized,
+    cached: true,
+    cacheKey: manifest.cacheKey,
+    cachedAt: manifest.cachedAt || null,
+    localOnly: true
+  };
+}
+
+function findCachedUpdateManifest(update) {
+  if (!update) return null;
+  const normalized = normalizeUpdate(update) || update;
+  const identity = getUpdatePackageIdentity(normalized);
+  const version = String(normalized.version || '').trim();
+  const manifests = listCachedUpdateManifests();
+  return manifests.find((manifest) => {
+    if (identity && manifest.identity && identity === manifest.identity) return true;
+    return !identity && version && version === String(manifest.version || '').trim();
+  }) || null;
+}
+
+function decorateUpdatesWithCache(updates) {
+  return (updates || []).map((update) => {
+    const cached = findCachedUpdateManifest(update);
+    return {
+      ...update,
+      cached: Boolean(cached),
+      cacheKey: cached?.cacheKey || '',
+      cachedAt: cached?.cachedAt || null,
+      installed: isUpdatePackageInstalled(update)
+    };
+  });
+}
+
+function getInstallerFilename(update) {
+  const version = safeUpdateCacheSegment(update?.version || 'versao');
+  return process.platform === 'darwin'
+    ? `Hook-Center-${version}-macOS.dmg`
+    : `Hook-Center-${version}-Windows.exe`;
+}
+
+function buildUpdatePackageEntries(update) {
+  const normalized = normalizeUpdate(update) || update;
+  const files = getPlatformFiles(normalized);
+  const entries = buildPayloadEntries(files);
+  const matchingHookCenter = normalizeHookCenterUpdate(store.get('hookCenterLatest'));
+  const matchingCurrentInstaller = normalized.current === true &&
+    matchingHookCenter?.version &&
+    String(matchingHookCenter.version) === String(normalized.version || '')
+      ? matchingHookCenter.downloadUrl
+      : '';
+  const installerUrl = ensureAbsoluteUrl(
+    files.installer ||
+    files.exe ||
+    files.dmg ||
+    normalized.installerUrl ||
+    normalized.downloadUrl ||
+    matchingCurrentInstaller
+  );
+  if (installerUrl) {
+    entries.push({ key: 'installer', url: installerUrl, filename: getInstallerFilename(normalized) });
+  }
+  return entries;
+}
+
+function getCurrentUpdatePackage() {
+  const update = normalizeUpdate(store.get('latestUpdate'));
+  const hookCenter = normalizeHookCenterUpdate(store.get('hookCenterLatest'));
+  if (!update && !hookCenter) return null;
+
+  const base = update || normalizeUpdate({
+    published: true,
+    product: 'vs-hook',
+    updateId: hookCenter?.updateId,
+    version: hookCenter?.version,
+    title: hookCenter?.title,
+    description: hookCenter?.notes,
+    publishedAt: hookCenter?.publishedAt,
+    files: { windows: {}, macos: {} }
+  });
+  if (!base) return null;
+
+  const platformKey = getPlatformKey();
+  const platformFiles = { ...(base.files?.[platformKey] || {}) };
+  if (!platformFiles.installer && hookCenter?.downloadUrl) platformFiles.installer = hookCenter.downloadUrl;
+
+  return {
+    ...base,
+    current: true,
+    version: base.version || hookCenter?.version || '',
+    files: {
+      ...(base.files || {}),
+      [platformKey]: platformFiles
+    }
+  };
+}
+
+async function cacheUpdatePackage(updateOverride = null, options = {}) {
+  const normalized = normalizeUpdate(updateOverride) || getCurrentUpdatePackage();
+  if (!normalized) throw new Error('Nenhuma atualização disponível para guardar.');
+
+  const entries = buildUpdatePackageEntries(normalized);
+  const requireInstaller = options.requireInstaller !== false;
+  const hasInstaller = entries.some((entry) => entry.key === 'installer');
+  const hasExtension = entries.some((entry) => entry.key === 'vshookDll' || entry.key === 'vshookDylib');
+  if (!hasExtension) throw new Error('A extensão desta versão não está disponível para este sistema.');
+  if (requireInstaller && !hasInstaller) throw new Error('O instalador da Hook Center não está disponível para esta versão.');
+
+  const cacheKey = getUpdateCacheKey(normalized);
+  const cacheDir = path.join(getOfflineUpdateCacheRoot(), cacheKey);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const previousManifest = readCachedManifestFile(path.join(cacheDir, 'manifest.json'));
+  const output = {};
+  const manifestFiles = {};
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const dest = path.join(cacheDir, entry.filename);
+    const previousEntry = previousManifest?.files?.[entry.key];
+    const canReuse = previousEntry?.url === entry.url && fs.existsSync(dest);
+    if (!canReuse) {
+      const partial = `${dest}.part`;
+      await fs.promises.rm(partial, { force: true }).catch(() => {});
+      try {
+        await downloadFile(entry.url, partial, (fileProgress) => {
+          const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
+          if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+        });
+        await fs.promises.rm(dest, { force: true }).catch(() => {});
+        await fs.promises.rename(partial, dest);
+      } catch (error) {
+        await fs.promises.rm(partial, { force: true }).catch(() => {});
+        throw error;
+      }
+    } else if (isValidWindow(mainWindow)) {
+      mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
+    }
+    output[entry.key] = dest;
+    manifestFiles[entry.key] = { url: entry.url, filename: entry.filename };
+  }
+
+  const manifest = {
+    schemaVersion: 1,
+    cacheKey,
+    identity: getUpdatePackageIdentity(normalized),
+    platform: getPlatformKey(),
+    version: normalized.version || '',
+    updateId: normalized.updateId || '',
+    title: normalized.title || '',
+    description: normalized.description || '',
+    publishedAt: normalized.publishedAt || null,
+    cachedAt: new Date().toISOString(),
+    files: manifestFiles,
+    update: normalized
+  };
+  const manifestPath = path.join(cacheDir, 'manifest.json');
+  const tempManifestPath = `${manifestPath}.tmp`;
+  fs.writeFileSync(tempManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  fs.rmSync(manifestPath, { force: true });
+  fs.renameSync(tempManifestPath, manifestPath);
+
+  const extensionFiles = Object.fromEntries(
+    Object.entries(output).filter(([key]) => key !== 'installer')
+  );
+  store.set('downloadedFiles', {
+    updateId: getPlatformUpdateId(normalized),
+    globalUpdateId: normalized.updateId,
+    version: normalized.version,
+    platform: getPlatformKey(),
+    files: extensionFiles,
+    manifest: {
+      platform: getPlatformKey(),
+      updateId: getPlatformUpdateId(normalized),
+      version: normalized.version || '',
+      files: Object.fromEntries(entries.filter((entry) => entry.key !== 'installer').map((entry) => [entry.key, { url: entry.url, filename: entry.filename }]))
+    }
+  });
+  if (output.installer) {
+    store.set('downloadedHookCenterUpdate', {
+      version: normalized.version,
+      updateId: normalized.updateId || normalized.version,
+      path: output.installer,
+      platform: process.platform,
+      downloadedAt: manifest.cachedAt,
+      cacheKey
+    });
+  }
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', 100);
+  return { ok: true, cached: true, cacheKey, version: normalized.version, files: output };
+}
+
+function removeCachedUpdatePackage(update) {
+  const manifest = findCachedUpdateManifest(update);
+  if (!manifest) return { ok: true, removed: false };
+  const root = path.resolve(getOfflineUpdateCacheRoot());
+  const target = path.resolve(manifest.cacheDir);
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('A pasta local desta atualização é inválida.');
+  }
+  fs.rmSync(target, { recursive: true, force: true });
+  return { ok: true, removed: true, cacheKey: manifest.cacheKey };
+}
+
+function isUpdatePackageInstalled(update) {
+  if (!update) return false;
+  const identity = getUpdatePackageIdentity(update);
+  const activeIdentity = String(store.get('activeInstalledPackageIdentity') || '').trim();
+  if (identity && activeIdentity) return identity === activeIdentity;
+  const installed = store.get('installedManifest') || {};
+  return Boolean(
+    identity &&
+    (installed.updateId === identity || installed.globalUpdateId === identity)
+  );
+}
+
+function markUpdatePackageInstalled(update, manifest) {
+  const identity = getUpdatePackageIdentity(update);
+  if (!identity) return;
+  const installedPackages = store.get('installedPackages') || {};
+  installedPackages[identity] = {
+    version: update.version || '',
+    updateId: update.updateId || '',
+    cacheKey: manifest?.cacheKey || '',
+    installedAt: new Date().toISOString()
+  };
+  store.set('installedPackages', installedPackages);
+  store.set('activeInstalledPackageIdentity', identity);
+}
+
+async function installCachedUpdatePackage(updateOverride = null) {
+  const update = normalizeUpdate(updateOverride) || getCurrentUpdatePackage();
+  if (!update) throw new Error('Atualização não encontrada.');
+  let manifest = findCachedUpdateManifest(update);
+  if (!manifest) {
+    await cacheUpdatePackage(update, { requireInstaller: true });
+    manifest = findCachedUpdateManifest(update);
+  }
+  if (!manifest) throw new Error('Não foi possível preparar os arquivos locais desta versão.');
+
+  const cachedFiles = {};
+  for (const [key, entry] of Object.entries(manifest.files || {})) {
+    cachedFiles[key] = path.join(manifest.cacheDir, entry.filename);
+  }
+  if (!cachedFiles.installer || !fs.existsSync(cachedFiles.installer)) {
+    throw new Error('O instalador local da Hook Center não foi encontrado.');
+  }
+
+  if (process.platform === 'win32') installWindowsPayload(cachedFiles);
+  else if (process.platform === 'darwin') installMacPayload(cachedFiles);
+  else throw new Error('Sistema operacional não suportado.');
+
+  await persistActiveLocalLicenseFromStore({ active: true, source: 'install-cached-update' }).catch(() => false);
+  markUpdatePackageInstalled(update, manifest);
+  store.set('currentVersion', update.version || store.get('currentVersion'));
+  store.set('installedManifest', {
+    platform: getPlatformKey(),
+    updateId: getPlatformUpdateId(update),
+    globalUpdateId: update.updateId || '',
+    version: update.version || '',
+    files: Object.fromEntries(
+      Object.entries(manifest.files || {})
+        .filter(([key]) => key !== 'installer')
+        .map(([key, entry]) => [key, { url: entry.url, filename: entry.filename }])
+    ),
+    installedAt: new Date().toISOString()
+  });
+  store.set('updateAvailable', false);
+
+  if (process.platform === 'win32') {
+    spawn(cachedFiles.installer, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+    appIsQuitting = true;
+    app.quit();
+    return { ok: true, action: 'installer-started', version: update.version };
+  }
+
+  const openError = await shell.openPath(cachedFiles.installer);
+  if (openError) throw new Error(openError);
+  return { ok: true, action: 'dmg-opened', version: update.version };
 }
 
 async function downloadLatestUpdate(updateOverride = null) {
@@ -3016,38 +3492,18 @@ function removeLegacyVsHookLuaFiles(dir) {
 }
 
 function installWindowsPayload(files) {
-  const publicVsHookDir = getWindowsPublicVsHookDir();
-
-  removeLegacyVsHookLuaFiles(publicVsHookDir);
-  removeLegacyVsHookLuaFiles(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'REAPER', 'Scripts', 'VS Hook APP'));
-  removeLegacyVsHookLuaFiles(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'REAPER', 'Scripts'));
-
-  copyFileEnsured(files.betaLua || files.proLua || files.lua, path.join(publicVsHookDir, 'VS Hook Beta.lua'));
-  copyFileEnsured(files.estableLua || files.stableLua || files.basicLua, path.join(publicVsHookDir, 'VS Hook Estable.lua'));
-
-  copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_vshook.dll'));
-  copyFileEnsured(files.jsApiDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_js_ReaScriptAPI64.dll'));
+  copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
 }
 
 function installMacPayload(files) {
   const commands = [];
-  const betaLuaSource = files.betaLua || files.proLua || files.lua;
-  const estableLuaSource = files.estableLua || files.stableLua || files.basicLua;
   const vshookSource = files.vshookDylib;
-  const jsApiSource = files.jsApiDylib;
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
-  commands.push('GLOBAL_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
-  commands.push('mkdir -p "$GLOBAL_SCRIPT_DIR" "$GLOBAL_PLUGIN_DIR"');
-
-  commands.push('rm -f "$GLOBAL_SCRIPT_DIR/VS Hook Pro.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Basic.lua" "$GLOBAL_SCRIPT_DIR/VS Hook.lua" "$GLOBAL_SCRIPT_DIR/Hook Lyrics.lua" "$GLOBAL_SCRIPT_DIR/Hook lyrics.lua" 2>/dev/null || true');
-  if (betaLuaSource) commands.push(`cp -f ${shellQuote(betaLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Beta.lua"`);
-  if (estableLuaSource) commands.push(`cp -f ${shellQuote(estableLuaSource)} "$GLOBAL_SCRIPT_DIR/VS Hook Estable.lua"`);
-  if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"`);
-  if (jsApiSource) commands.push(`cp -f ${shellQuote(jsApiSource)} "$GLOBAL_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('chmod 644 "$GLOBAL_SCRIPT_DIR/VS Hook Beta.lua" "$GLOBAL_SCRIPT_DIR/VS Hook Estable.lua" 2>/dev/null || true');
+  commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
+  if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -3055,16 +3511,10 @@ function installMacPayload(files) {
   commands.push('  USER_NAME=$(basename "$USER_HOME")');
   commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
   commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
-  commands.push('  USER_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
-  commands.push('  mkdir -p "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR"');
-  commands.push('  rm -f "$USER_SCRIPT_DIR/VS Hook Pro.lua" "$USER_SCRIPT_DIR/VS Hook Basic.lua" "$USER_SCRIPT_DIR/VS Hook.lua" "$USER_SCRIPT_DIR/Hook Lyrics.lua" "$USER_SCRIPT_DIR/Hook lyrics.lua" 2>/dev/null || true');
-  if (betaLuaSource) commands.push(`  cp -f ${shellQuote(betaLuaSource)} "$USER_SCRIPT_DIR/VS Hook Beta.lua"`);
-  if (estableLuaSource) commands.push(`  cp -f ${shellQuote(estableLuaSource)} "$USER_SCRIPT_DIR/VS Hook Estable.lua"`);
-  if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_vshook.dylib"`);
-  if (jsApiSource) commands.push(`  cp -f ${shellQuote(jsApiSource)} "$USER_PLUGIN_DIR/reaper_js_ReaScriptAPI.dylib"`);
-  commands.push('  chown -R "$USER_NAME":staff "$USER_SCRIPT_DIR" "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 644 "$USER_SCRIPT_DIR/VS Hook Beta.lua" "$USER_SCRIPT_DIR/VS Hook Estable.lua" 2>/dev/null || true');
+  commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
+  if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
+  commands.push('  chown -R "$USER_NAME":staff "$USER_PLUGIN_DIR" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
 
@@ -3469,6 +3919,7 @@ ipcMain.handle('get-state', async () => {
 
 ipcMain.handle('get-bridge-state', () => getBridgeState());
 ipcMain.handle('restart-bridge', () => startBridgeServers());
+ipcMain.handle('select-bridge-network', (_event, payload) => selectBridgeNetwork(payload || {}));
 ipcMain.handle('check-updates', async () => {
   const result = await checkForUpdates(true);
   await checkHookCenterUpdates(true);
@@ -3486,67 +3937,9 @@ ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('get-previous-updates', () => getPreviousUpdates());
 ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payload?.update || null));
 ipcMain.handle('install-update', () => installDownloadedUpdate());
-ipcMain.handle('get-lyrics-settings', (_event, slot) => slot ? getLyricsSettings(slot) : getLyricsAllSettings());
-ipcMain.handle('save-lyrics-settings', (_event, payload) => saveLyricsSettings(payload || {}, payload?.slot));
-ipcMain.handle('get-technical-notice-settings', () => getTechnicalNoticeSettings());
-ipcMain.handle('save-technical-notice-settings', (_event, payload) => saveTechnicalNoticeSettings(payload || {}));
-ipcMain.handle('send-recados-notice', (_event, payload) => sendRecadosNotice(payload || {}));
-ipcMain.handle('cancel-recados-notice', () => cancelRecadosNotice());
-ipcMain.handle('set-recados-notice-pinned', (_event, payload) => setRecadosNoticePinned(payload || {}));
-ipcMain.handle('export-lyrics-backup', () => exportLyricsBackup());
-ipcMain.handle('import-lyrics-backup', () => importLyricsBackup());
-ipcMain.handle('open-lyrics-window', (_event, slot) => createLyricsWindow(slot));
-ipcMain.handle('close-lyrics-window', (_event, slot) => {
-  const id = Number(slot) === 2 ? 2 : 1;
-  const win = lyricsWindows.get(id);
-  if (win && !win.isDestroyed()) {
-    lyricsWindows.delete(id);
-    try { win.close(); } catch (_) {}
-  }
-  return { ok: true, slot: id, lyricsWindows: broadcastLyricsWindowsState() };
-});
-ipcMain.handle('get-lyrics-state', (_event, slot) => getLyricsState(slot));
-ipcMain.handle('close-current-window', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (win && !win.isDestroyed()) {
-    for (const [slot, lyricsWin] of lyricsWindows.entries()) {
-      if (lyricsWin === win) {
-        lyricsWindows.delete(slot);
-        break;
-      }
-    }
-    try { win.close(); } catch (_) {}
-  }
-  return { ok: true, lyricsWindows: broadcastLyricsWindowsState() };
-});
-
-ipcMain.handle('toggle-current-window-fullscreen', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  return toggleLyricsWindowFullscreen(win);
-});
-
-ipcMain.handle('get-current-window-bounds', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed()) return { ok: false };
-  return {
-    ok: true,
-    bounds: win.getBounds(),
-    maximized: process.platform === 'darwin' && isLyricsWindowMaximized(win)
-  };
-});
-
-ipcMain.handle('prepare-current-window-drag', (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isDestroyed() || process.platform !== 'darwin' || isHookCenterLegacyBuild()) {
-    return { ok: false };
-  }
-  try {
-    const result = restoreMaximizedLyricsWindowForDrag(win, screen.getCursorScreenPoint());
-    return { ok: true, ...result };
-  } catch (_) {
-    return { ok: false };
-  }
-});
+ipcMain.handle('cache-update-package', (_event, payload) => cacheUpdatePackage(payload?.update || null, { requireInstaller: true }));
+ipcMain.handle('remove-cached-update-package', (_event, payload) => removeCachedUpdatePackage(payload?.update || payload || null));
+ipcMain.handle('install-cached-update-package', (_event, payload) => installCachedUpdatePackage(payload?.update || null));
 
 function finishLegacyWindowDrag(session) {
   const win = session?.win;
@@ -3670,6 +4063,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   const document = docParts.document;
   const email = normalizeEmail(payload?.email);
   const machineId = await getMachineId();
+  const deviceFingerprint = await getDeviceFingerprint();
   const computerName = getStoredDeviceName();
 
   if (document && document.length !== 11 && document.length !== 14) {
@@ -3684,9 +4078,10 @@ ipcMain.handle('activate-license', async (_event, payload) => {
 
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
-    body: JSON.stringify({ cpf, cnpj, document, email, machineId, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   });
 
+  saveSignedLicenseToken(result.licenseToken, { required: true });
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
   let activationPersistenceWarning = '';
   try {

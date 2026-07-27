@@ -187,6 +187,11 @@ button, input {
   background: #ca8a04;
   color: #111827;
 }
+.btnAutoplayActive.btnAutoplay2Active {
+  border-color: #4ade80;
+  background: #16a34a;
+  color: #ffffff;
+}
 .sectionLabel {
   color: #d1d5db;
   font-weight: bold;
@@ -249,6 +254,24 @@ button, input {
 }
 .playbackQueueNext .playbackQueueTitle {
   color: #facc15;
+}
+.playbackQueueMultiLoop {
+  min-height: 22px;
+  padding: 2px 9px;
+  border-top: 1px solid #1b2634;
+}
+.playbackQueueMultiLoop .playbackQueueLabel,
+.playbackQueueMultiLoop .playbackQueueTitle {
+  color: #bb69ff !important;
+  font-size: 9px;
+}
+.playbackQueueMultiLoop.playbackQueueLoop .playbackQueueLabel,
+.playbackQueueMultiLoop.playbackQueueLoop .playbackQueueTitle {
+  color: #bb69ff !important;
+}
+.playbackQueueMultiLoopBypass .playbackQueueLabel,
+.playbackQueueMultiLoopBypass .playbackQueueTitle {
+  color: #ffe02e !important;
 }
 .listBox {
   border: 1px solid #364152;
@@ -4681,6 +4704,35 @@ body.boot-loading {
   }
 }
 
+/* Diretor: Auto 1 e Auto 2 disponíveis no transporte do celular. */
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay"],
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay2"] {
+  min-width: 0 !important;
+  font-size: 14px !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="stop-break"] {
+  font-size: 13px !important;
+}
+
+/* Override final: mantém os quatro controles visíveis também após as regras
+   legadas de layout carregadas abaixo neste arquivo. */
+.controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay"],
+.controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay2"] {
+  min-width: 0 !important;
+  font-size: 14px !important;
+}
+.btnAutoplayActive.btnAutoplay2Active {
+  border-color: #4ade80 !important;
+  background: #16a34a !important;
+  color: #ffffff !important;
+}
+
 
 /* v1.8.4 Diretor: Play/Stop, AUTO, << e >> alinhados e no mesmo padrão */
 .controlsStickyPanel .controlsRowEqual {
@@ -6326,10 +6378,6 @@ button,
   text-align: center;
 }
 
-.timerActionButtonsSingle {
-  grid-template-columns: 1fr !important;
-}
-
 /* VS_HOOK_PARTS_STABLE_PANEL */
 .partsOverlay {
   inset: 0 !important;
@@ -6389,6 +6437,9 @@ button,
   border-radius: 14px;
   background: rgba(15, 23, 42, .98);
   box-shadow: 0 20px 40px rgba(0,0,0,.48), 0 0 0 1px rgba(148,163,184,.14);
+  max-height: calc(100vh - 54px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .topMenuFlyoutBtn {
@@ -6439,6 +6490,52 @@ button,
   border-color: #fde047;
   background: #facc15;
   color: #111827;
+}
+
+@keyframes directorLiveControlBlink {
+  0%, 49.99% {
+    opacity: 1;
+    filter: brightness(1.08) saturate(1);
+  }
+  50%, 100% {
+    opacity: 1;
+    filter: brightness(.20) saturate(.35);
+  }
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOff,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOff {
+  border-color: #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  animation: none !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOn,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOn,
+.app .tabletLiveButtonActive {
+  border-color: #4ade80 !important;
+  background: #15803d !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 14px rgba(34,197,94,.58) !important;
+  animation: directorLiveControlBlink .72s linear infinite !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnByOff,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnByOff {
+  border-color: #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  animation: none !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnByOn,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnByOn {
+  border-color: #fde047 !important;
+  background: #facc15 !important;
+  color: #111827 !important;
+  box-shadow: 0 0 14px rgba(250,204,21,.62) !important;
+  animation: directorLiveControlBlink .72s linear infinite !important;
 }
 
 .topMenuFlyoutBtnCopy {
@@ -6927,8 +7024,8 @@ button,
 .partsSongSwitchBtnActive{background:#1d4ed8!important;border-color:#60a5fa!important;color:#ffffff!important;box-shadow:0 0 0 1px rgba(96,165,250,.28),0 0 14px rgba(37,99,235,.32)!important}
 
 /* Loop ativo: pisca em amarelo no botão superior e no botão da tela Parts. */
-.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s steps(2,end) infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
-@keyframes directorLoopBlink{0%,100%{filter:brightness(1);opacity:1}50%{filter:brightness(.64);opacity:.58}}
+.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s linear infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
+@keyframes directorLoopBlink{0%,49.99%{filter:brightness(1.08) saturate(1);opacity:1}50%,100%{filter:brightness(.20) saturate(.35);opacity:1}}
 .playbackQueueLoop .playbackQueueLabel,.playbackQueueLoop .playbackQueueTitle{color:#facc15!important}
 
 
@@ -7377,6 +7474,21 @@ button,
   background: #000;
   isolation: isolate;
 }
+html[data-director-device="tablet"] .directorTpOverlay {
+  inset: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: var(--app-vh, 100dvh) !important;
+  padding:
+    max(4px, var(--tablet-safe-top, env(safe-area-inset-top, 0px)))
+    max(4px, var(--tablet-safe-right, env(safe-area-inset-right, 0px)))
+    max(4px, var(--tablet-safe-bottom, env(safe-area-inset-bottom, 0px)))
+    max(4px, var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
+  box-sizing: border-box !important;
+}
 .directorTpImage,
 .directorTpVideo {
   position: absolute;
@@ -7631,7 +7743,7 @@ button,
   padding: clamp(24px, 7vh, 74px) clamp(20px, 7vw, 72px);
   pointer-events: none;
   overflow: hidden;
-  background: #000;
+  background: var(--director-notice-background, #000);
   color: var(--director-notice-text, #ffea00);
   font-family: var(--director-notice-font, Arial, sans-serif);
   font-size: clamp(30px, 7.8vw, 72px);
@@ -7648,11 +7760,11 @@ button,
 }
 @keyframes directorTpTechnicalNoticeFlash {
   0%, 16.66% { background: var(--director-notice-flash, #ff0000); }
-  16.67%, 33.33% { background: #000; }
+  16.67%, 33.33% { background: var(--director-notice-background, #000); }
   33.34%, 50% { background: var(--director-notice-flash, #ff0000); }
-  50.01%, 66.66% { background: #000; }
+  50.01%, 66.66% { background: var(--director-notice-background, #000); }
   66.67%, 83.33% { background: var(--director-notice-flash, #ff0000); }
-  83.34%, 100% { background: #000; }
+  83.34%, 100% { background: var(--director-notice-background, #000); }
 }
 
 /* VS_HOOK_PARTS_ARMED_REGRESS_V1
@@ -7695,9 +7807,9 @@ button,
 /* VS_HOOK_PARTS_TRANSPORT_SAME_SIZE_V1
    O painel de transporte do Parts nao pode ser comprimido pela altura minima da lista. */
 .partsOverlayContent > .playbackQueueHeader {
-  flex: 0 0 72px !important;
-  min-height: 72px !important;
-  max-height: 72px !important;
+  flex: 0 0 94px !important;
+  min-height: 94px !important;
+  max-height: 94px !important;
   width: 100% !important;
   margin: 0 0 8px !important;
 }
@@ -7965,4 +8077,520 @@ body.directorRecadosTouchMode #app {
 .musicianMonitor .item:not(.numberedItem) > .queuedRowRegressTrack > .queuedRowRegressBar {
   background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
   box-shadow: 0 0 7px rgba(249, 115, 22, .52) !important;
+}
+
+/* Live confirmado pela extensão: mesmo contraste para Diretor e Músicos,
+   inclusive regiões-pai e músicas-filho. */
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) {
+  background: #991b1b !important;
+  border-color: #ef4444 !important;
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, .34) !important;
+}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .leftCol span,
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .rightCol span {
+  color: #fecaca !important;
+  text-decoration: none !important;
+  text-shadow: none !important;
+}
+
+/* A largura é atualizada localmente a 30 FPS entre os snapshots do Bridge. */
+.app .playbackQueueFill,
+.app .playingRowProgressBar,
+.app .queuedRowRegressBar,
+.app .partsArmedRegressBar {
+  transition: width 90ms linear !important;
+  will-change: width;
+}
+
+/* Gavetas no App Diretor: controle explícito imediatamente antes do tempo. */
+.app:not(.musicianMonitor) .item.numberedItem.hasFamilyDrawerToggle {
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
+}
+.app:not(.musicianMonitor) .item.hasFamilyDrawerToggle > .rightCol {
+  min-width: 68px;
+  padding-left: 3px !important;
+}
+.musicianMonitor .item.hasFamilyDrawerToggle {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.musicianMonitor .item.hasFamilyDrawerToggle > .rightCol {
+  min-width: 58px;
+  padding-left: 3px !important;
+}
+.familyDrawerToggle {
+  position: relative;
+  z-index: 9;
+  align-self: center;
+  min-width: 54px;
+  height: 25px;
+  margin-left: 2px;
+  padding: 0 6px;
+  border: 1px solid #f87171;
+  border-radius: 6px;
+  background: #7f1d1d;
+  color: #fee2e2;
+  font-size: 9px;
+  font-weight: 1000;
+  line-height: 1;
+  touch-action: manipulation !important;
+}
+.familyDrawerToggleOpen {
+  border-color: #4ade80;
+  background: #166534;
+  color: #dcfce7;
+}
+html[data-director-device="tablet"] .familyDrawerToggle {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+/* Ornamentos de bloco sincronizados com o preset visual da extensão. */
+.blockDesignerLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+}
+.blockDesignerText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.blockDesignerOrnament {
+  position: relative;
+  flex: 1 1 24px;
+  min-width: 8px;
+  height: 10px;
+  color: var(--block-symbol-color, #fff02e);
+}
+.blockSymbol-none .blockDesignerOrnament { display: none; }
+.blockSymbol-colon .blockDesignerOrnament {
+  background: radial-gradient(circle, currentColor 0 1.5px, transparent 1.7px)
+    center / 9px 7px repeat-x;
+}
+.blockSymbol-equal .blockDesignerOrnament {
+  background:
+    linear-gradient(currentColor, currentColor) center 2px / 100% 1px no-repeat,
+    linear-gradient(currentColor, currentColor) center 8px / 100% 1px no-repeat;
+}
+.blockSymbol-dash .blockDesignerOrnament {
+  background: repeating-linear-gradient(
+    90deg, currentColor 0 9px, transparent 9px 14px
+  ) center / 100% 2px no-repeat;
+}
+.blockSymbol-diamond .blockDesignerOrnament {
+  background:
+    linear-gradient(45deg, transparent 42%, currentColor 43% 57%, transparent 58%)
+      center / 12px 12px repeat-x,
+    linear-gradient(-45deg, transparent 42%, currentColor 43% 57%, transparent 58%)
+      center / 12px 12px repeat-x;
+}
+.blockSymbol-spark .blockDesignerOrnament {
+  background:
+    linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat,
+    repeating-linear-gradient(
+      90deg, transparent 0 5px, currentColor 5px 7px, transparent 7px 13px
+    ) center / 100% 7px no-repeat;
+}
+.blockSymbol-capsule .blockDesignerOrnament {
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.blockSymbol-capsule .blockDesignerOrnament::before,
+.blockSymbol-capsule .blockDesignerOrnament::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background: #111827;
+  transform: translateY(-50%);
+}
+.blockSymbol-capsule .blockDesignerOrnament::before { left: 0; }
+.blockSymbol-capsule .blockDesignerOrnament::after { right: 0; }
+.blockSymbol-angle .blockDesignerOrnament {
+  height: 2px;
+  background: currentColor;
+}
+.blockSymbol-angle .blockDesignerOrnament::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+}
+.blockSymbol-angle .blockDesignerOrnamentLeft::after {
+  right: 0;
+  transform: translateY(-50%) rotate(45deg);
+}
+.blockSymbol-angle .blockDesignerOrnamentRight::after {
+  left: 0;
+  transform: translateY(-50%) rotate(225deg);
+}
+
+/* Configurações sempre começam no alto e possuem rolagem própria. */
+.settingsModalBox {
+  max-height: calc(100vh - 12px) !important;
+  max-height: calc(100dvh - 12px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+.modalOverlay:has(.settingsModalBox) .modalSpacer {
+  flex: 0 0 4px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox {
+  max-height: calc(100vh - 76px) !important;
+  max-height: calc(100dvh - 76px) !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer,
+html[data-director-device="tablet"] .modalOverlay:has(.settingsModalBox) .modalSpacer {
+  flex: 0 0 48px !important;
+}
+
+/* Diretor 1.0.0: transporte com Auto 1 e Auto 2 no modo celular. */
+.app:not(.musicianMonitor) .controlsStickyPanel .controlsRowDirectorMain {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+.app:not(.musicianMonitor) .controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay"],
+.app:not(.musicianMonitor) .controlsStickyPanel .controlsRowDirectorMain > [data-action="autoplay2"] {
+  min-width: 0 !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+  font-size: 14px !important;
+}
+.app:not(.musicianMonitor) .btnAutoplayActive.btnAutoplay2Active {
+  border-color: #4ade80 !important;
+  background: #16a34a !important;
+  color: #ffffff !important;
+}
+
+/* Tablet: os modais ocupam toda a altura útil abaixo dos controles. */
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
+  flex: 0 0 44px !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsModalBox {
+  height: calc(100vh - 72px) !important;
+  height: calc(100dvh - 72px) !important;
+  max-height: calc(100vh - 72px) !important;
+  max-height: calc(100dvh - 72px) !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsExitButtons {
+  margin-top: auto !important;
+  padding-top: 7px !important;
+  flex: 0 0 auto !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .modalSpacer {
+  flex: 0 0 62px !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalBox {
+  height: calc(100vh - 90px) !important;
+  height: calc(100dvh - 90px) !important;
+  max-height: calc(100vh - 90px) !important;
+  max-height: calc(100dvh - 90px) !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalActionButtons {
+  flex: 0 0 auto !important;
+}
+
+/* A extensão fornece o fundo Live; o texto permanece vermelho fixo. */
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) {
+  background: var(--live-mark-background, #7d8693) !important;
+  border-color: var(--live-mark-border, #8f99a8) !important;
+  box-shadow: inset 0 0 0 1px var(--live-mark-shadow, #8f99a857) !important;
+}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .leftCol span,
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rightCol span,
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rowNumberCol span {
+  color: #f87171 !important;
+  text-decoration: none !important;
+  text-shadow: none !important;
+}
+
+/* Repertórios multiaba e modais maiores/responsivos. */
+.playlistModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.playlistModalHeader .modalTitle {
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+.playlistMultiButton {
+  flex: 0 0 auto;
+  min-width: 104px;
+  min-height: 38px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+.playlistMultiButton:disabled {
+  opacity: 1 !important;
+  filter: none !important;
+  cursor: not-allowed !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .modalSpacer {
+  flex: 0 0 48px !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalBox {
+  width: min(94%, 980px) !important;
+  max-width: 980px !important;
+  height: calc(100vh - 76px) !important;
+  height: calc(100dvh - 76px) !important;
+  max-height: calc(100vh - 76px) !important;
+  max-height: calc(100dvh - 76px) !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
+  flex: 0 0 36px !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsModalBox {
+  width: min(92%, 920px) !important;
+  max-width: 920px !important;
+  height: calc(100vh - 64px) !important;
+  height: calc(100dvh - 64px) !important;
+  max-height: calc(100vh - 64px) !important;
+  max-height: calc(100dvh - 64px) !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .modalSpacer,
+html[data-director-device="phone"] .modalOverlay:has(.projectModalBox) .modalSpacer {
+  flex: 0 0 12px !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistModalBox,
+html[data-director-device="phone"] .projectModalBox {
+  width: min(96vw, 620px) !important;
+  max-width: 620px !important;
+  height: calc(100vh - 52px) !important;
+  height: calc(100dvh - 52px) !important;
+  max-height: calc(100vh - 52px) !important;
+  max-height: calc(100dvh - 52px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistSelectList,
+html[data-director-device="phone"] .projectModalBox .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 4px !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone > [data-action="stop-break"] {
+  font-size: 10px !important;
+  white-space: nowrap !important;
+}
+
+/* Tamanho final dos modais: ocupam de fato todo o espaço útil da tela. */
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay,
+html[data-director-device="tablet"] .projectModalOverlay {
+  padding: 62px 8px 8px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay {
+  padding: 62px 8px 8px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .modalBottomSpace,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalBottomSpace,
+html[data-director-device="tablet"] .projectModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .projectModalOverlay > .modalBottomSpace {
+  display: none !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .projectModalOverlay .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox {
+  overflow-y: auto !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay,
+html[data-director-device="phone"] .projectModalOverlay,
+html[data-director-device="phone"] .tabletSettingsModalOverlay {
+  padding: 6px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .modalBottomSpace,
+html[data-director-device="phone"] .projectModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .projectModalOverlay > .modalBottomSpace,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .modalBottomSpace {
+  display: none !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="phone"] .projectModalOverlay > .projectModalBox,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .settingsModalBox {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .settingsModalBox {
+  overflow-y: auto !important;
+}
+.tabletPlaylistModalOverlay .playlistSelectList {
+  gap: 5px !important;
+  align-content: start !important;
+  grid-auto-rows: max-content !important;
+}
+.tabletPlaylistModalOverlay .playlistOption,
+.tabletPlaylistModalOverlay .playlistOptionActive {
+  height: 35px !important;
+  max-height: 35px !important;
+  min-height: 35px !important;
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+.tabletPlaylistModalOverlay .playlistOptionTime {
+  font-size: 10px !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistOption,
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistOptionActive {
+  height: 33px !important;
+  max-height: 33px !important;
+  min-height: 33px !important;
+  padding: 4px 7px !important;
+  font-size: 10.5px !important;
+}
+.projectModalOverlay .playlistSelectList {
+  gap: 5px !important;
+  align-content: start !important;
+  grid-auto-rows: max-content !important;
+}
+.projectModalOverlay .playlistOption,
+.projectModalOverlay .playlistOptionActive {
+  height: 35px !important;
+  max-height: 35px !important;
+  min-height: 35px !important;
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+html[data-director-device="phone"] .projectModalOverlay .playlistOption,
+html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
+  height: 33px !important;
+  max-height: 33px !important;
+  min-height: 33px !important;
+  padding: 4px 7px !important;
+  font-size: 10.5px !important;
+}
+
+/* AUTO 2: fila preparada sem reprodução automática, inclusive no monitor. */
+.app .item.queuedGreen:not(.blockItem) {
+  background: #22c55e !important;
+  border-color: #166534 !important;
+  box-shadow: inset 0 0 0 1px rgba(134,239,172,.34) !important;
+}
+.app .item.queuedGreen .queuedGreenText,
+.app .item.queuedGreen .queuedGreenTimeText,
+.app .item.queuedGreen .leftCol span,
+.app .item.queuedGreen .rightCol span,
+.app .item.queuedGreen .rowNumberCol span {
+  color: #052e16 !important;
+  text-shadow: none !important;
+  font-weight: bold !important;
+}
+.app .item.numberedItem.queuedGreen:not(.blockItem) {
+  position: relative;
+  background: transparent !important;
+  border-bottom-color: #18212c !important;
+  box-shadow: none !important;
+}
+.app .item.numberedItem.queuedGreen:not(.blockItem)::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 38px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: #22c55e !important;
+  box-shadow: inset 0 0 0 1px rgba(134,239,172,.34) !important;
+}
+.app .item.blockItem.queuedGreen {
+  background: #22c55e !important;
+  border-color: #166534 !important;
+}
+.app .item.queuedGreen .queuedRowRegressBar,
+.app .playbackQueueTrackNext.playbackQueuePrepareOnly .playbackQueueFillNext {
+  background: linear-gradient(90deg,#4ade80 0%,#16a34a 100%) !important;
+  box-shadow: 0 0 7px rgba(34,197,94,.52) !important;
+}
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueLabel,
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle {
+  color: #4ade80 !important;
 }

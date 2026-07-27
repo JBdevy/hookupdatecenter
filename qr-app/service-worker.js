@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-3.0.9-tablet-runtime-orientation-v104';
+const CACHE_NAME = 'vshook-mobile-1.0.0-native-single-motor-v28';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -51,7 +51,7 @@ self.addEventListener('fetch', (event) => {
     '/projects', '/projects.json',
     '/state', '/state.json',
     '/lyrics', '/lyrics.json',
-    '/command', '/technical-notice', '/recados-notice',
+    '/command', '/technical-notice', '/recados-notice', '/recados-templates',
     '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg',
     '/media', '/tp-media', '/teleprompt-media'
   ];

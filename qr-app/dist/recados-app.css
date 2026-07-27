@@ -66,6 +66,13 @@ button, textarea, input { font: inherit; }
 .recadosGlobalButton { grid-column:1 / -1; margin-top:0; }
 .recadosEditButton { background:#1d4ed8; border-color:#60a5fa; color:#fff; }
 .recadosSaveButton { background:#15803d; border-color:#4ade80; }
+.recadosContentArea {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0,1fr) auto;
+  gap: 8px;
+}
 .recadosTextInput {
   display: block;
   width: 100%;
@@ -92,6 +99,55 @@ button, textarea, input { font: inherit; }
   user-select: text;
   -webkit-overflow-scrolling: touch;
 }
+.recadosImagePanel {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(72px,104px) minmax(0,1fr);
+  gap: 8px;
+  align-items: stretch;
+}
+.recadosImagePreview,
+.recadosImageEmpty {
+  width: 100%;
+  height: 66px;
+  border: 1px solid #475569;
+  border-radius: 10px;
+  background: #020617;
+}
+.recadosImagePreview { display:block; object-fit:contain; }
+.recadosImageEmpty {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:6px;
+  color:#94a3b8;
+  font-size:11px;
+  font-weight:900;
+  text-align:center;
+}
+.recadosImageActions {
+  min-width: 0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.recadosImageButton,
+.recadosImageRemoveButton {
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid #60a5fa;
+  border-radius: 10px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+.recadosImageRemoveButton {
+  border-color:#f87171;
+  background:#991b1b;
+}
+.recadosImageActions > :only-child { grid-column:1 / -1; }
+.recadosImageInput { display:none; }
 .recadosTextInput:focus { border-color: rgba(250,204,21,.78); }
 .recadosTextInput[readonly] { color:#e2e8f0; background:#0f172a; cursor:default; }
 .recadosStatus { min-height:28px; color:#facc15; text-align:center; font-weight:900; letter-spacing:.06em; }
@@ -109,4 +165,7 @@ button, textarea, input { font: inherit; }
   .recadosTextInput { font-size:18px; padding:13px; }
   .recadosSlotButton, .recadosEditButton, .recadosPinButton { min-height:38px; }
   .recadosSendButton, .recadosCancelButton, .recadosExitButton { min-height:52px; }
+  .recadosImagePanel { grid-template-columns:74px minmax(0,1fr); }
+  .recadosImagePreview, .recadosImageEmpty { height:58px; }
+  .recadosImageButton, .recadosImageRemoveButton { font-size:10px; padding:4px; }
 }

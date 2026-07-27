@@ -5,11 +5,13 @@ const path = require('path')
 const { URL } = require('url')
 const { createQrSvg } = require('./qr-svg')
 
+let electronNativeImage = null
+try {
+  electronNativeImage = require('electron').nativeImage || null
+} catch (_) {}
+
 const PROJECT_STALE_MS = 20000
 const MAX_LAST_GOOD_STATE_AGE_MS = 5 * 60 * 1000
-const TECHNICAL_NOTICE_DURATION_MS = 20000
-const DIRECTOR_NOTICE_DURATION_MS = 20000
-const TECHNICAL_NOTICE_MAX_LEN = 500
 
 function parseDateMs(value) {
   if (!value) return 0
@@ -246,13 +248,76 @@ const READ_JSON_CACHE_TTL_MS = 60
 
 const NATIVE_BRIDGE_PORT = Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830)
 const NATIVE_BRIDGE_CACHE_TTL_MS = 180 // evita martelar o REAPER enquanto o Diretor esta aberto
+const NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS = 180
 const NATIVE_BRIDGE_BACKGROUND_POLL_MS = 250
 let nativeBridgeStateCache = null
 let nativeBridgeStateCacheAt = 0
 let nativeBridgeRefreshInFlight = false
+let nativeBridgeBackgroundPollTimer = null
+const nativeBridgeLicenseChecks = new Set()
+const optimizedTelepromptImageCache = new Map()
+
+function trySendOptimizedTelepromptImage(req, res, targetPath) {
+  if (!electronNativeImage) return false
+  let mediaPath = ''
+  try {
+    const parsed = new URL(targetPath, 'http://127.0.0.1')
+    if (String(parsed.searchParams.get('preview') || '').toLowerCase() !== 'low') return false
+    mediaPath = String(parsed.searchParams.get('path') || parsed.searchParams.get('file') || '').trim()
+  } catch (_) {
+    return false
+  }
+  if (!mediaPath) return false
+
+  const extension = path.extname(mediaPath).slice(1).toLowerCase()
+  if (!['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(extension)) return false
+
+  try {
+    const stat = fs.statSync(mediaPath)
+    const cacheKey = `${mediaPath}|${stat.size}|${Math.floor(stat.mtimeMs)}`
+    let jpeg = optimizedTelepromptImageCache.get(cacheKey)
+    if (!jpeg) {
+      const original = electronNativeImage.createFromPath(mediaPath)
+      if (!original || original.isEmpty()) return false
+      const size = original.getSize()
+      const scale = Math.min(
+        1,
+        720 / Math.max(1, Number(size.width) || 1),
+        405 / Math.max(1, Number(size.height) || 1)
+      )
+      const width = Math.max(1, Math.round(size.width * scale))
+      const height = Math.max(1, Math.round(size.height * scale))
+      const reduced = scale < 0.999
+        ? original.resize({ width, height, quality: 'good' })
+        : original
+      jpeg = reduced.toJPEG(32)
+      if (!jpeg || !jpeg.length) return false
+      optimizedTelepromptImageCache.set(cacheKey, jpeg)
+      while (optimizedTelepromptImageCache.size > 6) {
+        optimizedTelepromptImageCache.delete(
+          optimizedTelepromptImageCache.keys().next().value
+        )
+      }
+    }
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': jpeg.length,
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Range',
+      'Cache-Control': 'private, max-age=120',
+    })
+    if (req.method !== 'HEAD') res.end(jpeg)
+    else res.end()
+    return true
+  } catch (_) {
+    return false
+  }
+}
 
 
 function proxyNativeBridgeMedia(req, res, targetPath) {
+  if (trySendOptimizedTelepromptImage(req, res, targetPath)) return
   const headers = {}
   if (req.headers.range) headers.Range = req.headers.range
   if (req.headers['user-agent']) headers['User-Agent'] = req.headers['user-agent']
@@ -268,7 +333,9 @@ function proxyNativeBridgeMedia(req, res, targetPath) {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type,Range',
-      'Cache-Control': 'no-store',
+      // Permite reutilizar a mesma mídia na troca TP1/TP2. O cache é curto
+      // para refletir rapidamente qualquer arquivo alterado no projeto.
+      'Cache-Control': 'private, max-age=120',
     }
     for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
       const value = nativeRes.headers[name]
@@ -313,68 +380,36 @@ function requestNativeBridgeJson(pathname, options = {}) {
       res.on('end', () => {
         try {
           const parsed = raw ? JSON.parse(raw) : {}
-          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, data: parsed })
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            status: Number(res.statusCode || 0),
+            data: parsed,
+          })
         } catch (_) {
-          resolve({ ok: false, data: null })
+          resolve({ ok: false, status: Number(res.statusCode || 0), data: null })
         }
       })
     })
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, data: null }) })
-    req.on('error', () => resolve({ ok: false, data: null }))
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, data: null }) })
+    req.on('error', () => resolve({ ok: false, status: 0, data: null }))
     if (body) req.write(body)
     req.end()
   })
 }
 
 
-function parseEmbeddedLuaLiveState(value) {
-  if (!value) return null
-  if (typeof value === 'object') return value
-  if (typeof value !== 'string') return null
-  try { return JSON.parse(value) } catch (error) { return null }
-}
-
-function mergeLuaLiveStateIntoNativeState(state) {
-  if (!state || typeof state !== 'object') return state
-  const candidates = [
-    state.luaLiveState,
-    state.luaState,
-    state.luaLive,
-    state.lua,
-    parseEmbeddedLuaLiveState(state.luaLiveJson),
-    parseEmbeddedLuaLiveState(state.luaStateJson),
-    parseEmbeddedLuaLiveState(state.LUA_LIVE_JSON_V1),
-  ].filter((item) => item && typeof item === 'object')
-  if (!candidates.length) return state
-  const live = Object.assign({}, ...candidates)
-  return {
-    ...state,
-    ...live,
-    projects: state.projects || live.projects,
-    projectTabs: state.projectTabs || live.projectTabs,
-    regions: state.regions || live.regions,
-    playlists: state.playlists || live.playlists,
-    markers: state.markers || live.markers,
-    mixer: live.mixer || state.mixer,
-    mixerTracks: live.mixerTracks || state.mixerTracks,
-    mixerGroups: live.mixerGroups || state.mixerGroups,
-    mixerMaster: live.mixerMaster || state.mixerMaster,
-    premix: live.premix || state.premix,
-    premixTracks: live.premixTracks || state.premixTracks,
-    premixItems: live.premixItems || state.premixItems,
-    premixRows: live.premixRows || state.premixRows,
-    premixSelectedSongId: live.premixSelectedSongId || state.premixSelectedSongId,
-    luaLiveMerged: true,
-  }
-}
-
 async function refreshNativeBridgeState() {
+  if (nativeBridgeStateCache &&
+      (Date.now() - nativeBridgeStateCacheAt) <
+        NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS) {
+    return nativeBridgeStateCache
+  }
   if (nativeBridgeRefreshInFlight) return nativeBridgeStateCache
   nativeBridgeRefreshInFlight = true
   try {
     const result = await requestNativeBridgeJson('/state', { timeoutMs: 650 })
     if (result.ok && result.data && result.data.connected) {
-      nativeBridgeStateCache = mergeLuaLiveStateIntoNativeState(result.data)
+      nativeBridgeStateCache = result.data
       nativeBridgeStateCacheAt = Date.now()
       return nativeBridgeStateCache
     }
@@ -382,6 +417,37 @@ async function refreshNativeBridgeState() {
     nativeBridgeRefreshInFlight = false
   }
   return null
+}
+
+function retainNativeBridgeBackgroundPolling(licenseCheck) {
+  if (typeof licenseCheck === 'function') {
+    nativeBridgeLicenseChecks.add(licenseCheck)
+  }
+  if (!nativeBridgeBackgroundPollTimer) {
+    nativeBridgeBackgroundPollTimer = setInterval(() => {
+      const enabled = Array.from(nativeBridgeLicenseChecks)
+        .some((check) => {
+          try { return check() === true } catch (_) { return false }
+        })
+      if (enabled) refreshNativeBridgeState().catch(() => {})
+    }, NATIVE_BRIDGE_BACKGROUND_POLL_MS)
+    if (nativeBridgeBackgroundPollTimer.unref) {
+      nativeBridgeBackgroundPollTimer.unref()
+    }
+  }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    if (typeof licenseCheck === 'function') {
+      nativeBridgeLicenseChecks.delete(licenseCheck)
+    }
+    if (!nativeBridgeLicenseChecks.size &&
+        nativeBridgeBackgroundPollTimer) {
+      clearInterval(nativeBridgeBackgroundPollTimer)
+      nativeBridgeBackgroundPollTimer = null
+    }
+  }
 }
 
 function getFreshNativeBridgeState() {
@@ -461,58 +527,6 @@ function normalizeNoticeSource(value) {
   if (source === 'hooklyrics' || source === 'hook-lyrics' || source === 'lyrics') return 'hooklyrics'
   if (source === 'recados' || source === 'recado') return 'recados'
   return 'recados'
-}
-
-function getTechnicalNoticePriority(source) {
-  const normalized = normalizeNoticeSource(source)
-  if (normalized === 'recados') return 4
-  if (normalized === 'director') return 3
-  return 1
-}
-
-function getTechnicalNoticeDurationMs(source, raw = {}) {
-  const normalized = normalizeNoticeSource(source)
-  const requested = Math.floor(Number(raw.durationMs || raw.duration || raw.ttlMs || 0))
-  if (requested > 0) return Math.min(Math.max(requested, 1000), 60000)
-  return normalized === 'director' ? DIRECTOR_NOTICE_DURATION_MS : TECHNICAL_NOTICE_DURATION_MS
-}
-
-function normalizeTechnicalNotice(raw) {
-  if (!raw || typeof raw !== 'object') return null
-  const text = String(raw.text || raw.message || '').trim()
-  const expiresAt = Number(raw.expiresAt || 0)
-  if (!text || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null
-  const source = normalizeNoticeSource(raw.source || 'recados')
-  const priority = Math.max(getTechnicalNoticePriority(source), Math.floor(Number(raw.priority) || 0))
-  return {
-    id: String(raw.id || ''),
-    text,
-    message: text,
-    source,
-    priority,
-    createdAt: raw.createdAt || null,
-    updatedAt: raw.updatedAt || raw.createdAt || null,
-    expiresAt,
-    expiresAtIso: raw.expiresAtIso || new Date(expiresAt).toISOString(),
-    pinned: raw.pinned === true,
-    pausedRemainingMs: Math.max(0, Math.floor(Number(raw.pausedRemainingMs || 0))),
-  }
-}
-
-function readActiveTechnicalNotice(noticeFile) {
-  return normalizeTechnicalNotice(readJson(noticeFile, null))
-}
-
-function clearTechnicalNotice(noticeFile) {
-  writeJson(noticeFile, {
-    id: '',
-    text: '',
-    message: '',
-    source: '',
-    priority: 0,
-    cancelledAt: new Date().toISOString(),
-    expiresAt: 0,
-  })
 }
 
 function firstString(...values) {
@@ -730,10 +744,6 @@ function sendText(res, statusCode, body, contentType) {
   res.end(body)
 }
 
-const lastDirectorPlaybackCommandBySignature = new Map()
-
-
-
 function isQueueCommandTypeNoTransport(type) {
   const t = String(type || '').toLowerCase()
   return t === 'queue_playlist_song' || t === 'queue_region_song' || t === 'clear_queue'
@@ -844,61 +854,6 @@ function makeNativeTransportOnlyStopCommand(type, payload = {}) {
     fromHookCenter: true,
   }
 }
-
-function shouldDropDuplicateDirectorPlaybackCommand(type, payload = {}) {
-  const commandType = String(type || '')
-  if (!['play_start', 'play_stop', 'play_toggle', 'director_play_button', 'play_button'].includes(commandType)) return false
-  const source = String(payload.role || payload.clientRole || payload.appRole || payload.source || payload.mode || '').toLowerCase()
-  if (source && !source.includes('director') && !source.includes('diretor')) return false
-  const target = String(payload.selectedPlaylistSongId || payload.selectedRegionId || payload.songId || payload.targetId || payload.id || '')
-  const desired = String(payload.desiredState || payload.desiredPlaying || payload.forcePlay || payload.forceStop || '')
-  const signature = `${commandType}:${desired}:${payload.activeTab || payload.page || ''}:${target}`
-  const now = Date.now()
-  const last = Number(lastDirectorPlaybackCommandBySignature.get(signature) || 0)
-  lastDirectorPlaybackCommandBySignature.set(signature, now)
-  return last > 0 && (now - last) < 900
-}
-
-function enqueueCommand(commandsFile, type, payload = {}) {
-  if (shouldDropDuplicateDirectorPlaybackCommand(type, payload)) {
-    return { id: `dedup-${Date.now()}`, type, payload, deduped: true, createdAt: new Date().toISOString() }
-  }
-
-  const commandsDb = readJson(commandsFile, {
-    bridgeVersion: 1,
-    updatedAt: null,
-    commands: [],
-  })
-
-  const command = {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    type,
-    payload,
-    createdAt: new Date().toISOString(),
-  }
-
-  commandsDb.updatedAt = new Date().toISOString()
-  commandsDb.commands = Array.isArray(commandsDb.commands) ? commandsDb.commands : []
-  commandsDb.commands.push(command)
-
-  writeJson(commandsFile, commandsDb)
-  return command
-}
-
-function normalizeCommandPage(value) {
-  const page = String(value || '').trim().toLowerCase()
-  if (page === 'regions' || page === 'musicas' || page === 'músicas') return 'regions'
-  if (page === 'playlist' || page === 'repertorios' || page === 'repertórios') return 'playlist'
-  if (page === 'markers' || page === 'parts') return 'markers'
-  return ''
-}
-
-function normalizeCommandId(value) {
-  if (value === undefined || value === null) return null
-  const text = String(value).trim()
-  return text || null
-}
-
 
 function normalizeLyricsText(value) {
   return String(value ?? '')
@@ -1120,11 +1075,9 @@ function createBridgeServer(options) {
   const sharedDir = options.sharedDir
   const stateFile = path.join(sharedDir, 'vshook_state.json')
   const commandsFile = path.join(sharedDir, 'vshook_commands.json')
-  const noticeFile = path.join(sharedDir, 'vshook_technical_notice.json')
   const lyricsFile = path.join(sharedDir, 'vshook_song_lyrics.json')
+  const recadosImagesDir = path.join(sharedDir, 'recados-images')
   const routes = normalizeRoutes(options.routes)
-  const getHookCenterTechnicalNoticeSettings = typeof options.getTechnicalNoticeSettings === 'function' ? options.getTechnicalNoticeSettings : null
-  const saveHookCenterTechnicalNoticeSettings = typeof options.saveTechnicalNoticeSettings === 'function' ? options.saveTechnicalNoticeSettings : null
   const getLicenseActive = typeof options.isLicenseActive === 'function' ? options.isLicenseActive : () => true
 
   function isBridgeLicenseActive() {
@@ -1135,71 +1088,108 @@ function createBridgeServer(options) {
     }
   }
 
-
-  function getHookCenterTechnicalNoticePublicSettings() {
-    if (!getHookCenterTechnicalNoticeSettings) return {
-      textColor: '#ffea00',
-      flashColor: '#ff0000',
-      fontFamily: 'Arial',
-      emojiEnabled: true,
-      emoji: '⚠️',
+  function decodeRecadosImageDataUrl(value) {
+    const match = String(value || '').match(
+      /^data:(image\/(?:png|jpeg|webp|gif|bmp));base64,([a-z0-9+/=\r\n]+)$/i)
+    if (!match) throw new Error('Formato de imagem não aceito.')
+    const extensions = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/bmp': 'bmp',
     }
+    const mime = String(match[1] || '').toLowerCase()
+    const extension = extensions[mime]
+    const buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64')
+    if (!extension || !buffer.length) throw new Error('Imagem inválida.')
+    if (buffer.length > 10 * 1024 * 1024) {
+      throw new Error('A imagem deve ter no máximo 10 MB.')
+    }
+    return { buffer, extension }
+  }
+
+  async function saveRecadosUploadedImage(dataUrl, slot) {
+    const safeSlot = Math.max(0, Math.min(2, Math.trunc(Number(slot))))
+    const decoded = decodeRecadosImageDataUrl(dataUrl)
+    await fs.promises.mkdir(recadosImagesDir, { recursive: true })
+    const filePath = path.join(
+      recadosImagesDir,
+      `recado-${safeSlot + 1}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.${decoded.extension}`)
+    await fs.promises.writeFile(filePath, decoded.buffer)
+    return filePath
+  }
+
+  async function cleanupRecadosUploadedImages(slot, keepPath = '') {
+    const safeSlot = Math.max(0, Math.min(2, Math.trunc(Number(slot))))
+    const prefix = `recado-${safeSlot + 1}-`
+    let entries = []
     try {
-      const settings = getHookCenterTechnicalNoticeSettings() || {}
-      const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact']
-      const color = (value, fallback) => /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? String(value) : fallback
-      const fontFamily = allowedFonts.includes(String(settings.fontFamily || '')) ? String(settings.fontFamily) : 'Arial'
-      const emoji = String(settings.emoji || '⚠️').trim().replace(/[\r\n\t]+/g, '').slice(0, 8) || '⚠️'
-      return {
-        textColor: color(settings.textColor, '#ffea00'),
-        flashColor: color(settings.flashColor, '#ff0000'),
-        fontFamily,
-        emojiEnabled: settings.emojiEnabled !== false,
-        emoji,
-        recadosTemplates: [0, 1, 2].map((index) => String(settings.recadosTemplates?.[index] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN)),
-      }
+      entries = await fs.promises.readdir(recadosImagesDir, {
+        withFileTypes: true,
+      })
     } catch (_) {
-      return {
-        textColor: '#ffea00',
-        flashColor: '#ff0000',
-        fontFamily: 'Arial',
-        emojiEnabled: true,
-        emoji: '⚠️',
-      }
+      return
+    }
+    const keep = keepPath ? path.resolve(keepPath) : ''
+    await Promise.all(entries.map(async (entry) => {
+      if (!entry.isFile() || !entry.name.startsWith(prefix)) return
+      const candidate = path.resolve(recadosImagesDir, entry.name)
+      if (keep && candidate === keep) return
+      try { await fs.promises.unlink(candidate) } catch (_) {}
+    }))
+  }
+
+  async function proxyNativeJson(pathname, method = 'GET', payload = null, timeoutMs = 1600) {
+    const result = await requestNativeBridgeJson(pathname, {
+      method,
+      body: payload == null ? '' : JSON.stringify(payload),
+      timeoutMs,
+    })
+    return {
+      status: result.status || (result.ok ? 200 : 503),
+      data: result.data && typeof result.data === 'object'
+        ? result.data
+        : { ok: false, error: 'Extensão VS Hook indisponível.' },
     }
   }
 
-  function getHookCenterRecadosAuthState() {
-    if (!getHookCenterTechnicalNoticeSettings) return {}
-    try {
-      const settings = getHookCenterTechnicalNoticeSettings() || {}
-      const password = String(settings.recadosPassword || '').trim()
-      const hash = String(settings.recadosAuthHash || settings.technicalNoticeAuthHash || '').trim()
-      const enabled = settings.recadosAuthEnabled === true || settings.technicalNoticeAuthEnabled === true || !!password || !!hash
-      return {
-        recadosAuthEnabled: enabled,
-        technicalNoticeAuthEnabled: enabled,
-        recadosAuthHash: hash || (password ? simpleHash(password) : ''),
-        technicalNoticeAuthHash: hash || (password ? simpleHash(password) : ''),
-      }
-    } catch (_) {
-      return {}
-    }
+  function readRequestJson(req, maxBytes = 1024 * 512) {
+    return new Promise((resolve, reject) => {
+      let body = ''
+      let bytes = 0
+      let tooLarge = false
+      req.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > maxBytes) {
+          tooLarge = true
+          return
+        }
+        body += chunk.toString('utf8')
+      })
+      req.on('end', () => {
+        if (tooLarge) {
+          const error = new Error('Conteúdo muito grande.')
+          error.status = 413
+          reject(error)
+          return
+        }
+        try {
+          resolve(body ? JSON.parse(body) : {})
+        } catch (_) {
+          const error = new Error('JSON inválido.')
+          error.status = 400
+          reject(error)
+        }
+      })
+      req.on('error', reject)
+    })
   }
 
   function mergeHookCenterRecadosAuth(state) {
-    const auth = getHookCenterRecadosAuthState()
-    const publicSettings = getHookCenterTechnicalNoticePublicSettings()
-    return {
-      ...(state || {}),
-      technicalNoticeSettings: publicSettings,
-      ...(auth && auth.recadosAuthEnabled ? {
-        recadosAuthEnabled: true,
-        technicalNoticeAuthEnabled: true,
-        recadosAuthHash: auth.recadosAuthHash || '',
-        technicalNoticeAuthHash: auth.technicalNoticeAuthHash || auth.recadosAuthHash || '',
-      } : {}),
-    }
+    // A extensão nova é a fonte única dos Recados, inclusive senha, modelos,
+    // imagens e aparência. A Hook Center apenas transporta o snapshot.
+    return { ...(state || {}) }
   }
 
   const fallbackState = options.fallbackState || {
@@ -1249,16 +1239,6 @@ function createBridgeServer(options) {
     }, sharedDir)
   }
 
-  const liveCommandOverlay = {
-    currentPage: null,
-    currentPageUntil: 0,
-    queuedSongId: undefined,
-    queuedSongUntil: 0,
-    activePlaylistId: undefined,
-    activePlaylistName: '',
-    activePlaylistUntil: 0,
-  }
-
   function readEffectiveState() {
     if (!isBridgeLicenseActive()) return buildLicenseLockedState()
 
@@ -1295,65 +1275,9 @@ function createBridgeServer(options) {
     }, sharedDir)
   }
 
-  function updateLiveCommandOverlay(type, payload = {}) {
-    const now = Date.now()
-    const commandType = String(type || '')
-    if (commandType === 'set_page') {
-      const page = normalizeCommandPage(payload.page || payload.currentPage || payload.targetPage)
-      if (page) {
-        liveCommandOverlay.currentPage = page
-        liveCommandOverlay.currentPageUntil = now + 6000
-      }
-    }
-
-    if (commandType === 'clear_queue') {
-      liveCommandOverlay.queuedSongId = null
-      liveCommandOverlay.queuedSongUntil = now + 5000
-    } else if (commandType === 'queue_playlist_song' || commandType === 'queue_region_song') {
-      const id = normalizeCommandId(payload.id || payload.selectedRegionId || payload.songId || payload.regionId)
-      liveCommandOverlay.queuedSongId = id
-      liveCommandOverlay.queuedSongUntil = now + 5000
-    } else if (isDirectorTransportStopCommand(commandType, payload) || commandType === 'play_toggle' || commandType === 'play_start' || commandType === 'play_stop') {
-      // Stop do Diretor limpa a fila também no estado intermediário da Hook Center.
-      liveCommandOverlay.queuedSongId = null
-      liveCommandOverlay.queuedSongUntil = now + 5000
-    }
-
-    if (commandType === 'select_playlist' || commandType === 'playlist_select' || commandType === 'set_playlist' || commandType === 'set_active_playlist') {
-      liveCommandOverlay.activePlaylistId = normalizeCommandId(payload.playlistId || payload.activePlaylistId || payload.targetId || payload.id)
-      liveCommandOverlay.activePlaylistName = String(payload.playlistName || payload.activePlaylistName || payload.currentPlaylistName || payload.name || '')
-      liveCommandOverlay.activePlaylistUntil = now + 12000
-    }
-  }
-
-  function applyLiveCommandOverlay(state) {
-    const now = Date.now()
-    const out = { ...(state || {}) }
-    if (liveCommandOverlay.currentPage && now < Number(liveCommandOverlay.currentPageUntil || 0)) {
-      out.currentPage = liveCommandOverlay.currentPage
-    }
-    if (now < Number(liveCommandOverlay.queuedSongUntil || 0)) {
-      out.queuedSongId = liveCommandOverlay.queuedSongId === undefined ? out.queuedSongId : liveCommandOverlay.queuedSongId
-      out.queuedPlaylistSongId = liveCommandOverlay.queuedSongId === undefined ? out.queuedPlaylistSongId : liveCommandOverlay.queuedSongId
-    }
-    if (now < Number(liveCommandOverlay.activePlaylistUntil || 0)) {
-      if (liveCommandOverlay.activePlaylistId !== undefined && liveCommandOverlay.activePlaylistId !== '') {
-        out.activePlaylistId = liveCommandOverlay.activePlaylistId
-        const numericId = Number(liveCommandOverlay.activePlaylistId)
-        if (Number.isFinite(numericId) && numericId > 0) out.currentPlaylistIndex = numericId
-      }
-      if (liveCommandOverlay.activePlaylistName) {
-        out.currentPlaylistName = liveCommandOverlay.activePlaylistName
-        out.activePlaylistName = liveCommandOverlay.activePlaylistName
-      }
-    }
-    return out
-  }
-
-
   function buildDiscoveryPayload() {
     if (!isBridgeLicenseActive()) {
-      const ip = getLanIp()
+      const ip = publicBridgeHost || getLanIp()
       return {
         ok: false,
         app: 'VS Hook',
@@ -1388,8 +1312,8 @@ function createBridgeServer(options) {
       }
     }
 
-    const state = applyLiveCommandOverlay(readEffectiveState())
-    const ip = getLanIp()
+    const state = readEffectiveState()
+    const ip = publicBridgeHost || getLanIp()
     const projectPayload = buildProjectPayload(state)
 
     return {
@@ -1452,7 +1376,7 @@ function createBridgeServer(options) {
 
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/qr.svg' || parsedUrl.pathname === '/app-qr.svg')) {
-      const stateIp = getLanIp()
+      const stateIp = publicBridgeHost || getLanIp()
       const targetUrl = String(parsedUrl.searchParams.get('url') || `http://${stateIp}:${port}/`).trim()
       sendText(res, 200, createQrSvg(targetUrl), 'image/svg+xml; charset=utf-8')
       return
@@ -1499,19 +1423,13 @@ function createBridgeServer(options) {
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
       if (!isBridgeLicenseActive()) {
-        const state = {
-          ...mergeHookCenterRecadosAuth(readEffectiveState()),
-          technicalNotice: readActiveTechnicalNotice(noticeFile),
-        }
+        const state = mergeHookCenterRecadosAuth(readEffectiveState())
         sendJson(res, 200, buildPublicStatePayload(state))
         return
       }
       refreshNativeBridgeState().catch(() => {}).finally(() => {
-        const rawState = {
-          ...mergeHookCenterRecadosAuth(readEffectiveState()),
-          technicalNotice: readActiveTechnicalNotice(noticeFile),
-        }
-        const state = applyLiveCommandOverlay(applyLyricsToState(rawState, lyricsFile))
+        const rawState = mergeHookCenterRecadosAuth(readEffectiveState())
+        const state = applyLyricsToState(rawState, lyricsFile)
         sendJson(res, 200, buildPublicStatePayload(state))
       })
       return
@@ -1531,7 +1449,7 @@ function createBridgeServer(options) {
         return
       }
       refreshNativeBridgeState().catch(() => {}).finally(() => {
-        const state = applyLiveCommandOverlay(mergeHookCenterRecadosAuth(readEffectiveState()))
+        const state = mergeHookCenterRecadosAuth(readEffectiveState())
         sendJson(res, 200, {
         ok: true,
         appName,
@@ -1543,177 +1461,112 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/recados-templates') {
-      const settings = getHookCenterTechnicalNoticeSettings ? (getHookCenterTechnicalNoticeSettings() || {}) : {}
-      const templates = [0, 1, 2].map((index) => String(settings.recadosTemplates?.[index] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN))
-      sendJson(res, 200, { ok: true, templates })
+      proxyNativeJson('/recados-templates')
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch(() => sendJson(res, 503, {
+          ok: false,
+          error: 'Extensão VS Hook indisponível.',
+        }))
       return
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/recados-templates') {
-      let body = ''
-      req.on('data', (chunk) => { body += chunk.toString('utf8') })
-      req.on('end', () => {
-        try {
-          const parsed = body ? JSON.parse(body) : {}
+      readRequestJson(req, 16 * 1024 * 1024)
+        .then(async (parsed) => {
           const state = mergeHookCenterRecadosAuth(readEffectiveState())
           const source = normalizeNoticeSource(parsed.source || 'recados')
           if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
             sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
             return
           }
-          if (!saveHookCenterTechnicalNoticeSettings || !getHookCenterTechnicalNoticeSettings) {
-            sendJson(res, 503, { ok: false, error: 'Hook Center indisponível.' })
-            return
-          }
           const index = Math.trunc(Number(parsed.index))
-          if (index < 0 || index > 2) {
+          if (!Number.isFinite(index) || index < 0 || index > 2) {
             sendJson(res, 400, { ok: false, error: 'Recado inválido.' })
             return
           }
-          const current = getHookCenterTechnicalNoticeSettings() || {}
-          const templates = [0, 1, 2].map((slot) => String(current.recadosTemplates?.[slot] || '').slice(0, TECHNICAL_NOTICE_MAX_LEN))
-          templates[index] = String(parsed.text || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
-          const saved = saveHookCenterTechnicalNoticeSettings({ recadosTemplates: templates }) || {}
-          sendJson(res, 200, { ok: true, templates: [0, 1, 2].map((slot) => String(saved.recadosTemplates?.[slot] || '')) })
-        } catch (_) {
-          sendJson(res, 400, { ok: false, error: 'JSON inválido' })
-        }
-      })
+
+          const nativePayload = {
+            ...parsed,
+            source,
+            index,
+          }
+          delete nativePayload.imageDataUrl
+          delete nativePayload.imageName
+
+          let uploadedPath = ''
+          if (parsed.updateImage === true &&
+              String(parsed.imageDataUrl || '').trim()) {
+            uploadedPath = await saveRecadosUploadedImage(
+              parsed.imageDataUrl, index)
+            nativePayload.imagePath = uploadedPath
+          }
+
+          const result = await proxyNativeJson(
+            '/recados-templates', 'POST', nativePayload, 3000)
+          if (result.status >= 200 && result.status < 300 &&
+              result.data?.ok !== false) {
+            const keepPath = String(
+              result.data?.images?.[index] ||
+              nativePayload.imagePath || '')
+            await cleanupRecadosUploadedImages(index, keepPath)
+          } else if (uploadedPath) {
+            try { await fs.promises.unlink(uploadedPath) } catch (_) {}
+          }
+          sendJson(res, result.status, result.data)
+        })
+        .catch((error) => {
+          sendJson(res, Number(error?.status || 400), {
+            ok: false,
+            error: String(error?.message || 'Não foi possível salvar o recado.'),
+          })
+        })
       return
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
-      sendJson(res, 200, { ok: true, notice: readActiveTechnicalNotice(noticeFile), now: Date.now() })
+      proxyNativeJson('/technical-notice')
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch(() => sendJson(res, 503, {
+          ok: false,
+          error: 'Extensão VS Hook indisponível.',
+        }))
       return
     }
 
     if (req.method === 'POST' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
-      let body = ''
-      let tooLarge = false
-      req.on('data', (chunk) => {
-        body += chunk.toString('utf8')
-        if (body.length > 1024 * 64) {
-          tooLarge = true
-          req.pause()
-        }
-      })
-      req.on('end', () => {
-        if (tooLarge) {
-          sendJson(res, 413, { ok: false, error: 'Recado muito grande' })
-          return
-        }
-        try {
-          const parsed = body ? JSON.parse(body) : {}
-          const action = String(parsed.action || parsed.command || '').toLowerCase()
-          const source = normalizeNoticeSource(parsed.source || 'recados')
-          const priority = getTechnicalNoticePriority(source)
-          const state = mergeHookCenterRecadosAuth(readEffectiveState())
-
-          if (action === 'cancel' || action === 'clear' || action === 'remove') {
-            if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
-              sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
-              return
-            }
-            const activeNotice = readActiveTechnicalNotice(noticeFile)
-            if (activeNotice && activeNotice.priority > priority) {
-              sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
-              return
-            }
-            clearTechnicalNotice(noticeFile)
-            sendJson(res, 200, { ok: true, cancelled: true, notice: null, now: Date.now() })
-            return
-          }
-
-          if (action === 'pin' || action === 'unpin') {
-            if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
-              sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
-              return
-            }
-            const activeNotice = readActiveTechnicalNotice(noticeFile)
-            if (!activeNotice) {
-              sendJson(res, 404, { ok: false, error: 'Nenhum recado ativo.' })
-              return
-            }
-            if (activeNotice.priority > priority) {
-              sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
-              return
-            }
-            const now = Date.now()
-            const pinned = action === 'pin'
-            const configuredDurationMs = Math.max(1000, Math.floor(Number(activeNotice.durationMs || 0)) || getTechnicalNoticeDurationMs(source, parsed))
-            const pausedRemainingMs = pinned
-              ? Math.max(0, Math.floor(Number(activeNotice.expiresAt || now) - now))
-              : Math.max(0, Math.floor(Number(activeNotice.pausedRemainingMs || 0)) || configuredDurationMs)
-            const durationMs = pinned ? configuredDurationMs : pausedRemainingMs
-            const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + pausedRemainingMs
-            const notice = {
-              ...activeNotice,
-              pinned,
-              durationMs,
-              pausedRemainingMs: pinned ? pausedRemainingMs : 0,
-              updatedAt: new Date(now).toISOString(),
-              expiresAt,
-              expiresAtIso: new Date(expiresAt).toISOString()
-            }
-            writeJson(noticeFile, notice)
-            sendJson(res, 200, { ok: true, notice, now })
-            return
-          }
-
-          const text = String(parsed.text || parsed.message || '').trim().slice(0, TECHNICAL_NOTICE_MAX_LEN)
-
-          if (!text) {
-            sendJson(res, 400, { ok: false, error: 'Digite um recado antes de enviar.' })
-            return
-          }
-          if (!isTechnicalNoticeAuthorized(parsed, state, source)) {
-            sendJson(res, 401, { ok: false, error: 'Senha inválida.' })
-            return
-          }
-
-          const activeNotice = readActiveTechnicalNotice(noticeFile)
-          if (activeNotice && activeNotice.priority > priority) {
-            sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
-            return
-          }
-
-          const now = Date.now()
-          const pinned = parsed.pinned === true
-          const durationMs = getTechnicalNoticeDurationMs(source, parsed)
-          const expiresAt = pinned ? now + (3650 * 24 * 60 * 60 * 1000) : now + durationMs
-          const notice = {
-            id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
-            text,
-            message: text,
-            source,
-            priority,
-            createdAt: new Date(now).toISOString(),
-            updatedAt: new Date(now).toISOString(),
-            durationMs,
-            pausedRemainingMs: pinned ? durationMs : 0,
-            expiresAt,
-            expiresAtIso: new Date(expiresAt).toISOString(),
-            pinned,
-          }
-          writeJson(noticeFile, notice)
-          sendJson(res, 200, { ok: true, notice, now })
-        } catch (error) {
-          sendJson(res, 400, { ok: false, error: 'JSON inválido' })
-        }
-      })
+      readRequestJson(req)
+        .then((parsed) => proxyNativeJson(
+          '/technical-notice',
+          'POST',
+          {
+            ...parsed,
+            source: normalizeNoticeSource(parsed.source || 'recados'),
+          },
+          3000))
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch((error) => {
+          sendJson(res, Number(error?.status || 400), {
+            ok: false,
+            error: String(error?.message || 'Não foi possível enviar o recado.'),
+          })
+        })
       return
     }
 
     if (req.method === 'DELETE' && (parsedUrl.pathname === '/technical-notice' || parsedUrl.pathname === '/recados-notice')) {
-      const source = normalizeNoticeSource(parsedUrl.searchParams.get('source') || 'recados')
-      const priority = getTechnicalNoticePriority(source)
-      const activeNotice = readActiveTechnicalNotice(noticeFile)
-      if (activeNotice && activeNotice.priority > priority) {
-        sendJson(res, 200, { ok: true, ignoredDuePriority: true, notice: activeNotice, now: Date.now() })
-        return
-      }
-      clearTechnicalNotice(noticeFile)
-      sendJson(res, 200, { ok: true, cancelled: true, notice: null, now: Date.now() })
+      proxyNativeJson('/technical-notice', 'POST', {
+        action: 'cancel',
+        source: normalizeNoticeSource(
+          parsedUrl.searchParams.get('source') || 'recados'),
+        password: parsedUrl.searchParams.get('password') || '',
+        passwordHash: parsedUrl.searchParams.get('passwordHash') || '',
+        sessionHash: parsedUrl.searchParams.get('sessionHash') || '',
+      }, 3000)
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch(() => sendJson(res, 503, {
+          ok: false,
+          error: 'Extensão VS Hook indisponível.',
+        }))
       return
     }
 
@@ -1808,9 +1661,8 @@ function createBridgeServer(options) {
             lyricsResult = saveLyricsPayload(lyricsFile, payload)
           }
           payload = sanitizeNativeCommandForTransportSafety(type, payload)
-          updateLiveCommandOverlay(type, payload)
-          // FIX21: manda comando achatado e com payload. Algumas versões da extensão/Lua leem
-          // campos no topo; outras leem dentro de payload. Enviar os dois evita comando sem target.
+          // Compatibilidade entre versões da extensão: envia campos no topo
+          // e dentro de payload, sem criar um segundo motor no bridge.
           let nativeCommandPayload = {
             id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             type,
@@ -1829,11 +1681,6 @@ function createBridgeServer(options) {
           // VS_HOOK_FIX_NATIVE_STOP_TYPE_RECOGNIZED
           const nativeOk = await postNativeBridgeCommand(nativeCommandPayload)
           nativeBridgeStateCacheAt = 0
-          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 40)
-          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 130)
-          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 280)
-          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 650)
-          setTimeout(() => { refreshNativeBridgeState().catch(() => {}) }, 1200)
           // Native Bridge EXT ONLY: comandos nao caem mais no vshook_commands.json.
           // Se a extensao nao estiver respondendo, o app recebe erro em vez de usar ponte antiga por arquivo.
           if (!nativeOk) {
@@ -1878,12 +1725,7 @@ function createBridgeServer(options) {
     res.end('404')
   })
 
-  const nativePollTimer = setInterval(() => {
-    if (!isBridgeLicenseActive()) return
-    refreshNativeBridgeState().catch(() => {})
-  }, NATIVE_BRIDGE_BACKGROUND_POLL_MS)
-  if (nativePollTimer.unref) nativePollTimer.unref()
-  if (isBridgeLicenseActive()) refreshNativeBridgeState().catch(() => {})
+  let releaseNativeBridgePolling = null
 
   // Evita queda por inatividade em conexões longas do APK.
   server.keepAliveTimeout = 120000
@@ -1907,6 +1749,14 @@ function createBridgeServer(options) {
         server.once('error', reject)
         server.listen(port, host, () => {
           server.removeListener('error', reject)
+          if (!releaseNativeBridgePolling) {
+            releaseNativeBridgePolling =
+              retainNativeBridgeBackgroundPolling(
+                isBridgeLicenseActive)
+          }
+          if (isBridgeLicenseActive()) {
+            refreshNativeBridgeState().catch(() => {})
+          }
           const ip = getLanIp()
           resolve({
             appName,
@@ -1922,11 +1772,14 @@ function createBridgeServer(options) {
     },
     stop() {
       return new Promise((resolve) => {
+        if (releaseNativeBridgePolling) {
+          releaseNativeBridgePolling()
+          releaseNativeBridgePolling = null
+        }
         if (!server.listening) {
           resolve()
           return
         }
-        clearInterval(nativePollTimer)
         server.close(() => resolve())
       })
     },

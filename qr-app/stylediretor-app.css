@@ -194,6 +194,11 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   background: #ca8a04;
   color: #111827;
 }
+.btnAutoplayActive.btnAutoplay2Active {
+  border-color: #4ade80;
+  background: #16a34a;
+  color: #ffffff;
+}
 .btnAutoUnavailable {
   border-color: #374151 !important;
   background: #171d27 !important;
@@ -268,6 +273,24 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
 }
 .playbackQueueNext .playbackQueueTitle {
   color: #facc15;
+}
+.playbackQueueMultiLoop {
+  min-height: 22px;
+  padding: 2px 9px;
+  border-top: 1px solid #1b2634;
+}
+.playbackQueueMultiLoop .playbackQueueLabel,
+.playbackQueueMultiLoop .playbackQueueTitle {
+  color: #bb69ff !important;
+  font-size: 9px;
+}
+.playbackQueueMultiLoop.playbackQueueLoop .playbackQueueLabel,
+.playbackQueueMultiLoop.playbackQueueLoop .playbackQueueTitle {
+  color: #bb69ff !important;
+}
+.playbackQueueMultiLoopBypass .playbackQueueLabel,
+.playbackQueueMultiLoopBypass .playbackQueueTitle {
+  color: #ffe02e !important;
 }
 .listBox {
   border: 1px solid #364152;
@@ -6381,10 +6404,6 @@ button,
   text-align: center;
 }
 
-.timerActionButtonsSingle {
-  grid-template-columns: 1fr !important;
-}
-
 /* VS_HOOK_PARTS_STABLE_PANEL */
 .partsOverlay {
   inset: 0 !important;
@@ -6444,6 +6463,9 @@ button,
   border-radius: 14px;
   background: rgba(15, 23, 42, .98);
   box-shadow: 0 20px 40px rgba(0,0,0,.48), 0 0 0 1px rgba(148,163,184,.14);
+  max-height: calc(100vh - 54px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .topMenuFlyoutBtn {
@@ -6494,6 +6516,52 @@ button,
   border-color: #fde047;
   background: #facc15;
   color: #111827;
+}
+
+@keyframes directorLiveControlBlink {
+  0%, 49.99% {
+    opacity: 1;
+    filter: brightness(1.08) saturate(1);
+  }
+  50%, 100% {
+    opacity: 1;
+    filter: brightness(.20) saturate(.35);
+  }
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOff,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOff {
+  border-color: #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  animation: none !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOn,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnLiveOn,
+.app .tabletLiveButtonActive {
+  border-color: #4ade80 !important;
+  background: #15803d !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 14px rgba(34,197,94,.58) !important;
+  animation: directorLiveControlBlink .72s linear infinite !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnByOff,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnByOff {
+  border-color: #f87171 !important;
+  background: #991b1b !important;
+  color: #ffffff !important;
+  animation: none !important;
+}
+
+.app .topMenuFlyoutBtn.topMenuFlyoutBtnByOn,
+.app[data-theme="light"] .topMenuFlyoutBtn.topMenuFlyoutBtnByOn {
+  border-color: #fde047 !important;
+  background: #facc15 !important;
+  color: #111827 !important;
+  box-shadow: 0 0 14px rgba(250,204,21,.62) !important;
+  animation: directorLiveControlBlink .72s linear infinite !important;
 }
 
 .mixerContentPanel .mixerListBox {
@@ -6976,8 +7044,8 @@ button,
 .partsSongSwitchBtnActive{background:#1d4ed8!important;border-color:#60a5fa!important;color:#ffffff!important;box-shadow:0 0 0 1px rgba(96,165,250,.28),0 0 14px rgba(37,99,235,.32)!important}
 
 /* Loop ativo: pisca em amarelo no botão superior e no botão da tela Parts. */
-.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s steps(2,end) infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
-@keyframes directorLoopBlink{0%,100%{filter:brightness(1);opacity:1}50%{filter:brightness(.64);opacity:.58}}
+.btnLoopActive,.loopTabActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important;animation:directorLoopBlink .72s linear infinite!important;box-shadow:0 0 14px rgba(250,204,21,.62)!important}
+@keyframes directorLoopBlink{0%,49.99%{filter:brightness(1.08) saturate(1);opacity:1}50%,100%{filter:brightness(.20) saturate(.35);opacity:1}}
 .playbackQueueLoop .playbackQueueLabel,.playbackQueueLoop .playbackQueueTitle{color:#facc15!important}
 
 
@@ -7541,8 +7609,8 @@ html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .conte
 .tabletPreviewButtonActive{background:#15803d;border-color:#4ade80;color:#fff;box-shadow:0 0 8px rgba(34,197,94,.35)}
 .tabletSidebarByButton{flex:0 0 72px!important;width:46px!important;height:72px!important;min-height:72px!important;color:#fff!important;font-size:18px;font-weight:1000;letter-spacing:.02em}
 .tabletSidebarByButtonOff{background:#b00000!important;border-color:#ff2a2a!important;box-shadow:0 0 8px rgba(239,68,68,.22)!important}
-.tabletSidebarByButtonOn{background:#facc15!important;border-color:#fff176!important;color:#111827!important;box-shadow:0 0 11px rgba(250,204,21,.52)!important;animation:tabletBypassYellowBlink .72s steps(2,end) infinite!important;will-change:opacity}
-@keyframes tabletBypassYellowBlink{0%,100%{opacity:1}50%{opacity:.28}}
+.tabletSidebarByButtonOn{background:#facc15!important;border-color:#fff176!important;color:#111827!important;box-shadow:0 0 11px rgba(250,204,21,.52)!important;animation:tabletBypassYellowBlink .72s linear infinite!important;will-change:filter}
+@keyframes tabletBypassYellowBlink{0%,49.99%{opacity:1;filter:brightness(1.08) saturate(1)}50%,100%{opacity:1;filter:brightness(.20) saturate(.35)}}
 .tabletSongToolsModal{width:min(76%,700px)!important;max-width:700px!important;height:320px!important;max-height:calc(100vh - 56px)!important;padding:18px 22px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;overflow-y:auto!important}
 .tabletSongToolsOptions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:12px;margin:12px 0 14px;flex:0 0 auto}
 .tabletSongToolOption{min-width:0;height:64px;border:1px solid #475569;border-radius:12px;background:#172033;color:#f8fafc;font-size:14px;font-weight:1000;padding:0 6px}
@@ -7572,11 +7640,16 @@ html[data-director-device="phone"] .tabletMultiLoopTracksModal{width:min(94vw,62
 .tabletMultiLoopFadeControl>button{height:38px!important;min-height:38px!important}
 .tabletMultiLoopFadeControl>strong{text-align:center;color:#facc15;font-size:20px}
 .tabletMultiLoopTracksList{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid #263244;border-radius:10px;background:#080d14}
-.tabletMultiLoopTrackRow{display:grid;grid-template-columns:minmax(0,1fr) 82px 40px 40px;align-items:center;gap:6px;min-height:44px;padding:4px 7px;border-bottom:1px solid #263244}
+.tabletMultiLoopTrackRow{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 82px 40px 40px;align-items:center;gap:6px;min-height:44px;padding:4px 7px 4px calc(9px + var(--multiloop-family-indent,0px));border-bottom:1px solid #263244;box-sizing:border-box}
 .tabletMultiLoopTrackRow:last-child{border-bottom:0}
-.tabletMultiLoopTrackName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-size:11px;font-weight:900}
-.tabletMultiLoopTrackToggle{height:32px;border:1px solid #475569;border-radius:7px;background:#172033;color:#f8fafc;font-size:10px;font-weight:1000;padding:0 3px}
+.tabletMultiLoopTrackGroup{min-height:52px;background:var(--multiloop-track-tint,rgba(57,214,104,.24))}
+.tabletMultiLoopTrackName{position:relative;z-index:3;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--multiloop-track-color,#ffe02e);font-size:11px;font-weight:900}
+.tabletMultiLoopTrackGroup .tabletMultiLoopTrackName{font-size:13px;font-weight:1000}
+.tabletMultiLoopTrackToggle{position:relative;z-index:3;height:32px;border:1px solid #475569;border-radius:7px;background:#172033;color:#f8fafc;font-size:10px;font-weight:1000;padding:0 3px}
 .tabletMultiLoopTrackToggle.active{background:#15803d;border-color:#4ade80}.tabletMultiLoopTrackToggle.active.mute{background:#b91c1c;border-color:#f87171}.tabletMultiLoopTrackToggle.active.solo{background:#ca8a04;border-color:#fde047;color:#111827}
+.tabletMultiLoopFamilyOutline{position:absolute;z-index:2;pointer-events:none;left:calc(2px + var(--multiloop-family-inset,0px));right:calc(2px + var(--multiloop-family-inset,0px));top:0;bottom:0;border-left:2px solid var(--multiloop-family-color,#39d668);border-right:2px solid var(--multiloop-family-color,#39d668);box-sizing:border-box}
+.tabletMultiLoopFamilyOutlineStart{border-top:2px solid var(--multiloop-family-color,#39d668)}
+.tabletMultiLoopFamilyOutlineEnd{border-bottom:2px solid var(--multiloop-family-color,#39d668)}
 .tabletMultiLoopAutoLimitModal{width:min(90vw,620px)!important;max-width:620px!important;min-height:310px!important;padding:24px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;gap:16px!important}
 .tabletMultiLoopAutoLimitTrack{text-align:center;color:#facc15;font-size:15px;font-weight:1000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tabletMultiLoopAutoLimitInfo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:10px;color:#cbd5e1;font-size:10px;font-weight:900;text-align:center}
@@ -7701,10 +7774,14 @@ html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResu
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResult{min-height:58px}
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchResultName{font-size:14px}
 .app[data-theme="light"] .tabletSearchScreen{background:rgba(226,232,240,.98)}
-html[data-director-device="tablet"] .app .controlsRowDirectorMain.controlsRowDirectorMainTablet{grid-template-columns:repeat(4,minmax(0,1fr)) minmax(42px,.68fr)!important;gap:3px!important}
+html[data-director-device="tablet"] .app .controlsRowDirectorMain.controlsRowDirectorMainTablet{grid-template-columns:repeat(5,minmax(0,1fr)) minmax(42px,.68fr)!important;gap:3px!important}
 html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>button{width:100%!important;min-width:0!important;max-width:100%!important;padding-left:1px!important;padding-right:1px!important;font-size:11px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important}
 html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>[data-action="stop-break"]{font-size:10.5px!important}
 html[data-director-device="tablet"] .app .controlsRowDirectorMainTablet>[data-action="live"]{font-size:10.5px!important}
+.app .controlsRowDirectorMain:not(.controlsRowDirectorMainTablet){grid-template-columns:repeat(4,minmax(0,1fr))!important}
+.app .controlsRowDirectorMain>[data-action="autoplay"],
+.app .controlsRowDirectorMain>[data-action="autoplay2"]{min-width:0!important;padding-left:2px!important;padding-right:2px!important}
+.app .btnAutoplayActive.btnAutoplay2Active{border-color:#4ade80!important;background:#16a34a!important;color:#fff!important}
 .tabletTransportPanel{position:relative;z-index:60;left:auto;right:auto;top:auto;width:100%;flex:0 0 auto;margin:4px 0 0;padding:4px;border:1px solid #7c3aed;border-radius:10px;background:#0b1220;box-shadow:0 6px 16px rgba(0,0,0,.32),0 0 0 1px rgba(167,139,250,.16);display:flex;flex-direction:column;gap:3px;overflow:hidden}
 .tabletTransportPanelOpening{animation:tabletTransportSlideUp .22s cubic-bezier(.2,.8,.2,1) both}
 .tabletTransportPanel .transportSeekRegionTitle{padding:3px 7px;font-size:9px}
@@ -7740,15 +7817,27 @@ html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topSt
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topPlaylistButton,
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .topTimerBtn{width:100%!important;min-width:0!important;max-width:none!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.headerRow{display:none!important}
-html[data-director-device="tablet"] .directorTpOverlay{left:76px!important;right:76px!important;width:auto!important}
-html[data-director-device="tablet"] .directorTpOverlay{top:50px!important;height:auto!important}
+html[data-director-device="tablet"] .directorTpOverlay{
+  inset:0!important;
+  left:0!important;
+  right:0!important;
+  top:0!important;
+  bottom:0!important;
+  width:100%!important;
+  height:var(--app-vh,100dvh)!important;
+  padding:max(4px,var(--tablet-safe-top,env(safe-area-inset-top,0px)))
+    max(4px,var(--tablet-safe-right,env(safe-area-inset-right,0px)))
+    max(4px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px)))
+    max(4px,var(--tablet-safe-left,env(safe-area-inset-left,0px)))!important;
+  box-sizing:border-box!important;
+}
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTrack{height:3px!important}
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLine{min-height:22px!important;padding:2px 7px!important;gap:7px!important;grid-template-columns:90px minmax(0,1fr)!important}
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLabel{font-size:9px!important}
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueName,html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTime{font-size:10px!important}
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink){background:#c40000!important;border-color:#ff2a2a!important;box-shadow:inset 0 0 0 1px rgba(255,80,80,.34)!important}
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .leftCol span{color:#fff!important;text-decoration:line-through!important;text-shadow:none!important}
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .rightCol span{color:#fff!important;text-decoration:none!important;text-shadow:none!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink){background:#991b1b!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.34)!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .leftCol span{color:#fecaca!important;text-decoration:none!important;text-shadow:none!important}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .rightCol span{color:#fecaca!important;text-decoration:none!important;text-shadow:none!important}
 html[data-director-device="tablet"] .tabletMainSplit{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:8px;flex:1 1 auto;min-height:0;overflow:hidden}
 html[data-director-device="tablet"] .tabletMainSplitPrimary,
 html[data-director-device="tablet"] .tabletMainSplitParts{display:flex;min-width:0;min-height:0;overflow:hidden}
@@ -7820,7 +7909,7 @@ html[data-director-device="tablet"] .tabletPlayHoldModal{width:min(72%,620px)!im
 @keyframes tabletFadeoutStopPulse{0%,100%{border-color:#ef4444;box-shadow:0 0 0 rgba(239,68,68,0);filter:brightness(1)}50%{border-color:#fecaca;box-shadow:0 0 18px rgba(239,68,68,.9);filter:brightness(1.34)}}
 .app[data-theme] button.btn.tabletFadeoutStopBlink{animation:tabletFadeoutStopPulse .62s ease-in-out infinite!important;color:#fff!important}
 .app[data-theme] button.btn.tabletStopBreakPlaying{background:#dc2626!important;border-color:#f87171!important;color:#fff!important;box-shadow:0 0 12px rgba(220,38,38,.35)!important}
-.app[data-theme] button.btn.tabletFadeoutRegress{background:linear-gradient(90deg,#dc2626 0 var(--fadeout-remaining,100%),#3b1115 var(--fadeout-remaining,100%) 100%)!important;border-color:#f87171!important;color:#fff!important;transition:background-size .12s linear!important}
+.app[data-theme] button.btn.tabletFadeoutRegress{background-color:#3b1115!important;background-image:linear-gradient(#dc2626,#dc2626)!important;background-position:left center!important;background-repeat:no-repeat!important;background-size:var(--fadeout-remaining,100%) 100%!important;border-color:#f87171!important;color:#fff!important;transition:background-size .075s linear!important;will-change:background-size}
 html[data-director-device="tablet"] .directorTpImage,
 html[data-director-device="tablet"] .directorTpVideo{object-fit:contain!important;background:#000!important}
 html[data-director-device="tablet"] .directorTpImage.directorTpMediaWide169,
@@ -7985,7 +8074,7 @@ html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:
   padding: clamp(24px, 7vh, 74px) clamp(20px, 7vw, 72px);
   pointer-events: none;
   overflow: hidden;
-  background: #000;
+  background: var(--director-notice-background, #000);
   color: var(--director-notice-text, #ffea00);
   font-family: var(--director-notice-font, Arial, sans-serif);
   font-size: clamp(30px, 7.8vw, 72px);
@@ -8002,11 +8091,11 @@ html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:
 }
 @keyframes directorTpTechnicalNoticeFlash {
   0%, 16.66% { background: var(--director-notice-flash, #ff0000); }
-  16.67%, 33.33% { background: #000; }
+  16.67%, 33.33% { background: var(--director-notice-background, #000); }
   33.34%, 50% { background: var(--director-notice-flash, #ff0000); }
-  50.01%, 66.66% { background: #000; }
+  50.01%, 66.66% { background: var(--director-notice-background, #000); }
   66.67%, 83.33% { background: var(--director-notice-flash, #ff0000); }
-  83.34%, 100% { background: #000; }
+  83.34%, 100% { background: var(--director-notice-background, #000); }
 }
 
 /* VS_HOOK_PARTS_ARMED_REGRESS_V1
@@ -8049,9 +8138,9 @@ html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:
 /* VS_HOOK_PARTS_TRANSPORT_SAME_SIZE_V1
    O painel de transporte do Parts nao pode ser comprimido pela altura minima da lista. */
 .partsOverlayContent > .playbackQueueHeader {
-  flex: 0 0 72px !important;
-  min-height: 72px !important;
-  max-height: 72px !important;
+  flex: 0 0 94px !important;
+  min-height: 94px !important;
+  max-height: 94px !important;
   width: 100% !important;
   margin: 0 0 8px !important;
 }
@@ -8107,6 +8196,13 @@ html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:
 .directorRecadosRoot .recadosGlobalButton { grid-column:1 / -1; margin-top:0; }
 .directorRecadosRoot .recadosEditButton { background:#1d4ed8; border-color:#60a5fa; color:#fff; }
 .directorRecadosRoot .recadosSaveButton { background:#15803d; border-color:#4ade80; }
+.directorRecadosRoot .recadosContentArea {
+  min-width:0;
+  min-height:0;
+  display:grid;
+  grid-template-rows:minmax(0,1fr) auto;
+  gap:8px;
+}
 .directorRecadosRoot .recadosTextInput {
   display:block; width:100%; height:100%; min-width:0; min-height:0; margin:0; padding:16px;
   border:1px solid rgba(250,204,21,.32); border-radius:18px; resize:none; overflow-y:auto; overflow-x:hidden;
@@ -8114,6 +8210,56 @@ html[data-director-device="tablet"] .premixFullScreen{left:76px!important;right:
   font-family:Arial,sans-serif; font-size:20px; line-height:1.35; -webkit-appearance:none; appearance:none;
   -webkit-user-select:text !important; user-select:text !important; -webkit-overflow-scrolling:touch;
 }
+.directorRecadosRoot .recadosImagePanel {
+  min-width:0;
+  display:grid;
+  grid-template-columns:minmax(72px,104px) minmax(0,1fr);
+  gap:8px;
+}
+.directorRecadosRoot .recadosImagePreview,
+.directorRecadosRoot .recadosImageEmpty {
+  width:100%;
+  height:66px;
+  border:1px solid #475569;
+  border-radius:10px;
+  background:#020617;
+}
+.directorRecadosRoot .recadosImagePreview { display:block; object-fit:contain; }
+.directorRecadosRoot .recadosImageEmpty {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:6px;
+  color:#94a3b8;
+  font-size:11px;
+  font-weight:900;
+  text-align:center;
+}
+.directorRecadosRoot .recadosImageActions {
+  min-width:0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.directorRecadosRoot .recadosImageButton,
+.directorRecadosRoot .recadosImageRemoveButton {
+  min-width:0;
+  min-height:42px;
+  border:1px solid #60a5fa;
+  border-radius:10px;
+  background:#1d4ed8;
+  color:#fff;
+  font-size:12px;
+  font-weight:900;
+}
+.directorRecadosRoot .recadosImageRemoveButton {
+  border-color:#f87171;
+  background:#991b1b;
+}
+.directorRecadosRoot .recadosImageActions > :only-child {
+  grid-column:1 / -1;
+}
+.directorRecadosRoot .recadosImageInput { display:none; }
 .directorRecadosRoot .recadosTextInput:focus { border-color:rgba(250,204,21,.78); }
 .directorRecadosRoot .recadosTextInput[readonly] { color:#e2e8f0; background:#0f172a; cursor:default; }
 .directorRecadosRoot .recadosStatus {
@@ -8135,6 +8281,9 @@ html[data-director-device="tablet"].directorRecadosPortraitMode .directorRecados
   .directorRecadosRoot .recadosTextInput { font-size:18px; padding:13px; }
   .directorRecadosRoot .recadosSlotButton, .directorRecadosRoot .recadosEditButton, .directorRecadosRoot .recadosPinButton { min-height:38px; }
   .directorRecadosRoot .recadosSendButton, .directorRecadosRoot .recadosCancelButton, .directorRecadosRoot .recadosExitButton { min-height:52px; }
+  .directorRecadosRoot .recadosImagePanel { grid-template-columns:74px minmax(0,1fr); }
+  .directorRecadosRoot .recadosImagePreview, .directorRecadosRoot .recadosImageEmpty { height:58px; }
+  .directorRecadosRoot .recadosImageButton, .directorRecadosRoot .recadosImageRemoveButton { font-size:10px; padding:4px; }
 }
 
 
@@ -8512,4 +8661,619 @@ html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption 
 .musicianMonitor .item:not(.numberedItem) > .queuedRowRegressTrack > .queuedRowRegressBar {
   background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
   box-shadow: 0 0 7px rgba(249, 115, 22, .52) !important;
+}
+.directorInterfaceAccessButton {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 120000;
+  min-width: 132px;
+  min-height: 46px;
+  padding: 10px 22px;
+  border: 1px solid #86efac;
+  border-radius: 12px;
+  background: #15803d;
+  color: #fff;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, .48),
+    0 0 0 2px rgba(34, 197, 94, .2);
+  font: 900 15px/1.1 Arial, sans-serif;
+  letter-spacing: .05em;
+  text-align: center;
+  opacity: 0;
+  transform: translate3d(calc(100% + 36px), 0, 0);
+  transition: transform .28s ease-out, opacity .2s ease-out;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.directorInterfaceAccessButtonVisible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.directorInterfaceAccessButton:active {
+  filter: brightness(1.14);
+  transform: translate3d(0, 1px, 0);
+}
+
+.settingsAccessGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.settingsAccessControlButton {
+  width: 100%;
+  min-height: 48px !important;
+  height: auto !important;
+  padding: 9px 12px !important;
+  white-space: normal !important;
+  line-height: 1.25 !important;
+  text-align: left !important;
+}
+
+/* Diretor 1.0.0: Auto 1/Auto 2 em celular e tablet. */
+.app:not(.musicianMonitor) .controlsRowDirectorMain:not(.controlsRowDirectorMainTablet) {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+}
+.app:not(.musicianMonitor) .controlsRowDirectorMain > [data-action="autoplay"],
+.app:not(.musicianMonitor) .controlsRowDirectorMain > [data-action="autoplay2"] {
+  min-width: 0 !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+.app:not(.musicianMonitor) .btnAutoplayActive.btnAutoplay2Active {
+  border-color: #4ade80 !important;
+  background: #16a34a !important;
+  color: #ffffff !important;
+}
+
+/* A largura é interpolada localmente a 30 FPS entre os snapshots do Bridge. */
+.app .playbackQueueFill,
+.app .playingRowProgressBar,
+.app .queuedRowRegressBar,
+.app .partsArmedRegressBar {
+  transition: width 90ms linear !important;
+  will-change: width;
+}
+
+/* Gavetas no App Diretor: controle explícito imediatamente antes do tempo. */
+.app:not(.musicianMonitor) .item.numberedItem.hasFamilyDrawerToggle {
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
+}
+.app:not(.musicianMonitor) .item.hasFamilyDrawerToggle > .rightCol {
+  min-width: 68px;
+  padding-left: 3px !important;
+}
+.musicianMonitor .item.hasFamilyDrawerToggle {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.musicianMonitor .item.hasFamilyDrawerToggle > .rightCol {
+  min-width: 58px;
+  padding-left: 3px !important;
+}
+.familyDrawerToggle {
+  position: relative;
+  z-index: 9;
+  align-self: center;
+  min-width: 54px;
+  height: 25px;
+  margin-left: 2px;
+  padding: 0 6px;
+  border: 1px solid #f87171;
+  border-radius: 6px;
+  background: #7f1d1d;
+  color: #fee2e2;
+  font-size: 9px;
+  font-weight: 1000;
+  line-height: 1;
+  touch-action: manipulation !important;
+}
+.familyDrawerToggleOpen {
+  border-color: #4ade80;
+  background: #166534;
+  color: #dcfce7;
+}
+html[data-director-device="tablet"] .familyDrawerToggle {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+/* Ornamentos de bloco sincronizados com o preset visual da extensão. */
+.blockDesignerLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+}
+.blockDesignerText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.blockDesignerOrnament {
+  position: relative;
+  flex: 1 1 24px;
+  min-width: 8px;
+  height: 10px;
+  color: var(--block-symbol-color, #fff02e);
+}
+.blockSymbol-none .blockDesignerOrnament { display: none; }
+.blockSymbol-colon .blockDesignerOrnament {
+  background: radial-gradient(circle, currentColor 0 1.5px, transparent 1.7px)
+    center / 9px 7px repeat-x;
+}
+.blockSymbol-equal .blockDesignerOrnament {
+  background:
+    linear-gradient(currentColor, currentColor) center 2px / 100% 1px no-repeat,
+    linear-gradient(currentColor, currentColor) center 8px / 100% 1px no-repeat;
+}
+.blockSymbol-dash .blockDesignerOrnament {
+  background: repeating-linear-gradient(
+    90deg, currentColor 0 9px, transparent 9px 14px
+  ) center / 100% 2px no-repeat;
+}
+.blockSymbol-diamond .blockDesignerOrnament {
+  background:
+    linear-gradient(45deg, transparent 42%, currentColor 43% 57%, transparent 58%)
+      center / 12px 12px repeat-x,
+    linear-gradient(-45deg, transparent 42%, currentColor 43% 57%, transparent 58%)
+      center / 12px 12px repeat-x;
+}
+.blockSymbol-spark .blockDesignerOrnament {
+  background:
+    linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat,
+    repeating-linear-gradient(
+      90deg, transparent 0 5px, currentColor 5px 7px, transparent 7px 13px
+    ) center / 100% 7px no-repeat;
+}
+.blockSymbol-capsule .blockDesignerOrnament {
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.blockSymbol-capsule .blockDesignerOrnament::before,
+.blockSymbol-capsule .blockDesignerOrnament::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background: #111827;
+  transform: translateY(-50%);
+}
+.blockSymbol-capsule .blockDesignerOrnament::before { left: 0; }
+.blockSymbol-capsule .blockDesignerOrnament::after { right: 0; }
+.blockSymbol-angle .blockDesignerOrnament {
+  height: 2px;
+  background: currentColor;
+}
+.blockSymbol-angle .blockDesignerOrnament::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+}
+.blockSymbol-angle .blockDesignerOrnamentLeft::after {
+  right: 0;
+  transform: translateY(-50%) rotate(45deg);
+}
+.blockSymbol-angle .blockDesignerOrnamentRight::after {
+  left: 0;
+  transform: translateY(-50%) rotate(225deg);
+}
+
+/* Configurações sempre começam no alto e possuem rolagem própria. */
+.settingsModalBox {
+  max-height: calc(100vh - 12px) !important;
+  max-height: calc(100dvh - 12px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+.modalOverlay:has(.settingsModalBox) .modalSpacer {
+  flex: 0 0 4px !important;
+}
+html[data-director-device="tablet"] .settingsModalBox {
+  max-height: calc(100vh - 76px) !important;
+  max-height: calc(100dvh - 76px) !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer,
+html[data-director-device="tablet"] .modalOverlay:has(.settingsModalBox) .modalSpacer {
+  flex: 0 0 48px !important;
+}
+html[data-director-device="tablet"] .app:not(.musicianMonitor) .controlsRowDirectorMain.controlsRowDirectorMainTablet {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(42px, .68fr) !important;
+}
+
+/* O Recados do Diretor usa literalmente o mesmo app independente. */
+.directorRecadosRoot {
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  padding: 0 !important;
+  display: block !important;
+  overflow: hidden !important;
+}
+.directorRecadosFrame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #05070a;
+}
+.topPlaylistButtonStatic {
+  cursor: default !important;
+  pointer-events: none !important;
+}
+
+/* No tablet, os modais começam abaixo da navegação superior e aproveitam
+   todo o espaço restante da tela. */
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .modalSpacer {
+  flex: 0 0 62px !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalBox {
+  max-height: calc(100vh - 82px) !important;
+  max-height: calc(100dvh - 82px) !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .settingsModalBox {
+  max-height: calc(100vh - 58px) !important;
+  max-height: calc(100dvh - 58px) !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
+  flex: 0 0 44px !important;
+}
+
+/* AUTO 2: fila preparada sem reprodução automática. */
+.app .item.queuedGreen:not(.blockItem) {
+  background: #22c55e !important;
+  border-color: #166534 !important;
+  box-shadow: inset 0 0 0 1px rgba(134,239,172,.34) !important;
+}
+.app .item.queuedGreen .queuedGreenText,
+.app .item.queuedGreen .queuedGreenTimeText,
+.app .item.queuedGreen .leftCol span,
+.app .item.queuedGreen .rightCol span,
+.app .item.queuedGreen .rowNumberCol span {
+  color: #052e16 !important;
+  text-shadow: none !important;
+  font-weight: bold !important;
+}
+.app .item.numberedItem.queuedGreen:not(.blockItem) {
+  position: relative;
+  background: transparent !important;
+  border-bottom-color: #18212c !important;
+  box-shadow: none !important;
+}
+.app .item.numberedItem.queuedGreen:not(.blockItem)::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 38px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: #22c55e !important;
+  box-shadow: inset 0 0 0 1px rgba(134,239,172,.34) !important;
+}
+.app .item.blockItem.queuedGreen {
+  background: #22c55e !important;
+  border-color: #166534 !important;
+}
+.app .item.queuedGreen .queuedRowRegressBar,
+.app .playbackQueueTrackNext.playbackQueuePrepareOnly .playbackQueueFillNext {
+  background: linear-gradient(90deg,#4ade80 0%,#16a34a 100%) !important;
+  box-shadow: 0 0 7px rgba(34,197,94,.52) !important;
+}
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueLabel,
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle {
+  color: #4ade80 !important;
+}
+
+/* Tablet: os modais ocupam toda a altura útil abaixo dos controles. */
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
+  flex: 0 0 44px !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsModalBox {
+  height: calc(100vh - 72px) !important;
+  height: calc(100dvh - 72px) !important;
+  max-height: calc(100vh - 72px) !important;
+  max-height: calc(100dvh - 72px) !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsExitButtons {
+  margin-top: auto !important;
+  padding-top: 7px !important;
+  flex: 0 0 auto !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .modalSpacer {
+  flex: 0 0 62px !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalBox {
+  height: calc(100vh - 90px) !important;
+  height: calc(100dvh - 90px) !important;
+  max-height: calc(100vh - 90px) !important;
+  max-height: calc(100dvh - 90px) !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalActionButtons {
+  flex: 0 0 auto !important;
+}
+
+/* A extensão fornece o fundo Live; o texto permanece vermelho fixo. */
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) {
+  background: var(--live-mark-background, #7d8693) !important;
+  border-color: var(--live-mark-border, #8f99a8) !important;
+  box-shadow: inset 0 0 0 1px var(--live-mark-shadow, #8f99a857) !important;
+}
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .leftCol span,
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rightCol span,
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rowNumberCol span {
+  color: #f87171 !important;
+  text-decoration: none !important;
+  text-shadow: none !important;
+}
+
+/* Repertórios multiaba e modais maiores/responsivos. */
+.playlistModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.playlistModalHeader .modalTitle {
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+.playlistMultiButton {
+  flex: 0 0 auto;
+  min-width: 104px;
+  min-height: 38px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+.playlistMultiButton:disabled {
+  opacity: 1 !important;
+  filter: none !important;
+  cursor: not-allowed !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .modalSpacer {
+  flex: 0 0 48px !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalBox {
+  width: min(94%, 980px) !important;
+  max-width: 980px !important;
+  height: calc(100vh - 76px) !important;
+  height: calc(100dvh - 76px) !important;
+  max-height: calc(100vh - 76px) !important;
+  max-height: calc(100dvh - 76px) !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
+  flex: 0 0 36px !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay .settingsModalBox {
+  width: min(92%, 920px) !important;
+  max-width: 920px !important;
+  height: calc(100vh - 64px) !important;
+  height: calc(100dvh - 64px) !important;
+  max-height: calc(100vh - 64px) !important;
+  max-height: calc(100dvh - 64px) !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .modalSpacer,
+html[data-director-device="phone"] .modalOverlay:has(.projectModalBox) .modalSpacer {
+  flex: 0 0 12px !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistModalBox,
+html[data-director-device="phone"] .projectModalBox {
+  width: min(96vw, 620px) !important;
+  max-width: 620px !important;
+  height: calc(100vh - 52px) !important;
+  height: calc(100dvh - 52px) !important;
+  max-height: calc(100vh - 52px) !important;
+  max-height: calc(100dvh - 52px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistSelectList,
+html[data-director-device="phone"] .projectModalBox .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 4px !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+html[data-director-device="phone"] .controlsRowDirectorMainPhone > [data-action="stop-break"] {
+  font-size: 10px !important;
+  white-space: nowrap !important;
+}
+
+/* Tamanho final dos modais: ocupam de fato todo o espaço útil da tela. */
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay,
+html[data-director-device="tablet"] .projectModalOverlay {
+  padding: 62px 8px 8px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay {
+  padding: 62px 8px 8px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .modalBottomSpace,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalBottomSpace,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .modalBottomSpace,
+html[data-director-device="tablet"] .projectModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .projectModalOverlay > .modalBottomSpace {
+  display: none !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .tabletMultiLoopsModal,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .tabletMultiLoopTracksModal,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .projectModalOverlay .playlistSelectList {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox {
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .tabletMultiLoopsModal {
+  overflow-y: auto !important;
+}
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .tabletMultiLoopTracksModal {
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay,
+html[data-director-device="phone"] .projectModalOverlay,
+html[data-director-device="phone"] .tabletSettingsModalOverlay,
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay {
+  padding: 6px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .modalBottomSpace,
+html[data-director-device="phone"] .projectModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .projectModalOverlay > .modalBottomSpace,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .modalBottomSpace,
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .modalSpacer,
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .modalBottomSpace {
+  display: none !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="phone"] .projectModalOverlay > .projectModalBox,
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .settingsModalBox,
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .tabletMultiLoopsModal,
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .tabletMultiLoopTracksModal {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+html[data-director-device="phone"] .tabletSettingsModalOverlay > .settingsModalBox {
+  overflow-y: auto !important;
+}
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .tabletMultiLoopsModal {
+  overflow-y: auto !important;
+}
+html[data-director-device="phone"] .tabletMultiLoopModalOverlay > .tabletMultiLoopTracksModal {
+  overflow: hidden !important;
+}
+.tabletPlaylistModalOverlay .playlistSelectList {
+  gap: 5px !important;
+  align-content: start !important;
+  grid-auto-rows: max-content !important;
+}
+.tabletPlaylistModalOverlay .playlistOption,
+.tabletPlaylistModalOverlay .playlistOptionActive {
+  height: 35px !important;
+  max-height: 35px !important;
+  min-height: 35px !important;
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+.tabletPlaylistModalOverlay .playlistOptionTime {
+  font-size: 10px !important;
+}
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistOption,
+html[data-director-device="phone"] .tabletPlaylistModalOverlay .playlistOptionActive {
+  height: 33px !important;
+  max-height: 33px !important;
+  min-height: 33px !important;
+  padding: 4px 7px !important;
+  font-size: 10.5px !important;
+}
+.projectModalOverlay .playlistSelectList {
+  gap: 5px !important;
+  align-content: start !important;
+  grid-auto-rows: max-content !important;
+}
+.projectModalOverlay .playlistOption,
+.projectModalOverlay .playlistOptionActive {
+  height: 35px !important;
+  max-height: 35px !important;
+  min-height: 35px !important;
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+html[data-director-device="phone"] .projectModalOverlay .playlistOption,
+html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
+  height: 33px !important;
+  max-height: 33px !important;
+  min-height: 33px !important;
+  padding: 4px 7px !important;
+  font-size: 10.5px !important;
 }

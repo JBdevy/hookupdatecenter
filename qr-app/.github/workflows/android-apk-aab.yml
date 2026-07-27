@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Version name, exemplo: 1.8.2'
+        description: 'Version name, exemplo: 1.0.0'
         required: true
-        default: '1.8.2'
+        default: '1.0.0'
       version_code:
         description: 'Version code inteiro, aumente a cada envio para Play Store'
         required: true
@@ -47,7 +47,7 @@ jobs:
 
       - name: Definir versão Android
         run: |
-          VERSION_NAME="${{ github.event.inputs.version_name || '1.8.2' }}"
+          VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
           VERSION_CODE="${{ github.event.inputs.version_code || '19' }}"
           python3 scripts/set-android-version.py --version-name "$VERSION_NAME" --version-code "$VERSION_CODE"
 

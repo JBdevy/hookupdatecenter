@@ -5,7 +5,7 @@ const VSHOOK_SAVED_PROBE_TIMEOUT_MS = 650
 const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '3-0-8-tablet-runtime-orientation-v103'
+const VSHOOK_ASSET_VERSION = '1-0-0-native-single-motor-v126'
 let vshookDiscoveredProjects = []
 let vshookBridgeBrowserMode = false
 let vshookDiscoveryRunId = 0
@@ -298,7 +298,7 @@ function renderSearching() {
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
-    <p class="vshook-shell-subtitle">Procurando projetos VS Hook disponíveis na rede Wi‑Fi...</p>
+    <p class="vshook-shell-subtitle">Procurando sessões VS Hook disponíveis na rede Wi‑Fi...</p>
     <p class="vshook-shell-status">A busca continua em segundo plano. Se preferir, digite o IP do computador agora.</p>
     ${renderManualIpBox()}
   `)
@@ -309,8 +309,8 @@ function renderNoProjects() {
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
-    <p class="vshook-shell-subtitle">Nenhum projeto VS Hook foi encontrado.</p>
-    <p class="vshook-shell-status">Abra o REAPER ou abra um projeto no REAPER e verifique se o Hook Center está aberto.</p>
+    <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
+    <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
     ${renderManualIpBox()}
   `)
   attachManualIpHandler()
@@ -333,7 +333,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
     </div>
-    <div class="vshook-app-version">Versão 3.0.9 app</div>
+    <div class="vshook-app-version">Versão 1.0.0 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {
@@ -393,7 +393,7 @@ function renderDirectorDeviceSelection() {
 
 async function refreshProjectSelector() {
   const runId = ++vshookProjectsRefreshRunId
-  renderProjects([], { loading: true, status: 'Procurando projeto ativo...' })
+  renderProjects([], { loading: true, status: 'Procurando sessão ativa...' })
 
   let projects = []
   if (vshookBridgeBrowserMode) {
@@ -406,13 +406,13 @@ async function refreshProjectSelector() {
   if (runId !== vshookProjectsRefreshRunId) return
 
   if (projects && projects.length) {
-    renderProjects(projects, { status: 'Projetos atualizados.' })
+    renderProjects(projects, { status: 'Sessões atualizadas.' })
   } else {
     try {
       localStorage.removeItem('vshook_selected_project')
       localStorage.removeItem('vshook_cached_mode_projects')
     } catch (error) {}
-    renderProjects([], { status: 'Abra o REAPER ou abra um projeto no REAPER e verifique se o Hook Center está aberto.' })
+    renderProjects([], { status: 'Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.' })
   }
 }
 
@@ -429,8 +429,8 @@ function renderProjects(projects, options = {}) {
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">Modo Diretor</h1>
-    <p class="vshook-shell-subtitle">Selecione o projeto disponível na rede Wi‑Fi.</p>
-    <div class="vshook-project-list">${rows || `<div class="vshook-shell-status">Abra o REAPER ou abra um projeto no REAPER e verifique se o Hook Center está aberto.</div>`}</div>
+    <p class="vshook-shell-subtitle">Selecione a sessão disponível na rede Wi‑Fi.</p>
+    <div class="vshook-project-list">${rows || `<div class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</div>`}</div>
     ${status ? `<p class="vshook-shell-status">${vshookEscape(status)}</p>` : ''}
     <div class="vshook-project-actions">
       <button class="vshook-back-button" id="backModeBtn">Voltar</button>
@@ -494,16 +494,16 @@ async function enterApp(project, mode, options = {}) {
   const tabIndex = Number(project.projectTabIndex)
   const shouldSwitchProjectTab = mode === 'director' && !options.skipProjectSwitch
   if (shouldSwitchProjectTab && Number.isFinite(tabIndex)) {
-    try {
-      await fetch(`${project.directorUrl}/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'set_project_tab',
-          payload: { projectTabIndex: tabIndex, index: tabIndex },
-        }),
-      })
-    } catch (error) {}
+    // A troca é processada pelo mesmo motor nativo que abastece o app. Não
+    // bloqueia a montagem da interface esperando a resposta de rede.
+    void fetch(`${project.directorUrl}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'set_project_tab',
+        payload: { projectTabIndex: tabIndex, index: tabIndex },
+      }),
+    }).catch(() => {})
   }
 
   appRoot.innerHTML = ''
@@ -866,8 +866,8 @@ function renderBridgeNoProjects() {
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
-    <p class="vshook-shell-subtitle">Nenhum projeto VS Hook foi encontrado.</p>
-    <p class="vshook-shell-status">Abra o REAPER ou abra um projeto no REAPER e verifique se o Hook Center está aberto.</p>
+    <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
+    <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
     <button class="vshook-secondary-button" id="refreshProjectsBtn">Atualizar</button>
   `)
   document.getElementById('refreshProjectsBtn')?.addEventListener('click', startBridgeBrowserMode)
@@ -878,7 +878,7 @@ async function startBridgeBrowserMode() {
   setShell(`
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
-    <p class="vshook-shell-subtitle">Carregando projeto do Hook Center...</p>
+    <p class="vshook-shell-subtitle">Carregando sessão do Hook Center...</p>
   `)
   const projects = await fetchBridgeBrowserProjects()
   if (projects.length) renderModeFirst(projects)

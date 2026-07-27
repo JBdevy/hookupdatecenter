@@ -23,7 +23,6 @@
         <button class="nav-item" data-view="license">Ativação</button>
         <button class="nav-item" data-view="devices">Dispositivos</button>
         <button class="nav-item" data-view="bridge">Conexão via app</button>
-        <button class="nav-item" data-view="lyrics">Teleprompt</button>
         <button class="nav-item" data-view="tools">Ferramentas</button>
         <button class="nav-item" data-view="status">Status</button>
         <button id="supportNavButton" class="nav-item support-nav" type="button">Suporte</button>
@@ -91,7 +90,7 @@
           <div>
             <p class="eyebrow">Histórico</p>
             <h1>Atualizações anteriores</h1>
-            <p class="muted">Baixe e instale versões anteriores do VS Hook quando precisar.</p>
+            <p class="muted">Guarde, instale ou reinstale a versão atual e versões anteriores, inclusive sem internet quando já estiverem salvas.</p>
           </div>
           <button id="refreshPreviousButton" class="primary-button">Carregar versões</button>
         </div>
@@ -210,12 +209,16 @@
         </div>
 
         <div class="card bridge-card-inline compact-connection-card">
-          <h2>Conexão pronta</h2>
+          <div class="bridge-ready-heading">
+            <button id="openBridgeNetworkModalButton" class="secondary-button bridge-network-open-button" type="button">Escolher rede</button>
+            <h2>Conexão pronta</h2>
+            <span aria-hidden="true"></span>
+          </div>
           <p class="status ok-text" id="bridgeRunningText">Conexão ativa. O Hook Center já está funcionando.</p>
 
           <div class="bridge-auto-panel">
-            <strong>Busca automática pela mesma rede Wi‑Fi</strong>
-            <p class="muted">Abra o app no celular e toque em procurar projeto.</p>
+            <strong>Busca automática pela rede selecionada</strong>
+            <p class="muted">Funciona por Wi‑Fi ou cabo. Abra o app e toque em procurar projeto.</p>
           </div>
 
           <div class="bridge-ip-panel">
@@ -240,7 +243,7 @@
 
 
 
-      <section id="lyricsView" class="view">
+      <section id="lyricsView" class="view hidden" aria-hidden="true">
         <div class="hero-card bridge-hero">
           <div class="lyrics-top-controls">
             <div class="lyrics-window-quick-actions lyrics-window-quick-actions-left">
@@ -1016,6 +1019,20 @@
       <div id="supportQrCode" class="support-qr-code" aria-label="QR Code do suporte"></div>
       <div class="modal-actions">
         <button id="supportQrCloseButton" class="primary-button modal-button" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bridgeNetworkModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="bridgeNetworkModalTitle">
+    <div class="hook-modal bridge-network-modal">
+      <div class="modal-icon info">⌁</div>
+      <h2 id="bridgeNetworkModalTitle">Escolher rede</h2>
+      <p>Selecione o Wi‑Fi, cabo de rede ou adaptador que o App do Diretor deve usar.</p>
+      <div id="bridgeNetworkOptions" class="bridge-network-options">
+        <p class="muted">Procurando redes...</p>
+      </div>
+      <div class="modal-actions">
+        <button id="closeBridgeNetworkModalButton" class="secondary-button modal-button" type="button">Fechar</button>
       </div>
     </div>
   </div>

@@ -748,6 +748,88 @@ select option {
 .compact-connection-card { margin-top: 14px; }
 .compact-connection-card h2 { margin-bottom: 8px; }
 
+.bridge-ready-heading {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.bridge-ready-heading h2 {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.bridge-network-open-button {
+  justify-self: start;
+  min-height: 32px;
+  padding: 6px 11px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bridge-network-options {
+  display: grid;
+  gap: 8px;
+  max-height: min(50vh, 330px);
+  overflow: auto;
+  padding: 2px;
+}
+
+.bridge-network-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 10px;
+  background: rgba(255,255,255,.045);
+  color: #f4f7fa;
+  text-align: left;
+}
+
+.bridge-network-option:hover,
+.bridge-network-option:focus-visible {
+  border-color: rgba(158,255,0,.55);
+  background: rgba(158,255,0,.09);
+  outline: none;
+}
+
+.bridge-network-option strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bridge-network-option span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bridge-network-option em {
+  color: #08090b;
+  background: var(--green);
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.bridge-network-option-selected {
+  border-color: rgba(158,255,0,.62);
+  background: rgba(158,255,0,.12);
+}
+
+.bridge-network-modal {
+  width: min(560px, 92vw);
+}
+
 .bridge-ip-panel {
   margin: 18px auto 14px;
   max-width: 560px;
@@ -1054,6 +1136,9 @@ select option {
 #bridgeView h2 {
   font-size: 18px;
   margin-bottom: 5px;
+}
+#bridgeView .bridge-ready-heading h2 {
+  margin-bottom: 0;
 }
 #bridgeView .bridge-auto-panel {
   margin: 8px 0;
@@ -6627,11 +6712,15 @@ body.previous-mode .content > .view.active {
 }
 
 #previousView .previous-update-card .actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
   margin-top: auto !important;
   padding-top: 2px;
 }
 
-#previousView .previous-update-card .previous-download-button {
+#previousView .previous-update-card .previous-install-button,
+#previousView .previous-update-card .previous-cache-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6640,6 +6729,22 @@ body.previous-mode .content > .view.active {
   padding: 6px 10px;
   font-size: 11px;
   text-align: center;
+}
+
+#previousView .previous-update-card .previous-cache-button.danger-button {
+  background: rgba(239, 68, 68, .14);
+  border-color: rgba(239, 68, 68, .42);
+  color: #fecaca;
+}
+
+#previousView .previous-local-status {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+#previousView .previous-local-status.is-cached {
+  color: var(--accent);
 }
 
 @media (max-width: 680px) {

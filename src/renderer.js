@@ -8,7 +8,7 @@ let hookRenameFolder = null;
 let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
 let combinedDownloadInProgress = false;
-let combinedDownloadReady = { vsHook: false, hookCenter: false };
+let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
 let recadosHubSelectedSlot = 'global';
@@ -22,6 +22,7 @@ let recadosHubRemainingMs = 0;
 let recadosHubCountdownTimer = 0;
 let updateDescriptionFitFrame = 0;
 let updateDescriptionResizeObserver = null;
+let currentBridgeState = null;
 
 function setLyricsConfigSlot(slot) {
   selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
@@ -439,20 +440,49 @@ async function startVsHookDownload(updateOverride = null) {
 }
 
 async function startCombinedUpdateDownload() {
-  const downloadVsHook = !!state?.latestUpdate;
-  const downloadHookCenter = state?.hookCenterUpdateAvailable === true;
-  if (!downloadVsHook && !downloadHookCenter) {
+  if (!state?.latestUpdate && !state?.hookCenterLatest) {
     showModal({ title: 'Atualizações', message: 'Nenhuma atualização disponível no momento.', type: 'info' });
     return;
   }
 
   if (!(await ensureLicenseActiveForDownload())) return;
-  if (downloadVsHook && !(await showDownloadDescriptionNotice())) return;
   if (!(await ensureDeviceName())) return;
 
   const button = $('#downloadButton');
+  if (state?.currentPackageInstalled === true) {
+    const confirmed = await confirmModal({
+      title: 'Reinstalar esta versão?',
+      message: state?.currentPackageCached
+        ? 'A Hook Center abrirá o instalador salvo no computador e reinstalará também a extensão.'
+        : 'Os arquivos serão baixados novamente, salvos no computador e a instalação completa será aberta.',
+      type: 'info',
+      okText: 'Reinstalar',
+      cancelText: 'Cancelar'
+    });
+    if (!confirmed) return;
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Preparando...';
+      }
+      await window.hookUpdateCenter.installCachedUpdatePackage();
+      if (state?.platform === 'darwin') {
+        renderState(await window.hookUpdateCenter.getState());
+        showModal({ title: 'Reinstalação pronta', message: 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.', type: 'success' });
+      }
+    } catch (error) {
+      showModal({ title: 'Erro ao reinstalar', message: friendlyError(error, 'Não foi possível reinstalar esta versão.'), type: 'error' });
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Reinstalar';
+      }
+    }
+    return;
+  }
+
+  if (!(await showDownloadDescriptionNotice())) return;
   combinedDownloadInProgress = true;
-  combinedDownloadReady = { vsHook: false, hookCenter: false };
+  combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
   $('#homeProgressArea')?.classList.add('hidden');
   resetVsHookProgress();
   if (button) {
@@ -460,22 +490,11 @@ async function startCombinedUpdateDownload() {
     setHomeDownloadButtonProgress(0, true);
   }
 
-  let completedAny = false;
   try {
-    if (downloadVsHook) {
-      await window.hookUpdateCenter.downloadUpdate();
-      combinedDownloadReady.vsHook = true;
-      completedAny = true;
-    }
-    if (downloadHookCenter) {
-      resetVsHookProgress();
-      setHomeDownloadButtonProgress(0, true);
-      await window.hookUpdateCenter.downloadHookCenterUpdate();
-      combinedDownloadReady.hookCenter = true;
-      completedAny = true;
-    }
+    await window.hookUpdateCenter.cacheUpdatePackage();
+    combinedDownloadReady = { package: true, vsHook: true, hookCenter: true };
   } catch (error) {
-    showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar todas as atualizações.'), type: 'error' });
+    showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível guardar o instalador e a extensão desta versão.'), type: 'error' });
   } finally {
     combinedDownloadInProgress = false;
     if (button) {
@@ -484,30 +503,23 @@ async function startCombinedUpdateDownload() {
       button.style.removeProperty('--download-progress');
       button.textContent = 'Baixar';
     }
-    if (completedAny) {
+    if (combinedDownloadReady.package) {
       updateVsHookProgress(100);
       const installButton = $('#installButton');
       if (installButton) {
-        installButton.textContent = combinedDownloadReady.vsHook && combinedDownloadReady.hookCenter
-          ? 'Instalar atualizações'
-          : (combinedDownloadReady.hookCenter ? 'Instalar Hook Center' : 'Instalar');
+        installButton.textContent = 'Instalar';
         installButton.classList.remove('hidden');
       }
+      renderState(await window.hookUpdateCenter.getState());
     }
   }
 }
 
 async function installCombinedDownloadedUpdates() {
-  const installVsHook = combinedDownloadReady.vsHook;
-  const installHookCenter = combinedDownloadReady.hookCenter;
-  if (!installVsHook && !installHookCenter) return;
-
-  const products = [installVsHook ? 'VS Hook' : '', installHookCenter ? 'Hook Center' : ''].filter(Boolean).join(' e ');
+  if (!combinedDownloadReady.package) return;
   const confirmed = await confirmModal({
-    title: 'Instalar atualizações',
-    message: installVsHook
-      ? `Feche o REAPER antes de continuar. O Hook Center vai instalar ${products}.`
-      : `O Hook Center vai instalar ${products}.`,
+    title: 'Instalar atualização',
+    message: 'Feche o REAPER antes de continuar. A Hook Center instalará a extensão e abrirá o instalador completo.',
     type: 'info',
     okText: 'Instalar',
     cancelText: 'Cancelar'
@@ -515,21 +527,14 @@ async function installCombinedDownloadedUpdates() {
   if (!confirmed) return;
 
   try {
-    let vsHookResult = null;
-    if (installVsHook) vsHookResult = await window.hookUpdateCenter.installUpdate();
-    if (installHookCenter) {
-      await window.hookUpdateCenter.installDownloadedHookCenterUpdate();
-      if (state?.platform === 'darwin') {
-        showModal({ title: 'Atualizações prontas', message: 'O VS Hook foi atualizado e o instalador do Hook Center foi aberto.', type: 'success' });
-      }
-      return;
+    await window.hookUpdateCenter.installCachedUpdatePackage();
+    if (state?.platform === 'darwin') {
+      renderState(await window.hookUpdateCenter.getState());
+      setProgressVisible(false);
+      resetVsHookProgress();
+      showModal({ title: 'Atualizações prontas', message: 'A extensão foi instalada e o instalador da Hook Center foi aberto.', type: 'success' });
     }
-
-    renderState(await window.hookUpdateCenter.getState());
-    setProgressVisible(false);
-    resetVsHookProgress();
-    combinedDownloadReady = { vsHook: false, hookCenter: false };
-    showModal({ title: 'Instalação concluída', message: `${vsHookResult?.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
+    combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
   } catch (error) {
     showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar as atualizações.'), type: 'error' });
   }
@@ -1333,6 +1338,7 @@ function setupLyricsAutoApply() {
 
 function renderBridgeState(bridge) {
   if (!bridge) return;
+  currentBridgeState = bridge;
   const runningText = $('#bridgeRunningText');
   if (runningText) {
     runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando.' : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
@@ -1346,6 +1352,7 @@ function renderBridgeState(bridge) {
     bridgeAddressEl.textContent = shortAddress || '--';
     bridgeAddressEl.title = fullAddress || shortAddress || '';
   }
+  renderBridgeNetworkOptions(bridge);
   const qrImage = $('#browserQrImage');
   if (qrImage) {
     if (bridge.qrCodeUrl && bridge.running) {
@@ -1359,6 +1366,92 @@ function renderBridgeState(bridge) {
   if ($('#bridgeDirectorPort')) $('#bridgeDirectorPort').textContent = String(bridge.directorPort || '--');
   if ($('#bridgeMusiciansPort')) $('#bridgeMusiciansPort').textContent = String(bridge.musiciansPort || '--');
   if ($('#bridgeScriptsDir')) $('#bridgeScriptsDir').textContent = bridge.scriptsDir || '--';
+}
+
+function renderBridgeNetworkOptions(bridge = currentBridgeState) {
+  const container = $('#bridgeNetworkOptions');
+  if (!container || !bridge) return;
+  const networks = Array.isArray(bridge.lanIps)
+    ? bridge.lanIps : [];
+  const selectedIp = String(
+    bridge.selectedNetworkIp || bridge.lanIp || '');
+  container.innerHTML = '';
+  if (!networks.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'Nenhuma rede local encontrada.';
+    container.appendChild(empty);
+    return;
+  }
+  networks.forEach((item) => {
+    const ip = String(item?.ip || '');
+    const selected = !!ip && ip === selectedIp;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className =
+      `bridge-network-option${selected
+        ? ' bridge-network-option-selected' : ''}`;
+    button.dataset.networkIp = ip;
+
+    const name = document.createElement('strong');
+    name.textContent = String(item?.name || 'Rede');
+    const address = document.createElement('span');
+    address.textContent = ip || '--';
+    button.append(name, address);
+    if (selected) {
+      const badge = document.createElement('em');
+      badge.textContent = 'EM USO';
+      button.appendChild(badge);
+    }
+    container.appendChild(button);
+  });
+}
+
+async function openBridgeNetworkModal() {
+  $('#bridgeNetworkModal')?.classList.remove('hidden');
+  try {
+    const bridge =
+      await window.hookUpdateCenter.getBridgeState();
+    renderBridgeState(bridge);
+  } catch (_) {
+    renderBridgeNetworkOptions();
+  }
+  $('#closeBridgeNetworkModalButton')?.focus();
+}
+
+function closeBridgeNetworkModal() {
+  $('#bridgeNetworkModal')?.classList.add('hidden');
+}
+
+async function selectBridgeNetworkFromModal(ip) {
+  const selectedIp = String(ip || '');
+  if (!selectedIp) return;
+  const buttons = $$('#bridgeNetworkOptions button');
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const bridge =
+      await window.hookUpdateCenter.selectBridgeNetwork({
+        ip: selectedIp
+      });
+    renderBridgeState(bridge);
+    closeBridgeNetworkModal();
+    showModal({
+      title: 'Rede do app alterada',
+      message:
+        'O endereço e o QR Code agora usam a rede escolhida.',
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({
+      title: 'Erro ao trocar a rede',
+      message: friendlyError(error,
+        'Não foi possível usar a rede escolhida.'),
+      type: 'error'
+    });
+    await refreshBridgeState();
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
 }
 
 
@@ -1693,7 +1786,7 @@ function renderState(nextState) {
   const homeDownloadButton = $('#downloadButton');
   if (homeDownloadButton && !combinedDownloadInProgress) {
     homeDownloadButton.disabled = !hasHomeUpdate;
-    homeDownloadButton.textContent = 'Baixar';
+    homeDownloadButton.textContent = state.currentPackageInstalled ? 'Reinstalar' : 'Baixar';
   }
 
   if (hasStatusTestUpdate) {
@@ -1773,15 +1866,36 @@ function getPlatformFilesForUpdate(update) {
 function hasInstallableFiles(update) {
   const files = getPlatformFilesForUpdate(update);
   if (!files) return false;
+  const hasExpectedName = (value, expectedName) => {
+    try {
+      const filename = decodeURIComponent(new URL(String(value || ''), 'https://local.invalid').pathname.split('/').pop() || '').toLowerCase();
+      return filename === expectedName.toLowerCase();
+    } catch (_) {
+      return false;
+    }
+  };
 
   if (state?.platform === 'darwin') {
-    const jsApi = state?.arch === 'arm64'
-      ? (files.jsApiArmDylib || files.jsApiDylib)
-      : (files.jsApiIntelDylib || files.jsApiDylib);
-    return !!(files.betaLua || files.estableLua || files.stableLua || files.proLua || files.basicLua || files.lua || files.logoPng || files.loadingLogo || files.logo || files.hookLyricsLua || files.lyricsLua || files.vshookDylib || jsApi);
+    return hasExpectedName(files.vshookDylib || files.vshookExtDylib, 'reaper_VSHookExt.dylib');
   }
 
-  return Object.values(files || {}).some(Boolean);
+  return hasExpectedName(files.vshookDll || files.vshookExtDll, 'reaper_VSHookExt.dll');
+}
+
+function getInstallerUrlForUpdate(update) {
+  const files = getPlatformFilesForUpdate(update);
+  const direct = files?.installer || files?.exe || files?.dmg || update?.installerUrl || update?.downloadUrl || '';
+  if (String(direct || '').trim()) return String(direct).trim();
+
+  const hookCenter = state?.hookCenterLatest || {};
+  const sameCurrentVersion = update?.current === true &&
+    String(update?.version || '').trim() &&
+    String(update?.version || '').trim() === String(hookCenter?.version || '').trim();
+  return sameCurrentVersion ? String(hookCenter?.downloadUrl || '').trim() : '';
+}
+
+function hasCompleteInstallablePackage(update) {
+  return hasInstallableFiles(update) && Boolean(getInstallerUrlForUpdate(update));
 }
 
 function renderPreviousUpdates(updates) {
@@ -1801,48 +1915,110 @@ function renderPreviousUpdates(updates) {
     const title = escapeHtml(update.title || `VS Hook ${version}`);
     const date = escapeHtml(formatDate(update.publishedAt || update.createdAt));
     const description = escapeHtml(update.description || '');
+    const cached = update.cached === true;
+    const installed = update.installed === true;
+    const current = update.current === true;
+    const packageAvailable = cached || hasCompleteInstallablePackage(update);
 
     return `
       <div class="card previous-update-card">
         <div class="update-header">
           <div>
-            <p class="eyebrow">Versão anterior</p>
+            <p class="eyebrow">${current ? 'Versão atual' : 'Versão anterior'}</p>
             <h2>${title}</h2>
             <p class="muted">${date}</p>
           </div>
           <span class="badge">v${version}</span>
         </div>
         ${description ? `<p class="description">${description}</p>` : ''}
+        <p class="previous-local-status ${cached ? 'is-cached' : ''}">
+          ${cached ? 'Salva neste computador' : 'Disponível somente online'}${installed ? ' · instalada' : ''}
+        </p>
         <div class="actions">
-          <button class="primary-button previous-download-button" data-index="${index}">Baixar esta versão</button>
+          <button class="primary-button previous-install-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? 'Instalar' : 'Indisponível'}</button>
+          <button class="${cached ? 'danger-button' : 'secondary-button'} previous-cache-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>
+            ${cached ? 'Remover do meu PC' : packageAvailable ? 'Manter no meu PC' : 'Indisponível'}
+          </button>
         </div>
       </div>
     `;
   }).join('');
 
-  list.querySelectorAll('.previous-download-button').forEach((button) => {
+  list.querySelectorAll('.previous-install-button').forEach((button) => {
     button.addEventListener('click', async () => {
       const index = Number(button.dataset.index);
       const update = updates[index];
-      if (!hasInstallableFiles(update)) {
+      if (!hasCompleteInstallablePackage(update) && update.cached !== true) {
         showModal({ title: 'Versão indisponível', message: 'Não há arquivos disponíveis para esta versão neste sistema.', type: 'error' });
         return;
       }
 
       try {
         if (!(await ensureLicenseActiveForDownload())) return;
-        if (!(await showDownloadDescriptionNotice())) return;
-        setView('home');
-        setProgressVisible(true);
-        resetVsHookProgress();
+        const confirmed = await confirmModal({
+          title: `Instalar versão ${update.version || ''}?`,
+          message: update.cached
+            ? 'A extensão será instalada e o instalador da Hook Center salvo no computador será aberto.'
+            : 'Esta versão será baixada, mantida no computador e depois instalada por completo.',
+          type: 'info',
+          okText: 'Instalar',
+          cancelText: 'Cancelar'
+        });
+        if (!confirmed) return;
         button.disabled = true;
-        button.textContent = 'Baixando...';
-        await window.hookUpdateCenter.downloadUpdate({ update });
+        button.textContent = update.cached ? 'Instalando...' : 'Baixando...';
+        await window.hookUpdateCenter.installCachedUpdatePackage({ update });
+        if (state?.platform === 'darwin') {
+          renderState(await window.hookUpdateCenter.getState());
+          await loadPreviousUpdates();
+          showModal({ title: 'Instalação pronta', message: 'A extensão foi instalada e o instalador da Hook Center foi aberto.', type: 'success' });
+        }
       } catch (error) {
-        showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar esta versão.'), type: 'error' });
+        showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar esta versão.'), type: 'error' });
       } finally {
         button.disabled = false;
-        button.textContent = 'Baixar esta versão';
+        button.textContent = 'Instalar';
+      }
+    });
+  });
+
+  list.querySelectorAll('.previous-cache-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.index);
+      const update = updates[index];
+      try {
+        if (update.cached) {
+          const confirmed = await confirmModal({
+            title: 'Remover esta versão do computador?',
+            message: 'Se remover do PC, pode ser que esta atualização não esteja disponível para baixar novamente.',
+            type: 'warning',
+            okText: 'Remover do meu PC',
+            cancelText: 'Cancelar'
+          });
+          if (!confirmed) return;
+          button.disabled = true;
+          button.textContent = 'Removendo...';
+          await window.hookUpdateCenter.removeCachedUpdatePackage({ update });
+        } else {
+          if (!hasCompleteInstallablePackage(update)) {
+            showModal({ title: 'Versão indisponível', message: 'Esta versão não possui a extensão e o instalador compatíveis com este sistema.', type: 'error' });
+            return;
+          }
+          if (!(await ensureLicenseActiveForDownload())) return;
+          button.disabled = true;
+          button.textContent = 'Baixando...';
+          await window.hookUpdateCenter.cacheUpdatePackage({ update });
+        }
+        renderState(await window.hookUpdateCenter.getState());
+        await loadPreviousUpdates();
+      } catch (error) {
+        showModal({
+          title: update.cached ? 'Erro ao remover' : 'Erro ao guardar',
+          message: friendlyError(error, update.cached ? 'Não foi possível remover esta versão do computador.' : 'Não foi possível guardar esta versão no computador.'),
+          type: 'error'
+        });
+      } finally {
+        button.disabled = false;
       }
     });
   });
@@ -1987,6 +2163,7 @@ async function init() {
     if (event.key === 'Escape') {
       if (!$('#technicalNoticeModal')?.classList.contains('hidden')) closeTechnicalNoticeModal();
       else if (!$('#recadosModal')?.classList.contains('hidden')) closeRecadosModal();
+      else if (!$('#bridgeNetworkModal')?.classList.contains('hidden')) closeBridgeNetworkModal();
       else if (!$('#supportQrModal')?.classList.contains('hidden')) closeSupportQrModal();
       else if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
       else hideModal();
@@ -2034,6 +2211,23 @@ async function init() {
     } finally {
       $('#restartBridgeButton').disabled = false;
       $('#restartBridgeButton').textContent = 'Reiniciar conexão';
+    }
+  });
+  $('#openBridgeNetworkModalButton')?.addEventListener(
+    'click', openBridgeNetworkModal);
+  $('#closeBridgeNetworkModalButton')?.addEventListener(
+    'click', closeBridgeNetworkModal);
+  $('#bridgeNetworkModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'bridgeNetworkModal') {
+      closeBridgeNetworkModal();
+    }
+  });
+  $('#bridgeNetworkOptions')?.addEventListener('click', (event) => {
+    const button =
+      event.target.closest('[data-network-ip]');
+    if (button) {
+      selectBridgeNetworkFromModal(
+        button.dataset.networkIp);
     }
   });
   $('#supportButton')?.addEventListener('click', openSupport);
