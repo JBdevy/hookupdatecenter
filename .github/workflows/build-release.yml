@@ -17,6 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout VSHookExtension
+        uses: actions/checkout@v4
+        with:
+          repository: JBdevy/Extensionvshook
+          ref: main
+          path: vshook-extension
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -24,6 +31,23 @@ jobs:
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Build Teleprompt Settings companion
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm ci --prefix vshook-extension/teleprompt-settings --legacy-peer-deps
+          npm run build:win --prefix vshook-extension/teleprompt-settings
+          $source = Get-ChildItem vshook-extension/teleprompt-settings/dist -Directory -Filter win-unpacked | Select-Object -First 1
+          if (-not $source) { throw "Aplicativo auxiliar do Teleprompt nao encontrado." }
+          $destination = 'build/vshook-companion'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Get-ChildItem -LiteralPath $destination -Force | Remove-Item -Recurse -Force
+          Copy-Item "$($source.FullName)/*" $destination -Recurse -Force
+          if (-not (Test-Path "$destination/VS Hook Teleprompt Settings.exe")) {
+            throw "Executavel auxiliar do Teleprompt nao foi preparado."
+          }
 
       - name: Build Windows
         run: npm run build:win
@@ -43,6 +67,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Checkout VSHookExtension
+        uses: actions/checkout@v4
+        with:
+          repository: JBdevy/Extensionvshook
+          ref: main
+          path: vshook-extension
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -65,6 +96,25 @@ jobs:
           test -n "$APPLE_ID" || (echo "Secret APPLE_ID não configurado" && exit 1)
           test -n "$APPLE_APP_SPECIFIC_PASSWORD" || (echo "Secret APPLE_APP_SPECIFIC_PASSWORD não configurado" && exit 1)
           test -n "$APPLE_TEAM_ID" || (echo "Secret APPLE_TEAM_ID não configurado" && exit 1)
+
+      - name: Build signed Teleprompt Settings companion
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: true
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm ci --prefix vshook-extension/teleprompt-settings --legacy-peer-deps
+          npm run build:mac --prefix vshook-extension/teleprompt-settings
+          APP="$(find vshook-extension/teleprompt-settings/dist -type d -name 'VS Hook Teleprompt Settings.app' -print -quit)"
+          test -n "$APP"
+          test -d "$APP"
+          rm -rf build/vshook-companion
+          mkdir -p build/vshook-companion
+          ditto "$APP" "build/vshook-companion/VS Hook Teleprompt Settings.app"
+          codesign --verify --deep --strict "build/vshook-companion/VS Hook Teleprompt Settings.app"
 
       - name: Build macOS signed universal
         env:

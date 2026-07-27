@@ -36,6 +36,15 @@
       "package.json",
       "installer/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "build/vshook-companion",
+        "to": "vshook-companion",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "win": {
       "target": [
         "nsis"

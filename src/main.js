@@ -3474,6 +3474,22 @@ function copyFileEnsured(source, destination) {
   fs.copyFileSync(source, destination);
 }
 
+function getBundledVshookCompanionDir() {
+  return path.join(process.resourcesPath || '', 'vshook-companion');
+}
+
+function installWindowsVshookCompanion() {
+  const source = getBundledVshookCompanionDir();
+  if (!source || !fs.existsSync(source)) return;
+  const destination = path.join(
+    getWindowsReaperUserPluginsDir(),
+    'VSHookTelepromptSettings'
+  );
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, { recursive: true });
+}
+
 function getWindowsPublicVsHookDir() {
   const publicDir = process.env.PUBLIC || process.env.ALLUSERSPROFILE || 'C:\\Users\\Public';
   return path.join(publicDir, 'VS Hook APP');
@@ -3493,17 +3509,30 @@ function removeLegacyVsHookLuaFiles(dir) {
 
 function installWindowsPayload(files) {
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
+  installWindowsVshookCompanion();
 }
 
 function installMacPayload(files) {
   const commands = [];
   const vshookSource = files.vshookDylib;
+  const companionSource = path.join(
+    getBundledVshookCompanionDir(),
+    'VS Hook Teleprompt Settings.app'
+  );
+  const hasCompanion = fs.existsSync(companionSource);
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
+  if (hasCompanion) {
+    commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
+    commands.push('GLOBAL_COMPANION_DIR="$GLOBAL_PLUGIN_DIR/VSHookTelepromptSettings"');
+    commands.push('mkdir -p "$GLOBAL_COMPANION_DIR"');
+    commands.push('rm -rf "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+    commands.push('ditto "$COMPANION_SOURCE" "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+  }
   commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
@@ -3514,6 +3543,12 @@ function installMacPayload(files) {
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
+  if (hasCompanion) {
+    commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
+    commands.push('  mkdir -p "$USER_COMPANION_DIR"');
+    commands.push('  rm -rf "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+    commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+  }
   commands.push('  chown -R "$USER_NAME":staff "$USER_PLUGIN_DIR" 2>/dev/null || true');
   commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
   commands.push('done');
