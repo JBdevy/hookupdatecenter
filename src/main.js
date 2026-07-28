@@ -1217,6 +1217,71 @@ async function downloadHookCenterUpdateInstaller() {
   return { ok: true, downloaded };
 }
 
+function powershellStringLiteral(value) {
+  return `'${String(value || '').replace(/'/g, "''")}'`;
+}
+
+function launchWindowsInstallerAfterExit(installerPath) {
+  const requestedInstaller = String(installerPath || '').trim();
+  const resolvedInstaller = requestedInstaller ? path.resolve(requestedInstaller) : '';
+  if (
+    !resolvedInstaller ||
+    !fs.existsSync(resolvedInstaller) ||
+    !fs.statSync(resolvedInstaller).isFile()
+  ) {
+    throw new Error('O instalador da atualização da Hook Center não foi encontrado.');
+  }
+
+  const appPids = new Set([process.pid]);
+  try {
+    for (const metric of app.getAppMetrics()) {
+      const pid = Number(metric?.pid);
+      if (Number.isInteger(pid) && pid > 0) appPids.add(pid);
+    }
+  } catch (_) {}
+
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$hookCenterPids = @(${[...appPids].join(',')})`,
+    '$deadline = (Get-Date).AddSeconds(30)',
+    'while ((@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -gt 0) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }',
+    'Start-Sleep -Milliseconds 700',
+    `if (@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -eq 0) { Start-Process -FilePath ${powershellStringLiteral(resolvedInstaller)} }`
+  ].join('; ');
+
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const bundledPowershell = path.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe'
+  );
+  const powershell = fs.existsSync(bundledPowershell)
+    ? bundledPowershell
+    : 'powershell.exe';
+  const launcher = spawn(powershell, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-WindowStyle', 'Hidden',
+    '-Command', script
+  ], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true
+  });
+  if (!launcher.pid) {
+    throw new Error('Não foi possível preparar o instalador da Hook Center.');
+  }
+  launcher.unref();
+}
+
+function quitAfterWindowsInstallerIsQueued() {
+  appIsQuitting = true;
+  setTimeout(() => app.quit(), 80);
+}
+
 async function installDownloadedHookCenterUpdate() {
   const downloaded = store.get('downloadedHookCenterUpdate') || {};
   const dest = String(downloaded.path || '');
@@ -1225,9 +1290,8 @@ async function installDownloadedHookCenterUpdate() {
   }
 
   if (process.platform === 'win32') {
-    spawn(dest, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-    appIsQuitting = true;
-    app.quit();
+    launchWindowsInstallerAfterExit(dest);
+    quitAfterWindowsInstallerIsQueued();
     return { ok: true, action: 'installer-started' };
   }
 
@@ -3419,9 +3483,8 @@ async function installCachedUpdatePackage(updateOverride = null) {
   store.set('updateAvailable', false);
 
   if (process.platform === 'win32') {
-    spawn(cachedFiles.installer, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-    appIsQuitting = true;
-    app.quit();
+    launchWindowsInstallerAfterExit(cachedFiles.installer);
+    quitAfterWindowsInstallerIsQueued();
     return { ok: true, action: 'installer-started', version: update.version };
   }
 
@@ -3489,16 +3552,81 @@ function getBundledVshookCompanionDir() {
   return path.join(process.resourcesPath || '', 'vshook-companion');
 }
 
+function windowsVshookCompanionCopyIsComplete(source, destination) {
+  const pending = [[source, destination]];
+
+  while (pending.length > 0) {
+    const [sourceDir, destinationDir] = pending.pop();
+    if (!fs.existsSync(destinationDir)) return false;
+
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      const sourceEntry = path.join(sourceDir, entry.name);
+      const destinationEntry = path.join(destinationDir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!fs.existsSync(destinationEntry) || !fs.statSync(destinationEntry).isDirectory()) {
+          return false;
+        }
+        pending.push([sourceEntry, destinationEntry]);
+        continue;
+      }
+
+      if (!entry.isFile()) continue;
+      if (!fs.existsSync(destinationEntry)) return false;
+      const sourceStat = fs.statSync(sourceEntry);
+      const destinationStat = fs.statSync(destinationEntry);
+      if (!destinationStat.isFile() || sourceStat.size !== destinationStat.size) return false;
+    }
+  }
+
+  return true;
+}
+
 function installWindowsVshookCompanion() {
   const source = getBundledVshookCompanionDir();
-  if (!source || !fs.existsSync(source)) return;
+  const sourceExecutable = path.join(
+    source,
+    'VS Hook Teleprompt Settings.exe'
+  );
+  if (!source || !fs.existsSync(sourceExecutable)) {
+    throw new Error(
+      'O aplicativo de configurações do TP não veio completo nesta versão da Hook Center.'
+    );
+  }
   const destination = path.join(
     getWindowsReaperUserPluginsDir(),
     'VSHookTelepromptSettings'
   );
-  fs.rmSync(destination, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(source, destination, { recursive: true });
+  // Nunca apaga a instalação anterior antes da nova cópia terminar. Uma nova
+  // tentativa completa/substitui somente os arquivos necessários.
+  fs.mkdirSync(destination, { recursive: true });
+  try {
+    fs.cpSync(source, destination, {
+      recursive: true,
+      force: true
+    });
+  } catch (error) {
+    if (['EBUSY', 'EPERM', 'EACCES'].includes(String(error?.code || ''))) {
+      throw new Error(
+        'Feche as Configurações do TP e tente instalar novamente.'
+      );
+    }
+    throw error;
+  }
+  if (!windowsVshookCompanionCopyIsComplete(source, destination)) {
+    throw new Error(
+      'A cópia das Configurações do TP não foi concluída. Tente instalar novamente.'
+    );
+  }
+  const installedExecutable = path.join(
+    destination,
+    'VS Hook Teleprompt Settings.exe'
+  );
+  if (!fs.existsSync(installedExecutable)) {
+    throw new Error(
+      'A cópia das Configurações do TP não foi concluída. Tente instalar novamente.'
+    );
+  }
 }
 
 function getWindowsPublicVsHookDir() {

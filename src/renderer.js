@@ -191,6 +191,24 @@ function friendlyError(error, fallback) {
   const message = cleanErrorMessage(error);
   const lower = message.toLowerCase();
 
+  const userFacingUpdateErrors = [
+    'feche as configurações do tp',
+    'feche as configuracoes do tp',
+    'o aplicativo de configurações do tp',
+    'o aplicativo de configuracoes do tp',
+    'a cópia das configurações do tp',
+    'a copia das configuracoes do tp',
+    'o instalador da atualização da hook center não foi encontrado',
+    'o instalador da atualizacao da hook center nao foi encontrado',
+    'o instalador local da hook center não foi encontrado',
+    'o instalador local da hook center nao foi encontrado',
+    'não foi possível preparar o instalador da hook center',
+    'nao foi possivel preparar o instalador da hook center'
+  ];
+  if (userFacingUpdateErrors.some((item) => lower.includes(item))) {
+    return message;
+  }
+
   const technicalPatterns = [
     'osascript',
     'administrator privileges',
