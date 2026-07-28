@@ -28,6 +28,7 @@
   let directorProgressAnimationFrame = 0
   let directorProgressLastPaintAt = 0
   const directorTpMediaWarmups = new Map()
+  const directorTpVideoSyncStates = new WeakMap()
   let interfaceAccessButtonTimer = 0
   let liveMarkIndexSnapshot = null
   let liveMarkIndex = null
@@ -2010,8 +2011,11 @@
     if (!(songEnd > songStart)) return false
     const pos = songStart + (songEnd - songStart) * Math.max(0, Math.min(1, Number(ratio) || 0))
     state.transportSeekCursorPos = pos
-    state.transportSeekPauseVisualHoldPos = null
-    state.transportSeekPauseVisualHoldUntil = 0
+    // Mantém o último ponto enviado até a extensão publicá-lo no snapshot.
+    // Sem esta retenção, um snapshot anterior podia desenhar o cursor no ponto
+    // velho por um ciclo e causar o "vai e volta" apenas visual.
+    state.transportSeekPauseVisualHoldPos = pos
+    state.transportSeekPauseVisualHoldUntil = now() + 3000
     state.snapshot = { ...(state.snapshot || {}), editCursorPosition: pos, cursorPosition: pos }
 
     state.transportSeekCommandSeq = Math.max(Number(state.transportSeekCommandSeq) + 1 || 1, Date.now() * 1000)
@@ -3950,8 +3954,8 @@
       // A próxima mídia de cada TP é aquecida em todo snapshot, mesmo quando
       // a tela de TP ainda não está aberta. Assim ela já está no dispositivo
       // quando o cursor alcançar o item.
-      warmDirectorTelepromptMedia(1, state.snapshot)
-      warmDirectorTelepromptMedia(2, state.snapshot)
+      reconcileDirectorTelepromptMediaWarmups(
+        state.snapshot)
       state.bridgeOnline = true
       if (!bridgeWasOnline) nativeFamilyDrawersLastSignature = null
       state.lastGoodAt = now()
@@ -6327,7 +6331,17 @@
     if (descriptor.type === 'video' &&
         options.allowVideo !== true) return
     const cacheKey = `${descriptor.type}|${mediaUrl}`
-    if (directorTpMediaWarmups.has(cacheKey)) return
+    const existing = directorTpMediaWarmups.get(cacheKey)
+    if (existing) {
+      if (descriptor.type === 'video' &&
+          options.videoPreload === 'auto' &&
+          existing.preload !== 'auto') {
+        existing.preload = 'auto'
+        existing.setAttribute('preload', 'auto')
+        try { existing.load() } catch (_) {}
+      }
+      return
+    }
 
     let media = null
     if (descriptor.type === 'image') {
@@ -6344,8 +6358,11 @@
       media = document.createElement('video')
       media.muted = true
       media.playsInline = true
-      media.preload = 'auto'
-      media.setAttribute('preload', 'auto')
+      const videoPreload =
+        options.videoPreload === 'metadata'
+          ? 'metadata' : 'auto'
+      media.preload = videoPreload
+      media.setAttribute('preload', videoPreload)
       media.setAttribute('playsinline', '')
       media.setAttribute('webkit-playsinline', '')
       media.setAttribute('fetchpriority', 'low')
@@ -6383,18 +6400,59 @@
   function warmDirectorTelepromptMedia(
     slot, data = state.snapshot) {
     const tp = getDirectorTelepromptState(slot, data)
+    const selectedSlot =
+      Number(state.telepromptSlot) === Number(tp.slot)
     const slotVisible =
       state.showTelepromptScreen &&
-      Number(state.telepromptSlot) === Number(tp.slot)
+      selectedSlot
     // Se o TP não está visível, até a mídia atual pode ficar carregada para a
     // abertura/troca de TP ser imediata. Com o player visível, não cria um
     // segundo download concorrente para a mídia que já está tocando.
     warmDirectorTelepromptDescriptor(tp, {
       allowVideo: !slotVisible,
+      videoPreload: selectedSlot ? 'auto' : 'metadata',
     })
-    if (tp.nextMedia?.itemFound) {
+    // Só a próxima mídia do TP selecionado recebe pré-carga. Pré-carregar
+    // também a próxima do TP oculto competia com o vídeo que estava no ar.
+    if (selectedSlot && tp.nextMedia?.itemFound) {
       warmDirectorTelepromptDescriptor(
-        tp.nextMedia, { allowVideo: true })
+        tp.nextMedia, {
+          allowVideo: true,
+          videoPreload: state.showTelepromptScreen
+            ? 'auto' : 'metadata',
+        })
+    }
+  }
+
+  function reconcileDirectorTelepromptMediaWarmups(
+    data = state.snapshot) {
+    warmDirectorTelepromptMedia(1, data)
+    warmDirectorTelepromptMedia(2, data)
+
+    const wantedVideoKeys = new Set()
+    for (const slot of [1, 2]) {
+      const tp = getDirectorTelepromptState(slot, data)
+      const selectedSlot =
+        Number(state.telepromptSlot) === Number(tp.slot)
+      const slotVisible =
+        state.showTelepromptScreen && selectedSlot
+      if (!slotVisible && tp.type === 'video') {
+        const url = getDirectorTelepromptMediaUrl(tp)
+        if (url) wantedVideoKeys.add(`video|${url}`)
+      }
+      if (selectedSlot && tp.nextMedia?.itemFound &&
+          tp.nextMedia.type === 'video') {
+        const url =
+          getDirectorTelepromptMediaUrl(tp.nextMedia)
+        if (url) wantedVideoKeys.add(`video|${url}`)
+      }
+    }
+
+    for (const [key, media] of directorTpMediaWarmups) {
+      if (!key.startsWith('video|') ||
+          wantedVideoKeys.has(key)) continue
+      directorTpMediaWarmups.delete(key)
+      discardDirectorTelepromptWarmup(media)
     }
   }
 
@@ -6416,7 +6474,7 @@
     const normalizedSlot = Number(slot) === 2 ? 2 : 1
     state.telepromptSlot = normalizedSlot
     writeLocal('vshook_director_teleprompt_slot', normalizedSlot)
-    warmDirectorTelepromptMedia(normalizedSlot)
+    reconcileDirectorTelepromptMediaWarmups()
     if (shouldRender) {
       syncDirectorTelepromptDom()
       scheduleRender(false)
@@ -6502,8 +6560,8 @@
     const mediaUrl = getDirectorTelepromptMediaUrl(tp)
     const hasText = !!String(tp.text || '').trim()
     const hasMedia = (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
-    warmDirectorTelepromptMedia(1, state.snapshot)
-    warmDirectorTelepromptMedia(2, state.snapshot)
+    reconcileDirectorTelepromptMediaWarmups(
+      state.snapshot)
 
     viewport.setAttribute('data-content-type', hasMedia ? tp.type : (hasText ? 'text' : 'empty'))
     viewport.setAttribute('data-playing', tp.playing ? '1' : '0')
@@ -6590,14 +6648,76 @@
     const sourceChanged = video.getAttribute('src') !== mediaUrl
     if (sourceChanged) video.classList.add('directorTpHidden')
     const targetTime = Math.max(0, Number(tp.currentTime) || 0)
+    let videoSyncState = directorTpVideoSyncStates.get(video)
+    if (!videoSyncState) {
+      videoSyncState = {
+        mediaUrl: '',
+        targetTime: 0,
+        targetAt: 0,
+        playing: false,
+        playrate: 1,
+        lastCorrectionAt: 0,
+      }
+      directorTpVideoSyncStates.set(video, videoSyncState)
+    }
+    const syncNow = typeof performance !== 'undefined'
+      ? performance.now() : Date.now()
+    const syncSourceChanged =
+      sourceChanged || videoSyncState.mediaUrl !== mediaUrl
+    const hadPreviousTarget =
+      videoSyncState.targetAt > 0 && !syncSourceChanged
+    const elapsedSinceTarget = hadPreviousTarget
+      ? Math.max(0,
+          (syncNow - videoSyncState.targetAt) / 1000)
+      : 0
+    const targetDelta = hadPreviousTarget
+      ? targetTime - videoSyncState.targetTime : 0
+    const expectedTargetDelta =
+      hadPreviousTarget && videoSyncState.playing
+        ? elapsedSinceTarget *
+          Math.max(0.1, Number(videoSyncState.playrate) || 1)
+        : 0
+    const targetJump = hadPreviousTarget && (
+      targetDelta < -0.35 ||
+      targetDelta - expectedTargetDelta > 1.1
+    )
+    const playingTransition = hadPreviousTarget &&
+      videoSyncState.playing !== tp.playing
+    const targetAdvancing = !hadPreviousTarget ||
+      targetDelta > 0.02 || targetJump
     const applyVideoPosition = (force = false) => {
       if (!Number.isFinite(video.duration) || video.readyState < 1) return
-      const drift = Math.abs((Number(video.currentTime) || 0) - targetTime)
-      const tolerance = tp.playing ? 0.45 : 0.08
-      if (force || drift > tolerance) {
+      const currentTime =
+        Math.max(0, Number(video.currentTime) || 0)
+      const drift = Math.abs(currentTime - targetTime)
+      const correctionNow = typeof performance !== 'undefined'
+        ? performance.now() : Date.now()
+      let shouldSeek = false
+      if (force || syncSourceChanged ||
+          playingTransition || targetJump) {
+        shouldSeek = drift > 0.035
+      } else if (!tp.playing) {
+        shouldSeek = drift > 0.08
+      } else {
+        // Durante a reprodução, o vídeo corre localmente. Snapshot atrasado
+        // nunca pode puxá-lo para trás. Só corrige se o player realmente ficou
+        // para trás, com margem e intervalo suficientes para não engasgar.
+        const videoBehindBy = targetTime - currentTime
+        shouldSeek = targetAdvancing &&
+          videoBehindBy > 1.15 &&
+          correctionNow -
+            Number(videoSyncState.lastCorrectionAt || 0) >= 1800
+      }
+      if (shouldSeek) {
         try { video.currentTime = Math.min(targetTime, Math.max(0, Number(video.duration) || targetTime)) } catch (_) {}
+        videoSyncState.lastCorrectionAt = correctionNow
       }
     }
+    videoSyncState.mediaUrl = mediaUrl
+    videoSyncState.targetTime = targetTime
+    videoSyncState.targetAt = syncNow
+    videoSyncState.playing = tp.playing
+    videoSyncState.playrate = tp.playrate
 
     video.onloadedmetadata = () => {
       updateDirectorTpMediaAspect(video, video.videoWidth, video.videoHeight)
@@ -6641,7 +6761,7 @@
       }
     } else {
       try { video.pause() } catch (_) {}
-      applyVideoPosition(true)
+      applyVideoPosition(false)
     }
   }
 
@@ -8033,8 +8153,55 @@
     }
   }
 
+  function syncPlaybackQueueHeaderDom(data = state.snapshot || {}) {
+    const nowName = getNowPlayingName(data) || 'NENHUMA MÚSICA EM REPRODUÇÃO'
+    const queuedName = getQueuedSongName(data) || 'FILA DE ESPERA VAZIA'
+    const loopActive = getLoopActive(data)
+    const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
+    const showQueueBar = hasQueue && !loopActive
+    const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
+    const multiLoopStatus = getTransportMultiLoopStatus(data)
+    const loopStatus = multiLoopStatus.kind === 'loop' ||
+      multiLoopStatus.kind === 'loop-region'
+
+    for (const header of root.querySelectorAll('.playbackQueueHeader')) {
+      const nowTitle = header.querySelector(
+        '.playbackQueueNow .playbackQueueTitle')
+      const queuedTitle = header.querySelector(
+        '.playbackQueueNext .playbackQueueTitle')
+      const multiLoopLine = header.querySelector('.playbackQueueMultiLoop')
+      const multiLoopTitle = multiLoopLine?.querySelector(
+        '.playbackQueueTitle')
+      const queueLine = header.querySelector('.playbackQueueNext')
+      const queueTrack = header.querySelector('.playbackQueueTrackNext')
+
+      if (nowTitle && nowTitle.textContent !== nowName) {
+        nowTitle.textContent = nowName
+      }
+      if (queuedTitle && queuedTitle.textContent !== queuedName) {
+        queuedTitle.textContent = queuedName
+      }
+      if (multiLoopTitle &&
+          multiLoopTitle.textContent !== multiLoopStatus.text) {
+        multiLoopTitle.textContent = multiLoopStatus.text
+      }
+
+      queueLine?.classList.toggle('playbackQueuePrepareOnly', prepareOnly)
+      queueTrack?.classList.toggle('playbackQueuePrepareOnly', prepareOnly)
+      queueTrack?.classList.toggle('playbackQueueTrackEmpty', !showQueueBar)
+      multiLoopLine?.classList.toggle(
+        'playbackQueueMultiLoopBypass',
+        multiLoopStatus.kind === 'bypass')
+      multiLoopLine?.classList.toggle('playbackQueueLoop', loopStatus)
+      multiLoopLine?.classList.toggle(
+        'playbackQueueLoopRegion',
+        multiLoopStatus.kind === 'loop-region')
+    }
+  }
+
   function syncPlaybackProgressDom() {
     const data = state.snapshot || {}
+    syncPlaybackQueueHeaderDom(data)
     const progress = isPlaying(data) ? getSmoothedPlaybackProgressPercent(data) : 0
     const loopActive = getLoopActive(data)
     const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
@@ -10912,6 +11079,9 @@
   function handleTimerCountdownFocus(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
+      window.setDirectorTabletKeyboardOpen(true)
+    }
     requestAnimationFrame(() => {
       try {
         input.select()
@@ -10919,17 +11089,38 @@
     })
   }
 
+  function handleTimerCountdownPointerDown(event) {
+    const input = event.target
+    if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
+      window.setDirectorTabletKeyboardOpen(true)
+    }
+    if (document.activeElement === input) return
+    try {
+      input.focus({ preventScroll: true })
+    } catch (_) {
+      try { input.focus() } catch (_) {}
+    }
+  }
+
   function handleTimerCountdownBlur(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
     normalizeTimerCountdownInput(input, { commit: true })
     applyCountdownTarget(readCountdownInputs(), { render: false })
+    window.setTimeout(() => {
+      if (isCountdownInputFocused()) return
+      if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
+        window.setDirectorTabletKeyboardOpen(false)
+      }
+    }, 80)
   }
 
   function installEvents() {
     document.addEventListener('scroll', handleTabletMultiLoopTracksScroll, true)
     document.addEventListener('pointerdown', handleAuthFieldPointerDown, true)
-        document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
+    document.addEventListener('pointerdown', handleTimerCountdownPointerDown, true)
+    document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
     document.addEventListener('focusin', handleTimerCountdownFocus, true)
     document.addEventListener('focusout', handleTimerCountdownBlur, true)
     if (window.PointerEvent) {
@@ -10963,7 +11154,6 @@
       document.addEventListener('pointermove', handleMultiLoopAutoHold, { passive: true })
       document.addEventListener('pointerup', handleMultiLoopAutoHold, { passive: true })
       document.addEventListener('pointercancel', handleMultiLoopAutoHold, { passive: true })
-      document.addEventListener('pointerup', handleTimerCountdownFocus, true)
       document.addEventListener('pointerup', onTap, { passive: false })
       document.addEventListener('pointerup', handleMenuOutsidePointerUp, { passive: true })
     } else {
@@ -11028,6 +11218,7 @@
 
   function updateViewportHeight() {
     if (isDirectorRecadosInputFocused()) return
+    if (isCountdownInputFocused()) return
     if (document.activeElement?.id === 'tabletSearchInput') return
     if (document.documentElement.classList.contains('directorSearchViewportRestoring')) return
     if (document.documentElement.classList.contains('directorTabletKeyboardOpen')) return

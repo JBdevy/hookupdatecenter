@@ -315,9 +315,143 @@ function trySendOptimizedTelepromptImage(req, res, targetPath) {
   }
 }
 
+function getTelepromptMediaContentType(mediaPath) {
+  const extension = path.extname(String(mediaPath || '')).toLowerCase()
+  return {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.bmp': 'image/bmp',
+    '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo',
+  }[extension] || 'application/octet-stream'
+}
+
+function parseTelepromptByteRange(headerValue, totalSize) {
+  const value = String(headerValue || '').trim()
+  if (!value) return null
+  const match = /^bytes=(\d*)-(\d*)/i.exec(value)
+  if (!match || (!match[1] && !match[2]) || totalSize <= 0) {
+    return { invalid: true }
+  }
+
+  let start = 0
+  let end = totalSize - 1
+  if (!match[1]) {
+    const suffixLength = Number(match[2])
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return { invalid: true }
+    }
+    start = Math.max(0, totalSize - Math.floor(suffixLength))
+  } else {
+    start = Number(match[1])
+    if (match[2]) end = Number(match[2])
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) ||
+      start < 0 || start >= totalSize || end < start) {
+    return { invalid: true }
+  }
+  return {
+    invalid: false,
+    start: Math.floor(start),
+    end: Math.min(totalSize - 1, Math.floor(end)),
+  }
+}
+
+function tryStreamLocalTelepromptMedia(req, res, targetPath) {
+  let mediaPath = ''
+  try {
+    const parsed = new URL(targetPath, 'http://127.0.0.1')
+    mediaPath = String(
+      parsed.searchParams.get('path') ||
+      parsed.searchParams.get('file') || ''
+    ).trim()
+  } catch (_) {
+    return false
+  }
+  if (!mediaPath) return false
+
+  let stat = null
+  try {
+    stat = fs.statSync(mediaPath)
+  } catch (_) {
+    return false
+  }
+  if (!stat?.isFile()) return false
+
+  const totalSize = Number(stat.size) || 0
+  const range = parseTelepromptByteRange(
+    req.headers.range, totalSize)
+  if (range?.invalid) {
+    res.writeHead(416, {
+      'Content-Range': `bytes */${totalSize}`,
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Range',
+      'Cache-Control': 'private, max-age=120',
+    })
+    res.end()
+    return true
+  }
+
+  const start = range ? range.start : 0
+  const end = range ? range.end : Math.max(0, totalSize - 1)
+  const contentLength = totalSize > 0 ? end - start + 1 : 0
+  const headers = {
+    'Content-Type': getTelepromptMediaContentType(mediaPath),
+    'Content-Length': contentLength,
+    'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Range',
+    'Cache-Control': 'private, max-age=120',
+    'Last-Modified': stat.mtime.toUTCString(),
+    'ETag': `W/"${totalSize}-${Math.floor(stat.mtimeMs)}"`,
+  }
+  if (range) {
+    headers['Content-Range'] =
+      `bytes ${start}-${end}/${totalSize}`
+  }
+  res.writeHead(range ? 206 : 200, headers)
+  if (req.method === 'HEAD' || totalSize === 0) {
+    res.end()
+    return true
+  }
+
+  const stream = fs.createReadStream(mediaPath, { start, end })
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      sendJson(res, 500, {
+        ok: false,
+        error: 'Não foi possível ler a mídia do Teleprompt.',
+      })
+      return
+    }
+    try { res.destroy() } catch (_) {}
+  })
+  res.on('close', () => {
+    if (!stream.destroyed) stream.destroy()
+  })
+  stream.pipe(res)
+  return true
+}
+
 
 function proxyNativeBridgeMedia(req, res, targetPath) {
   if (trySendOptimizedTelepromptImage(req, res, targetPath)) return
+  // A Hook Center está na mesma máquina dos arquivos do REAPER. Servir o
+  // vídeo diretamente permite que cada app mantenha um stream contínuo e
+  // impede que os pedaços do vídeo disputem a fila de estado da extensão.
+  if (tryStreamLocalTelepromptMedia(req, res, targetPath)) return
   const headers = {}
   if (req.headers.range) headers.Range = req.headers.range
   if (req.headers['user-agent']) headers['User-Agent'] = req.headers['user-agent']
