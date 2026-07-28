@@ -2684,9 +2684,8 @@ function createLyricsWindow(slot = 1) {
     movable: true,
     resizable: true,
     maximizable: true,
-    // No macOS, "expandir" deve manter o Teleprompt como uma janela comum.
-    // Isso também faz o botão verde da Legacy maximizar, sem criar outro Space.
-    fullscreenable: !isMac,
+    // O Teleprompt precisa ocupar inclusive a barra de menus no macOS.
+    fullscreenable: true,
     useContentSize: true,
     hasShadow: isLegacyMac,
     acceptFirstMouse: true,
@@ -2841,29 +2840,30 @@ function toggleLyricsWindowFullscreen(win) {
   const isFullScreen = isReallyFullScreen || isSimpleFullScreen || win.__vshookFullScreen === true;
 
   if (process.platform === 'darwin') {
-    // Fullscreen e simple fullscreen tiram a janela do estado normal; o modo
-    // nativo ainda pode criar outro Space. O Teleprompt usa zoom/maximize.
     if (isFullScreen) {
       win.__vshookFullScreen = false;
-      try { win.setFullScreen(false); } catch (_) {}
       try { if (win.setSimpleFullScreen) win.setSimpleFullScreen(false); } catch (_) {}
+      try { win.setFullScreen(false); } catch (_) {}
+      const restoreBounds = win.__vshookBeforeFullScreenBounds || null;
+      if (restoreBounds) {
+        setTimeout(() => {
+          if (!win || win.isDestroyed()) return;
+          try { win.setBounds(restoreBounds, false); } catch (_) {}
+        }, 80);
+      }
       return { ok: true, fullScreen: false, maximized: false };
     }
 
-    if (isLyricsWindowMaximized(win)) {
-      win.__vshookMaximized = false;
-      try { win.unmaximize(); } catch (_) { return { ok: false }; }
-      return { ok: true, fullScreen: false, maximized: false };
-    }
-
-    win.__vshookMaximized = true;
+    try { win.__vshookBeforeFullScreenBounds = win.getBounds(); } catch (_) { win.__vshookBeforeFullScreenBounds = null; }
+    win.__vshookFullScreen = true;
     try {
-      win.maximize();
+      if (typeof win.setSimpleFullScreen === 'function') win.setSimpleFullScreen(true);
+      else win.setFullScreen(true);
     } catch (_) {
-      win.__vshookMaximized = false;
+      win.__vshookFullScreen = false;
       return { ok: false };
     }
-    return { ok: true, fullScreen: false, maximized: true };
+    return { ok: true, fullScreen: true, maximized: false };
   }
 
   if (isFullScreen) {

@@ -2262,9 +2262,28 @@ body.clear-mode .lyrics-video {
   padding: 0 !important;
   object-fit: contain !important;
   object-position: center center !important;
-  transform: translateZ(0) scale(var(--lyrics-media-scale, 1)) !important;
+  transform: scale(var(--lyrics-media-scale, 1)) !important;
   transform-origin: center center !important;
+  image-rendering: auto !important;
+  will-change: auto !important;
   background: #000 !important;
+}
+
+/* O compositor do macOS não deve promover a mídia para uma textura 3D.
+   Além de evitar inversão vertical, mantém a resolução nativa da mídia. */
+html[data-platform="darwin"] .lyrics-image,
+html[data-platform="darwin"] .lyrics-video {
+  transform: scale(var(--lyrics-media-scale, 1)) !important;
+  backface-visibility: visible !important;
+  -webkit-backface-visibility: visible !important;
+}
+
+html[data-platform="darwin"] .lyrics-text {
+  box-sizing: border-box !important;
+  left: max(12px, env(safe-area-inset-left)) !important;
+  right: max(12px, env(safe-area-inset-right)) !important;
+  max-width: calc(100vw - max(12px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right))) !important;
+  overflow-wrap: anywhere !important;
 }
 
 body.media-active .lyrics-stage,

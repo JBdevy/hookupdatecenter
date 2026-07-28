@@ -20,6 +20,7 @@ const technicalNoticeEl = document.getElementById('technicalNotice');
 const params = new URLSearchParams(window.location.search);
 const lyricsSlot = Number(params.get('slot')) === 2 ? 2 : 1;
 const legacyMacWindow = window.hookUpdateCenter.platform === 'darwin' && params.get('legacy') === '1';
+document.documentElement.dataset.platform = window.hookUpdateCenter.platform || '';
 
 let settings = {
   textColor: '#ffea00',
@@ -139,7 +140,9 @@ function normalizeMediaScale(value, fallback = 1) {
 
 function applyMediaScaleToElements(value = settings.mediaScale) {
   const safeMediaScale = normalizeMediaScale(value, 1);
-  const transformValue = `translateZ(0) scale(${safeMediaScale})`;
+  // Não força uma camada 3D: em alguns Macs/monitores externos o compositor
+  // do Chromium invertia a textura de imagens e vídeos.
+  const transformValue = `scale(${safeMediaScale})`;
 
   document.documentElement.style.setProperty('--lyrics-media-scale', String(safeMediaScale));
   if (mediaLayerEl) mediaLayerEl.style.setProperty('--lyrics-media-scale', String(safeMediaScale));
@@ -148,7 +151,7 @@ function applyMediaScaleToElements(value = settings.mediaScale) {
     if (!el) return;
     el.style.setProperty('transform', transformValue, 'important');
     el.style.setProperty('transform-origin', 'center center', 'important');
-    el.style.setProperty('will-change', 'transform', 'important');
+    el.style.removeProperty('will-change');
   });
 
   return safeMediaScale;
