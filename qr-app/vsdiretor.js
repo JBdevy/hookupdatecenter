@@ -5361,7 +5361,7 @@
     const toggleLabel = running ? 'PARAR' : 'INICIAR'
     const countdown = splitCountdownSec(getCountdownTargetSec(data))
     const countdownInputs = mode === 'countdown'
-      ? `<div class="timerCountdownInputs"><label><span>H</span><input id="timerCountdownHours" data-timer-countdown-input data-timer-max="99" type="text" maxlength="2" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.hours).padStart(2, '0')}"></label><label><span>M</span><input id="timerCountdownMinutes" data-timer-countdown-input data-timer-max="59" type="text" maxlength="2" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.minutes).padStart(2, '0')}"></label><label><span>S</span><input id="timerCountdownSeconds" data-timer-countdown-input data-timer-max="59" type="text" maxlength="2" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.seconds).padStart(2, '0')}"></label></div>`
+      ? `<div class="timerCountdownInputs"><label><span>H</span><input id="timerCountdownHours" data-timer-countdown-input data-timer-max="99" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.hours).padStart(2, '0')}"></label><label><span>M</span><input id="timerCountdownMinutes" data-timer-countdown-input data-timer-max="59" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.minutes).padStart(2, '0')}"></label><label><span>S</span><input id="timerCountdownSeconds" data-timer-countdown-input data-timer-max="59" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.seconds).padStart(2, '0')}"></label></div>`
       : ''
     const actionButtons = `<div class="modalButtons timerActionButtons"><button class="${running ? 'btnStopActive' : 'modalOkBtnWide'}" data-action="timer-toggle">${toggleLabel}</button><button class="modalCancelBtn" data-action="modal-close">FECHAR</button></div>`
     return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox timerModalBox" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview ${isCountdownOverrun(data) ? 'timerOverrunBlink' : ''}">${escapeHtml(getTimerDisplayText(data))}</div>${countdownInputs}<div class="timerModeGrid"><button class="${mode === 'progressive' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${mode === 'countdown' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-countdown">REGRESSIVO</button></div>${actionButtons}</div><div class="modalBottomSpace"></div></div>`
@@ -10914,8 +10914,7 @@
     if (!input?.matches?.('[data-timer-countdown-input]')) return
     requestAnimationFrame(() => {
       try {
-        const end = String(input.value || '').length
-        input.setSelectionRange(end, end)
+        input.select()
       } catch (_) {}
     })
   }
