@@ -1859,7 +1859,18 @@ function createBridgeServer(options) {
     res.end('404')
   })
 
+  // O app mantém conexões HTTP keep-alive e pode estar transmitindo mídia.
+  // server.close() sozinho espera essas conexões terminarem, o que deixava o
+  // botão "Reiniciar conexão" preso por até minutos. Guarde os sockets para
+  // encerrar somente o Bridge imediatamente durante um reinício.
+  const openSockets = new Set()
+  server.on('connection', (socket) => {
+    openSockets.add(socket)
+    socket.once('close', () => openSockets.delete(socket))
+  })
+
   let releaseNativeBridgePolling = null
+  let stoppingPromise = null
 
   // Evita queda por inatividade em conexões longas do APK.
   server.keepAliveTimeout = 120000
@@ -1905,17 +1916,60 @@ function createBridgeServer(options) {
       })
     },
     stop() {
-      return new Promise((resolve) => {
+      if (stoppingPromise) return stoppingPromise
+      stoppingPromise = new Promise((resolve) => {
         if (releaseNativeBridgePolling) {
           releaseNativeBridgePolling()
           releaseNativeBridgePolling = null
         }
-        if (!server.listening) {
+
+        let finished = false
+        let fallbackTimer = null
+        const finish = () => {
+          if (finished) return
+          finished = true
+          if (fallbackTimer) clearTimeout(fallbackTimer)
           resolve()
+        }
+        const destroyOpenSockets = () => {
+          for (const socket of [...openSockets]) {
+            try { socket.destroy() } catch (_) {}
+          }
+        }
+
+        if (!server.listening) {
+          destroyOpenSockets()
+          finish()
           return
         }
-        server.close(() => resolve())
+
+        // Defesa para versões antigas do Node/Electron: nunca deixa o IPC da
+        // interface esperando indefinidamente por um callback de close.
+        fallbackTimer = setTimeout(() => {
+          destroyOpenSockets()
+          finish()
+        }, 1200)
+        if (typeof fallbackTimer.unref === 'function') fallbackTimer.unref()
+
+        try {
+          // Primeiro para de aceitar novas conexões; em seguida derruba apenas
+          // os clientes conectados ao Bridge. A janela da Hook Center continua
+          // intacta e as portas podem ser abertas de novo imediatamente.
+          server.close(finish)
+          if (typeof server.closeIdleConnections === 'function') {
+            server.closeIdleConnections()
+          }
+          if (typeof server.closeAllConnections === 'function') {
+            server.closeAllConnections()
+          }
+          destroyOpenSockets()
+        } catch (_) {
+          destroyOpenSockets()
+          finish()
+          return
+        }
       })
+      return stoppingPromise
     },
   }
 }

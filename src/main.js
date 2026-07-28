@@ -71,6 +71,7 @@ let bridgeInfos = [];
 let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
+let bridgeRestartPromise = null;
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
 
@@ -1667,12 +1668,10 @@ async function stopBridgeServers() {
   const running = [...bridgeServers];
   bridgeServers = [];
   bridgeInfos = [];
-  for (const server of running) {
-    try { await server.stop(); } catch (_) {}
-  }
+  await Promise.allSettled(running.map((server) => server.stop()));
 }
 
-async function startBridgeServers() {
+async function restartBridgeServersNow() {
   await stopBridgeServers();
   bridgeConfig = readBridgeConfig();
   fs.mkdirSync(resolveBridgeScriptsDir(bridgeConfig), { recursive: true });
@@ -1700,6 +1699,19 @@ async function startBridgeServers() {
     rebuildTrayMenu();
     if (isValidWindow(mainWindow)) mainWindow.webContents.send('bridge-status', getBridgeState());
     throw error;
+  }
+}
+
+async function startBridgeServers() {
+  // O monitor automático, a troca de rede e o botão manual podem disparar no
+  // mesmo instante. Todos aguardam o mesmo reinício para não disputar portas.
+  if (bridgeRestartPromise) return bridgeRestartPromise;
+  const restart = restartBridgeServersNow();
+  bridgeRestartPromise = restart;
+  try {
+    return await restart;
+  } finally {
+    if (bridgeRestartPromise === restart) bridgeRestartPromise = null;
   }
 }
 
