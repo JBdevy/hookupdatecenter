@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.0-native-extension-shared-control-v21'
+  const VERSION = '1.0.0-native-extension-shared-control-v22'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -3092,6 +3092,9 @@
           ? bridgeQueuedId : ''
       state.queuedSongLocalUntil = 0
       if (bridgeQueuedId) state.optimisticQueueClearedUntil = 0
+      else if (bridgeQueuedId === localQueuedId) {
+        state.optimisticQueueClearedUntil = 0
+      }
     }
 
     const bridgePlaylistSelection = String(
@@ -3333,6 +3336,158 @@
   function getQueuedTextClass(data = state.snapshot) {
     return getQueuedVisualKind(data) === 'green'
       ? 'queuedGreenText' : 'queuedYellowText'
+  }
+
+  function isQueuedSongManualForVisual(id, data = state.snapshot) {
+    const targetId = String(id || '')
+    if (!targetId) return false
+    if (String(state.queuedManualVisualId || '') === targetId) return true
+    const bridgeQueuedId = String(
+      data?.queuedSongId || data?.queueSongId || '')
+    return bridgeQueuedId === targetId && (
+      data?.queuedManual === true ||
+      data?.queueManual === true ||
+      data?.queuedByManual === true)
+  }
+
+  function isImmediateAutoQueuePlayable(item) {
+    if (!isPlayable(item) || isHashChild(item) || !getId(item)) return false
+    const start = getItemStart(item)
+    const end = getItemEnd(item)
+    return start !== null && end !== null && end > start + 0.0005
+  }
+
+  function findImmediateAutoQueueCurrentIndex(
+    items,
+    data = state.snapshot,
+  ) {
+    if (!Array.isArray(items) || !items.length) return -1
+    const playingId = String(
+      getVisualPlayingId(data) || getPlayingId(data) || '')
+    const songStart = firstFiniteNumber([
+      data?.currentSongStart,
+      data?.playbackStartPos,
+      data?.songStartPos,
+    ])
+    const songEnd = firstFiniteNumber([
+      data?.currentSongEnd,
+      data?.playbackEndPos,
+      data?.songEndPos,
+    ])
+    let firstIdMatch = -1
+    let exactBoundsMatch = -1
+    let containingParent = -1
+
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]
+      if (!isPlayable(item) || !getId(item)) continue
+      if (playingId && String(getId(item)) === playingId &&
+          firstIdMatch < 0) {
+        firstIdMatch = index
+      }
+      const start = getItemStart(item)
+      const end = getItemEnd(item)
+      if (songStart !== null && songEnd !== null &&
+          start !== null && end !== null) {
+        if (Math.abs(start - songStart) <= 0.002 &&
+            Math.abs(end - songEnd) <= 0.002) {
+          exactBoundsMatch = index
+        }
+        if (isHashParent(item) &&
+            songStart >= start - 0.002 &&
+            songEnd <= end + 0.002) {
+          containingParent = index
+        }
+      }
+    }
+
+    const matched = exactBoundsMatch >= 0
+      ? exactBoundsMatch : firstIdMatch
+    if (matched >= 0) {
+      const matchedItem = items[matched]
+      if (isHashChild(matchedItem)) {
+        const parentId = getHashFamilyParentId(matchedItem)
+        const parentIndex = items.findIndex((item) =>
+          isHashParent(item) &&
+          (String(getId(item) || '') === parentId ||
+           String(item?.sourceNumber ?? item?.source_number ?? '') ===
+             parentId))
+        if (parentIndex >= 0) return parentIndex
+      }
+      return matched
+    }
+
+    if (containingParent >= 0) return containingParent
+    const playingChild = getPlayingHashChild(data)
+    const parentId = getHashFamilyParentId(playingChild)
+    if (!parentId) return -1
+    return items.findIndex((item) =>
+      isHashParent(item) &&
+      (String(getId(item) || '') === parentId ||
+       String(item?.sourceNumber ?? item?.source_number ?? '') === parentId))
+  }
+
+  function resolveImmediateAutoQueueId(data = state.snapshot) {
+    if (!isPlaying(data)) return ''
+    const items = getPlaylistItems(data)
+    const currentIndex =
+      findImmediateAutoQueueCurrentIndex(items, data)
+    if (currentIndex < 0) return ''
+
+    let crossedBlock = false
+    for (let index = currentIndex + 1;
+      index < items.length; index += 1) {
+      const candidate = items[index]
+      if (isBlock(candidate)) {
+        crossedBlock = true
+        continue
+      }
+      if (!isImmediateAutoQueuePlayable(candidate)) continue
+      if (getAutoBlocoEnabled(data) && crossedBlock) return ''
+      return String(getId(candidate) || '')
+    }
+    return ''
+  }
+
+  function applyImmediateAutoplayQueueVisual(
+    nextMode,
+    data = state.snapshot,
+  ) {
+    const sampledAt = now()
+    const holdUntil = sampledAt + 8000
+    const queuedId = getQueuedId(data)
+    const queuedManual =
+      isQueuedSongManualForVisual(queuedId, data)
+
+    if (Number(nextMode) === 0) {
+      if (queuedId && queuedManual) {
+        state.queuedSongId = queuedId
+        state.queuedManualVisualId = queuedId
+        state.queuedSongLocalUntil = Math.max(
+          Number(state.queuedSongLocalUntil || 0), holdUntil)
+        state.optimisticQueueClearedUntil = 0
+        return
+      }
+      state.queuedSongId = ''
+      state.queuedManualVisualId = ''
+      state.queuedSongLocalUntil = holdUntil
+      state.optimisticQueueClearedUntil = holdUntil
+      return
+    }
+
+    state.optimisticQueueClearedUntil = 0
+    if (queuedId) {
+      state.queuedSongId = queuedId
+      state.queuedManualVisualId = queuedManual ? queuedId : ''
+      state.queuedSongLocalUntil = Math.max(
+        Number(state.queuedSongLocalUntil || 0), holdUntil)
+      return
+    }
+
+    const immediateQueueId = resolveImmediateAutoQueueId(data)
+    state.queuedSongId = immediateQueueId
+    state.queuedManualVisualId = ''
+    state.queuedSongLocalUntil = immediateQueueId ? holdUntil : 0
   }
 
   function getAutoBlocoEnabled(data = state.snapshot) {
@@ -8829,6 +8984,30 @@
     })
   }
 
+  function getListContentRenderSignature(items) {
+    return JSON.stringify((Array.isArray(items) ? items : []).map(
+      (item, index) => [
+        index,
+        getId(item),
+        item?.playlistEntryId ?? item?.playlist_entry_id ?? '',
+        getName(item),
+        isBlock(item) ? 1 : 0,
+        isHashParent(item) ? 1 : 0,
+        isHashChild(item) ? 1 : 0,
+        getHashFamilyParentId(item),
+        item?.playlistOrder ?? item?.playlistIndex ??
+          item?.order ?? item?.index ?? '',
+        item?.sourceNumber ?? item?.source_number ??
+          item?.regionNumber ?? item?.number ?? '',
+        getItemStart(item) ?? '',
+        getItemEnd(item) ?? '',
+        getDurationSec(item),
+        getLuaBlockColor(item),
+        getLuaItemTextColor(item),
+      ],
+    ))
+  }
+
   function compactRenderState() {
     const d = state.snapshot || {}
     const partsOpen = state.showMarkersOverlay
@@ -8868,6 +9047,11 @@
       timerMode: getEffectiveTimerMode(d),
       timerRunning: !!d.timerRunning,
       counts: [getPlaylistItems(d).length, getRegions(d).length, getMarkers(d).length, getMixerTracks(d).length, getPremixSongs(d).length, getPremixTracks(d).length],
+      listContent: [
+        getListContentRenderSignature(getPlaylistItems(d)),
+        getListContentRenderSignature(getRegions(d)),
+        getListContentRenderSignature(getMarkers(d)),
+      ],
       totals: [getActivePlaylistTotalText(d, getActivePlaylist(d)), getRegionsTotalText(d)],
       projects: getProjects(d).map((project, index) =>
         `${getProjectItemId(project, index)}:${getProjectItemName(project, index)}`).join('|'),
@@ -9800,9 +9984,14 @@
     state.pendingAutoplay = next
     state.pendingAutoplayMode = next ? desiredMode : 0
     state.pendingAutoplayUntil = now() + 8000
+    // O clique é a fonte imediata do front. Botão, cor e alvo da fila mudam
+    // agora; o Bridge apenas confirma o estado depois.
+    applyImmediateAutoplayQueueVisual(
+      next ? desiredMode : 0,
+      state.snapshot,
+    )
     // A extensão é o único motor da fila automática. O front apenas muda o
-    // modo; ao desligar, a própria extensão remove somente a fila automática
-    // e preserva uma fila escolhida manualmente.
+    // transporte; a previsão local abaixo replica apenas a pintura da fila.
     const command = desiredMode === 2 ? 'autoplay2_set' : 'autoplay_set'
     const payload = {
       desiredState: next ? 'on' : 'off',
@@ -9818,6 +10007,7 @@
     }
     postCommand(command, payload)
     syncMainControlButtonsDom()
+    syncPlaybackQueueHeaderDom(state.snapshot || {})
     scheduleRender()
   }
 
