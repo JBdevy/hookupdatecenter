@@ -24,7 +24,6 @@
   let bridgePollTimer = 0
   let meterPollTimer = 0
   let technicalNoticeTimer = 0
-  let directorRenderTimer = 0
   let directorProgressAnimationFrame = 0
   let directorProgressLastPaintAt = 0
   const directorTpMediaWarmups = new Map()
@@ -103,6 +102,7 @@
     showTimerModal: false,
     showSettingsModal: false,
     pendingInterfaceBlocking: null,
+    interfaceAccessAllowed: readLocal('vshook_local_interface_access_allowed', '0') === '1',
     hideInterfaceAccessNotification: readLocal('vshook_hide_interface_access_notification', '0') === '1',
     lastBlockedInterfaceAttemptRevision: null,
     lastProjectPlaylistSwitchBlockedRevision: null,
@@ -592,8 +592,14 @@
     return BORDER_COLOR_SEQUENCE.some((item) => item.id === saved) ? saved : 'fixed-yellow'
   }
 
+  function getBorderColorPreferenceKey() {
+    return IS_MUSICIAN_MONITOR
+      ? 'vshook_musician_border_color_mode'
+      : 'vshook_director_border_color_mode'
+  }
+
   function getBorderColorMode() {
-    return normalizeBorderColorMode(readLocal('vshook_director_border_color_mode', 'fixed-yellow'))
+    return normalizeBorderColorMode(readLocal(getBorderColorPreferenceKey(), 'fixed-yellow'))
   }
 
   function getBorderColorOption(mode = getBorderColorMode()) {
@@ -622,7 +628,7 @@
     const current = getBorderColorMode()
     const index = BORDER_COLOR_SEQUENCE.findIndex((item) => item.id === current)
     const next = BORDER_COLOR_SEQUENCE[(Math.max(0, index) + 1) % BORDER_COLOR_SEQUENCE.length].id
-    writeLocal('vshook_director_border_color_mode', next)
+    writeLocal(getBorderColorPreferenceKey(), next)
     showPopup(getBorderColorModeLabel(next), next === 'off' ? 'info' : 'success', 1000)
     scheduleRender(true)
   }
@@ -2835,8 +2841,6 @@
 
     if (currentTime >= Number(
           state.sharedControlsLocalUntil || 0)) {
-      state.pendingAutoplay = null
-      state.pendingAutoplayMode = null
       state.pendingAutoBloco = null
       state.pendingAutoStop = null
       state.pendingStopPauseMode = null
@@ -2947,12 +2951,7 @@
     return getAutoplayMode(data) > 0
   }
 
-  function getAutoplayMode(data = state.snapshot) {
-    if (state.pendingAutoplay !== null && now() < state.pendingAutoplayUntil) {
-      return state.pendingAutoplay
-        ? (Number(state.pendingAutoplayMode) === 2 ? 2 : 1)
-        : 0
-    }
+  function getBridgeAutoplayMode(data = state.snapshot) {
     const directMode = Number(data?.autoplayMode)
     if (directMode === 1 || directMode === 2) return directMode
     if (data?.autoplay2Enabled === true || data?.queuePrepareOnly === true) return 2
@@ -2960,6 +2959,28 @@
         data?.autoplayEnabled === true ||
         data?.autoPlayEnabled === true) return 1
     return 0
+  }
+
+  function getAutoplayMode(data = state.snapshot) {
+    if (state.pendingAutoplay !== null && now() < state.pendingAutoplayUntil) {
+      return state.pendingAutoplay
+        ? (Number(state.pendingAutoplayMode) === 2 ? 2 : 1)
+        : 0
+    }
+    return getBridgeAutoplayMode(data)
+  }
+
+  function syncPendingAutoplayFromBridge(data = state.snapshot) {
+    if (state.pendingAutoplay === null) return
+    const desiredMode = state.pendingAutoplay
+      ? (Number(state.pendingAutoplayMode) === 2 ? 2 : 1)
+      : 0
+    if (getBridgeAutoplayMode(data) === desiredMode ||
+        now() >= Number(state.pendingAutoplayUntil || 0)) {
+      state.pendingAutoplay = null
+      state.pendingAutoplayMode = null
+      state.pendingAutoplayUntil = 0
+    }
   }
 
   function getAutoplay1Enabled(data = state.snapshot) {
@@ -3678,6 +3699,8 @@
 
   function allowLocalInterfaceFromDirector() {
     dismissInterfaceAccessButton()
+    writeLocal('vshook_local_interface_access_allowed', '1')
+    state.interfaceAccessAllowed = true
     state.pendingInterfaceBlocking = false
     state.snapshot = {
       ...(state.snapshot || {}),
@@ -3687,15 +3710,26 @@
       exclusiveControl: false,
       controlMode: 'shared',
     }
-    postCommand('director_allow_local_interface', {
-      allow: true,
-      keepDirectorConnected: true,
-    })
+    // Desliga a preferência persistente e também envia o comando de liberação
+    // para manter compatibilidade com versões anteriores da extensão.
+    Promise.allSettled([
+      postCommand('director_set_interface_blocking', {
+        enabled: false,
+        blockInterfaceWhenDirectorConnected: false,
+      }),
+      postCommand('director_allow_local_interface', {
+        allow: true,
+        keepDirectorConnected: true,
+      }),
+    ]).then(() => window.setTimeout(pollBridge, 80))
     scheduleRender(true)
   }
 
-  function showInterfaceAccessButton() {
-    if (IS_MUSICIAN_MONITOR || state.hideInterfaceAccessNotification) return
+  function showInterfaceAccessButton(data = state.snapshot) {
+    if (IS_MUSICIAN_MONITOR || state.hideInterfaceAccessNotification ||
+        state.interfaceAccessAllowed ||
+        readLocal('vshook_local_interface_access_allowed', '0') === '1' ||
+        !getInterfaceBlockingEnabled(data)) return
     let button = document.getElementById('directorInterfaceAccessButton')
     if (!button) {
       button = document.createElement('button')
@@ -3726,8 +3760,11 @@
     }
     if (revision === state.lastBlockedInterfaceAttemptRevision) return
     state.lastBlockedInterfaceAttemptRevision = revision
-    if (!state.hideInterfaceAccessNotification) {
-      showInterfaceAccessButton()
+    if (!state.hideInterfaceAccessNotification &&
+        !state.interfaceAccessAllowed &&
+        readLocal('vshook_local_interface_access_allowed', '0') !== '1' &&
+        getInterfaceBlockingEnabled(data)) {
+      showInterfaceAccessButton(data)
     }
   }
 
@@ -3940,6 +3977,10 @@
       const data = await response.json()
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
       syncSharedInterfaceState(state.snapshot)
+      // AUTO 1 e AUTO 2 são front-first: o snapshot antigo não desfaz o
+      // toque enquanto o Bridge processa o comando. Só libera o estado
+      // otimista quando o modo desejado for confirmado ou expirar.
+      syncPendingAutoplayFromBridge(state.snapshot)
       syncInterfaceBlockingPreference(state.snapshot)
       syncBlockedInterfaceAttempt(state.snapshot)
       syncProjectPlaylistSwitchBlocked(state.snapshot)
@@ -7214,6 +7255,44 @@
     return value && typeof value === 'object' ? value : {}
   }
 
+  function getTabletMultiLoopsRenderSignature() {
+    if (!state.showTabletMultiLoopsModal) return ''
+    const data = getTabletMultiLoopsState()
+    const tracks = Array.isArray(data.tracks) ? data.tracks : []
+    const snapshot = state.snapshot || {}
+    const mixer = snapshot.mixer && typeof snapshot.mixer === 'object'
+      ? snapshot.mixer : {}
+    const mixerTracks = Array.isArray(snapshot.mixerTracks)
+      ? snapshot.mixerTracks
+      : (Array.isArray(mixer.tracks) ? mixer.tracks : [])
+    const mixerMetadata = mixerTracks.map((track, index) => [
+      track?.guid ?? track?.id ?? `mixer-track-${index}`,
+      track?.name ?? track?.label ?? '',
+      track?.folderDepth ?? 0,
+      track?.group === true,
+      track?.displayColor ?? track?.color ?? track?.trackColor ?? '',
+    ])
+    return JSON.stringify({
+      song: [data.songId ?? '', data.songKey ?? '', data.songName ?? ''],
+      loops: [
+        data.loop1Enabled === true, data.loop1Available === true,
+        data.loop2Enabled === true, data.loop2Available === true,
+        data.ms1Enabled === true, data.ms2Enabled === true,
+        data.fade1Sec ?? '', data.fade2Sec ?? '',
+      ],
+      tracks: tracks.map((track, index) => [
+        track?.guid ?? track?.id ?? `track-${index}`,
+        track?.name ?? '',
+        track?.folderDepth ?? 0,
+        track?.group === true,
+        track?.displayColor ?? track?.color ?? track?.trackColor ?? '',
+        track?.auto1 === true, track?.mute1 === true, track?.solo1 === true,
+        track?.auto2 === true, track?.mute2 === true, track?.solo2 === true,
+      ]),
+      mixerMetadata,
+    })
+  }
+
   function normalizeTabletMultiLoopTrackColor(value, fallback) {
     const raw = String(value || '').trim()
     if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase()
@@ -7776,7 +7855,7 @@
         return
       }
       const html = renderApp()
-      const sig = `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${JSON.stringify(state.snapshot?.multiloops || {})}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${state.popupText}|${state.popupUntil}|${JSON.stringify(compactRenderState())}`
+      const sig = `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${state.popupText}|${state.popupUntil}|${JSON.stringify(compactRenderState())}`
       if (sig !== state.lastHtmlSignature) {
         if (!forceRender && state.showTransportSeekModal && getTransportSeekTarget(state.snapshot) && root.querySelector('.transportSeekOverlay, .tabletTransportPanel')) {
           state.lastHtmlSignature = sig
@@ -9655,7 +9734,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -10060,6 +10139,14 @@
       case 'theme-dark': setAppTheme('dark'); break
       case 'interface-blocking-toggle': {
         const next = !getInterfaceBlockingEnabled()
+        if (next) {
+          removeLocal('vshook_local_interface_access_allowed')
+          state.interfaceAccessAllowed = false
+        } else {
+          writeLocal('vshook_local_interface_access_allowed', '1')
+          state.interfaceAccessAllowed = true
+          dismissInterfaceAccessButton()
+        }
         state.pendingInterfaceBlocking = next
         state.snapshot = {
           ...(state.snapshot || {}),
@@ -11076,6 +11163,20 @@
     input.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
+  function handleTimerCountdownKeyDown(event) {
+    const input = event.target
+    if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (!/^\d$/.test(String(event.key || '')) || event.ctrlKey || event.metaKey || event.altKey) return
+    const current = String(input.value || '').replace(/\D/g, '')
+    if (current.length < 2) return
+    event.preventDefault()
+    input.value = (current + String(event.key)).slice(-2)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    try {
+      input.setSelectionRange(input.value.length, input.value.length)
+    } catch (_) {}
+  }
+
   function handleTimerCountdownFocus(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
@@ -11121,6 +11222,7 @@
     document.addEventListener('pointerdown', handleAuthFieldPointerDown, true)
     document.addEventListener('pointerdown', handleTimerCountdownPointerDown, true)
     document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
+    document.addEventListener('keydown', handleTimerCountdownKeyDown, true)
     document.addEventListener('focusin', handleTimerCountdownFocus, true)
     document.addEventListener('focusout', handleTimerCountdownBlur, true)
     if (window.PointerEvent) {
@@ -11296,11 +11398,9 @@
   function stopDirectorVisualLoops() {
     if (bridgePollTimer) window.clearInterval(bridgePollTimer)
     if (technicalNoticeTimer) window.clearInterval(technicalNoticeTimer)
-    if (directorRenderTimer) window.clearInterval(directorRenderTimer)
     if (directorProgressAnimationFrame) window.cancelAnimationFrame(directorProgressAnimationFrame)
     bridgePollTimer = 0
     technicalNoticeTimer = 0
-    directorRenderTimer = 0
     directorProgressAnimationFrame = 0
     directorProgressLastPaintAt = 0
   }
@@ -11321,7 +11421,6 @@
   function startDirectorVisualLoops() {
     if (!bridgePollTimer) bridgePollTimer = window.setInterval(pollBridge, POLL_MS)
     if (!technicalNoticeTimer) technicalNoticeTimer = window.setInterval(pollDirectorTechnicalNotice, NOTICE_POLL_MS)
-    if (!directorRenderTimer) directorRenderTimer = window.setInterval(() => scheduleRender(), 1000)
     if (!directorProgressAnimationFrame) {
       directorProgressAnimationFrame = window.requestAnimationFrame(animateDirectorProgress)
     }

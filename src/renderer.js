@@ -326,7 +326,7 @@ async function ensureLicenseActiveForDownload() {
   return false;
 }
 
-function openVideoModal() {
+async function openUpdateVideoExternally() {
   if (!currentYoutubeWatchUrl) {
     showModal({
       title: 'Vídeo indisponível',
@@ -336,13 +336,15 @@ function openVideoModal() {
     return;
   }
 
-  $('#youtubeWebview').src = currentYoutubeWatchUrl;
-  $('#videoModal').classList.remove('hidden');
-}
-
-function closeVideoModal() {
-  $('#youtubeWebview').src = 'about:blank';
-  $('#videoModal').classList.add('hidden');
+  try {
+    await window.hookUpdateCenter.openExternal(currentYoutubeWatchUrl);
+  } catch (error) {
+    showModal({
+      title: 'Vídeo da atualização',
+      message: friendlyError(error, 'Não foi possível abrir o vídeo no navegador.'),
+      type: 'error'
+    });
+  }
 }
 
 function showSupportQrModal({ qrSvg = '', url = '' } = {}) {
@@ -1744,7 +1746,6 @@ function renderState(nextState) {
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
     $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
-    $('#videoModalTitle').textContent = vsHookTitle;
 
     // A descrição/changelog da atualização do VS Hook fica exclusivamente no card amarelo separado.
     // Não renderiza lista dentro do card principal para evitar duplicidade e liberar espaço.
@@ -2165,7 +2166,6 @@ async function init() {
       else if (!$('#recadosModal')?.classList.contains('hidden')) closeRecadosModal();
       else if (!$('#bridgeNetworkModal')?.classList.contains('hidden')) closeBridgeNetworkModal();
       else if (!$('#supportQrModal')?.classList.contains('hidden')) closeSupportQrModal();
-      else if (!$('#videoModal').classList.contains('hidden')) closeVideoModal();
       else hideModal();
     }
   });
@@ -2304,11 +2304,7 @@ async function init() {
     updateLyricsWindowButtons();
   });
 
-  $('#openVideoModalButton')?.addEventListener('click', openVideoModal);
-  $('#closeVideoModalButton')?.addEventListener('click', closeVideoModal);
-  $('#videoModal')?.addEventListener('click', (event) => {
-    if (event.target.id === 'videoModal') closeVideoModal();
-  });
+  $('#openVideoModalButton')?.addEventListener('click', openUpdateVideoExternally);
 
   async function runManualUpdateCheck(button, idleText) {
     if (!button) return;
