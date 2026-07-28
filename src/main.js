@@ -1,6 +1,16 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
+// O Electron intercepta caminhos terminados em .asar no módulo fs comum.
+// O companion contém o próprio resources/app.asar e precisa ser tratado como
+// arquivo físico durante a instalação.
+const physicalFs = (() => {
+  try {
+    return require('original-fs');
+  } catch (_) {
+    return fs;
+  }
+})();
 const os = require('os');
 const crypto = require('crypto');
 const Store = require('electron-store');
@@ -1246,7 +1256,7 @@ function launchWindowsInstallerAfterExit(installerPath) {
     '$deadline = (Get-Date).AddSeconds(30)',
     'while ((@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -gt 0) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }',
     'Start-Sleep -Milliseconds 700',
-    `if (@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -eq 0) { Start-Process -FilePath ${powershellStringLiteral(resolvedInstaller)} }`
+    `if (@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -eq 0) { Start-Process -FilePath ${powershellStringLiteral(resolvedInstaller)} -ArgumentList '--updated' -WorkingDirectory ${powershellStringLiteral(path.dirname(resolvedInstaller))} }`
   ].join('; ');
 
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
@@ -3557,14 +3567,17 @@ function windowsVshookCompanionCopyIsComplete(source, destination) {
 
   while (pending.length > 0) {
     const [sourceDir, destinationDir] = pending.pop();
-    if (!fs.existsSync(destinationDir)) return false;
+    if (!physicalFs.existsSync(destinationDir)) return false;
 
-    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    for (const entry of physicalFs.readdirSync(sourceDir, { withFileTypes: true })) {
       const sourceEntry = path.join(sourceDir, entry.name);
       const destinationEntry = path.join(destinationDir, entry.name);
 
       if (entry.isDirectory()) {
-        if (!fs.existsSync(destinationEntry) || !fs.statSync(destinationEntry).isDirectory()) {
+        if (
+          !physicalFs.existsSync(destinationEntry) ||
+          !physicalFs.statSync(destinationEntry).isDirectory()
+        ) {
           return false;
         }
         pending.push([sourceEntry, destinationEntry]);
@@ -3572,9 +3585,9 @@ function windowsVshookCompanionCopyIsComplete(source, destination) {
       }
 
       if (!entry.isFile()) continue;
-      if (!fs.existsSync(destinationEntry)) return false;
-      const sourceStat = fs.statSync(sourceEntry);
-      const destinationStat = fs.statSync(destinationEntry);
+      if (!physicalFs.existsSync(destinationEntry)) return false;
+      const sourceStat = physicalFs.statSync(sourceEntry);
+      const destinationStat = physicalFs.statSync(destinationEntry);
       if (!destinationStat.isFile() || sourceStat.size !== destinationStat.size) return false;
     }
   }
@@ -3588,7 +3601,7 @@ function installWindowsVshookCompanion() {
     source,
     'VS Hook Teleprompt Settings.exe'
   );
-  if (!source || !fs.existsSync(sourceExecutable)) {
+  if (!source || !physicalFs.existsSync(sourceExecutable)) {
     throw new Error(
       'O aplicativo de configurações do TP não veio completo nesta versão da Hook Center.'
     );
@@ -3599,9 +3612,9 @@ function installWindowsVshookCompanion() {
   );
   // Nunca apaga a instalação anterior antes da nova cópia terminar. Uma nova
   // tentativa completa/substitui somente os arquivos necessários.
-  fs.mkdirSync(destination, { recursive: true });
+  physicalFs.mkdirSync(destination, { recursive: true });
   try {
-    fs.cpSync(source, destination, {
+    physicalFs.cpSync(source, destination, {
       recursive: true,
       force: true
     });
@@ -3622,7 +3635,7 @@ function installWindowsVshookCompanion() {
     destination,
     'VS Hook Teleprompt Settings.exe'
   );
-  if (!fs.existsSync(installedExecutable)) {
+  if (!physicalFs.existsSync(installedExecutable)) {
     throw new Error(
       'A cópia das Configurações do TP não foi concluída. Tente instalar novamente.'
     );
