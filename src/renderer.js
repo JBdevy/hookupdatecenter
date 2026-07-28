@@ -202,6 +202,8 @@ function friendlyError(error, fallback) {
     'o instalador da atualizacao da hook center nao foi encontrado',
     'o instalador local da hook center não foi encontrado',
     'o instalador local da hook center nao foi encontrado',
+    'não foi possível abrir o instalador da hook center',
+    'nao foi possivel abrir o instalador da hook center',
     'não foi possível preparar o instalador da hook center',
     'nao foi possivel preparar o instalador da hook center'
   ];

@@ -1227,11 +1227,7 @@ async function downloadHookCenterUpdateInstaller() {
   return { ok: true, downloaded };
 }
 
-function powershellStringLiteral(value) {
-  return `'${String(value || '').replace(/'/g, "''")}'`;
-}
-
-function launchWindowsInstallerAfterExit(installerPath) {
+function launchWindowsUpdateInstaller(installerPath) {
   const requestedInstaller = String(installerPath || '').trim();
   const resolvedInstaller = requestedInstaller ? path.resolve(requestedInstaller) : '';
   if (
@@ -1242,47 +1238,18 @@ function launchWindowsInstallerAfterExit(installerPath) {
     throw new Error('O instalador da atualização da Hook Center não foi encontrado.');
   }
 
-  const appPids = new Set([process.pid]);
-  try {
-    for (const metric of app.getAppMetrics()) {
-      const pid = Number(metric?.pid);
-      if (Number.isInteger(pid) && pid > 0) appPids.add(pid);
-    }
-  } catch (_) {}
-
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$hookCenterPids = @(${[...appPids].join(',')})`,
-    '$deadline = (Get-Date).AddSeconds(30)',
-    'while ((@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -gt 0) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }',
-    'Start-Sleep -Milliseconds 700',
-    `if (@(Get-Process -Id $hookCenterPids -ErrorAction SilentlyContinue).Count -eq 0) { Start-Process -FilePath ${powershellStringLiteral(resolvedInstaller)} -ArgumentList '--updated' -WorkingDirectory ${powershellStringLiteral(path.dirname(resolvedInstaller))} }`
-  ].join('; ');
-
-  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  const bundledPowershell = path.join(
-    systemRoot,
-    'System32',
-    'WindowsPowerShell',
-    'v1.0',
-    'powershell.exe'
-  );
-  const powershell = fs.existsSync(bundledPowershell)
-    ? bundledPowershell
-    : 'powershell.exe';
-  const launcher = spawn(powershell, [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass',
-    '-WindowStyle', 'Hidden',
-    '-Command', script
-  ], {
+  // O NSIS do electron-builder entende --updated: ele aguarda/encerra a
+  // instância anterior antes de substituir os arquivos. O processo precisa
+  // nascer diretamente; um PowerShell intermediário pode morrer junto com o
+  // Electron antes de conseguir abrir o instalador.
+  const launcher = spawn(resolvedInstaller, ['--updated'], {
+    cwd: path.dirname(resolvedInstaller),
     detached: true,
     stdio: 'ignore',
-    windowsHide: true
+    windowsHide: false
   });
   if (!launcher.pid) {
-    throw new Error('Não foi possível preparar o instalador da Hook Center.');
+    throw new Error('Não foi possível abrir o instalador da Hook Center.');
   }
   launcher.unref();
 }
@@ -1300,7 +1267,7 @@ async function installDownloadedHookCenterUpdate() {
   }
 
   if (process.platform === 'win32') {
-    launchWindowsInstallerAfterExit(dest);
+    launchWindowsUpdateInstaller(dest);
     quitAfterWindowsInstallerIsQueued();
     return { ok: true, action: 'installer-started' };
   }
@@ -3493,7 +3460,7 @@ async function installCachedUpdatePackage(updateOverride = null) {
   store.set('updateAvailable', false);
 
   if (process.platform === 'win32') {
-    launchWindowsInstallerAfterExit(cachedFiles.installer);
+    launchWindowsUpdateInstaller(cachedFiles.installer);
     quitAfterWindowsInstallerIsQueued();
     return { ok: true, action: 'installer-started', version: update.version };
   }
