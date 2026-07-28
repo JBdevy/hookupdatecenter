@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.0-native-extension-shared-control-v22'
+  const VERSION = '1.0.0-native-extension-shared-control-v23'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -3357,12 +3357,23 @@
     return start !== null && end !== null && end > start + 0.0005
   }
 
+  function immediateAutoQueueItemMatchesId(item, id) {
+    const targetId = String(id || '')
+    if (!targetId || !item) return false
+    return String(getId(item) || '') === targetId ||
+      String(item?.playlistEntryId ?? item?.playlist_entry_id ?? '') ===
+        targetId ||
+      String(item?.sourceNumber ?? item?.source_number ?? '') === targetId
+  }
+
   function findImmediateAutoQueueCurrentIndex(
     items,
     data = state.snapshot,
+    preferredPlayingId = '',
   ) {
     if (!Array.isArray(items) || !items.length) return -1
-    const playingId = String(
+    const explicitPlayingId = String(preferredPlayingId || '')
+    const playingId = explicitPlayingId || String(
       getVisualPlayingId(data) || getPlayingId(data) || '')
     const songStart = firstFiniteNumber([
       data?.currentSongStart,
@@ -3381,7 +3392,7 @@
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index]
       if (!isPlayable(item) || !getId(item)) continue
-      if (playingId && String(getId(item)) === playingId &&
+      if (playingId && immediateAutoQueueItemMatchesId(item, playingId) &&
           firstIdMatch < 0) {
         firstIdMatch = index
       }
@@ -3401,8 +3412,12 @@
       }
     }
 
-    const matched = exactBoundsMatch >= 0
-      ? exactBoundsMatch : firstIdMatch
+    // No clique de Play, o alvo escolhido pelo usuário é mais novo que os
+    // limites do último snapshot. Fora desse caso, os limites continuam
+    // ganhando para identificar corretamente pais/filhos em reprodução.
+    const matched = explicitPlayingId && firstIdMatch >= 0
+      ? firstIdMatch
+      : exactBoundsMatch >= 0 ? exactBoundsMatch : firstIdMatch
     if (matched >= 0) {
       const matchedItem = items[matched]
       if (isHashChild(matchedItem)) {
@@ -3427,11 +3442,15 @@
        String(item?.sourceNumber ?? item?.source_number ?? '') === parentId))
   }
 
-  function resolveImmediateAutoQueueId(data = state.snapshot) {
-    if (!isPlaying(data)) return ''
+  function resolveImmediateAutoQueueId(
+    data = state.snapshot,
+    preferredPlayingId = '',
+  ) {
+    if (!preferredPlayingId && !isPlaying(data)) return ''
     const items = getPlaylistItems(data)
     const currentIndex =
-      findImmediateAutoQueueCurrentIndex(items, data)
+      findImmediateAutoQueueCurrentIndex(
+        items, data, preferredPlayingId)
     if (currentIndex < 0) return ''
 
     let crossedBlock = false
@@ -3452,6 +3471,7 @@
   function applyImmediateAutoplayQueueVisual(
     nextMode,
     data = state.snapshot,
+    preferredPlayingId = '',
   ) {
     const sampledAt = now()
     const holdUntil = sampledAt + 8000
@@ -3476,7 +3496,7 @@
     }
 
     state.optimisticQueueClearedUntil = 0
-    if (queuedId) {
+    if (queuedId && (queuedManual || !preferredPlayingId)) {
       state.queuedSongId = queuedId
       state.queuedManualVisualId = queuedManual ? queuedId : ''
       state.queuedSongLocalUntil = Math.max(
@@ -3484,10 +3504,13 @@
       return
     }
 
-    const immediateQueueId = resolveImmediateAutoQueueId(data)
+    const immediateQueueId = resolveImmediateAutoQueueId(
+      data, preferredPlayingId)
     state.queuedSongId = immediateQueueId
     state.queuedManualVisualId = ''
-    state.queuedSongLocalUntil = immediateQueueId ? holdUntil : 0
+    state.queuedSongLocalUntil = holdUntil
+    state.optimisticQueueClearedUntil =
+      immediateQueueId ? 0 : holdUntil
   }
 
   function getAutoBlocoEnabled(data = state.snapshot) {
@@ -9918,7 +9941,16 @@
       state.partsArmedMarkerId = ''
       state.partsArmedMarkerUntil = 0
       setPendingTransportPlaying(true)
-      postCommand('director_play_no_seek', { activeTab: state.activeTab, page: state.activeTab, targetId: id || '', songId: id || '', selectedRegionId: id || '', selectedPlaylistSongId: id || '', noSeek: true, preserveCursor: true, transportOnly: true })
+      if (id && getAutoplayEnabled()) {
+        // Apenas antecipa a pintura que o Auto da extensão produzirá. Nenhum
+        // comando de fila nasce no front.
+        applyImmediateAutoplayQueueVisual(
+          getAutoplayMode(), state.snapshot, id)
+      }
+      // Usa exatamente o mesmo comando do botão Play da extensão. O caminho
+      // antigo `director_play_no_seek` armava o Auto 2, mas podia tentar tocar
+      // no cursor antigo e deixar somente a próxima música marcada.
+      postCommand('play_button')
       if (partsOpen) syncPartsPlayButtonDom(true)
       else showPopup('PLAY', 'success', 700)
     }
