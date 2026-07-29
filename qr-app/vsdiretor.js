@@ -5705,9 +5705,8 @@
   function renderPlaybackQueueHeader(data = state.snapshot, holdable = false) {
     const nowName = getNowPlayingName(data) || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = getQueuedSongName(data) || 'FILA DE ESPERA VAZIA'
-    const loopActive = getLoopActive(data)
     const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
-    const showQueueBar = hasQueue && !loopActive
+    const showQueueBar = hasQueue
     const progress = isPlaying(data) ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -8882,9 +8881,8 @@
   function syncPlaybackQueueHeaderDom(data = state.snapshot || {}) {
     const nowName = getNowPlayingName(data) || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = getQueuedSongName(data) || 'FILA DE ESPERA VAZIA'
-    const loopActive = getLoopActive(data)
     const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
-    const showQueueBar = hasQueue && !loopActive
+    const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
     const loopStatus = multiLoopStatus.kind === 'loop' ||
@@ -8930,9 +8928,10 @@
     syncPlaybackQueueHeaderDom(data)
     const progress = isPlaying(data)
       ? getVisualPlaybackProgressPercent(data, sampledAt) : 0
-    const loopActive = getLoopActive(data)
     const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
-    const showQueueBar = hasQueue && !loopActive
+    // LOOP não apaga a fila. Enquanto houver uma música marcada, mantenha o
+    // regresso visível na lista e no painel; apenas a largura segue o progresso.
+    const showQueueBar = hasQueue
     const queueProgress = showQueueBar ? 100 - progress : 0
 
     for (const el of root.querySelectorAll('.playbackQueueFillNow, .playingRowProgressBar')) {
