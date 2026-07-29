@@ -8495,23 +8495,11 @@
         return
       }
       const html = renderApp()
-      const renderedPlayingId = String(
-        root.querySelector('.app')?.getAttribute(
-          'data-visual-playing-id') || '')
-      const visualPlayingId = getVisualPlayingId(state.snapshot)
-      const playingBoundaryChanged =
-        renderedPlayingId !== visualPlayingId
       const sig = `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${state.popupText}|${state.popupUntil}|${JSON.stringify(compactRenderState())}`
+      // Cursor e progresso do Grid já são sincronizados sem reconstrução pelo
+      // loop visual. Uma assinatura nova deve seguir o render normal mesmo com
+      // o Grid aberto; caso contrário lista, fila e controles ficam congelados.
       if (sig !== state.lastHtmlSignature) {
-        if (!forceRender && !playingBoundaryChanged && state.showTransportSeekModal && getTransportSeekTarget(state.snapshot) && root.querySelector('.transportSeekOverlay, .tabletTransportPanel')) {
-          state.lastHtmlSignature = sig
-          syncPlaybackProgressDom()
-          syncTimerDom()
-          syncDirectorTelepromptDom()
-          syncDirectorTechnicalNoticeDom()
-          syncTransportSeekModalDom()
-          return
-        }
         if (!forceRender && state.showTelepromptScreen && root.querySelector('.directorTpOverlay')) {
           state.lastHtmlSignature = sig
           syncPlaybackProgressDom()
