@@ -1211,7 +1211,10 @@ function renderTelepromptState(state = {}) {
   return showTextMode(String(state.text || ''));
 }
 
+let pollStateInFlight = false;
 async function pollState() {
+  if (pollStateInFlight) return;
+  pollStateInFlight = true;
   try {
     const state = await window.hookUpdateCenter.getLyricsState(lyricsSlot);
     if (state.technicalNoticeSettings) applyTechnicalNoticeSettings(state.technicalNoticeSettings);
@@ -1263,7 +1266,10 @@ async function pollState() {
     } else if (nextRunning && nextStartedMs > 0 && Math.abs(nextStartedMs - timerStartedAtMs) > 1500) {
       timerStartedAtMs = nextStartedMs;
     }
-  } catch (_) {}
+  } catch (_) {
+  } finally {
+    pollStateInFlight = false;
+  }
 }
 
 async function init() {
@@ -1528,7 +1534,9 @@ async function init() {
     }
   });
   await pollState();
-  setInterval(pollState, 120);
+  // O estado nativo é produzido a cada ~220 ms. Consultar mais rápido apenas
+  // repetia o mesmo JSON e congestionava a porta local em Macs antigos.
+  setInterval(pollState, 220);
   setInterval(updateTimerVisual, 250);
   setInterval(() => updateTechnicalNoticeVisual(activeTechnicalNotice), 250);
 }

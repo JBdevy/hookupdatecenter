@@ -3,6 +3,7 @@ const VSHOOK_MUSICIANS_PORT = 47832
 const VSHOOK_SCAN_TIMEOUT_MS = 650
 const VSHOOK_SAVED_PROBE_TIMEOUT_MS = 650
 const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
+const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
 const VSHOOK_ASSET_VERSION = '1-0-0-native-single-motor-v133'
@@ -248,9 +249,7 @@ function isVSHookFakeProjectName(value) {
   const name = String(value || '').trim().toLowerCase()
   if (!name) return true
   const compact = name.replace(/\s+/g, ' ')
-  return compact === 'projeto 1'
-    || compact === 'project 1'
-    || compact === 'projeto vs hook'
+  return compact === 'projeto vs hook'
     || compact === 'vs hook'
     || compact === 'demo'
     || compact === 'projeto demo'
@@ -853,9 +852,9 @@ async function fetchBridgeBrowserProjects() {
   if (!host) return []
 
   const payload =
-    await fetchJsonWithTimeout(`${window.location.origin}/projects`, VSHOOK_SCAN_TIMEOUT_MS) ||
-    await fetchJsonWithTimeout(`${window.location.origin}/discovery`, VSHOOK_SCAN_TIMEOUT_MS) ||
-    await fetchJsonWithTimeout(`${window.location.origin}/state`, VSHOOK_SCAN_TIMEOUT_MS)
+    await fetchJsonWithTimeout(`${window.location.origin}/projects`, VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS) ||
+    await fetchJsonWithTimeout(`${window.location.origin}/discovery`, VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS) ||
+    await fetchJsonWithTimeout(`${window.location.origin}/state`, VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS)
 
   if (!payload) return []
   return extractProjectList(payload, payload, host)

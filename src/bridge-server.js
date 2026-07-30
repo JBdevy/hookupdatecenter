@@ -72,8 +72,6 @@ function getProjectPath(project) {
 function isFakeProjectName(name) {
   const value = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
   return !value
-    || value === 'projeto 1'
-    || value === 'project 1'
     || value === 'projeto vs hook'
     || value === 'vs hook'
     || value === 'demo'
@@ -247,12 +245,15 @@ const readJsonShortCacheByFile = new Map()
 const READ_JSON_CACHE_TTL_MS = 60
 
 const NATIVE_BRIDGE_PORT = Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830)
-const NATIVE_BRIDGE_CACHE_TTL_MS = 180 // evita martelar o REAPER enquanto o Diretor esta aberto
-const NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS = 180
-const NATIVE_BRIDGE_BACKGROUND_POLL_MS = 250
+const NATIVE_BRIDGE_CACHE_TTL_MS =
+  process.platform === 'darwin' ? 300 : 180
+const NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS =
+  process.platform === 'darwin' ? 300 : 180
+const NATIVE_BRIDGE_BACKGROUND_POLL_MS =
+  process.platform === 'darwin' ? 400 : 250
 let nativeBridgeStateCache = null
 let nativeBridgeStateCacheAt = 0
-let nativeBridgeRefreshInFlight = false
+let nativeBridgeRefreshInFlight = null
 let nativeBridgeBackgroundPollTimer = null
 const nativeBridgeLicenseChecks = new Set()
 const optimizedTelepromptImageCache = new Map()
@@ -538,20 +539,37 @@ async function refreshNativeBridgeState() {
         NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS) {
     return nativeBridgeStateCache
   }
-  if (nativeBridgeRefreshInFlight) return nativeBridgeStateCache
-  nativeBridgeRefreshInFlight = true
-  try {
+  if (nativeBridgeRefreshInFlight) return nativeBridgeRefreshInFlight
+  const refreshPromise = (async () => {
     // O snapshot pode ser grande e o macOS 10.13 possui buffers/CPU bem mais
     // lentos. Como a conexão é somente localhost, dois segundos evitam tratar
     // uma resposta válida ainda em trânsito como "REAPER fechado".
-    const result = await requestNativeBridgeJson('/state', { timeoutMs: 2000 })
+    const result = await requestNativeBridgeJson(
+      '/state', { timeoutMs: 3000 })
     if (result.ok && result.data && result.data.connected) {
       nativeBridgeStateCache = result.data
       nativeBridgeStateCacheAt = Date.now()
       return nativeBridgeStateCache
     }
+    return null
+  })()
+  nativeBridgeRefreshInFlight = refreshPromise
+  try {
+    return await refreshPromise
   } finally {
-    nativeBridgeRefreshInFlight = false
+    if (nativeBridgeRefreshInFlight === refreshPromise) {
+      nativeBridgeRefreshInFlight = null
+    }
+  }
+}
+
+async function getNativeBridgeStateSnapshot(maxStaleMs = 3000) {
+  const refreshed = await refreshNativeBridgeState()
+  if (refreshed) return refreshed
+  if (nativeBridgeStateCache &&
+      Date.now() - nativeBridgeStateCacheAt <=
+        Math.max(0, Number(maxStaleMs) || 0)) {
+    return nativeBridgeStateCache
   }
   return null
 }
@@ -2048,4 +2066,5 @@ module.exports = {
   ensureJsonFile,
   getLanIp,
   getAllLanIps,
+  getNativeBridgeStateSnapshot,
 }

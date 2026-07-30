@@ -17,7 +17,13 @@ const Store = require('electron-store');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const http = require('http');
-const { createBridgeServer, getLanIp, getAllLanIps, ensureJsonFile } = require('./bridge-server');
+const {
+  createBridgeServer,
+  getLanIp,
+  getAllLanIps,
+  ensureJsonFile,
+  getNativeBridgeStateSnapshot
+} = require('./bridge-server');
 const { createQrSvg } = require('./qr-svg');
 const appPackage = require('../package.json');
 
@@ -2332,31 +2338,11 @@ function getNativeTelepromptMediaUrl(rawUrl, filePath) {
   return getFileUrlSafe(value);
 }
 
-function requestNativeBridgeStateForLyrics(timeoutMs = 220) {
-  return new Promise((resolve) => {
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: Number(process.env.VSHOOK_NATIVE_BRIDGE_PORT || 47830),
-      path: '/state',
-      method: 'GET',
-      timeout: timeoutMs,
-    }, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; if (body.length > 1024 * 1024 * 2) req.destroy(); });
-      res.on('end', () => {
-        try {
-          const data = body ? JSON.parse(body) : null;
-          resolve(data && data.connected ? data : null);
-        } catch (_) {
-          resolve(null);
-        }
-      });
-    });
-    req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve(null); });
-    req.on('error', () => resolve(null));
-    req.end();
-  });
+function requestNativeBridgeStateForLyrics() {
+  // TP1, TP2, QR e app compartilham o mesmo cache e a mesma requisição.
+  // Isso impede que um Mac antigo receba várias cópias simultâneas do
+  // snapshot completo.
+  return getNativeBridgeStateSnapshot(3000);
 }
 
 
@@ -3087,54 +3073,173 @@ function buildPayloadEntries(files) {
   return [];
 }
 
-async function downloadFile(url, destPath, onProgress) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Falha ao baixar ${url}: HTTP ${response.status}`);
-
-  const total = Number(response.headers.get('content-length')) || 0;
-  fs.mkdirSync(path.dirname(destPath), { recursive: true });
-
-  const file = fs.createWriteStream(destPath);
-  let downloaded = 0;
-
-  if (!response.body || typeof response.body.getReader !== 'function') {
-    const buffer = Buffer.from(await response.arrayBuffer());
-    file.write(buffer);
-    file.end();
-    await new Promise((resolve, reject) => {
-      file.on('finish', resolve);
-      file.on('error', reject);
-    });
-    onProgress(100);
-    return;
-  }
-
-  const reader = response.body.getReader();
-
+function appendDownloadCacheBust(url) {
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const parsed = new URL(url);
+    parsed.searchParams.set(
+      'vshook_download',
+      `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+    );
+    return parsed.href;
+  } catch (_) {
+    return url;
+  }
+}
 
-      const chunk = Buffer.from(value);
-      downloaded += chunk.length;
+const fileIntegrityCache = new Map();
 
-      if (!file.write(chunk)) {
-        await new Promise((resolve) => file.once('drain', resolve));
-      }
+function getFileIntegrity(filePath) {
+  const stat = fs.statSync(filePath);
+  const cacheKey = path.resolve(filePath);
+  const cached = fileIntegrityCache.get(cacheKey);
+  if (cached &&
+      cached.size === stat.size &&
+      cached.mtimeMs === stat.mtimeMs) {
+    return { size: cached.size, sha256: cached.sha256 };
+  }
+  const integrity = {
+    size: stat.size,
+    sha256: crypto.createHash('sha256')
+      .update(fs.readFileSync(filePath))
+      .digest('hex')
+  };
+  if (fileIntegrityCache.size >= 128) fileIntegrityCache.clear();
+  fileIntegrityCache.set(cacheKey, {
+    ...integrity,
+    mtimeMs: stat.mtimeMs
+  });
+  return integrity;
+}
 
-      if (total > 0) onProgress(Math.round((downloaded / total) * 100));
+function validateExtensionBinaryFile(filePath, key = '') {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error('O arquivo da extensão não foi encontrado.');
+  }
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size < 4096) {
+    throw new Error('O arquivo baixado da extensão está vazio ou incompleto.');
+  }
+  const handle = fs.openSync(filePath, 'r');
+  const header = Buffer.alloc(4);
+  try {
+    const bytesRead = fs.readSync(handle, header, 0, header.length, 0);
+    if (bytesRead !== header.length) {
+      throw new Error('Não foi possível validar o arquivo da extensão.');
     }
   } finally {
-    file.end();
+    fs.closeSync(handle);
   }
+  const normalizedKey = String(key || '').toLowerCase();
+  if (normalizedKey.includes('dll') ||
+      path.extname(filePath).toLowerCase() === '.dll') {
+    if (header[0] !== 0x4d || header[1] !== 0x5a) {
+      throw new Error('A DLL baixada não é um binário válido do Windows.');
+    }
+    return true;
+  }
+  if (normalizedKey.includes('dylib') ||
+      path.extname(filePath).toLowerCase() === '.dylib') {
+    const magic = header.toString('hex').toLowerCase();
+    const validMachOMagic = new Set([
+      'cafebabe',
+      'bebafeca',
+      'feedface',
+      'cefaedfe',
+      'feedfacf',
+      'cffaedfe'
+    ]);
+    if (!validMachOMagic.has(magic)) {
+      throw new Error('A dylib baixada não é um binário válido do macOS.');
+    }
+    return true;
+  }
+  throw new Error('O tipo do arquivo da extensão não pôde ser validado.');
+}
 
-  await new Promise((resolve, reject) => {
-    file.on('finish', resolve);
-    file.on('error', reject);
-  });
+async function downloadFile(url, destPath, onProgress, options = {}) {
+  const requestUrl = options.cacheBust === true
+    ? appendDownloadCacheBust(url)
+    : url;
+  const controller = new AbortController();
+  const inactivityTimeoutMs = Math.max(
+    5000,
+    Number(options.timeoutMs) || 120000
+  );
+  let timeoutHandle = null;
+  const armTimeout = () => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    timeoutHandle = setTimeout(() => controller.abort(), inactivityTimeoutMs);
+  };
+  armTimeout();
+  try {
+    const response = await fetch(requestUrl, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, max-age=0',
+        Pragma: 'no-cache'
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`Falha ao baixar ${url}: HTTP ${response.status}`);
+    }
 
-  onProgress(100);
+    const total = Number(response.headers.get('content-length')) || 0;
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+    const file = fs.createWriteStream(destPath);
+    let downloaded = 0;
+
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      downloaded = buffer.length;
+      file.write(buffer);
+      file.end();
+      await new Promise((resolve, reject) => {
+        file.on('finish', resolve);
+        file.on('error', reject);
+      });
+    } else {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          armTimeout();
+          const chunk = Buffer.from(value);
+          downloaded += chunk.length;
+          if (!file.write(chunk)) {
+            await new Promise((resolve) => file.once('drain', resolve));
+          }
+          if (total > 0) {
+            onProgress(Math.round((downloaded / total) * 100));
+          }
+        }
+      } finally {
+        file.end();
+      }
+      await new Promise((resolve, reject) => {
+        file.on('finish', resolve);
+        file.on('error', reject);
+      });
+    }
+
+    if (downloaded <= 0 ||
+        (total > 0 &&
+         !response.headers.get('content-encoding') &&
+         downloaded !== total)) {
+      throw new Error('O download terminou incompleto.');
+    }
+
+    onProgress(100);
+    return { downloaded, total };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('O download ficou sem resposta e foi interrompido.');
+    }
+    throw error;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 function getOfflineUpdateCacheRoot() {
@@ -3181,7 +3286,21 @@ function readCachedManifestFile(manifestPath) {
     const files = parsed.files || {};
     const allFilesExist = Object.values(files).every((entry) => {
       const filename = String(entry?.filename || '');
-      return filename && path.basename(filename) === filename && fs.existsSync(path.join(cacheDir, filename));
+      if (!filename || path.basename(filename) !== filename) return false;
+      const localPath = path.join(cacheDir, filename);
+      if (!fs.existsSync(localPath)) return false;
+      const expectedSize = Number(entry?.size);
+      if (Number.isFinite(expectedSize) &&
+          expectedSize > 0 &&
+          fs.statSync(localPath).size !== expectedSize) {
+        return false;
+      }
+      const expectedHash = String(entry?.sha256 || '').trim().toLowerCase();
+      if (expectedHash &&
+          getFileIntegrity(localPath).sha256 !== expectedHash) {
+        return false;
+      }
+      return true;
     });
     if (!allFilesExist || Object.keys(files).length === 0) return null;
     return { ...parsed, cacheDir, manifestPath };
@@ -3326,7 +3445,14 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
     const entry = entries[index];
     const dest = path.join(cacheDir, entry.filename);
     const previousEntry = previousManifest?.files?.[entry.key];
-    const canReuse = previousEntry?.url === entry.url && fs.existsSync(dest);
+    const isExtensionEntry =
+      entry.key === 'vshookDll' || entry.key === 'vshookDylib';
+    // A DLL/dylib pode ser substituída no servidor mantendo a mesma URL.
+    // Reaproveitar por URL instalava indefinidamente o binário anterior.
+    const canReuse =
+      !isExtensionEntry &&
+      previousEntry?.url === entry.url &&
+      fs.existsSync(dest);
     if (!canReuse) {
       const partial = `${dest}.part`;
       await fs.promises.rm(partial, { force: true }).catch(() => {});
@@ -3334,7 +3460,13 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
         await downloadFile(entry.url, partial, (fileProgress) => {
           const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
           if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+        }, {
+          cacheBust: isExtensionEntry,
+          timeoutMs: isExtensionEntry ? 30000 : 120000
         });
+        if (isExtensionEntry) {
+          validateExtensionBinaryFile(partial, entry.key);
+        }
         await fs.promises.rm(dest, { force: true }).catch(() => {});
         await fs.promises.rename(partial, dest);
       } catch (error) {
@@ -3345,7 +3477,15 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
       mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
     }
     output[entry.key] = dest;
-    manifestFiles[entry.key] = { url: entry.url, filename: entry.filename };
+    const integrity = isExtensionEntry
+      ? getFileIntegrity(dest)
+      : { size: fs.statSync(dest).size, sha256: '' };
+    manifestFiles[entry.key] = {
+      url: entry.url,
+      filename: entry.filename,
+      size: integrity.size,
+      sha256: integrity.sha256
+    };
   }
 
   const manifest = {
@@ -3441,6 +3581,17 @@ async function installCachedUpdatePackage(updateOverride = null) {
   const update = normalizeUpdate(updateOverride) || getCurrentUpdatePackage();
   if (!update) throw new Error('Atualização não encontrada.');
   let manifest = findCachedUpdateManifest(update);
+  const cachedAtMs = Date.parse(String(manifest?.cachedAt || ''));
+  const cacheWasJustDownloaded = Number.isFinite(cachedAtMs) &&
+    Date.now() - cachedAtMs <= 2 * 60 * 1000;
+  if (manifest && !updateOverride && !cacheWasJustDownloaded) {
+    // Ao reinstalar a versão atual, confirma novamente a extensão publicada.
+    // Se estiver offline, o pacote local continua disponível.
+    try {
+      await cacheUpdatePackage(update, { requireInstaller: true });
+      manifest = findCachedUpdateManifest(update);
+    } catch (_) {}
+  }
   if (!manifest) {
     await cacheUpdatePackage(update, { requireInstaller: true });
     manifest = findCachedUpdateManifest(update);
@@ -3454,6 +3605,16 @@ async function installCachedUpdatePackage(updateOverride = null) {
   if (!cachedFiles.installer || !fs.existsSync(cachedFiles.installer)) {
     throw new Error('O instalador local da Hook Center não foi encontrado.');
   }
+  const extensionKey = process.platform === 'win32'
+    ? 'vshookDll'
+    : process.platform === 'darwin'
+      ? 'vshookDylib'
+      : '';
+  const extensionPath = extensionKey ? cachedFiles[extensionKey] : '';
+  if (!extensionPath || !fs.existsSync(extensionPath)) {
+    throw new Error('A extensão deste sistema não foi encontrada no pacote.');
+  }
+  validateExtensionBinaryFile(extensionPath, extensionKey);
 
   if (process.platform === 'win32') installWindowsPayload(cachedFiles);
   else if (process.platform === 'darwin') installMacPayload(cachedFiles);
@@ -3511,10 +3672,18 @@ async function downloadLatestUpdate(updateOverride = null) {
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     const dest = path.join(downloadDir, entry.filename);
+    const isExtensionEntry =
+      entry.key === 'vshookDll' || entry.key === 'vshookDylib';
     await downloadFile(entry.url, dest, (fileProgress) => {
       const totalProgress = Math.round(((i * 100) + fileProgress) / entries.length);
       if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+    }, {
+      cacheBust: isExtensionEntry,
+      timeoutMs: isExtensionEntry ? 30000 : 120000
     });
+    if (isExtensionEntry) {
+      validateExtensionBinaryFile(dest, entry.key);
+    }
     output[entry.key] = dest;
   }
 
@@ -3537,9 +3706,56 @@ async function downloadLatestUpdate(updateOverride = null) {
 }
 
 function copyFileEnsured(source, destination) {
-  if (!source || !fs.existsSync(source)) return;
+  if (!source || !fs.existsSync(source)) {
+    throw new Error('O arquivo da extensão baixada não foi encontrado.');
+  }
+  validateExtensionBinaryFile(source, 'vshookDll');
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
+  const expected = getFileIntegrity(source);
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  const backup = `${destination}.backup-${process.pid}-${Date.now()}`;
+  const hadExistingDestination = fs.existsSync(destination);
+  let movedPreviousToBackup = false;
+  try {
+    fs.copyFileSync(source, temporary);
+    const copied = getFileIntegrity(temporary);
+    if (copied.size !== expected.size || copied.sha256 !== expected.sha256) {
+      throw new Error('A verificação da DLL copiada falhou.');
+    }
+    if (hadExistingDestination) {
+      fs.renameSync(destination, backup);
+      movedPreviousToBackup = true;
+    }
+    fs.renameSync(temporary, destination);
+    fileIntegrityCache.delete(path.resolve(destination));
+    const installed = getFileIntegrity(destination);
+    if (installed.size !== expected.size ||
+        installed.sha256 !== expected.sha256) {
+      throw new Error('A DLL instalada não corresponde ao arquivo baixado.');
+    }
+    if (movedPreviousToBackup) {
+      fs.rmSync(backup, { force: true });
+      movedPreviousToBackup = false;
+    }
+    return installed;
+  } catch (error) {
+    if (movedPreviousToBackup || !hadExistingDestination) {
+      try { fs.rmSync(destination, { force: true }); } catch (_) {}
+    }
+    if (movedPreviousToBackup && fs.existsSync(backup)) {
+      try {
+        fs.renameSync(backup, destination);
+        fileIntegrityCache.delete(path.resolve(destination));
+        movedPreviousToBackup = false;
+      } catch (_) {}
+    }
+    throw error;
+  } finally {
+    try { fs.rmSync(temporary, { force: true }); } catch (_) {}
+    if (!movedPreviousToBackup) {
+      try { fs.rmSync(backup, { force: true }); } catch (_) {}
+    }
+  }
 }
 
 function getBundledVshookCompanionDir() {
@@ -3715,14 +3931,90 @@ function removeLegacyVsHookLuaFiles(dir) {
   }
 }
 
+function isWindowsReaperRunning() {
+  if (process.platform !== 'win32') return false;
+  try {
+    const output = execFileSync(
+      'tasklist.exe',
+      ['/FI', 'IMAGENAME eq reaper.exe', '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', windowsHide: true, timeout: 3000 }
+    );
+    return /(^|[",\s])reaper\.exe([",\s]|$)/i.test(output);
+  } catch (_) {}
+  try {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'if (Get-Process -Name reaper -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }'
+      ],
+      { stdio: 'ignore', windowsHide: true, timeout: 3000 }
+    );
+    return true;
+  } catch (_) {}
+  return false;
+}
+
 function installWindowsPayload(files) {
+  if (isWindowsReaperRunning()) {
+    throw new Error(
+      'Feche completamente o REAPER antes de instalar a extensão.'
+    );
+  }
   removeLegacyWindowsVshookExtensions();
   removeWindowsPublicVsHookDir();
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
+  // Confere novamente o diretório antes de entregar o controle ao instalador.
+  // O customInstall e a próxima inicialização repetem a mesma limpeza.
+  removeLegacyWindowsVshookExtensions();
   installWindowsVshookCompanion();
 }
 
+function cleanupLegacyWindowsVshookOnStartup() {
+  if (process.platform !== 'win32' || isWindowsReaperRunning()) return;
+  const currentExtension = path.join(
+    getWindowsReaperUserPluginsDir(),
+    'reaper_VSHookExt.dll'
+  );
+  if (!physicalFs.existsSync(currentExtension)) return;
+  try {
+    removeLegacyWindowsVshookExtensions();
+  } catch (error) {
+    console.warn(
+      '[Hook Center] Extensão legada não pôde ser removida:',
+      error?.message || error
+    );
+  }
+}
+
+function isMacReaperRunning() {
+  if (process.platform !== 'darwin') return false;
+  try {
+    execFileSync('/usr/bin/pgrep', ['-x', 'REAPER'], {
+      stdio: 'ignore',
+      timeout: 3000
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function installMacPayload(files) {
+  if (isMacReaperRunning()) {
+    throw new Error(
+      'Encerre completamente o REAPER com Cmd+Q antes de instalar. ' +
+      'Fechar somente a janela não descarrega a extensão antiga.'
+    );
+  }
+  if (!files?.vshookDylib || !fs.existsSync(files.vshookDylib)) {
+    throw new Error('A dylib do VS Hook não foi encontrada no pacote.');
+  }
+  validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   const commands = [];
   const vshookSource = files.vshookDylib;
   const companionSource = path.join(
@@ -3738,7 +4030,12 @@ function installMacPayload(files) {
   commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
   commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
-  if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
+  if (vshookSource) {
+    commands.push(`VSHOOK_SOURCE=${shellQuote(vshookSource)}`);
+    commands.push('cp -f "$VSHOOK_SOURCE" "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+    commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+    commands.push('mv -f "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"');
+  }
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
     commands.push('GLOBAL_COMPANION_DIR="$GLOBAL_PLUGIN_DIR/VSHookTelepromptSettings"');
@@ -3746,7 +4043,7 @@ function installMacPayload(files) {
     commands.push('rm -rf "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
     commands.push('ditto "$COMPANION_SOURCE" "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
   }
-  commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
+  commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
 
   commands.push('for USER_HOME in /Users/*; do');
   commands.push('  [ -d "$USER_HOME" ] || continue');
@@ -3758,15 +4055,20 @@ function installMacPayload(files) {
   commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
   commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
-  if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
+  if (vshookSource) {
+    commands.push('  cp -f "$VSHOOK_SOURCE" "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+    commands.push('  chmod 755 "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+    commands.push('  mv -f "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"');
+    commands.push('  chown "$USER_NAME":staff "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+  }
   if (hasCompanion) {
     commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
     commands.push('  mkdir -p "$USER_COMPANION_DIR"');
     commands.push('  rm -rf "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
     commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+    commands.push('  chown -R "$USER_NAME":staff "$USER_COMPANION_DIR" 2>/dev/null || true');
   }
-  commands.push('  chown -R "$USER_NAME":staff "$USER_PLUGIN_DIR" 2>/dev/null || true');
-  commands.push('  chmod 755 "$USER_PLUGIN_DIR"/*.dylib 2>/dev/null || true');
+  commands.push('  chmod 755 "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
   commands.push('done');
 
   const script = commands.join('\n');
@@ -3781,8 +4083,16 @@ async function installDownloadedUpdate() {
   const files = downloaded?.files || {};
 
   if (process.platform === 'win32') {
+    if (!files.vshookDll || !fs.existsSync(files.vshookDll)) {
+      throw new Error('A DLL do VS Hook não foi encontrada no pacote.');
+    }
+    validateExtensionBinaryFile(files.vshookDll, 'vshookDll');
     installWindowsPayload(files);
   } else if (process.platform === 'darwin') {
+    if (!files.vshookDylib || !fs.existsSync(files.vshookDylib)) {
+      throw new Error('A dylib do VS Hook não foi encontrada no pacote.');
+    }
+    validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
     installMacPayload(files);
   } else {
     throw new Error('Sistema operacional não suportado.');
@@ -4191,6 +4501,83 @@ ipcMain.handle('install-update', () => installDownloadedUpdate());
 ipcMain.handle('cache-update-package', (_event, payload) => cacheUpdatePackage(payload?.update || null, { requireInstaller: true }));
 ipcMain.handle('remove-cached-update-package', (_event, payload) => removeCachedUpdatePackage(payload?.update || payload || null));
 ipcMain.handle('install-cached-update-package', (_event, payload) => installCachedUpdatePackage(payload?.update || null));
+ipcMain.handle('get-lyrics-settings', (_event, slot) =>
+  slot ? getLyricsSettings(slot) : getLyricsAllSettings());
+ipcMain.handle('save-lyrics-settings', (_event, payload) =>
+  saveLyricsSettings(payload || {}, payload?.slot));
+ipcMain.handle('get-technical-notice-settings', () =>
+  getTechnicalNoticeSettings());
+ipcMain.handle('save-technical-notice-settings', (_event, payload) =>
+  saveTechnicalNoticeSettings(payload || {}));
+ipcMain.handle('send-recados-notice', (_event, payload) =>
+  sendRecadosNotice(payload || {}));
+ipcMain.handle('cancel-recados-notice', () =>
+  cancelRecadosNotice());
+ipcMain.handle('set-recados-notice-pinned', (_event, payload) =>
+  setRecadosNoticePinned(payload || {}));
+ipcMain.handle('export-lyrics-backup', () => exportLyricsBackup());
+ipcMain.handle('import-lyrics-backup', () => importLyricsBackup());
+ipcMain.handle('open-lyrics-window', (_event, slot) =>
+  createLyricsWindow(slot));
+ipcMain.handle('close-lyrics-window', (_event, slot) => {
+  const id = Number(slot) === 2 ? 2 : 1;
+  const win = lyricsWindows.get(id);
+  if (win && !win.isDestroyed()) {
+    lyricsWindows.delete(id);
+    try { win.close(); } catch (_) {}
+  }
+  return {
+    ok: true,
+    slot: id,
+    lyricsWindows: broadcastLyricsWindowsState()
+  };
+});
+ipcMain.handle('get-lyrics-state', (_event, slot) =>
+  getLyricsState(slot));
+ipcMain.handle('close-current-window', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) {
+    for (const [slot, lyricsWin] of lyricsWindows.entries()) {
+      if (lyricsWin !== win) continue;
+      lyricsWindows.delete(slot);
+      break;
+    }
+    try { win.close(); } catch (_) {}
+  }
+  return {
+    ok: true,
+    lyricsWindows: broadcastLyricsWindowsState()
+  };
+});
+ipcMain.handle('toggle-current-window-fullscreen', (event) =>
+  toggleLyricsWindowFullscreen(
+    BrowserWindow.fromWebContents(event.sender)));
+ipcMain.handle('get-current-window-bounds', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return { ok: false };
+  return {
+    ok: true,
+    bounds: win.getBounds(),
+    maximized:
+      process.platform === 'darwin' &&
+      isLyricsWindowMaximized(win)
+  };
+});
+ipcMain.handle('prepare-current-window-drag', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed() ||
+      process.platform !== 'darwin' ||
+      isHookCenterLegacyBuild()) {
+    return { ok: false };
+  }
+  try {
+    const result = restoreMaximizedLyricsWindowForDrag(
+      win, screen.getCursorScreenPoint());
+    return { ok: true, ...result };
+  } catch (_) {
+    return { ok: false };
+  }
+});
 
 function finishLegacyWindowDrag(session) {
   const win = session?.win;
@@ -4386,6 +4773,8 @@ function prepareForAppQuit() {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+
+  cleanupLegacyWindowsVshookOnStartup();
 
   if (process.platform === 'darwin') {
     // O macOS avisa antes de desligar ou reiniciar. Marcar a saída aqui evita

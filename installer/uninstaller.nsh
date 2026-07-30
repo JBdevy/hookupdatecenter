@@ -80,6 +80,9 @@
   Delete "$APPDATA\REAPER\Scripts\VS Hook.lua"
   Delete "$APPDATA\REAPER\Scripts\Hook Lyrics.lua"
   Delete "$APPDATA\REAPER\Scripts\Hook lyrics.lua"
+  ; A extensão anterior não pode permanecer ao lado de reaper_VSHookExt.dll:
+  ; o REAPER carrega as duas quando os nomes coexistem.
+  Delete "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll"
 
   IfFileExists "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" 0 +3
     CreateDirectory "$R9\HookDeveloper\VSCore"
@@ -160,7 +163,9 @@
 
   ; Plugins/Extensões do REAPER
   Delete "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll"
+  Delete "$APPDATA\REAPER\UserPlugins\reaper_VSHookExt.dll"
   Delete "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll"
+  RMDir /r "$APPDATA\REAPER\UserPlugins\VSHookTelepromptSettings"
 
   ; Diretórios vazios
   RMDir "$0\VS Hook APP"
