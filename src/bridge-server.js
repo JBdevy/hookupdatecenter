@@ -541,7 +541,10 @@ async function refreshNativeBridgeState() {
   if (nativeBridgeRefreshInFlight) return nativeBridgeStateCache
   nativeBridgeRefreshInFlight = true
   try {
-    const result = await requestNativeBridgeJson('/state', { timeoutMs: 650 })
+    // O snapshot pode ser grande e o macOS 10.13 possui buffers/CPU bem mais
+    // lentos. Como a conexão é somente localhost, dois segundos evitam tratar
+    // uma resposta válida ainda em trânsito como "REAPER fechado".
+    const result = await requestNativeBridgeJson('/state', { timeoutMs: 2000 })
     if (result.ok && result.data && result.data.connected) {
       nativeBridgeStateCache = result.data
       nativeBridgeStateCacheAt = Date.now()
