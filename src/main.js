@@ -396,9 +396,16 @@ function getSharedMachineIdPath() {
     return path.join(publicDir, 'vslive_machine_id.dat');
   }
   if (process.platform === 'darwin') {
-    return '/Users/Shared/.vslive_machine_id';
+    return '/Users/Shared/vslive_machine_id.dat';
   }
   return path.join(os.homedir(), '.vslive_machine_id');
+}
+
+function getLegacySharedMachineIdPaths() {
+  if (process.platform === 'darwin') {
+    return ['/Users/Shared/.vslive_machine_id'];
+  }
+  return [];
 }
 
 function getSharedLicensePath() {
@@ -486,15 +493,15 @@ function applyLicenseFileChanges({ writes = [], removes = [] } = {}) {
 
 async function getWindowsAnchor() {
   const probes = [
+    ['reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64']],
     ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "(Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid).MachineGuid"]],
-    ['reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']],
     ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(Get-CimInstance Win32_ComputerSystemProduct).UUID']],
     ['wmic.exe', ['csproduct', 'get', 'uuid']]
   ];
 
   for (const [cmd, args] of probes) {
     const raw = await runCapture(cmd, args);
-    const guid = raw.match(/([0-9A-Fa-f-][0-9A-Fa-f-]+)/);
+    const guid = raw.match(/\b([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32})\b/);
     if (guid?.[1]) return normalizeMachineId(guid[1]);
   }
   return '';
@@ -508,7 +515,7 @@ async function getMacAnchor() {
 
   for (const [cmd, args] of probes) {
     const raw = await runCapture(cmd, args);
-    const guid = raw.match(/([0-9A-Fa-f-][0-9A-Fa-f-]+)/);
+    const guid = raw.match(/\b([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\b/);
     if (guid?.[1]) return normalizeMachineId(guid[1]);
   }
   return '';
@@ -516,10 +523,20 @@ async function getMacAnchor() {
 
 async function getMachineId() {
   const machinePath = getSharedMachineIdPath();
-  try {
-    const cached = normalizeMachineId(fs.readFileSync(machinePath, 'utf8'));
-    if (/^[0-9A-F]+$/.test(cached)) return cached;
-  } catch (_) {}
+  const cachedPaths = [machinePath, ...getLegacySharedMachineIdPaths()];
+  for (const cachedPath of cachedPaths) {
+    try {
+      const cached = normalizeMachineId(fs.readFileSync(cachedPath, 'utf8'));
+      if (!/^[0-9A-F]+$/.test(cached)) continue;
+      if (cachedPath !== machinePath) {
+        try {
+          fs.mkdirSync(path.dirname(machinePath), { recursive: true });
+          fs.writeFileSync(machinePath, cached, 'utf8');
+        } catch (_) {}
+      }
+      return cached;
+    } catch (_) {}
+  }
 
   let anchor = '';
   if (process.platform === 'win32') anchor = await getWindowsAnchor();
@@ -3614,9 +3631,81 @@ function getWindowsPublicVsHookDir() {
   return path.join(publicDir, 'VS Hook APP');
 }
 
+function removeWindowsPublicVsHookDir() {
+  const publicDir = path.resolve(
+    process.env.PUBLIC || process.env.ALLUSERSPROFILE || 'C:\\Users\\Public'
+  );
+  const target = path.resolve(getWindowsPublicVsHookDir());
+  if (path.dirname(target).toLowerCase() !== publicDir.toLowerCase() ||
+      path.basename(target).toLowerCase() !== 'vs hook app') {
+    throw new Error('A pasta antiga do VS Hook não pôde ser validada.');
+  }
+  try {
+    physicalFs.rmSync(target, { recursive: true, force: true });
+  } catch (_) {
+    throw new Error(
+      'Não foi possível apagar a pasta antiga VS Hook APP. ' +
+      'Feche o REAPER e tente novamente.'
+    );
+  }
+}
+
 function getWindowsReaperUserPluginsDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   return path.join(appData, 'REAPER', 'UserPlugins');
+}
+
+function getWindowsReaperUserPluginsDirs() {
+  const candidates = [getWindowsReaperUserPluginsDir()];
+  const profilesRoot = path.dirname(os.homedir());
+  try {
+    for (const entry of physicalFs.readdirSync(profilesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      candidates.push(path.join(
+        profilesRoot, entry.name, 'AppData', 'Roaming', 'REAPER', 'UserPlugins'
+      ));
+    }
+  } catch (_) {}
+  const programData = process.env.PROGRAMDATA || process.env.ProgramData;
+  if (programData) candidates.push(path.join(programData, 'REAPER', 'UserPlugins'));
+
+  const seen = new Set();
+  return candidates.filter((dir) => {
+    const key = path.resolve(dir).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return physicalFs.existsSync(dir);
+  });
+}
+
+function removeLegacyWindowsVshookExtensions() {
+  const failures = [];
+  for (const pluginsDir of getWindowsReaperUserPluginsDirs()) {
+    // Nome exato e diretório UserPlugins conhecido: não remove outros plugins.
+    const resolvedPluginsDir = path.resolve(pluginsDir);
+    const legacyFile = path.resolve(
+      resolvedPluginsDir, 'reaper_vshook.dll'
+    );
+    const isExpectedTarget =
+      path.basename(resolvedPluginsDir).toLowerCase() === 'userplugins' &&
+      path.basename(path.dirname(resolvedPluginsDir)).toLowerCase() === 'reaper' &&
+      path.dirname(legacyFile).toLowerCase() ===
+        resolvedPluginsDir.toLowerCase() &&
+      path.basename(legacyFile).toLowerCase() === 'reaper_vshook.dll';
+    if (!isExpectedTarget) continue;
+    try {
+      physicalFs.rmSync(legacyFile, { force: true });
+      if (physicalFs.existsSync(legacyFile)) failures.push(legacyFile);
+    } catch (_) {
+      failures.push(legacyFile);
+    }
+  }
+  if (failures.length) {
+    throw new Error(
+      'Não foi possível remover a extensão antiga reaper_vshook.dll. ' +
+      'Feche o REAPER e execute a Hook Center como administrador.'
+    );
+  }
 }
 
 function removeLegacyVsHookLuaFiles(dir) {
@@ -3627,6 +3716,8 @@ function removeLegacyVsHookLuaFiles(dir) {
 }
 
 function installWindowsPayload(files) {
+  removeLegacyWindowsVshookExtensions();
+  removeWindowsPublicVsHookDir();
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
   installWindowsVshookCompanion();
 }
@@ -3643,7 +3734,10 @@ function installMacPayload(files) {
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
+  commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
+  commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
+  commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) commands.push(`cp -f ${shellQuote(vshookSource)} "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
@@ -3660,7 +3754,10 @@ function installMacPayload(files) {
   commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
   commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
+  commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
+  commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
+  commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) commands.push(`  cp -f ${shellQuote(vshookSource)} "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"`);
   if (hasCompanion) {
     commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');

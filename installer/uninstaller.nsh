@@ -16,18 +16,12 @@
   RMDir /r "$TEMP\HookCenterUpgradeBackup"
   CreateDirectory "$TEMP\HookCenterUpgradeBackup"
   CreateDirectory "$TEMP\HookCenterUpgradeBackup\ProgramData"
-  CreateDirectory "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp"
   CreateDirectory "$TEMP\HookCenterUpgradeBackup\ReaperScripts"
   CreateDirectory "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp"
   CreateDirectory "$TEMP\HookCenterUpgradeBackup\UserPlugins"
 
   IfFileExists "$R9\HookDeveloper\VSCore\sys_runtime.dat" 0 +2
     CopyFiles /SILENT "$R9\HookDeveloper\VSCore\sys_runtime.dat" "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat"
-
-  IfFileExists "$R8\VS Hook APP\VS Hook Beta.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Beta.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua"
-  IfFileExists "$R8\VS Hook APP\VS Hook Estable.lua" 0 +2
-    CopyFiles /SILENT "$R8\VS Hook APP\VS Hook Estable.lua" "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua"
 
   IfFileExists "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua" 0 +2
     CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua"
@@ -39,8 +33,6 @@
   IfFileExists "$APPDATA\REAPER\Scripts\VS Hook Estable.lua" 0 +2
     CopyFiles /SILENT "$APPDATA\REAPER\Scripts\VS Hook Estable.lua" "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Estable.lua"
 
-  IfFileExists "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" 0 +2
-    CopyFiles /SILENT "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll" "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll"
   IfFileExists "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll" 0 +2
     CopyFiles /SILENT "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll" "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll"
 
@@ -93,13 +85,6 @@
     CreateDirectory "$R9\HookDeveloper\VSCore"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ProgramData\sys_runtime.dat" "$R9\HookDeveloper\VSCore\sys_runtime.dat"
 
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua" 0 +3
-    CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Beta.lua" "$R8\VS Hook APP\VS Hook Beta.lua"
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua" 0 +3
-    CreateDirectory "$R8\VS Hook APP"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\PublicVSHookApp\VS Hook Estable.lua" "$R8\VS Hook APP\VS Hook Estable.lua"
-
   IfFileExists "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua" 0 +3
     CreateDirectory "$APPDATA\REAPER\Scripts\VS Hook APP"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScriptsApp\VS Hook Beta.lua" "$APPDATA\REAPER\Scripts\VS Hook APP\VS Hook Beta.lua"
@@ -114,9 +99,6 @@
     CreateDirectory "$APPDATA\REAPER\Scripts"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\ReaperScripts\VS Hook Estable.lua" "$APPDATA\REAPER\Scripts\VS Hook Estable.lua"
 
-  IfFileExists "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll" 0 +3
-    CreateDirectory "$APPDATA\REAPER\UserPlugins"
-    CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_vshook.dll" "$APPDATA\REAPER\UserPlugins\reaper_vshook.dll"
   IfFileExists "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll" 0 +3
     CreateDirectory "$APPDATA\REAPER\UserPlugins"
     CopyFiles /SILENT "$TEMP\HookCenterUpgradeBackup\UserPlugins\reaper_js_ReaScriptAPI64.dll" "$APPDATA\REAPER\UserPlugins\reaper_js_ReaScriptAPI64.dll"
