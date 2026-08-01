@@ -5072,7 +5072,7 @@
       const colorStyle = markedBlack
         ? ' style="color:#050505!important"'
         : liveVisual
-          ? ' style="color:#f87171!important;text-decoration:none!important"'
+          ? ' style="color:#f87171!important"'
           : forceBlackInLightTheme ? ' style="color:#050505!important"' : itemBaseColorStyle
       // O tempo individual do bloco usa o mesmo verde fixo da extensão,
       // inclusive durante seleção e marcação do modo Live.
@@ -6830,6 +6830,127 @@
     return 'text'
   }
 
+  function directorTelepromptPreviewBoolean(value, fallback = false) {
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return value !== 0
+    const normalized = String(value ?? '').trim().toLowerCase()
+    if (['1', 'true', 'yes', 'on', 'active', 'enabled'].includes(normalized)) return true
+    if (['0', 'false', 'no', 'off', 'inactive', 'disabled'].includes(normalized)) return false
+    return fallback
+  }
+
+  function normalizeDirectorTelepromptPreview(data, nested) {
+    const shared = data?.telepromptPreview && typeof data.telepromptPreview === 'object' &&
+      !Array.isArray(data.telepromptPreview) ? data.telepromptPreview : null
+    const nestedOverlay = nested?.previewOverlay && typeof nested.previewOverlay === 'object' &&
+      !Array.isArray(nested.previewOverlay) ? nested.previewOverlay : null
+    const nestedPreview = nested?.preview && typeof nested.preview === 'object' &&
+      !Array.isArray(nested.preview) ? nested.preview : null
+    const topLevelBlocksPresent = Array.isArray(data?.previewBlocks)
+    const hasPreviewContract = !!shared || !!nestedOverlay || !!nestedPreview || topLevelBlocksPresent
+    const raw = shared || nestedOverlay || nestedPreview || {}
+    const rawMode = Number(
+      raw.mode ?? raw.previewMode ??
+      nested?.previewMode ?? data?.previewMode ?? 0
+    )
+    const mode = Number.isFinite(rawMode) && rawMode >= 1 && rawMode <= 6
+      ? Math.trunc(rawMode) : 0
+    const rawPageIndex = Number(raw.pageIndex ?? raw.page ?? (mode > 0 ? mode - 1 : 0))
+    const pageIndex = Number.isFinite(rawPageIndex)
+      ? Math.max(0, Math.min(5, Math.trunc(rawPageIndex))) : Math.max(0, mode - 1)
+    const rawPageSize = Number(raw.pageSize ?? raw.limit ?? 8)
+    const pageSize = Number.isFinite(rawPageSize)
+      ? Math.max(1, Math.min(8, Math.trunc(rawPageSize))) : 8
+    const sourceBlocks = Array.isArray(raw.blocks)
+      ? raw.blocks
+      : Array.isArray(raw.previewBlocks)
+        ? raw.previewBlocks
+        : topLevelBlocksPresent
+          ? data.previewBlocks
+          : []
+    let visibleBlocks = sourceBlocks
+    if (sourceBlocks.length > pageSize) {
+      const pageStart = pageIndex * pageSize
+      visibleBlocks = pageStart < sourceBlocks.length
+        ? sourceBlocks.slice(pageStart, pageStart + pageSize)
+        : sourceBlocks.slice(0, pageSize)
+    } else {
+      visibleBlocks = sourceBlocks.slice(0, pageSize)
+    }
+    const blocks = visibleBlocks.map((block, blockIndex) => {
+      const rawBlock = block && typeof block === 'object' ? block : { name: block }
+      const rawSongs = Array.isArray(rawBlock.songs)
+        ? rawBlock.songs
+        : Array.isArray(rawBlock.items)
+          ? rawBlock.items
+          : []
+      const inheritedSongColor = rawSongs.reduce((resolved, song) => {
+        if (resolved || !song || typeof song !== 'object') return resolved
+        return normalizeColor(song.colorHex)
+          || normalizeColor(song.textColorHex)
+          || normalizeColor(song.inheritedBlockColorHex)
+      }, '')
+      const colorHex = normalizeColor(rawBlock.colorHex)
+        || normalizeColor(rawBlock.blockColorHex)
+        || normalizeColor(rawBlock.bridgeBlockColorHex)
+        || normalizeColor(rawBlock.textColorHex)
+        || inheritedSongColor
+        || '#fde047'
+      const songs = rawSongs.map((song, songIndex) => {
+        const rawSong = song && typeof song === 'object' ? song : { name: song }
+        return {
+          id: String(rawSong.id ?? rawSong.itemId ?? rawSong.regionId ?? `${blockIndex}-${songIndex}`),
+          name: String(rawSong.name ?? rawSong.title ?? rawSong.songName ?? ''),
+          playing: directorTelepromptPreviewBoolean(rawSong.playing ?? rawSong.isPlaying, false),
+          queued: directorTelepromptPreviewBoolean(rawSong.queued ?? rawSong.isQueued, false),
+          // Preview usa uma única cor por bloco, inclusive durante Play/Fila.
+          colorHex,
+        }
+      })
+      return {
+        id: String(rawBlock.id ?? rawBlock.blockId ?? rawBlock.key ?? blockIndex),
+        name: String(rawBlock.name ?? rawBlock.title ?? rawBlock.blockName ?? 'SEM BLOCO'),
+        colorHex,
+        songs,
+      }
+    })
+    const revision = String(raw.revision ?? raw.rev ?? data?.previewRevision ?? '')
+    const activeValue = raw.active ?? raw.enabled ??
+      nested?.previewActive ?? data?.previewActive
+    const explicitlyActive = activeValue === undefined
+      ? mode >= 1 && mode <= 6
+      : directorTelepromptPreviewBoolean(activeValue, false)
+    const active = hasPreviewContract && explicitlyActive && mode >= 1 && mode <= 6
+    const signaturePayload = {
+      active,
+      mode,
+      pageIndex,
+      pageSize,
+      revision,
+      blocks: blocks.map((block) => ({
+        id: block.id,
+        name: block.name,
+        colorHex: block.colorHex,
+        songs: block.songs.map((song) => ({
+          id: song.id,
+          name: song.name,
+          playing: song.playing,
+          queued: song.queued,
+        })),
+      })),
+    }
+    return {
+      active,
+      enabled: active,
+      mode,
+      pageIndex,
+      pageSize,
+      revision,
+      blocks,
+      signature: simpleHash(JSON.stringify(signaturePayload)),
+    }
+  }
+
   function getDirectorTelepromptState(slot = state.telepromptSlot, data = state.snapshot) {
     const normalizedSlot = Number(slot) === 2 ? 2 : 1
     const prefix = `tp${normalizedSlot}`
@@ -6934,6 +7055,7 @@
       ?? data?.[`${prefix}NextMediaEnd`]
       ?? 0
     ) || 0
+    const preview = normalizeDirectorTelepromptPreview(data, nested)
     return {
       slot: normalizedSlot,
       type,
@@ -6949,6 +7071,7 @@
       itemStart,
       itemEnd,
       itemFound: nested.itemFound !== false && (nested.itemFound === true || !!text.trim() || !!mediaPath || !!mediaUrl),
+      preview,
       nextMedia: {
         type: nextMediaType,
         mediaPath: nextMediaPath,
@@ -6989,7 +7112,27 @@
 
   function getDirectorTelepromptContentKey(slot = state.telepromptSlot, data = state.snapshot) {
     const tp = getDirectorTelepromptState(slot, data)
-    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd].join('|')
+    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off'].join('|')
+  }
+
+  function renderDirectorTelepromptPreviewHtml(preview) {
+    const blocks = Array.isArray(preview?.blocks) ? preview.blocks.slice(0, 8) : []
+    if (!blocks.length) {
+      return '<div class="directorTpPreviewEmpty">SEM BLOCOS NESTA PÁGINA</div>'
+    }
+    return `<div class="directorTpPreviewGrid">${blocks.map((block) => {
+      const colorHex = normalizeColor(block?.colorHex) || '#fde047'
+      const songs = Array.isArray(block?.songs) ? block.songs : []
+      const songHtml = songs.map((song) => {
+        const classes = [
+          'directorTpPreviewSong',
+          song?.playing ? 'directorTpPreviewSongPlaying' : '',
+          song?.queued ? 'directorTpPreviewSongQueued' : '',
+        ].filter(Boolean).join(' ')
+        return `<div class="${classes}"${song?.playing ? ' aria-current="true"' : ''}><span class="directorTpPreviewSongName">${escapeHtml(song?.name || '')}</span></div>`
+      }).join('')
+      return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}"><div class="directorTpPreviewBlockName">${escapeHtml(block?.name || 'SEM BLOCO')}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
+    }).join('')}</div>`
   }
 
   function discardDirectorTelepromptWarmup(media) {
@@ -7217,6 +7360,7 @@
               <img class="directorTpImage directorTpHidden" alt="Conteúdo do Teleprompt" />
               <video class="directorTpVideo directorTpHidden" muted playsinline preload="auto"></video>
               <div class="directorTpText directorTpHidden" aria-live="polite"></div>
+              <div class="directorTpPreview directorTpHidden" data-director-tp-preview aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpEmpty">SEM CONTEÚDO NO TP/${slot}</div>
               ${renderDirectorTechnicalNotice(data)}
             </div>
@@ -7250,16 +7394,47 @@
     const image = viewport.querySelector('.directorTpImage')
     let video = viewport.querySelector('.directorTpVideo')
     const text = viewport.querySelector('.directorTpText')
+    const previewHost = viewport.querySelector('[data-director-tp-preview]')
     const empty = viewport.querySelector('.directorTpEmpty')
     const tp = getDirectorTelepromptState(state.telepromptSlot, state.snapshot)
     const mediaUrl = getDirectorTelepromptMediaUrl(tp)
     const hasText = !!String(tp.text || '').trim()
     const hasMedia = (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
+    const showPreview = tp.preview?.active === true && tp.preview.mode >= 1 && tp.preview.mode <= 6
     reconcileDirectorTelepromptMediaWarmups(
       state.snapshot)
 
-    viewport.setAttribute('data-content-type', hasMedia ? tp.type : (hasText ? 'text' : 'empty'))
+    viewport.setAttribute('data-content-type', showPreview ? 'preview' : (hasMedia ? tp.type : (hasText ? 'text' : 'empty')))
     viewport.setAttribute('data-playing', tp.playing ? '1' : '0')
+
+    if (previewHost) {
+      if (showPreview && previewHost.dataset.previewSignature !== tp.preview.signature) {
+        previewHost.innerHTML = renderDirectorTelepromptPreviewHtml(tp.preview)
+        previewHost.dataset.previewSignature = tp.preview.signature
+      }
+      previewHost.classList.toggle('directorTpHidden', !showPreview)
+      previewHost.setAttribute('aria-hidden', showPreview ? 'false' : 'true')
+    }
+
+    if (showPreview) {
+      if (text) text.classList.add('directorTpHidden')
+      if (empty) empty.classList.add('directorTpHidden')
+      if (image) {
+        image.onload = null
+        image.onerror = null
+        image.classList.add('directorTpHidden')
+      }
+      if (video) {
+        video.onloadedmetadata = null
+        video.oncanplay = null
+        video.onloadeddata = null
+        video.onerror = null
+        try { video.pause() } catch (_) {}
+        // Mantém o src carregado para a mídia retomar sem novo download.
+        video.classList.add('directorTpHidden')
+      }
+      return
+    }
 
     const showText = hasText
     if (text) {

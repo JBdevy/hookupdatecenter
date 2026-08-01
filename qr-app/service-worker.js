@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.0-mac-native-bridge-v37';
+const CACHE_NAME = 'vshook-mobile-1.0.0-mac-native-bridge-v39';
 const APP_ASSETS = [
   './',
   './index.html',
