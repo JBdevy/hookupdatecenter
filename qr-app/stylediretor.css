@@ -8594,3 +8594,58 @@ html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
 .app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle {
   color: #4ade80 !important;
 }
+/* Altura dos blocos sincronizada exclusivamente pela extensão. */
+.app[data-block-height-mode="compact"] .item.blockItem {
+  min-height: 24px !important;
+  height: auto !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  margin-top: 1px !important;
+  margin-bottom: 1px !important;
+  border-radius: 6px !important;
+}
+.app[data-block-height-mode="compact"] .item.numberedItem.blockItem {
+  padding: 0 8px 0 0 !important;
+}
+.app[data-block-height-mode="compact"] .item.blockItem > .leftCol,
+.app[data-block-height-mode="compact"] .item.blockItem > .rightCol {
+  min-height: 0 !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+.app[data-block-height-mode="compact"] .item.blockItem .blockDesignerText,
+.app[data-block-height-mode="compact"] .item.blockItem > .leftCol > span,
+.app[data-block-height-mode="compact"] .item.blockItem > .rightCol > span {
+  font-size: 10.5px !important;
+  line-height: 1.05 !important;
+}
+.app[data-block-height-mode="compact"] .item.blockItem::before {
+  top: 2px !important;
+  bottom: 2px !important;
+  width: 3px !important;
+}
+.app[data-block-height-mode="compact"] .blockDesignerLabel {
+  gap: 4px !important;
+}
+.app[data-block-height-mode="compact"] .blockDesignerOrnament {
+  flex-basis: 16px !important;
+  min-width: 5px !important;
+  height: 7px !important;
+}
+.app[data-block-height-mode="compact"] .tunerFullBlockRow.item.numberedItem {
+  min-height: 24px !important;
+  height: auto !important;
+  overflow: hidden !important;
+}
+.app[data-block-height-mode="compact"] .tunerFullBlockRow .leftCol.tunerFullBlockName {
+  min-height: 0 !important;
+  padding: 2px 8px !important;
+  overflow: hidden !important;
+}
+.app[data-block-height-mode="compact"] .tunerFullBlockRow .leftCol.tunerFullBlockName > span {
+  font-size: 10.5px !important;
+  line-height: 1.05 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
