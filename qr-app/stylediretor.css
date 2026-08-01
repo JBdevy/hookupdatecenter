@@ -7572,6 +7572,8 @@ html[data-director-device="phone"] .directorTpPreviewGrid {
 }
 .directorTpPreviewCard {
   --tp-preview-block-color: #fde047;
+  --tp-preview-playing-color: #00ff55;
+  --tp-preview-queued-color: #ffea00;
   min-width: 0;
   box-sizing: border-box;
   padding: clamp(8px, 1vw, 14px);
@@ -7620,8 +7622,16 @@ html[data-director-device="phone"] .directorTpPreviewGrid {
 }
 .directorTpPreviewSongPlaying,
 .directorTpPreviewSongQueued {
-  color: inherit;
   font-weight: 1000;
+}
+.directorTpPreviewCard[data-preview-whiten-others="1"] .directorTpPreviewSong:not(.directorTpPreviewSongPlaying):not(.directorTpPreviewSongQueued) {
+  color: #ffffff;
+}
+.directorTpPreviewSongQueued {
+  color: var(--tp-preview-queued-color);
+}
+.directorTpPreviewSongPlaying {
+  color: var(--tp-preview-playing-color);
 }
 .directorTpPreviewSongPlaying::before,
 .directorTpPreviewSongQueued::before {

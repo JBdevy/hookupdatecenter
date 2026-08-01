@@ -6839,6 +6839,16 @@
     return fallback
   }
 
+  function normalizeDirectorTelepromptPreviewColorKey(value, colorHex = '') {
+    const key = String(value || '').trim().toLowerCase()
+    if (key === 'green' || key === 'verde') return 'green'
+    if (key === 'yellow' || key === 'amarelo') return 'yellow'
+    const color = String(normalizeColor(colorHex) || '').toLowerCase()
+    if (['#2ebd5c', '#1aff57', '#22c55e', '#00ff55'].includes(color)) return 'green'
+    if (['#ffbd1f', '#fff02e', '#facc15', '#ffea00', '#fde047'].includes(color)) return 'yellow'
+    return key
+  }
+
   function normalizeDirectorTelepromptPreview(data, nested) {
     const shared = data?.telepromptPreview && typeof data.telepromptPreview === 'object' &&
       !Array.isArray(data.telepromptPreview) ? data.telepromptPreview : null
@@ -6896,6 +6906,10 @@
         || normalizeColor(rawBlock.textColorHex)
         || inheritedSongColor
         || '#fde047'
+      const colorKey = normalizeDirectorTelepromptPreviewColorKey(
+        rawBlock.colorKey ?? rawBlock.blockColorKey ?? rawBlock.block_color_key,
+        colorHex
+      )
       const songs = rawSongs.map((song, songIndex) => {
         const rawSong = song && typeof song === 'object' ? song : { name: song }
         return {
@@ -6911,6 +6925,7 @@
         id: String(rawBlock.id ?? rawBlock.blockId ?? rawBlock.key ?? blockIndex),
         name: String(rawBlock.name ?? rawBlock.title ?? rawBlock.blockName ?? 'SEM BLOCO'),
         colorHex,
+        colorKey,
         songs,
       }
     })
@@ -6931,6 +6946,7 @@
         id: block.id,
         name: block.name,
         colorHex: block.colorHex,
+        colorKey: block.colorKey,
         songs: block.songs.map((song) => ({
           id: song.id,
           name: song.name,
@@ -7123,6 +7139,10 @@
     return `<div class="directorTpPreviewGrid">${blocks.map((block) => {
       const colorHex = normalizeColor(block?.colorHex) || '#fde047'
       const songs = Array.isArray(block?.songs) ? block.songs : []
+      const colorKey = normalizeDirectorTelepromptPreviewColorKey(block?.colorKey, colorHex)
+      const whitenOtherSongs =
+        (colorKey === 'green' && songs.some((song) => song?.playing)) ||
+        (colorKey === 'yellow' && songs.some((song) => song?.queued))
       const songHtml = songs.map((song) => {
         const classes = [
           'directorTpPreviewSong',
@@ -7131,7 +7151,7 @@
         ].filter(Boolean).join(' ')
         return `<div class="${classes}"${song?.playing ? ' aria-current="true"' : ''}><span class="directorTpPreviewSongName">${escapeHtml(song?.name || '')}</span></div>`
       }).join('')
-      return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}"><div class="directorTpPreviewBlockName">${escapeHtml(block?.name || 'SEM BLOCO')}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
+      return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}" data-preview-block-color-key="${escapeHtml(colorKey)}" data-preview-whiten-others="${whitenOtherSongs ? '1' : '0'}"><div class="directorTpPreviewBlockName">${escapeHtml(block?.name || 'SEM BLOCO')}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
     }).join('')}</div>`
   }
 
