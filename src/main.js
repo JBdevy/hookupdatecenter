@@ -3156,6 +3156,39 @@ function validateExtensionBinaryFile(filePath, key = '') {
   throw new Error('O tipo do arquivo da extensão não pôde ser validado.');
 }
 
+function validateUpdateInstallerFile(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error('O instalador baixado não foi encontrado.');
+  }
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size < 4096) {
+    throw new Error('O instalador baixado está vazio ou incompleto.');
+  }
+
+  const handle = fs.openSync(filePath, 'r');
+  try {
+    if (process.platform === 'win32') {
+      const header = Buffer.alloc(2);
+      if (fs.readSync(handle, header, 0, header.length, 0) !== header.length ||
+          header[0] !== 0x4d || header[1] !== 0x5a) {
+        throw new Error('O instalador baixado não é um executável válido do Windows.');
+      }
+    } else if (process.platform === 'darwin') {
+      // Imagens UDIF/DMG terminam com um trailer de 512 bytes iniciado por
+      // "koly". Isso impede que uma página HTML HTTP 200 substitua o cache.
+      const signature = Buffer.alloc(4);
+      const trailerOffset = stat.size - 512;
+      if (fs.readSync(handle, signature, 0, signature.length, trailerOffset) !== signature.length ||
+          signature.toString('ascii') !== 'koly') {
+        throw new Error('O instalador baixado não é uma imagem DMG válida do macOS.');
+      }
+    }
+  } finally {
+    fs.closeSync(handle);
+  }
+  return true;
+}
+
 async function downloadFile(url, destPath, onProgress, options = {}) {
   const requestUrl = options.cacheBust === true
     ? appendDownloadCacheBust(url)
@@ -3242,12 +3275,57 @@ async function downloadFile(url, destPath, onProgress, options = {}) {
   }
 }
 
+let offlineUpdateCacheRecoveryComplete = false;
+
+function recoverInterruptedUpdateCacheTransactions(root) {
+  if (offlineUpdateCacheRecoveryComplete) return;
+  offlineUpdateCacheRecoveryComplete = true;
+
+  const refreshRoot = path.join(root, '.refresh');
+  try {
+    if (!fs.existsSync(refreshRoot)) return;
+    const entries = fs.readdirSync(refreshRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory());
+    const transactionPattern = /^(.+)-\d+-\d+-[0-9a-f]{12}\.(old|new)$/i;
+
+    // Primeiro restaura o pacote anterior quando a troca foi interrompida
+    // entre os dois renames. Se o destino já existe, a cópia nova venceu.
+    for (const entry of entries) {
+      const match = entry.name.match(transactionPattern);
+      if (!match || match[2].toLowerCase() !== 'old') continue;
+      const backupDir = path.join(refreshRoot, entry.name);
+      const cacheDir = path.join(root, match[1]);
+      try {
+        if (fs.existsSync(cacheDir)) {
+          fs.rmSync(backupDir, { recursive: true, force: true });
+        } else {
+          fs.renameSync(backupDir, cacheDir);
+        }
+      } catch (_) {}
+    }
+
+    // Um staging restante nunca foi ativado por completo e pode ser descartado.
+    for (const entry of entries) {
+      const match = entry.name.match(transactionPattern);
+      if (!match || match[2].toLowerCase() !== 'new') continue;
+      try {
+        fs.rmSync(path.join(refreshRoot, entry.name), {
+          recursive: true,
+          force: true
+        });
+      } catch (_) {}
+    }
+    try { fs.rmdirSync(refreshRoot); } catch (_) {}
+  } catch (_) {}
+}
+
 function getOfflineUpdateCacheRoot() {
   const root = path.join(app.getPath('userData'), 'offline-updates', getPlatformKey());
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {
     try { fs.chmodSync(root, 0o700); } catch (_) {}
   }
+  recoverInterruptedUpdateCacheTransactions(root);
   return root;
 }
 
@@ -3435,78 +3513,122 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
   if (requireInstaller && !hasInstaller) throw new Error('O instalador da Hook Center não está disponível para esta versão.');
 
   const cacheKey = getUpdateCacheKey(normalized);
-  const cacheDir = path.join(getOfflineUpdateCacheRoot(), cacheKey);
-  fs.mkdirSync(cacheDir, { recursive: true });
+  const cacheRoot = getOfflineUpdateCacheRoot();
+  const cacheDir = path.join(cacheRoot, cacheKey);
+  const forceRedownload = options.forceRedownload === true;
+  const refreshToken = forceRedownload
+    ? `${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+    : '';
+  const refreshRoot = forceRedownload ? path.join(cacheRoot, '.refresh') : '';
+  const stagingDir = forceRedownload
+    ? path.join(refreshRoot, `${cacheKey}-${refreshToken}.new`)
+    : cacheDir;
+  const backupDir = forceRedownload
+    ? path.join(refreshRoot, `${cacheKey}-${refreshToken}.old`)
+    : '';
+  fs.mkdirSync(stagingDir, { recursive: true });
   const previousManifest = readCachedManifestFile(path.join(cacheDir, 'manifest.json'));
   const output = {};
   const manifestFiles = {};
+  let manifest;
 
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    const dest = path.join(cacheDir, entry.filename);
-    const previousEntry = previousManifest?.files?.[entry.key];
-    const isExtensionEntry =
-      entry.key === 'vshookDll' || entry.key === 'vshookDylib';
-    // A DLL/dylib pode ser substituída no servidor mantendo a mesma URL.
-    // Reaproveitar por URL instalava indefinidamente o binário anterior.
-    const canReuse =
-      !isExtensionEntry &&
-      previousEntry?.url === entry.url &&
-      fs.existsSync(dest);
-    if (!canReuse) {
-      const partial = `${dest}.part`;
-      await fs.promises.rm(partial, { force: true }).catch(() => {});
-      try {
-        await downloadFile(entry.url, partial, (fileProgress) => {
-          const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
-          if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
-        }, {
-          cacheBust: isExtensionEntry,
-          timeoutMs: isExtensionEntry ? 30000 : 120000
-        });
-        if (isExtensionEntry) {
-          validateExtensionBinaryFile(partial, entry.key);
-        }
-        await fs.promises.rm(dest, { force: true }).catch(() => {});
-        await fs.promises.rename(partial, dest);
-      } catch (error) {
+  try {
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      const finalDest = path.join(cacheDir, entry.filename);
+      const dest = path.join(stagingDir, entry.filename);
+      const previousEntry = previousManifest?.files?.[entry.key];
+      const isExtensionEntry =
+        entry.key === 'vshookDll' || entry.key === 'vshookDylib';
+      // A DLL/dylib pode ser substituída no servidor mantendo a mesma URL.
+      // Reaproveitar por URL instalava indefinidamente o binário anterior.
+      const canReuse =
+        !forceRedownload &&
+        !isExtensionEntry &&
+        previousEntry?.url === entry.url &&
+        fs.existsSync(dest);
+      if (!canReuse) {
+        const partial = `${dest}.part`;
         await fs.promises.rm(partial, { force: true }).catch(() => {});
+        try {
+          await downloadFile(entry.url, partial, (fileProgress) => {
+            const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
+            if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+          }, {
+            cacheBust: forceRedownload || isExtensionEntry,
+            timeoutMs: isExtensionEntry ? 30000 : 120000
+          });
+          if (isExtensionEntry) {
+            validateExtensionBinaryFile(partial, entry.key);
+          } else if (entry.key === 'installer') {
+            validateUpdateInstallerFile(partial);
+          }
+          await fs.promises.rm(dest, { force: true }).catch(() => {});
+          await fs.promises.rename(partial, dest);
+        } catch (error) {
+          await fs.promises.rm(partial, { force: true }).catch(() => {});
+          throw error;
+        }
+      } else if (isValidWindow(mainWindow)) {
+        mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
+      }
+      output[entry.key] = finalDest;
+      const integrity = isExtensionEntry
+        ? getFileIntegrity(dest)
+        : { size: fs.statSync(dest).size, sha256: '' };
+      manifestFiles[entry.key] = {
+        url: entry.url,
+        filename: entry.filename,
+        size: integrity.size,
+        sha256: integrity.sha256
+      };
+    }
+
+    manifest = {
+      schemaVersion: 1,
+      cacheKey,
+      identity: getUpdatePackageIdentity(normalized),
+      platform: getPlatformKey(),
+      version: normalized.version || '',
+      updateId: normalized.updateId || '',
+      title: normalized.title || '',
+      description: normalized.description || '',
+      publishedAt: normalized.publishedAt || null,
+      cachedAt: new Date().toISOString(),
+      files: manifestFiles,
+      update: normalized
+    };
+    const manifestPath = path.join(stagingDir, 'manifest.json');
+    const tempManifestPath = `${manifestPath}.tmp`;
+    fs.writeFileSync(tempManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+    fs.rmSync(manifestPath, { force: true });
+    fs.renameSync(tempManifestPath, manifestPath);
+
+    if (forceRedownload) {
+      const hadPreviousCache = fs.existsSync(cacheDir);
+      fs.mkdirSync(refreshRoot, { recursive: true });
+      fs.rmSync(backupDir, { recursive: true, force: true });
+      if (hadPreviousCache) fs.renameSync(cacheDir, backupDir);
+      try {
+        fs.renameSync(stagingDir, cacheDir);
+      } catch (error) {
+        if (hadPreviousCache && fs.existsSync(backupDir) && !fs.existsSync(cacheDir)) {
+          fs.renameSync(backupDir, cacheDir);
+        }
         throw error;
       }
-    } else if (isValidWindow(mainWindow)) {
-      mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
+      // A cópia nova já está ativa. Uma eventual falha ao limpar o backup da
+      // transação não deve transformar a reinstalação concluída em erro.
+      try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmdirSync(refreshRoot); } catch (_) {}
     }
-    output[entry.key] = dest;
-    const integrity = isExtensionEntry
-      ? getFileIntegrity(dest)
-      : { size: fs.statSync(dest).size, sha256: '' };
-    manifestFiles[entry.key] = {
-      url: entry.url,
-      filename: entry.filename,
-      size: integrity.size,
-      sha256: integrity.sha256
-    };
+  } catch (error) {
+    if (forceRedownload) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmdirSync(refreshRoot); } catch (_) {}
+    }
+    throw error;
   }
-
-  const manifest = {
-    schemaVersion: 1,
-    cacheKey,
-    identity: getUpdatePackageIdentity(normalized),
-    platform: getPlatformKey(),
-    version: normalized.version || '',
-    updateId: normalized.updateId || '',
-    title: normalized.title || '',
-    description: normalized.description || '',
-    publishedAt: normalized.publishedAt || null,
-    cachedAt: new Date().toISOString(),
-    files: manifestFiles,
-    update: normalized
-  };
-  const manifestPath = path.join(cacheDir, 'manifest.json');
-  const tempManifestPath = `${manifestPath}.tmp`;
-  fs.writeFileSync(tempManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  fs.rmSync(manifestPath, { force: true });
-  fs.renameSync(tempManifestPath, manifestPath);
 
   const extensionFiles = Object.fromEntries(
     Object.entries(output).filter(([key]) => key !== 'installer')
@@ -3577,24 +3699,45 @@ function markUpdatePackageInstalled(update, manifest) {
   store.set('activeInstalledPackageIdentity', identity);
 }
 
-async function installCachedUpdatePackage(updateOverride = null) {
+async function installCachedUpdatePackage(updateOverride = null, options = {}) {
   const update = normalizeUpdate(updateOverride) || getCurrentUpdatePackage();
   if (!update) throw new Error('Atualização não encontrada.');
+  const requestedSource = String(options.source || 'auto').trim().toLowerCase();
+  const source = ['auto', 'internet', 'computer'].includes(requestedSource)
+    ? requestedSource
+    : 'auto';
   let manifest = findCachedUpdateManifest(update);
-  const cachedAtMs = Date.parse(String(manifest?.cachedAt || ''));
-  const cacheWasJustDownloaded = Number.isFinite(cachedAtMs) &&
-    Date.now() - cachedAtMs <= 2 * 60 * 1000;
-  if (manifest && !updateOverride && !cacheWasJustDownloaded) {
-    // Ao reinstalar a versão atual, confirma novamente a extensão publicada.
-    // Se estiver offline, o pacote local continua disponível.
-    try {
+
+  if (source === 'internet') {
+    // A escolha pela internet sempre renova o pacote inteiro. A troca do cache
+    // só acontece depois que extensão e instalador terminarem de baixar.
+    await cacheUpdatePackage(update, {
+      requireInstaller: true,
+      forceRedownload: true
+    });
+    manifest = findCachedUpdateManifest(update);
+  } else if (source === 'computer') {
+    // Este caminho é deliberadamente offline: nunca tenta completar ou atualizar
+    // o pacote pela rede quando o usuário escolhe os arquivos do computador.
+    if (!manifest) {
+      throw new Error('Os arquivos completos desta versão não estão salvos neste computador. Escolha baixar da internet.');
+    }
+  } else {
+    const cachedAtMs = Date.parse(String(manifest?.cachedAt || ''));
+    const cacheWasJustDownloaded = Number.isFinite(cachedAtMs) &&
+      Date.now() - cachedAtMs <= 2 * 60 * 1000;
+    if (manifest && !updateOverride && !cacheWasJustDownloaded) {
+      // Mantém o comportamento das instalações antigas que ainda não informam
+      // explicitamente se devem usar a internet ou o cache local.
+      try {
+        await cacheUpdatePackage(update, { requireInstaller: true });
+        manifest = findCachedUpdateManifest(update);
+      } catch (_) {}
+    }
+    if (!manifest) {
       await cacheUpdatePackage(update, { requireInstaller: true });
       manifest = findCachedUpdateManifest(update);
-    } catch (_) {}
-  }
-  if (!manifest) {
-    await cacheUpdatePackage(update, { requireInstaller: true });
-    manifest = findCachedUpdateManifest(update);
+    }
   }
   if (!manifest) throw new Error('Não foi possível preparar os arquivos locais desta versão.');
 
@@ -3605,6 +3748,7 @@ async function installCachedUpdatePackage(updateOverride = null) {
   if (!cachedFiles.installer || !fs.existsSync(cachedFiles.installer)) {
     throw new Error('O instalador local da Hook Center não foi encontrado.');
   }
+  validateUpdateInstallerFile(cachedFiles.installer);
   const extensionKey = process.platform === 'win32'
     ? 'vshookDll'
     : process.platform === 'darwin'
@@ -4500,7 +4644,13 @@ ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payl
 ipcMain.handle('install-update', () => installDownloadedUpdate());
 ipcMain.handle('cache-update-package', (_event, payload) => cacheUpdatePackage(payload?.update || null, { requireInstaller: true }));
 ipcMain.handle('remove-cached-update-package', (_event, payload) => removeCachedUpdatePackage(payload?.update || payload || null));
-ipcMain.handle('install-cached-update-package', (_event, payload) => installCachedUpdatePackage(payload?.update || null));
+ipcMain.handle('install-cached-update-package', (_event, payload) => {
+  const requestedSource = String(payload?.source || 'auto').trim().toLowerCase();
+  const source = ['internet', 'computer'].includes(requestedSource)
+    ? requestedSource
+    : 'auto';
+  return installCachedUpdatePackage(payload?.update || null, { source });
+});
 ipcMain.handle('get-lyrics-settings', (_event, slot) =>
   slot ? getLyricsSettings(slot) : getLyricsAllSettings());
 ipcMain.handle('save-lyrics-settings', (_event, payload) =>

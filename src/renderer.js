@@ -3,7 +3,7 @@ const $$ = (selector) => document.querySelectorAll(selector);
 
 let state = null;
 let currentYoutubeWatchUrl = "";
-let pendingConfirmResolve = null;
+let pendingModalRequest = null;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
@@ -271,9 +271,33 @@ function friendlyError(error, fallback) {
   return fallback || 'Não foi possível concluir a operação. Tente novamente.';
 }
 
+function resetModalControls() {
+  const backdrop = $('#appModal');
+  const okButton = $('#modalOkButton');
+  const alternativeButton = $('#modalAlternativeButton');
+  const cancelButton = $('#modalCancelButton');
+  backdrop?.classList.remove('reinstall-source-choice');
+  if (okButton) {
+    okButton.textContent = 'OK';
+    okButton.disabled = false;
+  }
+  if (alternativeButton) {
+    alternativeButton.textContent = 'Reinstalar do PC';
+    alternativeButton.disabled = false;
+    alternativeButton.title = '';
+    alternativeButton.classList.add('hidden');
+  }
+  if (cancelButton) {
+    cancelButton.textContent = 'Cancelar';
+    cancelButton.disabled = false;
+    cancelButton.classList.add('hidden');
+  }
+}
+
 function showModal({ title = 'Aviso', message = '', type = 'info' }) {
   const backdrop = $('#appModal');
   const icon = $('#modalIcon');
+  resetModalControls();
   $('#modalTitle').textContent = title;
   $('#modalMessage').textContent = message;
   icon.className = `modal-icon ${type}`;
@@ -282,22 +306,30 @@ function showModal({ title = 'Aviso', message = '', type = 'info' }) {
   $('#modalOkButton').focus();
 }
 
-function hideModal() {
+function settleModal(value) {
+  const request = pendingModalRequest;
+  pendingModalRequest = null;
   $('#appModal').classList.add('hidden');
-  const okButton = $('#modalOkButton');
-  const cancelButton = $('#modalCancelButton');
-  if (okButton) okButton.textContent = 'OK';
-  if (cancelButton) cancelButton.classList.add('hidden');
-  if (pendingConfirmResolve) {
-    const resolve = pendingConfirmResolve;
-    pendingConfirmResolve = null;
-    resolve(false);
-  }
+  resetModalControls();
+  if (request) request.resolve(value);
+}
+
+function hideModal() {
+  const dismissValue = pendingModalRequest
+    ? pendingModalRequest.dismissValue
+    : false;
+  settleModal(dismissValue);
 }
 
 function confirmModal({ title = 'Confirmar', message = '', type = 'info', okText = 'Continuar', cancelText = 'Cancelar' }) {
   return new Promise((resolve) => {
-    pendingConfirmResolve = resolve;
+    pendingModalRequest = {
+      resolve,
+      okValue: true,
+      alternativeValue: null,
+      cancelValue: false,
+      dismissValue: false
+    };
     showModal({ title, message, type });
     const okButton = $('#modalOkButton');
     const cancelButton = $('#modalCancelButton');
@@ -309,12 +341,54 @@ function confirmModal({ title = 'Confirmar', message = '', type = 'info', okText
 
 function noticeModal({ title = 'Aviso', message = '', type = 'info', okText = 'OK' }) {
   return new Promise((resolve) => {
-    pendingConfirmResolve = resolve;
+    pendingModalRequest = {
+      resolve,
+      okValue: true,
+      alternativeValue: null,
+      cancelValue: false,
+      dismissValue: false
+    };
     showModal({ title, message, type });
     const okButton = $('#modalOkButton');
     const cancelButton = $('#modalCancelButton');
     okButton.textContent = okText;
     if (cancelButton) cancelButton.classList.add('hidden');
+  });
+}
+
+function reinstallSourceModal({ title = 'Reinstalar esta versão?', computerAvailable = false } = {}) {
+  return new Promise((resolve) => {
+    pendingModalRequest = {
+      resolve,
+      okValue: 'internet',
+      alternativeValue: 'computer',
+      cancelValue: null,
+      dismissValue: null
+    };
+    showModal({
+      title,
+      message: computerAvailable
+        ? 'Escolha se deseja baixar os arquivos novamente ou usar a cópia salva neste computador.'
+        : 'Esta versão não está salva neste computador. Para reinstalar, baixe os arquivos novamente pela internet.',
+      type: 'info'
+    });
+    const backdrop = $('#appModal');
+    const okButton = $('#modalOkButton');
+    const alternativeButton = $('#modalAlternativeButton');
+    const cancelButton = $('#modalCancelButton');
+    backdrop?.classList.add('reinstall-source-choice');
+    if (okButton) okButton.textContent = 'Baixar da internet';
+    if (alternativeButton) {
+      alternativeButton.textContent = 'Reinstalar do PC';
+      alternativeButton.disabled = !computerAvailable;
+      alternativeButton.title = computerAvailable ? '' : 'Esta versão não está salva neste computador.';
+      alternativeButton.classList.remove('hidden');
+    }
+    if (cancelButton) {
+      cancelButton.textContent = 'Cancelar';
+      cancelButton.classList.remove('hidden');
+    }
+    okButton?.focus();
   });
 }
 
@@ -472,22 +546,23 @@ async function startCombinedUpdateDownload() {
 
   const button = $('#downloadButton');
   if (state?.currentPackageInstalled === true) {
-    const confirmed = await confirmModal({
+    const source = await reinstallSourceModal({
       title: 'Reinstalar esta versão?',
-      message: state?.currentPackageCached
-        ? 'A Hook Center abrirá o instalador salvo no computador e reinstalará também a extensão.'
-        : 'Os arquivos serão baixados novamente, salvos no computador e a instalação completa será aberta.',
-      type: 'info',
-      okText: 'Reinstalar',
-      cancelText: 'Cancelar'
+      computerAvailable: state?.currentPackageCached === true
     });
-    if (!confirmed) return;
+    if (!source) return;
+    const downloadingFromInternet = source === 'internet';
     try {
       if (button) {
         button.disabled = true;
-        button.textContent = 'Preparando...';
+        if (downloadingFromInternet) {
+          combinedDownloadInProgress = true;
+          setHomeDownloadButtonProgress(0, true);
+        } else {
+          button.textContent = 'Preparando...';
+        }
       }
-      await window.hookUpdateCenter.installCachedUpdatePackage();
+      await window.hookUpdateCenter.installCachedUpdatePackage({ source });
       if (state?.platform === 'darwin') {
         renderState(await window.hookUpdateCenter.getState());
         showModal({ title: 'Reinstalação pronta', message: 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.', type: 'success' });
@@ -497,6 +572,16 @@ async function startCombinedUpdateDownload() {
       if (button) {
         button.disabled = false;
         button.textContent = 'Reinstalar';
+      }
+    } finally {
+      if (downloadingFromInternet) {
+        combinedDownloadInProgress = false;
+        if (button) {
+          button.disabled = false;
+          button.classList.remove('download-progress-active');
+          button.style.removeProperty('--download-progress');
+          button.textContent = 'Reinstalar';
+        }
       }
     }
     return;
@@ -1956,7 +2041,7 @@ function renderPreviousUpdates(updates) {
           ${cached ? 'Salva neste computador' : 'Disponível somente online'}${installed ? ' · instalada' : ''}
         </p>
         <div class="actions">
-          <button class="primary-button previous-install-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? 'Instalar' : 'Indisponível'}</button>
+          <button class="primary-button previous-install-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? (installed ? 'Reinstalar' : 'Instalar') : 'Indisponível'}</button>
           <button class="${cached ? 'danger-button' : 'secondary-button'} previous-cache-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>
             ${cached ? 'Remover do meu PC' : packageAvailable ? 'Manter no meu PC' : 'Indisponível'}
           </button>
@@ -1976,29 +2061,56 @@ function renderPreviousUpdates(updates) {
 
       try {
         if (!(await ensureLicenseActiveForDownload())) return;
-        const confirmed = await confirmModal({
-          title: `Instalar versão ${update.version || ''}?`,
-          message: update.cached
-            ? 'A extensão será instalada e o instalador da Hook Center salvo no computador será aberto.'
-            : 'Esta versão será baixada, mantida no computador e depois instalada por completo.',
-          type: 'info',
-          okText: 'Instalar',
-          cancelText: 'Cancelar'
-        });
-        if (!confirmed) return;
+        const reinstalling = update.installed === true;
+        let source = null;
+        if (reinstalling) {
+          source = await reinstallSourceModal({
+            title: `Reinstalar versão ${update.version || ''}?`,
+            computerAvailable: update.cached === true
+          });
+          if (!source) return;
+        } else {
+          const confirmed = await confirmModal({
+            title: `Instalar versão ${update.version || ''}?`,
+            message: update.cached
+              ? 'A extensão será instalada e o instalador da Hook Center salvo no computador será aberto.'
+              : 'Esta versão será baixada, mantida no computador e depois instalada por completo.',
+            type: 'info',
+            okText: 'Instalar',
+            cancelText: 'Cancelar'
+          });
+          if (!confirmed) return;
+        }
         button.disabled = true;
-        button.textContent = update.cached ? 'Instalando...' : 'Baixando...';
-        await window.hookUpdateCenter.installCachedUpdatePackage({ update });
+        button.textContent = reinstalling
+          ? (source === 'internet' ? 'Baixando...' : 'Reinstalando...')
+          : (update.cached ? 'Instalando...' : 'Baixando...');
+        await window.hookUpdateCenter.installCachedUpdatePackage(
+          reinstalling ? { update, source } : { update }
+        );
         if (state?.platform === 'darwin') {
           renderState(await window.hookUpdateCenter.getState());
           await loadPreviousUpdates();
-          showModal({ title: 'Instalação pronta', message: 'A extensão foi instalada e o instalador da Hook Center foi aberto.', type: 'success' });
+          showModal({
+            title: reinstalling ? 'Reinstalação pronta' : 'Instalação pronta',
+            message: reinstalling
+              ? 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.'
+              : 'A extensão foi instalada e o instalador da Hook Center foi aberto.',
+            type: 'success'
+          });
         }
       } catch (error) {
-        showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar esta versão.'), type: 'error' });
+        const reinstalling = update.installed === true;
+        showModal({
+          title: reinstalling ? 'Erro ao reinstalar' : 'Erro ao instalar',
+          message: friendlyError(error, reinstalling
+            ? 'Não foi possível reinstalar esta versão.'
+            : 'Não foi possível instalar esta versão.'),
+          type: 'error'
+        });
       } finally {
         button.disabled = false;
-        button.textContent = 'Instalar';
+        button.textContent = update.installed === true ? 'Reinstalar' : 'Instalar';
       }
     });
   });
@@ -2103,18 +2215,27 @@ async function init() {
   await refreshState();
 
   $('#modalOkButton').addEventListener('click', () => {
-    if (pendingConfirmResolve) {
-      const resolve = pendingConfirmResolve;
-      pendingConfirmResolve = null;
-      $('#appModal').classList.add('hidden');
-      $('#modalOkButton').textContent = 'OK';
-      $('#modalCancelButton').classList.add('hidden');
-      resolve(true);
+    if (pendingModalRequest) {
+      settleModal(pendingModalRequest.okValue);
       return;
     }
     hideModal();
   });
-  $('#modalCancelButton').addEventListener('click', hideModal);
+  $('#modalAlternativeButton')?.addEventListener('click', (event) => {
+    if (event.currentTarget.disabled) return;
+    if (pendingModalRequest) {
+      settleModal(pendingModalRequest.alternativeValue);
+      return;
+    }
+    hideModal();
+  });
+  $('#modalCancelButton').addEventListener('click', () => {
+    if (pendingModalRequest) {
+      settleModal(pendingModalRequest.cancelValue);
+      return;
+    }
+    hideModal();
+  });
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
   $('#supportQrModal')?.addEventListener('click', (event) => { if (event.target.id === 'supportQrModal') closeSupportQrModal(); });
   $('#supportQrCloseButton')?.addEventListener('click', closeSupportQrModal);

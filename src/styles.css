@@ -623,6 +623,36 @@ input:focus {
   min-width: 130px;
 }
 
+#appModal.reinstall-source-choice .modal-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  gap: 8px;
+}
+
+#appModal.reinstall-source-choice .modal-actions .modal-button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#appModal.reinstall-source-choice #modalOkButton {
+  order: 1;
+}
+
+#appModal.reinstall-source-choice #modalAlternativeButton {
+  order: 2;
+}
+
+#appModal.reinstall-source-choice #modalCancelButton {
+  order: 3;
+}
+
+#appModal.reinstall-source-choice #modalAlternativeButton:disabled {
+  cursor: not-allowed;
+  opacity: .46;
+}
+
 .bridge-card-inline {
   text-align: center;
   max-width: 760px;
