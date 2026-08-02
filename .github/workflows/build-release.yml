@@ -23,6 +23,7 @@ jobs:
           repository: JBdevy/Extensionvshook
           ref: main
           path: vshook-extension
+          token: ${{ secrets.VSHOOK_EXTENSION_REPO_TOKEN }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -106,6 +107,7 @@ jobs:
           repository: JBdevy/Extensionvshook
           ref: main
           path: vshook-extension
+          token: ${{ secrets.VSHOOK_EXTENSION_REPO_TOKEN }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
