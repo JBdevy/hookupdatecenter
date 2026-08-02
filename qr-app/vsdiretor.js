@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.0-native-extension-shared-control-v23'
+  const VERSION = '1.0.1-save-project-bpm-ui-v1'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -93,6 +93,7 @@
     showPassword: false,
     showPlaylistModal: false,
     showProjectModal: false,
+    showProjectSaveConfirm: false,
     pendingProjectId: '',
     pendingProjectIndex: -1,
     pendingProjectUntil: 0,
@@ -115,6 +116,7 @@
     numberOrderConfirmUseRegionId: false,
     numberOrderConfirmDescending: false,
     showTunerScreen: readLocal('vshook_director_tuner_open', '0') === '1',
+    showBpmScreen: false,
     showTelepromptScreen: false,
     showRecadosScreen: false,
     recadosDraft: '',
@@ -5969,6 +5971,36 @@
     `
   }
 
+  function renderBpmScreen() {
+    if (!state.showBpmScreen) return ''
+    const data = state.snapshot || {}
+    const sourceType = state.tunerSourceTab === 'regions' ? 'region' : 'playlist'
+    const items = getMobileTunerSourceItems()
+    let blockNumber = 0
+    let songNumber = 0
+    const rows = (Array.isArray(items) ? items : []).map((item, index) => {
+      const block = isBlock(item)
+      if (block) blockNumber += 1
+      if (!block) songNumber += 1
+      const id = escapeHtml(String(getId(item) || ''))
+      const name = escapeHtml(getRowDisplayName(item, index, blockNumber))
+      const rowNumber = block ? '' : getRowNumberText(item, songNumber)
+      const rowCls = tunerRowClass(sourceType, item, data)
+      const rowTextCls = tunerTextClass(sourceType, item, data)
+      const colorStyle = getAppTheme() === 'light'
+        ? ' style="color:#050505!important"'
+        : itemColorStyle(item, sourceType)
+      if (block) {
+        return `<div class="${rowCls} numberedItem tunerFullRow tunerFullBlockRow bpmFullBlockRow"><div class="rowNumberCol"><span class="rowNumberText"></span></div><div class="leftCol tunerFullBlockName"><span class="text"${colorStyle}>${name}</span></div></div>`
+      }
+      if (isHashParent(item)) {
+        return `<div class="${rowCls} numberedItem tunerFullRow tunerFullParentRow bpmFullParentRow"><div class="rowNumberCol"><span class="rowNumberText">${escapeHtml(rowNumber)}</span></div><div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div></div>`
+      }
+      return `<div class="${rowCls} numberedItem tunerFullRow bpmFullRow" data-bpm-row-id="${id}"><div class="rowNumberCol"><span class="rowNumberText">${escapeHtml(rowNumber)}</span></div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-minus" data-bpm-song-id="${id}">−</button><div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div><div class="tunerFullValue bpmFullValue" data-bpm-value-for="${id}">—<small> BPM</small></div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-plus" data-bpm-song-id="${id}">+</button></div>`
+    }).join('') || '<div class="emptyBox">NENHUMA MÚSICA ENCONTRADA</div>'
+    return `<div class="tunerFullScreen bpmFullScreen" data-stop-modal><div class="tunerFullHeader bpmFullHeader"><div class="tunerFullTransportActions"><div class="bpmFullTitle">BPM</div><button class="tunerFullCloseBtn" data-action="bpm-close">FECHAR</button></div></div><div class="tunerFullList listBox">${rows}</div></div>`
+  }
+
   function adjustTunerFromButton(el, delta, absoluteValue = null) {
     const id = String(el?.getAttribute?.('data-tuner-song-id') || '')
     if (!id) return
@@ -6039,7 +6071,19 @@
         : selectedProject.index === getProjectItemIndex(p, index)
       return `<button class="playlistOption ${active ? 'playlistOptionActive' : ''}" data-action="project-select" data-project-id="${id}" data-project-index="${index}"><span class="playlistOptionText">${name}</span></button>`
     }).join('') || `<div class="emptyBox">NENHUMA SESSÃO ABERTA</div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
+  }
+
+  function renderProjectSaveConfirm() {
+    if (!state.showProjectSaveConfirm) return ''
+    const selected = getEffectiveActiveProjectSelection()
+    const projects = getProjects()
+    const project = projects.find((item, index) => {
+      const id = getProjectItemId(item, index)
+      return selected.id ? id === selected.id : getProjectItemIndex(item, index) === selected.index
+    })
+    const name = upperText(project ? getProjectItemName(project) : 'PROJETO ATUAL')
+    return `<div class="modalOverlay tabletCenteredModalOverlay projectSaveConfirmOverlay"><div class="modalSpacer"></div><div class="modalBox projectSaveConfirmBox" data-stop-modal><div class="modalTitle">SALVAR PROJETO</div><div class="projectSaveConfirmText">Deseja salvar <strong>${escapeHtml(name)}</strong> no REAPER?</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveConfirmBtn" data-action="project-save-confirm">SALVAR</button><button class="modalCancelBtn" data-action="project-save-cancel">CANCELAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderMixerVolumeModal() {
@@ -6166,6 +6210,7 @@
         <button class="topMenuFlyoutBtn" data-action="project-selector">SESSÃO</button>
         <button class="topMenuFlyoutBtn" data-action="go-mixer">MIXER</button>
         <button class="topMenuFlyoutBtn topMenuFlyoutBtnTuner" data-action="tuner-focus">TUNER</button>
+        <button class="topMenuFlyoutBtn topMenuFlyoutBtnBpm" data-action="bpm-focus">BPM</button>
         <button class="topMenuFlyoutBtn topMenuFlyoutBtnRecados" data-action="toggle-notice">RECADOS</button>
         <button class="${liveClass}" data-action="live" aria-pressed="${liveEnabled ? 'true' : 'false'}">MODO LIVE</button>
         <button class="${bypassClass}" data-action="multiloop-bypass" aria-label="Bypass dos multiloops" aria-pressed="${bypassActive ? 'true' : 'false'}">BY</button>
@@ -7974,6 +8019,7 @@
         <button class="tabletTopBarButton tabletTopBarRepertorios${state.activeTab === 'playlist' && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="go-playlist">REPERTÓRIO</button>
         <button class="tabletTopBarButton tabletTopBarMusicas${state.activeTab === 'regions' && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="go-regions">MÚSICAS</button>
         <button class="tabletTopBarButton tabletTopBarTuner${state.tabletTunerSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-tuner-split">TUNER</button>
+        <button class="tabletTopBarButton tabletTopBarBpm${state.showBpmScreen ? ' tabletTopBarButtonActive' : ''}" data-action="bpm-focus">BPM</button>
         <button class="tabletTopBarButton tabletTopBarMixer${state.activeTab === 'mixer' && !state.showRecadosScreen && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-mixer">MIXER</button>
         <button class="tabletTopBarButton tabletTopBarParts${state.tabletPartsSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-parts-split">PARTS</button>
       </nav>
@@ -8589,7 +8635,7 @@
         ${renderTabletSearchScreen(data)}
         ${IS_MUSICIAN_MONITOR
           ? `${renderDirectorTelepromptScreen(data)}${renderSettingsModal()}`
-          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderMixerVolumeModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderPremixFullScreen(data)}`}
+          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderProjectSaveConfirm()}${renderMixerVolumeModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderBpmScreen()}${renderPremixFullScreen(data)}`}
       </div>
     `
   }
@@ -11014,6 +11060,10 @@
       case 'tuner-minus': adjustTunerFromButton(el, -1); break
       case 'tuner-plus': adjustTunerFromButton(el, 1); break
       case 'tuner-reset': adjustTunerFromButton(el, 0, 0); break
+      case 'bpm-focus': state.showMenu = false; state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'; state.showTunerScreen = false; state.tabletTunerSplit = false; state.showBpmScreen = true; scheduleRender(true); break
+      case 'bpm-close': state.showBpmScreen = false; scheduleRender(true); break
+      case 'bpm-minus': break
+      case 'bpm-plus': break
       case 'toggle-notice': openDirectorRecadosScreen(); break
       case 'recados-send': sendDirectorRecado(); break
       case 'recados-cancel': cancelDirectorRecado(); break
@@ -11049,7 +11099,7 @@
       case 'timer-stop-cancel': state.showConfirmTimerStop = false; scheduleRender(true); break
       case 'timer-mode-countdown': setTimerModeOptimistic('countdown'); postCommand('timer_set_mode', getTimerCommandPayload({ mode: 'countdown', timerMode: 'countdown', timerTargetSec: getCountdownTargetSec(state.snapshot), timerDisplaySec: getCountdownTargetSec(state.snapshot), timerAccumulatedSec: getCountdownTargetSec(state.snapshot) })); break
       case 'timer-mode-progressive': setTimerModeOptimistic('progressive'); postCommand('timer_set_mode', getTimerCommandPayload({ mode: 'progressive', timerMode: 'progressive', timerDisplaySec: 0, timerAccumulatedSec: 0 })); break
-      case 'modal-close': { const insideModal = !!event.target?.closest?.('[data-stop-modal]'); const isOverlayAction = !!el.classList?.contains('modalOverlay'); if (insideModal && isOverlayAction) break; if (state.showSettingsModal && !!el.closest?.('.settingsModalBox')) { closeSettingsModalInPlace(); break; } state.showPlaylistModal = false; state.tabletPlaylistPendingId = ''; state.showProjectModal = false; state.showTimerModal = false; state.showSettingsModal = false; state.showTelepromptColorPalette = false; state.showTunerScreen = false; state.showTelepromptScreen = false; if (state.showRecadosScreen) setDirectorRecadosTouchMode(false); state.showRecadosScreen = false; state.showPremixScreen = false; state.showMixerVolume = false; state.showConfirmLiveOff = false; state.showConfirmTimerStop = false; state.mixerVolumeTarget = null; scheduleRender(true); break }
+      case 'modal-close': { const insideModal = !!event.target?.closest?.('[data-stop-modal]'); const isOverlayAction = !!el.classList?.contains('modalOverlay'); if (insideModal && isOverlayAction) break; if (state.showSettingsModal && !!el.closest?.('.settingsModalBox')) { closeSettingsModalInPlace(); break; } state.showPlaylistModal = false; state.tabletPlaylistPendingId = ''; state.showProjectModal = false; state.showProjectSaveConfirm = false; state.showTimerModal = false; state.showSettingsModal = false; state.showTelepromptColorPalette = false; state.showTunerScreen = false; state.showBpmScreen = false; state.showTelepromptScreen = false; if (state.showRecadosScreen) setDirectorRecadosTouchMode(false); state.showRecadosScreen = false; state.showPremixScreen = false; state.showMixerVolume = false; state.showConfirmLiveOff = false; state.showConfirmTimerStop = false; state.mixerVolumeTarget = null; scheduleRender(true); break }
       case 'theme-light': setAppTheme('light'); break
       case 'theme-dark': setAppTheme('dark'); break
       case 'interface-blocking-toggle': {
@@ -11191,6 +11241,18 @@
         scheduleRender(true)
         postCommand('set_project_tab', { id: projectId, projectId, targetId: projectId, projectIndex, tabIndex: projectIndex })
           .then(() => window.setTimeout(pollBridge, 60))
+        break
+      }
+      case 'project-save': state.showProjectSaveConfirm = true; scheduleRender(true); break
+      case 'project-save-cancel': state.showProjectSaveConfirm = false; scheduleRender(true); break
+      case 'project-save-confirm': {
+        state.showProjectSaveConfirm = false
+        postCommand('save_project', { source: 'director', confirmed: true })
+          .then((response) => {
+            showPopup(response?.ok ? 'PROJETO SALVO' : 'NÃO FOI POSSÍVEL SALVAR O PROJETO', response?.ok ? 'success' : 'error', 1600)
+            scheduleRender(true)
+          })
+        scheduleRender(true)
         break
       }
       case 'project-modal-ok': state.showProjectModal = false; scheduleRender(true); break

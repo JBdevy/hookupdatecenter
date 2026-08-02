@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.0-native-single-motor-v28';
+const CACHE_NAME = 'vshook-mobile-1.0.1-save-bpm-v1';
 const APP_ASSETS = [
   './',
   './index.html',
