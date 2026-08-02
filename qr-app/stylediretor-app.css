@@ -9473,7 +9473,7 @@ html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
   text-decoration-skip-ink: none !important;
 }
 .topMenuFlyoutBtnBpm{border-color:#38bdf8;background:#082f49;color:#bae6fd}
-.projectSaveBtn,.projectSaveConfirmBtn{background:#166534!important;border-color:#22c55e!important;color:#fff!important}
+.projectSaveBtnSaved,.projectSaveConfirmBtn{background:#166534!important;border-color:#22c55e!important;color:#fff!important}
 .projectSaveConfirmText{padding:18px 4px;color:#cbd5e1;font-size:15px;line-height:1.45;text-align:center}
 .app[data-theme="light"] .projectSaveConfirmText{color:#334155}
 .bpmFullScreen{z-index:2210}

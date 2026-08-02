@@ -523,7 +523,17 @@ async function startVsHookDownload(updateOverride = null) {
       button.dataset.originalText = button.textContent;
       button.textContent = 'Baixando...';
     });
-    await window.hookUpdateCenter.downloadUpdate(updateOverride ? { update: updateOverride } : undefined);
+    const platformFiles = updateOverride?.files?.[state?.platformKey || ''] || {};
+    const directedInstaller =
+      platformFiles.installer || platformFiles.exe || platformFiles.dmg || '';
+    if (updateOverride && isTestClientUpdate(updateOverride) && directedInstaller) {
+      // A atualização direcionada pode trazer o pacote completo. Nesse caso,
+      // guarda extensão + instalador juntos para o botão Instalar executar o
+      // mesmo fluxo seguro da atualização oficial.
+      await window.hookUpdateCenter.cacheUpdatePackage({ update: updateOverride });
+    } else {
+      await window.hookUpdateCenter.downloadUpdate(updateOverride ? { update: updateOverride } : undefined);
+    }
   } catch (error) {
     showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar a atualização.'), type: 'error' });
   } finally {
@@ -659,7 +669,18 @@ async function installVsHookDownloadedUpdate() {
   if (!confirmed) return;
 
   try {
-    const result = await window.hookUpdateCenter.installUpdate();
+    const testUpdate = isTestClientUpdate(state?.testClientUpdate)
+      ? state.testClientUpdate
+      : null;
+    const platformFiles = testUpdate?.files?.[state?.platformKey || ''] || {};
+    const directedInstaller =
+      platformFiles.installer || platformFiles.exe || platformFiles.dmg || '';
+    const result = testUpdate && directedInstaller
+      ? await window.hookUpdateCenter.installCachedUpdatePackage({
+          update: testUpdate,
+          source: 'computer'
+        })
+      : await window.hookUpdateCenter.installUpdate();
     if (result.ok) {
       renderState(await window.hookUpdateCenter.getState());
       setProgressVisible(false);
