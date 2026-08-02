@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VS Hook - Configurações do Teleprompt</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main id="lyricsView">
+    <nav class="lyrics-config-selector" role="tablist" aria-label="Configuração do Teleprompt">
+      <button class="lyrics-config-tab active" type="button" role="tab" aria-selected="true" data-view="teleprompt" data-slot="1">Config Teleprompt 1</button>
+      <button class="lyrics-config-tab" type="button" role="tab" aria-selected="false" data-view="teleprompt" data-slot="2">Config Teleprompt 2</button>
+      <button class="lyrics-config-tab" type="button" role="tab" aria-selected="false" data-view="recados">Config Recados</button>
+    </nav>
+
+    <section id="telepromptSettingsCard" class="card lyrics-window-card">
+      <div class="lyrics-window-header">
+        <div>
+          <h2 id="windowTitle">Janela 1</h2>
+          <p id="saveStatus" class="save-status">Carregando configurações…</p>
+        </div>
+        <div class="lyrics-preset-actions">
+          <button id="presetNight" class="secondary-button lyrics-preset-button preset-selected" type="button">Noite</button>
+          <button id="presetDay" class="secondary-button lyrics-preset-button" type="button">Dia</button>
+        </div>
+        <button id="clearMode" class="secondary-button clear-mode-button" type="button" aria-pressed="false">Modo Clear</button>
+      </div>
+
+      <div class="lyrics-window-groups">
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Cores</h3>
+          <div class="lyrics-group-grid">
+            <label>Cor da letra <input name="textColor" type="color"></label>
+            <label>Cor contorno letra <input name="textBoxColor" type="color"></label>
+            <label>Cor do cronômetro <input name="clockColor" type="color"></label>
+            <label>Cor do fim regressivo <input name="clockExpiredColor" type="color"></label>
+            <label>Cor da borda do cronômetro <input name="clockBorderColor" type="color"></label>
+            <label>Cor do relógio local <input name="localClockColor" type="color"></label>
+            <label>Cor da borda da janela <input name="borderColor" type="color"></label>
+            <label>Cor do nome da música <input name="songNameColor" type="color"></label>
+            <label>Cor do nome da fila <input name="queueNameColor" type="color"></label>
+            <label>Cor do progresso <input name="progressColor" type="color"></label>
+          </div>
+        </section>
+
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Escalas</h3>
+          <div class="lyrics-group-grid">
+            <label>Escala da letra
+              <div class="range-field"><input name="textScale" type="range" min="0.50" max="1.00" step="0.05"><output data-output="textScale"></output></div>
+            </label>
+            <label>Escala do cronômetro
+              <div class="range-field"><input name="clockScale" type="range" min="0.50" max="1.00" step="0.05"><output data-output="clockScale"></output></div>
+            </label>
+            <label>Escala do nome da música
+              <div class="range-field"><input name="songNameScale" type="range" min="0.50" max="2.00" step="0.05"><output data-output="songNameScale"></output></div>
+            </label>
+            <label>Escala do nome da fila
+              <div class="range-field"><input name="queueNameScale" type="range" min="0.50" max="2.00" step="0.05"><output data-output="queueNameScale"></output></div>
+            </label>
+            <label>Escala da mídia
+              <div class="range-field"><input name="mediaScale" type="range" min="0.50" max="1.50" step="0.05"><output data-output="mediaScale"></output></div>
+            </label>
+            <label>Profundidade Preview
+              <div class="range-field"><input name="previewScale" type="range" min="0.50" max="1.00" step="0.05"><output data-output="previewScale"></output></div>
+            </label>
+            <label>Escala do relógio local
+              <div class="range-field"><input name="localClockDepth" type="range" min="0.50" max="2.00" step="0.05"><output data-output="localClockDepth"></output></div>
+            </label>
+          </div>
+        </section>
+
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Fontes e posição</h3>
+          <div class="lyrics-group-grid">
+            <label>Caixa da letra
+              <select name="textCase">
+                <option value="original">Padrão (como foi escrito)</option>
+                <option value="uppercase">CAIXA ALTA</option>
+                <option value="lowercase">caixa baixa</option>
+              </select>
+            </label>
+            <label>Fonte da letra
+              <select name="fontFamily">
+                <option>Arial</option><option>Segoe UI</option><option>Verdana</option>
+                <option>Tahoma</option><option>Georgia</option>
+                <option>Trebuchet MS</option><option>Impact</option>
+              </select>
+            </label>
+            <label>Fonte do nome da música
+              <select name="songNameFontFamily">
+                <option>Arial</option><option>Segoe UI</option><option>Verdana</option>
+                <option>Tahoma</option><option>Georgia</option>
+                <option>Trebuchet MS</option><option>Impact</option>
+              </select>
+            </label>
+            <label>Fonte do nome da fila
+              <select name="queueNameFontFamily">
+                <option>Arial</option><option>Segoe UI</option><option>Verdana</option>
+                <option>Tahoma</option><option>Georgia</option>
+                <option>Trebuchet MS</option><option>Impact</option>
+              </select>
+            </label>
+            <label>Posição do cronômetro
+              <select name="clockPosition">
+                <option value="left-top">Esquerda em cima</option>
+                <option value="left-bottom">Esquerda em baixo</option>
+                <option value="right-top">Direita em cima</option>
+                <option value="right-bottom">Direita em baixo</option>
+                <option value="center-top">Centro em cima</option>
+                <option value="center-bottom">Centro em baixo</option>
+              </select>
+            </label>
+            <label>Posição do relógio local
+              <select name="localClockPosition">
+                <option value="left">Esquerda</option>
+                <option value="right">Direita</option>
+              </select>
+            </label>
+            <label>Posição do nome da música
+              <select name="songNamePosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
+            </label>
+            <label>Posição do nome da fila
+              <select name="queueNamePosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
+            </label>
+            <label>Posição do progresso
+              <select name="progressPosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
+            </label>
+          </div>
+        </section>
+
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Mostrar</h3>
+          <div class="lyrics-group-grid lyrics-group-grid-checks">
+            <label class="settings-check"><input name="windowBorderEnabled" type="checkbox"> Mostrar borda da janela</label>
+            <label class="settings-check"><input name="rgbWindowBorderEnabled" type="checkbox"> RGB borda da janela</label>
+            <label class="settings-check"><input name="rgbClockBorderEnabled" type="checkbox"> RGB borda do cronômetro</label>
+            <label class="settings-check"><input name="rgbTextBoxBorderEnabled" type="checkbox"> RGB borda da letra</label>
+            <label class="settings-check"><input name="clockBorderEnabled" type="checkbox"> Mostrar borda do cronômetro</label>
+            <label class="settings-check"><input name="textBoxEnabled" type="checkbox"> Mostrar borda da letra</label>
+            <label class="settings-check"><input name="clockEnabled" type="checkbox"> Mostrar cronômetro</label>
+            <label class="settings-check"><input name="localClockEnabled" type="checkbox"> Mostrar relógio local</label>
+            <label class="settings-check"><input name="songNameEnabled" type="checkbox"> Mostrar nome da música</label>
+            <label class="settings-check"><input name="queueNameEnabled" type="checkbox"> Mostrar nome da fila</label>
+            <label class="settings-check"><input name="previewEnabled" type="checkbox"> Mostrar Preview nesta janela</label>
+            <label class="settings-check"><input name="progressEnabled" type="checkbox"> Mostrar progresso da letra</label>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="recadosSettingsCard" class="card lyrics-window-card hidden">
+      <div class="lyrics-window-header">
+        <div>
+          <h2>Recados</h2>
+          <p id="recadosSaveStatus" class="save-status">Configuração visual das janelas nativas.</p>
+        </div>
+      </div>
+      <div class="lyrics-window-groups">
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Cores e fonte</h3>
+          <div class="lyrics-group-grid">
+            <label>Cor da letra <input name="noticeTextColor" type="color"></label>
+            <label>Cor de fundo <input name="noticeBackgroundColor" type="color"></label>
+            <label>Cor do pisca <input name="noticeFlashColor" type="color"></label>
+            <label>Fonte do recado
+              <select name="noticeFontFamily">
+                <option>Arial</option><option>Segoe UI</option><option>Verdana</option>
+                <option>Tahoma</option><option>Georgia</option>
+                <option>Trebuchet MS</option><option>Impact</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="lyrics-group">
+          <h3 class="lyrics-group-title">Exibição</h3>
+          <div class="lyrics-group-grid lyrics-group-grid-checks">
+            <label class="settings-check"><input name="noticeWindow1Enabled" type="checkbox"> Mostrar no Teleprompt 1</label>
+            <label class="settings-check"><input name="noticeWindow2Enabled" type="checkbox"> Mostrar no Teleprompt 2</label>
+            <label class="settings-check"><input name="noticeEmojiEnabled" type="checkbox"> Mostrar símbolo no recado</label>
+            <label class="settings-check"><input name="noticeCleanDisplay" type="checkbox"> Mostrar recados limpo</label>
+            <label>Símbolo
+              <input name="noticeEmoji" type="text" maxlength="8" value="⚠️">
+            </label>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

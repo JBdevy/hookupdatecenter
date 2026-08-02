@@ -1,0 +1,47 @@
+{
+  "name": "vshook-teleprompt-settings",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Janela de configurações dos teleprompts nativos do VS Hook",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win dir --publish never",
+    "build:mac": "electron-builder --mac dir --universal --publish never"
+  },
+  "devDependencies": {
+    "electron": "26.6.10",
+    "electron-builder": "24.13.3"
+  },
+  "build": {
+    "appId": "com.hookdeveloper.vshook.telepromptsettings",
+    "productName": "VS Hook Teleprompt Settings",
+    "electronVersion": "26.6.10",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "settings.html",
+      "settings.css",
+      "settings.js",
+      "recados.html",
+      "recados.css",
+      "recados.js",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": "dir",
+      "icon": "build/icon.png"
+    },
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.utilities",
+      "minimumSystemVersion": "10.13.0",
+      "icon": "build/icon.png"
+    }
+  }
+}

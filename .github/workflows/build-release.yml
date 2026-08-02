@@ -15,18 +15,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Checkout VSHookExtension
-        uses: actions/checkout@v4
-        with:
-          repository: JBdevy/Extensionvshook
-          ref: main
-          path: vshook-extension
-          token: ${{ secrets.VSHOOK_EXTENSION_REPO_TOKEN }}
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -38,9 +30,9 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
-          npm ci --prefix vshook-extension/teleprompt-settings --legacy-peer-deps
-          npm run build:win --prefix vshook-extension/teleprompt-settings
-          $source = Get-ChildItem vshook-extension/teleprompt-settings/dist -Directory -Filter win-unpacked | Select-Object -First 1
+          npm ci --prefix teleprompt-settings --legacy-peer-deps
+          npm run build:win --prefix teleprompt-settings
+          $source = Get-ChildItem teleprompt-settings/dist -Directory -Filter win-unpacked | Select-Object -First 1
           if (-not $source) { throw "Aplicativo auxiliar do Teleprompt nao encontrado." }
           $destination = 'build/vshook-companion'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
@@ -99,18 +91,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Checkout VSHookExtension
-        uses: actions/checkout@v4
-        with:
-          repository: JBdevy/Extensionvshook
-          ref: main
-          path: vshook-extension
-          token: ${{ secrets.VSHOOK_EXTENSION_REPO_TOKEN }}
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -137,9 +121,9 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: true
         run: |
-          npm ci --prefix vshook-extension/teleprompt-settings --legacy-peer-deps
-          npm run build:mac --prefix vshook-extension/teleprompt-settings
-          APP="$(find vshook-extension/teleprompt-settings/dist -type d -name 'VS Hook Teleprompt Settings.app' -print -quit)"
+          npm ci --prefix teleprompt-settings --legacy-peer-deps
+          npm run build:mac --prefix teleprompt-settings
+          APP="$(find teleprompt-settings/dist -type d -name 'VS Hook Teleprompt Settings.app' -print -quit)"
           test -n "$APP"
           test -d "$APP"
           rm -rf build/vshook-companion

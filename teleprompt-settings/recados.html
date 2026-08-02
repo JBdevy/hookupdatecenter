@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VS Hook - Recados</title>
+  <link rel="stylesheet" href="recados.css">
+</head>
+<body>
+  <main class="recados-app">
+    <header class="recados-header">
+      <img src="build/icon.png" alt="" class="recados-logo">
+      <div>
+        <h1>Recados</h1>
+        <p id="projectName">Conectando à extensão…</p>
+      </div>
+    </header>
+
+    <div class="recados-primary-actions">
+      <button id="sendButton" class="button button-send" type="button">ENVIAR</button>
+      <button id="removeButton" class="button button-remove" type="button">RETIRAR</button>
+    </div>
+
+    <button id="pinButton" class="button button-pin" type="button" aria-pressed="false">FIXAR</button>
+
+    <div class="recados-slots" role="tablist" aria-label="Modelos de recado">
+      <button class="slot-button" type="button" data-slot="0">RECADO 1</button>
+      <button class="slot-button" type="button" data-slot="1">RECADO 2</button>
+      <button class="slot-button" type="button" data-slot="2">RECADO 3</button>
+      <button class="slot-button active global-slot" type="button" data-slot="global">GLOBAL</button>
+    </div>
+
+    <textarea id="messageInput" maxlength="500" spellcheck="false" placeholder="Digite o recado técnico…"></textarea>
+    <button id="editButton" class="button button-edit hidden" type="button">EDITAR</button>
+
+    <section id="imagePanel" class="recados-image-panel hidden" aria-label="Imagem do recado">
+      <div class="recados-image-preview">
+        <img id="imagePreview" class="hidden" alt="Imagem salva neste recado">
+        <span id="imageEmpty">NENHUMA IMAGEM SALVA</span>
+      </div>
+      <div class="recados-image-actions">
+        <button id="chooseImageButton" class="button button-image" type="button">ESCOLHER IMAGEM</button>
+        <button id="removeImageButton" class="button button-image-remove" type="button">REMOVER IMAGEM</button>
+        <p>A imagem tem prioridade: enquanto estiver salva, somente ela será exibida.</p>
+      </div>
+    </section>
+
+    <p id="status" class="recados-status" aria-live="polite"></p>
+    <button id="exitButton" class="button button-exit" type="button">SAIR</button>
+  </main>
+  <script src="recados.js"></script>
+</body>
+</html>
