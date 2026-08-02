@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-save-project-bpm-ui-v1'
+  const VERSION = '1.0.1-save-project-bpm-ui-v3'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -97,6 +97,8 @@
     pendingProjectId: '',
     pendingProjectIndex: -1,
     pendingProjectUntil: 0,
+    optimisticProjectSaved: false,
+    optimisticProjectSavedUntil: 0,
     showMarkersOverlay: readLocal('vshook_director_parts_open', '0') === '1',
     optimisticActivePlaylistId: '',
     optimisticActivePlaylistName: '',
@@ -1650,6 +1652,32 @@
       state.pendingProjectIndex = -1
       state.pendingProjectUntil = 0
     }
+  }
+
+  function getProjectDirtyForUi(data = state.snapshot) {
+    if (state.optimisticProjectSaved &&
+        now() < Number(state.optimisticProjectSavedUntil || 0)) {
+      return false
+    }
+    return data?.projectDirty === true
+  }
+
+  function syncOptimisticProjectSaved(data = state.snapshot) {
+    if (!state.optimisticProjectSaved) return
+    if (data?.projectDirty === false ||
+        now() >= Number(state.optimisticProjectSavedUntil || 0)) {
+      state.optimisticProjectSaved = false
+      state.optimisticProjectSavedUntil = 0
+    }
+  }
+
+  function syncProjectSaveButtonDom() {
+    const projectDirty = getProjectDirtyForUi()
+    const buttons = root.querySelectorAll('.projectSaveBtn')
+    buttons.forEach((button) => {
+      button.classList.toggle('projectSaveBtnDirty', projectDirty)
+      button.classList.toggle('projectSaveBtnSaved', !projectDirty)
+    })
   }
 
   function getActiveProject(data = state.snapshot) {
@@ -4584,6 +4612,8 @@
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
       syncBlockHeightModeDom(state.snapshot)
       syncPendingProjectSelection(state.snapshot)
+      syncOptimisticProjectSaved(state.snapshot)
+      syncProjectSaveButtonDom()
       syncSharedInterfaceState(state.snapshot)
       // AUTO 1 e AUTO 2 são front-first: o snapshot antigo não desfaz o
       // toque enquanto o Bridge processa o comando. Só libera o estado
@@ -6071,7 +6101,7 @@
         : selectedProject.index === getProjectItemIndex(p, index)
       return `<button class="playlistOption ${active ? 'playlistOptionActive' : ''}" data-action="project-select" data-project-id="${id}" data-project-index="${index}"><span class="playlistOptionText">${name}</span></button>`
     }).join('') || `<div class="emptyBox">NENHUMA SESSÃO ABERTA</div>`
-    const projectDirty = state.snapshot?.projectDirty === true
+    const projectDirty = getProjectDirtyForUi()
     return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn ${projectDirty ? 'projectSaveBtnDirty' : 'projectSaveBtnSaved'}" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
@@ -11236,6 +11266,8 @@
       case 'project-select': {
         const projectId = el.getAttribute('data-project-id') || ''
         const projectIndex = Number(el.getAttribute('data-project-index') || 0)
+        state.optimisticProjectSaved = false
+        state.optimisticProjectSavedUntil = 0
         state.pendingProjectId = projectId
         state.pendingProjectIndex = projectIndex
         state.pendingProjectUntil = now() + 5000
@@ -11248,12 +11280,21 @@
       case 'project-save-cancel': state.showProjectSaveConfirm = false; scheduleRender(true); break
       case 'project-save-confirm': {
         state.showProjectSaveConfirm = false
+        state.optimisticProjectSaved = true
+        state.optimisticProjectSavedUntil = now() + 5000
+        syncProjectSaveButtonDom()
+        scheduleRender(true)
         postCommand('save_project', { source: 'director', confirmed: true })
           .then((response) => {
+            if (!response?.ok) {
+              state.optimisticProjectSaved = false
+              state.optimisticProjectSavedUntil = 0
+            }
+            syncProjectSaveButtonDom()
             showPopup(response?.ok ? 'PROJETO SALVO' : 'NÃO FOI POSSÍVEL SALVAR O PROJETO', response?.ok ? 'success' : 'error', 1600)
             scheduleRender(true)
+            if (response?.ok) window.setTimeout(pollBridge, 60)
           })
-        scheduleRender(true)
         break
       }
       case 'project-modal-ok': state.showProjectModal = false; scheduleRender(true); break
