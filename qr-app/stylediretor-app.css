@@ -9291,6 +9291,10 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   min-height: 0 !important;
   margin: 0 !important;
 }
+
+.projectSaveBtnSaved{background:#166534!important;border-color:#22c55e!important;color:#fff!important}
+.projectSaveBtnDirty{background:#a16207!important;border-color:#fde047!important;color:#fff!important;animation:directorProjectSaveBlink .8s ease-in-out infinite alternate!important}
+@keyframes directorProjectSaveBlink{from{filter:brightness(.82);box-shadow:0 0 0 rgba(250,204,21,0)}to{filter:brightness(1.28);box-shadow:0 0 18px rgba(250,204,21,.85)}}
 html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
 html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   display: flex !important;
@@ -9477,3 +9481,15 @@ html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
 .bpmFullTitle{display:flex;align-items:center;color:#38bdf8;font-size:22px;font-weight:1000;letter-spacing:.12em;margin-right:auto}
 .bpmStepBtn{border-color:#38bdf8!important;color:#bae6fd!important}
 .bpmFullValue{color:#38bdf8!important}
+
+/* Tablet: preserva 20% livres em cada lateral para os controles fixos. */
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  flex: 0 1 60% !important;
+  width: 60% !important;
+  max-width: 60% !important;
+  margin-left: 20% !important;
+  margin-right: 20% !important;
+  box-sizing: border-box !important;
+}

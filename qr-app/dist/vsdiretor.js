@@ -6071,7 +6071,8 @@
         : selectedProject.index === getProjectItemIndex(p, index)
       return `<button class="playlistOption ${active ? 'playlistOptionActive' : ''}" data-action="project-select" data-project-id="${id}" data-project-index="${index}"><span class="playlistOptionText">${name}</span></button>`
     }).join('') || `<div class="emptyBox">NENHUMA SESSÃO ABERTA</div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
+    const projectDirty = state.snapshot?.projectDirty === true
+    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn ${projectDirty ? 'projectSaveBtnDirty' : 'projectSaveBtnSaved'}" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderProjectSaveConfirm() {
