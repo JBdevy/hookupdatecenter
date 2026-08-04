@@ -24,6 +24,7 @@ const {
   ensureJsonFile,
   getNativeBridgeStateSnapshot
 } = require('./bridge-server');
+const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createQrSvg } = require('./qr-svg');
 const appPackage = require('../package.json');
 
@@ -88,6 +89,7 @@ let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
 let bridgeRestartPromise = null;
+let timecodeLanRelay = null;
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
 
@@ -1838,6 +1840,7 @@ function buildBridgeServers(config) {
         createMobileSession: () => createChatMobileSession()
       },
       chatBootstrapSecret: getChatMobileBootstrapSecret(),
+      timecodeLanApi: timecodeLanRelay,
       isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
@@ -1875,15 +1878,26 @@ function buildBridgeServers(config) {
 
 async function stopBridgeServers() {
   const running = [...bridgeServers];
+  const runningTimecodeRelay = timecodeLanRelay;
   bridgeServers = [];
   bridgeInfos = [];
-  await Promise.allSettled(running.map((server) => server.stop()));
+  timecodeLanRelay = null;
+  await Promise.allSettled([
+    ...running.map((server) => server.stop()),
+    ...(runningTimecodeRelay ? [runningTimecodeRelay.stop()] : []),
+  ]);
 }
 
 async function restartBridgeServersNow() {
   await stopBridgeServers();
   bridgeConfig = readBridgeConfig();
   fs.mkdirSync(resolveBridgeScriptsDir(bridgeConfig), { recursive: true });
+  timecodeLanRelay = createTimecodeLanRelay({
+    nativeBridgePort: 47830,
+    getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
+    getDeviceName: getStoredDeviceName,
+    isLicenseActive: isVsHookLicenseActiveForBridge,
+  });
   const nextServers = buildBridgeServers(bridgeConfig);
   const nextInfos = [];
 
@@ -1892,6 +1906,7 @@ async function restartBridgeServersNow() {
       const info = await server.start();
       nextInfos.push(info);
     }
+    await timecodeLanRelay.start();
     bridgeServers = nextServers;
     bridgeInfos = nextInfos;
     bridgeLastError = '';
@@ -1902,6 +1917,10 @@ async function restartBridgeServersNow() {
     bridgeLastError = error?.message || String(error || 'Erro desconhecido ao iniciar a conexão via app.');
     for (const server of nextServers) {
       try { await server.stop(); } catch (_) {}
+    }
+    if (timecodeLanRelay) {
+      try { await timecodeLanRelay.stop(); } catch (_) {}
+      timecodeLanRelay = null;
     }
     bridgeServers = [];
     bridgeInfos = [];

@@ -1235,6 +1235,9 @@ function createBridgeServer(options) {
   const recadosImagesDir = path.join(sharedDir, 'recados-images')
   const routes = normalizeRoutes(options.routes)
   const chatApi = options.chatApi && typeof options.chatApi === 'object' ? options.chatApi : {}
+  const timecodeLanApi = options.timecodeLanApi && typeof options.timecodeLanApi === 'object'
+    ? options.timecodeLanApi
+    : null
   const chatBootstrapSecret = String(options.chatBootstrapSecret || '').trim()
   const getLicenseActive = typeof options.isLicenseActive === 'function' ? options.isLicenseActive : () => true
 
@@ -1529,6 +1532,21 @@ function createBridgeServer(options) {
     }
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${port}`}`)
+
+    if (parsedUrl.pathname.startsWith('/timecode-link/')) {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 403, { ok: false, error: 'Ative a licença na Hook Center para usar o Timecode LAN.' })
+        return
+      }
+      if (!timecodeLanApi || typeof timecodeLanApi.handleHttp !== 'function') {
+        sendJson(res, 404, { ok: false, error: 'Timecode LAN indisponível nesta porta.' })
+        return
+      }
+      const handled = await timecodeLanApi.handleHttp(req, res, parsedUrl)
+      if (handled) return
+      sendJson(res, 404, { ok: false, error: 'Rota Timecode LAN não encontrada.' })
+      return
+    }
 
     if (parsedUrl.pathname.startsWith('/chat/')) {
       if (!isBridgeLicenseActive()) {
