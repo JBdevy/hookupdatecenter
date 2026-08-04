@@ -542,9 +542,7 @@ async function startVsHookDownload(updateOverride = null) {
       button.dataset.originalText = button.textContent;
       button.textContent = 'Baixando...';
     });
-    const platformFiles = updateOverride?.files?.[state?.platformKey || ''] || {};
-    const directedInstaller =
-      platformFiles.installer || platformFiles.exe || platformFiles.dmg || '';
+    const directedInstaller = getInstallerUrlForUpdate(updateOverride);
     if (updateOverride && isTestClientUpdate(updateOverride) && directedInstaller) {
       // A atualização direcionada pode trazer o pacote completo. Nesse caso,
       // guarda extensão + instalador juntos para o botão Instalar executar o
@@ -691,9 +689,7 @@ async function installVsHookDownloadedUpdate() {
     const testUpdate = isTestClientUpdate(state?.testClientUpdate)
       ? state.testClientUpdate
       : null;
-    const platformFiles = testUpdate?.files?.[state?.platformKey || ''] || {};
-    const directedInstaller =
-      platformFiles.installer || platformFiles.exe || platformFiles.dmg || '';
+    const directedInstaller = getInstallerUrlForUpdate(testUpdate);
     const result = testUpdate && directedInstaller
       ? await window.hookUpdateCenter.installCachedUpdatePackage({
           update: testUpdate,

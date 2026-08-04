@@ -1034,7 +1034,8 @@ function normalizeUpdate(raw) {
   const macIntel = macos.intel || macos.x64 || macos.macIntel || files.macIntel || files.macosIntel || {};
   const macArm = macos.arm || macos.arm64 || macos.appleSilicon || macos.macArm || files.macArm || files.macosArm || files.appleSilicon || files.macosAppleSilicon || {};
   const platforms = source.platforms || files.platforms || files._platforms || {};
-  const platformMeta = platforms?.[getPlatformKey()] || {};
+  const currentPlatformKey = getPlatformKey();
+  const platformMeta = platforms?.[currentPlatformKey] || {};
 
   const updateSource = String(platformMeta.source || source.source || source.origin || '').trim();
   const testClientFlag = Boolean(
@@ -1074,7 +1075,16 @@ function normalizeUpdate(raw) {
         lua: pickFirst(windows.lua, windows.luaUrl, windows.vsHookLua, windows.vsHookLuaUrl, windows.script, windows.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(windows.hookLyricsLua, windows.hookLyricsLuaUrl, windows.lyricsLua, windows.lyricsLuaUrl, windows.hookLyrics, windows.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDll: pickFirst(windows.vshookDll, windows.vshookExtDll, windows.vshookDllUrl, windows.reaperVshookDll, windows.reaperVshookDllUrl, windows.vshook, windows.vshookUrl, windows.reaper_vshook, windows.reaper_vshook_url),
-        installer: pickFirst(windows.installer, windows.exe, windows.url, source.windowsInstallerUrl, source.windowsUrl),
+        installer: pickFirst(
+          windows.installer,
+          windows.exe,
+          windows.url,
+          source.windowsHookCenterUrl,
+          source.windowsInstallerUrl,
+          source.windowsUrl,
+          currentPlatformKey === 'windows' ? source.installerUrl : '',
+          currentPlatformKey === 'windows' ? source.downloadUrl : ''
+        ),
         jsApiDll: pickFirst(windows.jsApiDll, windows.jsApiDllUrl, windows.reaperJsApiDll, windows.reaperJsApiDllUrl, windows.jsapi, windows.jsapiUrl, windows.reaper_js_ReaScriptAPI64, windows.reaper_js_ReaScriptAPI64_url),
         logoPng: pickFirst(windows.logoPng, windows.logoPngUrl, windows.loadingLogo, windows.loadingLogoUrl, windows.logohookPng, windows.logohookPngUrl, windows.logo, windows.logoUrl, source.logoPng, source.logoPngUrl)
       },
@@ -1084,7 +1094,16 @@ function normalizeUpdate(raw) {
         lua: pickFirst(macos.lua, macos.luaUrl, macos.vsHookLua, macos.vsHookLuaUrl, macos.script, macos.scriptUrl, source.lua, source.luaUrl),
         hookLyricsLua: pickFirst(macos.hookLyricsLua, macos.hookLyricsLuaUrl, macos.lyricsLua, macos.lyricsLuaUrl, macos.hookLyrics, macos.hookLyricsUrl, source.hookLyricsLua, source.hookLyricsLuaUrl, source.lyricsLua, source.lyricsLuaUrl),
         vshookDylib: pickFirst(macos.vshookDylib, macos.vshookExtDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
-        installer: pickFirst(macos.installer, macos.dmg, macos.url, source.macosInstallerUrl, source.macosUrl),
+        installer: pickFirst(
+          macos.installer,
+          macos.dmg,
+          macos.url,
+          source.macosHookCenterUrl,
+          source.macosInstallerUrl,
+          source.macosUrl,
+          currentPlatformKey === 'macos' ? source.installerUrl : '',
+          currentPlatformKey === 'macos' ? source.downloadUrl : ''
+        ),
         jsApiDylib: pickFirst(macos.jsApiDylib, macos.jsApiDylibUrl, macos.reaperJsApiDylib, macos.reaperJsApiDylibUrl, macos.jsapi, macos.jsapiUrl, macos.universalJsApiDylib, macos.universalJsApiDylibUrl),
         jsApiArmDylib: pickFirst(macArm.jsApiDylib, macArm.jsApiDylibUrl, macArm.reaperJsApiDylib, macArm.reaperJsApiDylibUrl, macArm.jsapi, macArm.jsapiUrl, macos.armJsApiDylib, macos.armJsApiDylibUrl, macos.jsApiArmDylib, macos.jsApiArmDylibUrl, macos.jsApiAppleSiliconDylib, macos.jsApiAppleSiliconDylibUrl, macos.reaperJsApiArmDylib, macos.reaperJsApiArmDylibUrl, macos.reaperJsApiAppleSiliconDylib, macos.reaperJsApiAppleSiliconDylibUrl, macos.reaper_js_ReaScriptAPI64ARM, macos.reaper_js_ReaScriptAPI64ARM_url),
         jsApiIntelDylib: pickFirst(macIntel.jsApiDylib, macIntel.jsApiDylibUrl, macIntel.reaperJsApiDylib, macIntel.reaperJsApiDylibUrl, macIntel.jsapi, macIntel.jsapiUrl, macos.intelJsApiDylib, macos.intelJsApiDylibUrl, macos.jsApiIntelDylib, macos.jsApiIntelDylibUrl, macos.reaperJsApiIntelDylib, macos.reaperJsApiIntelDylibUrl, macos.reaper_js_ReaScriptAPI64, macos.reaper_js_ReaScriptAPI64_url),
@@ -3079,10 +3098,9 @@ function getAppState() {
     // instalador da Hook Center precisa ser baixado novamente.
     currentVersion: hookCenterBinaryVersion,
     hookCenterBinaryVersion,
-    // No Status, a Central acompanha a versão do pacote VS Hook efetivamente
-    // instalado a partir da publicação do backend, mesmo quando esse pacote
-    // não traz um novo instalador da Hook Center.
-    statusDisplayVersion: installedVsHookVersion || hookCenterBinaryVersion,
+    // A versão da Central pertence ao próprio executável. A versão publicada
+    // pelo backend identifica o pacote do VS Hook e não altera este campo.
+    statusDisplayVersion: hookCenterBinaryVersion,
     lastCheck: store.get('lastCheck'),
     updateAvailable: store.get('updateAvailable'),
     latestUpdate: store.get('latestUpdate'),
@@ -4034,6 +4052,76 @@ function getBundledVshookCompanionDir() {
   return path.join(process.resourcesPath || '', 'vshook-companion');
 }
 
+const VSHOOK_THEME_FILENAME = 'ReiVS1.0.ReaperTheme';
+
+function getBundledVshookThemePath() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'vshook-themes', VSHOOK_THEME_FILENAME),
+    path.join(__dirname, '..', 'themes', VSHOOK_THEME_FILENAME)
+  ];
+  for (const candidate of candidates) {
+    if (candidate && physicalFs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `O tema ${VSHOOK_THEME_FILENAME} não veio dentro desta versão da Hook Center.`
+  );
+}
+
+function copyBundledThemeEnsured(destination) {
+  const source = getBundledVshookThemePath();
+  const expected = getFileIntegrity(source);
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  const backup = `${destination}.backup-${process.pid}-${Date.now()}`;
+  const hadExistingDestination = physicalFs.existsSync(destination);
+  let movedPreviousToBackup = false;
+  physicalFs.mkdirSync(path.dirname(destination), { recursive: true });
+  try {
+    physicalFs.copyFileSync(source, temporary);
+    const copied = getFileIntegrity(temporary);
+    if (copied.size !== expected.size || copied.sha256 !== expected.sha256) {
+      throw new Error('A verificação do tema copiado falhou.');
+    }
+    if (hadExistingDestination) {
+      physicalFs.renameSync(destination, backup);
+      movedPreviousToBackup = true;
+    }
+    physicalFs.renameSync(temporary, destination);
+    fileIntegrityCache.delete(path.resolve(destination));
+    const installed = getFileIntegrity(destination);
+    if (installed.size !== expected.size || installed.sha256 !== expected.sha256) {
+      throw new Error('O tema instalado não corresponde ao arquivo da Hook Center.');
+    }
+    if (movedPreviousToBackup) {
+      physicalFs.rmSync(backup, { force: true });
+      movedPreviousToBackup = false;
+    }
+  } catch (error) {
+    if (movedPreviousToBackup || !hadExistingDestination) {
+      try { physicalFs.rmSync(destination, { force: true }); } catch (_) {}
+    }
+    if (movedPreviousToBackup && physicalFs.existsSync(backup)) {
+      try {
+        physicalFs.renameSync(backup, destination);
+        fileIntegrityCache.delete(path.resolve(destination));
+        movedPreviousToBackup = false;
+      } catch (_) {}
+    }
+    throw error;
+  } finally {
+    try { physicalFs.rmSync(temporary, { force: true }); } catch (_) {}
+    if (!movedPreviousToBackup) {
+      try { physicalFs.rmSync(backup, { force: true }); } catch (_) {}
+    }
+  }
+}
+
+function installWindowsVshookTheme() {
+  const reaperRoot = path.dirname(getWindowsReaperUserPluginsDir());
+  copyBundledThemeEnsured(
+    path.join(reaperRoot, 'tema', VSHOOK_THEME_FILENAME)
+  );
+}
+
 function windowsVshookCompanionCopyIsComplete(source, destination) {
   const pending = [[source, destination]];
 
@@ -4244,6 +4332,7 @@ function installWindowsPayload(files) {
   // O customInstall e a próxima inicialização repetem a mesma limpeza.
   removeLegacyWindowsVshookExtensions();
   installWindowsVshookCompanion();
+  installWindowsVshookTheme();
 }
 
 function cleanupLegacyWindowsVshookOnStartup() {
@@ -4294,13 +4383,21 @@ function installMacPayload(files) {
     'VS Hook Teleprompt Settings.app'
   );
   const hasCompanion = fs.existsSync(companionSource);
+  const themeSource = getBundledVshookThemePath();
 
   commands.push('set -e');
+  commands.push(`THEME_SOURCE=${shellQuote(themeSource)}`);
+  commands.push(`THEME_FILENAME=${shellQuote(VSHOOK_THEME_FILENAME)}`);
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
+  commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/tema"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
   commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
+  commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
+  commands.push('cp -f "$THEME_SOURCE" "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp"');
+  commands.push('chmod 644 "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp"');
+  commands.push('mv -f "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp" "$GLOBAL_THEME_DIR/$THEME_FILENAME"');
   commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) {
     commands.push(`VSHOOK_SOURCE=${shellQuote(vshookSource)}`);
@@ -4323,9 +4420,15 @@ function installMacPayload(files) {
   commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
   commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
+  commands.push('  USER_THEME_DIR="$USER_REAPER/tema"');
   commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
   commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
+  commands.push('  mkdir -p "$USER_THEME_DIR"');
+  commands.push('  cp -f "$THEME_SOURCE" "$USER_THEME_DIR/.$THEME_FILENAME.tmp"');
+  commands.push('  chmod 644 "$USER_THEME_DIR/.$THEME_FILENAME.tmp"');
+  commands.push('  mv -f "$USER_THEME_DIR/.$THEME_FILENAME.tmp" "$USER_THEME_DIR/$THEME_FILENAME"');
+  commands.push('  chown -R "$USER_NAME":staff "$USER_THEME_DIR" 2>/dev/null || true');
   commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) {
     commands.push('  cp -f "$VSHOOK_SOURCE" "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');

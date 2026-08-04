@@ -76,6 +76,10 @@ jobs:
           if ($missing.Count -gt 0) {
             throw "Pacote final da Hook Center sem o Teleprompt completo: $($missing -join ', ')"
           }
+          $theme = 'dist/win-unpacked/resources/vshook-themes/ReiVS1.0.ReaperTheme'
+          if (-not (Test-Path -LiteralPath $theme -PathType Leaf)) {
+            throw "Pacote final da Hook Center sem o tema ReiVS1.0."
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -140,6 +144,11 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run build:mac
+
+      - name: Validate macOS theme payload
+        run: |
+          THEME="$(find dist -path '*/Hook Center.app/Contents/Resources/vshook-themes/ReiVS1.0.ReaperTheme' -type f -print -quit)"
+          test -n "$THEME" || (echo "Pacote final da Hook Center sem o tema ReiVS1.0." && exit 1)
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
