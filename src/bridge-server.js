@@ -2,6 +2,7 @@ const http = require('http')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const crypto = require('crypto')
 const { URL } = require('url')
 const { createQrSvg } = require('./qr-svg')
 
@@ -1233,11 +1234,23 @@ function createBridgeServer(options) {
   const lyricsFile = path.join(sharedDir, 'vshook_song_lyrics.json')
   const recadosImagesDir = path.join(sharedDir, 'recados-images')
   const routes = normalizeRoutes(options.routes)
+  const chatApi = options.chatApi && typeof options.chatApi === 'object' ? options.chatApi : {}
+  const chatBootstrapSecret = String(options.chatBootstrapSecret || '').trim()
   const getLicenseActive = typeof options.isLicenseActive === 'function' ? options.isLicenseActive : () => true
 
   function isBridgeLicenseActive() {
     try {
       return getLicenseActive() === true
+    } catch (_) {
+      return false
+    }
+  }
+
+  function isChatBootstrapAuthorized(value) {
+    const provided = String(value || '').trim()
+    if (!chatBootstrapSecret || provided.length !== chatBootstrapSecret.length) return false
+    try {
+      return crypto.timingSafeEqual(Buffer.from(provided, 'utf8'), Buffer.from(chatBootstrapSecret, 'utf8'))
     } catch (_) {
       return false
     }
@@ -1504,7 +1517,7 @@ function createBridgeServer(options) {
     lyricsById: {},
   })
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
@@ -1516,6 +1529,42 @@ function createBridgeServer(options) {
     }
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${port}`}`)
+
+    if (parsedUrl.pathname.startsWith('/chat/')) {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 403, { ok: false, error: 'Ative a licença na Hook Center para usar o Chat Hook.' })
+        return
+      }
+      const handlers = {
+        '/chat/state': chatApi.getState,
+        '/chat/messages': chatApi.sendMessage,
+        '/chat/pin': chatApi.setPinnedMessage,
+        '/chat/delete': chatApi.deleteMessage,
+        '/chat/bootstrap': chatApi.createMobileSession,
+      }
+      const handler = handlers[parsedUrl.pathname]
+      if (req.method !== 'POST' || typeof handler !== 'function') {
+        sendJson(res, 404, { ok: false, error: 'Rota do Chat Hook não encontrada.' })
+        return
+      }
+      try {
+        const payload = await readRequestJson(req, 60 * 1024 * 1024)
+        if (parsedUrl.pathname === '/chat/bootstrap' && !isChatBootstrapAuthorized(payload?.bootstrapKey)) {
+          sendJson(res, 403, { ok: false, error: 'QR Code inválido. Escaneie o QR Code da Hook Center novamente.' })
+          return
+        }
+        const result = await handler(payload || {})
+        sendJson(res, 200, result && typeof result === 'object' ? result : { ok: true })
+      } catch (error) {
+        const status = Math.max(400, Math.min(599, Number(error?.status) || 500))
+        sendJson(res, status, {
+          ok: false,
+          error: error?.message || 'Não foi possível acessar o Chat Hook.',
+          retryAfter: Number(error?.retryAfter) || undefined,
+        })
+      }
+      return
+    }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/') {
       const route = routes.get('/')

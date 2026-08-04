@@ -874,10 +874,112 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const message = data?.message || data?.error || `HTTP ${response.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.retryAfter = Number(data?.retryAfter) || 0;
+    error.data = data;
+    throw error;
   }
 
   return data;
+}
+
+async function getChatAuthPayload() {
+  const license = store.get('license') || {};
+  if (license.active !== true) throw new Error('Ative sua licença para acessar o Chat Hook.');
+  const document = normalizeDocument(license.document || license.cpf || license.cnpj || '');
+  const parts = splitDocument(document);
+  const email = normalizeEmail(license.email || store.get('deviceLoginEmail') || '');
+  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  if ((!parts.cpf && !parts.cnpj && !email) || !machineId) {
+    throw new Error('Ative sua licença para acessar o Chat Hook.');
+  }
+  return {
+    document,
+    cpf: parts.cpf,
+    cnpj: parts.cnpj,
+    email,
+    machineId,
+    deviceFingerprint: await getDeviceFingerprint(),
+    platform: process.platform,
+    computerName: getStoredDeviceName()
+  };
+}
+
+async function getChatState(afterId = 0) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/state`, {
+    method: 'POST',
+    cache: 'no-store',
+    body: JSON.stringify({ ...auth, afterId: Math.max(0, Number(afterId) || 0) })
+  });
+}
+
+async function sendChatMessage(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...auth,
+      text: String(payload.text || '').slice(0, 1000),
+      image: payload.image && typeof payload.image === 'object' ? payload.image : null,
+      video: payload.video && typeof payload.video === 'object' ? payload.video : null
+    })
+  });
+}
+
+async function setChatPinnedMessage(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/pin`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...auth,
+      messageId: Math.max(0, Math.floor(Number(payload.messageId) || 0))
+    })
+  });
+}
+
+async function deleteChatMessage(payload = {}) {
+  const auth = await getChatAuthPayload();
+  const messageId = Math.floor(Number(payload.messageId));
+  if (!Number.isInteger(messageId) || messageId < 1) {
+    throw new Error('Mensagem inválida.');
+  }
+  return fetchJson(`${BACKEND_URL}/api/chat/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, messageId })
+  });
+}
+
+async function createChatMobileSession() {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/mobile/session`, {
+    method: 'POST',
+    cache: 'no-store',
+    body: JSON.stringify(auth)
+  });
+}
+
+async function updateChatProfile(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/profile`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...auth,
+      name: String(payload.name || '').slice(0, 80)
+    })
+  });
+}
+
+async function uploadChatAvatar(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/avatar`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...auth,
+      image: payload.image && typeof payload.image === 'object' ? payload.image : null
+    })
+  });
 }
 
 
@@ -1686,6 +1788,14 @@ function isVsHookLicenseActiveForBridge() {
   return license.active === true;
 }
 
+function getChatMobileBootstrapSecret() {
+  const current = String(store.get('chatMobileBootstrapSecret') || '').trim();
+  if (/^[a-f0-9]{64}$/i.test(current)) return current.toLowerCase();
+  const created = crypto.randomBytes(32).toString('hex');
+  store.set('chatMobileBootstrapSecret', created);
+  return created;
+}
+
 function buildBridgeServers(config) {
   const sharedDir = resolveBridgeScriptsDir(config);
   const bridgeWebAppDir = getBridgeWebAppDir();
@@ -1701,6 +1811,14 @@ function buildBridgeServers(config) {
       sharedDir,
       getTechnicalNoticeSettings,
       saveTechnicalNoticeSettings,
+      chatApi: {
+        getState: ({ afterId } = {}) => getChatState(afterId),
+        sendMessage: (payload = {}) => sendChatMessage(payload),
+        setPinnedMessage: (payload = {}) => setChatPinnedMessage(payload),
+        deleteMessage: (payload = {}) => deleteChatMessage(payload),
+        createMobileSession: () => createChatMobileSession()
+      },
+      chatBootstrapSecret: getChatMobileBootstrapSecret(),
       isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
@@ -1721,6 +1839,14 @@ function buildBridgeServers(config) {
       sharedDir,
       getTechnicalNoticeSettings,
       saveTechnicalNoticeSettings,
+      chatApi: {
+        getState: ({ afterId } = {}) => getChatState(afterId),
+        sendMessage: (payload = {}) => sendChatMessage(payload),
+        setPinnedMessage: (payload = {}) => setChatPinnedMessage(payload),
+        deleteMessage: (payload = {}) => deleteChatMessage(payload),
+        createMobileSession: () => createChatMobileSession()
+      },
+      chatBootstrapSecret: getChatMobileBootstrapSecret(),
       isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState(),
       routes: [{ url: '/', file: 'index.html', contentType: 'text/html; charset=utf-8' }]
@@ -1790,6 +1916,8 @@ function getBridgeState() {
   const lanIp = selected.ip;
   const directorPort = Number(config.directorPort) || 47831;
   const musiciansPort = Number(config.musiciansPort) || 47832;
+  const chatBootstrapSecret = getChatMobileBootstrapSecret();
+  const bridgeAppUrl = `http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}&chatKey=${encodeURIComponent(chatBootstrapSecret)}`;
   return {
     running: bridgeServers.length > 0,
     lanIp,
@@ -1802,8 +1930,8 @@ function getBridgeState() {
     musiciansPort,
     directorUrl: `http://${lanIp}:${directorPort}`,
     musiciansUrl: `http://${lanIp}:${musiciansPort}`,
-    browserUrl: `http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}`,
-    qrCodeUrl: `http://${lanIp}:${directorPort}/qr.svg?url=${encodeURIComponent(`http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}`)}`,
+    browserUrl: bridgeAppUrl,
+    qrCodeUrl: `http://${lanIp}:${directorPort}/qr.svg?url=${encodeURIComponent(bridgeAppUrl)}`,
     directorUrls: allLanIps.map((item) => `http://${item.ip}:${directorPort}`),
     musiciansUrls: allLanIps.map((item) => `http://${item.ip}:${musiciansPort}`),
     infos: bridgeInfos,
@@ -4637,6 +4765,12 @@ ipcMain.handle('install-downloaded-hook-center-update', () => installDownloadedH
 ipcMain.handle('check-bridge-app-update', () => checkBridgeAppUpdates(true));
 ipcMain.handle('install-bridge-app-update', () => downloadAndInstallBridgeAppUpdate());
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
+ipcMain.handle('chat-get-state', (_event, payload) => getChatState(payload?.afterId));
+ipcMain.handle('chat-send-message', (_event, payload) => sendChatMessage(payload || {}));
+ipcMain.handle('chat-set-pinned-message', (_event, payload) => setChatPinnedMessage(payload || {}));
+ipcMain.handle('chat-delete-message', (_event, payload) => deleteChatMessage(payload || {}));
+ipcMain.handle('chat-update-profile', (_event, payload) => updateChatProfile(payload || {}));
+ipcMain.handle('chat-upload-avatar', (_event, payload) => uploadChatAvatar(payload || {}));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('get-previous-updates', () => getPreviousUpdates());

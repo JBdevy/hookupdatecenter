@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-save-bpm-v1';
+const CACHE_NAME = 'vshook-mobile-1.0.1-chat-video-multiloop4-v18';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -14,6 +14,8 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
+  './chat.js',
+  './chat-app.css',
   './vshook-2.0.67',
   './vshook-2.0.67',
   './vsdiretor-icon-180.png',
@@ -52,6 +54,7 @@ self.addEventListener('fetch', (event) => {
     '/state', '/state.json',
     '/lyrics', '/lyrics.json',
     '/command', '/technical-notice', '/recados-notice', '/recados-templates',
+    '/chat/state', '/chat/messages', '/chat/pin', '/chat/delete', '/chat/bootstrap',
     '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg',
     '/media', '/tp-media', '/teleprompt-media'
   ];

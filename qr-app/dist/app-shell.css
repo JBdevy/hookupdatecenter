@@ -198,7 +198,7 @@ html[data-director-device="tablet"].directorTabletViewportRestoring #app {
   overscroll-behavior:none;
 }
 
-/* A busca do Diretor Tablet também usa o eixo físico vertical no modo web. */
+/* A busca do Diretor Tablet conserva a mesma prancheta e escala da tela principal. */
 html[data-director-device="tablet"].directorSearchPortraitMode,
 html[data-director-device="tablet"].directorSearchPortraitMode body {
   width:100%;
@@ -214,11 +214,13 @@ html[data-director-device="tablet"].directorSearchPortraitMode body {
 }
 
 html[data-director-device="tablet"].directorSearchPortraitMode #app {
-  width:100%;
-  height:100%;
+  width:var(--tablet-ui-width, 100%);
+  max-width:none;
+  height:var(--tablet-ui-height, 100%);
   min-height:0;
   overflow:hidden;
-  transform:none;
+  transform-origin:top left;
+  transform:scale(var(--tablet-ui-scale, 1));
 }
 
 /* Entrada do Diretor (login e escolha de projeto): sempre no retrato físico.

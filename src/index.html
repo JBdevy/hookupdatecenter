@@ -32,6 +32,8 @@
 
     <main class="content">
       <section id="homeView" class="view active">
+        <div class="home-live-layout">
+          <div class="home-main-column">
         <div class="hero-card home-compact-header">
           <h1>Hook Center</h1>
           <p class="home-header-installed-version">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
@@ -59,6 +61,7 @@
                 <span id="versionBadge" class="badge">v0.0.0</span>
               </div>
               <div id="videoBox" class="video-box video-preview">
+                <span class="video-click-indicator" aria-hidden="true">👇</span>
                 <button id="openVideoModalButton" class="video-play-button" type="button">
                   <span class="play-icon">▶</span>
                   <span>Assistir vídeo da atualização</span>
@@ -81,6 +84,60 @@
               </div>
             </div>
           </div>
+        </div>
+          </div>
+
+          <aside id="chatHookPanel" class="home-chat-panel" aria-label="Chat Hook">
+            <div class="chat-hook-header">
+              <div class="chat-hook-title-row">
+                <div id="chatHookCurrentAvatar" class="chat-hook-avatar chat-hook-current-avatar" aria-hidden="true">H</div>
+                <div>
+                  <h2>Chat Hook</h2>
+                  <span id="chatHookConnectionStatus">Conectando...</span>
+                </div>
+              </div>
+              <button id="chatHookAvatarButton" class="chat-hook-avatar-button hidden" type="button" title="Alterar foto de perfil">Foto</button>
+              <input id="chatHookAvatarInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+            </div>
+
+            <div id="chatHookPinned" class="chat-hook-pinned hidden" aria-live="polite">
+              <div class="chat-hook-pinned-head">
+                <strong>📌 Mensagem fixada</strong>
+                <button id="chatHookUnpinButton" class="hidden" type="button">Desafixar</button>
+              </div>
+              <p id="chatHookPinnedText"></p>
+            </div>
+
+            <div id="chatHookMessages" class="chat-hook-messages" aria-live="polite">
+              <div class="chat-hook-empty">Carregando conversa...</div>
+            </div>
+
+            <emoji-picker id="chatHookEmojiPicker" class="chat-hook-emoji-picker dark hidden" locale="pt" emoji-version="17.0" data-source="https://cdn.jsdelivr.net/npm/emoji-picker-element-data@^1/pt/cldr/data.json" aria-label="Escolher emoji"></emoji-picker>
+
+            <div id="chatHookClosedNotice" class="chat-hook-closed hidden">O chat está fechado. Somente administradores podem escrever.</div>
+            <div class="chat-hook-composer">
+              <div id="chatHookImagePreview" class="chat-hook-image-preview hidden">
+                <img id="chatHookImagePreviewImage" alt="Imagem escolhida" />
+                <video id="chatHookVideoPreview" class="hidden" muted playsinline preload="metadata"></video>
+                <button id="chatHookRemoveImageButton" type="button" aria-label="Remover imagem">×</button>
+              </div>
+              <textarea id="chatHookMessageInput" maxlength="1000" rows="2" placeholder="Escreva uma mensagem..."></textarea>
+              <div class="chat-hook-composer-actions">
+                <div class="chat-hook-attachment-actions">
+                  <button id="chatHookEmojiButton" class="chat-hook-icon-button" type="button" title="Emoji">😊</button>
+                  <button id="chatHookImageButton" class="chat-hook-icon-button" type="button" title="Enviar foto ou print">📎</button>
+                  <input id="chatHookImageInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+                  <label class="chat-hook-enter-option" title="Quando ativo, Enter envia e Shift+Enter quebra a linha">
+                    <input id="chatHookSendWithEnter" type="checkbox" />
+                    <span>Enviar com Enter</span>
+                  </label>
+                </div>
+                <span id="chatHookQuota">--</span>
+                <button id="chatHookSendButton" class="primary-button chat-hook-send-button" type="button">Enviar</button>
+              </div>
+              <div id="chatHookStatus" class="chat-hook-status" role="status"></div>
+            </div>
+          </aside>
         </div>
       </section>
 
@@ -170,6 +227,14 @@
               Nome deste dispositivo
               <input id="devicesNameInput" type="text" placeholder="Ex.: Notebook palco" autocomplete="off" />
             </label>
+            <div class="chat-customer-name-editor">
+              <label>
+                Seu nome no Chat Hook
+                <input id="chatCustomerNameInput" type="text" maxlength="80" placeholder="Nome que aparecerá no chat" autocomplete="name" />
+              </label>
+              <button id="saveChatCustomerNameButton" class="secondary-button" type="button">Salvar meu nome</button>
+              <div id="chatCustomerNameMessage" class="license-message muted"></div>
+            </div>
             <div class="actions">
               <button id="devicesLoginButton" class="primary-button" type="button">Entrar</button>
               <button id="saveDeviceNameButton" class="secondary-button" type="button">Salvar nome</button>
@@ -1034,6 +1099,7 @@
     </div>
   </div>
 
+  <script type="module" src="../node_modules/emoji-picker-element/index.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

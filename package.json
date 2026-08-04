@@ -15,12 +15,13 @@
     "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --universal --publish never"
   },
   "dependencies": {
-    "electron-store": "8.2.0"
+    "electron-store": "8.2.0",
+    "emoji-picker-element": "1.29.1"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "electron": "26.6.10",
-    "electron-builder": "24.13.3",
-    "@electron/notarize": "^2.5.0"
+    "electron-builder": "24.13.3"
   },
   "build": {
     "appId": "com.hookdeveloper.hookcenter",

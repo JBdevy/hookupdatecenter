@@ -23,7 +23,16 @@ let recadosHubCountdownTimer = 0;
 let updateDescriptionFitFrame = 0;
 let updateDescriptionResizeObserver = null;
 let currentBridgeState = null;
-
+let chatHookState = null;
+let chatHookPollTimer = 0;
+let chatHookPollInFlight = false;
+let chatHookSending = false;
+let chatHookSelectedMedia = null;
+let chatHookLastMessageId = 0;
+let chatHookRevision = 0;
+let chatHookClearedAt = '';
+let chatHookLastPollAt = 0;
+const chatHookMessagesById = new Map();
 function setLyricsConfigSlot(slot) {
   selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
 
@@ -205,7 +214,17 @@ function friendlyError(error, fallback) {
     'não foi possível abrir o instalador da hook center',
     'nao foi possivel abrir o instalador da hook center',
     'não foi possível preparar o instalador da hook center',
-    'nao foi possivel preparar o instalador da hook center'
+    'nao foi possivel preparar o instalador da hook center',
+    'chat hook',
+    'mensagens permitidas hoje',
+    'aguarde ',
+    'somente administradores do chat',
+    'escolha uma imagem',
+    'a imagem deve ter no máximo',
+    'a imagem deve ter no maximo',
+    'vídeos não são permitidos',
+    'videos nao sao permitidos',
+    'digite uma mensagem ou escolha uma imagem'
   ];
   if (userFacingUpdateErrors.some((item) => lower.includes(item))) {
     return message;
@@ -1032,6 +1051,7 @@ function setView(viewName) {
   document.body.classList.toggle('lyrics-mode', viewName === 'lyrics');
   document.body.classList.toggle('tools-mode', viewName === 'tools');
   updateDownloadCompactMode();
+  if (viewName === 'home') refreshChatHook(!chatHookState).catch(() => {});
 }
 
 function formatDate(value) {
@@ -1071,6 +1091,551 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function isChatHookHomeVisible() {
+  return document.visibilityState !== 'hidden' && $('#homeView')?.classList.contains('active');
+}
+
+function chatHookInitials(name) {
+  const parts = String(name || 'User').trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : parts[0]?.slice(0, 2) || 'U').toUpperCase();
+}
+
+function formatChatHookTime(value) {
+  const date = new Date(value || '');
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function chatHookAvatarHtml(name, avatarUrl = '') {
+  if (avatarUrl) return `<img src="${escapeHtml(avatarUrl)}" alt="" />`;
+  return `<span>${escapeHtml(chatHookInitials(name))}</span>`;
+}
+
+function renderChatHookMessages(forceBottom = false) {
+  const container = $('#chatHookMessages');
+  if (!container) return;
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 64;
+  const retentionDays = Math.max(1, Math.min(30, Number(chatHookState?.chat?.retentionDays || 7)));
+  const cutoff = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+  const messages = [...chatHookMessagesById.values()]
+    .filter((message) => {
+      const createdAt = new Date(message.createdAt || '').getTime();
+      return !Number.isFinite(createdAt) || createdAt >= cutoff;
+    })
+    .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+  const currentUserId = Number(chatHookState?.user?.id || 0);
+  const currentUserIsAdmin = chatHookState?.user?.isAdmin === true;
+  const pinnedMessageId = Number(chatHookState?.chat?.pinnedMessageId || 0);
+
+  if (!messages.length) {
+    container.innerHTML = '<div class="chat-hook-empty">Nenhuma mensagem ainda. Comece a conversa.</div>';
+    return;
+  }
+
+  container.innerHTML = messages.map((message) => {
+    const safeName = escapeHtml(message.name || 'User');
+    const safeText = escapeHtml(message.text || '').replace(/\n/g, '<br>');
+    const uploadState = message.pending
+      ? '<span class="chat-hook-upload-spinner" aria-label="Enviando mídia"></span>'
+      : message.failed
+        ? '<span class="chat-hook-upload-failed">!</span>'
+        : '';
+    const image = message.imageUrl
+      ? `<button class="chat-hook-message-image${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}" type="button"${message.pending ? ' disabled' : ` data-chat-image-url="${escapeHtml(message.imageUrl)}"`} title="${message.pending ? 'Enviando imagem' : 'Abrir imagem'}"><img src="${escapeHtml(message.imageUrl)}" alt="Imagem enviada por ${safeName}" />${uploadState}</button>`
+      : '';
+    const video = message.videoUrl
+      ? `<div class="chat-hook-message-video${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadState}</div>`
+      : '';
+    const canPin = !message.pending && !message.failed && currentUserIsAdmin && Number(message.customerId || 0) === currentUserId && Boolean(String(message.text || '').trim());
+    const isPinned = canPin && Number(message.id || 0) === pinnedMessageId;
+    const pinAction = canPin
+      ? `<button class="chat-hook-pin-message" type="button" data-chat-pin-message-id="${Number(message.id || 0)}" title="${isPinned ? 'Desafixar mensagem' : 'Fixar mensagem no topo'}">${isPinned ? 'Desafixar' : '📌 Fixar'}</button>`
+      : '';
+    const canDelete = !message.pending && !message.failed && (currentUserIsAdmin || Number(message.customerId || 0) === currentUserId);
+    const deleteAction = canDelete
+      ? `<button class="chat-hook-delete-message" type="button" data-chat-delete-message-id="${Number(message.id || 0)}" title="Apagar mensagem" aria-label="Apagar mensagem">🗑</button>`
+      : '';
+    return `
+      <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}">
+        <div class="chat-hook-avatar">${chatHookAvatarHtml(message.name, message.avatarUrl)}</div>
+        <div class="chat-hook-message-body">
+          <div class="chat-hook-message-head">
+            <strong>${safeName}</strong>
+            ${message.isAdmin ? '<span>ADMIN</span>' : ''}
+            <time>${escapeHtml(formatChatHookTime(message.createdAt))}</time>
+            ${pinAction}
+            ${deleteAction}
+          </div>
+          ${safeText ? `<p>${safeText}</p>` : ''}
+          ${image}
+          ${video}
+        </div>
+      </article>`;
+  }).join('');
+  if (forceBottom || wasNearBottom) container.scrollTop = container.scrollHeight;
+}
+
+function renderChatHookCurrentUser() {
+  const user = chatHookState?.user;
+  const currentAvatar = $('#chatHookCurrentAvatar');
+  const userKey = `${user?.id || ''}|${user?.name || ''}|${user?.avatarUrl || ''}|${user?.isAdmin === true}`;
+  if (currentAvatar && currentAvatar.dataset.userKey !== userKey) {
+    currentAvatar.dataset.userKey = userKey;
+    currentAvatar.innerHTML = chatHookAvatarHtml(user?.name || 'Hook', user?.avatarUrl || '');
+  }
+  const avatarButton = $('#chatHookAvatarButton');
+  if (avatarButton) avatarButton.classList.toggle('hidden', user?.isAdmin !== true);
+}
+
+function chatHookCooldownRemaining() {
+  if (chatHookState?.user?.isAdmin) return 0;
+  const target = new Date(chatHookState?.limits?.nextAllowedAt || '').getTime();
+  return Number.isFinite(target) ? Math.max(0, Math.ceil((target - Date.now()) / 1000)) : 0;
+}
+
+function renderChatHookControls() {
+  const user = chatHookState?.user;
+  const settings = chatHookState?.chat || {};
+  const limits = chatHookState?.limits || {};
+  const cooldown = chatHookCooldownRemaining();
+  const authenticated = Boolean(user?.id);
+  const exhausted = authenticated && !user?.isAdmin && Number(limits.remainingToday || 0) <= 0;
+  const closed = settings.open === false && !user?.isAdmin;
+  const available = authenticated && !closed && !exhausted && cooldown <= 0 && !chatHookSending;
+  const input = $('#chatHookMessageInput');
+  const send = $('#chatHookSendButton');
+  const imageButton = $('#chatHookImageButton');
+  const mediaInput = $('#chatHookImageInput');
+  const emojiButton = $('#chatHookEmojiButton');
+  if (input) {
+    input.disabled = !available;
+    input.placeholder = !authenticated
+      ? 'Ative sua licença para participar'
+      : closed
+      ? 'Chat fechado pelo administrador'
+      : exhausted
+        ? 'Limite diário atingido'
+        : cooldown > 0
+          ? `Aguarde ${cooldown}s para enviar novamente`
+          : 'Escreva uma mensagem...';
+  }
+  if (send) {
+    send.disabled = !available;
+    send.textContent = chatHookSending ? 'Enviando...' : (cooldown > 0 ? `${cooldown}s` : 'Enviar');
+  }
+  if (imageButton) imageButton.disabled = !available;
+  if (mediaInput) {
+    const isAdmin = user?.isAdmin === true;
+    mediaInput.accept = isAdmin
+      ? 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm'
+      : 'image/png,image/jpeg,image/webp,image/gif';
+    if (imageButton) imageButton.title = isAdmin ? 'Enviar foto, print ou vídeo de até 30s' : 'Enviar foto ou print';
+    if (!isAdmin && chatHookSelectedMedia?.kind === 'video') clearChatHookSelectedMedia();
+  }
+  if (emojiButton) emojiButton.disabled = !available;
+  $('#chatHookClosedNotice')?.classList.toggle('hidden', !closed);
+  const quota = $('#chatHookQuota');
+  if (quota) quota.textContent = user?.isAdmin
+    ? 'Administrador'
+    : user?.id
+      ? `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje`
+      : '--';
+}
+
+function applyChatHookState(next, { full = false } = {}) {
+  if (!next?.ok) return;
+  const nextRevision = Math.max(0, Number(next.chat?.revision || 0));
+  const nextClearedAt = String(next.chat?.clearedAt || '');
+  const resetMessages = full;
+  if (resetMessages) {
+    chatHookMessagesById.clear();
+    chatHookLastMessageId = 0;
+  }
+  chatHookRevision = nextRevision;
+  chatHookClearedAt = nextClearedAt;
+  chatHookState = next;
+  let messagesChanged = resetMessages;
+  for (const message of (next.messages || [])) {
+    const id = Number(message.id || 0);
+    if (!id) continue;
+    if (!chatHookMessagesById.has(id)) messagesChanged = true;
+    chatHookMessagesById.set(id, message);
+    chatHookLastMessageId = Math.max(chatHookLastMessageId, id);
+  }
+  const retentionDays = Math.max(1, Math.min(30, Number(next.chat?.retentionDays || 7)));
+  const cutoff = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+  for (const [id, message] of chatHookMessagesById.entries()) {
+    const createdAt = new Date(message.createdAt || '').getTime();
+    if (Number.isFinite(createdAt) && createdAt < cutoff) {
+      chatHookMessagesById.delete(id);
+      messagesChanged = true;
+    }
+  }
+
+  const pinned = $('#chatHookPinned');
+  const pinnedText = String(next.chat?.pinnedMessage || '').trim();
+  if (pinned) pinned.classList.toggle('hidden', !pinnedText);
+  if ($('#chatHookPinnedText')) $('#chatHookPinnedText').textContent = pinnedText;
+  const unpinButton = $('#chatHookUnpinButton');
+  if (unpinButton) unpinButton.classList.toggle('hidden', !pinnedText || next.user?.isAdmin !== true);
+  if ($('#chatHookConnectionStatus')) {
+    $('#chatHookConnectionStatus').textContent = next.chat?.open === false ? 'Somente administradores' : 'Ao vivo';
+  }
+  renderChatHookCurrentUser();
+  const customerNameInput = $('#chatCustomerNameInput');
+  if (customerNameInput && document.activeElement !== customerNameInput) {
+    customerNameInput.value = String(next.user?.name || '');
+  }
+  if (messagesChanged) renderChatHookMessages(full);
+  renderChatHookControls();
+  if ($('#chatHookStatus')?.dataset.kind === 'connection') $('#chatHookStatus').textContent = '';
+}
+
+async function refreshChatHook(forceFull = false) {
+  if (!isChatHookHomeVisible() || chatHookPollInFlight) return;
+  chatHookPollInFlight = true;
+  chatHookLastPollAt = Date.now();
+  try {
+    const afterId = forceFull ? 0 : chatHookLastMessageId;
+    const result = await window.hookUpdateCenter.getChatState(afterId);
+    const serverRevision = Math.max(0, Number(result?.chat?.revision || 0));
+    if (!forceFull && chatHookRevision && serverRevision !== chatHookRevision) {
+      chatHookPollInFlight = false;
+      await refreshChatHook(true);
+      return;
+    }
+    applyChatHookState(result, { full: forceFull || !chatHookState });
+  } catch (error) {
+    const status = $('#chatHookStatus');
+    if (status) {
+      status.dataset.kind = 'connection';
+      status.textContent = friendlyError(error, 'Não foi possível conectar ao Chat Hook.');
+    }
+    if ($('#chatHookConnectionStatus')) $('#chatHookConnectionStatus').textContent = 'Desconectado';
+    if (!chatHookState) {
+      const messages = $('#chatHookMessages');
+      if (messages) messages.innerHTML = '<div class="chat-hook-empty">Ative sua licença e conecte-se à internet para usar o chat.</div>';
+      renderChatHookControls();
+    }
+  } finally {
+    chatHookPollInFlight = false;
+  }
+}
+
+function startChatHookPolling() {
+  if (chatHookPollTimer) return;
+  chatHookPollTimer = window.setInterval(() => {
+    if (Date.now() - chatHookLastPollAt >= 3000) refreshChatHook(false).catch(() => {});
+    renderChatHookControls();
+  }, 1000);
+}
+
+function readChatHookFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Não foi possível ler a mídia escolhida.'));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const base64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : '';
+      if (!base64) return reject(new Error('A mídia escolhida é inválida.'));
+      resolve({ mimeType: file.type, base64, dataUrl, name: file.name || 'mídia' });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function readChatHookVideoDuration(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    const finish = (callback) => {
+      URL.revokeObjectURL(url);
+      video.removeAttribute('src');
+      callback();
+    };
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => finish(() => resolve(Number(video.duration) || 0));
+    video.onerror = () => finish(() => reject(new Error('Não foi possível verificar a duração do vídeo.')));
+    video.src = url;
+  });
+}
+
+async function readChatHookImage(file, maxBytes) {
+  const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  if (!file || !allowed.includes(String(file.type || '').toLowerCase())) {
+    throw new Error('Escolha uma imagem PNG, JPG, WEBP ou GIF.');
+  }
+  if (file.size > maxBytes) {
+    throw new Error(`A imagem deve ter no máximo ${Math.floor(maxBytes / 1024 / 1024)} MB.`);
+  }
+  return { ...(await readChatHookFile(file)), kind: 'image' };
+}
+
+async function readChatHookMedia(file) {
+  const mimeType = String(file?.type || '').toLowerCase();
+  const imageTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  const videoTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
+  if (imageTypes.includes(mimeType)) {
+    if (file.size > 6 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 6 MB.');
+    return { ...(await readChatHookFile(file)), kind: 'image' };
+  }
+  if (!videoTypes.includes(mimeType)) throw new Error('Escolha uma imagem ou um vídeo MP4, MOV ou WEBM.');
+  if (chatHookState?.user?.isAdmin !== true) throw new Error('Somente administradores podem enviar vídeos.');
+  if (file.size > 40 * 1024 * 1024) throw new Error('O vídeo deve ter no máximo 40 MB.');
+  const durationSeconds = await readChatHookVideoDuration(file);
+  if (!durationSeconds || durationSeconds > 30.25) throw new Error('O vídeo pode ter no máximo 30 segundos.');
+  return { ...(await readChatHookFile(file)), kind: 'video', durationSeconds };
+}
+
+function clearChatHookSelectedMedia() {
+  chatHookSelectedMedia = null;
+  $('#chatHookImagePreview')?.classList.add('hidden');
+  const imagePreview = $('#chatHookImagePreviewImage');
+  if (imagePreview) {
+    imagePreview.removeAttribute('src');
+    imagePreview.classList.remove('hidden');
+  }
+  const videoPreview = $('#chatHookVideoPreview');
+  if (videoPreview) {
+    videoPreview.pause();
+    videoPreview.removeAttribute('src');
+    videoPreview.classList.add('hidden');
+  }
+  const input = $('#chatHookImageInput');
+  if (input) input.value = '';
+}
+
+async function sendChatHookMessage() {
+  if (chatHookSending) return;
+  const input = $('#chatHookMessageInput');
+  const text = String(input?.value || '').trim();
+  if (!text && !chatHookSelectedMedia) {
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = 'Digite uma mensagem ou escolha uma mídia.';
+    return;
+  }
+  const selectedMedia = chatHookSelectedMedia ? { ...chatHookSelectedMedia } : null;
+  const optimisticId = selectedMedia ? Date.now() * 1000 + Math.floor(Math.random() * 1000) : 0;
+  if (optimisticId) {
+    const user = chatHookState?.user || {};
+    chatHookMessagesById.set(optimisticId, {
+      id: optimisticId,
+      customerId: user.id || null,
+      name: user.name || 'User',
+      isAdmin: user.isAdmin === true,
+      text,
+      imageUrl: selectedMedia.kind === 'image' ? selectedMedia.dataUrl : '',
+      videoUrl: selectedMedia.kind === 'video' ? selectedMedia.dataUrl : '',
+      videoDurationSeconds: selectedMedia.durationSeconds || 0,
+      avatarUrl: user.avatarUrl || '',
+      createdAt: new Date().toISOString(),
+      pending: true
+    });
+    if (input) input.value = '';
+    clearChatHookSelectedMedia();
+    renderChatHookMessages(true);
+  }
+  chatHookSending = true;
+  renderChatHookControls();
+  try {
+    const result = await window.hookUpdateCenter.sendChatMessage({
+      text,
+      image: selectedMedia?.kind === 'image' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
+      video: selectedMedia?.kind === 'video' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64, durationSeconds: selectedMedia.durationSeconds } : null
+    });
+    if (optimisticId) chatHookMessagesById.delete(optimisticId);
+    if (input) input.value = '';
+    clearChatHookSelectedMedia();
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
+    applyChatHookState(result, { full: false });
+    renderChatHookMessages(true);
+  } catch (error) {
+    if (optimisticId && chatHookMessagesById.has(optimisticId)) {
+      chatHookMessagesById.set(optimisticId, {
+        ...chatHookMessagesById.get(optimisticId),
+        pending: false,
+        failed: true
+      });
+      renderChatHookMessages(true);
+    }
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = friendlyError(error, 'Não foi possível enviar a mensagem.');
+    await refreshChatHook(false).catch(() => {});
+  } finally {
+    chatHookSending = false;
+    renderChatHookControls();
+  }
+}
+
+async function setChatHookPinnedMessage(messageId, button = null) {
+  if (chatHookState?.user?.isAdmin !== true) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await window.hookUpdateCenter.setChatPinnedMessage({ messageId });
+    applyChatHookState(result, { full: true });
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = Number(messageId) > 0 && Number(result?.chat?.pinnedMessageId || 0) > 0
+      ? 'Mensagem fixada no topo.'
+      : 'Mensagem desafixada.';
+  } catch (error) {
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = friendlyError(error, 'Não foi possível alterar a mensagem fixada.');
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
+async function deleteChatHookMessage(messageId, button = null) {
+  const normalizedId = Math.floor(Number(messageId));
+  if (!Number.isInteger(normalizedId) || normalizedId < 1) return;
+  const confirmed = await confirmModal({
+    title: 'Apagar mensagem?',
+    message: 'Essa mensagem será apagada do Chat Hook para todos. Essa ação não pode ser desfeita.',
+    type: 'warning',
+    okText: 'Apagar',
+    cancelText: 'Cancelar'
+  });
+  if (!confirmed) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await window.hookUpdateCenter.deleteChatMessage({ messageId: normalizedId });
+    applyChatHookState(result, { full: true });
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = 'Mensagem apagada.';
+  } catch (error) {
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = friendlyError(error, 'Não foi possível apagar a mensagem.');
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
+function setupChatHook() {
+  const sendWithEnter = $('#chatHookSendWithEnter');
+  if (sendWithEnter) {
+    sendWithEnter.checked = localStorage.getItem('chatHookSendWithEnter') === '1';
+    sendWithEnter.addEventListener('change', () => {
+      localStorage.setItem('chatHookSendWithEnter', sendWithEnter.checked ? '1' : '0');
+    });
+  }
+  $('#saveChatCustomerNameButton')?.addEventListener('click', async () => {
+    const input = $('#chatCustomerNameInput');
+    const button = $('#saveChatCustomerNameButton');
+    const message = $('#chatCustomerNameMessage');
+    const name = String(input?.value || '').replace(/\s+/g, ' ').trim();
+    if (!name) {
+      if (message) message.textContent = 'Digite seu nome.';
+      input?.focus();
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Salvando...';
+    }
+    try {
+      const result = await window.hookUpdateCenter.updateChatProfile({ name });
+      applyChatHookState(result, { full: true });
+      if (message) message.textContent = 'Nome atualizado.';
+    } catch (error) {
+      if (message) message.textContent = friendlyError(error, 'Não foi possível atualizar seu nome.');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Salvar meu nome';
+      }
+    }
+  });
+  const picker = $('#chatHookEmojiPicker');
+  if (picker) {
+    picker.addEventListener('emoji-click', (event) => {
+      const input = $('#chatHookMessageInput');
+      const emoji = String(event.detail?.unicode || '');
+      if (!emoji || !input) return;
+      const start = Number.isFinite(input.selectionStart) ? input.selectionStart : input.value.length;
+      const end = Number.isFinite(input.selectionEnd) ? input.selectionEnd : start;
+      input.setRangeText(emoji, start, end, 'end');
+      input.focus();
+      picker.classList.add('hidden');
+    });
+  }
+  const emojiButton = $('#chatHookEmojiButton');
+  emojiButton?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    picker?.classList.toggle('hidden');
+  });
+  document.addEventListener('pointerdown', (event) => {
+    if (!picker || picker.classList.contains('hidden')) return;
+    if (event.target === emojiButton || event.target === picker || picker.contains(event.target)) return;
+    picker.classList.add('hidden');
+  });
+  $('#chatHookImageButton')?.addEventListener('click', () => $('#chatHookImageInput')?.click());
+  $('#chatHookImageInput')?.addEventListener('change', async (event) => {
+    try {
+      chatHookSelectedMedia = await readChatHookMedia(event.target.files?.[0]);
+      const imagePreview = $('#chatHookImagePreviewImage');
+      const videoPreview = $('#chatHookVideoPreview');
+      if (chatHookSelectedMedia.kind === 'video') {
+        if (imagePreview) imagePreview.classList.add('hidden');
+        if (videoPreview) {
+          videoPreview.src = chatHookSelectedMedia.dataUrl;
+          videoPreview.classList.remove('hidden');
+        }
+      } else {
+        if (imagePreview) {
+          imagePreview.src = chatHookSelectedMedia.dataUrl;
+          imagePreview.classList.remove('hidden');
+        }
+        if (videoPreview) videoPreview.classList.add('hidden');
+      }
+      $('#chatHookImagePreview')?.classList.remove('hidden');
+      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
+    } catch (error) {
+      clearChatHookSelectedMedia();
+      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
+    }
+  });
+  $('#chatHookRemoveImageButton')?.addEventListener('click', clearChatHookSelectedMedia);
+  $('#chatHookSendButton')?.addEventListener('click', sendChatHookMessage);
+  $('#chatHookMessageInput')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing) return;
+    const sendOnPlainEnter = sendWithEnter?.checked === true &&
+      !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+    const sendOnShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey;
+    if (sendOnPlainEnter || sendOnShortcut) {
+      event.preventDefault();
+      sendChatHookMessage();
+    }
+  });
+  $('#chatHookMessages')?.addEventListener('click', (event) => {
+    const deleteButton = event.target.closest('[data-chat-delete-message-id]');
+    if (deleteButton) {
+      deleteChatHookMessage(Number(deleteButton.dataset.chatDeleteMessageId || 0), deleteButton);
+      return;
+    }
+    const pinButton = event.target.closest('[data-chat-pin-message-id]');
+    if (pinButton) {
+      setChatHookPinnedMessage(Number(pinButton.dataset.chatPinMessageId || 0), pinButton);
+      return;
+    }
+    const button = event.target.closest('[data-chat-image-url]');
+    if (button?.dataset.chatImageUrl) window.hookUpdateCenter.openExternal(button.dataset.chatImageUrl).catch(() => {});
+  });
+  $('#chatHookUnpinButton')?.addEventListener('click', (event) => setChatHookPinnedMessage(0, event.currentTarget));
+  $('#chatHookAvatarButton')?.addEventListener('click', () => $('#chatHookAvatarInput')?.click());
+  $('#chatHookAvatarInput')?.addEventListener('change', async (event) => {
+    const status = $('#chatHookStatus');
+    try {
+      const image = await readChatHookImage(event.target.files?.[0], 3 * 1024 * 1024);
+      if (status) status.textContent = 'Salvando foto...';
+      const result = await window.hookUpdateCenter.uploadChatAvatar({ image: { mimeType: image.mimeType, base64: image.base64 } });
+      applyChatHookState(result, { full: true });
+      if (status) status.textContent = 'Foto atualizada.';
+    } catch (error) {
+      if (status) status.textContent = friendlyError(error, 'Não foi possível alterar a foto.');
+    } finally {
+      event.target.value = '';
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (isChatHookHomeVisible()) refreshChatHook(!chatHookState).catch(() => {});
+  });
+  startChatHookPolling();
 }
 
 
@@ -2234,6 +2799,8 @@ async function init() {
     });
   });
   await refreshState();
+  setupChatHook();
+  refreshChatHook(true).catch(() => {});
 
   $('#modalOkButton').addEventListener('click', () => {
     if (pendingModalRequest) {
@@ -2624,7 +3191,13 @@ async function init() {
   });
 
   window.hookUpdateCenter.onUpdateStatus(renderState);
-  window.hookUpdateCenter.onLicenseStatus(renderState);
+  window.hookUpdateCenter.onLicenseStatus((nextState) => {
+    renderState(nextState);
+    chatHookState = null;
+    chatHookMessagesById.clear();
+    chatHookLastMessageId = 0;
+    refreshChatHook(true).catch(() => {});
+  });
   // A verificação de atualização não deve abrir popup de erro. Instabilidade de rede/backend fica silenciosa.
   window.hookUpdateCenter.onUpdateError((message) => console.warn('[Hook Center] update-error ignorado:', message));
   window.hookUpdateCenter.onDownloadProgress((progress) => {

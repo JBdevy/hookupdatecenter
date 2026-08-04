@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-save-project-bpm-ui-v1'
+  const VERSION = '1.0.1-director-bpm-input-generic-v15'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -97,6 +97,8 @@
     pendingProjectId: '',
     pendingProjectIndex: -1,
     pendingProjectUntil: 0,
+    optimisticProjectSaved: false,
+    optimisticProjectSavedUntil: 0,
     showMarkersOverlay: readLocal('vshook_director_parts_open', '0') === '1',
     optimisticActivePlaylistId: '',
     optimisticActivePlaylistName: '',
@@ -116,7 +118,7 @@
     numberOrderConfirmUseRegionId: false,
     numberOrderConfirmDescending: false,
     showTunerScreen: readLocal('vshook_director_tuner_open', '0') === '1',
-    showBpmScreen: false,
+    showBpmScreen: readLocal('vshook_director_bpm_open', '0') === '1',
     showTelepromptScreen: false,
     showRecadosScreen: false,
     recadosDraft: '',
@@ -138,7 +140,7 @@
     tabletSongToolsTarget: null,
     showTabletMultiLoopsModal: false,
     tabletMultiLoopTracksSlot: 0,
-    tabletMultiLoopTracksScrollBySlot: { 1: 0, 2: 0 },
+    tabletMultiLoopTracksScrollBySlot: { 1: 0, 2: 0, 3: 0, 4: 0 },
     tabletMultiLoopAutoLimitTarget: null,
     tabletMultiLoopAutoLimitTimer: 0,
     showTabletLiveResetConfirm: false,
@@ -156,6 +158,7 @@
     telepromptSlot: readLocal('vshook_director_teleprompt_slot', '1') === '2' ? 2 : 1,
     tunerSourceTab: 'playlist',
     tunerOptimisticValues: {},
+    bpmOptimisticValues: {},
     hashRegionDrawers: readJsonLocal('vshook_director_hash_drawers', {}),
     hashRegionDrawerChildren: {},
     hashRegionDrawerPendingId: '',
@@ -210,6 +213,7 @@
     tabletPlaylistPendingId: '',
     tabletPartsSplit: readLocal('vshook_director_tablet_parts_open', '0') === '1',
     tabletTunerSplit: readLocal('vshook_director_tablet_tuner_open', '0') === '1',
+    tabletBpmSplit: readLocal('vshook_director_tablet_bpm_open', '0') === '1',
     tabletMixerReturnTab: 'playlist',
     showTabletSearch: false,
     tabletSearchQuery: '',
@@ -263,6 +267,16 @@
     playlistSelectionLocalUntil: 0,
     regionSelectionLocalUntil: 0,
     directorSelectionScrollPending: null,
+  }
+
+  // Estados antigos podiam deixar duas colunas restauradas ao mesmo tempo.
+  // BPM e Tuner são modos exclusivos, tanto no celular quanto no tablet.
+  if (state.showBpmScreen) state.showTunerScreen = false
+  if (state.tabletBpmSplit) {
+    state.tabletTunerSplit = false
+    state.tabletPartsSplit = false
+  } else if (state.tabletTunerSplit) {
+    state.tabletPartsSplit = false
   }
 
   const mixerToggleHold = new Map()
@@ -336,8 +350,10 @@
     writeLocal('vshook_director_grid_open', state.showTransportSeekModal ? '1' : '0')
     writeLocal('vshook_director_parts_open', state.showMarkersOverlay ? '1' : '0')
     writeLocal('vshook_director_tuner_open', state.showTunerScreen ? '1' : '0')
+    writeLocal('vshook_director_bpm_open', state.showBpmScreen ? '1' : '0')
     writeLocal('vshook_director_tablet_parts_open', state.tabletPartsSplit ? '1' : '0')
     writeLocal('vshook_director_tablet_tuner_open', state.tabletTunerSplit ? '1' : '0')
+    writeLocal('vshook_director_tablet_bpm_open', state.tabletBpmSplit ? '1' : '0')
     syncNativeFamilyDrawers()
   }
 
@@ -1443,6 +1459,66 @@
     return n > 0 ? `+${n}` : String(n)
   }
 
+  function clampBpmValue(value) {
+    const n = Math.round(Number(value) || 0)
+    return Math.max(10, Math.min(960, n))
+  }
+
+  function getBpmItemKey(item) {
+    return String(getId(item) || '')
+  }
+
+  function getBpmValue(item) {
+    const key = getBpmItemKey(item)
+    const pending = key ? state.bpmOptimisticValues?.[key] : null
+    if (pending && Number(pending.until || 0) > now()) {
+      return clampBpmValue(pending.value)
+    }
+    if (pending && key) delete state.bpmOptimisticValues[key]
+    if (item?.bpmAvailable === false || item?.bpmControllable === false) return null
+    const value = Number(item?.bpmValue ?? item?.detectedBpm ?? item?.bpm)
+    return Number.isFinite(value) && value > 0 ? clampBpmValue(value) : null
+  }
+
+  function getBpmOriginalValue(item) {
+    const current = getBpmValue(item)
+    if (current === null) return null
+    const value = Number(item?.bpmOriginal ?? item?.originalBpm ?? current)
+    return Number.isFinite(value) && value > 0 ? clampBpmValue(value) : current
+  }
+
+  function formatBpmCurrentValue(item) {
+    const current = getBpmValue(item)
+    if (current === null) return '—'
+    return String(current)
+  }
+
+  function formatBpmDeltaValue(item) {
+    const current = getBpmValue(item)
+    if (current === null) return '—'
+    const original = getBpmOriginalValue(item)
+    const difference = original === null ? 0 : current - original
+    return difference > 0 ? `+${difference}` : String(difference)
+  }
+
+  function bpmItemIsPlaying(item, data = state.snapshot) {
+    return !!item && !isBlock(item) && rowRepresentsPlayingSong(item, data)
+  }
+
+  function bpmItemIsGeneric(item) {
+    return item?.bpmGeneric === true || item?.bpm_generic === true
+  }
+
+  function getBpmValuesSignature(data = state.snapshot) {
+    if (!state.showBpmScreen && !state.tabletBpmSplit) return ''
+    const source = state.showBpmScreen
+      ? getMobileTunerSourceItems(data) : getTunerSourceItems(data)
+    return source.map((item) => {
+      if (isBlock(item)) return `b:${getId(item)}:${getName(item)}`
+      return `${getBpmItemKey(item)}:${formatBpmCurrentValue(item)}:${formatBpmDeltaValue(item)}:${bpmItemIsGeneric(item) ? 1 : 0}:${bpmItemIsPlaying(item, data) ? 1 : 0}`
+    }).join('|')
+  }
+
   function getTunerSourceItems(data = state.snapshot) {
     return state.tunerSourceTab === 'regions' ? getRegions(data) : getPlaylistItems(data)
   }
@@ -1650,6 +1726,54 @@
       state.pendingProjectIndex = -1
       state.pendingProjectUntil = 0
     }
+  }
+
+  function getProjectDirtyForUi(data = state.snapshot) {
+    if (state.optimisticProjectSaved &&
+        now() < Number(state.optimisticProjectSavedUntil || 0)) {
+      return false
+    }
+    return data?.projectDirty === true
+  }
+
+  function getProjectItemDirtyForUi(item, index = 0, data = state.snapshot) {
+    const explicit = [
+      item?.projectDirty,
+      item?.dirty,
+      item?.isDirty,
+      item?.modified,
+      item?.needsSave,
+      item?.unsaved,
+      item?.hasUnsavedChanges,
+    ].find((value) => typeof value === 'boolean')
+    if (typeof explicit === 'boolean') return explicit
+
+    // Em snapshots antigos somente a sessão realmente ativa informa
+    // projectDirty. Não transfere o * para uma seleção otimista ainda não
+    // confirmada pelo REAPER.
+    const active = getSnapshotActiveProjectSelection(data)
+    const id = getProjectItemId(item, index)
+    const itemIndex = getProjectItemIndex(item, index)
+    const isActive = active.id ? active.id === id : active.index === itemIndex
+    return isActive && getProjectDirtyForUi(data)
+  }
+
+  function syncOptimisticProjectSaved(data = state.snapshot) {
+    if (!state.optimisticProjectSaved) return
+    if (data?.projectDirty === false ||
+        now() >= Number(state.optimisticProjectSavedUntil || 0)) {
+      state.optimisticProjectSaved = false
+      state.optimisticProjectSavedUntil = 0
+    }
+  }
+
+  function syncProjectSaveButtonDom() {
+    const projectDirty = getProjectDirtyForUi()
+    const buttons = root.querySelectorAll('.projectSaveBtn')
+    buttons.forEach((button) => {
+      button.classList.toggle('projectSaveBtnDirty', projectDirty)
+      button.classList.toggle('projectSaveBtnSaved', !projectDirty)
+    })
   }
 
   function getActiveProject(data = state.snapshot) {
@@ -2098,7 +2222,7 @@
         const pos = firstFiniteNumber([marker?.pos, marker?.position, marker?.startPos, marker?.start_pos])
         if (pos === null || pos <= start + 0.0005 || pos >= end - 0.0005) return null
         const markerName = getName(marker)
-        const isLoop = markerName.startsWith('*1') || markerName.startsWith('*2')
+        const isLoop = /^\*[1-4]/.test(markerName)
         return {
           percent: clampPercent(((pos - start) / (end - start)) * 100),
           isLoop,
@@ -2424,11 +2548,8 @@
     if (raw.startsWith('$')) {
       prefix = '$'
       name = raw.slice(1)
-    } else if (raw.startsWith('*1')) {
-      prefix = '*1'
-      name = raw.slice(2)
-    } else if (raw.startsWith('*2')) {
-      prefix = '*2'
+    } else if (/^\*[1-4]/.test(raw)) {
+      prefix = raw.slice(0, 2)
       name = raw.slice(2)
     } else {
       return null
@@ -3171,8 +3292,11 @@
         state.showMarkersOverlay = false
         state.tabletPartsSplit = false
         state.tabletTunerSplit = false
+        state.tabletBpmSplit = false
         state.showMenu = false
-        state.showTabletSearch = false
+        // A Lupa inteligente pode trocar automaticamente de Repertorio para
+        // Musicas enquanto o usuario ainda esta digitando. Essa sincronizacao
+        // de pagina nao pode fechar a pesquisa no app (celular ou tablet).
         state.showSettingsModal = false
         state.showPlaylistModal = false
         state.showProjectModal = false
@@ -4086,6 +4210,7 @@
     state.showTimerModal = false
     state.showSettingsModal = false
     state.showTunerScreen = false
+    state.showBpmScreen = false
     state.showTelepromptScreen = false
     state.showRecadosScreen = false
 
@@ -4459,8 +4584,17 @@
       const dbText = formatMixerDb(liveItem)
       const groupDisplay = row.querySelector('.mixerRowGroupName')
       const dbDisplay = row.querySelector('.mixerRowDb')
+      const volumeInput = row.querySelector(
+        '.mixerInlineSlider[data-action="mixer-volume"]',
+      )
       if (groupDisplay) groupDisplay.textContent = dbText
       if (dbDisplay) dbDisplay.textContent = dbText
+      if (volumeInput) {
+        const ratio = getMixerRatio(liveItem)
+        if (Math.abs(Number(volumeInput.value) - ratio) > 0.0005) {
+          volumeInput.value = String(ratio)
+        }
+      }
     })
   }
 
@@ -4584,6 +4718,8 @@
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
       syncBlockHeightModeDom(state.snapshot)
       syncPendingProjectSelection(state.snapshot)
+      syncOptimisticProjectSaved(state.snapshot)
+      syncProjectSaveButtonDom()
       syncSharedInterfaceState(state.snapshot)
       // AUTO 1 e AUTO 2 são front-first: o snapshot antigo não desfaz o
       // toque enquanto o Bridge processa o comando. Só libera o estado
@@ -4620,6 +4756,7 @@
         state.showProjectModal = false
         state.showTimerModal = false
         state.showTunerScreen = false
+        state.showBpmScreen = false
         state.showRecadosScreen = false
         state.showTransportSeekModal = false
         state.showPremixScreen = false
@@ -5103,6 +5240,19 @@
           const sourceAttr = sourceNumber == null ? '' : ` data-tuner-source-number="${sourceNumber}"`
           tabletTunerControls = `<div class="tabletTunerInlineControls"><button class="tunerStepBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceAttr}${value <= -12 ? ' disabled' : ''}>−</button><button class="tabletTunerZero" data-action="tuner-reset" data-tuner-song-id="${id}"${sourceAttr}>${escapeHtml(formatTunerValue(value))}st</button><button class="tunerStepBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceAttr}${value >= 12 ? ' disabled' : ''}>+</button></div>`
         }
+      } else if (options.tabletBpm && (type === 'playlist' || type === 'region')) {
+        const bpmUnavailable = isBlockRow || isHashParent(item)
+        if (bpmUnavailable) {
+          tabletTunerControls = '<div class="tabletTunerInlineControls tabletBpmInlineControls tabletTunerInlineControlsEmpty"></div>'
+        } else {
+          const value = getBpmValue(item)
+          const playingBpm = bpmItemIsPlaying(item, state.snapshot)
+          const genericBpm = bpmItemIsGeneric(item)
+          const minDisabled = playingBpm || (value !== null && value <= 10) ? ' disabled aria-disabled="true"' : ''
+          const maxDisabled = playingBpm || (value !== null && value >= 960) ? ' disabled aria-disabled="true"' : ''
+          const bpmUnit = value === null ? '' : ' BPM'
+          tabletTunerControls = `<div class="tabletTunerInlineControls tabletBpmInlineControls${playingBpm ? ' tabletBpmInlineControlsPlaying' : ''}"><button class="tunerStepBtn bpmStepBtn" data-action="bpm-minus" data-bpm-song-id="${id}"${minDisabled}>−</button><div class="tabletTunerZero tabletBpmInlineValue" data-bpm-delta-for="${id}">${escapeHtml(formatBpmDeltaValue(item))}</div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-plus" data-bpm-song-id="${id}"${maxDisabled}>+</button><div class="tabletTunerZero tabletBpmCurrentValue${genericBpm ? ' bpmGenericValue' : ''}" data-bpm-value-for="${id}">${escapeHtml(formatBpmCurrentValue(item))}${bpmUnit}</div></div>`
+        }
       }
       const hashParentKey = entry.hashParent ? String(rawId || getRegionNumberValue(item) || entry.index) : ''
       const hashParentAttr = hashParentKey ? ` data-hash-parent-key="${escapeHtml(hashParentKey)}" data-hash-parent="1"` : ''
@@ -5136,7 +5286,7 @@
             ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="width:${queueProgress}%"></div></div>`
             : ''
       return `
-        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner ? ' tabletTunerUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}"${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${drawerStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
+        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner || options.tabletBpm ? ' tabletTunerUnifiedItem' : ''}${options.tabletBpm ? ' tabletBpmUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}"${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${drawerStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
           ${drawerFamilyTop || drawerFamilyChild ? '<span class="drawerOutlineSides" aria-hidden="true"></span>' : ''}
           ${drawerFamilyTop ? '<span class="drawerOutlineTop" aria-hidden="true"></span>' : ''}
           ${drawerFamilyBottom ? '<span class="drawerOutlineBottom" aria-hidden="true"></span>' : ''}
@@ -5216,7 +5366,7 @@
 
   function cleanLoopMarkerName(value) {
     let name = String(value || '').trim()
-    if (name.startsWith('*1') || name.startsWith('*2')) name = name.slice(2)
+    if (/^\*[1-4]/.test(name)) name = name.slice(2)
     else if (name.startsWith('$') || name.startsWith('!')) name = name.slice(1)
     name = name.replace(/^[-–—:\s]+/, '').trim()
     return upperText(name)
@@ -5275,8 +5425,9 @@
         data?.multiloops?.selectedOrPlayingActive === true) return true
 
     const multiLoops = data?.multiloops
-    if (!multiLoops || (multiLoops.loop1Enabled !== true &&
-        multiLoops.loop2Enabled !== true)) return false
+    if (!multiLoops || ![1, 2, 3, 4].some(
+      (slot) => multiLoops[`loop${slot}Enabled`] === true
+    )) return false
 
     const focusId = String(multiLoops.songId || '')
     if (!focusId) return false
@@ -5784,7 +5935,8 @@
       const muted = getHeldMixerToggle(item, 'mute')
       const solo = getHeldMixerToggle(item, 'solo')
       const db = formatMixerDb(item)
-      return `<div class="mixerRow" data-action="mixer-volume-open" data-mixer-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
+      const ratio = getMixerRatio(item)
+      return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('') || `<div class="emptyBox">MIXER SEM DADOS</div>`
     return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox">${rows}</div></div>`
   }
@@ -5876,7 +6028,8 @@
   }
 
   function renderTunerScreen() {
-    if (!state.showTunerScreen) return ''
+    if (!state.showTunerScreen && !state.showBpmScreen) return ''
+    const bpmMode = state.showBpmScreen && !state.showTunerScreen
     const data = state.snapshot || {}
     const sourceType = getTunerSourceType()
     const items = getMobileTunerSourceItems()
@@ -5941,6 +6094,24 @@
         `
       }
 
+      if (bpmMode) {
+        const value = getBpmValue(item)
+        const bpmUnit = value === null ? '' : '<small> BPM</small>'
+        const playingBpm = bpmItemIsPlaying(item, data)
+        const genericBpm = bpmItemIsGeneric(item)
+        const minDisabled = playingBpm || (value !== null && value <= 10) ? ' disabled aria-disabled="true"' : ''
+        const maxDisabled = playingBpm || (value !== null && value >= 960) ? ' disabled aria-disabled="true"' : ''
+        return `
+          <div class="${rowCls} numberedItem tunerFullRow bpmFullRow${playingBpm ? ' bpmFullRowPlaying' : ''}" data-bpm-row-id="${id}" ${selectAttrs}>
+            ${rowProgress}
+            <div class="rowNumberCol"><span class="rowNumberText"${numberColorStyle}>${escapeHtml(rowNumber)}</span></div>
+            <div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div>
+            <div class="bpmFullControls"><button class="tunerStepBtn bpmStepBtn" data-action="bpm-minus" data-bpm-song-id="${id}"${minDisabled}>−</button><div class="bpmFullDelta" data-bpm-delta-for="${id}">${escapeHtml(formatBpmDeltaValue(item))}</div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-plus" data-bpm-song-id="${id}"${maxDisabled}>+</button></div>
+            <div class="bpmFullCurrent${genericBpm ? ' bpmGenericValue' : ''}" data-bpm-value-for="${id}">${escapeHtml(formatBpmCurrentValue(item))}${bpmUnit}</div>
+          </div>
+        `
+      }
+
       const value = getTunerValue(item)
       const sourceNumber = getTunerSourceNumber(item)
       const minDisabled = value <= -12 ? ' disabled aria-disabled="true"' : ''
@@ -5958,47 +6129,17 @@
     }).join('') || '<div class="emptyBox">NENHUMA MÚSICA ENCONTRADA</div>'
 
     return `
-      <div class="tunerFullScreen" data-stop-modal>
+      <div class="tunerFullScreen${bpmMode ? ' tunerFullScreenBpmMode' : ''}" data-stop-modal>
         <div class="tunerFullHeader tunerFullTransportHeader">
           <div class="tunerFullTransportActions">
             <button class="${playClass}" data-action="play"${fadeoutStyle}>${playLabel}</button>
             <button class="${stopBreakClass}" data-action="stop-break"${fadeoutStyle}>STOP BREAK</button>
-            <button class="tunerFullCloseBtn" data-action="tuner-close">FECHAR</button>
+            <button class="tunerFullCloseBtn" data-action="tone-tools-close">FECHAR</button>
           </div>
         </div>
         <div class="tunerFullList listBox">${rows}</div>
       </div>
     `
-  }
-
-  function renderBpmScreen() {
-    if (!state.showBpmScreen) return ''
-    const data = state.snapshot || {}
-    const sourceType = state.tunerSourceTab === 'regions' ? 'region' : 'playlist'
-    const items = getMobileTunerSourceItems()
-    let blockNumber = 0
-    let songNumber = 0
-    const rows = (Array.isArray(items) ? items : []).map((item, index) => {
-      const block = isBlock(item)
-      if (block) blockNumber += 1
-      if (!block) songNumber += 1
-      const id = escapeHtml(String(getId(item) || ''))
-      const name = escapeHtml(getRowDisplayName(item, index, blockNumber))
-      const rowNumber = block ? '' : getRowNumberText(item, songNumber)
-      const rowCls = tunerRowClass(sourceType, item, data)
-      const rowTextCls = tunerTextClass(sourceType, item, data)
-      const colorStyle = getAppTheme() === 'light'
-        ? ' style="color:#050505!important"'
-        : itemColorStyle(item, sourceType)
-      if (block) {
-        return `<div class="${rowCls} numberedItem tunerFullRow tunerFullBlockRow bpmFullBlockRow"><div class="rowNumberCol"><span class="rowNumberText"></span></div><div class="leftCol tunerFullBlockName"><span class="text"${colorStyle}>${name}</span></div></div>`
-      }
-      if (isHashParent(item)) {
-        return `<div class="${rowCls} numberedItem tunerFullRow tunerFullParentRow bpmFullParentRow"><div class="rowNumberCol"><span class="rowNumberText">${escapeHtml(rowNumber)}</span></div><div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div></div>`
-      }
-      return `<div class="${rowCls} numberedItem tunerFullRow bpmFullRow" data-bpm-row-id="${id}"><div class="rowNumberCol"><span class="rowNumberText">${escapeHtml(rowNumber)}</span></div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-minus" data-bpm-song-id="${id}">−</button><div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div><div class="tunerFullValue bpmFullValue" data-bpm-value-for="${id}">—<small> BPM</small></div><button class="tunerStepBtn bpmStepBtn" data-action="bpm-plus" data-bpm-song-id="${id}">+</button></div>`
-    }).join('') || '<div class="emptyBox">NENHUMA MÚSICA ENCONTRADA</div>'
-    return `<div class="tunerFullScreen bpmFullScreen" data-stop-modal><div class="tunerFullHeader bpmFullHeader"><div class="tunerFullTransportActions"><div class="bpmFullTitle">BPM</div><button class="tunerFullCloseBtn" data-action="bpm-close">FECHAR</button></div></div><div class="tunerFullList listBox">${rows}</div></div>`
   }
 
   function adjustTunerFromButton(el, delta, absoluteValue = null) {
@@ -6024,6 +6165,43 @@
       page: state.tunerSourceTab,
     })
     scheduleRender(true)
+  }
+
+  function adjustBpmFromButton(el, delta) {
+    const id = String(el?.getAttribute?.('data-bpm-song-id') || '')
+    if (!id) return
+    const items = state.showBpmScreen
+      ? getMobileTunerSourceItems() : getTunerSourceItems()
+    const item = items.find((candidate) => String(getId(candidate)) === id)
+    if (!item || isBlock(item) || isHashParent(item)) return
+    if (bpmItemIsPlaying(item, state.snapshot)) {
+      showPopup('NÃO É POSSÍVEL ALTERAR O BPM DA MÚSICA TOCANDO', 'error', 1800)
+      scheduleRender(true)
+      return
+    }
+    const current = getBpmValue(item)
+    if (current === null) {
+      showPopup('BPM NÃO ENCONTRADO', 'error', 1400)
+      scheduleRender(true)
+      return
+    }
+    const next = clampBpmValue(current + Number(delta || 0))
+    if (next === current) return
+    state.bpmOptimisticValues[id] = { value: next, until: now() + 5000 }
+    // O valor muda no front antes do POST; a confirmação posterior do bridge
+    // apenas consolida o estado que já está visível.
+    scheduleRender(true)
+    postCommand('bpm_set', {
+      songId: id,
+      targetId: id,
+      regionId: id,
+      value: next,
+      bpm: next,
+      startPos: getItemStart(item),
+      endPos: getItemEnd(item),
+      activeTab: state.tunerSourceTab,
+      page: state.tunerSourceTab,
+    })
   }
 
   function renderPlaylistModal() {
@@ -6065,13 +6243,20 @@
     const rows = projects.map((p, index) => {
       const projectId = getProjectItemId(p, index)
       const id = escapeHtml(projectId)
-      const name = escapeHtml(upperText(getProjectItemName(p, index)))
       const active = selectedProject.id
         ? selectedProject.id === projectId
         : selectedProject.index === getProjectItemIndex(p, index)
+      // O REAPER identifica a aba atual alterada com "*". No app usamos o
+      // mesmo projectDirty que controla o SAVE, removendo primeiro qualquer
+      // prefixo antigo para o salvamento otimista desaparecer na mesma hora.
+      const cleanName = getProjectItemName(p, index).replace(/^\s*\*+\s*/, '')
+      const displayName = getProjectItemDirtyForUi(p, index)
+        ? `*${cleanName}`
+        : cleanName
+      const name = escapeHtml(upperText(displayName))
       return `<button class="playlistOption ${active ? 'playlistOptionActive' : ''}" data-action="project-select" data-project-id="${id}" data-project-index="${index}"><span class="playlistOptionText">${name}</span></button>`
     }).join('') || `<div class="emptyBox">NENHUMA SESSÃO ABERTA</div>`
-    const projectDirty = state.snapshot?.projectDirty === true
+    const projectDirty = getProjectDirtyForUi()
     return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn ${projectDirty ? 'projectSaveBtnDirty' : 'projectSaveBtnSaved'}" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
@@ -6489,6 +6674,7 @@
     state.showTimerModal = false
     state.showSettingsModal = false
     state.showTunerScreen = false
+    state.showBpmScreen = false
     state.showTelepromptScreen = false
     state.showPremixScreen = false
     state.showMixerVolume = false
@@ -7389,6 +7575,7 @@
     state.showMenu = false
     state.showMarkersOverlay = false
     state.showTunerScreen = false
+    state.showBpmScreen = false
     if (state.activeTab === 'mixer') setTab(state.tabletMixerReturnTab || 'playlist')
     state.showTelepromptScreen = true
     if (Number(slot) === 1 || Number(slot) === 2) {
@@ -7879,6 +8066,8 @@
       const ownerId = String(parentId || getHashChildParentId(item) || '')
       const owner = ownerId ? regionById.get(ownerId) : null
       const ownerName = upperText(parentName || getName(owner) || '')
+      const rawStart = Number(item.startPos ?? item.start_pos ?? item.pos ?? item.rgnstart ?? item.regionStart ?? 0)
+      const rawEnd = Number(item.endPos ?? item.end_pos ?? item.rgnend ?? item.regionEnd ?? rawStart)
       seen.add(id)
       entries.push({
         id,
@@ -7887,6 +8076,8 @@
         parentName: ownerName,
         isChild: child,
         durationSec: getDurationSec(item),
+        start: Number.isFinite(rawStart) ? rawStart : 0,
+        end: Number.isFinite(rawEnd) ? rawEnd : 0,
         searchText: normalizeTabletSearchText(`${name} ${ownerName}`),
       })
     }
@@ -7918,7 +8109,32 @@
     return entries
   }
 
+  function getNativeTabletSearchEntries(data = state.snapshot || {}) {
+    const smartSearch = data?.smartSearch
+    if (!smartSearch || !Array.isArray(smartSearch.results) || !smartSearch.open || smartSearch.ready === false) return null
+    const localQuery = normalizeTabletSearchText(state.tabletSearchQuery).trim()
+    const appliedQuery = normalizeTabletSearchText(smartSearch.appliedQuery).trim()
+    // Enquanto os 120 ms de debounce nativo ainda nao terminaram, conserva a
+    // resposta otimista local. Assim que a extensao aplicar o texto, ela passa
+    // a ser a unica fonte dos resultados e de sua pagina de origem.
+    if (localQuery !== appliedQuery) return null
+    return smartSearch.results.map((item) => ({
+      id: String(item?.id || ''),
+      name: upperText(item?.name || 'MÚSICA'),
+      parentId: String(item?.parentId || ''),
+      parentName: upperText(item?.parentName || ''),
+      isChild: item?.isChild === true,
+      durationSec: Math.max(0, Number(item?.durationSec || 0)),
+      start: Number(item?.start || 0),
+      end: Number(item?.end || 0),
+      regionsPage: item?.regionsPage === true,
+      nativeSmartSearchResult: true,
+    })).filter((item) => !!item.id)
+  }
+
   function getFilteredTabletSearchEntries(data = state.snapshot || {}) {
+    const nativeEntries = getNativeTabletSearchEntries(data)
+    if (nativeEntries) return nativeEntries
     const query = normalizeTabletSearchText(state.tabletSearchQuery).trim()
     const entries = getTabletSearchEntries(data)
     if (!query) return entries
@@ -7939,7 +8155,7 @@
       const destination = tabletSearchEntryIsInActivePlaylist(entry, data) ? 'REPERTÓRIO' : 'MÚSICAS'
       const childLabel = entry.isChild ? `<span class="tabletSearchResultParent">FILHO DE ${escapeHtml(entry.parentName || 'REGIÃO')}</span>` : ''
       const duration = entry.durationSec > 0 ? formatTime(entry.durationSec) : ''
-      return `<button type="button" class="tabletSearchResult" data-action="tablet-search-result" data-search-id="${escapeHtml(entry.id)}"><span class="tabletSearchResultMain"><span class="tabletSearchResultName">${escapeHtml(entry.name)}</span>${childLabel}</span><span class="tabletSearchResultSide"><span class="tabletSearchResultDestination">${destination}</span>${duration ? `<span class="tabletSearchResultTime">${escapeHtml(duration)}</span>` : ''}</span></button>`
+      return `<button type="button" class="tabletSearchResult" data-action="tablet-search-result" data-search-id="${escapeHtml(entry.id)}" data-search-start="${escapeHtml(Number(entry.start || 0))}"><span class="tabletSearchResultMain"><span class="tabletSearchResultName">${escapeHtml(entry.name)}</span>${childLabel}</span><span class="tabletSearchResultSide"><span class="tabletSearchResultDestination">${destination}</span>${duration ? `<span class="tabletSearchResultTime">${escapeHtml(duration)}</span>` : ''}</span></button>`
     }).join('')
   }
 
@@ -8020,7 +8236,7 @@
         <button class="tabletTopBarButton tabletTopBarRepertorios${state.activeTab === 'playlist' && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="go-playlist">REPERTÓRIO</button>
         <button class="tabletTopBarButton tabletTopBarMusicas${state.activeTab === 'regions' && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="go-regions">MÚSICAS</button>
         <button class="tabletTopBarButton tabletTopBarTuner${state.tabletTunerSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-tuner-split">TUNER</button>
-        <button class="tabletTopBarButton tabletTopBarBpm${state.showBpmScreen ? ' tabletTopBarButtonActive' : ''}" data-action="bpm-focus">BPM</button>
+        <button class="tabletTopBarButton tabletTopBarBpm${state.tabletBpmSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-bpm-split">BPM</button>
         <button class="tabletTopBarButton tabletTopBarMixer${state.activeTab === 'mixer' && !state.showRecadosScreen && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-mixer">MIXER</button>
         <button class="tabletTopBarButton tabletTopBarParts${state.tabletPartsSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-parts-split">PARTS</button>
       </nav>
@@ -8028,8 +8244,11 @@
   }
 
   function renderTabletMainContent(data = state.snapshot || {}) {
-    if (IS_MUSICIAN_MONITOR || document.documentElement.dataset.directorDevice !== 'tablet' || (!state.tabletPartsSplit && !state.tabletTunerSplit)) {
+    if (IS_MUSICIAN_MONITOR || document.documentElement.dataset.directorDevice !== 'tablet' || (!state.tabletPartsSplit && !state.tabletTunerSplit && !state.tabletBpmSplit)) {
       return IS_MUSICIAN_MONITOR ? renderMusicianMonitorContent(data) : renderMainContent()
+    }
+    if (state.tabletBpmSplit) {
+      return renderTabletBpmUnifiedContent(data)
     }
     if (state.tabletTunerSplit) {
       return renderTabletTunerUnifiedContent(data)
@@ -8060,6 +8279,12 @@
     const type = state.activeTab === 'regions' ? 'region' : 'playlist'
     const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
     return `<div class="contentPanel tabletTunerUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList">${renderRows(items, type, { tabletTuner: true })}</div></div>`
+  }
+
+  function renderTabletBpmUnifiedContent(data = state.snapshot || {}) {
+    const type = state.activeTab === 'regions' ? 'region' : 'playlist'
+    const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
+    return `<div class="contentPanel tabletTunerUnifiedContent tabletBpmUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList tabletBpmUnifiedList">${renderRows(items, type, { tabletBpm: true })}</div></div>`
   }
 
   function renderTabletTunerPanel(data = state.snapshot || {}) {
@@ -8173,8 +8398,12 @@
       loops: [
         data.loop1Enabled === true, data.loop1Available === true,
         data.loop2Enabled === true, data.loop2Available === true,
+        data.loop3Enabled === true, data.loop3Available === true,
+        data.loop4Enabled === true, data.loop4Available === true,
         data.ms1Enabled === true, data.ms2Enabled === true,
+        data.ms3Enabled === true, data.ms4Enabled === true,
         data.fade1Sec ?? '', data.fade2Sec ?? '',
+        data.fade3Sec ?? '', data.fade4Sec ?? '',
       ],
       tracks: tracks.map((track, index) => [
         track?.guid ?? track?.id ?? `track-${index}`,
@@ -8184,6 +8413,8 @@
         track?.displayColor ?? track?.color ?? track?.trackColor ?? '',
         track?.auto1 === true, track?.mute1 === true, track?.solo1 === true,
         track?.auto2 === true, track?.mute2 === true, track?.solo2 === true,
+        track?.auto3 === true, track?.mute3 === true, track?.solo3 === true,
+        track?.auto4 === true, track?.mute4 === true, track?.solo4 === true,
       ]),
       mixerMetadata,
     })
@@ -8264,14 +8495,14 @@
   function rememberTabletMultiLoopTracksScroll(list = null) {
     const target = list || root.querySelector('.tabletMultiLoopTracksList')
     if (!target) return
-    const slot = Math.max(1, Math.min(2, Number(target.getAttribute('data-multiloop-slot')) || Number(state.tabletMultiLoopTracksSlot) || 1))
+    const slot = Math.max(1, Math.min(4, Number(target.getAttribute('data-multiloop-slot')) || Number(state.tabletMultiLoopTracksSlot) || 1))
     state.tabletMultiLoopTracksScrollBySlot[slot] = Math.max(0, Number(target.scrollTop) || 0)
   }
 
   function restoreTabletMultiLoopTracksScrollDom() {
     const list = root.querySelector('.tabletMultiLoopTracksList')
     if (!list) return
-    const slot = Math.max(1, Math.min(2, Number(list.getAttribute('data-multiloop-slot')) || Number(state.tabletMultiLoopTracksSlot) || 1))
+    const slot = Math.max(1, Math.min(4, Number(list.getAttribute('data-multiloop-slot')) || Number(state.tabletMultiLoopTracksSlot) || 1))
     list.scrollTop = Math.max(0, Number(state.tabletMultiLoopTracksScrollBySlot[slot]) || 0)
   }
 
@@ -8373,7 +8604,7 @@
     if (state.tabletMultiLoopAutoLimitTarget) return renderTabletMultiLoopAutoLimitModal()
     const data = getTabletMultiLoopsState()
     const slot = Number(state.tabletMultiLoopTracksSlot) || 0
-    if (slot === 1 || slot === 2) {
+    if (slot >= 1 && slot <= 4) {
       const tracks = Array.isArray(data.tracks) ? data.tracks : []
       const preparedTracks = prepareTabletMultiLoopTrackRows(tracks)
       const rows = preparedTracks.map((prepared, index) => {
@@ -8388,7 +8619,17 @@
     const toggle = (label, action, active, available, slotNumber) => {
       return `<button class="tabletMultiLoopToggle${active ? ' tabletMultiLoopToggleActive' : ''}" data-action="${action}" data-slot="${slotNumber}" data-available="${available ? '1' : '0'}">${label}</button>`
     }
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletMultiLoopModalOverlay"><div class="modalSpacer"></div><div class="modalBox tabletMultiLoopsModal" data-stop-modal><div class="modalTitle">MULTILOOPS</div><div class="tabletMultiLoopsSong">${escapeHtml(upperText(data.songName || state.tabletSongToolsTarget?.name || 'MÚSICA'))}</div><div class="tabletMultiLoopsGrid">${toggle('LOOP 1', 'tablet-multiloop-loop', data.loop1Enabled === true, data.loop1Available === true, 1)}${toggle('LOOP 2', 'tablet-multiloop-loop', data.loop2Enabled === true, data.loop2Available === true, 2)}${toggle('M/S 1', 'tablet-multiloop-ms', data.ms1Enabled === true, data.loop1Enabled === true, 1)}${toggle('M/S 2', 'tablet-multiloop-ms', data.ms2Enabled === true, data.loop2Enabled === true, 2)}</div><div class="tabletMultiLoopsHint">TOQUE E SEGURE EM M/S PARA CONFIGURAR AS PISTAS</div><div class="modalButtons tabletMultiLoopsActions"><button class="modalCancelBtn" data-action="tablet-multiloop-back">VOLTAR</button><button class="modalCancelBtn" data-action="tablet-multiloop-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    const loopButtons = [1, 2, 3, 4].map((loopSlot) =>
+      toggle(`LOOP ${loopSlot}`, 'tablet-multiloop-loop',
+        data[`loop${loopSlot}Enabled`] === true,
+        data[`loop${loopSlot}Available`] === true, loopSlot)
+    ).join('')
+    const msButtons = [1, 2, 3, 4].map((loopSlot) =>
+      toggle(`M/S ${loopSlot}`, 'tablet-multiloop-ms',
+        data[`ms${loopSlot}Enabled`] === true,
+        data[`loop${loopSlot}Enabled`] === true, loopSlot)
+    ).join('')
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletMultiLoopModalOverlay"><div class="modalSpacer"></div><div class="modalBox tabletMultiLoopsModal" data-stop-modal><div class="modalTitle">MULTILOOPS</div><div class="tabletMultiLoopsSong">${escapeHtml(upperText(data.songName || state.tabletSongToolsTarget?.name || 'MÚSICA'))}</div><div class="tabletMultiLoopsGrid">${loopButtons}${msButtons}</div><div class="tabletMultiLoopsHint">TOQUE E SEGURE EM M/S PARA CONFIGURAR AS PISTAS</div><div class="modalButtons tabletMultiLoopsActions"><button class="modalCancelBtn" data-action="tablet-multiloop-back">VOLTAR</button><button class="modalCancelBtn" data-action="tablet-multiloop-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function mountTabletPlayHoldModal() {
@@ -8636,7 +8877,7 @@
         ${renderTabletSearchScreen(data)}
         ${IS_MUSICIAN_MONITOR
           ? `${renderDirectorTelepromptScreen(data)}${renderSettingsModal()}`
-          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderProjectSaveConfirm()}${renderMixerVolumeModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderBpmScreen()}${renderPremixFullScreen(data)}`}
+          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderProjectSaveConfirm()}${renderMixerVolumeModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderPremixFullScreen(data)}`}
       </div>
     `
   }
@@ -9284,8 +9525,10 @@
     return {
       online: state.bridgeOnline,
       project: getProjectName(d),
+      projectDirty: getProjectDirtyForUi(d),
       tab: state.activeTab,
       tabletTunerSplit: state.tabletTunerSplit,
+      tabletBpmSplit: state.tabletBpmSplit,
       playlist: d.activePlaylistId,
       playing: getVisualPlayingId(d),
       transportPlaying: isPlaying(d),
@@ -9345,6 +9588,7 @@
         .map((item) => `${getId(item)}:${itemHasLiveMark(item, d) ? 1 : 0}`)
         .join('|'),
       tunerOpen: state.showTunerScreen,
+      bpmOpen: state.showBpmScreen,
       telepromptOpen: state.showTelepromptScreen,
       technicalNotice: getDirectorTechnicalNoticeKey(d),
       recadosOpen: state.showRecadosScreen,
@@ -9362,6 +9606,7 @@
       telepromptContent: getDirectorTelepromptContentKey(),
       tunerSource: state.tunerSourceTab,
       tunerValues: getTunerValuesSignature(d),
+      bpmValues: getBpmValuesSignature(d),
     }
   }
 
@@ -9589,6 +9834,7 @@
     state.showMenu = false
     state.showMarkersOverlay = false
     state.showTunerScreen = false
+    state.showBpmScreen = false
     state.showTelepromptScreen = false
     state.showPremixScreen = true
     state.premixSourceTab = type === 'region' ? 'regions' : 'playlist'
@@ -10603,94 +10849,114 @@
     scheduleRender(true)
   }
 
-  function closeTabletSearchState() {
+  function beginNativeTabletSearch() {
+    if (state.tabletSearchNativeQueryTimer) {
+      window.clearTimeout(state.tabletSearchNativeQueryTimer)
+      state.tabletSearchNativeQueryTimer = 0
+    }
+    state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
+    const serial = state.tabletSearchNativeSerial
+    state.tabletSearchNativeOpenPromise = postCommand('smart_search_open', {
+      page: state.activeTab,
+      searchSerial: serial,
+    })
+  }
+
+  function queueNativeTabletSearchQuery(query) {
+    if (state.tabletSearchNativeQueryTimer) window.clearTimeout(state.tabletSearchNativeQueryTimer)
+    const serial = Number(state.tabletSearchNativeSerial || 0)
+    const openPromise = state.tabletSearchNativeOpenPromise
+    state.tabletSearchNativeQueryTimer = window.setTimeout(() => {
+      state.tabletSearchNativeQueryTimer = 0
+      const send = () => {
+        if (!state.showTabletSearch || serial !== Number(state.tabletSearchNativeSerial || 0)) return
+        postCommand('smart_search_query', { query, searchSerial: serial })
+      }
+      Promise.resolve(openPromise).then(send, send)
+    }, 24)
+  }
+
+  function activateNativeTabletSearchResult(payload) {
+    if (state.tabletSearchNativeQueryTimer) {
+      window.clearTimeout(state.tabletSearchNativeQueryTimer)
+      state.tabletSearchNativeQueryTimer = 0
+    }
+    const serial = Number(state.tabletSearchNativeSerial || 0)
+    const openPromise = state.tabletSearchNativeOpenPromise
+    const send = () => postCommand('smart_search_activate', {
+      ...payload,
+      searchSerial: serial,
+    })
+    Promise.resolve(openPromise).then(send, send)
+  }
+
+  function closeTabletSearchState(options = {}) {
+    const wasOpen = state.showTabletSearch
     const input = document.getElementById('tabletSearchInput')
     if (input) {
       try { input.blur() } catch (_) {}
     }
     state.showTabletSearch = false
     state.tabletSearchQuery = ''
-    setDirectorSearchPortraitMode(false)
+    if (state.tabletSearchNativeQueryTimer) {
+      window.clearTimeout(state.tabletSearchNativeQueryTimer)
+      state.tabletSearchNativeQueryTimer = 0
+    }
+    const hadLegacySearchViewport = document.documentElement.classList.contains('directorSearchPortraitMode') ||
+      document.documentElement.classList.contains('directorSearchViewportRestoring')
+    if (wasOpen || hadLegacySearchViewport) setDirectorSearchPortraitMode(false)
+    if (wasOpen && options.notifyNative !== false) {
+      state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
+      // Envia antes do eventual comando de troca de aba disparado pelo mesmo
+      // clique, para que o retorno da Lupa nao sobrescreva a navegacao nova.
+      postCommand('smart_search_close')
+    }
   }
 
   function setDirectorSearchPortraitMode(enabled) {
     const rootElement = document.documentElement
     const tabletMode = rootElement.dataset.directorDevice === 'tablet'
-    const portrait = !!enabled && tabletMode
     if (state.tabletSearchViewportRestoreTimer) {
       window.clearTimeout(state.tabletSearchViewportRestoreTimer)
       state.tabletSearchViewportRestoreTimer = 0
     }
-    if (!tabletMode) {
-      rootElement.classList.remove('directorSearchPortraitMode', 'directorSearchViewportRestoring')
-      try { document.body.classList.remove('directorSearchPortraitMode') } catch (_) {}
-      state.tabletSearchViewportSnapshot = null
-      return
-    }
-    if (portrait) rootElement.classList.remove('directorSearchViewportRestoring')
-    if (portrait && !rootElement.classList.contains('directorSearchPortraitMode')) {
-      const names = ['--tablet-screen-width', '--tablet-screen-height', '--tablet-ui-width', '--tablet-ui-height', '--tablet-ui-scale', '--app-vh']
-      const snapshot = {}
-      for (const name of names) snapshot[name] = rootElement.style.getPropertyValue(name)
-      state.tabletSearchViewportSnapshot = snapshot
-    }
-    try { document.documentElement.classList.toggle('directorSearchPortraitMode', portrait) } catch (_) {}
-    try { document.body.classList.toggle('directorSearchPortraitMode', portrait) } catch (_) {}
-    if (!portrait) {
-      rootElement.classList.add('directorSearchViewportRestoring')
-      const snapshot = state.tabletSearchViewportSnapshot
-      if (snapshot) {
-        for (const name of Object.keys(snapshot)) {
-          if (snapshot[name]) rootElement.style.setProperty(name, snapshot[name])
-          else rootElement.style.removeProperty(name)
-        }
+    // A Lupa permanece na mesma prancheta escalada do modo tablet. A antiga
+    // troca para um viewport fisico separado podia deixar o #app fora da tela
+    // durante a abertura/fechamento do teclado, resultando em fundo preto.
+    rootElement.classList.remove('directorSearchPortraitMode', 'directorSearchViewportRestoring')
+    try { document.body.classList.remove('directorSearchPortraitMode') } catch (_) {}
+    state.tabletSearchViewportSnapshot = null
+    if (!tabletMode) return
+    try {
+      if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
+        window.setDirectorTabletKeyboardOpen(!!enabled)
       }
-      state.tabletSearchViewportRestoreTimer = window.setTimeout(() => {
-        state.tabletSearchViewportRestoreTimer = 0
-        state.tabletSearchViewportSnapshot = null
-        rootElement.classList.remove('directorSearchViewportRestoring')
-        updateViewportHeight()
-        try {
-          if (typeof window.updateDirectorTabletWebViewport === 'function') window.updateDirectorTabletWebViewport()
-        } catch (_) {}
-      }, 520)
-    }
+    } catch (_) {}
   }
 
-  function handleTabletSearchResult(searchId) {
+  function handleTabletSearchResult(searchId, element = null) {
     const id = String(searchId || '')
     const data = state.snapshot || {}
-    const entry = getTabletSearchEntries(data).find((candidate) => String(candidate.id) === id)
+    const entry = getFilteredTabletSearchEntries(data).find((candidate) => String(candidate.id) === id) ||
+      getTabletSearchEntries(data).find((candidate) => String(candidate.id) === id)
     if (!entry) return
+    const attributeStart = Number(element?.getAttribute?.('data-search-start'))
+    const resultStart = Number.isFinite(attributeStart)
+      ? attributeStart : Number(entry.start || 0)
+    activateNativeTabletSearchResult({
+      resultId: entry.id,
+      resultStart,
+      query: state.tabletSearchQuery,
+    })
 
-    const destinationTab = tabletSearchEntryIsInActivePlaylist(entry, data) ? 'playlist' : 'regions'
-    const itemType = destinationTab === 'playlist' ? 'playlist' : 'region'
-    if (entry.isChild && entry.parentId) {
-      state.hashRegionDrawers[String(entry.parentId)] = true
-      buildHashDrawerChildren(String(entry.parentId), itemType, data)
-      persistDirectorPanelState()
-    }
-
-    closeTabletSearchState()
+    // A extensao fecha a propria Lupa e executa selecao/fila/insercao. O app
+    // apenas fecha sua camada visual; nenhuma regra nativa e duplicada aqui.
+    closeTabletSearchState({ notifyNative: false })
     state.showProjectModal = false
     state.showPlaylistModal = false
     state.showSettingsModal = false
     state.showTelepromptScreen = false
     state.showRecadosScreen = false
-    if (state.activeTab === 'mixer') state.tabletMixerReturnTab = destinationTab
-    // A seleção da lupa substituirá a seleção anterior logo abaixo. Ao trocar
-    // de aba não envie clear_selection, pois ele pode chegar depois do comando
-    // de seleção e apagar no Bridge aquilo que acabou de ser escolhido.
-    setTab(destinationTab, { keepRemoteSelection: true })
-
-    state.tabletSearchPendingFocus = { id: entry.id, itemType, destinationTab }
-    const proxy = document.createElement('div')
-    proxy.setAttribute('data-item-type', itemType)
-    proxy.setAttribute('data-force-select', '1')
-    proxy.setAttribute(itemType === 'playlist' ? 'data-song-id' : 'data-region-id', entry.id)
-    if (entry.isChild) proxy.classList.add('hashChildItem')
-
-    handleItemSelect(proxy)
     scheduleRender(true)
   }
 
@@ -10739,6 +11005,7 @@
         state.showMenu = false
         if (opening) {
           state.showTabletSearch = true
+          beginNativeTabletSearch()
           setDirectorSearchPortraitMode(true)
           state.showProjectModal = false
           state.showPlaylistModal = false
@@ -10752,7 +11019,7 @@
         break
       }
       case 'tablet-search-close': closeTabletSearchState(); scheduleRender(true); break
-      case 'tablet-search-result': handleTabletSearchResult(el.getAttribute('data-search-id')); break
+      case 'tablet-search-result': handleTabletSearchResult(el.getAttribute('data-search-id'), el); break
       case 'go-playlist':
         leavePremixForTabletNavigation()
         closeTabletSearchState()
@@ -10761,7 +11028,7 @@
         state.showPlaylistModal = false
         state.tabletPlaylistPendingId = ''
         state.showTelepromptScreen = false
-        if (state.tabletTunerSplit) state.tunerSourceTab = 'playlist'
+        if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'playlist'
         setTab('playlist')
         scheduleRender(true)
         break
@@ -10773,7 +11040,7 @@
         state.showPlaylistModal = false
         state.tabletPlaylistPendingId = ''
         state.showTelepromptScreen = false
-        if (state.tabletTunerSplit) state.tunerSourceTab = 'regions'
+        if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'regions'
         setTab('regions')
         scheduleRender(true)
         break
@@ -10799,12 +11066,19 @@
       case 'tablet-parts-split':
         {
         const leavingPremix = leavePremixForTabletNavigation()
+        const tunerWasOpen = state.tabletTunerSplit
+        const bpmWasOpen = state.tabletBpmSplit
         closeTabletSearchState()
         state.showMenu = false
         state.showTelepromptScreen = false
         if (state.activeTab === 'mixer') setTab(state.tabletMixerReturnTab || 'playlist')
         state.tabletPartsSplit = leavingPremix ? true : !state.tabletPartsSplit
-        if (state.tabletPartsSplit) state.tabletTunerSplit = false
+        if (state.tabletPartsSplit) {
+          state.tabletTunerSplit = false
+          state.tabletBpmSplit = false
+          if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+          if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        }
         if (state.tabletPartsSplit && state.activeTab === 'markers') state.activeTab = 'playlist'
         persistDirectorPanelState()
         scheduleRender(true)
@@ -10813,6 +11087,7 @@
       case 'tablet-tuner-split':
         {
         const leavingPremix = leavePremixForTabletNavigation()
+        const bpmWasOpen = state.tabletBpmSplit
         closeTabletSearchState()
         state.showMenu = false
         state.showTelepromptScreen = false
@@ -10820,7 +11095,9 @@
         state.tabletTunerSplit = leavingPremix ? true : !state.tabletTunerSplit
         if (state.tabletTunerSplit) {
           state.tabletPartsSplit = false
+          state.tabletBpmSplit = false
           state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
+          if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
           postCommand('tuner_focus', { activeTab: state.tunerSourceTab, page: state.tunerSourceTab, visible: true })
         } else {
           postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
@@ -10829,9 +11106,33 @@
         scheduleRender(true)
         break
         }
+      case 'tablet-bpm-split':
+        {
+        const leavingPremix = leavePremixForTabletNavigation()
+        const tunerWasOpen = state.tabletTunerSplit
+        closeTabletSearchState()
+        state.showMenu = false
+        state.showTelepromptScreen = false
+        if (state.activeTab === 'mixer') setTab(state.tabletMixerReturnTab || 'playlist')
+        state.tabletBpmSplit = leavingPremix ? true : !state.tabletBpmSplit
+        if (state.tabletBpmSplit) {
+          state.tabletPartsSplit = false
+          state.tabletTunerSplit = false
+          state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
+          if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+          postCommand('bpm_focus', { activeTab: state.tunerSourceTab, page: state.tunerSourceTab, visible: true })
+        } else {
+          postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        }
+        persistDirectorPanelState()
+        scheduleRender(true)
+        break
+        }
       case 'tablet-mixer':
         {
         const leavingPremix = leavePremixForTabletNavigation()
+        const tunerWasOpen = state.tabletTunerSplit
+        const bpmWasOpen = state.tabletBpmSplit
         closeTabletSearchState()
         if (state.activeTab === 'mixer') {
           if (leavingPremix) {
@@ -10845,6 +11146,9 @@
         state.tabletMixerReturnTab = state.activeTab || 'playlist'
         state.tabletPartsSplit = false
         state.tabletTunerSplit = false
+        state.tabletBpmSplit = false
+        if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         state.showTelepromptScreen = false
         state.showRecadosScreen = false
         persistDirectorPanelState()
@@ -10856,8 +11160,13 @@
         closeTabletSearchState()
         if (state.showRecadosScreen) closeDirectorRecadosScreen()
         else {
+          const tunerWasOpen = state.tabletTunerSplit
+          const bpmWasOpen = state.tabletBpmSplit
           state.tabletPartsSplit = false
           state.tabletTunerSplit = false
+          state.tabletBpmSplit = false
+          if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+          if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
           persistDirectorPanelState()
           openDirectorRecadosScreen()
         }
@@ -10912,7 +11221,7 @@
         scheduleRender(true)
         break
       case 'tablet-multiloop-loop': {
-        const slot = Math.max(1, Math.min(2, Number(el.getAttribute('data-slot')) || 1))
+        const slot = Math.max(1, Math.min(4, Number(el.getAttribute('data-slot')) || 1))
         const data = getTabletMultiLoopsState()
         const key = `loop${slot}Enabled`
         if (data[key] !== true && data[`loop${slot}Available`] !== true) {
@@ -10927,7 +11236,7 @@
         break
       }
       case 'tablet-multiloop-ms': {
-        const slot = Math.max(1, Math.min(2, Number(el.getAttribute('data-slot')) || 1))
+        const slot = Math.max(1, Math.min(4, Number(el.getAttribute('data-slot')) || 1))
         const data = getTabletMultiLoopsState()
         if (data[`loop${slot}Enabled`] !== true) {
           showPopup(`O LOOP ${slot} PRECISA ESTAR ATIVO`, 'error', 1800)
@@ -10940,7 +11249,7 @@
         break
       }
       case 'tablet-multiloop-track': {
-        const slot = Math.max(1, Math.min(2, Number(el.getAttribute('data-slot')) || 1))
+        const slot = Math.max(1, Math.min(4, Number(el.getAttribute('data-slot')) || 1))
         const id = String(el.getAttribute('data-track-id') || '')
         const mode = String(el.getAttribute('data-mode') || '')
         const data = getTabletMultiLoopsState()
@@ -10970,7 +11279,7 @@
         scheduleRender(true)
         break
       case 'tablet-multiloop-fade': {
-        const slot = Math.max(1, Math.min(2, Number(el.getAttribute('data-slot')) || 1))
+        const slot = Math.max(1, Math.min(4, Number(el.getAttribute('data-slot')) || 1))
         const delta = Number(el.getAttribute('data-delta')) || 0
         const data = getTabletMultiLoopsState()
         data[`fade${slot}Sec`] = Math.max(1, Math.min(5, (Number(data[`fade${slot}Sec`]) || 3) + delta))
@@ -11056,15 +11365,48 @@
       case 'transport-seek-play': handleTransportSeekPlayToggle(); break
       case 'go-mixer': setTab('mixer'); break
       case 'go-premix': setTab('premix'); break
-      case 'tuner-focus': state.showMenu = false; state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'; state.showTunerScreen = true; postCommand('tuner_focus', { activeTab: state.tunerSourceTab, page: state.tunerSourceTab, visible: true }); scheduleRender(true); break
-      case 'tuner-close': state.showTunerScreen = false; postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab }); scheduleRender(true); break
+      case 'tuner-focus': {
+        const opening = !state.showTunerScreen
+        state.showMenu = false
+        state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
+        state.showBpmScreen = false
+        state.showTunerScreen = opening
+        persistDirectorPanelState()
+        postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        postCommand(opening ? 'tuner_focus' : 'set_tuner_visibility', { activeTab: state.tunerSourceTab, page: state.tunerSourceTab, visible: opening })
+        scheduleRender(true)
+        break
+      }
       case 'tuner-minus': adjustTunerFromButton(el, -1); break
       case 'tuner-plus': adjustTunerFromButton(el, 1); break
       case 'tuner-reset': adjustTunerFromButton(el, 0, 0); break
-      case 'bpm-focus': state.showMenu = false; state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'; state.showTunerScreen = false; state.tabletTunerSplit = false; state.showBpmScreen = true; scheduleRender(true); break
-      case 'bpm-close': state.showBpmScreen = false; scheduleRender(true); break
-      case 'bpm-minus': break
-      case 'bpm-plus': break
+      case 'bpm-focus': {
+        const opening = !state.showBpmScreen
+        state.showMenu = false
+        state.tunerSourceTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
+        state.showTunerScreen = false
+        state.showBpmScreen = opening
+        persistDirectorPanelState()
+        postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        postCommand(opening ? 'bpm_focus' : 'set_bpm_visibility', { visible: opening, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        scheduleRender(true)
+        break
+      }
+      case 'tone-tools-close':
+      case 'tuner-close':
+      case 'bpm-close': {
+        const tunerWasOpen = state.showTunerScreen
+        const bpmWasOpen = state.showBpmScreen
+        state.showTunerScreen = false
+        state.showBpmScreen = false
+        persistDirectorPanelState()
+        if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        scheduleRender(true)
+        break
+      }
+      case 'bpm-minus': adjustBpmFromButton(el, -1); break
+      case 'bpm-plus': adjustBpmFromButton(el, 1); break
       case 'toggle-notice': openDirectorRecadosScreen(); break
       case 'recados-send': sendDirectorRecado(); break
       case 'recados-cancel': cancelDirectorRecado(); break
@@ -11100,7 +11442,39 @@
       case 'timer-stop-cancel': state.showConfirmTimerStop = false; scheduleRender(true); break
       case 'timer-mode-countdown': setTimerModeOptimistic('countdown'); postCommand('timer_set_mode', getTimerCommandPayload({ mode: 'countdown', timerMode: 'countdown', timerTargetSec: getCountdownTargetSec(state.snapshot), timerDisplaySec: getCountdownTargetSec(state.snapshot), timerAccumulatedSec: getCountdownTargetSec(state.snapshot) })); break
       case 'timer-mode-progressive': setTimerModeOptimistic('progressive'); postCommand('timer_set_mode', getTimerCommandPayload({ mode: 'progressive', timerMode: 'progressive', timerDisplaySec: 0, timerAccumulatedSec: 0 })); break
-      case 'modal-close': { const insideModal = !!event.target?.closest?.('[data-stop-modal]'); const isOverlayAction = !!el.classList?.contains('modalOverlay'); if (insideModal && isOverlayAction) break; if (state.showSettingsModal && !!el.closest?.('.settingsModalBox')) { closeSettingsModalInPlace(); break; } state.showPlaylistModal = false; state.tabletPlaylistPendingId = ''; state.showProjectModal = false; state.showProjectSaveConfirm = false; state.showTimerModal = false; state.showSettingsModal = false; state.showTelepromptColorPalette = false; state.showTunerScreen = false; state.showBpmScreen = false; state.showTelepromptScreen = false; if (state.showRecadosScreen) setDirectorRecadosTouchMode(false); state.showRecadosScreen = false; state.showPremixScreen = false; state.showMixerVolume = false; state.showConfirmLiveOff = false; state.showConfirmTimerStop = false; state.mixerVolumeTarget = null; scheduleRender(true); break }
+      case 'modal-close': {
+        const insideModal = !!event.target?.closest?.('[data-stop-modal]')
+        const isOverlayAction = !!el.classList?.contains('modalOverlay')
+        if (insideModal && isOverlayAction) break
+        if (state.showSettingsModal && !!el.closest?.('.settingsModalBox')) {
+          closeSettingsModalInPlace()
+          break
+        }
+        const tunerWasOpen = state.showTunerScreen
+        const bpmWasOpen = state.showBpmScreen
+        state.showPlaylistModal = false
+        state.tabletPlaylistPendingId = ''
+        state.showProjectModal = false
+        state.showProjectSaveConfirm = false
+        state.showTimerModal = false
+        state.showSettingsModal = false
+        state.showTelepromptColorPalette = false
+        state.showTunerScreen = false
+        state.showBpmScreen = false
+        state.showTelepromptScreen = false
+        if (state.showRecadosScreen) setDirectorRecadosTouchMode(false)
+        state.showRecadosScreen = false
+        state.showPremixScreen = false
+        state.showMixerVolume = false
+        state.showConfirmLiveOff = false
+        state.showConfirmTimerStop = false
+        state.mixerVolumeTarget = null
+        persistDirectorPanelState()
+        if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
+        scheduleRender(true)
+        break
+      }
       case 'theme-light': setAppTheme('light'); break
       case 'theme-dark': setAppTheme('dark'); break
       case 'interface-blocking-toggle': {
@@ -11236,6 +11610,8 @@
       case 'project-select': {
         const projectId = el.getAttribute('data-project-id') || ''
         const projectIndex = Number(el.getAttribute('data-project-index') || 0)
+        state.optimisticProjectSaved = false
+        state.optimisticProjectSavedUntil = 0
         state.pendingProjectId = projectId
         state.pendingProjectIndex = projectIndex
         state.pendingProjectUntil = now() + 5000
@@ -11248,12 +11624,21 @@
       case 'project-save-cancel': state.showProjectSaveConfirm = false; scheduleRender(true); break
       case 'project-save-confirm': {
         state.showProjectSaveConfirm = false
+        state.optimisticProjectSaved = true
+        state.optimisticProjectSavedUntil = now() + 5000
+        syncProjectSaveButtonDom()
+        scheduleRender(true)
         postCommand('save_project', { source: 'director', confirmed: true })
           .then((response) => {
+            if (!response?.ok) {
+              state.optimisticProjectSaved = false
+              state.optimisticProjectSavedUntil = 0
+            }
+            syncProjectSaveButtonDom()
             showPopup(response?.ok ? 'PROJETO SALVO' : 'NÃO FOI POSSÍVEL SALVAR O PROJETO', response?.ok ? 'success' : 'error', 1600)
             scheduleRender(true)
+            if (response?.ok) window.setTimeout(pollBridge, 60)
           })
-        scheduleRender(true)
         break
       }
       case 'project-modal-ok': state.showProjectModal = false; scheduleRender(true); break
@@ -11558,7 +11943,7 @@
 
   function handlePremixHoldStart(event) {
     if (IS_MUSICIAN_MONITOR) return
-    if (state.showPremixScreen || state.showTabletSongToolsModal || state.showTabletMultiLoopsModal || state.showTabletLiveResetConfirm || state.showMarkersOverlay || state.showTunerScreen || state.showTelepromptScreen ||
+    if (state.showPremixScreen || state.showTabletSongToolsModal || state.showTabletMultiLoopsModal || state.showTabletLiveResetConfirm || state.showMarkersOverlay || state.showTunerScreen || state.showBpmScreen || state.showTelepromptScreen ||
         state.showPlaylistModal || state.showProjectModal || state.showTimerModal || state.showSettingsModal || state.showMixerVolume) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
     const row = event.target?.closest?.('.listBox .item[data-action="select-item"]')
@@ -11627,7 +12012,7 @@
     if (event.type === 'pointerdown') {
       const button = event.target?.closest?.('[data-action="tablet-multiloop-ms"]')
       if (!button || button.disabled || (event.pointerType === 'mouse' && event.button !== 0)) return
-      const requestedSlot = Math.max(1, Math.min(2, Number(button.getAttribute('data-slot')) || 1))
+      const requestedSlot = Math.max(1, Math.min(4, Number(button.getAttribute('data-slot')) || 1))
       if (getTabletMultiLoopsState()[`loop${requestedSlot}Enabled`] !== true) return
       cancelMultiLoopMsHold()
       multiLoopMsHoldPointerId = event.pointerId
@@ -11672,7 +12057,7 @@
       multiLoopAutoHoldStartX = Number(event.clientX) || 0
       multiLoopAutoHoldStartY = Number(event.clientY) || 0
       multiLoopAutoHoldTriggered = false
-      const slot = Math.max(1, Math.min(2, Number(button.getAttribute('data-slot')) || 1))
+      const slot = Math.max(1, Math.min(4, Number(button.getAttribute('data-slot')) || 1))
       const id = String(button.getAttribute('data-track-id') || '')
       const name = String(button.getAttribute('data-track-name') || 'PISTA')
       multiLoopAutoHoldTimer = window.setTimeout(() => {
@@ -11794,6 +12179,7 @@
       } else if (dx < 0) {
         state.tabletPartsSplit = true
         state.tabletTunerSplit = false
+        state.tabletBpmSplit = false
         persistDirectorPanelState()
         scheduleRender(true)
       } else if (dx > 0) {
@@ -11890,7 +12276,7 @@
     const transportPanel = target.transportPanel
     const tabletMode = document.documentElement.dataset.directorDevice === 'tablet' && !IS_MUSICIAN_MONITOR
     const visibleTransportSeek = !!root.querySelector('.transportSeekOverlay,.tabletTransportPanel')
-    if (state.showPlaylistModal || state.showProjectModal || state.showTimerModal || state.showSettingsModal || state.showTunerScreen || state.showRecadosScreen || (!tabletMode && state.showTransportSeekModal && visibleTransportSeek) || state.showMixerVolume) return
+    if (state.showPlaylistModal || state.showProjectModal || state.showTimerModal || state.showSettingsModal || state.showTunerScreen || state.showBpmScreen || state.showRecadosScreen || (!tabletMode && state.showTransportSeekModal && visibleTransportSeek) || state.showMixerVolume) return
     if (transportPanel && state.showPremixScreen) return
 
     transportTouchId = touch.identifier
@@ -12317,6 +12703,7 @@
       if (event.target?.id === 'tabletSearchInput') {
         state.tabletSearchQuery = event.target.value
         syncTabletSearchResultsDom()
+        queueNativeTabletSearchQuery(state.tabletSearchQuery)
         return
       }
       if (event.target?.matches?.('[data-timer-countdown-input]')) {

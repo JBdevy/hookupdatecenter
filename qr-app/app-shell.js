@@ -6,7 +6,9 @@ const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '1-0-1-save-bpm-v1'
+const VSHOOK_ASSET_VERSION = '1-0-1-chat-video-multiloop4-v18'
+const VSHOOK_CHAT_BOOTSTRAP_KEY = 'vshook_chat_bootstrap_key'
+const VSHOOK_CHAT_MOBILE_SESSION_KEY = 'vshook_chat_mobile_session'
 let vshookDiscoveredProjects = []
 let vshookBridgeBrowserMode = false
 let vshookDiscoveryRunId = 0
@@ -16,6 +18,100 @@ let vshookDirectorTabletStableViewport = null
 let vshookDirectorTabletViewportRestoreTimer = 0
 let vshookDirectorTabletLandscapeContinuation = null
 let vshookDirectorAppActive = false
+
+function captureChatBootstrapKey() {
+  try {
+    const url = new URL(window.location.href)
+    const bootstrapKey = String(url.searchParams.get('chatKey') || '').trim()
+    if (/^[a-f0-9]{64}$/i.test(bootstrapKey)) {
+      localStorage.setItem(VSHOOK_CHAT_BOOTSTRAP_KEY, bootstrapKey.toLowerCase())
+      url.searchParams.delete('chatKey')
+      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+    }
+  } catch (error) {}
+}
+
+function getStoredChatMobileSession() {
+  try {
+    const session = JSON.parse(localStorage.getItem(VSHOOK_CHAT_MOBILE_SESSION_KEY) || 'null')
+    if (!session || !String(session.accessToken || '').startsWith('vshcm_') || !/^https?:\/\//i.test(String(session.backendUrl || ''))) return null
+    if (session.expiresAt && Date.parse(session.expiresAt) <= Date.now()) {
+      localStorage.removeItem(VSHOOK_CHAT_MOBILE_SESSION_KEY)
+      return null
+    }
+    return session
+  } catch (error) {
+    return null
+  }
+}
+
+async function bootstrapChatMobileSessionFromQr() {
+  if (getStoredChatMobileSession()) return true
+  let bootstrapKey = ''
+  try { bootstrapKey = String(localStorage.getItem(VSHOOK_CHAT_BOOTSTRAP_KEY) || '').trim() }
+  catch (error) {}
+  if (!/^[a-f0-9]{64}$/i.test(bootstrapKey)) return false
+
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 20000)
+  try {
+    const response = await fetch(`${window.location.origin}/chat/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bootstrapKey }),
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    const result = await response.json().catch(() => ({}))
+    const created = result?.mobileSession
+    if (!response.ok || !created?.accessToken || !created?.backendUrl) return false
+    localStorage.setItem(VSHOOK_CHAT_MOBILE_SESSION_KEY, JSON.stringify({
+      accessToken: String(created.accessToken),
+      backendUrl: String(created.backendUrl).replace(/\/+$/, ''),
+      expiresAt: String(created.expiresAt || ''),
+      bridgeBaseUrl: String(window.location.origin || '').replace(/\/+$/, ''),
+    }))
+    localStorage.removeItem(VSHOOK_CHAT_BOOTSTRAP_KEY)
+    return true
+  } catch (error) {
+    return false
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+function hasStoredChatBootstrapKey() {
+  try { return /^[a-f0-9]{64}$/i.test(String(localStorage.getItem(VSHOOK_CHAT_BOOTSTRAP_KEY) || '').trim()) }
+  catch (error) { return false }
+}
+
+function renderStoredChatButton() {
+  if (getStoredChatMobileSession()) return '<button class="vshook-mode-button" id="openStoredChatBtn">Abrir Chat Hook pela internet</button>'
+  if (hasStoredChatBootstrapKey()) return '<button class="vshook-mode-button" id="openStoredChatBtn">Abrir Chat Hook</button>'
+  return ''
+}
+
+function enterStoredChat() {
+  const session = getStoredChatMobileSession()
+  if (!session && !hasStoredChatBootstrapKey()) return false
+  vshookDiscoveryRunId += 1
+  vshookProjectsRefreshRunId += 1
+  const bridgeBaseUrl = String(session?.bridgeBaseUrl || window.location.origin || '').replace(/\/+$/, '')
+  enterApp({
+    id: 'chat-hook-internet',
+    projectName: 'Chat Hook',
+    directorUrl: bridgeBaseUrl,
+    musiciansUrl: bridgeBaseUrl,
+    projectTabIndex: 0,
+  }, 'chat', { skipProjectSwitch: true })
+  return true
+}
+
+function attachStoredChatHandler() {
+  document.getElementById('openStoredChatBtn')?.addEventListener('click', enterStoredChat)
+}
+
+captureChatBootstrapKey()
 
 function normalizeDirectorDeviceMode(value) {
   return String(value || '').toLowerCase() === 'tablet' ? 'tablet' : 'phone'
@@ -299,8 +395,10 @@ function renderSearching() {
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Procurando sessões VS Hook disponíveis na rede Wi‑Fi...</p>
     <p class="vshook-shell-status">A busca continua em segundo plano. Se preferir, digite o IP do computador agora.</p>
+    ${renderStoredChatButton()}
     ${renderManualIpBox()}
   `)
+  attachStoredChatHandler()
   attachManualIpHandler()
 }
 
@@ -310,8 +408,10 @@ function renderNoProjects() {
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
     <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
+    ${renderStoredChatButton()}
     ${renderManualIpBox()}
   `)
+  attachStoredChatHandler()
   attachManualIpHandler()
 }
 
@@ -331,6 +431,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseDirectorBtn">Entrar como Diretor</button>
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
+      <button class="vshook-mode-button" id="chooseChatHookBtn">Entrar no Chat Hook</button>
     </div>
     <div class="vshook-app-version">Versão 1.0.1 app</div>
   `)
@@ -347,6 +448,11 @@ function renderModeFirst(projects) {
   document.getElementById('chooseRecadosBtn')?.addEventListener('click', () => {
     const selected = getDefaultMusicianProject(vshookDiscoveredProjects)
     if (selected) enterApp(selected, 'recados', { skipProjectSwitch: true })
+  })
+
+  document.getElementById('chooseChatHookBtn')?.addEventListener('click', () => {
+    const selected = getDefaultMusicianProject(vshookDiscoveredProjects)
+    if (selected) enterApp(selected, 'chat', { skipProjectSwitch: true })
   })
 
 }
@@ -461,7 +567,11 @@ function renderModeSelection(project) {
 
 function loadModeStyles(mode) {
   document.querySelectorAll('[data-vshook-mode-style]').forEach((el) => el.remove())
-  const cssFile = mode === 'recados' ? './recados-app.css' : './stylediretor-app.css'
+  const cssFile = mode === 'recados'
+    ? './recados-app.css'
+    : mode === 'chat'
+      ? './chat-app.css'
+      : './stylediretor-app.css'
   const link = document.createElement('link')
   link.rel = 'stylesheet'
   link.href = `${cssFile}?v=${VSHOOK_ASSET_VERSION}`
@@ -510,7 +620,12 @@ async function enterApp(project, mode, options = {}) {
 
   document.querySelectorAll('[data-vshook-mode-script]').forEach((el) => el.remove())
   const script = document.createElement('script')
-  script.src = `${mode === 'recados' ? './recados.js' : './vsdiretor.js'}?v=${VSHOOK_ASSET_VERSION}`
+  const scriptFile = mode === 'recados'
+    ? './recados.js'
+    : mode === 'chat'
+      ? './chat.js'
+      : './vsdiretor.js'
+  script.src = `${scriptFile}?v=${VSHOOK_ASSET_VERSION}`
   script.setAttribute('data-vshook-mode-script', mode)
   document.body.appendChild(script)
 }
@@ -867,8 +982,10 @@ function renderBridgeNoProjects() {
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
     <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
+    ${renderStoredChatButton()}
     <button class="vshook-secondary-button" id="refreshProjectsBtn">Atualizar</button>
   `)
+  attachStoredChatHandler()
   document.getElementById('refreshProjectsBtn')?.addEventListener('click', startBridgeBrowserMode)
 }
 
@@ -971,9 +1088,16 @@ window.vshookExitToProjectSelector = function () {
   window.location.reload()
 }
 
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   keepScreenAwake()
   consumeVSHookForcedModeSelection()
+  await bootstrapChatMobileSessionFromQr()
+  try {
+    if (localStorage.getItem('vshook_selected_mode') === 'chat' && getStoredChatMobileSession()) {
+      enterStoredChat()
+      return
+    }
+  } catch (error) {}
   if (isBridgeBrowserMode()) startBridgeBrowserMode()
   else startDiscovery()
 })

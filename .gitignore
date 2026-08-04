@@ -1,3 +1,6 @@
 node_modules/ 
 dist/
+!qr-app/dist/
+!qr-app/dist/chat.js
+!qr-app/dist/chat-app.css
 dist-restart-fix/
