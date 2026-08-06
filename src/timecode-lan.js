@@ -10,6 +10,9 @@ const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 const LOCAL_STATUS_INTERVAL_MS = 180
 const TRANSMIT_INTERVAL_MS = 45
 const DISCOVERY_INTERVAL_MS = 650
+const DIRECT_DISCOVERY_INTERVAL_MS = 3000
+const DIRECT_DISCOVERY_TIMEOUT_MS = 260
+const DIRECT_DISCOVERY_BATCH_SIZE = 24
 const RECEIVER_TIMEOUT_MS = 3000
 
 function isPairCode(value) {
@@ -161,6 +164,39 @@ function getBroadcastAddresses() {
   return [...addresses]
 }
 
+function ipv4ToNumber(value) {
+  const parts = String(value || '').split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null
+  return (((parts[0] << 24) >>> 0) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
+}
+
+function numberToIpv4(value) {
+  const number = Number(value) >>> 0
+  return [number >>> 24, (number >>> 16) & 255, (number >>> 8) & 255, number & 255].join('.')
+}
+
+// Alternativa ao broadcast UDP para redes e firewalls que o bloqueiam. A
+// busca continua inteiramente na LAN e tenta somente o /24 de cada interface
+// local, usando a mesma porta TCP já utilizada pelo aplicativo do Diretor.
+function getDirectDiscoveryAddresses() {
+  const ownAddresses = new Set()
+  const candidates = new Set()
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (!entry || entry.internal || entry.family !== 'IPv4') continue
+      const own = ipv4ToNumber(entry.address)
+      if (own == null) continue
+      ownAddresses.add(numberToIpv4(own))
+      const prefix = own & 0xffffff00
+      for (let host = 1; host <= 254; host += 1) {
+        candidates.add(numberToIpv4((prefix | host) >>> 0))
+      }
+    }
+  }
+  for (const own of ownAddresses) candidates.delete(own)
+  return [...candidates]
+}
+
 function createTimecodeLanRelay(options = {}) {
   const nativeBridgePort = Number(options.nativeBridgePort) || 47830
   const discoveryPort = Math.max(1, Math.min(65535,
@@ -176,6 +212,9 @@ function createTimecodeLanRelay(options = {}) {
   const isLicenseActive = typeof options.isLicenseActive === 'function'
     ? options.isLicenseActive
     : () => true
+  const listDirectDiscoveryAddresses = typeof options.getDirectDiscoveryAddresses === 'function'
+    ? options.getDirectDiscoveryAddresses
+    : getDirectDiscoveryAddresses
   const instanceId = crypto.randomBytes(16).toString('hex')
 
   let socket = null
@@ -184,6 +223,8 @@ function createTimecodeLanRelay(options = {}) {
   let localStatusAt = 0
   let lastStatusPollAt = 0
   let lastDiscoveryAt = 0
+  let lastDirectDiscoveryAt = 0
+  let directDiscoveryRunning = false
   let transmitterPeer = null
   let receiverSession = null
   let tickRunning = false
@@ -275,17 +316,12 @@ function createTimecodeLanRelay(options = {}) {
     for (const address of getBroadcastAddresses()) sendUdp(payload, address)
   }
 
-  async function acceptOffer(message, rinfo) {
-    const status = await readLocalStatus()
-    if (!status || status.mode !== 'transmitter' || !isPairCode(status.code)) return
-    if (String(message.code || '') !== String(status.code)) return
-    if (String(message.transmitterId || '') !== instanceId) return
-    if (transmitterPeer && transmitterPeer.connected) return
-
-    const remotePort = Math.max(1, Math.min(65535, Number(message.port) || 47831))
+  async function pairWithReceiver(status, address, remotePort, receiver = {}) {
+    if (!status || status.mode !== 'transmitter' || !isPairCode(status.code) ||
+        transmitterPeer?.connected || stopped) return false
     try {
       const result = await requestJson({
-        hostname: rinfo.address,
+        hostname: address,
         port: remotePort,
         path: '/timecode-link/pair',
         method: 'POST',
@@ -294,21 +330,51 @@ function createTimecodeLanRelay(options = {}) {
           transmitterId: instanceId,
           transmitterName: deviceName(),
         },
-        timeoutMs: 1000,
+        timeoutMs: Number(receiver.timeoutMs) || 1000,
       })
-      if (!result.ok || !result.data?.ok || !result.data?.token) return
+      if (!result.ok || !result.data?.ok || !result.data?.token || transmitterPeer?.connected || stopped) return false
       transmitterPeer = {
-        address: rinfo.address,
+        address,
         port: remotePort,
-        receiverId: String(message.receiverId || ''),
-        name: safeName(result.data.receiverName || message.receiverName, 'Receiver'),
+        receiverId: String(result.data.receiverId || receiver.id || ''),
+        name: safeName(result.data.receiverName || receiver.name, 'Receiver'),
         token: String(result.data.token),
         lastSequence: 0,
         failures: 0,
         connected: true,
       }
       await notifyLocalPeer(true, transmitterPeer.name)
-    } catch (_) {}
+      return true
+    } catch (_) {
+      return false
+    }
+  }
+
+  async function acceptOffer(message, rinfo) {
+    const status = await readLocalStatus()
+    if (!status || status.mode !== 'transmitter' || !isPairCode(status.code)) return
+    if (String(message.code || '') !== String(status.code)) return
+    if (String(message.transmitterId || '') !== instanceId) return
+    const remotePort = Math.max(1, Math.min(65535, Number(message.port) || 47831))
+    await pairWithReceiver(status, rinfo.address, remotePort, {
+      id: String(message.receiverId || ''),
+      name: message.receiverName,
+    })
+  }
+
+  async function discoverReceiverOverTcp(status) {
+    let addresses = []
+    try { addresses = [...new Set(listDirectDiscoveryAddresses())] } catch (_) {}
+    const ports = [...new Set([
+      Math.max(1, Math.min(65535, Number(getDirectorPort()) || 47831)),
+      47831,
+    ])]
+    for (let offset = 0; offset < addresses.length && !transmitterPeer?.connected && !stopped; offset += DIRECT_DISCOVERY_BATCH_SIZE) {
+      const batch = addresses.slice(offset, offset + DIRECT_DISCOVERY_BATCH_SIZE)
+      await Promise.allSettled(batch.flatMap((address) => ports.map((port) =>
+        pairWithReceiver(status, address, port, { timeoutMs: DIRECT_DISCOVERY_TIMEOUT_MS })
+      )))
+    }
   }
 
   async function handleUdpMessage(buffer, rinfo) {
@@ -345,6 +411,13 @@ function createTimecodeLanRelay(options = {}) {
       if (now - lastDiscoveryAt >= DISCOVERY_INTERVAL_MS) {
         lastDiscoveryAt = now
         broadcastDiscovery(status)
+      }
+      if (!directDiscoveryRunning && now - lastDirectDiscoveryAt >= DIRECT_DISCOVERY_INTERVAL_MS) {
+        lastDirectDiscoveryAt = now
+        directDiscoveryRunning = true
+        discoverReceiverOverTcp(status)
+          .catch(() => {})
+          .finally(() => { directDiscoveryRunning = false })
       }
       return
     }
@@ -434,13 +507,18 @@ function createTimecodeLanRelay(options = {}) {
       sendJson(res, 400, { ok: false, error: 'Transmissor inválido.' })
       return
     }
-    const token = crypto.randomBytes(32).toString('hex')
+    const sameTransmitter = receiverSession &&
+      receiverSession.code === code &&
+      receiverSession.transmitterId === transmitterId
+    const token = sameTransmitter
+      ? receiverSession.token
+      : crypto.randomBytes(32).toString('hex')
     receiverSession = {
       token,
       code,
       transmitterId,
       name: safeName(payload.transmitterName, 'Transmitter'),
-      lastSequence: 0,
+      lastSequence: sameTransmitter ? receiverSession.lastSequence : 0,
       lastSeenAt: Date.now(),
     }
     await notifyLocalPeer(true, receiverSession.name)
@@ -558,6 +636,7 @@ function createTimecodeLanRelay(options = {}) {
     resetReceiverSession(false)
     localStatus = null
     lastNotifiedPeer = ''
+    directDiscoveryRunning = false
     const currentSocket = socket
     socket = null
     if (!currentSocket) return
