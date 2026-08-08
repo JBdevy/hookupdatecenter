@@ -984,6 +984,50 @@ async function uploadChatAvatar(payload = {}) {
   });
 }
 
+async function getHookTutorials() {
+  return fetchJson(`${BACKEND_URL}/api/tutorials`, { cache: 'no-store' });
+}
+
+async function updateChatAdminSettings(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/admin/settings`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, ...payload })
+  });
+}
+
+async function clearChatAsAdmin(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/admin/clear`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, adminPassword: String(payload.adminPassword || '') })
+  });
+}
+
+async function unlockChatAdmin(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/admin/unlock`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, adminPassword: String(payload.adminPassword || '') })
+  });
+}
+
+async function saveChatReleaseNotes(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/admin/release-notes`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, adminPassword: String(payload.adminPassword || ''), releaseNotes: String(payload.releaseNotes || '') })
+  });
+}
+
+async function publishUpdateFromHookCenter(payload = {}) {
+  const auth = await getChatAuthPayload();
+  return fetchJson(`${BACKEND_URL}/api/chat/admin/publish-update`, {
+    method: 'POST',
+    body: JSON.stringify({ ...auth, adminPassword: String(payload.adminPassword || ''), update: payload.update || {} })
+  });
+}
+
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1062,6 +1106,7 @@ function normalizeUpdate(raw) {
     version: platformMeta.version || source.version || '',
     title: platformMeta.title || source.title || 'Atualização do VS Hook disponível',
     description: platformMeta.description || source.description || '',
+    releaseNotes: platformMeta.releaseNotes || source.releaseNotes || platformMeta.description || source.description || '',
     youtubeUrl: platformMeta.youtubeUrl || source.youtubeUrl || source.videoUrl || source.video || '',
     changelog: Array.isArray(source.changelog)
       ? source.changelog
@@ -1317,6 +1362,7 @@ function normalizeHookCenterUpdate(raw) {
     version: raw.version || '',
     title: raw.title || 'Nova versão do Hook Center disponível',
     notes: raw.notes || raw.description || '',
+    releaseNotes: raw.releaseNotes || raw.notes || raw.description || '',
     tutorialUrl: ensureAbsoluteUrl(raw.tutorialUrl || raw.learnUrl || raw.videoUrl || ''),
     downloadUrl,
     windowsUrl: ensureAbsoluteUrl(raw.windowsUrl),
@@ -1491,6 +1537,166 @@ function runProcess(command, args = [], options = {}) {
   });
 }
 
+function psSingleQuoted(value) {
+  return `'${String(value || '').replace(/'/g, "''")}'`;
+}
+
+async function listWindowsDirectCableAdapters() {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$items = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.HardwareInterface -eq $true -and $_.Name -notmatch '(?i)wi-?fi|wlan|wireless|bluetooth' } | ForEach-Object {",
+    "  $ip = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress",
+    "  [pscustomobject]@{ id=$_.Name; name=$_.Name; description=$_.InterfaceDescription; device=$_.Name; status=$_.Status.ToString(); linkSpeed=$_.LinkSpeed; ipv4=([string]$ip) }",
+    "}",
+    "@($items) | ConvertTo-Json -Compress"
+  ].join('; ');
+  const output = await runProcess('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-Command', script
+  ], { timeout: 12000 });
+  let parsed = [];
+  try { parsed = JSON.parse(output || '[]'); } catch (_) {}
+  return (Array.isArray(parsed) ? parsed : [parsed]).filter((item) => item?.id).map((item) => ({
+    id: String(item.id),
+    name: String(item.name || item.id),
+    description: String(item.description || ''),
+    device: String(item.device || item.id),
+    service: String(item.name || item.id),
+    connected: /up/i.test(String(item.status || '')),
+    status: String(item.status || ''),
+    linkSpeed: String(item.linkSpeed || ''),
+    ipv4: String(item.ipv4 || '')
+  }));
+}
+
+async function listMacDirectCableAdapters() {
+  const output = await runProcess('/usr/sbin/networksetup', ['-listnetworkserviceorder'], { timeout: 12000 });
+  const lines = String(output || '').split(/\r?\n/);
+  const adapters = [];
+  let service = '';
+  for (const rawLine of lines) {
+    const serviceMatch = rawLine.match(/^\(\d+\)\s+(.+)$/);
+    if (serviceMatch) {
+      service = serviceMatch[1].replace(/^\*/, '').trim();
+      continue;
+    }
+    const deviceMatch = rawLine.match(/Hardware Port:\s*([^,]+),\s*Device:\s*([^\)]+)/i);
+    if (!deviceMatch || !service) continue;
+    const hardwarePort = deviceMatch[1].trim();
+    const device = deviceMatch[2].trim();
+    if (/wi-?fi|airport|bluetooth/i.test(`${service} ${hardwarePort}`)) continue;
+    let ifconfig = '';
+    try { ifconfig = await runProcess('/sbin/ifconfig', [device], { timeout: 4000 }); } catch (_) {}
+    const ipMatch = ifconfig.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)/);
+    adapters.push({
+      id: device,
+      name: service,
+      description: hardwarePort,
+      device,
+      service,
+      connected: /status:\s*active/i.test(ifconfig),
+      status: /status:\s*active/i.test(ifconfig) ? 'Up' : 'Down',
+      linkSpeed: '',
+      ipv4: ipMatch ? ipMatch[1] : ''
+    });
+    service = '';
+  }
+  return adapters;
+}
+
+async function getDirectCableState() {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') {
+    return { ok: false, supported: false, platform: process.platform, adapters: [], error: 'Disponível apenas no Windows e macOS.' };
+  }
+  try {
+    const adapters = process.platform === 'win32'
+      ? await listWindowsDirectCableAdapters()
+      : await listMacDirectCableAdapters();
+    return {
+      ok: true,
+      supported: true,
+      platform: process.platform,
+      adapters,
+      configuredAdapterId: String(store.get('directCable.adapterId') || ''),
+      configuredIp: String(store.get('directCable.ip') || '')
+    };
+  } catch (error) {
+    return { ok: false, supported: true, platform: process.platform, adapters: [], error: error?.message || 'Não foi possível detectar os adaptadores de rede.' };
+  }
+}
+
+async function runWindowsElevatedPowerShell(script) {
+  const encoded = Buffer.from(String(script || ''), 'utf16le').toString('base64');
+  const launcher = `$p=Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'); exit $p.ExitCode`;
+  return runProcess('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-Command', launcher
+  ], { timeout: 120000 });
+}
+
+async function configureDirectCable(payload = {}) {
+  const adapterId = String(payload.adapterId || '').trim();
+  if (!adapterId) throw new Error('Escolha o adaptador USB/Ethernet que está ligado ao cabo.');
+  const current = await getDirectCableState();
+  const adapter = current.adapters.find((item) => item.id === adapterId);
+  if (!adapter) throw new Error('O adaptador selecionado não está mais disponível. Reconecte-o e tente novamente.');
+  // Cada computador recebe um endereço estável derivado do próprio ID. Não há
+  // papel mestre/escravo na rede e nenhum usuário precisa escolher PC 1/PC 2.
+  const machineId = await getMachineId();
+  const hostHash = crypto.createHash('sha256').update(`direct-cable|${machineId}`).digest();
+  const host = 10 + (hostHash.readUInt32BE(0) % 240);
+  const ip = `192.168.77.${host}`;
+  if (process.platform === 'win32') {
+    const alias = psSingleQuoted(adapter.name);
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      `$alias=${alias}`,
+      "Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop",
+      "Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue",
+      `New-NetIPAddress -InterfaceAlias $alias -IPAddress '${ip}' -PrefixLength 24 -ErrorAction Stop | Out-Null`
+    ].join('; ');
+    await runWindowsElevatedPowerShell(script);
+  } else if (process.platform === 'darwin') {
+    const script = `/sbin/ifconfig ${JSON.stringify(adapter.device)} inet ${ip} netmask 255.255.255.0 up`;
+    await runProcess('/usr/bin/osascript', [
+      '-e', `do shell script ${JSON.stringify(script)} with administrator privileges`
+    ], { timeout: 120000 });
+  } else {
+    throw new Error('Conexão redundante disponível apenas no Windows e macOS.');
+  }
+  store.set('directCable', { adapterId, ip, configuredAt: new Date().toISOString() });
+  try { await startBridgeServers(); } catch (_) {}
+  return { ok: true, ip, state: await getDirectCableState() };
+}
+
+async function restoreDirectCableDhcp(payload = {}) {
+  const adapterId = String(payload.adapterId || store.get('directCable.adapterId') || '').trim();
+  if (!adapterId) throw new Error('Escolha o adaptador que será restaurado para DHCP.');
+  const current = await getDirectCableState();
+  const adapter = current.adapters.find((item) => item.id === adapterId);
+  if (!adapter) throw new Error('O adaptador selecionado não está disponível.');
+  if (process.platform === 'win32') {
+    const alias = psSingleQuoted(adapter.name);
+    await runWindowsElevatedPowerShell([
+      "$ErrorActionPreference='Stop'",
+      `$alias=${alias}`,
+      "Set-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop",
+      "Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue",
+      "ipconfig.exe /renew $alias | Out-Null"
+    ].join('; '));
+  } else if (process.platform === 'darwin') {
+    const command = `/usr/sbin/networksetup -setdhcp ${JSON.stringify(adapter.service)}`;
+    await runProcess('/usr/bin/osascript', [
+      '-e', `do shell script ${JSON.stringify(command)} with administrator privileges`
+    ], { timeout: 120000 });
+  } else {
+    throw new Error('Restauração automática disponível apenas no Windows e macOS.');
+  }
+  store.delete('directCable');
+  try { await startBridgeServers(); } catch (_) {}
+  return { ok: true, state: await getDirectCableState() };
+}
+
 async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
   // Mantido apenas para compatibilidade com IPC/renderer antigo.
   // Não baixa mais ZIP do App QR: o QR Code usa diretamente o qr-app embutido no Hook Center.
@@ -1657,10 +1863,15 @@ function saveBridgeConfig(config) {
 
 function getSelectedBridgeNetwork(config = readBridgeConfig()) {
   const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const directCableIp = String(store.get('directCable.ip') || '').trim();
+  // O cabo fica reservado para redundancia. O QR Code e o app continuam
+  // anunciando Wi-Fi/LAN normal para o celular.
+  const appNetworks = networks.filter((item) => !directCableIp || item.ip !== directCableIp);
   const preferredIp = String(config?.preferredNetworkIp || '').trim();
   const preferredName = String(config?.preferredNetworkName || '').trim();
-  const selected = networks.find((item) => preferredIp && item.ip === preferredIp)
-    || networks.find((item) => preferredName && item.name === preferredName)
+  const selected = appNetworks.find((item) => preferredIp && item.ip === preferredIp)
+    || appNetworks.find((item) => preferredName && item.name === preferredName)
+    || appNetworks[0]
     || networks[0]
     || { name: 'Local', ip: '127.0.0.1', score: 0 };
   return { selected, networks };
@@ -1896,6 +2107,7 @@ async function restartBridgeServersNow() {
     nativeBridgePort: 47830,
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
+    getDirectCableIp: () => String(store.get('directCable.ip') || ''),
     isLicenseActive: isVsHookLicenseActiveForBridge,
   });
   const nextServers = buildBridgeServers(bridgeConfig);
@@ -4875,6 +5087,9 @@ ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
     errors: errors.slice(0, 20)
   };
 });
+ipcMain.handle('direct-cable-get-state', () => getDirectCableState());
+ipcMain.handle('direct-cable-configure', (_event, payload) => configureDirectCable(payload || {}));
+ipcMain.handle('direct-cable-restore-dhcp', (_event, payload) => restoreDirectCableDhcp(payload || {}));
 
 async function openSupport() {
   const data = await fetchJson(SUPPORT_API_URL, { cache: 'no-store' });
@@ -4917,6 +5132,12 @@ ipcMain.handle('chat-set-pinned-message', (_event, payload) => setChatPinnedMess
 ipcMain.handle('chat-delete-message', (_event, payload) => deleteChatMessage(payload || {}));
 ipcMain.handle('chat-update-profile', (_event, payload) => updateChatProfile(payload || {}));
 ipcMain.handle('chat-upload-avatar', (_event, payload) => uploadChatAvatar(payload || {}));
+ipcMain.handle('get-hook-tutorials', () => getHookTutorials());
+ipcMain.handle('chat-admin-update-settings', (_event, payload) => updateChatAdminSettings(payload || {}));
+ipcMain.handle('chat-admin-clear', (_event, payload) => clearChatAsAdmin(payload || {}));
+ipcMain.handle('chat-admin-unlock', (_event, payload) => unlockChatAdmin(payload || {}));
+ipcMain.handle('chat-admin-save-release-notes', (_event, payload) => saveChatReleaseNotes(payload || {}));
+ipcMain.handle('chat-admin-publish-update', (_event, payload) => publishUpdateFromHookCenter(payload || {}));
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('get-previous-updates', () => getPreviousUpdates());

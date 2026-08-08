@@ -577,6 +577,16 @@
     return normalizeTelepromptColor(readLocal(getTelepromptPreferenceKey('text_color'), 'white'))
   }
 
+  function getHideTelepromptTransport() {
+    return readLocal(getTelepromptPreferenceKey('hide_transport'), '0') === '1'
+  }
+
+  function toggleHideTelepromptTransport() {
+    const hidden = !getHideTelepromptTransport()
+    writeLocal(getTelepromptPreferenceKey('hide_transport'), hidden ? '1' : '0')
+    scheduleRender(true)
+  }
+
   function getTelepromptColorValue(value = getTelepromptColor()) {
     return TELEPROMPT_COLOR_OPTIONS.find((option) => option.id === normalizeTelepromptColor(value))?.color || '#ffffff'
   }
@@ -6308,7 +6318,8 @@
     const renderColorButton = (option, extra = false) => `<button class="btn telepromptSettingsOption telepromptColorOption${extra ? ' telepromptExtraColorOption' : ''}${selectedColor === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-color-set" data-value="${option.id}" style="--teleprompt-option-color:${option.color}" aria-label="Cor ${option.label}"><span class="telepromptColorSwatch"></span><span>${option.label}</span></button>`
     const colorButtons = TELEPROMPT_COLOR_OPTIONS.slice(0, 4).map((option) => renderColorButton(option)).join('')
     const extraColors = `<div class="telepromptExtraColorsGrid${state.showTelepromptColorPalette ? '' : ' telepromptExtraColorsGridHidden'}" data-teleprompt-extra-colors>${TELEPROMPT_COLOR_OPTIONS.slice(4).map((option) => renderColorButton(option, true)).join('')}</div>`
-    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}</div>`
+    const hideTransport = getHideTelepromptTransport()
+    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — VISUALIZAÇÃO</div><div class="settingsWideGrid"><button class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? '[x]' : '[ ]'} Ocultar painel transporte da área do teleprompt</button></div></div>`
   }
 
   function renderSettingsModal() {
@@ -7081,7 +7092,7 @@
     return key
   }
 
-  function normalizeDirectorTelepromptPreview(data, nested) {
+  function normalizeDirectorTelepromptPreview(data, nested, slot = 1) {
     const shared = data?.telepromptPreview && typeof data.telepromptPreview === 'object' &&
       !Array.isArray(data.telepromptPreview) ? data.telepromptPreview : null
     const nestedOverlay = nested?.previewOverlay && typeof nested.previewOverlay === 'object' &&
@@ -7091,6 +7102,7 @@
     const topLevelBlocksPresent = Array.isArray(data?.previewBlocks)
     const hasPreviewContract = !!shared || !!nestedOverlay || !!nestedPreview || topLevelBlocksPresent
     const raw = shared || nestedOverlay || nestedPreview || {}
+    const slotSettings = data?.telepromptPreviewSettings?.[`tp${Number(slot) === 2 ? 2 : 1}`] || {}
     const rawMode = Number(
       raw.mode ?? raw.previewMode ??
       nested?.previewMode ?? data?.previewMode ?? 0
@@ -7147,6 +7159,7 @@
         return {
           id: String(rawSong.id ?? rawSong.itemId ?? rawSong.regionId ?? `${blockIndex}-${songIndex}`),
           name: String(rawSong.name ?? rawSong.title ?? rawSong.songName ?? ''),
+          durationSec: Math.max(0, Number(rawSong.durationSec ?? rawSong.duration ?? 0) || 0),
           playing: directorTelepromptPreviewBoolean(rawSong.playing ?? rawSong.isPlaying, false),
           queued: directorTelepromptPreviewBoolean(rawSong.queued ?? rawSong.isQueued, false),
           // Preview usa uma única cor por bloco, inclusive durante Play/Fila.
@@ -7156,6 +7169,7 @@
       return {
         id: String(rawBlock.id ?? rawBlock.blockId ?? rawBlock.key ?? blockIndex),
         name: String(rawBlock.name ?? rawBlock.title ?? rawBlock.blockName ?? 'SEM BLOCO'),
+        durationSec: Math.max(0, Number(rawBlock.durationSec ?? rawBlock.duration ?? 0) || 0),
         colorHex,
         colorKey,
         songs,
@@ -7173,6 +7187,13 @@
       mode,
       pageIndex,
       pageSize,
+      songDurationEnabled: directorTelepromptPreviewBoolean(
+        slotSettings.songDurationEnabled ?? slotSettings.durationEnabled, true),
+      blockDurationEnabled: directorTelepromptPreviewBoolean(
+        slotSettings.blockDurationEnabled ?? slotSettings.durationEnabled, true),
+      underlineEnabled: directorTelepromptPreviewBoolean(slotSettings.underlineEnabled, true),
+      textCase: ['uppercase', 'lowercase', 'original'].includes(String(slotSettings.textCase || '').toLowerCase())
+        ? String(slotSettings.textCase).toLowerCase() : 'uppercase',
       revision,
       blocks: blocks.map((block) => ({
         id: block.id,
@@ -7193,6 +7214,10 @@
       mode,
       pageIndex,
       pageSize,
+      songDurationEnabled: signaturePayload.songDurationEnabled,
+      blockDurationEnabled: signaturePayload.blockDurationEnabled,
+      underlineEnabled: signaturePayload.underlineEnabled,
+      textCase: signaturePayload.textCase,
       revision,
       blocks,
       signature: simpleHash(JSON.stringify(signaturePayload)),
@@ -7303,7 +7328,7 @@
       ?? data?.[`${prefix}NextMediaEnd`]
       ?? 0
     ) || 0
-    const preview = normalizeDirectorTelepromptPreview(data, nested)
+    const preview = normalizeDirectorTelepromptPreview(data, nested, normalizedSlot)
     return {
       slot: normalizedSlot,
       type,
@@ -7368,7 +7393,25 @@
     if (!blocks.length) {
       return '<div class="directorTpPreviewEmpty">SEM BLOCOS NESTA PÁGINA</div>'
     }
-    return `<div class="directorTpPreviewGrid">${blocks.map((block) => {
+    const formatPreviewDuration = (seconds) => {
+      const total = Math.max(0, Math.round(Number(seconds) || 0))
+      const hours = Math.floor(total / 3600)
+      const minutes = Math.floor((total % 3600) / 60)
+      const secs = total % 60
+      return hours > 0
+        ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+        : `${minutes}:${String(secs).padStart(2, '0')}`
+    }
+    const songDurationEnabled = preview?.songDurationEnabled !== false
+    const blockDurationEnabled = preview?.blockDurationEnabled !== false
+    const underlineEnabled = preview?.underlineEnabled !== false
+    const applyPreviewTextCase = (value) => {
+      const text = String(value || '')
+      if (preview?.textCase === 'lowercase') return text.toLocaleLowerCase('pt-BR')
+      if (preview?.textCase === 'original') return text
+      return text.toLocaleUpperCase('pt-BR')
+    }
+    const cardHtml = blocks.map((block) => {
       const colorHex = normalizeColor(block?.colorHex) || '#fde047'
       const songs = Array.isArray(block?.songs) ? block.songs : []
       const colorKey = normalizeDirectorTelepromptPreviewColorKey(block?.colorKey, colorHex)
@@ -7381,10 +7424,19 @@
           song?.playing ? 'directorTpPreviewSongPlaying' : '',
           song?.queued ? 'directorTpPreviewSongQueued' : '',
         ].filter(Boolean).join(' ')
-        return `<div class="${classes}"${song?.playing ? ' aria-current="true"' : ''}><span class="directorTpPreviewSongName">${escapeHtml(song?.name || '')}</span></div>`
+        const duration = songDurationEnabled && Number(song?.durationSec) > 0
+          ? `  •  ${formatPreviewDuration(song.durationSec)}` : ''
+        return `<div class="${classes}"${song?.playing ? ' aria-current="true"' : ''}><span class="directorTpPreviewSongName">${escapeHtml(`${applyPreviewTextCase(song?.name)}${duration}`)}</span></div>`
       }).join('')
-      return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}" data-preview-block-color-key="${escapeHtml(colorKey)}" data-preview-whiten-others="${whitenOtherSongs ? '1' : '0'}"><div class="directorTpPreviewBlockName">${escapeHtml(block?.name || 'SEM BLOCO')}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
-    }).join('')}</div>`
+      const blockDuration = blockDurationEnabled && Number(block?.durationSec) > 0
+        ? `  •  ${formatPreviewDuration(block.durationSec)}` : ''
+      return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}" data-preview-block-color-key="${escapeHtml(colorKey)}" data-preview-whiten-others="${whitenOtherSongs ? '1' : '0'}"><div class="directorTpPreviewBlockName">${escapeHtml(`${applyPreviewTextCase(block?.name || 'SEM BLOCO')}${blockDuration}`)}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
+    })
+    const phone = document.documentElement.dataset.directorDevice === 'phone'
+    const columnCount = Math.max(1, Math.min(phone ? 2 : 4, blocks.length))
+    const columns = Array.from({ length: columnCount }, () => [])
+    cardHtml.forEach((card, index) => columns[index % columnCount].push(card))
+    return `<div class="directorTpPreviewGrid" data-preview-count="${blocks.length}" data-preview-underline="${underlineEnabled ? '1' : '0'}">${columns.map((cards) => `<div class="directorTpPreviewColumn">${cards.join('')}</div>`).join('')}</div>`
   }
 
   function discardDirectorTelepromptWarmup(media) {
@@ -7599,11 +7651,13 @@
     const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
+    const transportPanel = getHideTelepromptTransport()
+      ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
     return `
       <div class="directorTpOverlay" data-teleprompt-slot="${slot}">
         <div class="directorTpPanel">
           <div class="directorTpContent">
-            ${renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)}
+            ${transportPanel}
             <div class="directorTpControls">
               <button class="${tp1Class}" data-action="teleprompt-slot-1">TP/1</button>
               <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
@@ -10962,7 +11016,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -11533,6 +11587,7 @@
       case 'teleprompt-font-set': setTelepromptFont(el.getAttribute('data-value')); break
       case 'teleprompt-color-set': setTelepromptColor(el.getAttribute('data-value')); break
       case 'teleprompt-colors-more': toggleTelepromptColorPalette(); break
+      case 'teleprompt-transport-visibility-toggle': toggleHideTelepromptTransport(); break
       case 'number-label': toggleNumberColumnMode(); break
       case 'number-sort': toggleNumberSortDirection(); break
       case 'number-order-confirm': confirmNumberOrderChange(); break

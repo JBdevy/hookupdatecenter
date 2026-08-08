@@ -32,6 +32,11 @@ let chatHookLastMessageId = 0;
 let chatHookRevision = 0;
 let chatHookClearedAt = '';
 let chatHookLastPollAt = 0;
+let chatAdminPassword = '';
+let chatAdminPasswordResolver = null;
+let releaseNotesReadResolver = null;
+let releaseNotesReadScrollFrame = 0;
+let pingPongResizeObserver = null;
 const chatHookMessagesById = new Map();
 function setLyricsConfigSlot(slot) {
   selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
@@ -411,13 +416,78 @@ function reinstallSourceModal({ title = 'Reinstalar esta versão?', computerAvai
   });
 }
 
-async function showDownloadDescriptionNotice() {
-  return noticeModal({
-    title: 'Leia a descrição',
-    message: 'Leia a descrição da atualização antes de baixar.',
-    type: 'info',
-    okText: 'OK'
+function stopReleaseNotesScrollHint() {
+  if (releaseNotesReadScrollFrame) {
+    cancelAnimationFrame(releaseNotesReadScrollFrame);
+    releaseNotesReadScrollFrame = 0;
+  }
+}
+
+function closeReleaseNotesReadModal(accepted = false) {
+  stopReleaseNotesScrollHint();
+  const modal = $('#releaseNotesReadModal');
+  const content = $('#releaseNotesReadContent');
+  modal?.classList.add('hidden');
+  if (content) content.scrollTop = 0;
+  const resolve = releaseNotesReadResolver;
+  releaseNotesReadResolver = null;
+  if (resolve) resolve(Boolean(accepted));
+}
+
+function startReleaseNotesScrollHint() {
+  const content = $('#releaseNotesReadContent');
+  if (!content) return;
+  stopReleaseNotesScrollHint();
+  content.scrollTop = 0;
+  const maxScroll = content.scrollHeight - content.clientHeight;
+  if (maxScroll <= 4) return;
+
+  const peak = Math.min(maxScroll, Math.max(56, content.clientHeight * 0.16));
+  const duration = 1000;
+  const startedAt = performance.now();
+  const step = (now) => {
+    const progress = Math.min(1, (now - startedAt) / duration);
+    content.scrollTop = peak * Math.sin(Math.PI * progress);
+    if (progress < 1) {
+      releaseNotesReadScrollFrame = requestAnimationFrame(step);
+    } else {
+      releaseNotesReadScrollFrame = 0;
+      content.scrollTop = 0;
+    }
+  };
+  releaseNotesReadScrollFrame = requestAnimationFrame(step);
+}
+
+function showReleaseNotesReadModal(message) {
+  if (releaseNotesReadResolver) closeReleaseNotesReadModal(false);
+  const modal = $('#releaseNotesReadModal');
+  const content = $('#releaseNotesReadContent');
+  if (!modal || !content) return Promise.resolve(false);
+
+  content.textContent = String(message || 'Nenhuma Release Note foi publicada para esta versão.');
+  content.scrollTop = 0;
+  modal.classList.remove('hidden');
+
+  return new Promise((resolve) => {
+    releaseNotesReadResolver = resolve;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(startReleaseNotesScrollHint);
+    });
+    $('#releaseNotesReadContinue')?.focus();
   });
+}
+
+async function showDownloadDescriptionNotice(updateOverride = null) {
+  const releaseNotes = String(
+    updateOverride?.releaseNotes ||
+    state?.latestUpdate?.releaseNotes ||
+    state?.hookCenterLatest?.releaseNotes ||
+    updateOverride?.description ||
+    state?.latestUpdate?.description ||
+    state?.hookCenterLatest?.notes ||
+    'Nenhuma Release Note foi publicada para esta versão.'
+  ).trim();
+  return showReleaseNotesReadModal(releaseNotes);
 }
 
 async function ensureLicenseActiveForDownload() {
@@ -532,7 +602,7 @@ function updateVsHookProgress(progress) {
 async function startVsHookDownload(updateOverride = null) {
   try {
     if (!(await ensureLicenseActiveForDownload())) return;
-    if (!(await showDownloadDescriptionNotice())) return;
+    if (!(await showDownloadDescriptionNotice(updateOverride))) return;
     if (!(await ensureDeviceName())) return;
     setProgressVisible(true);
     resetVsHookProgress();
@@ -570,6 +640,7 @@ async function startCombinedUpdateDownload() {
 
   if (!(await ensureLicenseActiveForDownload())) return;
   if (!(await ensureDeviceName())) return;
+  if (!(await showDownloadDescriptionNotice())) return;
 
   const button = $('#downloadButton');
   if (state?.currentPackageInstalled === true) {
@@ -614,7 +685,6 @@ async function startCombinedUpdateDownload() {
     return;
   }
 
-  if (!(await showDownloadDescriptionNotice())) return;
   combinedDownloadInProgress = true;
   combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
   $('#homeProgressArea')?.classList.add('hidden');
@@ -1017,8 +1087,340 @@ function setupHookRename() {
   updateHookRenameControls();
 }
 
+let directCableState = null;
+
+function renderDirectCableState(state = directCableState) {
+  const select = $('#directCableAdapterSelect');
+  const details = $('#directCableAdapterDetails');
+  const badge = $('#directCableLinkBadge');
+  if (!select) return;
+  const previous = select.value;
+  const adapters = Array.isArray(state?.adapters) ? state.adapters : [];
+  select.innerHTML = adapters.length
+    ? adapters.map((adapter) => `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}</option>`).join('')
+    : '<option value="">Nenhum adaptador Ethernet encontrado</option>';
+  const wanted = adapters.some((item) => item.id === previous)
+    ? previous
+    : (adapters.some((item) => item.id === state?.configuredAdapterId)
+        ? state.configuredAdapterId : (adapters[0]?.id || ''));
+  select.value = wanted;
+  const adapter = adapters.find((item) => item.id === wanted);
+  if (adapter) {
+    const linkText = adapter.connected ? 'Cabo conectado' : 'Sem sinal do cabo';
+    badge.textContent = adapter.connected ? 'Conectado' : 'Aguardando cabo';
+    badge.classList.toggle('direct-cable-badge-online', adapter.connected);
+    details.textContent = `${linkText}${adapter.linkSpeed ? ` • ${adapter.linkSpeed}` : ''}${adapter.ipv4 ? ` • IP atual ${adapter.ipv4}` : ' • Sem IPv4 configurado'}`;
+  } else {
+    badge.textContent = state?.supported === false ? 'Indisponível' : 'Não detectado';
+    badge.classList.remove('direct-cable-badge-online');
+    details.textContent = state?.error || 'Conecte um adaptador USB–Ethernet e clique em detectar novamente.';
+  }
+  $('#directCableConfigureButton').disabled = !adapter;
+  $('#directCableRestoreButton').disabled = !adapter;
+}
+
+async function refreshDirectCableState() {
+  const result = $('#directCableResult');
+  if (result) result.textContent = 'Detectando adaptadores Ethernet...';
+  try {
+    directCableState = await window.hookUpdateCenter.getDirectCableState();
+    renderDirectCableState(directCableState);
+    if (result) {
+      result.textContent = directCableState?.configuredIp
+        ? `Rede direta configurada neste computador em ${directCableState.configuredIp}.`
+        : 'Escolha o adaptador que está ligado ao outro computador.';
+    }
+  } catch (error) {
+    directCableState = { ok: false, adapters: [], error: friendlyError(error) };
+    renderDirectCableState(directCableState);
+    if (result) result.textContent = directCableState.error;
+  }
+}
+
+async function configureDirectCableFromUi() {
+  const adapterId = $('#directCableAdapterSelect')?.value || '';
+  if (!adapterId) {
+    showModal({ title: 'Conexão redundante', message: 'Escolha o adaptador ligado ao outro computador.', type: 'error' });
+    return;
+  }
+  const confirmed = await confirmModal({
+    title: 'Configurar conexão redundante?',
+    message: 'A Hook Center configurará somente o adaptador selecionado. O sistema poderá pedir a senha de administrador. O Wi‑Fi e os demais adaptadores não serão alterados.',
+    type: 'info',
+    okText: 'Configurar'
+  });
+  if (!confirmed) return;
+  const button = $('#directCableConfigureButton');
+  const resultBox = $('#directCableResult');
+  button.disabled = true;
+  if (resultBox) resultBox.textContent = 'Aguardando autorização do sistema...';
+  try {
+    const result = await window.hookUpdateCenter.configureDirectCable({ adapterId });
+    directCableState = result.state;
+    renderDirectCableState(directCableState);
+    if (resultBox) resultBox.textContent = `Rede direta configurada em ${result.ip}. Repita o processo no outro computador.`;
+    showModal({ title: 'Conexão redundante pronta', message: `Este computador está em ${result.ip}. Agora repita a configuração na outra Hook Center. Depois escolha Receive/Transmitter ou Project Sync dentro da extensão.`, type: 'success' });
+  } catch (error) {
+    if (resultBox) resultBox.textContent = friendlyError(error, 'Não foi possível configurar o adaptador.');
+    showModal({ title: 'Conexão redundante', message: friendlyError(error, 'Não foi possível configurar o adaptador.'), type: 'error' });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function restoreDirectCableFromUi() {
+  const adapterId = $('#directCableAdapterSelect')?.value || '';
+  if (!adapterId) return;
+  const confirmed = await confirmModal({
+    title: 'Restaurar DHCP?',
+    message: 'O adaptador selecionado voltará a obter o endereço IP automaticamente.',
+    type: 'info',
+    okText: 'Restaurar'
+  });
+  if (!confirmed) return;
+  const button = $('#directCableRestoreButton');
+  const resultBox = $('#directCableResult');
+  button.disabled = true;
+  try {
+    const result = await window.hookUpdateCenter.restoreDirectCableDhcp({ adapterId });
+    directCableState = result.state;
+    renderDirectCableState(directCableState);
+    if (resultBox) resultBox.textContent = 'DHCP restaurado. O adaptador voltou para configuração automática.';
+  } catch (error) {
+    showModal({ title: 'Conexão redundante', message: friendlyError(error, 'Não foi possível restaurar o DHCP.'), type: 'error' });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+const pingPongGame = {
+  running: false,
+  frame: 0,
+  lastFrameAt: 0,
+  width: 960,
+  height: 540,
+  paddleWidth: 18,
+  paddleHeight: 112,
+  leftY: 214,
+  rightY: 214,
+  ballX: 480,
+  ballY: 270,
+  ballRadius: 11,
+  ballVx: 390,
+  ballVy: 130,
+  leftScore: 0,
+  rightScore: 0,
+  speedMultiplier: 1,
+  serveResumeAt: 0,
+  keys: new Set()
+};
+
+function updatePingPongHeader() {
+  const toggle = $('#pingPongToggleButton');
+  const overlay = $('#pingPongStartOverlay');
+  const score = $('#pingPongScore');
+  const status = $('#pingPongStatus');
+  if (toggle) {
+    toggle.textContent = pingPongGame.running ? 'Encerrar' : 'Iniciar';
+    toggle.classList.toggle('pingpong-stop-button', pingPongGame.running);
+  }
+  overlay?.classList.toggle('hidden', pingPongGame.running);
+  if (score) score.innerHTML = `${pingPongGame.leftScore}&nbsp;&nbsp;×&nbsp;&nbsp;${pingPongGame.rightScore}`;
+  if (status) status.textContent = pingPongGame.running
+    ? `Partida em andamento • ${pingPongGame.speedMultiplier}x`
+    : `Pronto para jogar • ${pingPongGame.speedMultiplier}x`;
+}
+
+function resetPingPongBall(direction = (Math.random() < 0.5 ? -1 : 1)) {
+  pingPongGame.ballX = pingPongGame.width / 2;
+  pingPongGame.ballY = pingPongGame.height / 2;
+  pingPongGame.ballVx = 390 * direction;
+  pingPongGame.ballVy = (100 + Math.random() * 150) * (Math.random() < 0.5 ? -1 : 1);
+}
+
+function drawPingPongGame() {
+  const canvas = $('#pingPongCanvas');
+  const ctx = canvas?.getContext('2d');
+  if (!ctx) return;
+  const { width, height, paddleWidth, paddleHeight, leftY, rightY, ballX, ballY, ballRadius } = pingPongGame;
+
+  const background = ctx.createLinearGradient(0, 0, width, height);
+  background.addColorStop(0, '#080910');
+  background.addColorStop(0.5, '#151023');
+  background.addColorStop(1, '#080910');
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, .18)';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([14, 18]);
+  ctx.beginPath();
+  ctx.moveTo(width / 2, 22);
+  ctx.lineTo(width / 2, height - 22);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.shadowBlur = 22;
+  ctx.shadowColor = '#9eff00';
+  ctx.fillStyle = '#9eff00';
+  ctx.fillRect(34, leftY, paddleWidth, paddleHeight);
+  ctx.shadowColor = '#bb39ff';
+  ctx.fillStyle = '#bb39ff';
+  ctx.fillRect(width - 34 - paddleWidth, rightY, paddleWidth, paddleHeight);
+
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(ballX, ballY, ballRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function updatePingPongGame(deltaSeconds) {
+  const game = pingPongGame;
+  const paddleSpeed = 470;
+  if (game.keys.has('KeyW')) game.leftY -= paddleSpeed * deltaSeconds;
+  if (game.keys.has('KeyS')) game.leftY += paddleSpeed * deltaSeconds;
+  if (game.keys.has('ArrowUp')) game.rightY -= paddleSpeed * deltaSeconds;
+  if (game.keys.has('ArrowDown')) game.rightY += paddleSpeed * deltaSeconds;
+  game.leftY = Math.max(0, Math.min(game.height - game.paddleHeight, game.leftY));
+  game.rightY = Math.max(0, Math.min(game.height - game.paddleHeight, game.rightY));
+
+  // Depois de cada ponto, a bola permanece visível e parada no centro por
+  // meio segundo. A pausa usa tempo real e não é encurtada pelo modo 2x–5x.
+  if (game.serveResumeAt > performance.now()) return;
+  game.serveResumeAt = 0;
+
+  game.ballX += game.ballVx * deltaSeconds;
+  game.ballY += game.ballVy * deltaSeconds;
+  if (game.ballY - game.ballRadius <= 0 && game.ballVy < 0) game.ballVy *= -1;
+  if (game.ballY + game.ballRadius >= game.height && game.ballVy > 0) game.ballVy *= -1;
+
+  const leftPaddleX = 34 + game.paddleWidth;
+  const rightPaddleX = game.width - 34 - game.paddleWidth;
+  const bounceFromPaddle = (paddleY, direction) => {
+    const relative = (game.ballY - (paddleY + game.paddleHeight / 2)) / (game.paddleHeight / 2);
+    const speed = Math.min(720, Math.hypot(game.ballVx, game.ballVy) * 1.045);
+    game.ballVx = Math.cos(relative * 0.78) * speed * direction;
+    game.ballVy = Math.sin(relative * 0.78) * speed;
+  };
+
+  if (game.ballVx < 0 && game.ballX - game.ballRadius <= leftPaddleX && game.ballX > 25 && game.ballY >= game.leftY && game.ballY <= game.leftY + game.paddleHeight) {
+    game.ballX = leftPaddleX + game.ballRadius;
+    bounceFromPaddle(game.leftY, 1);
+  }
+  if (game.ballVx > 0 && game.ballX + game.ballRadius >= rightPaddleX && game.ballX < game.width - 25 && game.ballY >= game.rightY && game.ballY <= game.rightY + game.paddleHeight) {
+    game.ballX = rightPaddleX - game.ballRadius;
+    bounceFromPaddle(game.rightY, -1);
+  }
+
+  if (game.ballX < -game.ballRadius) {
+    game.rightScore += 1;
+    resetPingPongBall(1);
+    game.serveResumeAt = performance.now() + 500;
+    updatePingPongHeader();
+  } else if (game.ballX > game.width + game.ballRadius) {
+    game.leftScore += 1;
+    resetPingPongBall(-1);
+    game.serveResumeAt = performance.now() + 500;
+    updatePingPongHeader();
+  }
+}
+
+function runPingPongFrame(now) {
+  if (!pingPongGame.running) return;
+  const delta = Math.min(0.032, Math.max(0, (now - pingPongGame.lastFrameAt) / 1000));
+  pingPongGame.lastFrameAt = now;
+  const acceleratedDelta = delta * pingPongGame.speedMultiplier;
+  const steps = Math.max(1, Math.ceil(acceleratedDelta / 0.008));
+  const stepDelta = acceleratedDelta / steps;
+  for (let step = 0; step < steps; step += 1) updatePingPongGame(stepDelta);
+  drawPingPongGame();
+  pingPongGame.frame = requestAnimationFrame(runPingPongFrame);
+}
+
+function startPingPongGame() {
+  if (pingPongGame.running) return;
+  pingPongGame.running = true;
+  pingPongGame.leftScore = 0;
+  pingPongGame.rightScore = 0;
+  pingPongGame.leftY = (pingPongGame.height - pingPongGame.paddleHeight) / 2;
+  pingPongGame.rightY = pingPongGame.leftY;
+  pingPongGame.keys.clear();
+  pingPongGame.serveResumeAt = 0;
+  resetPingPongBall();
+  pingPongGame.lastFrameAt = performance.now();
+  updatePingPongHeader();
+  $('#pingPongCanvas')?.focus();
+  pingPongGame.frame = requestAnimationFrame(runPingPongFrame);
+}
+
+function stopPingPongGame() {
+  pingPongGame.running = false;
+  pingPongGame.keys.clear();
+  pingPongGame.serveResumeAt = 0;
+  if (pingPongGame.frame) cancelAnimationFrame(pingPongGame.frame);
+  pingPongGame.frame = 0;
+  updatePingPongHeader();
+  drawPingPongGame();
+}
+
+function togglePingPongGame() {
+  if (pingPongGame.running) stopPingPongGame();
+  else startPingPongGame();
+}
+
+function resizePingPongCanvas() {
+  const canvas = $('#pingPongCanvas');
+  const shell = canvas?.parentElement;
+  if (!canvas || !shell) return;
+  const availableWidth = shell.clientWidth;
+  const availableHeight = shell.clientHeight;
+  if (availableWidth <= 0 || availableHeight <= 0) return;
+  const scale = Math.min(availableWidth / pingPongGame.width, availableHeight / pingPongGame.height);
+  canvas.style.width = `${Math.max(1, Math.floor(pingPongGame.width * scale))}px`;
+  canvas.style.height = `${Math.max(1, Math.floor(pingPongGame.height * scale))}px`;
+}
+
+function setupPingPongGame() {
+  const canvas = $('#pingPongCanvas');
+  $('#pingPongToggleButton')?.addEventListener('click', togglePingPongGame);
+  $('#pingPongStartButton')?.addEventListener('click', startPingPongGame);
+  $('#pingPongSpeedSelect')?.addEventListener('change', (event) => {
+    pingPongGame.speedMultiplier = Math.max(1, Math.min(5,
+      Math.round(Number(event.currentTarget.value) || 1)));
+    event.currentTarget.value = String(pingPongGame.speedMultiplier);
+    updatePingPongHeader();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!pingPongGame.running || selectedToolsPanel !== 'pingpong') return;
+    if (!['KeyW', 'KeyS', 'ArrowUp', 'ArrowDown'].includes(event.code)) return;
+    event.preventDefault();
+    pingPongGame.keys.add(event.code);
+  });
+  document.addEventListener('keyup', (event) => pingPongGame.keys.delete(event.code));
+  window.addEventListener('blur', () => pingPongGame.keys.clear());
+  canvas?.addEventListener('pointermove', (event) => {
+    if (!pingPongGame.running || !event.buttons) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * (pingPongGame.width / rect.width);
+    const y = (event.clientY - rect.top) * (pingPongGame.height / rect.height) - pingPongGame.paddleHeight / 2;
+    if (x < pingPongGame.width / 2) pingPongGame.leftY = Math.max(0, Math.min(pingPongGame.height - pingPongGame.paddleHeight, y));
+    else pingPongGame.rightY = Math.max(0, Math.min(pingPongGame.height - pingPongGame.paddleHeight, y));
+  });
+  const stage = canvas?.parentElement;
+  if (stage && typeof ResizeObserver === 'function') {
+    pingPongResizeObserver = new ResizeObserver(resizePingPongCanvas);
+    pingPongResizeObserver.observe(stage);
+  }
+  updatePingPongHeader();
+  drawPingPongGame();
+}
+
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'upcoming1', 'upcoming2', 'upcoming3'];
+  const allowed = ['rename', 'cable', 'upcoming2', 'pingpong'];
+  if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
     const active = button.dataset.toolsPanel === selectedToolsPanel;
@@ -1029,16 +1431,24 @@ function setToolsPanel(panelName = 'rename') {
     panel.classList.toggle('active', panel.dataset.toolsPanelContent === selectedToolsPanel);
   });
   if (selectedToolsPanel === 'rename') updateHookRenameControls();
+  if (selectedToolsPanel === 'cable') refreshDirectCableState();
+  if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
 
 function setupToolsSubmenu() {
   $$('[data-tools-panel]').forEach((button) => {
     button.addEventListener('click', () => setToolsPanel(button.dataset.toolsPanel));
   });
+  $('#directCableRefreshButton')?.addEventListener('click', refreshDirectCableState);
+  $('#directCableAdapterSelect')?.addEventListener('change', () => renderDirectCableState(directCableState));
+  $('#directCableConfigureButton')?.addEventListener('click', configureDirectCableFromUi);
+  $('#directCableRestoreButton')?.addEventListener('click', restoreDirectCableFromUi);
+  setupPingPongGame();
   setToolsPanel(selectedToolsPanel);
 }
 
 function setView(viewName) {
+  if (viewName !== 'tools' && pingPongGame.running) stopPingPongGame();
   $$('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.view === viewName));
   $$('.view').forEach((view) => view.classList.remove('active'));
   $(`#${viewName}View`).classList.add('active');
@@ -1183,6 +1593,7 @@ function renderChatHookCurrentUser() {
   }
   const avatarButton = $('#chatHookAvatarButton');
   if (avatarButton) avatarButton.classList.toggle('hidden', user?.isAdmin !== true);
+  $('#chatHookAdminMenuButton')?.classList.toggle('hidden', user?.isAdmin !== true);
 }
 
 function chatHookCooldownRemaining() {
@@ -1197,7 +1608,7 @@ function renderChatHookControls() {
   const limits = chatHookState?.limits || {};
   const cooldown = chatHookCooldownRemaining();
   const authenticated = Boolean(user?.id);
-  const exhausted = authenticated && !user?.isAdmin && Number(limits.remainingToday || 0) <= 0;
+  const exhausted = authenticated && !user?.isAdmin && limits.unlimited !== true && Number(limits.remainingToday || 0) <= 0;
   const closed = settings.open === false && !user?.isAdmin;
   const available = authenticated && !closed && !exhausted && cooldown <= 0 && !chatHookSending;
   const input = $('#chatHookMessageInput');
@@ -1232,12 +1643,191 @@ function renderChatHookControls() {
   }
   if (emojiButton) emojiButton.disabled = !available;
   $('#chatHookClosedNotice')?.classList.toggle('hidden', !closed);
+  $('#chatHookComposer')?.classList.toggle('hidden', closed);
   const quota = $('#chatHookQuota');
   if (quota) quota.textContent = user?.isAdmin
     ? 'Administrador'
     : user?.id
-      ? `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje`
+      ? (limits.unlimited === true ? `${Number(limits.usedToday || 0)} hoje • ilimitado` : `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje`)
       : '--';
+}
+
+async function openHookTutorialsModal() {
+  const modal = $('#hookTutorialsModal');
+  const cards = $('#hookTutorialCards');
+  if (!modal || !cards) return;
+  modal.classList.remove('hidden');
+  cards.innerHTML = '<p class="muted">Carregando tutoriais...</p>';
+  try {
+    const result = await window.hookUpdateCenter.getHookTutorials();
+    const items = Array.isArray(result?.items) ? result.items : [];
+    cards.innerHTML = items.length ? items.map((item) => `
+      <button class="hook-tutorial-card" type="button" data-tutorial-url="${escapeHtml(item.videoUrl || '')}">
+        <img src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(item.title || 'Tutorial')}" />
+        <strong>${escapeHtml(item.title || 'Assistir tutorial')}</strong>
+      </button>`).join('') : '<p class="muted">Nenhum tutorial cadastrado ainda.</p>';
+  } catch (error) {
+    cards.innerHTML = `<p class="muted">${escapeHtml(friendlyError(error, 'Não foi possível carregar os tutoriais.'))}</p>`;
+  }
+}
+
+function openChatHookAdminModal() {
+  if (chatHookState?.user?.isAdmin !== true) return;
+  const settings = chatHookState.chat || {};
+  $('#chatHookAdminOpen').checked = settings.open !== false;
+  $('#chatHookAdminDailyLimit').value = String(settings.dailyMessageLimit || 10);
+  $('#chatHookAdminUnlimited').checked = settings.dailyMessageUnlimited === true;
+  $('#chatHookAdminDailyLimit').disabled = settings.dailyMessageUnlimited === true;
+  $('#chatHookAdminRetentionDays').value = String(settings.retentionDays || 7);
+  $('#chatHookAdminModalStatus').textContent = '';
+  $('#chatHookAdminModal').classList.remove('hidden');
+}
+
+function requestChatAdminPassword() {
+  if (chatAdminPassword) return Promise.resolve(true);
+  if (chatAdminPasswordResolver) return Promise.resolve(false);
+  $('#chatAdminPasswordInput').value = '';
+  $('#chatAdminPasswordStatus').textContent = '';
+  $('#chatAdminPasswordModal').classList.remove('hidden');
+  setTimeout(() => $('#chatAdminPasswordInput')?.focus(), 0);
+  return new Promise((resolve) => { chatAdminPasswordResolver = resolve; });
+}
+
+function closeChatAdminPasswordModal(result = false) {
+  $('#chatAdminPasswordModal')?.classList.add('hidden');
+  const resolve = chatAdminPasswordResolver;
+  chatAdminPasswordResolver = null;
+  if (resolve) resolve(result);
+}
+
+async function confirmChatAdminPassword() {
+  const password = String($('#chatAdminPasswordInput')?.value || '');
+  const status = $('#chatAdminPasswordStatus');
+  const button = $('#chatAdminPasswordConfirm');
+  if (!password) { if (status) status.textContent = 'Digite a senha do painel.'; return; }
+  if (button) button.disabled = true;
+  try {
+    await window.hookUpdateCenter.unlockChatAdmin({ adminPassword: password });
+    chatAdminPassword = password;
+    closeChatAdminPasswordModal(true);
+  } catch (error) {
+    if (status) status.textContent = friendlyError(error, 'Senha inválida.');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function openChatReleaseNotesModal() {
+  $('#chatReleaseNotesInput').value = String(chatHookState?.releaseNotes || chatHookState?.adminUpdate?.releaseNotes || state?.hookCenterLatest?.releaseNotes || '');
+  $('#chatReleaseNotesStatus').textContent = '';
+  $('#chatReleaseNotesModal').classList.remove('hidden');
+}
+
+function openChatPublishUpdateModal() {
+  const update = chatHookState?.adminUpdate || {};
+  const fields = {
+    chatPublishVersion: update.version,
+    chatPublishReleaseVersion: update.releaseVersion,
+    chatPublishTitle: update.title,
+    chatPublishYoutubeUrl: update.youtubeUrl,
+    chatPublishWindowsUrl: update.windowsUrl,
+    chatPublishMacosUrl: update.macosUrl,
+    chatPublishWindowsExtensionUrl: update.windowsExtensionUrl,
+    chatPublishMacosExtensionUrl: update.macosExtensionUrl,
+    chatPublishTutorialUrl: update.tutorialUrl,
+    chatPublishDescription: update.description,
+    chatPublishReleaseNotes: update.releaseNotes
+  };
+  Object.entries(fields).forEach(([id, value]) => { if ($(`#${id}`)) $(`#${id}`).value = String(value || ''); });
+  $('#chatPublishUpdateStatus').textContent = '';
+  $('#chatPublishUpdateModal').classList.remove('hidden');
+}
+
+async function openChatAdminAction(action) {
+  $('#chatHookAdminMenu')?.classList.add('hidden');
+  if (!(await requestChatAdminPassword())) return;
+  if (action === 'config') openChatHookAdminModal();
+  else if (action === 'release-notes') openChatReleaseNotesModal();
+  else if (action === 'publish-update') openChatPublishUpdateModal();
+}
+
+function closeChatHookAdminModal() {
+  $('#chatHookAdminModal')?.classList.add('hidden');
+}
+
+async function saveChatHookAdminSettings() {
+  const button = $('#chatHookAdminSaveButton');
+  const status = $('#chatHookAdminModalStatus');
+  if (button) button.disabled = true;
+  try {
+    const result = await window.hookUpdateCenter.updateChatAdminSettings({
+      adminPassword: chatAdminPassword,
+      open: $('#chatHookAdminOpen').checked,
+      dailyMessageLimit: Number($('#chatHookAdminDailyLimit').value),
+      dailyMessageUnlimited: $('#chatHookAdminUnlimited').checked,
+      retentionDays: Number($('#chatHookAdminRetentionDays').value)
+    });
+    applyChatHookState(result, { full: true });
+    closeChatHookAdminModal();
+  } catch (error) {
+    if (status) status.textContent = friendlyError(error, 'Não foi possível salvar as configurações.');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function clearChatHookFromAdminModal() {
+  const confirmed = await confirmModal({ title: 'Limpar Chat Hook?', message: 'Todas as mensagens e mídias serão apagadas para todos.', type: 'warning', okText: 'Limpar' });
+  if (!confirmed) return;
+  try {
+    const result = await window.hookUpdateCenter.clearChatAsAdmin({ adminPassword: chatAdminPassword });
+    applyChatHookState(result, { full: true });
+    $('#chatHookAdminModalStatus').textContent = 'Chat limpo.';
+  } catch (error) {
+    $('#chatHookAdminModalStatus').textContent = friendlyError(error, 'Não foi possível limpar o chat.');
+  }
+}
+
+async function saveChatReleaseNotesFromModal() {
+  const status = $('#chatReleaseNotesStatus');
+  try {
+    const result = await window.hookUpdateCenter.saveChatReleaseNotes({ adminPassword: chatAdminPassword, releaseNotes: $('#chatReleaseNotesInput').value });
+    applyChatHookState(result, { full: true });
+    $('#chatReleaseNotesModal').classList.add('hidden');
+  } catch (error) {
+    if (status) status.textContent = friendlyError(error, 'Não foi possível salvar as Release Notes.');
+  }
+}
+
+async function publishUpdateFromChatModal() {
+  const status = $('#chatPublishUpdateStatus');
+  const button = $('#chatPublishUpdateSave');
+  if (button) button.disabled = true;
+  try {
+    await window.hookUpdateCenter.publishUpdateFromHookCenter({
+      adminPassword: chatAdminPassword,
+      update: {
+        version: $('#chatPublishVersion').value,
+        releaseVersion: $('#chatPublishReleaseVersion').value,
+        title: $('#chatPublishTitle').value,
+        youtubeUrl: $('#chatPublishYoutubeUrl').value,
+        windowsUrl: $('#chatPublishWindowsUrl').value,
+        macosUrl: $('#chatPublishMacosUrl').value,
+        windowsExtensionUrl: $('#chatPublishWindowsExtensionUrl').value,
+        macosExtensionUrl: $('#chatPublishMacosExtensionUrl').value,
+        tutorialUrl: $('#chatPublishTutorialUrl').value,
+        description: $('#chatPublishDescription').value,
+        releaseNotes: $('#chatPublishReleaseNotes').value
+      }
+    });
+    $('#chatPublishUpdateModal').classList.add('hidden');
+    await window.hookUpdateCenter.checkUpdates().catch(() => null);
+    showModal({ title: 'Atualização publicada', message: 'A atualização foi publicada com sucesso.', type: 'success' });
+  } catch (error) {
+    if (status) status.textContent = friendlyError(error, 'Não foi possível publicar a atualização.');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function applyChatHookState(next, { full = false } = {}) {
@@ -1503,6 +2093,33 @@ async function deleteChatHookMessage(messageId, button = null) {
 }
 
 function setupChatHook() {
+  $('#chatHookAdminMenuButton')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    $('#chatHookAdminMenu')?.classList.toggle('hidden');
+  });
+  $('#chatHookAdminMenu')?.addEventListener('click', (event) => {
+    const action = event.target.closest('[data-chat-admin-action]')?.dataset.chatAdminAction;
+    if (action) openChatAdminAction(action);
+  });
+  document.addEventListener('pointerdown', (event) => {
+    const menu = $('#chatHookAdminMenu');
+    const button = $('#chatHookAdminMenuButton');
+    if (!menu || menu.classList.contains('hidden') || event.target === button || menu.contains(event.target)) return;
+    menu.classList.add('hidden');
+  });
+  $('#chatAdminPasswordConfirm')?.addEventListener('click', confirmChatAdminPassword);
+  $('#chatAdminPasswordCancel')?.addEventListener('click', () => closeChatAdminPasswordModal(false));
+  $('#chatAdminPasswordInput')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') confirmChatAdminPassword(); });
+  $('#chatHookAdminCancelButton')?.addEventListener('click', closeChatHookAdminModal);
+  $('#chatHookAdminSaveButton')?.addEventListener('click', saveChatHookAdminSettings);
+  $('#chatHookAdminClearButton')?.addEventListener('click', clearChatHookFromAdminModal);
+  $('#chatHookAdminUnlimited')?.addEventListener('change', (event) => {
+    $('#chatHookAdminDailyLimit').disabled = event.target.checked;
+  });
+  $('#chatReleaseNotesCancel')?.addEventListener('click', () => $('#chatReleaseNotesModal')?.classList.add('hidden'));
+  $('#chatReleaseNotesSave')?.addEventListener('click', saveChatReleaseNotesFromModal);
+  $('#chatPublishUpdateCancel')?.addEventListener('click', () => $('#chatPublishUpdateModal')?.classList.add('hidden'));
+  $('#chatPublishUpdateSave')?.addEventListener('click', publishUpdateFromChatModal);
   const sendWithEnter = $('#chatHookSendWithEnter');
   if (sendWithEnter) {
     sendWithEnter.checked = localStorage.getItem('chatHookSendWithEnter') === '1';
@@ -2643,6 +3260,7 @@ function renderPreviousUpdates(updates) {
 
       try {
         if (!(await ensureLicenseActiveForDownload())) return;
+        if (!(await showDownloadDescriptionNotice(update))) return;
         const reinstalling = update.installed === true;
         let source = null;
         if (reinstalling) {
@@ -2821,6 +3439,14 @@ async function init() {
     hideModal();
   });
   $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
+  $('#releaseNotesReadContinue')?.addEventListener('click', () => closeReleaseNotesReadModal(true));
+  $('#releaseNotesReadCancel')?.addEventListener('click', () => closeReleaseNotesReadModal(false));
+  $('#releaseNotesReadModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'releaseNotesReadModal') closeReleaseNotesReadModal(false);
+  });
+  ['wheel', 'touchstart', 'pointerdown'].forEach((eventName) => {
+    $('#releaseNotesReadContent')?.addEventListener(eventName, stopReleaseNotesScrollHint, { passive: true });
+  });
   $('#supportQrModal')?.addEventListener('click', (event) => { if (event.target.id === 'supportQrModal') closeSupportQrModal(); });
   $('#supportQrCloseButton')?.addEventListener('click', closeSupportQrModal);
   $('#openTechnicalNoticeModalButton')?.addEventListener('click', openTechnicalNoticeModal);
@@ -3075,6 +3701,12 @@ async function init() {
     } catch (error) {
       showModal({ title: 'VS Hook', message: friendlyError(error, 'Não foi possível abrir o conteúdo.'), type: 'error' });
     }
+  });
+  $('#hookTutorialsButton')?.addEventListener('click', openHookTutorialsModal);
+  $('#closeHookTutorialsModal')?.addEventListener('click', () => $('#hookTutorialsModal')?.classList.add('hidden'));
+  $('#hookTutorialCards')?.addEventListener('click', (event) => {
+    const card = event.target.closest('[data-tutorial-url]');
+    if (card?.dataset.tutorialUrl) window.hookUpdateCenter.openExternal(card.dataset.tutorialUrl).catch(() => {});
   });
 
   $('#activateButton').addEventListener('click', async () => {

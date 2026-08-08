@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-chat-video-multiloop4-v18';
+const CACHE_NAME = 'vshook-mobile-1.0.1-chat-admin-tutorials-v19';
 const APP_ASSETS = [
   './',
   './index.html',

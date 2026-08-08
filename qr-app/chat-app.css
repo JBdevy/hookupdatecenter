@@ -58,6 +58,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileHeading h1 { margin: 0 0 3px; font-size: 19px; line-height: 1; }
 .chatMobileHeading span { color: #88f3a6; font-size: 11px; }
 
+.chatMobileHeaderActions { display:flex; align-items:center; gap:5px; margin-left:auto; }
+.chatMobileHeaderButton { min-width:34px; height:34px; padding:0 8px; border:1px solid rgba(255,255,255,.14); border-radius:10px; background:rgba(255,255,255,.07); color:#fff; font-size:12px; font-weight:800; }
+
 .chatMobileAvatar {
   display: grid;
   flex: 0 0 48px;
@@ -89,6 +92,9 @@ button { -webkit-tap-highlight-color: transparent; }
   border-radius: 12px;
   background: rgba(158, 255, 0, .075);
 }
+
+.chatMobileClosedNotice{flex:0 0 auto;margin:10px;padding:13px;border:1px solid rgba(255,190,50,.34);border-radius:12px;background:rgba(255,174,0,.09);color:#ffd978;font-size:13px;font-weight:800;text-align:center}
+.chatMobileClosedNotice[hidden],.chatMobileComposer[hidden]{display:none!important}
 
 .chatMobilePinned > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .chatMobilePinned strong { color: #9eff00; font-size: 11px; }
@@ -290,6 +296,17 @@ button { -webkit-tap-highlight-color: transparent; }
   font-weight: 800;
   text-align: left;
 }
+
+.chatMobileAdminBackdrop{position:absolute;inset:0;z-index:50;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
+.chatMobileAdminBackdrop[hidden]{display:none!important}
+.chatMobileAdminModal{display:grid;gap:13px;width:min(100%,440px);padding:18px;border:1px solid rgba(207,55,255,.35);border-radius:18px;background:#151521;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.chatMobileAdminModal h2{margin:0}
+.chatMobileAdminModal label{display:grid;grid-template-columns:minmax(0,1fr) 110px;align-items:center;gap:10px;color:#ddd}
+.chatMobileAdminModal input{width:100%;min-height:38px;padding:7px;border:1px solid rgba(255,255,255,.13);border-radius:9px;background:#090910;color:#fff}
+.chatMobileAdminModal input[type="checkbox"]{width:24px;min-height:24px;justify-self:end}
+.chatMobileAdminActions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+.chatMobileAdminActions button{min-height:40px;border:1px solid rgba(255,255,255,.13);border-radius:10px;background:rgba(255,255,255,.08);color:#fff;font-weight:800}
+.chatMobileAdminActions button:last-child{background:linear-gradient(135deg,#cf37ff,#8425df)}
 
 @media (max-height: 620px) {
   .chatMobileHeader { min-height: 58px; padding-top: calc(5px + env(safe-area-inset-top)); padding-bottom: 5px; }

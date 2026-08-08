@@ -39,7 +39,10 @@
           <p class="home-header-installed-version">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
           <button id="checkButton" class="primary-button">Verificar atualização</button>
         </div>
-        <button id="hookCenterLearnButton" class="primary-button home-learn-pulse-button hidden" type="button">Quero aprender tudo sobre o VS Hook</button>
+        <div class="home-learning-actions">
+          <button id="hookCenterLearnButton" class="primary-button home-learn-pulse-button hidden" type="button">Quero aprender tudo sobre o VS Hook</button>
+          <button id="hookTutorialsButton" class="secondary-button home-tutorials-button" type="button">Tutoriais e dúvidas</button>
+        </div>
         <div id="updateDescriptionCard" class="card update-description-card hidden" aria-hidden="true">
           <p class="eyebrow">Descrição da atualização</p>
           <div id="updateDescription" class="update-description-text">--</div>
@@ -96,8 +99,16 @@
                   <span id="chatHookConnectionStatus">Conectando...</span>
                 </div>
               </div>
-              <button id="chatHookAvatarButton" class="chat-hook-avatar-button hidden" type="button" title="Alterar foto de perfil">Foto</button>
+              <div class="chat-hook-header-actions">
+                <button id="chatHookAdminMenuButton" class="chat-hook-admin-menu-button hidden" type="button" title="Configurar Chat Hook" aria-label="Configurar Chat Hook">☰</button>
+                <button id="chatHookAvatarButton" class="chat-hook-avatar-button hidden" type="button" title="Alterar foto de perfil">Foto</button>
+              </div>
               <input id="chatHookAvatarInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+            </div>
+            <div id="chatHookAdminMenu" class="chat-hook-admin-menu hidden">
+              <button type="button" data-chat-admin-action="config">Config Chat</button>
+              <button type="button" data-chat-admin-action="release-notes">Release Notes</button>
+              <button type="button" data-chat-admin-action="publish-update">Subir atualização</button>
             </div>
 
             <div id="chatHookPinned" class="chat-hook-pinned hidden" aria-live="polite">
@@ -114,8 +125,8 @@
 
             <emoji-picker id="chatHookEmojiPicker" class="chat-hook-emoji-picker dark hidden" locale="pt" emoji-version="17.0" data-source="https://cdn.jsdelivr.net/npm/emoji-picker-element-data@^1/pt/cldr/data.json" aria-label="Escolher emoji"></emoji-picker>
 
-            <div id="chatHookClosedNotice" class="chat-hook-closed hidden">O chat está fechado. Somente administradores podem escrever.</div>
-            <div class="chat-hook-composer">
+            <div id="chatHookClosedNotice" class="chat-hook-closed hidden">Chat fechado pelo administrador</div>
+            <div id="chatHookComposer" class="chat-hook-composer">
               <div id="chatHookImagePreview" class="chat-hook-image-preview hidden">
                 <img id="chatHookImagePreviewImage" alt="Imagem escolhida" />
                 <video id="chatHookVideoPreview" class="hidden" muted playsinline preload="metadata"></video>
@@ -862,9 +873,9 @@
       <section id="toolsView" class="view">
         <nav class="tools-submenu" aria-label="Menu de ferramentas" role="tablist">
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming1">Em Breve</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming2">Em Breve</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming3">Em Breve</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
         <div id="toolsRenamePanel" class="tools-panel tools-rename-panel active" data-tools-panel-content="rename" role="tabpanel">
@@ -956,14 +967,87 @@
           </div>
         </div>
 
-        <div id="toolsUpcomingPanel1" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming1" role="tabpanel">
-          <h1>EM BREVE</h1>
+        <div id="toolsDirectCablePanel" class="tools-panel tools-direct-cable-panel" data-tools-panel-content="cable" role="tabpanel">
+          <div class="hero-card tools-hero direct-cable-hero">
+            <div>
+              <p class="eyebrow">Receive / Transmitter / Project Sync</p>
+              <h1>Conexão redundante</h1>
+              <p class="muted">Configure automaticamente dois computadores ligados por RJ45, inclusive usando adaptadores USB–Ethernet. O Wi‑Fi continua livre para internet.</p>
+            </div>
+            <button id="directCableRefreshButton" class="secondary-button" type="button">Detectar novamente</button>
+          </div>
+
+          <div class="direct-cable-grid">
+            <div class="card direct-cable-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Etapa 1</p><h2>Escolha o adaptador</h2></div>
+                <span id="directCableLinkBadge" class="badge">Verificando</span>
+              </div>
+              <label>
+                Porta USB/Ethernet ligada ao outro computador
+                <select id="directCableAdapterSelect"><option value="">Detectando adaptadores...</option></select>
+              </label>
+              <div id="directCableAdapterDetails" class="direct-cable-status muted">Conecte o cabo RJ45 nos dois computadores.</div>
+            </div>
+
+            <div class="card direct-cable-card direct-cable-action-card">
+              <div class="tool-card-header"><div><p class="eyebrow">Etapa 2</p><h2>Preparar a rede</h2></div></div>
+              <p class="muted">A Hook Center cria automaticamente um IP exclusivo neste computador. A rede não define mestre nem escravo e pode ser usada pelo Receive/Transmitter ou pelo Project Sync.</p>
+              <div class="actions direct-cable-actions">
+                <button id="directCableConfigureButton" class="primary-button" type="button">Configurar automaticamente</button>
+                <button id="directCableRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
+              </div>
+              <div id="directCableResult" class="direct-cable-result muted">Aguardando configuração.</div>
+            </div>
+
+            <div class="card direct-cable-card direct-cable-instructions">
+              <div class="tool-card-header"><div><p class="eyebrow">Depois</p><h2>Conectar o VS Hook</h2></div></div>
+              <ol>
+                <li>Repita esta configuração na Hook Center do outro computador.</li>
+                <li>Escolha Receive/Transmitter somente no menu da extensão, quando quiser esse modo.</li>
+                <li>No Project Sync, os dois computadores são equivalentes: comandos iniciados em qualquer um deles serão sincronizados.</li>
+                <li>A conexão continua totalmente local e não precisa de internet.</li>
+              </ol>
+            </div>
+          </div>
         </div>
         <div id="toolsUpcomingPanel2" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming2" role="tabpanel">
           <h1>EM BREVE</h1>
         </div>
-        <div id="toolsUpcomingPanel3" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming3" role="tabpanel">
-          <h1>EM BREVE</h1>
+        <div id="toolsPingPongPanel" class="tools-panel tools-pingpong-panel" data-tools-panel-content="pingpong" role="tabpanel">
+          <div class="pingpong-toolbar">
+            <div>
+              <p class="eyebrow">Jogo 2D</p>
+              <h1>PingPong Hook</h1>
+            </div>
+            <div class="pingpong-toolbar-center" aria-live="polite">
+              <strong id="pingPongScore">0&nbsp;&nbsp;×&nbsp;&nbsp;0</strong>
+              <span id="pingPongStatus">Pronto para jogar</span>
+            </div>
+            <div class="pingpong-toolbar-actions">
+              <label class="pingpong-speed-control">Velocidade
+                <select id="pingPongSpeedSelect" aria-label="Velocidade do PingPong Hook">
+                  <option value="1">1x</option>
+                  <option value="2">2x</option>
+                  <option value="3">3x</option>
+                  <option value="4">4x</option>
+                  <option value="5">5x</option>
+                </select>
+              </label>
+              <button id="pingPongToggleButton" class="primary-button pingpong-toggle-button" type="button">Iniciar</button>
+            </div>
+          </div>
+          <div class="pingpong-stage-shell">
+            <canvas id="pingPongCanvas" class="pingpong-canvas" width="960" height="540" tabindex="0" aria-label="PingPong Hook. Jogador esquerdo usa W e S; jogador direito usa as setas para cima e para baixo."></canvas>
+            <div id="pingPongStartOverlay" class="pingpong-start-overlay">
+              <strong>PingPong Hook</strong>
+              <span>W / S</span>
+              <small>Jogador esquerdo</small>
+              <span>↑ / ↓</span>
+              <small>Jogador direito</small>
+              <button id="pingPongStartButton" class="primary-button" type="button">Iniciar jogo</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1029,6 +1113,79 @@
       </section>
 
     </main>
+  </div>
+
+  <div id="hookTutorialsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="hookTutorialsModalTitle">
+    <div class="hook-modal hook-tutorials-modal">
+      <div class="hook-tutorials-modal-header"><div><p class="eyebrow">VS Hook</p><h2 id="hookTutorialsModalTitle">Tutoriais e dúvidas</h2></div><button id="closeHookTutorialsModal" class="secondary-button" type="button">Fechar</button></div>
+      <div id="hookTutorialCards" class="hook-tutorial-cards"><p class="muted">Carregando tutoriais...</p></div>
+    </div>
+  </div>
+
+  <div id="releaseNotesReadModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="releaseNotesReadTitle">
+    <div class="hook-modal release-notes-read-modal">
+      <header class="release-notes-read-header"><p class="eyebrow">Antes de continuar</p><h2 id="releaseNotesReadTitle">Release Notes</h2></header>
+      <div id="releaseNotesReadContent" class="release-notes-read-content" tabindex="0"></div>
+      <div class="release-notes-read-actions">
+        <button id="releaseNotesReadCancel" class="secondary-button modal-button" type="button">Cancelar</button>
+        <button id="releaseNotesReadContinue" class="primary-button modal-button" type="button">Continuar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatHookAdminModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="chatHookAdminModalTitle">
+    <div class="hook-modal chat-hook-admin-modal">
+      <h2 id="chatHookAdminModalTitle">Configurar Chat Hook</h2>
+      <label class="chat-admin-setting-row"><span>Permitir mensagens dos usuários</span><input id="chatHookAdminOpen" type="checkbox" /></label>
+      <label>Mensagens por usuário comum por dia<input id="chatHookAdminDailyLimit" type="number" min="1" max="10000" step="1" /></label>
+      <label class="chat-admin-setting-row"><span>Mensagens ilimitadas</span><input id="chatHookAdminUnlimited" type="checkbox" /></label>
+      <label>Apagar mensagens automaticamente depois de<input id="chatHookAdminRetentionDays" type="number" min="1" max="30" step="1" /></label>
+      <p id="chatHookAdminModalStatus" class="muted"></p>
+      <div class="modal-actions">
+        <button id="chatHookAdminClearButton" class="secondary-button" type="button">Limpar chat</button>
+        <button id="chatHookAdminCancelButton" class="secondary-button" type="button">Cancelar</button>
+        <button id="chatHookAdminSaveButton" class="primary-button" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatAdminPasswordModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal chat-admin-password-modal">
+      <h2>Acesso administrativo</h2><p>Digite a mesma senha usada para entrar no painel.</p>
+      <input id="chatAdminPasswordInput" type="password" autocomplete="current-password" placeholder="Senha do painel" />
+      <p id="chatAdminPasswordStatus" class="muted"></p>
+      <div class="modal-actions"><button id="chatAdminPasswordCancel" class="secondary-button" type="button">Cancelar</button><button id="chatAdminPasswordConfirm" class="primary-button" type="button">Entrar</button></div>
+    </div>
+  </div>
+
+  <div id="chatReleaseNotesModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal chat-release-notes-modal">
+      <h2>Release Notes</h2>
+      <textarea id="chatReleaseNotesInput" rows="12" maxlength="10000" placeholder="Digite as notas exibidas antes de baixar ou reinstalar..."></textarea>
+      <p id="chatReleaseNotesStatus" class="muted"></p>
+      <div class="modal-actions"><button id="chatReleaseNotesCancel" class="secondary-button" type="button">Cancelar</button><button id="chatReleaseNotesSave" class="primary-button" type="button">Salvar</button></div>
+    </div>
+  </div>
+
+  <div id="chatPublishUpdateModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="hook-modal chat-publish-update-modal">
+      <h2>Subir atualização</h2>
+      <div class="chat-publish-update-grid">
+        <label>Versão da Hook Center<input id="chatPublishVersion" placeholder="1.0.1" /></label>
+        <label>Versão do VS Hook<input id="chatPublishReleaseVersion" placeholder="1.0.1" /></label>
+        <label>Título<input id="chatPublishTitle" /></label>
+        <label>Vídeo da atualização<input id="chatPublishYoutubeUrl" type="url" /></label>
+        <label>Instalador Windows (.exe)<input id="chatPublishWindowsUrl" type="url" /></label>
+        <label>Instalador macOS (.dmg)<input id="chatPublishMacosUrl" type="url" /></label>
+        <label>Extensão Windows (.dll)<input id="chatPublishWindowsExtensionUrl" type="url" /></label>
+        <label>Extensão macOS (.dylib)<input id="chatPublishMacosExtensionUrl" type="url" /></label>
+        <label>Link Quero aprender<input id="chatPublishTutorialUrl" type="url" /></label>
+        <label class="chat-publish-wide">Descrição<textarea id="chatPublishDescription" rows="4"></textarea></label>
+        <label class="chat-publish-wide">Release Notes<textarea id="chatPublishReleaseNotes" rows="5" maxlength="10000"></textarea></label>
+      </div>
+      <p id="chatPublishUpdateStatus" class="muted"></p>
+      <div class="modal-actions"><button id="chatPublishUpdateCancel" class="secondary-button" type="button">Cancelar</button><button id="chatPublishUpdateSave" class="primary-button" type="button">Publicar atualização</button></div>
+    </div>
   </div>
 
   <div id="deviceNameModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">

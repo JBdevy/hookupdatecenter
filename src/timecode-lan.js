@@ -215,6 +215,9 @@ function createTimecodeLanRelay(options = {}) {
   const listDirectDiscoveryAddresses = typeof options.getDirectDiscoveryAddresses === 'function'
     ? options.getDirectDiscoveryAddresses
     : getDirectDiscoveryAddresses
+  const getDirectCableIp = typeof options.getDirectCableIp === 'function'
+    ? options.getDirectCableIp
+    : () => ''
   const instanceId = crypto.randomBytes(16).toString('hex')
 
   let socket = null
@@ -230,6 +233,7 @@ function createTimecodeLanRelay(options = {}) {
   let tickRunning = false
   let stopped = true
   let lastNotifiedPeer = ''
+  let lastLocalActivityAt = 0
 
   function deviceName() {
     let value = ''
@@ -239,6 +243,18 @@ function createTimecodeLanRelay(options = {}) {
 
   function licenseIsActive() {
     try { return isLicenseActive() === true } catch (_) { return false }
+  }
+
+  function preferredCablePrefix() {
+    let ip = ''
+    try { ip = String(getDirectCableIp() || '').trim() } catch (_) {}
+    const match = ip.match(/^(\d+\.\d+\.\d+)\.\d+$/)
+    return match ? `${match[1]}.` : ''
+  }
+
+  function peerAddressAllowed(address) {
+    const prefix = preferredCablePrefix()
+    return !prefix || String(address || '').replace(/^::ffff:/, '').startsWith(prefix)
   }
 
   async function readLocalStatus(force = false) {
@@ -312,13 +328,14 @@ function createTimecodeLanRelay(options = {}) {
       code: String(status.code || ''),
       transmitterId: instanceId,
       transmitterName: deviceName(),
+      mode: status.mode,
     }
     for (const address of getBroadcastAddresses()) sendUdp(payload, address)
   }
 
   async function pairWithReceiver(status, address, remotePort, receiver = {}) {
-    if (!status || status.mode !== 'transmitter' || !isPairCode(status.code) ||
-        transmitterPeer?.connected || stopped) return false
+    if (!status || !['transmitter', 'project_sync'].includes(status.mode) || !isPairCode(status.code) ||
+        transmitterPeer?.connected || stopped || !peerAddressAllowed(address)) return false
     try {
       const result = await requestJson({
         hostname: address,
@@ -329,6 +346,8 @@ function createTimecodeLanRelay(options = {}) {
           code: status.code,
           transmitterId: instanceId,
           transmitterName: deviceName(),
+          transmitterPort: Number(getDirectorPort()) || 47831,
+          mode: status.mode,
         },
         timeoutMs: Number(receiver.timeoutMs) || 1000,
       })
@@ -343,6 +362,16 @@ function createTimecodeLanRelay(options = {}) {
         failures: 0,
         connected: true,
       }
+      if (status.mode === 'project_sync') {
+        receiverSession = {
+          token: String(result.data.token),
+          code: String(status.code),
+          transmitterId: String(result.data.receiverId || receiver.id || ''),
+          name: safeName(result.data.receiverName || receiver.name, 'VS Hook'),
+          lastSequence: 0,
+          lastSeenAt: Date.now(),
+        }
+      }
       await notifyLocalPeer(true, transmitterPeer.name)
       return true
     } catch (_) {
@@ -352,7 +381,7 @@ function createTimecodeLanRelay(options = {}) {
 
   async function acceptOffer(message, rinfo) {
     const status = await readLocalStatus()
-    if (!status || status.mode !== 'transmitter' || !isPairCode(status.code)) return
+    if (!status || !['transmitter', 'project_sync'].includes(status.mode) || !isPairCode(status.code)) return
     if (String(message.code || '') !== String(status.code)) return
     if (String(message.transmitterId || '') !== instanceId) return
     const remotePort = Math.max(1, Math.min(65535, Number(message.port) || 47831))
@@ -385,8 +414,10 @@ function createTimecodeLanRelay(options = {}) {
     if (message.magic === DISCOVER_MAGIC) {
       if (String(message.transmitterId || '') === instanceId || !licenseIsActive()) return
       const status = await readLocalStatus()
-      if (!status || status.mode !== 'receive' || !isPairCode(status.code)) return
+      if (!status || !['receive', 'project_sync'].includes(status.mode) || !isPairCode(status.code)) return
       if (String(message.code || '') !== String(status.code)) return
+      if (status.mode === 'project_sync' &&
+          String(message.transmitterId || '').localeCompare(instanceId) >= 0) return
       sendUdp({
         magic: OFFER_MAGIC,
         version: 1,
@@ -434,6 +465,7 @@ function createTimecodeLanRelay(options = {}) {
       if (!outboxResult.ok || !outboxResult.data?.ok) throw new Error('Outbox indisponível.')
       const packet = outboxResult.data
       const events = Array.isArray(packet.events) ? packet.events.slice(0, 256) : []
+      if (events.length > 0) lastLocalActivityAt = Date.now()
       const remoteResult = await requestJson({
         hostname: transmitterPeer.address,
         port: transmitterPeer.port,
@@ -481,6 +513,11 @@ function createTimecodeLanRelay(options = {}) {
         if (receiverSession && Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS) {
           resetReceiverSession(true)
         }
+      } else if (status.mode === 'project_sync') {
+        await transmitTick(status)
+        if (receiverSession && Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS) {
+          resetReceiverSession(true)
+        }
       } else {
         if (transmitterPeer) resetTransmitterPeer(true)
         if (receiverSession) resetReceiverSession(true)
@@ -496,15 +533,24 @@ function createTimecodeLanRelay(options = {}) {
       return
     }
     const payload = await readJsonBody(req, 64 * 1024)
+    if (!peerAddressAllowed(req.socket?.remoteAddress)) {
+      sendJson(res, 409, { ok: false, error: 'A conexão redundante deve usar o cabo configurado.' })
+      return
+    }
     const status = await readLocalStatus(true)
     const code = String(payload.code || '').trim()
-    if (!status || status.mode !== 'receive' || !isPairCode(status.code) || code !== String(status.code)) {
+    if (!status || !['receive', 'project_sync'].includes(status.mode) ||
+        !isPairCode(status.code) || code !== String(status.code)) {
       sendJson(res, 403, { ok: false, error: 'Código de pareamento inválido.' })
       return
     }
     const transmitterId = String(payload.transmitterId || '').trim()
     if (!transmitterId || transmitterId === instanceId) {
       sendJson(res, 400, { ok: false, error: 'Transmissor inválido.' })
+      return
+    }
+    if (status.mode === 'project_sync' && transmitterId.localeCompare(instanceId) >= 0) {
+      sendJson(res, 409, { ok: false, error: 'O outro computador iniciará o pareamento.' })
       return
     }
     const sameTransmitter = receiverSession &&
@@ -520,6 +566,21 @@ function createTimecodeLanRelay(options = {}) {
       name: safeName(payload.transmitterName, 'Transmitter'),
       lastSequence: sameTransmitter ? receiverSession.lastSequence : 0,
       lastSeenAt: Date.now(),
+    }
+    if (status.mode === 'project_sync') {
+      const remoteAddress = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '')
+      const remotePort = Math.max(1, Math.min(65535,
+        Number(payload.transmitterPort) || 47831))
+      transmitterPeer = {
+        address: remoteAddress,
+        port: remotePort,
+        receiverId: transmitterId,
+        name: receiverSession.name,
+        token,
+        lastSequence: 0,
+        failures: 0,
+        connected: true,
+      }
     }
     await notifyLocalPeer(true, receiverSession.name)
     sendJson(res, 200, {
@@ -539,7 +600,7 @@ function createTimecodeLanRelay(options = {}) {
   async function handleEvents(req, res) {
     const payload = await readJsonBody(req)
     const status = await readLocalStatus(true)
-    if (!licenseIsActive() || !status || status.mode !== 'receive' ||
+    if (!licenseIsActive() || !status || !['receive', 'project_sync'].includes(status.mode) ||
         !receiverSession || String(payload.code || '') !== String(status.code) ||
         String(payload.transmitterId || '') !== receiverSession.transmitterId ||
         !tokenMatches(payload.token, receiverSession.token)) {
@@ -553,19 +614,27 @@ function createTimecodeLanRelay(options = {}) {
     for (const event of incoming) {
       const sequence = Math.max(0, Math.trunc(Number(event?.sequence) || 0))
       if (sequence <= receiverSession.lastSequence || !event?.command || typeof event.command !== 'object') continue
-      commands.push(JSON.stringify(event.command))
+      commands.push(JSON.stringify({
+        ...event.command,
+        __vshookLanRemote: true,
+      }))
       acceptedSequence = Math.max(acceptedSequence, sequence)
     }
     const transport = payload.transport && typeof payload.transport === 'object'
       ? payload.transport
       : {}
-    commands.push(JSON.stringify({
-      type: 'timecode_transport_sync',
-      playState: Math.max(0, Math.trunc(Number(transport.playState) || 0)),
-      position: Math.max(0, Number(transport.position) || 0),
-      sequence: Math.max(0, Math.trunc(Number(transport.sequence) || 0)),
-      sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
-    }))
+    const localActionHasPriority = status.mode === 'project_sync' &&
+      commands.length === 0 && Date.now() - lastLocalActivityAt < 700
+    if (!localActionHasPriority) {
+      commands.push(JSON.stringify({
+        type: 'timecode_transport_sync',
+        playState: Math.max(0, Math.trunc(Number(transport.playState) || 0)),
+        position: Math.max(0, Number(transport.position) || 0),
+        sequence: Math.max(0, Math.trunc(Number(transport.sequence) || 0)),
+        sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
+        __vshookLanRemote: true,
+      }))
+    }
 
     const localResult = await requestRaw({
       hostname: '127.0.0.1',

@@ -14,6 +14,7 @@
   let polling = false
   let sending = false
   let selectedMedia = null
+  let adminPassword = ''
   let pollTimer = 0
   let mobileSession = readMobileSession()
 
@@ -147,6 +148,11 @@
             <h1>Chat Hook</h1>
             <span id="chatMobileConnection">Conectando...</span>
           </div>
+          <div class="chatMobileHeaderActions">
+            <button id="chatMobileAdminMenu" class="chatMobileHeaderButton" type="button" aria-label="Configurar chat" hidden>☰</button>
+            <button id="chatMobileAvatarButton" class="chatMobileHeaderButton" type="button" hidden>Foto</button>
+            <input id="chatMobileAvatarInput" type="file" accept="image/*" hidden />
+          </div>
         </header>
 
         <section id="chatMobilePinned" class="chatMobilePinned" hidden>
@@ -158,7 +164,8 @@
           <div class="chatMobileEmpty">Carregando conversa...</div>
         </section>
 
-        <section class="chatMobileComposer">
+        <div id="chatMobileClosedNotice" class="chatMobileClosedNotice" hidden>Chat fechado pelo administrador</div>
+        <section id="chatMobileComposer" class="chatMobileComposer">
           <div id="chatMobilePreview" class="chatMobilePreview" hidden>
             <img id="chatMobilePreviewImage" alt="Imagem escolhida" />
             <video id="chatMobilePreviewVideo" muted playsinline preload="metadata" hidden></video>
@@ -181,6 +188,17 @@
         <div id="chatMobileCameraMenu" class="chatMobileCameraMenu" hidden>
           <button id="chatMobilePhotoChoice" type="button">📷 Tirar foto</button>
           <button id="chatMobileVideoChoice" type="button">🎥 Gravar vídeo — até 30s</button>
+        </div>
+        <div id="chatMobileAdminModal" class="chatMobileAdminBackdrop" hidden>
+          <section class="chatMobileAdminModal">
+            <h2>Configurar Chat Hook</h2>
+            <label><span>Permitir mensagens</span><input id="chatMobileAdminOpen" type="checkbox" /></label>
+            <label><span>Mensagens por dia</span><input id="chatMobileAdminLimit" type="number" min="1" max="10000" /></label>
+            <label><span>Ilimitado</span><input id="chatMobileAdminUnlimited" type="checkbox" /></label>
+            <label><span>Limpar depois de quantos dias</span><input id="chatMobileAdminRetention" type="number" min="1" max="30" /></label>
+            <div id="chatMobileAdminStatus" class="chatMobileStatus"></div>
+            <div class="chatMobileAdminActions"><button id="chatMobileAdminClear" type="button">Limpar chat</button><button id="chatMobileAdminClose" type="button">Cancelar</button><button id="chatMobileAdminSave" type="button">Salvar</button></div>
+          </section>
         </div>
       </main>`
 
@@ -268,7 +286,7 @@
     const unpin = document.getElementById('chatMobileUnpin')
     if (unpin) unpin.hidden = !pinnedText || user.isAdmin !== true
 
-    const exhausted = user.id && !user.isAdmin && Number(limits.remainingToday || 0) <= 0
+    const exhausted = user.id && !user.isAdmin && limits.unlimited !== true && Number(limits.remainingToday || 0) <= 0
     const closed = settings.open === false && !user.isAdmin
     const enabled = Boolean(user.id) && !exhausted && !closed && !sending
     const input = document.getElementById('chatMobileInput')
@@ -278,12 +296,20 @@
       input.placeholder = closed ? 'O chat está fechado' : exhausted ? 'Limite diário atingido' : 'Escreva uma mensagem...'
     }
     if (send) send.disabled = !enabled
+    const composer = document.getElementById('chatMobileComposer')
+    const closedNotice = document.getElementById('chatMobileClosedNotice')
+    if (composer) composer.hidden = closed
+    if (closedNotice) closedNotice.hidden = !closed
     ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera'].forEach((id) => {
       const button = document.getElementById(id)
       if (button) button.disabled = !enabled
     })
     const quota = document.getElementById('chatMobileQuota')
-    if (quota) quota.textContent = user.isAdmin ? 'Administrador' : user.id ? `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje` : '--'
+    if (quota) quota.textContent = user.isAdmin ? 'Administrador' : user.id ? (limits.unlimited === true ? `${Number(limits.usedToday || 0)} hoje • ilimitado` : `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje`) : '--'
+    const adminMenu = document.getElementById('chatMobileAdminMenu')
+    const avatarButton = document.getElementById('chatMobileAvatarButton')
+    if (adminMenu) adminMenu.hidden = user.isAdmin !== true
+    if (avatarButton) avatarButton.hidden = user.isAdmin !== true
     const videoChoice = document.getElementById('chatMobileVideoChoice')
     if (videoChoice) videoChoice.hidden = user.isAdmin !== true
     if (user.isAdmin !== true && selectedMedia?.kind === 'video') clearSelectedMedia()
@@ -357,9 +383,9 @@
     })
   }
 
-  async function prepareImage(file) {
+  async function prepareImage(file, maxBytes = 6 * 1024 * 1024) {
     if (!file || !String(file.type || '').startsWith('image/')) throw new Error('Escolha uma imagem válida.')
-    if (file.type === 'image/gif' && file.size <= 6 * 1024 * 1024) {
+    if (file.type === 'image/gif' && file.size <= maxBytes) {
       const dataUrl = await fileAsDataUrl(file)
       return { kind: 'image', dataUrl, mimeType: 'image/gif', base64: dataUrl.split(',')[1] || '' }
     }
@@ -381,11 +407,11 @@
       context.drawImage(image, 0, 0, width, height)
       let quality = .88
       let dataUrl = canvas.toDataURL('image/jpeg', quality)
-      while ((dataUrl.length * .75) > 5.7 * 1024 * 1024 && quality > .46) {
+      while ((dataUrl.length * .75) > maxBytes * .95 && quality > .36) {
         quality -= .1
         dataUrl = canvas.toDataURL('image/jpeg', quality)
       }
-      if ((dataUrl.length * .75) > 6 * 1024 * 1024) throw new Error('A imagem ficou grande demais para enviar.')
+      if ((dataUrl.length * .75) > maxBytes) throw new Error('A imagem ficou grande demais para enviar.')
       return { kind: 'image', dataUrl, mimeType: 'image/jpeg', base64: dataUrl.split(',')[1] || '' }
     } finally {
       URL.revokeObjectURL(sourceUrl)
@@ -555,8 +581,86 @@
     }
   }
 
+  async function ensureAdminUnlocked() {
+    if (adminPassword) return true
+    const password = window.prompt('Digite a mesma senha usada para entrar no painel:')
+    if (!password) return false
+    try {
+      await post('/chat/admin/unlock', { adminPassword: password })
+      adminPassword = password
+      return true
+    } catch (error) {
+      document.getElementById('chatMobileStatus').textContent = error.message
+      return false
+    }
+  }
+
+  async function openAdminSettings() {
+    if (chatState?.user?.isAdmin !== true) return
+    if (!(await ensureAdminUnlocked())) return
+    const settings = chatState.chat || {}
+    document.getElementById('chatMobileAdminOpen').checked = settings.open !== false
+    document.getElementById('chatMobileAdminLimit').value = String(settings.dailyMessageLimit || 10)
+    document.getElementById('chatMobileAdminUnlimited').checked = settings.dailyMessageUnlimited === true
+    document.getElementById('chatMobileAdminLimit').disabled = settings.dailyMessageUnlimited === true
+    document.getElementById('chatMobileAdminRetention').value = String(settings.retentionDays || 7)
+    document.getElementById('chatMobileAdminStatus').textContent = ''
+    document.getElementById('chatMobileAdminModal').hidden = false
+  }
+
+  async function saveAdminSettings() {
+    const status = document.getElementById('chatMobileAdminStatus')
+    try {
+      const result = await post('/chat/admin/settings', {
+        adminPassword,
+        open: document.getElementById('chatMobileAdminOpen').checked,
+        dailyMessageLimit: Number(document.getElementById('chatMobileAdminLimit').value),
+        dailyMessageUnlimited: document.getElementById('chatMobileAdminUnlimited').checked,
+        retentionDays: Number(document.getElementById('chatMobileAdminRetention').value),
+      })
+      applyState(result, true)
+      document.getElementById('chatMobileAdminModal').hidden = true
+    } catch (error) {
+      status.textContent = error.message
+    }
+  }
+
+  async function clearChatAsAdmin() {
+    if (!window.confirm('Apagar todas as mensagens e mídias do Chat Hook?')) return
+    try {
+      const result = await post('/chat/admin/clear', { adminPassword })
+      applyState(result, true)
+      document.getElementById('chatMobileAdminStatus').textContent = 'Chat limpo.'
+    } catch (error) {
+      document.getElementById('chatMobileAdminStatus').textContent = error.message
+    }
+  }
+
+  async function uploadMobileAvatar(file) {
+    const status = document.getElementById('chatMobileStatus')
+    try {
+      if (status) status.textContent = 'Preparando foto...'
+      const image = await prepareImage(file, 3 * 1024 * 1024)
+      const result = await post('/chat/avatar', { image: { mimeType: image.mimeType, base64: image.base64 } })
+      applyState(result, true)
+      if (status) status.textContent = 'Foto atualizada.'
+    } catch (error) {
+      if (status) status.textContent = error.message
+    }
+  }
+
   function bindEvents() {
     document.getElementById('chatMobileBack')?.addEventListener('click', () => window.vshookExitToProjectSelector?.())
+    document.getElementById('chatMobileAdminMenu')?.addEventListener('click', openAdminSettings)
+    document.getElementById('chatMobileAdminClose')?.addEventListener('click', () => { document.getElementById('chatMobileAdminModal').hidden = true })
+    document.getElementById('chatMobileAdminSave')?.addEventListener('click', saveAdminSettings)
+    document.getElementById('chatMobileAdminClear')?.addEventListener('click', clearChatAsAdmin)
+    document.getElementById('chatMobileAdminUnlimited')?.addEventListener('change', (event) => { document.getElementById('chatMobileAdminLimit').disabled = event.target.checked })
+    document.getElementById('chatMobileAvatarButton')?.addEventListener('click', () => document.getElementById('chatMobileAvatarInput')?.click())
+    document.getElementById('chatMobileAvatarInput')?.addEventListener('change', (event) => {
+      uploadMobileAvatar(event.target.files?.[0])
+      event.target.value = ''
+    })
     const picker = document.getElementById('chatMobileEmojiPicker')
     const emojiButton = document.getElementById('chatMobileEmoji')
     emojiButton?.addEventListener('click', (event) => {
