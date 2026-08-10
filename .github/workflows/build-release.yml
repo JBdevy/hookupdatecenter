@@ -76,9 +76,19 @@ jobs:
           if ($missing.Count -gt 0) {
             throw "Pacote final da Hook Center sem o Teleprompt completo: $($missing -join ', ')"
           }
-          $theme = 'dist/win-unpacked/resources/vshook-themes/ReiVS1.0.ReaperThemeZip'
-          if (-not (Test-Path -LiteralPath $theme -PathType Leaf)) {
-            throw "Pacote final da Hook Center sem o tema ReiVS1.0.ReaperThemeZip."
+          $themeSource = 'themes'
+          $themePayload = 'dist/win-unpacked/resources/vshook-themes'
+          $themes = @(Get-ChildItem -LiteralPath $themeSource -File | Where-Object {
+            $_.Name -match '\.(ReaperTheme|ReaperThemeZip)$'
+          })
+          if ($themes.Count -eq 0) {
+            throw 'Nenhum tema foi encontrado na pasta themes.'
+          }
+          $missingThemes = @($themes | Where-Object {
+            -not (Test-Path -LiteralPath (Join-Path $themePayload $_.Name) -PathType Leaf)
+          } | ForEach-Object Name)
+          if ($missingThemes.Count -gt 0) {
+            throw "Pacote final da Hook Center sem os temas: $($missingThemes -join ', ')"
           }
 
       - name: Upload Windows artifacts
@@ -147,8 +157,16 @@ jobs:
 
       - name: Validate macOS theme payload
         run: |
-          THEME="$(find dist -path '*/Hook Center.app/Contents/Resources/vshook-themes/ReiVS1.0.ReaperThemeZip' -type f -print -quit)"
-          test -n "$THEME" || (echo "Pacote final da Hook Center sem o tema ReiVS1.0.ReaperThemeZip." && exit 1)
+          THEME_DIR="$(find dist -path '*/Hook Center.app/Contents/Resources/vshook-themes' -type d -print -quit)"
+          test -n "$THEME_DIR" || (echo "Pacote final da Hook Center sem a pasta de temas." && exit 1)
+          THEME_COUNT=0
+          for THEME in themes/*.ReaperTheme themes/*.ReaperThemeZip; do
+            test -f "$THEME" || continue
+            THEME_COUNT=$((THEME_COUNT + 1))
+            THEME_NAME="$(basename "$THEME")"
+            test -f "$THEME_DIR/$THEME_NAME" || (echo "Pacote final da Hook Center sem o tema $THEME_NAME." && exit 1)
+          done
+          test "$THEME_COUNT" -gt 0 || (echo "Nenhum tema foi encontrado na pasta themes." && exit 1)
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
