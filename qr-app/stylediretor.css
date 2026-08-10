@@ -8462,17 +8462,17 @@ html[data-director-device="tablet"] .tabletPlaylistModalOverlay .playlistModalAc
   flex: 0 0 auto !important;
 }
 
-/* A extensão fornece o fundo Live; o texto permanece vermelho fixo. */
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) {
+/* A extensão fornece o fundo Live; "Nenhum" preserva a linha normal. */
+.app:not([data-live-mark-mode="none"]) .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) {
   background: var(--live-mark-background, #7d8693) !important;
   border-color: var(--live-mark-border, #8f99a8) !important;
   box-shadow: inset 0 0 0 1px var(--live-mark-shadow, #8f99a857) !important;
 }
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .leftCol span,
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rightCol span,
-.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .rowNumberCol span {
-  color: #f87171 !important;
-  text-decoration: none !important;
+.app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink) .leftCol span {
+  color: #fff !important;
+  text-decoration-line: line-through !important;
+  text-decoration-color: #000 !important;
+  text-decoration-thickness: 2px !important;
   text-shadow: none !important;
 }
 

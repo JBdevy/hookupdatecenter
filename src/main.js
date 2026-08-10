@@ -4283,24 +4283,32 @@ function getBundledVshookCompanionDir() {
   return path.join(process.resourcesPath || '', 'vshook-companion');
 }
 
-const VSHOOK_THEME_FILENAME = 'ReiVS1.0.ReaperThemeZip';
-const VSHOOK_LEGACY_THEME_FILENAME = 'ReiVS1.0.ReaperTheme';
+const VSHOOK_LEGACY_THEME_FILENAMES = [
+  'ReiVS1.0.ReaperTheme',
+  'ReiVS1.0.ReaperThemeZip'
+];
 
-function getBundledVshookThemePath() {
-  const candidates = [
-    path.join(process.resourcesPath || '', 'vshook-themes', VSHOOK_THEME_FILENAME),
-    path.join(__dirname, '..', 'themes', VSHOOK_THEME_FILENAME)
+function getBundledVshookThemePaths() {
+  const directories = [
+    path.join(process.resourcesPath || '', 'vshook-themes'),
+    path.join(__dirname, '..', 'themes')
   ];
-  for (const candidate of candidates) {
-    if (candidate && physicalFs.existsSync(candidate)) return candidate;
+  for (const directory of directories) {
+    if (!directory || !physicalFs.existsSync(directory)) continue;
+    const themes = physicalFs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => (
+        entry.isFile() && /\.(?:ReaperTheme|ReaperThemeZip)$/i.test(entry.name)
+      ))
+      .map((entry) => path.join(directory, entry.name))
+      .sort((left, right) => path.basename(left).localeCompare(path.basename(right)));
+    if (themes.length > 0) return themes;
   }
   throw new Error(
-    `O tema ${VSHOOK_THEME_FILENAME} não veio dentro desta versão da Hook Center.`
+    'Nenhum arquivo .ReaperTheme ou .ReaperThemeZip veio dentro desta versão da Hook Center.'
   );
 }
 
-function copyBundledThemeEnsured(destination) {
-  const source = getBundledVshookThemePath();
+function copyBundledThemeEnsured(source, destination) {
   const expected = getFileIntegrity(source);
   const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
   const backup = `${destination}.backup-${process.pid}-${Date.now()}`;
@@ -4349,18 +4357,34 @@ function copyBundledThemeEnsured(destination) {
 
 function installWindowsVshookTheme() {
   const reaperRoot = path.dirname(getWindowsReaperUserPluginsDir());
-  copyBundledThemeEnsured(
-    path.join(reaperRoot, 'ColorThemes', VSHOOK_THEME_FILENAME)
-  );
+  const themeSources = getBundledVshookThemePaths();
+  const themeFilenames = themeSources.map((source) => path.basename(source));
+  const installedThemeDir = path.join(reaperRoot, 'ColorThemes');
+  for (const source of themeSources) {
+    copyBundledThemeEnsured(
+      source,
+      path.join(installedThemeDir, path.basename(source))
+    );
+  }
 
+  // A versão 1.1 substitui somente os dois nomes históricos do ReiVS 1.0.
+  // Outros temas do usuário jamais são varridos ou removidos.
+  const bundledNames = new Set(themeFilenames.map((name) => name.toLowerCase()));
+  for (const filename of VSHOOK_LEGACY_THEME_FILENAMES) {
+    if (bundledNames.has(filename.toLowerCase())) continue;
+    try {
+      physicalFs.rmSync(path.join(installedThemeDir, filename), { force: true });
+    } catch (_) {}
+  }
   // Versoes anteriores criavam uma pasta fora do padrao do REAPER. Remove
-  // somente os dois nomes pertencentes ao VS Hook e apaga a pasta apenas se
-  // ela estiver vazia, sem tocar em qualquer outro arquivo do usuario.
+  // somente os nomes empacotados e os dois nomes históricos, apagando a pasta
+  // apenas se ela estiver vazia, sem tocar em qualquer outro arquivo.
   const legacyThemeDir = path.join(reaperRoot, 'tema');
-  for (const filename of [
-    VSHOOK_LEGACY_THEME_FILENAME,
-    VSHOOK_THEME_FILENAME
-  ]) {
+  const legacyThemeNames = new Set([
+    ...VSHOOK_LEGACY_THEME_FILENAMES,
+    ...themeFilenames
+  ]);
+  for (const filename of legacyThemeNames) {
     try {
       physicalFs.rmSync(path.join(legacyThemeDir, filename), { force: true });
     } catch (_) {}
@@ -4629,12 +4653,20 @@ function installMacPayload(files) {
     'VS Hook Teleprompt Settings.app'
   );
   const hasCompanion = fs.existsSync(companionSource);
-  const themeSource = getBundledVshookThemePath();
+  const themeSources = getBundledVshookThemePaths();
+  const themeFilenames = themeSources.map((source) => path.basename(source));
+  const bundledThemeNames = new Set(
+    themeFilenames.map((filename) => filename.toLowerCase())
+  );
+  const obsoleteThemeFilenames = VSHOOK_LEGACY_THEME_FILENAMES.filter(
+    (filename) => !bundledThemeNames.has(filename.toLowerCase())
+  );
+  const legacyThemeFilenames = new Set([
+    ...VSHOOK_LEGACY_THEME_FILENAMES,
+    ...themeFilenames
+  ]);
 
   commands.push('set -e');
-  commands.push(`THEME_SOURCE=${shellQuote(themeSource)}`);
-  commands.push(`THEME_FILENAME=${shellQuote(VSHOOK_THEME_FILENAME)}`);
-  commands.push(`LEGACY_THEME_FILENAME=${shellQuote(VSHOOK_LEGACY_THEME_FILENAME)}`);
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
@@ -4643,11 +4675,19 @@ function installMacPayload(files) {
   commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
   commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
-  commands.push('cp -f "$THEME_SOURCE" "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp"');
-  commands.push('chmod 644 "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp"');
-  commands.push('mv -f "$GLOBAL_THEME_DIR/.$THEME_FILENAME.tmp" "$GLOBAL_THEME_DIR/$THEME_FILENAME"');
-  commands.push('rm -f "$GLOBAL_LEGACY_THEME_DIR/$LEGACY_THEME_FILENAME"');
-  commands.push('rm -f "$GLOBAL_LEGACY_THEME_DIR/$THEME_FILENAME"');
+  for (const themeSource of themeSources) {
+    const filename = path.basename(themeSource);
+    const temporaryName = `.${filename}.tmp`;
+    commands.push(`cp -f ${shellQuote(themeSource)} "$GLOBAL_THEME_DIR"/${shellQuote(temporaryName)}`);
+    commands.push(`chmod 644 "$GLOBAL_THEME_DIR"/${shellQuote(temporaryName)}`);
+    commands.push(`mv -f "$GLOBAL_THEME_DIR"/${shellQuote(temporaryName)} "$GLOBAL_THEME_DIR"/${shellQuote(filename)}`);
+  }
+  for (const filename of obsoleteThemeFilenames) {
+    commands.push(`rm -f "$GLOBAL_THEME_DIR"/${shellQuote(filename)}`);
+  }
+  for (const filename of legacyThemeFilenames) {
+    commands.push(`rm -f "$GLOBAL_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
+  }
   commands.push('rmdir "$GLOBAL_LEGACY_THEME_DIR" 2>/dev/null || true');
   commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) {
@@ -4677,12 +4717,20 @@ function installMacPayload(files) {
   commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
   commands.push('  mkdir -p "$USER_THEME_DIR"');
-  commands.push('  cp -f "$THEME_SOURCE" "$USER_THEME_DIR/.$THEME_FILENAME.tmp"');
-  commands.push('  chmod 644 "$USER_THEME_DIR/.$THEME_FILENAME.tmp"');
-  commands.push('  mv -f "$USER_THEME_DIR/.$THEME_FILENAME.tmp" "$USER_THEME_DIR/$THEME_FILENAME"');
-  commands.push('  chown "$USER_NAME":staff "$USER_THEME_DIR/$THEME_FILENAME" 2>/dev/null || true');
-  commands.push('  rm -f "$USER_LEGACY_THEME_DIR/$LEGACY_THEME_FILENAME"');
-  commands.push('  rm -f "$USER_LEGACY_THEME_DIR/$THEME_FILENAME"');
+  for (const themeSource of themeSources) {
+    const filename = path.basename(themeSource);
+    const temporaryName = `.${filename}.tmp`;
+    commands.push(`  cp -f ${shellQuote(themeSource)} "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
+    commands.push(`  chmod 644 "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
+    commands.push(`  mv -f "$USER_THEME_DIR"/${shellQuote(temporaryName)} "$USER_THEME_DIR"/${shellQuote(filename)}`);
+    commands.push(`  chown "$USER_NAME":staff "$USER_THEME_DIR"/${shellQuote(filename)} 2>/dev/null || true`);
+  }
+  for (const filename of obsoleteThemeFilenames) {
+    commands.push(`  rm -f "$USER_THEME_DIR"/${shellQuote(filename)}`);
+  }
+  for (const filename of legacyThemeFilenames) {
+    commands.push(`  rm -f "$USER_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
+  }
   commands.push('  rmdir "$USER_LEGACY_THEME_DIR" 2>/dev/null || true');
   commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
   if (vshookSource) {
