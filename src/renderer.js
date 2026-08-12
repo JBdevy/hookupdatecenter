@@ -660,10 +660,17 @@ async function startCombinedUpdateDownload() {
           button.textContent = 'Preparando...';
         }
       }
-      await window.hookUpdateCenter.installCachedUpdatePackage({ source });
+      const result = await window.hookUpdateCenter.installCachedUpdatePackage({ source });
       if (state?.platform === 'darwin') {
         renderState(await window.hookUpdateCenter.getState());
-        showModal({ title: 'Reinstalação pronta', message: 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.', type: 'success' });
+        const centerFirst = result?.action === 'center-first-dmg-opened';
+        showModal({
+          title: centerFirst ? 'Instale a nova Hook Center' : 'Reinstalação pronta',
+          message: centerFirst
+            ? 'A nova Hook Center foi aberta primeiro. Depois de instalá-la, abra a central nova para ela concluir automaticamente a extensão, o Teleprompt Settings e os temas.'
+            : 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.',
+          type: 'success'
+        });
       }
     } catch (error) {
       showModal({ title: 'Erro ao reinstalar', message: friendlyError(error, 'Não foi possível reinstalar esta versão.'), type: 'error' });
@@ -723,7 +730,7 @@ async function installCombinedDownloadedUpdates() {
   if (!combinedDownloadReady.package) return;
   const confirmed = await confirmModal({
     title: 'Instalar atualização',
-    message: 'Feche o REAPER antes de continuar. A Hook Center instalará a extensão e abrirá o instalador completo.',
+    message: 'Feche o REAPER antes de continuar. Se houver uma central nova, ela será instalada primeiro e concluirá automaticamente a extensão, o Teleprompt Settings e os temas quando abrir.',
     type: 'info',
     okText: 'Instalar',
     cancelText: 'Cancelar'
@@ -731,12 +738,19 @@ async function installCombinedDownloadedUpdates() {
   if (!confirmed) return;
 
   try {
-    await window.hookUpdateCenter.installCachedUpdatePackage();
+    const result = await window.hookUpdateCenter.installCachedUpdatePackage();
     if (state?.platform === 'darwin') {
       renderState(await window.hookUpdateCenter.getState());
       setProgressVisible(false);
       resetVsHookProgress();
-      showModal({ title: 'Atualizações prontas', message: 'A extensão foi instalada e o instalador da Hook Center foi aberto.', type: 'success' });
+      const centerFirst = result?.action === 'center-first-dmg-opened';
+      showModal({
+        title: centerFirst ? 'Instale a nova Hook Center' : 'Atualizações prontas',
+        message: centerFirst
+          ? 'Instale a central nova e abra-a. Ela concluirá automaticamente a extensão, o Teleprompt Settings e os temas.'
+          : 'A extensão foi instalada e o instalador da Hook Center foi aberto.',
+        type: 'success'
+      });
     }
     combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
   } catch (error) {
@@ -3191,6 +3205,10 @@ function getInstallerUrlForUpdate(update) {
   const files = getPlatformFilesForUpdate(update);
   const direct = files?.installer || files?.exe || files?.dmg || update?.installerUrl || update?.downloadUrl || '';
   if (String(direct || '').trim()) return String(direct).trim();
+
+  // Atualização direcionada nunca pode herdar o instalador da publicação
+  // principal. Sem o link próprio, o botão deve acusar pacote incompleto.
+  if (isTestClientUpdate(update)) return '';
 
   const hookCenter = state?.hookCenterLatest || {};
   const sameCurrentVersion = update?.current === true &&

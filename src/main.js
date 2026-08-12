@@ -37,6 +37,8 @@ const store = new Store({
     bridgeAppLatest: null,
     bridgeAppUpdateAvailable: false,
     bridgeAppInstalled: null,
+    pendingPostCenterUpdateInstall: null,
+    bundledReaperAssetsIdentity: '',
     lastCheck: null,
     updateAvailable: false,
     latestUpdate: null,
@@ -1451,6 +1453,14 @@ function quitAfterWindowsInstallerIsQueued() {
   setTimeout(() => app.quit(), 80);
 }
 
+function quitAfterMacDmgIsOpened() {
+  // O Electron usa instância única. Se a central antiga continuar aberta,
+  // clicar na nova cópia instalada apenas reativa o processo antigo e dá a
+  // impressão de que o DMG não trouxe as mudanças.
+  appIsQuitting = true;
+  setTimeout(() => app.quit(), 1200);
+}
+
 async function installDownloadedHookCenterUpdate() {
   const downloaded = store.get('downloadedHookCenterUpdate') || {};
   const dest = String(downloaded.path || '');
@@ -1464,8 +1474,10 @@ async function installDownloadedHookCenterUpdate() {
     return { ok: true, action: 'installer-started' };
   }
 
-  await shell.openPath(dest);
+  const openError = await shell.openPath(dest);
+  if (openError) throw new Error(openError);
   shell.showItemInFolder(dest);
+  quitAfterMacDmgIsOpened();
   return { ok: true, action: 'dmg-opened' };
 }
 
@@ -3826,8 +3838,16 @@ function buildUpdatePackageEntries(update) {
   const normalized = normalizeUpdate(update) || update;
   const files = getPlatformFiles(normalized);
   const entries = buildPayloadEntries(files);
+  const directedTestUpdate = Boolean(
+    normalized?.testClient ||
+    normalized?.isTestClient ||
+    normalized?.clientTest ||
+    normalized?.test_client ||
+    ['test-client', 'cliente-teste'].includes(String(normalized?.source || normalized?.origin || '').trim().toLowerCase())
+  );
   const matchingHookCenter = normalizeHookCenterUpdate(store.get('hookCenterLatest'));
-  const matchingCurrentInstaller = normalized.current === true &&
+  const matchingCurrentInstaller = !directedTestUpdate &&
+    normalized.current === true &&
     matchingHookCenter?.version &&
     String(matchingHookCenter.version) === String(normalized.version || '')
       ? matchingHookCenter.downloadUrl
@@ -4137,36 +4157,42 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
   }
   validateExtensionBinaryFile(extensionPath, extensionKey);
 
-  if (process.platform === 'win32') installWindowsPayload(cachedFiles);
-  else if (process.platform === 'darwin') installMacPayload(cachedFiles);
-  else throw new Error('Sistema operacional não suportado.');
-
-  await persistActiveLocalLicenseFromStore({ active: true, source: 'install-cached-update' }).catch(() => false);
-  markUpdatePackageInstalled(update, manifest);
-  store.set('currentVersion', update.version || store.get('currentVersion'));
-  store.set('installedManifest', {
-    platform: getPlatformKey(),
-    updateId: getPlatformUpdateId(update),
-    globalUpdateId: update.updateId || '',
-    version: update.version || '',
+  // A Hook Center do pacote precisa entrar sempre primeiro, mesmo quando o
+  // número da versão não mudou. Builds de teste podem manter a versão pública
+  // e ainda assim trazer um companion, tema ou interface mais recente.
+  // Os caminhos do cache ficam no userData e sobrevivem à troca do aplicativo;
+  // ao abrir, a central nova conclui a instalação usando o companion e os temas
+  // que vieram dentro dela, nunca os arquivos da central antiga.
+  store.set('pendingPostCenterUpdateInstall', {
+    targetCenterVersion: update.version,
+    update,
+    manifest: {
+      cacheKey: manifest.cacheKey || '',
+      platform: manifest.platform || getPlatformKey(),
+      files: manifest.files || {}
+    },
     files: Object.fromEntries(
-      Object.entries(manifest.files || {})
-        .filter(([key]) => key !== 'installer')
-        .map(([key, entry]) => [key, { url: entry.url, filename: entry.filename }])
+      Object.entries(cachedFiles).filter(([key]) => key !== 'installer')
     ),
-    installedAt: new Date().toISOString()
+    queuedAt: new Date().toISOString()
   });
-  store.set('updateAvailable', false);
-
   if (process.platform === 'win32') {
     launchWindowsUpdateInstaller(cachedFiles.installer);
     quitAfterWindowsInstallerIsQueued();
-    return { ok: true, action: 'installer-started', version: update.version };
+    return {
+      ok: true,
+      action: 'center-first-installer-started',
+      version: update.version
+    };
   }
-
   const openError = await shell.openPath(cachedFiles.installer);
   if (openError) throw new Error(openError);
-  return { ok: true, action: 'dmg-opened', version: update.version };
+  quitAfterMacDmgIsOpened();
+  return {
+    ok: true,
+    action: 'center-first-dmg-opened',
+    version: update.version
+  };
 }
 
 async function downloadLatestUpdate(updateOverride = null) {
@@ -4635,19 +4661,23 @@ function isMacReaperRunning() {
   }
 }
 
-function installMacPayload(files) {
-  if (isMacReaperRunning()) {
+function installMacPayload(files, options = {}) {
+  const installExtension = options.installExtension !== false;
+  if (installExtension && isMacReaperRunning()) {
     throw new Error(
       'Encerre completamente o REAPER com Cmd+Q antes de instalar. ' +
       'Fechar somente a janela não descarrega a extensão antiga.'
     );
   }
-  if (!files?.vshookDylib || !fs.existsSync(files.vshookDylib)) {
+  if (installExtension &&
+      (!files?.vshookDylib || !fs.existsSync(files.vshookDylib))) {
     throw new Error('A dylib do VS Hook não foi encontrada no pacote.');
   }
-  validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
+  if (installExtension) {
+    validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
+  }
   const commands = [];
-  const vshookSource = files.vshookDylib;
+  const vshookSource = installExtension ? files.vshookDylib : '';
   const companionSource = path.join(
     getBundledVshookCompanionDir(),
     'VS Hook Teleprompt Settings.app'
@@ -4672,7 +4702,9 @@ function installMacPayload(files) {
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_THEME_DIR="$GLOBAL_REAPER/tema"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
-  commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
+  if (installExtension) {
+    commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
+  }
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
   commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
   for (const themeSource of themeSources) {
@@ -4689,7 +4721,9 @@ function installMacPayload(files) {
     commands.push(`rm -f "$GLOBAL_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
   }
   commands.push('rmdir "$GLOBAL_LEGACY_THEME_DIR" 2>/dev/null || true');
-  commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
+  if (installExtension) {
+    commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
+  }
   if (vshookSource) {
     commands.push(`VSHOOK_SOURCE=${shellQuote(vshookSource)}`);
     commands.push('cp -f "$VSHOOK_SOURCE" "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
@@ -4703,7 +4737,9 @@ function installMacPayload(files) {
     commands.push('rm -rf "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
     commands.push('ditto "$COMPANION_SOURCE" "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
   }
-  commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+  if (installExtension) {
+    commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+  }
 
   commands.push('for USER_HOME in /Users/*; do');
   commands.push('  [ -d "$USER_HOME" ] || continue');
@@ -4714,7 +4750,9 @@ function installMacPayload(files) {
   commands.push('  USER_THEME_DIR="$USER_REAPER/ColorThemes"');
   commands.push('  USER_LEGACY_THEME_DIR="$USER_REAPER/tema"');
   commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
-  commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
+  if (installExtension) {
+    commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
+  }
   commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
   commands.push('  mkdir -p "$USER_THEME_DIR"');
   for (const themeSource of themeSources) {
@@ -4732,7 +4770,9 @@ function installMacPayload(files) {
     commands.push(`  rm -f "$USER_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
   }
   commands.push('  rmdir "$USER_LEGACY_THEME_DIR" 2>/dev/null || true');
-  commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
+  if (installExtension) {
+    commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
+  }
   if (vshookSource) {
     commands.push('  cp -f "$VSHOOK_SOURCE" "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('  chmod 755 "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
@@ -4746,7 +4786,9 @@ function installMacPayload(files) {
     commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
     commands.push('  chown -R "$USER_NAME":staff "$USER_COMPANION_DIR" 2>/dev/null || true');
   }
-  commands.push('  chmod 755 "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+  if (installExtension) {
+    commands.push('  chmod 755 "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+  }
   commands.push('done');
 
   const script = commands.join('\n');
@@ -4754,6 +4796,128 @@ function installMacPayload(files) {
     '-e',
     `do shell script ${JSON.stringify(script)} with administrator privileges`
   ], { stdio: 'ignore' });
+}
+
+function getBundledReaperAssetsIdentity() {
+  const companionRoot = getBundledVshookCompanionDir();
+  const candidates = process.platform === 'darwin'
+    ? [
+        path.join(companionRoot, 'VS Hook Teleprompt Settings.app',
+          'Contents', 'MacOS', 'VS Hook Teleprompt Settings'),
+        path.join(companionRoot, 'VS Hook Teleprompt Settings.app',
+          'Contents', 'Resources', 'app.asar')
+      ]
+    : [
+        path.join(companionRoot, 'VS Hook Teleprompt Settings.exe'),
+        path.join(companionRoot, 'resources', 'app.asar')
+      ];
+  candidates.push(...getBundledVshookThemePaths());
+  const hash = crypto.createHash('sha256');
+  let fileCount = 0;
+  for (const filename of candidates) {
+    if (!physicalFs.existsSync(filename) ||
+        !physicalFs.statSync(filename).isFile()) continue;
+    const integrity = getFileIntegrity(filename);
+    hash.update(path.basename(filename));
+    hash.update(String(integrity.size));
+    hash.update(integrity.sha256);
+    fileCount += 1;
+  }
+  if (fileCount < 3) {
+    throw new Error(
+      'Os arquivos do Teleprompt Settings ou do tema não vieram completos nesta Hook Center.'
+    );
+  }
+  return hash.digest('hex');
+}
+
+function hasInstalledVshookExtension() {
+  if (process.platform === 'win32') {
+    return getWindowsReaperUserPluginsDirs().some((directory) =>
+      physicalFs.existsSync(path.join(directory, 'reaper_VSHookExt.dll'))
+    );
+  }
+  if (process.platform === 'darwin') {
+    const candidates = [
+      '/Library/Application Support/REAPER/UserPlugins/reaper_VSHookExt.dylib',
+      path.join(os.homedir(), 'Library', 'Application Support', 'REAPER',
+        'UserPlugins', 'reaper_VSHookExt.dylib')
+    ];
+    return candidates.some((filename) => physicalFs.existsSync(filename));
+  }
+  return false;
+}
+
+function markBundledReaperAssetsInstalled() {
+  store.set('bundledReaperAssetsIdentity', getBundledReaperAssetsIdentity());
+}
+
+async function syncBundledReaperAssetsOnStartup() {
+  if (!hasInstalledVshookExtension()) return { ok: true, skipped: 'extension-not-installed' };
+  const identity = getBundledReaperAssetsIdentity();
+  if (store.get('bundledReaperAssetsIdentity') === identity) {
+    return { ok: true, skipped: 'already-current' };
+  }
+  if ((process.platform === 'win32' && isWindowsReaperRunning()) ||
+      (process.platform === 'darwin' && isMacReaperRunning())) {
+    return { ok: true, skipped: 'reaper-running' };
+  }
+  if (process.platform === 'win32') {
+    installWindowsVshookCompanion();
+    installWindowsVshookTheme();
+  } else if (process.platform === 'darwin') {
+    installMacPayload(null, { installExtension: false });
+  } else {
+    return { ok: true, skipped: 'unsupported-platform' };
+  }
+  store.set('bundledReaperAssetsIdentity', identity);
+  return { ok: true, installed: true };
+}
+
+async function completePendingPostCenterUpdateInstall() {
+  const pending = store.get('pendingPostCenterUpdateInstall');
+  if (!pending?.files) return { ok: true, skipped: 'none' };
+  const targetVersion = String(pending.targetCenterVersion || '');
+  const files = pending.files || {};
+  if (process.platform === 'win32') {
+    if (!files.vshookDll || !fs.existsSync(files.vshookDll)) {
+      throw new Error('A DLL guardada para concluir a atualização não foi encontrada.');
+    }
+    validateExtensionBinaryFile(files.vshookDll, 'vshookDll');
+    installWindowsPayload(files);
+  } else if (process.platform === 'darwin') {
+    if (!files.vshookDylib || !fs.existsSync(files.vshookDylib)) {
+      throw new Error('A dylib guardada para concluir a atualização não foi encontrada.');
+    }
+    validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
+    installMacPayload(files);
+  } else {
+    return { ok: true, skipped: 'unsupported-platform' };
+  }
+
+  const update = normalizeUpdate(pending.update) || pending.update || {};
+  const manifest = pending.manifest || {};
+  await persistActiveLocalLicenseFromStore({
+    active: true,
+    source: 'post-center-update-install'
+  }).catch(() => false);
+  markUpdatePackageInstalled(update, manifest);
+  store.set('currentVersion', update.version || targetVersion || store.get('currentVersion'));
+  store.set('installedManifest', {
+    platform: getPlatformKey(),
+    updateId: getPlatformUpdateId(update),
+    globalUpdateId: update.updateId || '',
+    version: update.version || targetVersion || '',
+    files: Object.fromEntries(
+      Object.entries(manifest.files || {})
+        .filter(([key]) => key !== 'installer')
+    ),
+    installedAt: new Date().toISOString()
+  });
+  store.set('updateAvailable', false);
+  store.set('pendingPostCenterUpdateInstall', null);
+  markBundledReaperAssetsInstalled();
+  return { ok: true, installed: true };
 }
 
 async function installDownloadedUpdate() {
@@ -4775,6 +4939,7 @@ async function installDownloadedUpdate() {
   } else {
     throw new Error('Sistema operacional não suportado.');
   }
+  markBundledReaperAssetsInstalled();
 
   await persistActiveLocalLicenseFromStore({ active: true, source: 'install-update' }).catch(() => false);
 
@@ -5489,6 +5654,14 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   if (!isValidWindow(mainWindow)) createWindow();
   if (!tray) createTray();
+  await completePendingPostCenterUpdateInstall().catch((error) => {
+    console.error('[Hook Center] Não concluiu a instalação após atualizar a central:',
+      error?.message || error);
+  });
+  await syncBundledReaperAssetsOnStartup().catch((error) => {
+    console.error('[Hook Center] Não sincronizou Teleprompt Settings e temas:',
+      error?.message || error);
+  });
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });

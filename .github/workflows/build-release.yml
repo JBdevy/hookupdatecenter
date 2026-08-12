@@ -53,6 +53,7 @@ jobs:
           if ($missing.Count -gt 0) {
             throw "Aplicativo auxiliar do Teleprompt incompleto: $($missing -join ', ')"
           }
+          node -e "const asar=require('@electron/asar'); const html=asar.extractFile(process.argv[1],'settings.html').toString(); for (const key of ['previewSongDurationEnabled','previewBlockDurationEnabled','previewUnderlineEnabled']) { if (!html.includes(key)) throw new Error('Teleprompt Settings sem a opção '+key); }" (Join-Path $destination 'resources/app.asar')
 
       - name: Build Windows
         run: npm run build:win
@@ -144,6 +145,7 @@ jobs:
           mkdir -p build/vshook-companion
           ditto "$APP" "build/vshook-companion/VS Hook Teleprompt Settings.app"
           codesign --verify --deep --strict "build/vshook-companion/VS Hook Teleprompt Settings.app"
+          node -e "const asar=require('@electron/asar'); const html=asar.extractFile(process.argv[1],'settings.html').toString(); for (const key of ['previewSongDurationEnabled','previewBlockDurationEnabled','previewUnderlineEnabled']) { if (!html.includes(key)) throw new Error('Teleprompt Settings sem a opção '+key); }" "$APP/Contents/Resources/app.asar"
 
       - name: Build macOS signed universal
         env:
