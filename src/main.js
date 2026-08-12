@@ -2120,6 +2120,10 @@ async function restartBridgeServersNow() {
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
     getDirectCableIp: () => String(store.get('directCable.ip') || ''),
+    // A raiz é definida somente pela Hook Center. Nenhum caminho recebido da
+    // LAN pode escolher onde o bundle Project Sync será gravado.
+    getProjectSyncStagingDir: () => path.join(
+      app.getPath('userData'), 'project-sync-staging'),
     isLicenseActive: isVsHookLicenseActiveForBridge,
   });
   const nextServers = buildBridgeServers(bridgeConfig);
@@ -4309,11 +4313,6 @@ function getBundledVshookCompanionDir() {
   return path.join(process.resourcesPath || '', 'vshook-companion');
 }
 
-const VSHOOK_LEGACY_THEME_FILENAMES = [
-  'ReiVS1.0.ReaperTheme',
-  'ReiVS1.0.ReaperThemeZip'
-];
-
 function getBundledVshookThemePaths() {
   const directories = [
     path.join(process.resourcesPath || '', 'vshook-themes'),
@@ -4384,38 +4383,15 @@ function copyBundledThemeEnsured(source, destination) {
 function installWindowsVshookTheme() {
   const reaperRoot = path.dirname(getWindowsReaperUserPluginsDir());
   const themeSources = getBundledVshookThemePaths();
-  const themeFilenames = themeSources.map((source) => path.basename(source));
   const installedThemeDir = path.join(reaperRoot, 'ColorThemes');
+  // Instala ou atualiza apenas arquivos com o mesmo nome. Temas antigos do
+  // usuario, inclusive versoes anteriores do ReiVS, nunca sao removidos.
   for (const source of themeSources) {
     copyBundledThemeEnsured(
       source,
       path.join(installedThemeDir, path.basename(source))
     );
   }
-
-  // A versão 1.1 substitui somente os dois nomes históricos do ReiVS 1.0.
-  // Outros temas do usuário jamais são varridos ou removidos.
-  const bundledNames = new Set(themeFilenames.map((name) => name.toLowerCase()));
-  for (const filename of VSHOOK_LEGACY_THEME_FILENAMES) {
-    if (bundledNames.has(filename.toLowerCase())) continue;
-    try {
-      physicalFs.rmSync(path.join(installedThemeDir, filename), { force: true });
-    } catch (_) {}
-  }
-  // Versoes anteriores criavam uma pasta fora do padrao do REAPER. Remove
-  // somente os nomes empacotados e os dois nomes históricos, apagando a pasta
-  // apenas se ela estiver vazia, sem tocar em qualquer outro arquivo.
-  const legacyThemeDir = path.join(reaperRoot, 'tema');
-  const legacyThemeNames = new Set([
-    ...VSHOOK_LEGACY_THEME_FILENAMES,
-    ...themeFilenames
-  ]);
-  for (const filename of legacyThemeNames) {
-    try {
-      physicalFs.rmSync(path.join(legacyThemeDir, filename), { force: true });
-    } catch (_) {}
-  }
-  try { physicalFs.rmdirSync(legacyThemeDir); } catch (_) {}
 }
 
 function windowsVshookCompanionCopyIsComplete(source, destination) {
@@ -4684,29 +4660,19 @@ function installMacPayload(files, options = {}) {
   );
   const hasCompanion = fs.existsSync(companionSource);
   const themeSources = getBundledVshookThemePaths();
-  const themeFilenames = themeSources.map((source) => path.basename(source));
-  const bundledThemeNames = new Set(
-    themeFilenames.map((filename) => filename.toLowerCase())
-  );
-  const obsoleteThemeFilenames = VSHOOK_LEGACY_THEME_FILENAMES.filter(
-    (filename) => !bundledThemeNames.has(filename.toLowerCase())
-  );
-  const legacyThemeFilenames = new Set([
-    ...VSHOOK_LEGACY_THEME_FILENAMES,
-    ...themeFilenames
-  ]);
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
-  commands.push('GLOBAL_LEGACY_THEME_DIR="$GLOBAL_REAPER/tema"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   }
   commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
   commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
+  // No macOS vale a mesma regra do Windows: somente copiar/substituir o nome
+  // empacotado, sem limpar qualquer tema anterior nas pastas do REAPER.
   for (const themeSource of themeSources) {
     const filename = path.basename(themeSource);
     const temporaryName = `.${filename}.tmp`;
@@ -4714,13 +4680,6 @@ function installMacPayload(files, options = {}) {
     commands.push(`chmod 644 "$GLOBAL_THEME_DIR"/${shellQuote(temporaryName)}`);
     commands.push(`mv -f "$GLOBAL_THEME_DIR"/${shellQuote(temporaryName)} "$GLOBAL_THEME_DIR"/${shellQuote(filename)}`);
   }
-  for (const filename of obsoleteThemeFilenames) {
-    commands.push(`rm -f "$GLOBAL_THEME_DIR"/${shellQuote(filename)}`);
-  }
-  for (const filename of legacyThemeFilenames) {
-    commands.push(`rm -f "$GLOBAL_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
-  }
-  commands.push('rmdir "$GLOBAL_LEGACY_THEME_DIR" 2>/dev/null || true');
   if (installExtension) {
     commands.push('rm -f "$GLOBAL_PLUGIN_DIR/reaper_vshook.dylib"');
   }
@@ -4748,7 +4707,6 @@ function installMacPayload(files, options = {}) {
   commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
   commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
   commands.push('  USER_THEME_DIR="$USER_REAPER/ColorThemes"');
-  commands.push('  USER_LEGACY_THEME_DIR="$USER_REAPER/tema"');
   commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
   if (installExtension) {
     commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
@@ -4763,13 +4721,6 @@ function installMacPayload(files, options = {}) {
     commands.push(`  mv -f "$USER_THEME_DIR"/${shellQuote(temporaryName)} "$USER_THEME_DIR"/${shellQuote(filename)}`);
     commands.push(`  chown "$USER_NAME":staff "$USER_THEME_DIR"/${shellQuote(filename)} 2>/dev/null || true`);
   }
-  for (const filename of obsoleteThemeFilenames) {
-    commands.push(`  rm -f "$USER_THEME_DIR"/${shellQuote(filename)}`);
-  }
-  for (const filename of legacyThemeFilenames) {
-    commands.push(`  rm -f "$USER_LEGACY_THEME_DIR"/${shellQuote(filename)}`);
-  }
-  commands.push('  rmdir "$USER_LEGACY_THEME_DIR" 2>/dev/null || true');
   if (installExtension) {
     commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
   }
