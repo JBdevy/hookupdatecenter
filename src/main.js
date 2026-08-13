@@ -1909,6 +1909,27 @@ function hookMidiSha256File(filePath) {
 }
 
 async function installHookMidiComponents() {
+  if (process.platform === 'darwin') {
+    const candidates = [
+      '/System/Applications/Utilities/Audio MIDI Setup.app',
+      '/Applications/Utilities/Audio MIDI Setup.app'
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (!physicalFs.statSync(candidate).isDirectory()) continue;
+        const error = await shell.openPath(candidate);
+        if (!error) return { ok: true, nativeSettingsOpened: true };
+      } catch (_) {}
+    }
+    try {
+      await runProcess('/usr/bin/open', ['-a', 'Audio MIDI Setup'], {
+        timeout: 5000
+      });
+      return { ok: true, nativeSettingsOpened: true };
+    } catch (_) {
+      throw new Error('Não foi possível abrir a Configuração de Áudio e MIDI do macOS.');
+    }
+  }
   if (!hookMidiIsWindows11()) throw new Error('Os componentes do Hook MIDI são exclusivos do Windows 11.');
   if (hookMidiFindConsole()) return { ok: true, alreadyInstalled: true };
   const installerPath = hookMidiBundledInstallerPath();
@@ -1952,6 +1973,21 @@ async function hookMidiServiceState() {
 }
 
 async function getHookMidiState() {
+  if (process.platform === 'darwin') {
+    return {
+      ok: true,
+      platform: process.platform,
+      osRelease: os.release(),
+      build: 0,
+      supported: true,
+      macos: true,
+      nativeDriver: 'IAC Driver',
+      consoleInstalled: true,
+      serviceRunning: true,
+      busy: false,
+      ports: []
+    };
+  }
   const build = hookMidiWindowsBuild();
   const windows11 = hookMidiIsWindows11();
   const windows10 = process.platform === 'win32' && build > 0 && build < 22000;
@@ -2010,6 +2046,10 @@ async function hookMidiRunConsole(args) {
 }
 
 async function createHookMidiPort(payload = {}) {
+  if (process.platform === 'darwin') {
+    const opened = await installHookMidiComponents();
+    return { ...opened, state: await getHookMidiState() };
+  }
   if (!hookMidiIsWindows11()) throw new Error('O Hook MIDI está disponível apenas no Windows 11.');
   if (hookMidiOperationInProgress) throw new Error('Aguarde a operação atual do Hook MIDI terminar.');
   const rootName = hookMidiNormalizeRootName(payload.rootName || 'Hook MIDI');
@@ -2052,6 +2092,9 @@ async function createHookMidiPort(payload = {}) {
 }
 
 async function removeHookMidiPort(payload = {}) {
+  if (process.platform === 'darwin') {
+    throw new Error('No macOS, remova ou renomeie os barramentos diretamente no Driver IAC do Estúdio MIDI.');
+  }
   if (!hookMidiIsWindows11()) throw new Error('O Hook MIDI está disponível apenas no Windows 11.');
   if (hookMidiOperationInProgress) throw new Error('Aguarde a operação atual do Hook MIDI terminar.');
   const associationId = String(payload.associationId || '').trim().toLowerCase();

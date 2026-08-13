@@ -1016,14 +1016,14 @@
             <div>
               <p class="eyebrow">Portas MIDI virtuais</p>
               <h1>Hook MIDI</h1>
-              <p class="muted">Crie portas MIDI virtuais para comunicar o VS Hook, o REAPER e outros programas no Windows 11.</p>
+              <p id="hookMidiHeroDescription" class="muted">Crie portas MIDI virtuais para comunicar o VS Hook, o REAPER e outros programas neste computador.</p>
             </div>
             <span id="hookMidiAvailabilityBadge" class="badge">Verificando sistema</span>
           </div>
           <div class="tools-grid tools-midi-grid">
             <div class="card tools-midi-card">
               <div class="tool-card-header">
-                <div><p class="eyebrow">Windows 11</p><h2>Windows MIDI Services</h2></div>
+                <div><p id="hookMidiPlatformLabel" class="eyebrow">Sistema</p><h2 id="hookMidiProviderTitle">Serviço MIDI</h2></div>
                 <span id="hookMidiRuntimeBadge" class="badge">Verificando</span>
               </div>
               <p id="hookMidiSystemMessage" class="muted">Verificando a versão do Windows instalada neste computador.</p>
@@ -1056,6 +1056,19 @@
               <div class="actions">
                 <button id="hookMidiLoopMidiButton" class="secondary-button" type="button">Conhecer o loopMIDI</button>
               </div>
+            </div>
+            <div id="hookMidiMacCard" class="card tools-midi-card hidden">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">macOS</p><h2>Driver IAC nativo</h2></div>
+                <span class="badge">Sem instalação</span>
+              </div>
+              <ol class="tools-instructions-list">
+                <li>Abra o Estúdio MIDI pelo botão acima.</li>
+                <li>Dê dois cliques em <strong>Driver IAC</strong>.</li>
+                <li>Marque <strong>O dispositivo está online</strong>.</li>
+                <li>Adicione ou renomeie um barramento para <strong>Hook MIDI</strong> e clique em Aplicar.</li>
+                <li>Use o barramento como saída no programa emissor e como entrada no programa receptor.</li>
+              </ol>
             </div>
           </div>
         </div>

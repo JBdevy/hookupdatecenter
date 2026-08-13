@@ -1453,16 +1453,35 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
   const refreshButton = $('#hookMidiRefreshButton');
   const installButton = $('#hookMidiInstallButton');
   const nameInput = $('#hookMidiPortName');
+  const nameField = document.querySelector('.hook-midi-name-field');
   const windows10Card = $('#hookMidiWindows10Card');
+  const macCard = $('#hookMidiMacCard');
   const portsCard = $('#hookMidiPortsCard');
   const portsList = $('#hookMidiPortsList');
   const countBadge = $('#hookMidiPortCountBadge');
   const ports = Array.isArray(data.ports) ? data.ports : [];
   const busy = hookMidiBusy || data.busy === true;
+  const macos = data.macos === true || data.platform === 'darwin';
+  const heroDescription = $('#hookMidiHeroDescription');
+  const platformLabel = $('#hookMidiPlatformLabel');
+  const providerTitle = $('#hookMidiProviderTitle');
   windows10Card?.classList.toggle('hidden', data.windows10 !== true);
-  portsCard?.classList.toggle('hidden', data.supported !== true);
+  macCard?.classList.toggle('hidden', !macos);
+  portsCard?.classList.toggle('hidden', data.supported !== true || macos);
+  nameField?.classList.toggle('hidden', macos);
   installButton?.classList.toggle('hidden', !(data.supported && !data.consoleInstalled));
-  if (data.supported && data.consoleInstalled) {
+  if (macos) {
+    if (heroDescription) heroDescription.textContent = 'Use o CoreMIDI e o Driver IAC nativos do macOS para comunicar o VS Hook, o REAPER e outros programas.';
+    if (platformLabel) platformLabel.textContent = 'macOS';
+    if (providerTitle) providerTitle.textContent = 'CoreMIDI — Driver IAC';
+    if (badge) badge.textContent = 'Nativo do macOS';
+    if (runtimeBadge) runtimeBadge.textContent = 'Sem instalação';
+    if (message) message.textContent = 'Abra o Estúdio MIDI, ative o Driver IAC e crie um barramento chamado Hook MIDI.';
+    if (startButton) startButton.textContent = 'Abrir configuração MIDI';
+  } else if (data.supported && data.consoleInstalled) {
+    if (heroDescription) heroDescription.textContent = 'Crie portas MIDI virtuais para comunicar o VS Hook, o REAPER e outros programas no Windows 11.';
+    if (platformLabel) platformLabel.textContent = 'Windows 11';
+    if (providerTitle) providerTitle.textContent = 'Windows MIDI Services';
     if (badge) badge.textContent = 'Windows 11 compatível';
     if (runtimeBadge) runtimeBadge.textContent = data.serviceRunning ? 'Serviço ativo' : 'Pronto para iniciar';
     if (message) message.textContent = data.serviceRunning
@@ -1470,11 +1489,15 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
       : 'Componentes oficiais instalados. O serviço MIDI será iniciado pelo Windows ao criar as portas.';
     if (startButton) startButton.textContent = busy ? 'Criando...' : 'Criar portas';
   } else if (data.supported) {
+    if (platformLabel) platformLabel.textContent = 'Windows 11';
+    if (providerTitle) providerTitle.textContent = 'Windows MIDI Services';
     if (badge) badge.textContent = 'Windows 11';
     if (runtimeBadge) runtimeBadge.textContent = 'Componentes ausentes';
     if (message) message.textContent = 'Instale o Windows MIDI Services Runtime & Tools oficial para a Hook Center criar e remover as portas virtuais.';
     if (startButton) startButton.textContent = 'Instalação necessária';
   } else if (data.windows10) {
+    if (platformLabel) platformLabel.textContent = 'Windows 10';
+    if (providerTitle) providerTitle.textContent = 'Portas MIDI virtuais';
     if (badge) badge.textContent = 'Windows 10';
     if (runtimeBadge) runtimeBadge.textContent = 'Não compatível';
     if (message) message.textContent = 'O Hook MIDI requer o Windows 11. Para criar portas MIDI virtuais neste computador, recomendamos o loopMIDI.';
@@ -1485,10 +1508,10 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
     if (message) message.textContent = 'O Hook MIDI está disponível exclusivamente para computadores com Windows 11.';
     if (startButton) startButton.textContent = 'Indisponível neste sistema';
   }
-  if (startButton) startButton.disabled = busy || !data.supported || !data.consoleInstalled;
+  if (startButton) startButton.disabled = busy || !data.supported || (!macos && !data.consoleInstalled);
   if (refreshButton) refreshButton.disabled = busy;
   if (installButton) installButton.disabled = busy;
-  if (nameInput) nameInput.disabled = busy || !data.supported || !data.consoleInstalled;
+  if (nameInput) nameInput.disabled = macos || busy || !data.supported || !data.consoleInstalled;
   if (countBadge) countBadge.textContent = `${ports.length} ${ports.length === 1 ? 'par' : 'pares'}`;
   if (portsList) {
     portsList.innerHTML = ports.length
@@ -1527,6 +1550,19 @@ async function refreshHookMidiState() {
 
 async function createHookMidiPortFromUi() {
   if (hookMidiBusy) return;
+  if (hookMidiState?.macos === true || window.hookUpdateCenter?.platform === 'darwin') {
+    hookMidiBusy = true;
+    renderHookMidiAvailability();
+    try {
+      await window.hookUpdateCenter.openHookMidiComponents();
+    } catch (error) {
+      showModal({ title: 'Hook MIDI', message: hookMidiErrorMessage(error, 'Não foi possível abrir a Configuração de Áudio e MIDI.'), type: 'error' });
+    } finally {
+      hookMidiBusy = false;
+      renderHookMidiAvailability();
+    }
+    return;
+  }
   hookMidiBusy = true;
   renderHookMidiAvailability();
   try {
