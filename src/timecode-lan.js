@@ -24,6 +24,7 @@ const PROJECT_SYNC_PREFLIGHT_TTL_MS = 15000
 const PROJECT_SYNC_APPLY_TTL_MS = 30 * 60 * 1000
 const PROJECT_SYNC_BUNDLE_CHUNK_BYTES = 1024 * 1024
 const PROJECT_SYNC_BUNDLE_MANIFEST_BYTES = 8 * 1024 * 1024
+const PROJECT_SYNC_BUNDLE_SOURCE_MAP = '.vshook-source-map.json'
 const PROJECT_SYNC_BUNDLE_MAX_FILES = 16384
 const PROJECT_SYNC_BUNDLE_MAX_FILE_BYTES = 64 * 1024 * 1024 * 1024
 const PROJECT_SYNC_BUNDLE_MAX_TOTAL_BYTES = 256 * 1024 * 1024 * 1024
@@ -32,6 +33,10 @@ const PROJECT_SYNC_STAGING_TTL_MS = 24 * 60 * 60 * 1000
 const PROJECT_SYNC_STAGING_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const PROJECT_SYNC_STAGING_QUOTA_BYTES = 64 * 1024 * 1024 * 1024
 const PROJECT_SYNC_MIN_FREE_BYTES = 1024 * 1024 * 1024
+const PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS = 30 * 60 * 1000
+const PROJECT_SYNC_LOCAL_RPP_MAX_BYTES = 128 * 1024 * 1024
+const PROJECT_SYNC_LOCAL_RPP_MAX_REFERENCES = 65536
+const PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS = 32768
 
 // A ponta LAN e um servidor Node e aceita conexao persistente. Reutilizar o
 // socket remove o custo de um novo TCP handshake em cada pulso do Project Sync.
@@ -121,6 +126,121 @@ async function sha256File(filename) {
     stream.on('error', reject)
     stream.on('end', () => resolve(hash.digest('hex')))
   })
+}
+
+function sameFileVersion(left, right) {
+  if (!left || !right || left.size !== right.size ||
+      left.mtimeMs !== right.mtimeMs || left.ctimeMs !== right.ctimeMs) {
+    return false
+  }
+  // Alguns filesystems nao publicam inode/dispositivo de forma util. Quando
+  // publicam, eles tambem precisam permanecer estaveis durante a operacao.
+  if (left.ino && right.ino && left.ino !== right.ino) return false
+  if (left.dev && right.dev && left.dev !== right.dev) return false
+  return true
+}
+
+async function lstatRegularFileNoSymlinkPath(filename, expectedSize = null) {
+  if (!filename || String(filename).includes('\u0000') ||
+      !pathUtil.isAbsolute(filename)) {
+    throw new Error('Caminho local invalido.')
+  }
+  const resolved = pathUtil.resolve(filename)
+  const root = pathUtil.parse(resolved).root
+  const relative = pathUtil.relative(root, resolved)
+  if (!root || !relative || relative === '..' ||
+      relative.startsWith(`..${pathUtil.sep}`) ||
+      pathUtil.isAbsolute(relative)) {
+    throw new Error('Caminho local invalido.')
+  }
+
+  let cursor = root
+  let result = null
+  const components = relative.split(pathUtil.sep)
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index]
+    if (!component || component === '.' || component === '..') {
+      throw new Error('Caminho local invalido.')
+    }
+    cursor = pathUtil.join(cursor, component)
+    const stat = await fs.promises.lstat(cursor)
+    if (stat.isSymbolicLink()) {
+      throw new Error('Links nao sao aceitos como midia local.')
+    }
+    if (index + 1 < components.length) {
+      if (!stat.isDirectory()) throw new Error('Pasta local invalida.')
+    } else {
+      if (!stat.isFile()) throw new Error('Midia local invalida.')
+      result = stat
+    }
+  }
+  if (!result || (expectedSize != null && result.size !== expectedSize)) {
+    throw new Error('Tamanho da midia local nao confere.')
+  }
+  return result
+}
+
+async function readRegularFileLimitedNoFollow(filename, maximumSize) {
+  const pathStat = await lstatRegularFileNoSymlinkPath(filename)
+  const noFollow = Number(fs.constants.O_NOFOLLOW) || 0
+  const handle = await fs.promises.open(filename, fs.constants.O_RDONLY | noFollow)
+  try {
+    const before = await handle.stat()
+    if (!before.isFile() || before.size < 0 || before.size > maximumSize ||
+        !sameFileVersion(pathStat, before)) {
+      throw new Error('RPP local ausente ou maior que o limite seguro.')
+    }
+    const contents = Buffer.allocUnsafe(before.size)
+    let offset = 0
+    while (offset < contents.length) {
+      const { bytesRead } = await handle.read(
+        contents, offset, Math.min(1024 * 1024, contents.length - offset), offset)
+      if (bytesRead <= 0) throw new Error('Falha ao ler o RPP local.')
+      offset += bytesRead
+    }
+    const after = await handle.stat()
+    const pathAfter = await lstatRegularFileNoSymlinkPath(filename)
+    if (!sameFileVersion(before, after) ||
+        !sameFileVersion(before, pathAfter)) {
+      throw new Error('O RPP local mudou durante a leitura.')
+    }
+    return contents.toString('utf8')
+  } finally {
+    await handle.close()
+  }
+}
+
+async function sha256RegularFileNoFollow(filename, expectedSize) {
+  const pathStat = await lstatRegularFileNoSymlinkPath(filename, expectedSize)
+  const noFollow = Number(fs.constants.O_NOFOLLOW) || 0
+  const handle = await fs.promises.open(filename, fs.constants.O_RDONLY | noFollow)
+  try {
+    const before = await handle.stat()
+    if (!before.isFile() || before.size !== expectedSize ||
+        !sameFileVersion(pathStat, before)) {
+      throw new Error('Midia local mudou antes da verificacao.')
+    }
+    const hash = crypto.createHash('sha256')
+    const buffer = Buffer.allocUnsafe(1024 * 1024)
+    let offset = 0
+    while (offset < before.size) {
+      const { bytesRead } = await handle.read(
+        buffer, 0, Math.min(buffer.length, before.size - offset), offset)
+      if (bytesRead <= 0) throw new Error('Falha ao verificar a midia local.')
+      hash.update(buffer.subarray(0, bytesRead))
+      offset += bytesRead
+    }
+    const after = await handle.stat()
+    const pathAfter = await lstatRegularFileNoSymlinkPath(
+      filename, expectedSize)
+    if (!sameFileVersion(before, after) ||
+        !sameFileVersion(before, pathAfter)) {
+      throw new Error('Midia local mudou durante a verificacao.')
+    }
+    return hash.digest('hex')
+  } finally {
+    await handle.close()
+  }
 }
 
 async function assertRegularFileInside(root, filename) {
@@ -1065,6 +1185,302 @@ function createTimecodeLanRelay(options = {}) {
     return root
   }
 
+  async function projectSyncLocalProjectPath() {
+    // /state e localhost-only e e a unica fonte aceita. Assim nenhum caminho
+    // publicado pelo peer ou recebido no manifesto pode escolher arquivos do B.
+    let projectPath = ''
+    try {
+      const result = await requestJson({
+        hostname: '127.0.0.1',
+        port: nativeBridgePort,
+        path: '/state',
+        timeoutMs: 1000,
+        maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES,
+      })
+      if (result.ok && result.data && typeof result.data === 'object') {
+        projectPath = String(
+          result.data.projectPath || result.data.activeProjectPath || '').trim()
+      }
+    } catch (_) {}
+    if (!projectPath || projectPath.includes('\u0000') ||
+        !pathUtil.isAbsolute(projectPath)) return ''
+    const resolved = pathUtil.resolve(projectPath)
+    try {
+      await lstatRegularFileNoSymlinkPath(resolved)
+    } catch (_) {
+      return ''
+    }
+    return resolved
+  }
+
+  function projectSyncRppFileReferences(rpp) {
+    const references = []
+    let position = 0
+    while (position < rpp.length &&
+           references.length < PROJECT_SYNC_LOCAL_RPP_MAX_REFERENCES) {
+      const newline = rpp.indexOf('\n', position)
+      const end = newline < 0 ? rpp.length : newline
+      let cursor = position
+      while (cursor < end &&
+             (rpp[cursor] === ' ' || rpp[cursor] === '\t')) cursor += 1
+      if (cursor + 5 <= end && rpp.startsWith('FILE ', cursor)) {
+        cursor += 5
+        while (cursor < end &&
+               (rpp[cursor] === ' ' || rpp[cursor] === '\t')) cursor += 1
+        let sourcePath = ''
+        if (cursor < end && rpp[cursor] === '"') {
+          const valueStart = ++cursor
+          let escaped = false
+          while (cursor < end) {
+            const character = rpp[cursor]
+            if (character === '"' && !escaped) break
+            if (character === '\\') escaped = !escaped
+            else escaped = false
+            cursor += 1
+          }
+          if (cursor < end && cursor > valueStart &&
+              cursor - valueStart <= PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS) {
+            sourcePath = rpp.slice(valueStart, cursor).trim()
+          }
+        } else if (cursor < end) {
+          const valueStart = cursor
+          while (cursor < end && rpp[cursor] !== ' ' &&
+                 rpp[cursor] !== '\t' && rpp[cursor] !== '\r') cursor += 1
+          if (cursor > valueStart &&
+              cursor - valueStart <= PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS) {
+            sourcePath = rpp.slice(valueStart, cursor).trim()
+          }
+        }
+        if (sourcePath &&
+            !/[\u0000-\u001f\u007f]/.test(sourcePath)) {
+          references.push(sourcePath)
+        }
+      }
+      if (newline < 0) break
+      position = newline + 1
+    }
+    return references
+  }
+
+  function projectSyncLocalPathIdentity(filename) {
+    const normalized = pathUtil.normalize(pathUtil.resolve(filename))
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+
+  async function projectSyncRppMediaIndex(projectPath, manifest,
+    ensureActive, onCandidate) {
+    const mediaBySha = new Map()
+    const allowedHashesBySize = new Map()
+    for (const file of manifest.files) {
+      if (String(file.kind || '').toLowerCase() !== 'media') continue
+      if (!allowedHashesBySize.has(file.size)) {
+        allowedHashesBySize.set(file.size, new Set())
+      }
+      allowedHashesBySize.get(file.size).add(file.sha256)
+    }
+    if (allowedHashesBySize.size === 0) return mediaBySha
+
+    let rpp = ''
+    try {
+      ensureActive()
+      rpp = await readRegularFileLimitedNoFollow(
+        projectPath, PROJECT_SYNC_LOCAL_RPP_MAX_BYTES)
+      ensureActive()
+    } catch (_) {
+      ensureActive()
+      return mediaBySha
+    }
+
+    const projectDirectory = pathUtil.dirname(projectPath)
+    const seenNormalizedPaths = new Set()
+    const seenRealPaths = new Set()
+    const seenFiles = new Set()
+    for (const reference of projectSyncRppFileReferences(rpp)) {
+      ensureActive()
+      let candidate = ''
+      try {
+        candidate = pathUtil.resolve(pathUtil.isAbsolute(reference)
+          ? reference
+          : pathUtil.join(projectDirectory, reference))
+      } catch (_) {
+        continue
+      }
+      const normalizedIdentity = projectSyncLocalPathIdentity(candidate)
+      if (seenNormalizedPaths.has(normalizedIdentity)) continue
+      seenNormalizedPaths.add(normalizedIdentity)
+
+      try {
+        const candidateStat = await lstatRegularFileNoSymlinkPath(candidate)
+        const allowedHashes = allowedHashesBySize.get(candidateStat.size)
+        if (!allowedHashes) continue
+        const realPath = pathUtil.resolve(await fs.promises.realpath(candidate))
+        const realIdentity = projectSyncLocalPathIdentity(realPath)
+        // Diferenca aqui indica alias, junction ou outro redirecionamento. A
+        // otimizacao e abandonada mesmo que o alvo final seja um arquivo comum.
+        if (realIdentity !== normalizedIdentity ||
+            seenRealPaths.has(realIdentity)) continue
+        seenRealPaths.add(realIdentity)
+        const fileIdentity = candidateStat.ino
+          ? `${candidateStat.dev}:${candidateStat.ino}` : ''
+        if (fileIdentity && seenFiles.has(fileIdentity)) continue
+        if (fileIdentity) seenFiles.add(fileIdentity)
+
+        if (typeof onCandidate === 'function') {
+          try { await onCandidate(candidate, candidateStat) } catch (_) {
+            ensureActive()
+          }
+        }
+        ensureActive()
+        const digest = await sha256RegularFileNoFollow(
+          candidate, candidateStat.size)
+        ensureActive()
+        if (!allowedHashes.has(digest)) continue
+        if (!mediaBySha.has(digest)) mediaBySha.set(digest, [])
+        mediaBySha.get(digest).push(candidate)
+      } catch (_) {
+        // Uma referencia offline, alterada ou insegura nao impede o pacote.
+        ensureActive()
+      }
+    }
+    return mediaBySha
+  }
+
+  function projectSyncManagedBaseDirectory(projectPath) {
+    // Espelha nativeProjectSyncManagedBaseDirectory da extensao. Projetos que
+    // ja sao clones continuam compartilhando o cache Media da raiz original.
+    const normalized = String(projectPath || '').replace(/\\/g, '/')
+    const marker = '/VS Hook Project Sync/Clones/'
+    const searchable = process.platform === 'win32'
+      ? normalized.toLowerCase() : normalized
+    const markerToFind = process.platform === 'win32'
+      ? marker.toLowerCase() : marker
+    const markerPosition = searchable.indexOf(markerToFind)
+    let base = markerPosition > 0
+      ? normalized.slice(0, markerPosition)
+      : pathUtil.dirname(projectPath)
+    if (process.platform === 'win32' && /^[A-Za-z]:$/.test(base)) base += '/'
+    return base && pathUtil.isAbsolute(base) ? pathUtil.resolve(base) : ''
+  }
+
+  async function projectSyncManagedMediaCache(projectPath) {
+    if (!projectPath) return null
+    const base = projectSyncManagedBaseDirectory(projectPath)
+    if (!base) return null
+    const projectSyncRoot = pathUtil.join(base, 'VS Hook Project Sync')
+    const cacheRoot = pathUtil.join(projectSyncRoot, 'Media')
+    const relative = pathUtil.relative(base, cacheRoot)
+    if (!relative || relative.startsWith('..') ||
+        pathUtil.isAbsolute(relative)) return null
+
+    try {
+      // Nao segue junction/symlink em nenhuma parte criada pelo Project Sync.
+      // Se o cache nao existir ou estiver redirecionado, o download normal e
+      // usado sem transformar um cache local defeituoso em falha de sync.
+      for (const directory of [base, projectSyncRoot, cacheRoot]) {
+        const stat = await fs.promises.lstat(directory)
+        if (!stat.isDirectory() || stat.isSymbolicLink()) return null
+      }
+      const entries = await fs.promises.readdir(cacheRoot, {
+        withFileTypes: true,
+      })
+      const candidatesByPrefix = new Map()
+      for (const entry of entries) {
+        if (!entry.isFile()) continue
+        const match = /^([a-f0-9]{20})_/i.exec(entry.name)
+        if (!match) continue
+        const prefix = match[1].toLowerCase()
+        if (!candidatesByPrefix.has(prefix)) candidatesByPrefix.set(prefix, [])
+        candidatesByPrefix.get(prefix).push(entry.name)
+      }
+      return { root: cacheRoot, candidatesByPrefix }
+    } catch (_) {
+      return null
+    }
+  }
+
+  async function materializeProjectSyncCachedMedia(cache, rppMediaBySha, file,
+    destination, ensureActive, onCandidate) {
+    if (String(file?.kind || '').toLowerCase() !== 'media') {
+      return false
+    }
+    const candidates = []
+    for (const source of rppMediaBySha?.get(file.sha256) || []) {
+      candidates.push({ source, managedRoot: '' })
+    }
+    const prefix = String(file.sha256 || '').slice(0, 20).toLowerCase()
+    for (const entryName of cache?.candidatesByPrefix.get(prefix) || []) {
+      candidates.push({
+        source: pathUtil.resolve(cache.root, entryName),
+        managedRoot: cache.root,
+      })
+    }
+    const seenSources = new Set()
+    for (const candidate of candidates) {
+      ensureActive()
+      const source = pathUtil.resolve(candidate.source)
+      const sourceIdentity = projectSyncLocalPathIdentity(source)
+      if (seenSources.has(sourceIdentity)) continue
+      seenSources.add(sourceIdentity)
+      if (candidate.managedRoot) {
+        const relative = pathUtil.relative(candidate.managedRoot, source)
+        if (!relative || relative.startsWith('..') ||
+            pathUtil.isAbsolute(relative) || relative.includes(pathUtil.sep)) {
+          continue
+        }
+      }
+      let sourceBefore
+      try {
+        sourceBefore = await lstatRegularFileNoSymlinkPath(source, file.size)
+        const realPath = pathUtil.resolve(await fs.promises.realpath(source))
+        if (projectSyncLocalPathIdentity(realPath) !== sourceIdentity) continue
+      } catch (_) {
+        continue
+      }
+
+      if (typeof onCandidate === 'function') await onCandidate()
+      ensureActive()
+      let temporaryPath = `${destination}.local-${
+        crypto.randomBytes(8).toString('hex')}.partial`
+      try {
+        // COPYFILE_EXCL mais nome aleatorio impede reutilizar um parcial que
+        // tenha sido deixado por outro processo. Nao usa hardlink: o staging
+        // recebe uma copia independente da fonte local validada.
+        await fs.promises.copyFile(
+          source, temporaryPath, fs.constants.COPYFILE_EXCL)
+        ensureActive()
+        const copiedStat = await fs.promises.lstat(temporaryPath)
+        const sourceAfter = await lstatRegularFileNoSymlinkPath(
+          source, file.size)
+        if (!copiedStat.isFile() || copiedStat.isSymbolicLink() ||
+            copiedStat.size !== file.size ||
+            !sameFileVersion(sourceBefore, sourceAfter) ||
+            await sha256RegularFileNoFollow(
+              temporaryPath, file.size) !== file.sha256) {
+          continue
+        }
+        ensureActive()
+        try {
+          await fs.promises.lstat(destination)
+          continue
+        } catch (error) {
+          if (error?.code !== 'ENOENT') continue
+        }
+        await fs.promises.rename(temporaryPath, destination)
+        temporaryPath = ''
+        return true
+      } catch (_) {
+        // Fonte local ausente, alterada ou ilegivel nunca bloqueia o pacote. A
+        // rede continua sendo a fonte autoritativa e sera usada logo abaixo.
+        ensureActive()
+      } finally {
+        if (temporaryPath) {
+          try { await fs.promises.unlink(temporaryPath) } catch (_) {}
+        }
+      }
+    }
+    return false
+  }
+
   async function cleanupProjectSyncStaging(force = false) {
     const now = Date.now()
     if (!force && now - lastProjectSyncStagingCleanupAt <
@@ -1319,11 +1735,16 @@ function createTimecodeLanRelay(options = {}) {
       receiverSessionId: peer.remoteSessionId,
       peerName: peer.name || 'PC B',
       automatic: peer.automatic === true,
+      supportsSourceMap: true,
     })
     if (!accepted) {
       throw new Error('A extensão do PC A não iniciou a preparação do projeto.')
     }
-    const deadline = Date.now() + 60000
+    // O PC A precisa ler e calcular SHA-256 de toda mídia uma vez para saber
+    // com segurança o que o PC B já possui. Projetos grandes podem levar mais
+    // de um minuto mesmo sem nenhum download; não confundir trabalho ativo com
+    // travamento da Hook Center.
+    const deadline = Date.now() + PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS
     let bundleStatus = null
     while (!stopped && Date.now() < deadline) {
       const current = await readLocalStatus(true)
@@ -1370,18 +1791,76 @@ function createTimecodeLanRelay(options = {}) {
           safeBundleId(bundleStatus.bundleId) !== manifest.bundleId)) {
       throw new Error('O pacote preparado não corresponde ao projeto do PC A.')
     }
+    const sourceMapPath = pathUtil.join(
+      exportRoot, PROJECT_SYNC_BUNDLE_SOURCE_MAP)
+    let rawSourceMap = null
+    try {
+      await assertRegularFileInside(exportRoot, sourceMapPath)
+      rawSourceMap = await readLimitedJsonFile(
+        sourceMapPath, PROJECT_SYNC_BUNDLE_MANIFEST_BYTES)
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    const mediaEntries = new Map(manifest.files
+      .filter((file) => String(file.kind || '').toLowerCase() === 'media')
+      .map((file) => [file.id, file]))
+    const localSourcesById = new Map()
+    if (rawSourceMap) {
+      const descriptorStat = await lstatRegularFileNoSymlinkPath(descriptorPath)
+      const descriptorSha256 = await sha256RegularFileNoFollow(
+        descriptorPath, descriptorStat.size)
+      if (typeof rawSourceMap !== 'object' || Array.isArray(rawSourceMap) ||
+          Number(rawSourceMap.schemaVersion) !== 1 ||
+          safeBundleId(rawSourceMap.bundleId) !== manifest.bundleId ||
+          safePreflightRequestId(rawSourceMap.requestId) !== peer.requestId ||
+          safeSha256(rawSourceMap.descriptorSha256) !== descriptorSha256 ||
+          !Array.isArray(rawSourceMap.sources) ||
+          rawSourceMap.sources.length > PROJECT_SYNC_BUNDLE_MAX_FILES) {
+        throw new Error('Mapa local de mídia do PC A é inválido.')
+      }
+      for (const rawSource of rawSourceMap.sources) {
+        const id = safeBundleId(rawSource?.id)
+        const file = mediaEntries.get(id)
+        const sourcePath = String(rawSource?.absolutePath || '')
+        const size = Number(rawSource?.size)
+        const sha256 = safeSha256(rawSource?.sha256)
+        const mtimeMs = Number(rawSource?.mtimeMs)
+        if (!id || !file || localSourcesById.has(id) ||
+            !pathUtil.isAbsolute(sourcePath) || sourcePath.includes('\u0000') ||
+            !Number.isSafeInteger(size) || size !== file.size ||
+            sha256 !== file.sha256 || !Number.isFinite(mtimeMs)) {
+          throw new Error('Entrada inválida no mapa local de mídia do PC A.')
+        }
+        const stat = await lstatRegularFileNoSymlinkPath(sourcePath, file.size)
+        if (Math.abs(stat.mtimeMs - mtimeMs) > 1) {
+          throw new Error(`A mídia ${file.relativePath} mudou após a preparação.`)
+        }
+        localSourcesById.set(id, {
+          sourcePath: pathUtil.resolve(sourcePath),
+          stat,
+        })
+      }
+      if (localSourcesById.size !== mediaEntries.size) {
+        throw new Error('O mapa local não contém todas as mídias do PC A.')
+      }
+    }
     const filesById = new Map()
     for (const file of manifest.files) {
-      const sourcePath = resolveInside(exportRoot, file.relativePath)
+      const localSource = localSourcesById.get(file.id)
+      const sourcePath = localSource?.sourcePath ||
+        resolveInside(exportRoot, file.relativePath)
       if (!sourcePath) throw new Error('Arquivo inseguro no pacote do PC A.')
-      const stat = await assertRegularFileInside(exportRoot, sourcePath)
+      const stat = localSource?.stat ||
+        await assertRegularFileInside(exportRoot, sourcePath)
       if (stat.size !== file.size) {
         throw new Error(`O arquivo ${file.relativePath} mudou durante a preparação.`)
       }
       filesById.set(file.id, {
         ...file,
         sourcePath,
-        mtimeMs: stat.mtimeMs,
+        fileVersion: stat,
+        externalSource: !!localSource,
+        exportRoot,
       })
     }
     const manifestText = JSON.stringify(manifest)
@@ -1435,10 +1914,12 @@ function createTimecodeLanRelay(options = {}) {
       error.status = 400
       throw error
     }
-    const pathStat = await fs.promises.lstat(file.sourcePath)
+    const pathStat = file.externalSource
+      ? await lstatRegularFileNoSymlinkPath(file.sourcePath, file.size)
+      : await assertRegularFileInside(file.exportRoot, file.sourcePath)
     if (!pathStat.isFile() || pathStat.isSymbolicLink() ||
         pathStat.size !== file.size ||
-        Math.abs(pathStat.mtimeMs - file.mtimeMs) > 1) {
+        !sameFileVersion(pathStat, file.fileVersion)) {
       const error = new Error('Arquivo do PC A mudou durante a transferência.')
       error.status = 409
       throw error
@@ -1452,7 +1933,8 @@ function createTimecodeLanRelay(options = {}) {
       try {
         const openedStat = await handle.stat()
         if (!openedStat.isFile() || openedStat.size !== file.size ||
-            Math.abs(openedStat.mtimeMs - file.mtimeMs) > 1) {
+            !sameFileVersion(openedStat, file.fileVersion) ||
+            !sameFileVersion(openedStat, pathStat)) {
           throw new Error('Arquivo do PC A mudou durante a transferência.')
         }
         const result = await handle.read(data, 0, length, offset)
@@ -1460,8 +1942,7 @@ function createTimecodeLanRelay(options = {}) {
           throw new Error('Leitura incompleta do arquivo no PC A.')
         }
         const finalStat = await handle.stat()
-        if (finalStat.size !== openedStat.size ||
-            Math.abs(finalStat.mtimeMs - openedStat.mtimeMs) > 1) {
+        if (!sameFileVersion(finalStat, openedStat)) {
           throw new Error('Arquivo do PC A mudou durante a transferência.')
         }
       } finally {
@@ -1538,7 +2019,7 @@ function createTimecodeLanRelay(options = {}) {
         path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
         method: 'POST',
         payload: projectSyncAuthPayload(session, status),
-        timeoutMs: 65000,
+        timeoutMs: PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS + 5000,
         maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES + 64 * 1024,
       })
       if (!remoteManifest.ok || !remoteManifest.data?.ok ||
@@ -1599,6 +2080,56 @@ function createTimecodeLanRelay(options = {}) {
       }
 
       let bytesDone = 0
+      // Primeiro valida o que o staging de uma tentativa anterior já concluiu.
+      // O inventário/hash do RPP B só é calculado se ainda houver mídia ausente.
+      const completeFiles = new Set()
+      for (const file of manifest.files) {
+        const destination = resolveInside(transferRoot, file.relativePath)
+        if (!destination) throw new Error('Destino de arquivo inválido.')
+        try {
+          const stat = await fs.promises.lstat(destination)
+          if (stat.isFile() && !stat.isSymbolicLink() &&
+              stat.size === file.size &&
+              await sha256File(destination) === file.sha256) {
+            completeFiles.add(file.id)
+          }
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error
+        }
+      }
+      const missingMedia = manifest.files.some((file) =>
+        String(file.kind || '').toLowerCase() === 'media' &&
+        !completeFiles.has(file.id))
+      const localProjectPath = missingMedia
+        ? await projectSyncLocalProjectPath() : ''
+      let managedMediaCache = null
+      let rppMediaBySha = new Map()
+      if (localProjectPath) {
+        await report({
+          state: 'verifying',
+          bundleId,
+          bytesDone,
+          totalBytes: manifest.totalBytes,
+          fileIndex: 0,
+          fileCount: manifest.files.length,
+        }, true)
+        const localMediaSources = await Promise.all([
+          projectSyncManagedMediaCache(localProjectPath),
+          projectSyncRppMediaIndex(
+            localProjectPath, manifest, ensureActive, async () => {
+              await report({
+                state: 'verifying',
+                bundleId,
+                bytesDone,
+                totalBytes: manifest.totalBytes,
+                fileIndex: 0,
+                fileCount: manifest.files.length,
+              })
+            }),
+        ])
+        managedMediaCache = localMediaSources[0]
+        rppMediaBySha = localMediaSources[1]
+      }
       for (let index = 0; index < manifest.files.length; index += 1) {
         ensureActive()
         const file = manifest.files[index]
@@ -1613,8 +2144,8 @@ function createTimecodeLanRelay(options = {}) {
           if (!stat.isFile() || stat.isSymbolicLink()) {
             throw new Error('Arquivo de staging inseguro.')
           }
-          if (stat.size === file.size &&
-              await sha256File(destination) === file.sha256) {
+          if (completeFiles.has(file.id) || (stat.size === file.size &&
+              await sha256File(destination) === file.sha256)) {
             complete = true
             bytesDone += file.size
           } else {
@@ -1625,7 +2156,30 @@ function createTimecodeLanRelay(options = {}) {
               error?.message !== 'Arquivo de staging inseguro.') throw error
           if (error?.message === 'Arquivo de staging inseguro.') throw error
         }
+        if (!complete && String(file.kind || '').toLowerCase() === 'media' &&
+            (managedMediaCache || rppMediaBySha.size > 0)) {
+          complete = await materializeProjectSyncCachedMedia(
+            managedMediaCache, rppMediaBySha, file, destination,
+            ensureActive, async () => {
+              await report({
+                state: 'verifying',
+                bundleId,
+                bytesDone,
+                totalBytes: manifest.totalBytes,
+                fileIndex: index + 1,
+                fileCount: manifest.files.length,
+              }, true)
+            })
+          if (complete) bytesDone += file.size
+        }
         if (complete) {
+          // Uma retomada antiga pode ter deixado um .partial ao lado. Depois
+          // que o destino completo (inclusive reutilizado localmente) foi
+          // validado, o parcial não tem mais utilidade e não deve consumir
+          // quota nem confundir uma transferência futura.
+          try { await fs.promises.unlink(partial) } catch (error) {
+            if (error?.code !== 'ENOENT') throw error
+          }
           await report({
             state: 'downloading',
             bundleId,
@@ -1740,7 +2294,7 @@ function createTimecodeLanRelay(options = {}) {
         path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
         method: 'POST',
         payload: projectSyncAuthPayload(session, status),
-        timeoutMs: 65000,
+        timeoutMs: PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS + 5000,
         maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES + 64 * 1024,
       })
       ensureActive()
@@ -1794,14 +2348,6 @@ function createTimecodeLanRelay(options = {}) {
           timeoutMs: 3000,
         })
       } catch (_) {}
-      await report({
-        state: 'applying',
-        bundleId,
-        bytesDone: manifest.totalBytes,
-        totalBytes: manifest.totalBytes,
-        fileIndex: manifest.files.length,
-        fileCount: manifest.files.length,
-      }, true)
       const accepted = await sendLocalCommand({
         type: 'project_sync_apply_bundle',
         requestId: session.requestId,
@@ -1813,14 +2359,10 @@ function createTimecodeLanRelay(options = {}) {
       if (!accepted) {
         throw new Error('A extensão do PC B não aceitou o pacote Project Sync.')
       }
-      await report({
-        state: 'apply_started',
-        bundleId,
-        bytesDone: manifest.totalBytes,
-        totalBytes: manifest.totalBytes,
-        fileIndex: manifest.files.length,
-        fileCount: manifest.files.length,
-      }, true)
+      // /command confirma apenas que o comando entrou na fila da extensão.
+      // O estado semântico seguinte (validating/applying/applied ou error) é
+      // publicado pela própria extensão depois de realmente processá-lo. Não
+      // antecipe "applying" nem sobrescreva um erro detectado imediatamente.
     } catch (error) {
       if (!stopped && lifecycleSequence === relayLifecycleSequence) {
         await report({
@@ -1988,8 +2530,11 @@ function createTimecodeLanRelay(options = {}) {
       if (status.mode === 'project_sync' &&
           !await projectSyncCapabilities(
             status, address, remotePort,
-            !!String(receiver.id || '').trim() ||
-              (!!preferredCablePrefix() && peerAddressAllowed(address)))) {
+            // Somente uma oferta UDP do PC B prova que ele inseriu o mesmo
+            // codigo e esta esperando este PC A. A varredura TCP do cabo
+            // visita todos os hosts e jamais pode abrir uma conferencia so
+            // porque encontrou uma Hook Center antiga ou ainda nao armada.
+            !!String(receiver.id || '').trim())) {
         return false
       }
       const localEventBaseline = Math.max(0,
@@ -2039,6 +2584,7 @@ function createTimecodeLanRelay(options = {}) {
       })
       if (!result.ok || !result.data?.ok || transmitterPeer?.connected || stopped) {
         if (status.mode === 'project_sync' &&
+            !!String(receiver.id || '').trim() &&
             isRecognizableLegacyRelayResponse(result)) {
           await notifyProjectSyncProtocolMismatch(status, address)
         }
