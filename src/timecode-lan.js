@@ -466,6 +466,23 @@ function getDirectDiscoveryAddresses() {
 
 function createTimecodeLanRelay(options = {}) {
   const nativeBridgePort = Number(options.nativeBridgePort) || 47830
+  const relayChannel = String(options.channel || 'main') === 'parallel'
+    ? 'parallel' : 'main'
+  const nativeStatusPath = relayChannel === 'parallel'
+    ? '/timecode-parallel/status' : '/timecode/status'
+  const nativeOutboxPath = relayChannel === 'parallel'
+    ? '/timecode-parallel/outbox' : '/timecode/outbox'
+  const nativeInboxPath = relayChannel === 'parallel'
+    ? '/timecode-parallel/inbox' : '/timecode/inbox'
+  const linkPrefix = relayChannel === 'parallel'
+    ? '/timecode-parallel-link' : '/timecode-link'
+  // Na rede, o canal paralelo conversa com um Receive comum no PC C. Só os
+  // endpoints localhost da extensão A são separados; o protocolo remoto de
+  // Timecode continua sendo o mesmo para não exigir uma opção especial em C.
+  const outboundLinkPrefix = relayChannel === 'parallel'
+    ? '/timecode-link' : linkPrefix
+  const discoverMagic = DISCOVER_MAGIC
+  const offerMagic = OFFER_MAGIC
   const discoveryPort = Math.max(1, Math.min(65535,
     Number(options.discoveryPort) || DISCOVERY_PORT))
   const discoveryTargetPort = Math.max(1, Math.min(65535,
@@ -485,6 +502,14 @@ function createTimecodeLanRelay(options = {}) {
   const getDirectCableIp = typeof options.getDirectCableIp === 'function'
     ? options.getDirectCableIp
     : () => ''
+  const canUsePeerAddress =
+    typeof options.canUsePeerAddress === 'function'
+      ? options.canUsePeerAddress
+      : () => true
+  const onPeerConnectionChanged =
+    typeof options.onPeerConnectionChanged === 'function'
+      ? options.onPeerConnectionChanged
+      : () => {}
   // main.js deve devolver uma pasta privada e persistente da Hook Center,
   // atualmente app.getPath('userData')/project-sync-staging. O relay nunca
   // aceita uma raiz de staging vinda da rede.
@@ -613,6 +638,8 @@ function createTimecodeLanRelay(options = {}) {
       newPreflightRequestId()
     await sendLocalCommand({
       type: 'project_sync_preflight',
+      phase: 'pairing',
+      showConference: true,
       role: 'primary',
       requestId,
       ready: false,
@@ -635,7 +662,7 @@ function createTimecodeLanRelay(options = {}) {
       result = await requestJson({
         hostname: address,
         port,
-        path: '/timecode-link/capabilities',
+        path: `${outboundLinkPrefix}/capabilities`,
         method: 'POST',
         payload: {
           mode: 'project_sync',
@@ -859,7 +886,21 @@ function createTimecodeLanRelay(options = {}) {
 
   function projectSyncBundlePeerAllowed(address) {
     const prefix = preferredCablePrefix()
-    return !!prefix && normalizePeerAddress(address).startsWith(prefix)
+    const normalized = normalizePeerAddress(address)
+    if (prefix) return normalized.startsWith(prefix)
+    const numeric = ipv4ToNumber(normalized)
+    if (numeric == null) return false
+    // Sem a conexão redundante configurada, permite somente uma rede local
+    // privada/link-local. O token HMAC e o endereço exato do peer pareado
+    // continuam obrigatórios nas rotas de manifesto e chunks.
+    return (numeric >= ipv4ToNumber('10.0.0.0') &&
+            numeric <= ipv4ToNumber('10.255.255.255')) ||
+      (numeric >= ipv4ToNumber('172.16.0.0') &&
+       numeric <= ipv4ToNumber('172.31.255.255')) ||
+      (numeric >= ipv4ToNumber('192.168.0.0') &&
+       numeric <= ipv4ToNumber('192.168.255.255')) ||
+      (numeric >= ipv4ToNumber('169.254.0.0') &&
+       numeric <= ipv4ToNumber('169.254.255.255'))
   }
 
   async function readLocalStatus(force = false) {
@@ -881,7 +922,7 @@ function createTimecodeLanRelay(options = {}) {
         const result = await requestJson({
           hostname: '127.0.0.1',
           port: nativeBridgePort,
-          path: '/timecode/status',
+          path: nativeStatusPath,
           timeoutMs: 500,
         })
         localStatus = result.ok && result.data && result.data.ok
@@ -908,7 +949,9 @@ function createTimecodeLanRelay(options = {}) {
         port: nativeBridgePort,
         path: '/command',
         method: 'POST',
-        payload: command,
+        payload: relayChannel === 'parallel'
+          ? { ...command, channel: 'parallel' }
+          : command,
         timeoutMs: 550,
       })
       return result.ok
@@ -933,6 +976,7 @@ function createTimecodeLanRelay(options = {}) {
       requestId,
       sequence: safeSequence(
         apply?.sequence ?? status?.projectSyncApplySequence),
+      automatic: apply?.automatic === true,
     }
   }
 
@@ -955,6 +999,7 @@ function createTimecodeLanRelay(options = {}) {
       String(payload.sourceSessionId || ''),
       String(payload.receiverSessionId || ''),
       String(payload.bundleId || ''),
+      payload.automatic === true ? '1' : '0',
       String(payload.fileId || ''),
       String(payload.offset ?? ''),
       String(payload.length ?? ''),
@@ -980,6 +1025,7 @@ function createTimecodeLanRelay(options = {}) {
       sourceSessionId: session.remoteSessionId,
       receiverSessionId: session.localSessionId,
       projectSyncRole: 'secondary',
+      automatic: session.automatic === true,
       ...extra,
     }
     payload.authTimestamp = Date.now()
@@ -1235,9 +1281,6 @@ function createTimecodeLanRelay(options = {}) {
         !/^[a-f0-9]{32}$/.test(authNonce) || !authMac ||
         !tokenMatches(authMac, expectedMac)) {
       const error = new Error('Pedido de aplicação do Project Sync não autorizado.')
-      if (!preferredCablePrefix()) {
-        error.message = 'Configure a Conexão redundante por cabo antes de transferir o projeto.'
-      }
       error.status = 403
       throw error
     }
@@ -1256,6 +1299,7 @@ function createTimecodeLanRelay(options = {}) {
       throw error
     }
     peer.authNonces.set(authNonce, Date.now())
+    peer.automatic = payload?.automatic === true
     peer.createdAt = Date.now()
     return { peer, status }
   }
@@ -1274,6 +1318,7 @@ function createTimecodeLanRelay(options = {}) {
       expectedRevision: peer.localStructuralRevision,
       receiverSessionId: peer.remoteSessionId,
       peerName: peer.name || 'PC B',
+      automatic: peer.automatic === true,
     })
     if (!accepted) {
       throw new Error('A extensão do PC A não iniciou a preparação do projeto.')
@@ -1490,7 +1535,7 @@ function createTimecodeLanRelay(options = {}) {
       const remoteManifest = await requestJson({
         hostname: session.address,
         port: session.port,
-        path: '/timecode-link/project-sync/bundle/manifest',
+        path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
         method: 'POST',
         payload: projectSyncAuthPayload(session, status),
         timeoutMs: 65000,
@@ -1617,7 +1662,7 @@ function createTimecodeLanRelay(options = {}) {
           const chunk = await requestBinary({
             hostname: session.address,
             port: session.port,
-            path: '/timecode-link/project-sync/bundle/file',
+            path: `${outboundLinkPrefix}/project-sync/bundle/file`,
             payload: projectSyncAuthPayload(session, status, {
               bundleId,
               fileId: file.id,
@@ -1692,7 +1737,7 @@ function createTimecodeLanRelay(options = {}) {
       const sourceValidation = await requestJson({
         hostname: session.address,
         port: session.port,
-        path: '/timecode-link/project-sync/bundle/manifest',
+        path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
         method: 'POST',
         payload: projectSyncAuthPayload(session, status),
         timeoutMs: 65000,
@@ -1743,7 +1788,7 @@ function createTimecodeLanRelay(options = {}) {
         await requestJson({
           hostname: session.address,
           port: session.port,
-          path: '/timecode-link/project-sync/bundle/consumed',
+          path: `${outboundLinkPrefix}/project-sync/bundle/consumed`,
           method: 'POST',
           payload: projectSyncAuthPayload(session, status, { bundleId }),
           timeoutMs: 3000,
@@ -1763,6 +1808,7 @@ function createTimecodeLanRelay(options = {}) {
         bundleId,
         descriptorPath,
         stagingRoot: transferRoot,
+        automatic: session.automatic === true,
       })
       if (!accepted) {
         throw new Error('A extensão do PC B não aceitou o pacote Project Sync.')
@@ -1801,7 +1847,7 @@ function createTimecodeLanRelay(options = {}) {
     // O clique deve pertencer ao resultado bloqueado que ainda está exposto
     // pela extensão B; não basta alguém fabricar state=requested no status.
     if (statusPreflightRequestId(status) !== apply.requestId ||
-        status.projectSyncReady === true) return
+        (!apply.automatic && status.projectSyncReady === true)) return
     const key = `${apply.requestId}:${apply.sequence}`
     if (key === lastProjectSyncApplyKey) return
     if (String(status.sessionId || '').trim() !==
@@ -1810,7 +1856,8 @@ function createTimecodeLanRelay(options = {}) {
           projectSyncApplySession.localStructuralRevision) return
     lastProjectSyncApplyKey = key
     projectSyncBundlePullPromise = downloadProjectSyncBundle(
-      status, projectSyncApplySession)
+      status, { ...projectSyncApplySession,
+        automatic: apply.automatic === true })
       .catch(() => {})
       .finally(() => { projectSyncBundlePullPromise = null })
   }
@@ -1827,31 +1874,51 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
+  function clearProjectSyncTransientState() {
+    pendingProjectSyncPreflight = null
+    projectSyncPairAttempt = null
+    projectSyncApplyPeer = null
+    projectSyncApplySession = null
+    projectSyncExportBundle = null
+    lastProjectSyncApplyKey = ''
+  }
+
   function resetTransmitterPeer(notify = true) {
+    const previousAddress = normalizePeerAddress(transmitterPeer?.address)
     transmitterPeer = null
+    if (previousAddress) {
+      try { onPeerConnectionChanged(relayChannel, previousAddress, false) } catch (_) {}
+    }
     if (notify) notifyLocalPeer(false).catch(() => {})
   }
 
   function resetReceiverSession(notify = true) {
+    const previousAddress = normalizePeerAddress(receiverSession?.address)
     receiverSession = null
+    if (previousAddress) {
+      try { onPeerConnectionChanged(relayChannel, previousAddress, false) } catch (_) {}
+    }
     if (notify) notifyLocalPeer(false).catch(() => {})
   }
 
-  function sendUdp(payload, address) {
+  function sendUdp(payload, address, port = discoveryTargetPort) {
     if (!socket) return
     const data = Buffer.from(JSON.stringify(payload), 'utf8')
-    socket.send(data, 0, data.length, discoveryTargetPort, address, () => {})
+    socket.send(data, 0, data.length,
+      Math.max(1, Math.min(65535, Number(port) || discoveryTargetPort)),
+      address, () => {})
   }
 
   function broadcastDiscovery(status) {
     const payload = {
-      magic: DISCOVER_MAGIC,
+      magic: discoverMagic,
       version: status?.mode === 'project_sync'
         ? PROJECT_SYNC_PROTOCOL_VERSION
         : 1,
       code: String(status.code || ''),
       transmitterId: instanceId,
       transmitterName: deviceName(),
+      replyPort: discoveryPort,
       mode: status.mode,
       projectSyncRole: projectSyncRole(status),
     }
@@ -1878,7 +1945,7 @@ function createTimecodeLanRelay(options = {}) {
         const result = await requestJson({
           hostname: address,
           port,
-          path: '/timecode-link/preflight',
+          path: `${outboundLinkPrefix}/preflight`,
           method: 'POST',
           payload: {
             requestId,
@@ -1908,7 +1975,8 @@ function createTimecodeLanRelay(options = {}) {
 
   async function pairWithReceiver(status, address, remotePort, receiver = {}) {
     if (!statusCanTransmit(status) || !isPairCode(status.code) ||
-        transmitterPeer?.connected || stopped || !peerAddressAllowed(address)) return false
+        transmitterPeer?.connected || stopped || !peerAddressAllowed(address) ||
+        !canUsePeerAddress(relayChannel, normalizePeerAddress(address))) return false
     if (status.mode === 'project_sync' &&
         applyPeerIsCurrent(projectSyncApplyPeer) &&
         normalizePeerAddress(address) !==
@@ -1936,7 +2004,7 @@ function createTimecodeLanRelay(options = {}) {
       let result = await requestJson({
         hostname: address,
         port: remotePort,
-        path: '/timecode-link/pair',
+        path: `${outboundLinkPrefix}/pair`,
         method: 'POST',
         payload: {
           code: status.code,
@@ -1994,6 +2062,8 @@ function createTimecodeLanRelay(options = {}) {
         if (!completed) {
           await sendLocalCommand({
             type: 'project_sync_preflight',
+            phase: 'pairing',
+            showConference: true,
             role: 'primary',
             requestId,
             ready: false,
@@ -2016,6 +2086,8 @@ function createTimecodeLanRelay(options = {}) {
             confirmedStructuralRevision !== localStructuralRevision) {
           await sendLocalCommand({
             type: 'project_sync_preflight',
+            phase: 'pairing',
+            showConference: true,
             role: 'primary',
             requestId: safePreflightRequestId(result.data.requestId) ||
               proposedRequestId,
@@ -2036,6 +2108,8 @@ function createTimecodeLanRelay(options = {}) {
         // abre o fluxo A -> B enquanto o preflight apontar divergencias.
         await sendLocalCommand({
           type: 'project_sync_preflight',
+          phase: 'pairing',
+          showConference: true,
           role: 'primary',
           requestId: safePreflightRequestId(result.data.requestId) ||
             proposedRequestId,
@@ -2082,6 +2156,8 @@ function createTimecodeLanRelay(options = {}) {
       if (status.mode === 'project_sync') {
         await sendLocalCommand({
           type: 'project_sync_preflight',
+          phase: 'pairing',
+          showConference: true,
           role: 'primary',
           requestId: safePreflightRequestId(result.data.requestId) ||
             proposedRequestId,
@@ -2097,7 +2173,31 @@ function createTimecodeLanRelay(options = {}) {
         return false
       }
       if (!result.data?.token || transmitterPeer?.connected || stopped) return false
-      projectSyncApplyPeer = null
+      if (status.mode === 'project_sync' &&
+          /^[a-f0-9]{64}$/i.test(String(result.data.applyToken || ''))) {
+        projectSyncApplyPeer = {
+          requestId: safePreflightRequestId(result.data.requestId) ||
+            proposedRequestId,
+          token: String(result.data.applyToken),
+          code: String(status.code || ''),
+          address: normalizePeerAddress(address),
+          port: remotePort,
+          receiverId: String(result.data.receiverId || receiver.id || ''),
+          name: safeName(result.data.receiverName || receiver.name, 'PC B'),
+          localSessionId,
+          localManifestRevision: projectSyncManifestRevision(status),
+          localStructuralRevision,
+          remoteSessionId: String(result.data.receiverSessionId || '').trim(),
+          remoteManifestRevision: String(
+            result.data.manifestRevision || '').trim().slice(0, 256),
+          remoteStructuralRevision: String(
+            result.data.structuralManifestRevision ||
+              result.data.manifestRevision || '').trim().slice(0, 256),
+          createdAt: Date.now(),
+        }
+      } else {
+        projectSyncApplyPeer = null
+      }
       projectSyncExportBundle = null
       const remoteId = String(result.data.receiverId || receiver.id || '')
       transmitterPeer = {
@@ -2134,6 +2234,10 @@ function createTimecodeLanRelay(options = {}) {
         failures: 0,
         connected: true,
       }
+      try {
+        onPeerConnectionChanged(
+          relayChannel, normalizePeerAddress(address), true)
+      } catch (_) {}
       // Project Sync e estritamente A -> B. O PC A nunca cria uma sessao de
       // recepcao reversa e, portanto, o escravo nao pode devolver comandos.
       if (status.mode === 'project_sync') receiverSession = null
@@ -2189,7 +2293,7 @@ function createTimecodeLanRelay(options = {}) {
     try { message = JSON.parse(buffer.toString('utf8')) } catch (_) { return }
     if (!message || typeof message !== 'object') return
 
-    if (message.magic === DISCOVER_MAGIC) {
+    if (message.magic === discoverMagic) {
       if (String(message.transmitterId || '') === instanceId || !licenseIsActive()) return
       const status = await readLocalStatus()
       if (!statusCanReceive(status) || !isPairCode(status.code)) return
@@ -2200,7 +2304,7 @@ function createTimecodeLanRelay(options = {}) {
           !projectSyncRolesMatch(
             message.projectSyncRole, projectSyncRole(status))) return
       sendUdp({
-        magic: OFFER_MAGIC,
+        magic: offerMagic,
         version: status.mode === 'project_sync'
           ? PROJECT_SYNC_PROTOCOL_VERSION
           : 1,
@@ -2210,11 +2314,12 @@ function createTimecodeLanRelay(options = {}) {
         receiverName: deviceName(),
         port: Number(getDirectorPort()) || 47831,
         projectSyncRole: projectSyncRole(status),
-      }, rinfo.address)
+      }, rinfo.address, Math.max(1, Math.min(65535,
+        Number(message.replyPort) || discoveryTargetPort)))
       return
     }
 
-    if (message.magic === OFFER_MAGIC) {
+    if (message.magic === offerMagic) {
       if (String(message.receiverId || '') === instanceId || !licenseIsActive()) return
       await acceptOffer(message, rinfo)
     }
@@ -2241,30 +2346,30 @@ function createTimecodeLanRelay(options = {}) {
     const currentLocalManifestRevision = projectSyncManifestRevision(status)
     const currentLocalStructuralRevision =
       projectSyncStructuralRevision(status)
-    const localProjectChanged = status.mode === 'project_sync' &&
-      transmitterPeer.localStructuralRevision !==
-        currentLocalStructuralRevision
-    if (transmitterPeer.localSessionId !== currentLocalSessionId ||
-        localProjectChanged) {
-      if (localProjectChanged) {
-        await sendLocalCommand({
-          type: 'project_sync_preflight',
-          role: 'primary',
-          ready: false,
-          diff: projectSyncManifestChangedDiff(
-            'primary', transmitterPeer.localStructuralRevision,
-            currentLocalStructuralRevision),
-        })
-      }
+    // A conferencia pertence exclusivamente ao handshake inicial. Depois que
+    // a sessao A -> B esta autenticada, revisoes do projeto/configuracao sao
+    // estados vivos da mesma sessao e nao podem derrubar o peer nem iniciar um
+    // novo preflight. O sessionId muda quando o REAPER/extensao reinicia e
+    // continua sendo a identidade forte usada para encerrar o pareamento.
+    if (transmitterPeer.localSessionId !== currentLocalSessionId) {
       resetTransmitterPeer(true)
       resetReceiverSession(false)
       return
     }
     if (status.mode === 'project_sync') {
-      // A revisao completa inclui configuracoes e pode mudar legitimamente sem
-      // derrubar o link. Mantem o retrato da sessao atual para diagnostico; a
-      // decisao de novo preflight continua baseada somente na parte estrutural.
+      // As revisoes completa e estrutural sao apenas diagnostico depois do
+      // handshake. A conferencia somente volta a existir em outro pareamento.
       transmitterPeer.localManifestRevision = currentLocalManifestRevision
+      transmitterPeer.localStructuralRevision =
+        currentLocalStructuralRevision
+      if (projectSyncApplyPeer &&
+          projectSyncApplyPeer.receiverId === transmitterPeer.receiverId) {
+        projectSyncApplyPeer.localManifestRevision =
+          currentLocalManifestRevision
+        projectSyncApplyPeer.localStructuralRevision =
+          currentLocalStructuralRevision
+        projectSyncApplyPeer.createdAt = Date.now()
+      }
     }
 
     try {
@@ -2280,7 +2385,7 @@ function createTimecodeLanRelay(options = {}) {
         const outboxResult = await requestJson({
           hostname: '127.0.0.1',
           port: nativeBridgePort,
-          path: '/timecode/outbox',
+          path: nativeOutboxPath,
           method: 'POST',
           payload: { after: transmitterPeer.lastSequence },
           timeoutMs: 500,
@@ -2315,7 +2420,7 @@ function createTimecodeLanRelay(options = {}) {
       const remoteResult = await requestJson({
         hostname: transmitterPeer.address,
         port: transmitterPeer.port,
-        path: '/timecode-link/events',
+        path: `${outboundLinkPrefix}/events`,
         method: 'POST',
         payload: {
           token: transmitterPeer.token,
@@ -2336,23 +2441,6 @@ function createTimecodeLanRelay(options = {}) {
         },
         timeoutMs: 800,
       })
-      if (status.mode === 'project_sync' &&
-          remoteResult.data?.preflightRequired === true) {
-        await sendLocalCommand({
-          type: 'project_sync_preflight',
-          role: 'primary',
-          ready: false,
-          diff: remoteResult.data.diff ||
-            projectSyncManifestChangedDiff(
-              'secondary', transmitterPeer.remoteStructuralRevision,
-              remoteResult.data?.structuralManifestRevision ||
-                remoteResult.data?.manifestRevision),
-          remoteManifestRevision: String(
-            remoteResult.data?.manifestRevision || ''),
-        })
-        resetTransmitterPeer(true)
-        return
-      }
       if (!remoteResult.ok || !remoteResult.data?.ok) throw new Error('Receiver indisponível.')
       if (status.mode === 'project_sync') {
         const remoteSessionId = String(
@@ -2362,24 +2450,28 @@ function createTimecodeLanRelay(options = {}) {
         const remoteStructuralRevision = String(
           remoteResult.data.structuralManifestRevision ||
           remoteResult.data.manifestRevision || '').trim().slice(0, 256)
-        if (!remoteSessionId || !remoteManifestRevision ||
-            !remoteStructuralRevision ||
-            remoteSessionId !== transmitterPeer.remoteSessionId ||
-            remoteStructuralRevision !==
-              transmitterPeer.remoteStructuralRevision) {
-          await sendLocalCommand({
-            type: 'project_sync_preflight',
-            role: 'primary',
-            ready: false,
-            diff: projectSyncManifestChangedDiff(
-              'secondary', transmitterPeer.remoteStructuralRevision,
-              remoteStructuralRevision),
-            remoteManifestRevision,
-          })
+        if (!remoteSessionId ||
+            remoteSessionId !== transmitterPeer.remoteSessionId) {
           resetTransmitterPeer(true)
           return
         }
-        transmitterPeer.remoteManifestRevision = remoteManifestRevision
+        if (remoteManifestRevision) {
+          transmitterPeer.remoteManifestRevision = remoteManifestRevision
+        }
+        if (remoteStructuralRevision) {
+          transmitterPeer.remoteStructuralRevision = remoteStructuralRevision
+        }
+        if (projectSyncApplyPeer &&
+            projectSyncApplyPeer.receiverId === transmitterPeer.receiverId) {
+          if (remoteManifestRevision) {
+            projectSyncApplyPeer.remoteManifestRevision =
+              remoteManifestRevision
+          }
+          if (remoteStructuralRevision) {
+            projectSyncApplyPeer.remoteStructuralRevision =
+              remoteStructuralRevision
+          }
+        }
       }
       const acknowledged = Number(remoteResult.data.acceptedSequence)
       const highestSentSequence = events.reduce((highest, event) => {
@@ -2414,11 +2506,7 @@ function createTimecodeLanRelay(options = {}) {
       if (!licenseIsActive() || !status || !isPairCode(status.code)) {
         if (transmitterPeer) resetTransmitterPeer(true)
         if (receiverSession) resetReceiverSession(true)
-        pendingProjectSyncPreflight = null
-        projectSyncPairAttempt = null
-        projectSyncApplyPeer = null
-        projectSyncApplySession = null
-        projectSyncExportBundle = null
+        clearProjectSyncTransientState()
         return
       }
 
@@ -2448,13 +2536,18 @@ function createTimecodeLanRelay(options = {}) {
           projectSyncExportBundle = null
           if (transmitterPeer) resetTransmitterPeer(false)
           if (receiverSession &&
-              (String(status.sessionId || '').trim() !==
-                 receiverSession.localSessionId ||
-               projectSyncStructuralRevision(status) !==
-                 receiverSession.localStructuralRevision)) {
-            // O projeto B mudou enquanto o vínculo estava ativo. Derruba apenas
-            // a autorização LAN; o transporte do REAPER B continua intacto.
+              String(status.sessionId || '').trim() !==
+                receiverSession.localSessionId) {
+            // Uma nova sessao nativa significa que o REAPER/extensao anterior
+            // foi encerrado. Alterar o projeto dentro da mesma sessao nao abre
+            // novamente a conferencia nem desfaz o Project Sync.
             resetReceiverSession(true)
+          }
+          if (receiverSession) {
+            receiverSession.localManifestRevision =
+              projectSyncManifestRevision(status)
+            receiverSession.localStructuralRevision =
+              projectSyncStructuralRevision(status)
           }
           if (receiverSession && Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS) {
             // Perder heartbeat apenas desfaz o link visual. Nao injeta Stop no
@@ -2473,20 +2566,12 @@ function createTimecodeLanRelay(options = {}) {
           // reabrir Project Sync e gerar/digitar o codigo uma unica vez.
           if (transmitterPeer) resetTransmitterPeer(true)
           if (receiverSession) resetReceiverSession(true)
-          pendingProjectSyncPreflight = null
-          projectSyncPairAttempt = null
-          projectSyncApplyPeer = null
-          projectSyncApplySession = null
-          projectSyncExportBundle = null
+          clearProjectSyncTransientState()
         }
       } else {
         if (transmitterPeer) resetTransmitterPeer(true)
         if (receiverSession) resetReceiverSession(true)
-        pendingProjectSyncPreflight = null
-        projectSyncPairAttempt = null
-        projectSyncApplyPeer = null
-        projectSyncApplySession = null
-        projectSyncExportBundle = null
+        clearProjectSyncTransientState()
       }
     } finally {
       tickRunning = false
@@ -2528,7 +2613,10 @@ function createTimecodeLanRelay(options = {}) {
         projectSyncStructuralRevision(status),
     }
     if (response.ready) {
-      projectSyncApplySession = null
+      // O mesmo canal autenticado permanece disponível para reconciliações
+      // estruturais automáticas posteriores (por exemplo, mídia/FX novos).
+      // A conferência humana continua exclusiva deste primeiro pareamento.
+      response.applyToken = pending.token
       lastProjectSyncApplyKey = ''
       pending.completedResponse = null
       receiverSession = {
@@ -2542,6 +2630,7 @@ function createTimecodeLanRelay(options = {}) {
         localManifestRevision: projectSyncManifestRevision(status),
         localStructuralRevision: pending.localStructuralRevision,
         name: pending.name,
+        address: normalizePeerAddress(pending.address),
         lastSequence: pending.remoteEventBaseline,
         lastTransportSequence: 0,
         lastControlSequence: -1,
@@ -2551,6 +2640,26 @@ function createTimecodeLanRelay(options = {}) {
       // Project Sync e estritamente A -> B. B jamais cria o canal reverso.
       transmitterPeer = null
       response.token = pending.token
+      projectSyncApplySession = {
+        requestId: pending.requestId,
+        token: pending.token,
+        code: pending.code,
+        transmitterId: pending.transmitterId,
+        remoteSessionId: pending.remoteSessionId,
+        remoteManifestRevision: pending.manifestRevision,
+        remoteStructuralRevision: pending.remoteStructuralRevision,
+        localSessionId: pending.localSessionId,
+        localManifestRevision: projectSyncManifestRevision(status),
+        localStructuralRevision: pending.localStructuralRevision,
+        address: pending.address,
+        port: pending.port,
+        name: pending.name,
+        createdAt: Date.now(),
+      }
+      try {
+        onPeerConnectionChanged(
+          relayChannel, normalizePeerAddress(pending.address), true)
+      } catch (_) {}
       await notifyLocalPeer(true, pending.name)
     } else {
       // O preflight bloqueado continua autorizado apenas para o fluxo de
@@ -2627,8 +2736,17 @@ function createTimecodeLanRelay(options = {}) {
     // O pareamento Project Sync tambem pode carregar o manifesto sanitizado do
     // projeto. Usa o mesmo limite defensivo dos demais pacotes LAN.
     const payload = await readJsonBody(req)
+    const incomingPeerAddress = normalizePeerAddress(
+      req.socket?.remoteAddress)
     if (!peerAddressAllowed(req.socket?.remoteAddress)) {
       sendJson(res, 409, { ok: false, error: 'A conexão redundante deve usar o cabo configurado.' })
+      return
+    }
+    if (!canUsePeerAddress(relayChannel, incomingPeerAddress)) {
+      sendJson(res, 409, {
+        ok: false,
+        error: 'Este computador já está conectado no outro canal VS Hook.',
+      })
       return
     }
     let status = await readLocalStatus(true)
@@ -2748,6 +2866,8 @@ function createTimecodeLanRelay(options = {}) {
         }
         const preflightAccepted = await sendLocalCommand({
           type: 'project_sync_preflight',
+          phase: 'pairing',
+          showConference: true,
           role: 'secondary',
           requestId: pendingProjectSyncPreflight.requestId,
           manifest: payload.manifest || null,
@@ -2809,6 +2929,7 @@ function createTimecodeLanRelay(options = {}) {
       transmitterId,
       remoteSessionId,
       name: safeName(payload.transmitterName, 'Transmitter'),
+      address: incomingPeerAddress,
       lastSequence: sameTransmitter
         ? Math.max(receiverSession.lastSequence, remoteEventBaseline)
         : remoteEventBaseline,
@@ -2826,6 +2947,10 @@ function createTimecodeLanRelay(options = {}) {
       lastSeenAt: Date.now(),
     }
     if (projectSyncReady) {
+      try {
+        onPeerConnectionChanged(
+          relayChannel, incomingPeerAddress, true)
+      } catch (_) {}
       await notifyLocalPeer(true, receiverSession.name)
     }
     sendJson(res, 200, {
@@ -2938,45 +3063,40 @@ function tokenMatches(left, right) {
       const currentRemoteStructuralRevision = String(
         payload.structuralRevision ||
         payload.manifestRevision || '').trim().slice(0, 256)
-      const localProjectChanged =
-        currentLocalSessionId !== receiverSession.localSessionId ||
-        currentLocalStructuralRevision !==
-          receiverSession.localStructuralRevision
-      const remoteProjectChanged =
-        !currentRemoteStructuralRevision ||
-        currentRemoteStructuralRevision !==
-          receiverSession.remoteStructuralRevision
-      if (localProjectChanged || remoteProjectChanged) {
-        const previousLocalStructuralRevision =
-          receiverSession.localStructuralRevision
-        const previousRemoteStructuralRevision =
-          receiverSession.remoteStructuralRevision
+      // A identidade da conexao ativa e a sessao nativa, nao a revisao do
+      // projeto. Revisoes mudam enquanto A edita e B espelha; isso nunca deve
+      // reabrir a janela de conferencia. Se o REAPER reiniciar, sessionId muda
+      // e o pareamento e encerrado de verdade.
+      if (currentLocalSessionId !== receiverSession.localSessionId) {
         resetReceiverSession(true)
-        sendJson(res, 409, {
-          ok: false,
-          preflightRequired: true,
-          receiverSessionId: currentLocalSessionId,
-          manifestRevision: projectSyncManifestRevision(status),
-          structuralManifestRevision:
-            currentLocalStructuralRevision,
-          diff: projectSyncManifestChangedDiff(
-            localProjectChanged ? 'secondary' : 'primary',
-            localProjectChanged
-              ? previousLocalStructuralRevision
-              : previousRemoteStructuralRevision,
-            localProjectChanged
-              ? currentLocalStructuralRevision
-              : currentRemoteStructuralRevision),
-          error: 'O projeto mudou depois do pareamento. Novo preflight obrigatório.',
-        })
+        sendJson(res, 403, { ok: false, error: 'Pareamento expirado.' })
         return
       }
       receiverSession.localManifestRevision =
         projectSyncManifestRevision(status)
+      receiverSession.localStructuralRevision =
+        currentLocalStructuralRevision
       const currentRemoteManifestRevision = String(
         payload.manifestRevision || '').trim().slice(0, 256)
       if (currentRemoteManifestRevision) {
         receiverSession.remoteManifestRevision = currentRemoteManifestRevision
+      }
+      if (currentRemoteStructuralRevision) {
+        receiverSession.remoteStructuralRevision =
+          currentRemoteStructuralRevision
+      }
+      if (projectSyncApplySession &&
+          projectSyncApplySession.transmitterId ===
+            receiverSession.transmitterId) {
+        projectSyncApplySession.localManifestRevision =
+          receiverSession.localManifestRevision
+        projectSyncApplySession.localStructuralRevision =
+          receiverSession.localStructuralRevision
+        projectSyncApplySession.remoteManifestRevision =
+          receiverSession.remoteManifestRevision
+        projectSyncApplySession.remoteStructuralRevision =
+          receiverSession.remoteStructuralRevision
+        projectSyncApplySession.createdAt = Date.now()
       }
     }
 
@@ -2989,6 +3109,7 @@ function tokenMatches(left, right) {
       if (sequence <= acceptedSequence || !event?.command || typeof event.command !== 'object') continue
       commands.push(JSON.stringify({
         ...event.command,
+        ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
         __vshookLanRemote: true,
       }))
       acceptedSequence = Math.max(acceptedSequence, sequence)
@@ -3017,6 +3138,7 @@ function tokenMatches(left, right) {
         sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
         audioHealthy: transportAudioHealthy(payload, transport),
         explicitControl: transport.explicitControl === true,
+        ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
         __vshookLanRemote: true,
       }))
     }
@@ -3025,7 +3147,7 @@ function tokenMatches(left, right) {
       const localResult = await requestRaw({
         hostname: '127.0.0.1',
         port: nativeBridgePort,
-        path: '/timecode/inbox',
+        path: nativeInboxPath,
         body: commands.join('\n'),
         timeoutMs: 700,
       })
@@ -3056,10 +3178,10 @@ function tokenMatches(left, right) {
 
   async function handleHttp(req, res, parsedUrl) {
     const pathname = String(parsedUrl?.pathname || '')
-    if (!pathname.startsWith('/timecode-link/')) return false
+    if (!pathname.startsWith(`${linkPrefix}/`)) return false
     try {
       if (req.method === 'POST' &&
-          pathname === '/timecode-link/capabilities') {
+          pathname === `${linkPrefix}/capabilities`) {
         // Somente leitura: permite ao PC A rejeitar uma Central antiga antes
         // que /pair altere qualquer estado no PC B.
         sendJson(res, 200, {
@@ -3068,20 +3190,20 @@ function tokenMatches(left, right) {
           projectSyncPreflight: true,
           projectSyncDirection: 'primary_to_secondary',
         })
-      } else if (req.method === 'POST' && pathname === '/timecode-link/pair') {
+      } else if (req.method === 'POST' && pathname === `${linkPrefix}/pair`) {
         await handlePair(req, res)
-      } else if (req.method === 'POST' && pathname === '/timecode-link/preflight') {
+      } else if (req.method === 'POST' && pathname === `${linkPrefix}/preflight`) {
         await handleProjectSyncPreflight(req, res)
       } else if (req.method === 'POST' &&
-          pathname === '/timecode-link/project-sync/bundle/manifest') {
+          pathname === `${linkPrefix}/project-sync/bundle/manifest`) {
         await handleProjectSyncBundleManifest(req, res)
       } else if (req.method === 'POST' &&
-          pathname === '/timecode-link/project-sync/bundle/file') {
+          pathname === `${linkPrefix}/project-sync/bundle/file`) {
         await handleProjectSyncBundleFile(req, res)
       } else if (req.method === 'POST' &&
-          pathname === '/timecode-link/project-sync/bundle/consumed') {
+          pathname === `${linkPrefix}/project-sync/bundle/consumed`) {
         await handleProjectSyncBundleConsumed(req, res)
-      } else if (req.method === 'POST' && pathname === '/timecode-link/events') {
+      } else if (req.method === 'POST' && pathname === `${linkPrefix}/events`) {
         await handleEvents(req, res)
       } else {
         sendJson(res, 404, { ok: false, error: 'Rota Timecode LAN não encontrada.' })

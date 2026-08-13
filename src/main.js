@@ -93,6 +93,8 @@ let bridgeLastError = '';
 let bridgeWatchTimer = null;
 let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
+let parallelTimecodeLanRelay = null;
+const timecodeRelayPeerAddresses = { main: '', parallel: '' };
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
 
@@ -1101,6 +1103,12 @@ function normalizeUpdate(raw) {
 
   return {
     updateId: platformMeta.updateId || source.updateId || source.id || source.publishedAt || source.version || null,
+    // `version` pode continuar igual entre duas builds (principalmente nas
+    // atualizacoes direcionadas). Preserve uma revisao de publicacao separada
+    // para que o cache identifique o artefato, e nao apenas o numero exibido.
+    artifactRevision: platformMeta.artifactRevision || platformMeta.revision || platformMeta.buildId ||
+      source.artifactRevision || source.revision || source.buildId || source.build ||
+      platformMeta.changedAt || source.updatedAt || source.publishedAt || source.createdAt || '',
     product: source.product || 'vs-hook',
     source: updateSource,
     testClient: testClientFlag,
@@ -1363,17 +1371,40 @@ function normalizeHookCenterUpdate(raw) {
     product: 'hook-center',
     platformKey,
     updateId: raw.updateId || raw.version || null,
+    artifactRevision: raw.artifactRevision || raw.revision || raw.buildId || raw.build ||
+      raw.updatedAt || raw.publishedAt || '',
     version: raw.version || '',
     title: raw.title || 'Nova versão do Hook Center disponível',
     notes: raw.notes || raw.description || '',
     releaseNotes: raw.releaseNotes || raw.notes || raw.description || '',
     tutorialUrl: ensureAbsoluteUrl(raw.tutorialUrl || raw.learnUrl || raw.videoUrl || ''),
     downloadUrl,
+    installerSha256: String(
+      raw.installerSha256 || raw.sha256 ||
+      (platformKey === 'windows' ? raw.windowsSha256 : raw.macosSha256) || ''
+    ).trim().toLowerCase(),
     windowsUrl: ensureAbsoluteUrl(raw.windowsUrl),
     macosUrl: ensureAbsoluteUrl(raw.macosUrl),
     macosLegacyUrl: ensureAbsoluteUrl(raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url),
     publishedAt: raw.publishedAt || null
   };
+}
+
+function getHookCenterArtifactIdentity(update) {
+  const normalized = normalizeHookCenterUpdate(update) || update || {};
+  const descriptor = {
+    schema: 2,
+    product: 'hook-center',
+    platform: String(normalized.platformKey || getHookCenterPlatformKey()),
+    updateId: String(normalized.updateId || ''),
+    version: String(normalized.version || ''),
+    revision: String(normalized.artifactRevision || normalized.publishedAt || ''),
+    url: normalizeArtifactUrl(normalized.downloadUrl || ''),
+    expectedSha256: String(normalized.installerSha256 || '').trim().toLowerCase()
+  };
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(descriptor), 'utf8')
+    .digest('hex');
 }
 
 async function checkHookCenterUpdates(manual = false) {
@@ -1399,24 +1430,52 @@ async function downloadHookCenterUpdateInstaller() {
   const checked = await checkHookCenterUpdates(true);
   const update = checked.update || store.get('hookCenterLatest');
   if (!update?.downloadUrl) throw new Error('Atualização do Hook Center indisponível para este sistema.');
-  if (!update.version || compareVersions(update.version, app.getVersion()) <= 0) {
-    throw new Error('O Hook Center já está atualizado.');
+  if (!update.version) {
+    throw new Error('A atualização da Hook Center não informou uma versão válida.');
   }
+  // Um download novo invalida imediatamente o ponteiro anterior. Se a rede
+  // falhar, o botão Instalar não pode cair silenciosamente no DMG/EXE velho.
+  store.set('downloadedHookCenterUpdate', null);
 
   const ext = process.platform === 'darwin' ? '.dmg' : '.exe';
+  const artifactIdentity = getHookCenterArtifactIdentity(update);
+  const artifactSuffix = artifactIdentity.slice(0, 12);
   const baseName = process.platform === 'darwin'
-    ? (getHookCenterPlatformKey() === 'macos-legacy' ? `Hook-Center-Legacy-${update.version}-macOS10${ext}` : `Hook-Center-${update.version}-macOS${ext}`)
-    : `Hook-Center-${update.version}-Windows${ext}`;
+    ? (getHookCenterPlatformKey() === 'macos-legacy' ? `Hook-Center-Legacy-${update.version}-${artifactSuffix}-macOS10${ext}` : `Hook-Center-${update.version}-${artifactSuffix}-macOS${ext}`)
+    : `Hook-Center-${update.version}-${artifactSuffix}-Windows${ext}`;
   const dest = path.join(app.getPath('downloads'), baseName);
-  await downloadFile(update.downloadUrl, dest, (progress) => {
-    if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
-  });
+  const partial = `${dest}.part-${process.pid}-${Date.now()}`;
+  await fs.promises.rm(partial, { force: true }).catch(() => {});
+  try {
+    await downloadFile(update.downloadUrl, partial, (progress) => {
+      if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
+    }, { cacheBust: true, timeoutMs: 120000 });
+    validateUpdateInstallerFile(partial);
+    const integrity = getFileIntegrity(partial);
+    const expectedHash = String(update.installerSha256 || '').trim().toLowerCase();
+    if (expectedHash && integrity.sha256 !== expectedHash) {
+      throw new Error('O instalador baixado não corresponde ao hash publicado.');
+    }
+    await fs.promises.rm(dest, { force: true }).catch(() => {});
+    await fs.promises.rename(partial, dest);
+    fileIntegrityCache.delete(path.resolve(dest));
+  } catch (error) {
+    await fs.promises.rm(partial, { force: true }).catch(() => {});
+    throw error;
+  }
+
+  const integrity = getFileIntegrity(dest);
 
   const downloaded = {
     version: update.version,
     updateId: update.updateId || update.version,
     path: dest,
     platform: process.platform,
+    platformKey: getHookCenterPlatformKey(),
+    sourceUrl: update.downloadUrl,
+    artifactIdentity,
+    sha256: integrity.sha256,
+    size: integrity.size,
     downloadedAt: new Date().toISOString()
   };
   store.set('downloadedHookCenterUpdate', downloaded);
@@ -1502,6 +1561,15 @@ async function installDownloadedHookCenterUpdate() {
   if (!dest || !fs.existsSync(dest)) {
     throw new Error('O instalador da atualização do Hook Center não foi encontrado. Baixe novamente.');
   }
+  if (downloaded.platform && downloaded.platform !== process.platform) {
+    throw new Error('O instalador baixado pertence a outro sistema operacional. Baixe novamente.');
+  }
+  validateUpdateInstallerFile(dest);
+  const integrity = getFileIntegrity(dest);
+  const expectedHash = String(downloaded.sha256 || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(expectedHash) || integrity.sha256 !== expectedHash) {
+    throw new Error('O instalador local mudou ou não possui hash válido. Baixe novamente.');
+  }
 
   if (process.platform === 'win32') {
     launchWindowsUpdateInstaller(dest);
@@ -1511,7 +1579,8 @@ async function installDownloadedHookCenterUpdate() {
 
   const openError = await shell.openPath(dest);
   if (openError) throw new Error(openError);
-  shell.showItemInFolder(dest);
+  // O DMG já foi entregue ao LaunchServices. Esconda/encerre a instância
+  // antiga imediatamente; não abra Finder nem aguarde outra interação.
   quitAfterMacDmgIsOpened();
   return { ok: true, action: 'dmg-opened' };
 }
@@ -2098,7 +2167,16 @@ function buildBridgeServers(config) {
         createMobileSession: () => createChatMobileSession()
       },
       chatBootstrapSecret: getChatMobileBootstrapSecret(),
-      timecodeLanApi: timecodeLanRelay,
+      timecodeLanApi: {
+        handleHttp: async (req, res, parsedUrl) => {
+          if (timecodeLanRelay &&
+              await timecodeLanRelay.handleHttp(req, res, parsedUrl)) {
+            return true;
+          }
+          return !!parallelTimecodeLanRelay &&
+            parallelTimecodeLanRelay.handleHttp(req, res, parsedUrl);
+        },
+      },
       isLicenseActive: isVsHookLicenseActiveForBridge,
       fallbackState: getBridgeFallbackState({
         selectedPlaylistSongIds: [],
@@ -2137,12 +2215,18 @@ function buildBridgeServers(config) {
 async function stopBridgeServers() {
   const running = [...bridgeServers];
   const runningTimecodeRelay = timecodeLanRelay;
+  const runningParallelTimecodeRelay = parallelTimecodeLanRelay;
   bridgeServers = [];
   bridgeInfos = [];
   timecodeLanRelay = null;
+  parallelTimecodeLanRelay = null;
+  timecodeRelayPeerAddresses.main = '';
+  timecodeRelayPeerAddresses.parallel = '';
   await Promise.allSettled([
     ...running.map((server) => server.stop()),
     ...(runningTimecodeRelay ? [runningTimecodeRelay.stop()] : []),
+    ...(runningParallelTimecodeRelay
+      ? [runningParallelTimecodeRelay.stop()] : []),
   ]);
 }
 
@@ -2150,6 +2234,23 @@ async function restartBridgeServersNow() {
   await stopBridgeServers();
   bridgeConfig = readBridgeConfig();
   fs.mkdirSync(resolveBridgeScriptsDir(bridgeConfig), { recursive: true });
+  const relayCanUsePeerAddress = (channel, address) => {
+    const normalized = String(address || '').replace(/^::ffff:/, '').trim();
+    if (!normalized) return false;
+    const other = channel === 'parallel' ? 'main' : 'parallel';
+    return !timecodeRelayPeerAddresses[other] ||
+      timecodeRelayPeerAddresses[other] !== normalized;
+  };
+  const relayPeerConnectionChanged = (channel, address, connected) => {
+    if (channel !== 'main' && channel !== 'parallel') return;
+    const normalized = String(address || '').replace(/^::ffff:/, '').trim();
+    if (connected) {
+      timecodeRelayPeerAddresses[channel] = normalized;
+    } else if (!normalized ||
+        timecodeRelayPeerAddresses[channel] === normalized) {
+      timecodeRelayPeerAddresses[channel] = '';
+    }
+  };
   timecodeLanRelay = createTimecodeLanRelay({
     nativeBridgePort: 47830,
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
@@ -2160,6 +2261,22 @@ async function restartBridgeServersNow() {
     getProjectSyncStagingDir: () => path.join(
       app.getPath('userData'), 'project-sync-staging'),
     isLicenseActive: isVsHookLicenseActiveForBridge,
+    canUsePeerAddress: relayCanUsePeerAddress,
+    onPeerConnectionChanged: relayPeerConnectionChanged,
+  });
+  parallelTimecodeLanRelay = createTimecodeLanRelay({
+    channel: 'parallel',
+    nativeBridgePort: 47830,
+    discoveryPort: 47834,
+    discoveryTargetPort: 47833,
+    getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
+    getDeviceName: getStoredDeviceName,
+    getDirectCableIp: () => String(store.get('directCable.ip') || ''),
+    getProjectSyncStagingDir: () => path.join(
+      app.getPath('userData'), 'project-sync-staging'),
+    isLicenseActive: isVsHookLicenseActiveForBridge,
+    canUsePeerAddress: relayCanUsePeerAddress,
+    onPeerConnectionChanged: relayPeerConnectionChanged,
   });
   const nextServers = buildBridgeServers(bridgeConfig);
   const nextInfos = [];
@@ -2170,6 +2287,7 @@ async function restartBridgeServersNow() {
       nextInfos.push(info);
     }
     await timecodeLanRelay.start();
+    await parallelTimecodeLanRelay.start();
     bridgeServers = nextServers;
     bridgeInfos = nextInfos;
     bridgeLastError = '';
@@ -2184,6 +2302,10 @@ async function restartBridgeServersNow() {
     if (timecodeLanRelay) {
       try { await timecodeLanRelay.stop(); } catch (_) {}
       timecodeLanRelay = null;
+    }
+    if (parallelTimecodeLanRelay) {
+      try { await parallelTimecodeLanRelay.stop(); } catch (_) {}
+      parallelTimecodeLanRelay = null;
     }
     bridgeServers = [];
     bridgeInfos = [];
@@ -3772,11 +3894,50 @@ function getUpdatePackageIdentity(update) {
   return String(getPlatformUpdateId(normalized) || normalized.updateId || normalized.version || '').trim();
 }
 
+function normalizeArtifactUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = '';
+    return parsed.href;
+  } catch (_) {
+    return raw;
+  }
+}
+
+function getUpdateArtifactIdentity(update) {
+  const normalized = normalizeUpdate(update) || update || {};
+  const entries = buildUpdatePackageEntries(normalized)
+    .map((entry) => ({
+      key: String(entry.key || ''),
+      url: normalizeArtifactUrl(entry.url)
+    }))
+    .filter((entry) => entry.key && entry.url)
+    .sort((a, b) => a.key.localeCompare(b.key));
+  const descriptor = {
+    schema: 2,
+    product: String(normalized.product || 'vs-hook'),
+    platform: getPlatformKey(),
+    source: String(normalized.source || ''),
+    testClient: Boolean(normalized.testClient || normalized.isTestClient),
+    targetMachineId: String(normalized.targetMachineId || ''),
+    updateId: String(getPlatformUpdateId(normalized) || normalized.updateId || ''),
+    version: String(normalized.version || ''),
+    revision: String(normalized.artifactRevision || normalized.revision || normalized.publishedAt || ''),
+    entries
+  };
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(descriptor), 'utf8')
+    .digest('hex');
+}
+
 function getUpdateCacheKey(update) {
   const normalized = normalizeUpdate(update) || update || {};
   const version = safeUpdateCacheSegment(normalized.version || 'sem-versao');
-  const identity = getUpdatePackageIdentity(normalized) || JSON.stringify(getPlatformFiles(normalized));
-  const suffix = crypto.createHash('sha256').update(String(identity)).digest('hex').slice(0, 12);
+  // O sufixo inclui URL do instalador/extensao, updateId e revisao. Duas
+  // publicacoes 1.0.1 diferentes nunca mais caem na mesma pasta por engano.
+  const suffix = getUpdateArtifactIdentity(normalized).slice(0, 16);
   return `${version}-${suffix}`;
 }
 
@@ -3790,7 +3951,11 @@ function readCachedManifestFile(manifestPath) {
     if (!parsed || parsed.platform !== getPlatformKey() || !parsed.cacheKey) return null;
     const cacheDir = path.dirname(manifestPath);
     const files = parsed.files || {};
-    const allFilesExist = Object.values(files).every((entry) => {
+    if (files.installer &&
+        (Number(parsed.schemaVersion) < 2 || !/^[a-f0-9]{64}$/.test(String(parsed.artifactIdentity || '')))) {
+      return null;
+    }
+    const allFilesExist = Object.entries(files).every(([key, entry]) => {
       const filename = String(entry?.filename || '');
       if (!filename || path.basename(filename) !== filename) return false;
       const localPath = path.join(cacheDir, filename);
@@ -3802,6 +3967,12 @@ function readCachedManifestFile(manifestPath) {
         return false;
       }
       const expectedHash = String(entry?.sha256 || '').trim().toLowerCase();
+      // Manifests antigos nao registravam o hash do DMG/EXE. Eles nao podem
+      // ser usados para instalar a Central, pois um arquivo diferente podia
+      // conservar versao, nome e URL.
+      if (key === 'installer' && !/^[a-f0-9]{64}$/.test(expectedHash)) {
+        return false;
+      }
       if (expectedHash &&
           getFileIntegrity(localPath).sha256 !== expectedHash) {
         return false;
@@ -3844,13 +4015,26 @@ function cachedManifestToUpdate(manifest) {
 function findCachedUpdateManifest(update) {
   if (!update) return null;
   const normalized = normalizeUpdate(update) || update;
+  const artifactIdentity = getUpdateArtifactIdentity(normalized);
   const identity = getUpdatePackageIdentity(normalized);
   const version = String(normalized.version || '').trim();
   const manifests = listCachedUpdateManifests();
   return manifests.find((manifest) => {
+    if (artifactIdentity && manifest.artifactIdentity) {
+      return artifactIdentity === manifest.artifactIdentity;
+    }
+    // Compatibilidade apenas para pacotes sem instalador. Um pacote completo
+    // legado sem identidade de artefato/hash deve ser baixado de novo.
+    if (manifest.files?.installer) return false;
     if (identity && manifest.identity && identity === manifest.identity) return true;
     return !identity && version && version === String(manifest.version || '').trim();
   }) || null;
+}
+
+function findCachedUpdateManifestByKey(cacheKey) {
+  const requested = String(cacheKey || '').trim();
+  if (!requested || safeUpdateCacheSegment(requested, '') !== requested) return null;
+  return readCachedManifestFile(getCachedManifestPath(requested));
 }
 
 function decorateUpdatesWithCache(updates) {
@@ -3948,6 +4132,11 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
   if (!hasExtension) throw new Error('A extensão desta versão não está disponível para este sistema.');
   if (requireInstaller && !hasInstaller) throw new Error('O instalador da Hook Center não está disponível para esta versão.');
 
+  // O registro selecionado pelo botão Instalar só volta a existir depois que
+  // todos os arquivos e hashes forem validados e o manifesto for gravado.
+  store.set('downloadedFiles', null);
+  if (hasInstaller) store.set('downloadedHookCenterUpdate', null);
+
   const cacheKey = getUpdateCacheKey(normalized);
   const cacheRoot = getOfflineUpdateCacheRoot();
   const cacheDir = path.join(cacheRoot, cacheKey);
@@ -4006,6 +4195,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
           }
           await fs.promises.rm(dest, { force: true }).catch(() => {});
           await fs.promises.rename(partial, dest);
+          fileIntegrityCache.delete(path.resolve(dest));
         } catch (error) {
           await fs.promises.rm(partial, { force: true }).catch(() => {});
           throw error;
@@ -4014,9 +4204,9 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
         mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
       }
       output[entry.key] = finalDest;
-      const integrity = isExtensionEntry
-        ? getFileIntegrity(dest)
-        : { size: fs.statSync(dest).size, sha256: '' };
+      // O instalador tambem recebe hash. Validar somente extensao deixava um
+      // DMG/EXE antigo passar quando a versao e a URL eram reutilizadas.
+      const integrity = getFileIntegrity(dest);
       manifestFiles[entry.key] = {
         url: entry.url,
         filename: entry.filename,
@@ -4026,9 +4216,10 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
     }
 
     manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       cacheKey,
       identity: getUpdatePackageIdentity(normalized),
+      artifactIdentity: getUpdateArtifactIdentity(normalized),
       platform: getPlatformKey(),
       version: normalized.version || '',
       updateId: normalized.updateId || '',
@@ -4079,6 +4270,10 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
     globalUpdateId: normalized.updateId,
     version: normalized.version,
     platform: getPlatformKey(),
+    cacheKey,
+    artifactIdentity: manifest.artifactIdentity,
+    update: normalized,
+    completePackage: Boolean(output.installer),
     files: extensionFiles,
     manifest: {
       platform: getPlatformKey(),
@@ -4093,6 +4288,9 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
       updateId: normalized.updateId || normalized.version,
       path: output.installer,
       platform: process.platform,
+      sourceUrl: manifest.files?.installer?.url || '',
+      sha256: manifest.files?.installer?.sha256 || '',
+      artifactIdentity: manifest.artifactIdentity,
       downloadedAt: manifest.cachedAt,
       cacheKey
     });
@@ -4141,13 +4339,24 @@ function markUpdatePackageInstalled(update, manifest) {
 }
 
 async function installCachedUpdatePackage(updateOverride = null, options = {}) {
-  const update = normalizeUpdate(updateOverride) || getCurrentUpdatePackage();
-  if (!update) throw new Error('Atualização não encontrada.');
   const requestedSource = String(options.source || 'auto').trim().toLowerCase();
   const source = ['auto', 'internet', 'computer'].includes(requestedSource)
     ? requestedSource
     : 'auto';
-  let manifest = findCachedUpdateManifest(update);
+  const requestedCacheKey = String(options.cacheKey || '').trim();
+  let manifest = requestedCacheKey
+    ? findCachedUpdateManifestByKey(requestedCacheKey)
+    : null;
+  // Havendo cacheKey, o manifesto baixado e soberano. Um estado remoto novo
+  // nunca pode trocar os metadados/arquivos durante o clique Instalar.
+  let update = normalizeUpdate(manifest?.update) ||
+    normalizeUpdate(updateOverride) ||
+    getCurrentUpdatePackage();
+  if (!update) throw new Error('Atualização não encontrada.');
+  if (requestedCacheKey && !manifest && source !== 'internet') {
+    throw new Error('O pacote que foi baixado não está mais íntegro. Baixe novamente.');
+  }
+  if (!manifest) manifest = findCachedUpdateManifest(update);
 
   if (source === 'internet') {
     // A escolha pela internet sempre renova o pacote inteiro. A troca do cache
@@ -4163,7 +4372,7 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     if (!manifest) {
       throw new Error('Os arquivos completos desta versão não estão salvos neste computador. Escolha baixar da internet.');
     }
-  } else {
+  } else if (!requestedCacheKey) {
     const cachedAtMs = Date.parse(String(manifest?.cachedAt || ''));
     const cacheWasJustDownloaded = Number.isFinite(cachedAtMs) &&
       Date.now() - cachedAtMs <= 2 * 60 * 1000;
@@ -4190,6 +4399,12 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     throw new Error('O instalador local da Hook Center não foi encontrado.');
   }
   validateUpdateInstallerFile(cachedFiles.installer);
+  const installerExpectedHash = String(manifest.files?.installer?.sha256 || '').trim().toLowerCase();
+  const installerIntegrity = getFileIntegrity(cachedFiles.installer);
+  if (!/^[a-f0-9]{64}$/.test(installerExpectedHash) ||
+      installerIntegrity.sha256 !== installerExpectedHash) {
+    throw new Error('O instalador local da Hook Center não corresponde ao pacote baixado. Baixe novamente.');
+  }
   const extensionKey = process.platform === 'win32'
     ? 'vshookDll'
     : process.platform === 'darwin'
@@ -4212,6 +4427,7 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     update,
     manifest: {
       cacheKey: manifest.cacheKey || '',
+      artifactIdentity: manifest.artifactIdentity || '',
       platform: manifest.platform || getPlatformKey(),
       files: manifest.files || {}
     },
@@ -4913,6 +5129,15 @@ async function completePendingPostCenterUpdateInstall() {
 
 async function installDownloadedUpdate() {
   const downloaded = store.get('downloadedFiles');
+  // Quando o download trouxe extensao + Hook Center, a referencia duravel do
+  // Store e a fonte da instalacao. Nao consulte novamente `testClientUpdate`:
+  // ela pode mudar/desaparecer entre os cliques Baixar e Instalar.
+  if (downloaded?.completePackage && downloaded?.cacheKey) {
+    return installCachedUpdatePackage(downloaded.update || null, {
+      source: 'computer',
+      cacheKey: downloaded.cacheKey
+    });
+  }
   const files = downloaded?.files || {};
 
   if (process.platform === 'win32') {
@@ -5354,7 +5579,11 @@ ipcMain.handle('install-cached-update-package', (_event, payload) => {
   const source = ['internet', 'computer'].includes(requestedSource)
     ? requestedSource
     : 'auto';
-  return installCachedUpdatePackage(payload?.update || null, { source });
+  const downloaded = store.get('downloadedFiles') || {};
+  const cacheKey = String(
+    payload?.cacheKey || (!payload?.update ? downloaded.cacheKey : '') || ''
+  ).trim();
+  return installCachedUpdatePackage(payload?.update || null, { source, cacheKey });
 });
 ipcMain.handle('get-lyrics-settings', (_event, slot) =>
   slot ? getLyricsSettings(slot) : getLyricsAllSettings());

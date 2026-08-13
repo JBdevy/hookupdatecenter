@@ -1533,7 +1533,8 @@ function createBridgeServer(options) {
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || `127.0.0.1:${port}`}`)
 
-    if (parsedUrl.pathname.startsWith('/timecode-link/')) {
+    if (parsedUrl.pathname.startsWith('/timecode-link/') ||
+        parsedUrl.pathname.startsWith('/timecode-parallel-link/')) {
       if (!isBridgeLicenseActive()) {
         sendJson(res, 403, { ok: false, error: 'Ative a licença na Hook Center para usar o Timecode LAN.' })
         return

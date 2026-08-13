@@ -9,7 +9,6 @@ let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
 let combinedDownloadInProgress = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
-let downloadedDirectedTestUpdate = null;
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
 let recadosHubSelectedSlot = 'global';
@@ -602,7 +601,6 @@ function updateVsHookProgress(progress) {
 
 async function startVsHookDownload(updateOverride = null) {
   try {
-    downloadedDirectedTestUpdate = null;
     if (!(await ensureLicenseActiveForDownload())) return;
     if (!(await showDownloadDescriptionNotice(updateOverride))) return;
     if (!(await ensureDeviceName())) return;
@@ -626,13 +624,10 @@ async function startVsHookDownload(updateOverride = null) {
       // mesmo fluxo seguro da atualização oficial.
       await window.hookUpdateCenter.cacheUpdatePackage({ update: updateOverride });
       // Conserva exatamente a publicação direcionada que acabou de ser
-      // guardada. O estado online pode mudar entre Baixar e Instalar; isso não
-      // pode transformar um pacote completo já baixado em instalação somente
-      // da DLL/dylib, deixando a Hook Center antiga aberta.
-      downloadedDirectedTestUpdate = updateOverride;
+      // guardada. A referência durável fica no processo principal/Store; o
+      // botão Instalar não depende mais do estado online desta tela.
     } else {
       await window.hookUpdateCenter.downloadUpdate(updateOverride ? { update: updateOverride } : undefined);
-      downloadedDirectedTestUpdate = null;
     }
   } catch (error) {
     showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar a atualização.'), type: 'error' });
@@ -783,19 +778,10 @@ async function installVsHookDownloadedUpdate() {
   if (!confirmed) return;
 
   try {
-    const liveTestUpdate = isTestClientUpdate(state?.testClientUpdate)
-      ? state.testClientUpdate
-      : null;
-    const testUpdate = isTestClientUpdate(downloadedDirectedTestUpdate)
-      ? downloadedDirectedTestUpdate
-      : liveTestUpdate;
-    const directedInstaller = getInstallerUrlForUpdate(testUpdate);
-    const result = testUpdate && directedInstaller
-      ? await window.hookUpdateCenter.installCachedUpdatePackage({
-          update: testUpdate,
-          source: 'computer'
-        })
-      : await window.hookUpdateCenter.installUpdate();
+    // O processo principal instala o registro exato salvo no download. Isso
+    // continua correto mesmo que a atualização de teste suma ou seja trocada
+    // no backend enquanto este modal está aberto.
+    const result = await window.hookUpdateCenter.installUpdate();
     if (result.ok && !String(result.action || '').startsWith('center-first-')) {
       renderState(await window.hookUpdateCenter.getState());
       setProgressVisible(false);
