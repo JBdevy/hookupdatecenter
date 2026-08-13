@@ -83,6 +83,7 @@ let mainWindow = null;
 let tray = null;
 let appIsQuitting = false;
 let quitCleanupStarted = false;
+let updateInstallerQuitWatchdog = null;
 let checkTimer = null;
 let updateReminderTimer = null;
 let bridgeServers = [];
@@ -232,6 +233,7 @@ function rebuildTrayMenu() {
 }
 
 function showMainWindow() {
+  if (appIsQuitting) return;
   if (!app.isReady()) {
     app.whenReady().then(showMainWindow).catch(() => {});
     return;
@@ -1462,7 +1464,36 @@ function quitAfterMacDmgIsOpened() {
   appIsQuitting = true;
   if (isValidWindow(mainWindow)) mainWindow.hide();
   prepareForAppQuit();
-  setImmediate(() => app.quit());
+  // Fecha também o ícone da barra e todas as janelas auxiliares já no próximo
+  // ciclo. A resposta do IPC atual ainda consegue ser concluída, mas não fica
+  // nenhuma janela antiga visível enquanto o usuário instala o DMG novo.
+  setImmediate(() => {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win && !win.isDestroyed()) win.destroy();
+      }
+    } catch (_) {}
+    try {
+      if (tray) tray.destroy();
+    } catch (_) {}
+    tray = null;
+    app.quit();
+  });
+
+  // Em algumas versões antigas do macOS/Electron, app.quit() pode ficar
+  // aguardando o loop nativo mesmo depois de todas as janelas terem fechado.
+  // O watchdog encerra somente essa instância antiga; o DMG já foi entregue ao
+  // LaunchServices e o estado pendente da instalação já foi salvo no Store.
+  if (updateInstallerQuitWatchdog) {
+    clearTimeout(updateInstallerQuitWatchdog);
+  }
+  updateInstallerQuitWatchdog = setTimeout(() => {
+    try {
+      app.exit(0);
+    } catch (_) {
+      process.exit(0);
+    }
+  }, 750);
 }
 
 async function installDownloadedHookCenterUpdate() {
@@ -3945,11 +3976,16 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
       const previousEntry = previousManifest?.files?.[entry.key];
       const isExtensionEntry =
         entry.key === 'vshookDll' || entry.key === 'vshookDylib';
-      // A DLL/dylib pode ser substituída no servidor mantendo a mesma URL.
-      // Reaproveitar por URL instalava indefinidamente o binário anterior.
+      const isCenterInstallerEntry = entry.key === 'installer';
+      const mustRefreshBinaryEntry =
+        isExtensionEntry || isCenterInstallerEntry;
+      // A DLL/dylib e o instalador da Central podem ser substituidos no
+      // servidor mantendo versao, nome e URL (principalmente nas builds de
+      // teste 1.0.1). Reaproveitar por URL instalava indefinidamente o binario
+      // ou o DMG anterior e mantinha o protocolo antigo do Project Sync.
       const canReuse =
         !forceRedownload &&
-        !isExtensionEntry &&
+        !mustRefreshBinaryEntry &&
         previousEntry?.url === entry.url &&
         fs.existsSync(dest);
       if (!canReuse) {
@@ -3960,7 +3996,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
             const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
             if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
           }, {
-            cacheBust: forceRedownload || isExtensionEntry,
+            cacheBust: forceRedownload || mustRefreshBinaryEntry,
             timeoutMs: isExtensionEntry ? 30000 : 120000
           });
           if (isExtensionEntry) {

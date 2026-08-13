@@ -58,6 +58,15 @@ jobs:
       - name: Build Windows
         run: npm run build:win
 
+      - name: Validate Hook Center protocol payload
+        shell: pwsh
+        run: |
+          $asarPath = 'dist/win-unpacked/resources/app.asar'
+          if (-not (Test-Path -LiteralPath $asarPath -PathType Leaf)) {
+            throw 'Pacote final da Hook Center sem resources/app.asar.'
+          }
+          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); if (!lan.includes('/timecode-link/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador');" $asarPath
+
       - name: Validate Windows installer payload
         shell: pwsh
         run: |
@@ -156,6 +165,14 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run build:mac
+
+      - name: Validate Hook Center protocol payload
+        run: |
+          APP="$(find dist -type d -name 'Hook Center.app' -print -quit)"
+          test -n "$APP" || (echo "Hook Center.app nao encontrado." && exit 1)
+          ASAR="$APP/Contents/Resources/app.asar"
+          test -f "$ASAR" || (echo "Pacote final da Hook Center sem resources/app.asar." && exit 1)
+          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); if (!lan.includes('/timecode-link/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador');" "$ASAR"
 
       - name: Validate macOS theme payload
         run: |
