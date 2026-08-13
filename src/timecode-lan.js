@@ -8,6 +8,7 @@ const pathUtil = require('path')
 const DISCOVERY_PORT = 47833
 const DISCOVER_MAGIC = 'VSHOOK_TIMECODE_DISCOVER_V1'
 const OFFER_MAGIC = 'VSHOOK_TIMECODE_OFFER_V1'
+const PROJECT_SYNC_PROTOCOL_VERSION = 2
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 const LOCAL_STATUS_INTERVAL_MS = 18
 const TRANSMIT_INTERVAL_MS = 20
@@ -517,6 +518,7 @@ function createTimecodeLanRelay(options = {}) {
   let relayLifecycleSequence = 0
   let lastProjectSyncStagingCleanupAt = 0
   let projectSyncStagingCleanupPromise = null
+  const projectSyncProtocolNotices = new Set()
   function projectSyncRole(status) {
     const role = String(status?.projectSyncRole || '').trim().toLowerCase()
     return role === 'primary' || role === 'secondary' ? role : ''
@@ -570,6 +572,89 @@ function createTimecodeLanRelay(options = {}) {
           : 'O projeto do PC B mudou. Faça o preflight novamente.',
       }],
     }
+  }
+
+  function projectSyncProtocolMismatchDiff(detail = '') {
+    const suffix = String(detail || '').trim()
+    return {
+      schemaVersion: 1,
+      ready: false,
+      configApplied: false,
+      differenceCount: 1,
+      structuralDifferenceCount: 1,
+      configDifferenceCount: 0,
+      truncated: false,
+      summary: { project: 1 },
+      message: 'A Hook Center do outro computador esta desatualizada. ' +
+        'Atualize e reinicie a Hook Center nos dois PCs.' +
+        (suffix ? ` ${suffix}` : ''),
+      differences: [{
+        category: 'project',
+        severity: 'blocking',
+        kind: 'incompatible_hook_center_protocol',
+        id: 'hook_center_protocol',
+        primary: `Project Sync v${PROJECT_SYNC_PROTOCOL_VERSION}`,
+        secondary: 'Protocolo antigo ou incompleto',
+      }],
+    }
+  }
+
+  async function notifyProjectSyncProtocolMismatch(status, address, detail = '') {
+    if (status?.mode !== 'project_sync' ||
+        projectSyncRole(status) !== 'primary') return
+    const key = [
+      String(status.sessionId || ''),
+      projectSyncStructuralRevision(status),
+      normalizePeerAddress(address),
+    ].join('|')
+    if (projectSyncProtocolNotices.has(key)) return
+    projectSyncProtocolNotices.add(key)
+    const requestId = projectSyncPairRequestId(status) ||
+      newPreflightRequestId()
+    await sendLocalCommand({
+      type: 'project_sync_preflight',
+      role: 'primary',
+      requestId,
+      ready: false,
+      diff: projectSyncProtocolMismatchDiff(detail),
+    })
+  }
+
+  function isRecognizableLegacyRelayResponse(result) {
+    const error = String(result?.data?.error || '').toLowerCase()
+    return result?.status === 413 ||
+      error.includes('timecode lan') ||
+      error.includes('pacote de sincroniza') ||
+      error.includes('pareamento')
+  }
+
+  async function projectSyncCapabilities(
+    status, address, port, reportMismatch = false) {
+    let result = null
+    try {
+      result = await requestJson({
+        hostname: address,
+        port,
+        path: '/timecode-link/capabilities',
+        method: 'POST',
+        payload: {
+          mode: 'project_sync',
+          protocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+        },
+        timeoutMs: 500,
+      })
+    } catch (_) {
+      return false
+    }
+    const compatible = result.ok && result.data?.ok === true &&
+      Number(result.data.projectSyncProtocolVersion) ===
+        PROJECT_SYNC_PROTOCOL_VERSION &&
+      result.data.projectSyncPreflight === true
+    if (!compatible && reportMismatch &&
+        isRecognizableLegacyRelayResponse(result)) {
+      await notifyProjectSyncProtocolMismatch(status, address)
+    }
+    return compatible
   }
 
   function wait(delayMs) {
@@ -657,14 +742,20 @@ function createTimecodeLanRelay(options = {}) {
     const healthy = transportAudioHealthy(status, transport)
     const snapshot = transportSnapshot(transport)
     if (!snapshot) return null
+    const observedControlSequence = Number.isFinite(
+      peer.lastObservedControlSequence)
+      ? peer.lastObservedControlSequence
+      : snapshot.controlSequence
+    const explicitControl =
+      snapshot.controlSequence > observedControlSequence
+    peer.lastObservedControlSequence = Math.max(
+      observedControlSequence, snapshot.controlSequence)
     if (!healthy) {
       const previous = peer.lastHealthyTransport
       // Contrato com a extensão: controlSequence sobe no hook da ação local,
       // antes que um Stop possa fechar a placa. Assim um Stop intencional ainda
       // atravessa uma única vez; queda física sem gesto mantém a revisão e é
       // bloqueada para o PC B/SW8.
-      const explicitControl = !!previous &&
-        snapshot.controlSequence > previous.controlSequence
       peer.audioHealthy = false
       if (!explicitControl) return null
       peer.lastHealthyTransport = snapshot
@@ -1755,7 +1846,9 @@ function createTimecodeLanRelay(options = {}) {
   function broadcastDiscovery(status) {
     const payload = {
       magic: DISCOVER_MAGIC,
-      version: 1,
+      version: status?.mode === 'project_sync'
+        ? PROJECT_SYNC_PROTOCOL_VERSION
+        : 1,
       code: String(status.code || ''),
       transmitterId: instanceId,
       transmitterName: deviceName(),
@@ -1821,6 +1914,16 @@ function createTimecodeLanRelay(options = {}) {
         normalizePeerAddress(address) !==
           normalizePeerAddress(projectSyncApplyPeer.address)) return false
     try {
+      // Verifica o contrato antes de enviar o manifesto. Uma Hook Center antiga
+      // aceitava /pair e se marcava como conectada, mas nao possuia preflight;
+      // isso criava uma conexao unilateral falsa no PC B.
+      if (status.mode === 'project_sync' &&
+          !await projectSyncCapabilities(
+            status, address, remotePort,
+            !!String(receiver.id || '').trim() ||
+              (!!preferredCablePrefix() && peerAddressAllowed(address)))) {
+        return false
+      }
       const localEventBaseline = Math.max(0,
         safeSequence(status.eventSequence))
       const localSessionId = String(status.sessionId || '').trim()
@@ -1841,6 +1944,9 @@ function createTimecodeLanRelay(options = {}) {
           transmitterName: deviceName(),
           transmitterPort: Number(getDirectorPort()) || 47831,
           mode: status.mode,
+          protocolVersion: status.mode === 'project_sync'
+            ? PROJECT_SYNC_PROTOCOL_VERSION
+            : 1,
           projectSyncRole: projectSyncRole(status),
           eventSequence: localEventBaseline,
           sessionId: localSessionId,
@@ -1863,10 +1969,19 @@ function createTimecodeLanRelay(options = {}) {
           status.mode === 'project_sync' ? 900 : 0,
           Number(receiver.timeoutMs) || 1000),
       })
-      if (!result.ok || !result.data?.ok || transmitterPeer?.connected || stopped) return false
+      if (!result.ok || !result.data?.ok || transmitterPeer?.connected || stopped) {
+        if (status.mode === 'project_sync' &&
+            isRecognizableLegacyRelayResponse(result)) {
+          await notifyProjectSyncProtocolMismatch(status, address)
+        }
+        return false
+      }
       if (status.mode === 'project_sync' &&
           !projectSyncRolesMatch(
-            projectSyncRole(status), result.data.projectSyncRole)) return false
+            projectSyncRole(status), result.data.projectSyncRole)) {
+        await notifyProjectSyncProtocolMismatch(status, address)
+        return false
+      }
       if (status.mode === 'project_sync' && result.data.pending === true) {
         const requestId = safePreflightRequestId(result.data.requestId)
         if (!requestId) return false
@@ -1996,6 +2111,8 @@ function createTimecodeLanRelay(options = {}) {
         lastPacketAt: 0,
         audioHealthy: true,
         lastHealthyTransport: null,
+        lastObservedControlSequence: safeSequence(
+          status?.transport?.controlSequence),
         resumeControlSequenceFloor: null,
         localSessionId,
         localManifestRevision: status.mode === 'project_sync'
@@ -2038,6 +2155,11 @@ function createTimecodeLanRelay(options = {}) {
     if (String(message.code || '') !== String(status.code)) return
     if (String(message.transmitterId || '') !== instanceId) return
     if (status.mode === 'project_sync' &&
+        Number(message.version) !== PROJECT_SYNC_PROTOCOL_VERSION) {
+      await notifyProjectSyncProtocolMismatch(status, rinfo.address)
+      return
+    }
+    if (status.mode === 'project_sync' &&
         !projectSyncRolesMatch(
           projectSyncRole(status), message.projectSyncRole)) return
     const remotePort = Math.max(1, Math.min(65535, Number(message.port) || 47831))
@@ -2073,11 +2195,15 @@ function createTimecodeLanRelay(options = {}) {
       if (!statusCanReceive(status) || !isPairCode(status.code)) return
       if (String(message.code || '') !== String(status.code)) return
       if (status.mode === 'project_sync' &&
+          Number(message.version) !== PROJECT_SYNC_PROTOCOL_VERSION) return
+      if (status.mode === 'project_sync' &&
           !projectSyncRolesMatch(
             message.projectSyncRole, projectSyncRole(status))) return
       sendUdp({
         magic: OFFER_MAGIC,
-        version: 1,
+        version: status.mode === 'project_sync'
+          ? PROJECT_SYNC_PROTOCOL_VERSION
+          : 1,
         code: status.code,
         transmitterId: String(message.transmitterId || ''),
         receiverId: instanceId,
@@ -2386,6 +2512,7 @@ function createTimecodeLanRelay(options = {}) {
   async function completePendingProjectSyncPreflight(status, pending, result) {
     const response = {
       ok: true,
+      projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
       completed: true,
       pending: false,
       requestId: pending.requestId,
@@ -2505,6 +2632,15 @@ function createTimecodeLanRelay(options = {}) {
       return
     }
     let status = await readLocalStatus(true)
+    if (String(payload.mode || '') === 'project_sync' &&
+        Number(payload.protocolVersion) !== PROJECT_SYNC_PROTOCOL_VERSION) {
+      sendJson(res, 426, {
+        ok: false,
+        error: 'Hook Center incompatível. Atualize a Hook Center nos dois PCs.',
+        projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+      })
+      return
+    }
     const code = String(payload.code || '').trim()
     if (!statusCanReceive(status) ||
         !isPairCode(status.code) || code !== String(status.code)) {
@@ -2645,6 +2781,7 @@ function createTimecodeLanRelay(options = {}) {
       } else {
         sendJson(res, 202, {
           ok: true,
+          projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
           completed: false,
           pending: true,
           requestId: pendingProjectSyncPreflight.requestId,
@@ -2758,6 +2895,7 @@ function createTimecodeLanRelay(options = {}) {
     }
     sendJson(res, 202, {
       ok: true,
+      projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
       completed: false,
       pending: true,
       requestId,
@@ -2920,7 +3058,17 @@ function tokenMatches(left, right) {
     const pathname = String(parsedUrl?.pathname || '')
     if (!pathname.startsWith('/timecode-link/')) return false
     try {
-      if (req.method === 'POST' && pathname === '/timecode-link/pair') {
+      if (req.method === 'POST' &&
+          pathname === '/timecode-link/capabilities') {
+        // Somente leitura: permite ao PC A rejeitar uma Central antiga antes
+        // que /pair altere qualquer estado no PC B.
+        sendJson(res, 200, {
+          ok: true,
+          projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+          projectSyncPreflight: true,
+          projectSyncDirection: 'primary_to_secondary',
+        })
+      } else if (req.method === 'POST' && pathname === '/timecode-link/pair') {
         await handlePair(req, res)
       } else if (req.method === 'POST' && pathname === '/timecode-link/preflight') {
         await handleProjectSyncPreflight(req, res)
@@ -2986,6 +3134,7 @@ function tokenMatches(left, right) {
     projectSyncApplySession = null
     projectSyncExportBundle = null
     lastProjectSyncApplyKey = ''
+    projectSyncProtocolNotices.clear()
     localStatus = null
     lastNotifiedPeer = ''
     directDiscoveryRunning = false

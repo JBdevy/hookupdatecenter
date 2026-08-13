@@ -1456,9 +1456,13 @@ function quitAfterWindowsInstallerIsQueued() {
 function quitAfterMacDmgIsOpened() {
   // O Electron usa instância única. Se a central antiga continuar aberta,
   // clicar na nova cópia instalada apenas reativa o processo antigo e dá a
-  // impressão de que o DMG não trouxe as mudanças.
+  // impressão de que o DMG não trouxe as mudanças. shell.openPath() só retorna
+  // depois que o LaunchServices aceitou abrir o DMG, portanto não precisamos
+  // manter o processo antigo vivo depois desse ponto.
   appIsQuitting = true;
-  setTimeout(() => app.quit(), 1200);
+  if (isValidWindow(mainWindow)) mainWindow.hide();
+  prepareForAppQuit();
+  setImmediate(() => app.quit());
 }
 
 async function installDownloadedHookCenterUpdate() {
