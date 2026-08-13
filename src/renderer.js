@@ -1476,8 +1476,8 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
     if (providerTitle) providerTitle.textContent = 'CoreMIDI — Driver IAC';
     if (badge) badge.textContent = 'Nativo do macOS';
     if (runtimeBadge) runtimeBadge.textContent = 'Sem instalação';
-    if (message) message.textContent = 'Abra o Estúdio MIDI, ative o Driver IAC e crie um barramento chamado Hook MIDI.';
-    if (startButton) startButton.textContent = 'Abrir configuração MIDI';
+    if (message) message.textContent = 'Abra o Estúdio MIDI (Command+2), ative o Driver IAC e crie um barramento chamado Hook MIDI.';
+    if (startButton) startButton.textContent = 'Abrir Estúdio MIDI';
   } else if (data.supported && data.consoleInstalled) {
     if (heroDescription) heroDescription.textContent = 'Crie portas MIDI virtuais para comunicar o VS Hook, o REAPER e outros programas no Windows 11.';
     if (platformLabel) platformLabel.textContent = 'Windows 11';

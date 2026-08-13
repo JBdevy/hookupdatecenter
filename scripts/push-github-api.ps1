@@ -101,11 +101,41 @@ $owner = $Matches[1]
 $repository = $Matches[2]
 $repositoryPath = "/repos/$owner/$repository"
 
-$credentialLines = @(
-  'protocol=https',
-  'host=github.com',
-  ''
-) | git credential fill
+function Get-GitHubCredentialLines {
+  param(
+    [Parameter(Mandatory = $true)][string]$Owner,
+    [Parameter(Mandatory = $true)][string]$Repository
+  )
+
+  # Windows PowerShell pode remover a linha vazia final de um pipeline nativo.
+  # O protocolo `git credential` exige essa linha para terminar a solicitacao;
+  # sem ela o Git 2.53 responde "credential missing protocol field". Envia o
+  # payload diretamente ao stdin para funcionar igual no CMD, PowerShell 5 e 7.
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = 'git'
+  $startInfo.WorkingDirectory = (Get-Location).Path
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardInput = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.Arguments = 'credential fill'
+  $process = [System.Diagnostics.Process]::Start($startInfo)
+  $payload = "protocol=https`nhost=github.com`npath=$Owner/$Repository.git`n`n"
+  $process.StandardInput.Write($payload)
+  $process.StandardInput.Close()
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+  $exitCode = $process.ExitCode
+  $process.Dispose()
+  if ($exitCode -ne 0) {
+    throw "O gerenciador de credenciais do Git falhou: $stderr"
+  }
+  return @($stdout -split "`r?`n")
+}
+
+$credentialLines = Get-GitHubCredentialLines `
+  -Owner $owner -Repository $repository
 $credential = @{}
 foreach ($line in $credentialLines) {
   $separator = $line.IndexOf('=')

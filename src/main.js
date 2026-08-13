@@ -1910,6 +1910,19 @@ function hookMidiSha256File(filePath) {
 
 async function installHookMidiComponents() {
   if (process.platform === 'darwin') {
+    const showMidiStudio = async () => {
+      // Audio MIDI Setup abre normalmente na pagina de dispositivos de audio.
+      // Command+2 troca para o Estudio MIDI, onde o Driver IAC e configurado.
+      // A automacao pode ser negada pela Privacidade do macOS; nesse caso o
+      // aplicativo continua aberto e a interface mostra o mesmo atalho.
+      try {
+        await runProcess('/usr/bin/osascript', [
+          '-e', 'delay 0.4',
+          '-e', 'tell application "Audio MIDI Setup" to activate',
+          '-e', 'tell application "System Events" to keystroke "2" using command down'
+        ], { timeout: 5000 });
+      } catch (_) {}
+    };
     const candidates = [
       '/System/Applications/Utilities/Audio MIDI Setup.app',
       '/Applications/Utilities/Audio MIDI Setup.app'
@@ -1918,14 +1931,18 @@ async function installHookMidiComponents() {
       try {
         if (!physicalFs.statSync(candidate).isDirectory()) continue;
         const error = await shell.openPath(candidate);
-        if (!error) return { ok: true, nativeSettingsOpened: true };
+        if (!error) {
+          await showMidiStudio();
+          return { ok: true, nativeSettingsOpened: true, midiStudioOpened: true };
+        }
       } catch (_) {}
     }
     try {
       await runProcess('/usr/bin/open', ['-a', 'Audio MIDI Setup'], {
         timeout: 5000
       });
-      return { ok: true, nativeSettingsOpened: true };
+      await showMidiStudio();
+      return { ok: true, nativeSettingsOpened: true, midiStudioOpened: true };
     } catch (_) {
       throw new Error('Não foi possível abrir a Configuração de Áudio e MIDI do macOS.');
     }
