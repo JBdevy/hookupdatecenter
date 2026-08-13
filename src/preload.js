@@ -1,9 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const os = require('os');
+
+const systemVersion = typeof process.getSystemVersion === 'function'
+  ? process.getSystemVersion()
+  : '';
 
 contextBridge.exposeInMainWorld('hookUpdateCenter', {
   platform: process.platform,
-  osRelease: os.release(),
+  osRelease: systemVersion,
   getState: () => ipcRenderer.invoke('get-state'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   downloadUpdate: (payload) => ipcRenderer.invoke('download-update', payload),
