@@ -1,7 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const os = require('os');
 
 contextBridge.exposeInMainWorld('hookUpdateCenter', {
   platform: process.platform,
+  osRelease: os.release(),
   getState: () => ipcRenderer.invoke('get-state'),
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   downloadUpdate: (payload) => ipcRenderer.invoke('download-update', payload),
@@ -43,6 +45,10 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getDirectCableState: () => ipcRenderer.invoke('direct-cable-get-state'),
   configureDirectCable: (payload) => ipcRenderer.invoke('direct-cable-configure', payload),
   restoreDirectCableDhcp: (payload) => ipcRenderer.invoke('direct-cable-restore-dhcp', payload),
+  getHookMidiState: () => ipcRenderer.invoke('hook-midi-get-state'),
+  createHookMidiPort: (payload) => ipcRenderer.invoke('hook-midi-create', payload),
+  removeHookMidiPort: (payload) => ipcRenderer.invoke('hook-midi-remove', payload),
+  openHookMidiComponents: () => ipcRenderer.invoke('hook-midi-open-components'),
   getBridgeState: () => ipcRenderer.invoke('get-bridge-state'),
   restartBridge: () => ipcRenderer.invoke('restart-bridge'),
   selectBridgeNetwork: (payload) => ipcRenderer.invoke('select-bridge-network', payload),

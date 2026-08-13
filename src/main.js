@@ -69,6 +69,9 @@ const store = new Store({
       musiciansPort: 47832,
       autoStart: true
     },
+    hookMidi: {
+      ports: []
+    },
     lyrics: {
       textColor: '#ffea00',
       clockColor: '#00ff55',
@@ -1811,6 +1814,258 @@ async function restoreDirectCableDhcp(payload = {}) {
   store.delete('directCable');
   try { await startBridgeServers(); } catch (_) {}
   return { ok: true, state: await getDirectCableState() };
+}
+
+const HOOK_MIDI_DOWNLOAD_URL = 'https://aka.ms/midi';
+const HOOK_MIDI_LOOPMIDI_URL = 'https://www.tobias-erichsen.de/software/loopmidi.html';
+const HOOK_MIDI_INSTALLER_NAME = 'Windows-MIDI-Services-Runtime-and-Tools-x64.exe';
+const HOOK_MIDI_INSTALLER_SIZE = 219603123;
+const HOOK_MIDI_INSTALLER_SHA256 = '5d241b52669a69795b7503f53eb082f83a1860e5ebc50849427b79f15c1a2546';
+let hookMidiOperationInProgress = false;
+
+function hookMidiWindowsBuild() {
+  if (process.platform !== 'win32') return 0;
+  const parts = String(os.release() || '').split('.');
+  return Number.parseInt(parts[2] || '0', 10) || 0;
+}
+
+function hookMidiIsWindows11() {
+  return process.platform === 'win32' && hookMidiWindowsBuild() >= 22000;
+}
+
+function hookMidiCleanProcessMessage(value) {
+  return String(value || '')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .replace(/\r/g, '')
+    .trim();
+}
+
+function hookMidiStoredPorts() {
+  const ports = store.get('hookMidi.ports');
+  if (!Array.isArray(ports)) return [];
+  return ports.filter((port) => port && /^[0-9a-f-]{36}$/i.test(String(port.associationId || ''))).map((port) => ({
+    associationId: String(port.associationId),
+    rootName: String(port.rootName || 'Hook MIDI'),
+    endpointA: String(port.endpointA || `${port.rootName || 'Hook MIDI'} (A)`),
+    endpointB: String(port.endpointB || `${port.rootName || 'Hook MIDI'} (B)`),
+    uniqueIdentifier: String(port.uniqueIdentifier || ''),
+    createdAt: String(port.createdAt || ''),
+    servicePid: Number(port.servicePid || 0)
+  }));
+}
+
+function hookMidiSavePorts(ports) {
+  store.set('hookMidi.ports', Array.isArray(ports) ? ports.slice(0, 16) : []);
+}
+
+function hookMidiFindConsole() {
+  if (process.platform !== 'win32') return '';
+  const candidates = [];
+  const add = (candidate) => {
+    const resolved = String(candidate || '').trim().replace(/^"|"$/g, '');
+    if (resolved && !candidates.some((item) => item.toLowerCase() === resolved.toLowerCase())) candidates.push(resolved);
+  };
+  try {
+    const output = execFileSync('reg.exe', [
+      'query',
+      'HKLM\\Software\\Microsoft\\Windows MIDI Services\\Desktop App SDK Runtime',
+      '/v', 'MidiConsole'
+    ], { windowsHide: true, encoding: 'utf8', timeout: 3000 });
+    const match = String(output || '').match(/MidiConsole\s+REG_\w+\s+(.+?midi\.exe)\s*$/im);
+    if (match) add(match[1]);
+  } catch (_) {}
+  for (const root of [process.env.ProgramW6432, process.env.ProgramFiles]) {
+    if (!root) continue;
+    add(path.join(root, 'Windows MIDI Services', 'Tools', 'Console', 'midi.exe'));
+    add(path.join(root, 'Windows MIDI Services', 'Tools', 'midi.exe'));
+  }
+  try {
+    const output = execFileSync('where.exe', ['midi.exe'], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 3000
+    });
+    String(output || '').split(/\r?\n/).forEach(add);
+  } catch (_) {}
+  return candidates.find((candidate) => {
+    try { return fs.statSync(candidate).isFile(); } catch (_) { return false; }
+  }) || '';
+}
+
+function hookMidiBundledInstallerPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'windows-midi-services', HOOK_MIDI_INSTALLER_NAME)
+    : path.join(__dirname, '..', 'vendor', 'windows-midi-services', HOOK_MIDI_INSTALLER_NAME);
+}
+
+function hookMidiSha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const input = physicalFs.createReadStream(filePath);
+    input.on('error', reject);
+    input.on('data', (chunk) => hash.update(chunk));
+    input.on('end', () => resolve(hash.digest('hex').toLowerCase()));
+  });
+}
+
+async function installHookMidiComponents() {
+  if (!hookMidiIsWindows11()) throw new Error('Os componentes do Hook MIDI são exclusivos do Windows 11.');
+  if (hookMidiFindConsole()) return { ok: true, alreadyInstalled: true };
+  const installerPath = hookMidiBundledInstallerPath();
+  let stats = null;
+  try { stats = physicalFs.statSync(installerPath); } catch (_) {}
+  if (!stats?.isFile()) {
+    await shell.openExternal(HOOK_MIDI_DOWNLOAD_URL);
+    return { ok: true, external: true };
+  }
+  if (stats.size !== HOOK_MIDI_INSTALLER_SIZE ||
+      await hookMidiSha256File(installerPath) !== HOOK_MIDI_INSTALLER_SHA256) {
+    throw new Error('O instalador interno do Windows MIDI Services está incompleto ou foi alterado. Reinstale a Hook Center.');
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawn(installerPath, [], {
+      detached: true,
+      windowsHide: false,
+      stdio: 'ignore'
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+  return { ok: true, installerStarted: true };
+}
+
+async function hookMidiServiceState() {
+  if (process.platform !== 'win32') return { running: false, pid: 0 };
+  try {
+    const output = await runProcess('sc.exe', ['queryex', 'MidiSrv'], { timeout: 5000 });
+    const pidMatch = output.match(/\bPID\s*:\s*(\d+)/i);
+    return {
+      running: /\bRUNNING\b/i.test(output),
+      pid: Number.parseInt(pidMatch?.[1] || '0', 10) || 0
+    };
+  } catch (_) {
+    return { running: false, pid: 0 };
+  }
+}
+
+async function getHookMidiState() {
+  const build = hookMidiWindowsBuild();
+  const windows11 = hookMidiIsWindows11();
+  const windows10 = process.platform === 'win32' && build > 0 && build < 22000;
+  const consolePath = windows11 ? hookMidiFindConsole() : '';
+  const service = windows11 ? await hookMidiServiceState() : { running: false, pid: 0 };
+  const bootedAt = Date.now() - Math.max(0, Number(os.uptime() || 0) * 1000) - 60000;
+  const stored = hookMidiStoredPorts();
+  const ports = stored.filter((port) => {
+    const createdAt = Date.parse(port.createdAt || '') || 0;
+    if (createdAt && createdAt < bootedAt) return false;
+    if (port.servicePid && service.pid && port.servicePid !== service.pid) return false;
+    return true;
+  });
+  if (ports.length !== stored.length) hookMidiSavePorts(ports);
+  return {
+    ok: true,
+    platform: process.platform,
+    osRelease: os.release(),
+    build,
+    supported: windows11,
+    windows10,
+    consoleInstalled: Boolean(consolePath),
+    serviceRunning: service.running,
+    busy: hookMidiOperationInProgress,
+    ports,
+    downloadUrl: HOOK_MIDI_DOWNLOAD_URL,
+    loopMidiUrl: HOOK_MIDI_LOOPMIDI_URL
+  };
+}
+
+function hookMidiNormalizeRootName(value) {
+  const cleaned = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) throw new Error('Digite um nome para as portas Hook MIDI.');
+  // O console acrescenta " (A)" e " (B)" e limita os nomes WinMM a 31 caracteres.
+  return cleaned.slice(0, 27);
+}
+
+async function hookMidiRunConsole(args) {
+  const consolePath = hookMidiFindConsole();
+  if (!consolePath) {
+    throw new Error('O Windows MIDI Services Runtime & Tools não está instalado. Use o botão Instalar componentes oficiais e abra novamente a Hook Center após a instalação.');
+  }
+  try {
+    return await runProcess(consolePath, args, {
+      timeout: 30000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' }
+    });
+  } catch (error) {
+    const detail = hookMidiCleanProcessMessage(error?.message || '');
+    throw new Error(detail || 'O Windows MIDI Services não conseguiu concluir a operação.');
+  }
+}
+
+async function createHookMidiPort(payload = {}) {
+  if (!hookMidiIsWindows11()) throw new Error('O Hook MIDI está disponível apenas no Windows 11.');
+  if (hookMidiOperationInProgress) throw new Error('Aguarde a operação atual do Hook MIDI terminar.');
+  const rootName = hookMidiNormalizeRootName(payload.rootName || 'Hook MIDI');
+  const current = await getHookMidiState();
+  if (!current.consoleInstalled) {
+    throw new Error('Instale primeiro os componentes oficiais do Windows MIDI Services.');
+  }
+  if (current.ports.length >= 16) throw new Error('O limite de 16 pares criados pela Hook Center foi atingido.');
+  if (current.ports.some((port) => port.rootName.toLocaleLowerCase() === rootName.toLocaleLowerCase())) {
+    throw new Error('Já existe um par Hook MIDI com esse nome.');
+  }
+  hookMidiOperationInProgress = true;
+  const associationId = crypto.randomUUID();
+  const uniqueIdentifier = `HookMidi${associationId.replace(/-/g, '').slice(0, 20)}`;
+  let created = null;
+  try {
+    await hookMidiRunConsole([
+      'loopback', 'create',
+      '--root-name', rootName,
+      '--association-id', associationId,
+      '--unique-identifier', uniqueIdentifier
+    ]);
+    const service = await hookMidiServiceState();
+    const ports = hookMidiStoredPorts();
+    created = {
+      associationId,
+      rootName,
+      endpointA: `${rootName} (A)`,
+      endpointB: `${rootName} (B)`,
+      uniqueIdentifier,
+      createdAt: new Date().toISOString(),
+      servicePid: service.pid
+    };
+    ports.push(created);
+    hookMidiSavePorts(ports);
+  } finally {
+    hookMidiOperationInProgress = false;
+  }
+  return { ok: true, created, state: await getHookMidiState() };
+}
+
+async function removeHookMidiPort(payload = {}) {
+  if (!hookMidiIsWindows11()) throw new Error('O Hook MIDI está disponível apenas no Windows 11.');
+  if (hookMidiOperationInProgress) throw new Error('Aguarde a operação atual do Hook MIDI terminar.');
+  const associationId = String(payload.associationId || '').trim().toLowerCase();
+  const ports = hookMidiStoredPorts();
+  const target = ports.find((port) => port.associationId.toLowerCase() === associationId);
+  if (!target) throw new Error('Essa porta não foi criada pela Hook Center ou já não existe.');
+  hookMidiOperationInProgress = true;
+  try {
+    await hookMidiRunConsole(['loopback', 'remove', '--association-id', target.associationId]);
+    hookMidiSavePorts(ports.filter((port) => port.associationId !== target.associationId));
+  } finally {
+    hookMidiOperationInProgress = false;
+  }
+  return { ok: true, removed: target, state: await getHookMidiState() };
 }
 
 async function downloadAndInstallBridgeAppUpdate(updateOverride = null) {
@@ -5519,6 +5774,10 @@ ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
 ipcMain.handle('direct-cable-get-state', () => getDirectCableState());
 ipcMain.handle('direct-cable-configure', (_event, payload) => configureDirectCable(payload || {}));
 ipcMain.handle('direct-cable-restore-dhcp', (_event, payload) => restoreDirectCableDhcp(payload || {}));
+ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
+ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
+ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
+ipcMain.handle('hook-midi-open-components', () => installHookMidiComponents());
 
 async function openSupport() {
   const data = await fetchJson(SUPPORT_API_URL, { cache: 'no-store' });

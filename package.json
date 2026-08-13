@@ -9,8 +9,8 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --publish never",
-    "build:win": "electron-builder --win nsis --publish never",
+    "build": "node scripts/prepare-windows-midi.js --if-windows && electron-builder --publish never",
+    "build:win": "node scripts/prepare-windows-midi.js && electron-builder --win nsis --publish never",
     "build:mac": "electron-builder --mac dmg zip --universal --publish never",
     "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --universal --publish never"
   },
@@ -58,7 +58,13 @@
         "nsis"
       ],
       "artifactName": "Hook-Center-${version}-Windows.${ext}",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe",
+          "to": "windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

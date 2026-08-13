@@ -874,7 +874,7 @@
         <nav class="tools-submenu" aria-label="Menu de ferramentas" role="tablist">
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="upcoming2">Em Breve</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
@@ -910,7 +910,7 @@
             <div class="form-grid hook-rename-form">
               <label>
                 Sufixo manual
-                <input id="hookRenameSuffixInput" type="text" placeholder="Ex.: _v2, _master, _backup" autocomplete="off" />
+                <input id="hookRenameSuffixInput" type="text" autocomplete="off" />
               </label>
 
               <label>
@@ -1011,8 +1011,53 @@
             </div>
           </div>
         </div>
-        <div id="toolsUpcomingPanel2" class="tools-panel tools-upcoming-panel" data-tools-panel-content="upcoming2" role="tabpanel">
-          <h1>EM BREVE</h1>
+        <div id="toolsMidiPanel" class="tools-panel tools-midi-panel" data-tools-panel-content="midi" role="tabpanel">
+          <div class="hero-card tools-hero tools-midi-hero">
+            <div>
+              <p class="eyebrow">Portas MIDI virtuais</p>
+              <h1>Hook MIDI</h1>
+              <p class="muted">Crie portas MIDI virtuais para comunicar o VS Hook, o REAPER e outros programas no Windows 11.</p>
+            </div>
+            <span id="hookMidiAvailabilityBadge" class="badge">Verificando sistema</span>
+          </div>
+          <div class="tools-grid tools-midi-grid">
+            <div class="card tools-midi-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Windows 11</p><h2>Windows MIDI Services</h2></div>
+                <span id="hookMidiRuntimeBadge" class="badge">Verificando</span>
+              </div>
+              <p id="hookMidiSystemMessage" class="muted">Verificando a versão do Windows instalada neste computador.</p>
+              <label class="hook-midi-name-field" for="hookMidiPortName">
+                Nome das portas
+                <input id="hookMidiPortName" type="text" maxlength="27" value="Hook MIDI" autocomplete="off" />
+                <small>Serão criadas duas pontas conectadas: <strong id="hookMidiNamePreviewA">Hook MIDI (A)</strong> e <strong id="hookMidiNamePreviewB">Hook MIDI (B)</strong>.</small>
+              </label>
+              <div class="actions hook-midi-actions">
+                <button id="hookMidiStartButton" class="primary-button" type="button" disabled>Criar portas</button>
+                <button id="hookMidiRefreshButton" class="secondary-button" type="button">Atualizar</button>
+                <button id="hookMidiInstallButton" class="secondary-button hidden" type="button">Instalar componentes oficiais</button>
+              </div>
+            </div>
+            <div id="hookMidiPortsCard" class="card tools-midi-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Gerenciamento</p><h2>Portas criadas</h2></div>
+                <span id="hookMidiPortCountBadge" class="badge">0 pares</span>
+              </div>
+              <div id="hookMidiPortsList" class="hook-midi-ports-list">
+                <p class="muted">Nenhuma porta criada pela Hook Center.</p>
+              </div>
+              <p class="hook-midi-footnote muted">Envie MIDI para uma ponta e receba na outra. As portas temporárias permanecem até serem removidas, o serviço MIDI reiniciar ou o Windows reiniciar.</p>
+            </div>
+            <div id="hookMidiWindows10Card" class="card tools-midi-card hidden">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Windows 10</p><h2>Alternativa recomendada</h2></div>
+              </div>
+              <p class="muted">O Hook MIDI será exclusivo do Windows 11. No Windows 10, utilize o loopMIDI para criar portas MIDI virtuais.</p>
+              <div class="actions">
+                <button id="hookMidiLoopMidiButton" class="secondary-button" type="button">Conhecer o loopMIDI</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div id="toolsPingPongPanel" class="tools-panel tools-pingpong-panel" data-tools-panel-content="pingpong" role="tabpanel">
           <div class="pingpong-toolbar">

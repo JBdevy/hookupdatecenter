@@ -7,6 +7,8 @@ let pendingModalRequest = null;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
+let hookMidiState = null;
+let hookMidiBusy = false;
 let combinedDownloadInProgress = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let selectedLyricsConfigSlot = 1;
@@ -1434,8 +1436,169 @@ function setupPingPongGame() {
   drawPingPongGame();
 }
 
+function updateHookMidiNamePreview() {
+  const input = $('#hookMidiPortName');
+  const rootName = String(input?.value || 'Hook MIDI').replace(/\s+/g, ' ').trim().slice(0, 27) || 'Hook MIDI';
+  if ($('#hookMidiNamePreviewA')) $('#hookMidiNamePreviewA').textContent = `${rootName} (A)`;
+  if ($('#hookMidiNamePreviewB')) $('#hookMidiNamePreviewB').textContent = `${rootName} (B)`;
+}
+
+function renderHookMidiAvailability(nextState = hookMidiState) {
+  const data = nextState || {};
+  hookMidiState = data;
+  const badge = $('#hookMidiAvailabilityBadge');
+  const runtimeBadge = $('#hookMidiRuntimeBadge');
+  const message = $('#hookMidiSystemMessage');
+  const startButton = $('#hookMidiStartButton');
+  const refreshButton = $('#hookMidiRefreshButton');
+  const installButton = $('#hookMidiInstallButton');
+  const nameInput = $('#hookMidiPortName');
+  const windows10Card = $('#hookMidiWindows10Card');
+  const portsCard = $('#hookMidiPortsCard');
+  const portsList = $('#hookMidiPortsList');
+  const countBadge = $('#hookMidiPortCountBadge');
+  const ports = Array.isArray(data.ports) ? data.ports : [];
+  const busy = hookMidiBusy || data.busy === true;
+  windows10Card?.classList.toggle('hidden', data.windows10 !== true);
+  portsCard?.classList.toggle('hidden', data.supported !== true);
+  installButton?.classList.toggle('hidden', !(data.supported && !data.consoleInstalled));
+  if (data.supported && data.consoleInstalled) {
+    if (badge) badge.textContent = 'Windows 11 compatível';
+    if (runtimeBadge) runtimeBadge.textContent = data.serviceRunning ? 'Serviço ativo' : 'Pronto para iniciar';
+    if (message) message.textContent = data.serviceRunning
+      ? 'Windows MIDI Services ativo. Crie um par virtual para conectar dois programas neste computador.'
+      : 'Componentes oficiais instalados. O serviço MIDI será iniciado pelo Windows ao criar as portas.';
+    if (startButton) startButton.textContent = busy ? 'Criando...' : 'Criar portas';
+  } else if (data.supported) {
+    if (badge) badge.textContent = 'Windows 11';
+    if (runtimeBadge) runtimeBadge.textContent = 'Componentes ausentes';
+    if (message) message.textContent = 'Instale o Windows MIDI Services Runtime & Tools oficial para a Hook Center criar e remover as portas virtuais.';
+    if (startButton) startButton.textContent = 'Instalação necessária';
+  } else if (data.windows10) {
+    if (badge) badge.textContent = 'Windows 10';
+    if (runtimeBadge) runtimeBadge.textContent = 'Não compatível';
+    if (message) message.textContent = 'O Hook MIDI requer o Windows 11. Para criar portas MIDI virtuais neste computador, recomendamos o loopMIDI.';
+    if (startButton) startButton.textContent = 'Requer Windows 11';
+  } else {
+    if (badge) badge.textContent = 'Somente Windows 11';
+    if (runtimeBadge) runtimeBadge.textContent = 'Indisponível';
+    if (message) message.textContent = 'O Hook MIDI está disponível exclusivamente para computadores com Windows 11.';
+    if (startButton) startButton.textContent = 'Indisponível neste sistema';
+  }
+  if (startButton) startButton.disabled = busy || !data.supported || !data.consoleInstalled;
+  if (refreshButton) refreshButton.disabled = busy;
+  if (installButton) installButton.disabled = busy;
+  if (nameInput) nameInput.disabled = busy || !data.supported || !data.consoleInstalled;
+  if (countBadge) countBadge.textContent = `${ports.length} ${ports.length === 1 ? 'par' : 'pares'}`;
+  if (portsList) {
+    portsList.innerHTML = ports.length
+      ? ports.map((port) => `
+        <div class="hook-midi-port-item">
+          <div class="hook-midi-port-names">
+            <strong>${escapeHtml(port.endpointA || `${port.rootName} (A)`)}</strong>
+            <span>↔ ${escapeHtml(port.endpointB || `${port.rootName} (B)`)}</span>
+          </div>
+          <button class="secondary-button hook-midi-remove-button" type="button" data-hook-midi-remove="${escapeHtml(port.associationId)}" ${busy ? 'disabled' : ''}>Remover</button>
+        </div>`).join('')
+      : '<p class="muted">Nenhuma porta criada pela Hook Center nesta sessão do Windows.</p>';
+  }
+  updateHookMidiNamePreview();
+}
+
+function hookMidiErrorMessage(error, fallback) {
+  const raw = String(error?.message || error || '').replace(/^Error invoking remote method '[^']+':\s*/i, '').replace(/^Error:\s*/i, '').trim();
+  return raw || fallback;
+}
+
+async function refreshHookMidiState() {
+  if (hookMidiBusy) return;
+  if (!hookMidiState) renderHookMidiAvailability({
+    platform: window.hookUpdateCenter?.platform,
+    supported: window.hookUpdateCenter?.platform === 'win32' && Number.parseInt(String(window.hookUpdateCenter?.osRelease || '').split('.')[2] || '0', 10) >= 22000,
+    windows10: window.hookUpdateCenter?.platform === 'win32' && Number.parseInt(String(window.hookUpdateCenter?.osRelease || '').split('.')[2] || '0', 10) < 22000,
+    ports: []
+  });
+  try {
+    renderHookMidiAvailability(await window.hookUpdateCenter.getHookMidiState());
+  } catch (error) {
+    showModal({ title: 'Hook MIDI', message: hookMidiErrorMessage(error, 'Não foi possível verificar o Windows MIDI Services.'), type: 'error' });
+  }
+}
+
+async function createHookMidiPortFromUi() {
+  if (hookMidiBusy) return;
+  hookMidiBusy = true;
+  renderHookMidiAvailability();
+  try {
+    const result = await window.hookUpdateCenter.createHookMidiPort({ rootName: $('#hookMidiPortName')?.value || 'Hook MIDI' });
+    hookMidiState = result?.state || await window.hookUpdateCenter.getHookMidiState();
+    showModal({
+      title: 'Portas Hook MIDI criadas',
+      message: `${result.created.endpointA} e ${result.created.endpointB} já estão disponíveis nos programas MIDI. Envie por uma ponta e receba pela outra.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({ title: 'Não foi possível criar', message: hookMidiErrorMessage(error, 'O Windows MIDI Services não conseguiu criar as portas.'), type: 'error' });
+  } finally {
+    hookMidiBusy = false;
+    renderHookMidiAvailability();
+  }
+}
+
+async function removeHookMidiPortFromUi(associationId) {
+  const port = (hookMidiState?.ports || []).find((item) => item.associationId === associationId);
+  if (!port || hookMidiBusy) return;
+  const confirmed = await confirmModal({
+    title: 'Remover portas Hook MIDI?',
+    message: `As portas ${port.endpointA} e ${port.endpointB} serão desconectadas dos programas que estiverem usando elas.`,
+    type: 'info',
+    okText: 'Remover',
+    cancelText: 'Cancelar'
+  });
+  if (!confirmed) return;
+  hookMidiBusy = true;
+  renderHookMidiAvailability();
+  try {
+    const result = await window.hookUpdateCenter.removeHookMidiPort({ associationId });
+    hookMidiState = result?.state || await window.hookUpdateCenter.getHookMidiState();
+  } catch (error) {
+    showModal({ title: 'Não foi possível remover', message: hookMidiErrorMessage(error, 'O Windows MIDI Services não conseguiu remover as portas.'), type: 'error' });
+  } finally {
+    hookMidiBusy = false;
+    renderHookMidiAvailability();
+  }
+}
+
+async function installHookMidiComponentsFromUi() {
+  if (hookMidiBusy) return;
+  hookMidiBusy = true;
+  renderHookMidiAvailability();
+  const button = $('#hookMidiInstallButton');
+  if (button) button.textContent = 'Abrindo instalador...';
+  try {
+    const result = await window.hookUpdateCenter.openHookMidiComponents();
+    if (result?.alreadyInstalled) {
+      hookMidiState = await window.hookUpdateCenter.getHookMidiState();
+      return;
+    }
+    showModal({
+      title: result?.external ? 'Windows MIDI Services' : 'Instalador iniciado',
+      message: result?.external
+        ? 'A página oficial da Microsoft foi aberta. Instale o Windows MIDI Services Runtime & Tools e depois clique em Atualizar.'
+        : 'Conclua a instalação oficial da Microsoft. Depois volte à Hook Center e clique em Atualizar para liberar a criação das portas.',
+      type: 'info'
+    });
+  } catch (error) {
+    showModal({ title: 'Não foi possível instalar', message: hookMidiErrorMessage(error, 'Não foi possível abrir o instalador do Windows MIDI Services.'), type: 'error' });
+  } finally {
+    hookMidiBusy = false;
+    if (button) button.textContent = 'Instalar componentes oficiais';
+    renderHookMidiAvailability();
+  }
+}
+
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'cable', 'upcoming2', 'pingpong'];
+  const allowed = ['rename', 'cable', 'midi', 'pingpong'];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -1448,6 +1611,7 @@ function setToolsPanel(panelName = 'rename') {
   });
   if (selectedToolsPanel === 'rename') updateHookRenameControls();
   if (selectedToolsPanel === 'cable') refreshDirectCableState();
+  if (selectedToolsPanel === 'midi') refreshHookMidiState();
   if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
 
@@ -1459,6 +1623,21 @@ function setupToolsSubmenu() {
   $('#directCableAdapterSelect')?.addEventListener('change', () => renderDirectCableState(directCableState));
   $('#directCableConfigureButton')?.addEventListener('click', configureDirectCableFromUi);
   $('#directCableRestoreButton')?.addEventListener('click', restoreDirectCableFromUi);
+  $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
+  $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
+  $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
+  $('#hookMidiPortName')?.addEventListener('input', updateHookMidiNamePreview);
+  $('#hookMidiPortName')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') createHookMidiPortFromUi();
+  });
+  $('#hookMidiPortsList')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-hook-midi-remove]');
+    if (button) removeHookMidiPortFromUi(button.dataset.hookMidiRemove);
+  });
+  $('#hookMidiLoopMidiButton')?.addEventListener('click', () => {
+    window.hookUpdateCenter.openExternal(
+      'https://www.tobias-erichsen.de/software/loopmidi.html');
+  });
   setupPingPongGame();
   setToolsPanel(selectedToolsPanel);
 }

@@ -4,3 +4,5 @@ dist/
 !qr-app/dist/chat.js
 !qr-app/dist/chat-app.css
 dist-restart-fix/
+vendor/windows-midi-services/*.exe
+vendor/windows-midi-services/*.partial

@@ -100,6 +100,18 @@ jobs:
           if ($missingThemes.Count -gt 0) {
             throw "Pacote final da Hook Center sem os temas: $($missingThemes -join ', ')"
           }
+          $midiInstaller = 'dist/win-unpacked/resources/windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe'
+          if (-not (Test-Path -LiteralPath $midiInstaller -PathType Leaf)) {
+            throw 'Pacote final da Hook Center sem o instalador do Windows MIDI Services.'
+          }
+          $midiExpectedSize = 219603123
+          $midiExpectedHash = '5D241B52669A69795B7503F53EB082F83A1860E5EBC50849427B79F15C1A2546'
+          if ((Get-Item -LiteralPath $midiInstaller).Length -ne $midiExpectedSize) {
+            throw 'Instalador do Windows MIDI Services com tamanho incorreto.'
+          }
+          if ((Get-FileHash -LiteralPath $midiInstaller -Algorithm SHA256).Hash -ne $midiExpectedHash) {
+            throw 'Instalador do Windows MIDI Services com SHA-256 incorreto.'
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
