@@ -113,14 +113,25 @@ echo ==========================================
 echo   ENVIANDO BRANCH %BRANCH%
 echo ==========================================
 git push origin "%BRANCH%"
-if errorlevel 1 goto erro
+if errorlevel 1 goto fallback_api
 
 echo.
 echo ==========================================
 echo   ENVIANDO TAG / DISPARANDO ACTIONS
 echo ==========================================
 git push origin "%TAG_VERSION%"
+if errorlevel 1 goto fallback_api
+
+goto pronto
+
+:fallback_api
+echo.
+echo O endpoint Git do GitHub recusou o push.
+echo Tentando a API oficial, sem build local...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\push-github-api.ps1" -Branch "%BRANCH%" -Tag "%TAG_VERSION%"
 if errorlevel 1 goto erro
+
+:pronto
 
 echo.
 echo ==========================================
