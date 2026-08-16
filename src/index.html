@@ -875,6 +875,7 @@
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Copy Project</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
@@ -1072,6 +1073,76 @@
             </div>
           </div>
         </div>
+        <div id="toolsCopyProjectPanel" class="tools-panel tools-copy-project-panel" data-tools-panel-content="copy-project" role="tabpanel">
+          <div class="hero-card tools-hero copy-project-hero">
+            <div>
+              <p class="eyebrow">Transferência direta pela rede</p>
+              <h1>Copy Project</h1>
+              <p class="muted">Envie qualquer pasta e qualquer tipo de arquivo diretamente para outro computador com a Hook Center.</p>
+            </div>
+            <span id="copyProjectStatusBadge" class="badge">Parado</span>
+          </div>
+
+          <div class="copy-project-grid">
+            <section class="card copy-project-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">PC emissor</p><h2>Enviar pasta</h2></div>
+                <span class="badge">Enviar</span>
+              </div>
+              <p class="muted">Escolha a pasta completa e digite o código mostrado no computador receptor.</p>
+              <div class="selected-folder-box">
+                <span>Pasta que será enviada</span>
+                <strong id="copyProjectSourceName">Nenhuma pasta selecionada</strong>
+                <small id="copyProjectSourcePath" class="muted">Todos os arquivos e subpastas serão incluídos.</small>
+              </div>
+              <button id="copyProjectSelectSourceButton" class="secondary-button" type="button">Escolher pasta para enviar</button>
+              <label class="copy-project-code-field" for="copyProjectReceiverCode">
+                Código do PC receptor
+                <input id="copyProjectReceiverCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
+              </label>
+              <button id="copyProjectSendButton" class="primary-button" type="button" disabled>Enviar agora</button>
+            </section>
+
+            <section class="card copy-project-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">PC receptor</p><h2>Receber pasta</h2></div>
+                <span class="badge">Receber</span>
+              </div>
+              <p class="muted">Escolha onde a pasta será salva e ative o recebimento para gerar o código.</p>
+              <div class="selected-folder-box">
+                <span>Pasta de destino</span>
+                <strong id="copyProjectDestinationName">Nenhuma pasta selecionada</strong>
+                <small id="copyProjectDestinationPath" class="muted">A pasta enviada será criada dentro deste local.</small>
+              </div>
+              <button id="copyProjectSelectDestinationButton" class="secondary-button" type="button">Escolher pasta de destino</button>
+              <div class="copy-project-code-display">
+                <span>Código para receber</span>
+                <strong id="copyProjectReceiveCode">------</strong>
+                <small>Informe este código ao computador emissor.</small>
+              </div>
+              <button id="copyProjectReceiveButton" class="primary-button" type="button" disabled>Ativar recebimento</button>
+            </section>
+
+            <section class="card copy-project-progress-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Atividade</p><h2 id="copyProjectProgressTitle">Aguardando</h2></div>
+                <span id="copyProjectProgressPercent" class="badge">0%</span>
+              </div>
+              <div class="progress-shell copy-project-progress-shell">
+                <div id="copyProjectProgressBar" class="progress-bar"></div>
+              </div>
+              <div class="copy-project-progress-details">
+                <strong id="copyProjectProgressText">Escolha se este computador vai enviar ou receber.</strong>
+                <span id="copyProjectCurrentFile" class="muted"></span>
+              </div>
+              <div class="actions copy-project-actions">
+                <button id="copyProjectCancelButton" class="secondary-button hidden" type="button">Cancelar</button>
+                <button id="copyProjectOpenDestinationButton" class="secondary-button hidden" type="button">Mostrar pasta recebida</button>
+              </div>
+            </section>
+          </div>
+        </div>
+
         <div id="toolsPingPongPanel" class="tools-panel tools-pingpong-panel" data-tools-panel-content="pingpong" role="tabpanel">
           <div class="pingpong-toolbar">
             <div>

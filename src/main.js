@@ -25,6 +25,7 @@ const {
   getNativeBridgeStateSnapshot
 } = require('./bridge-server');
 const { createTimecodeLanRelay } = require('./timecode-lan');
+const { createCopyProjectService } = require('./copy-project');
 const { createQrSvg } = require('./qr-svg');
 const appPackage = require('../package.json');
 
@@ -97,9 +98,24 @@ let bridgeWatchTimer = null;
 let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
 let parallelTimecodeLanRelay = null;
+let copyProjectService = null;
 const timecodeRelayPeerAddresses = { main: '', parallel: '' };
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
+
+function getCopyProjectService() {
+  if (!copyProjectService) {
+    copyProjectService = createCopyProjectService({
+      getDeviceName: getStoredDeviceName,
+      onState: (state) => {
+        if (isValidWindow(mainWindow)) {
+          mainWindow.webContents.send('copy-project-state', state);
+        }
+      }
+    });
+  }
+  return copyProjectService;
+}
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
@@ -5838,6 +5854,35 @@ ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
 ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-open-components', () => installHookMidiComponents());
+ipcMain.handle('copy-project-select-folder', async (_event, payload = {}) => {
+  const receiving = payload?.mode === 'receive';
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: receiving
+      ? 'Escolher pasta onde os arquivos serão recebidos'
+      : 'Escolher pasta para enviar',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+  const folderPath = path.resolve(result.filePaths[0]);
+  return { canceled: false, path: folderPath, name: path.basename(folderPath) };
+});
+ipcMain.handle('copy-project-get-state', () =>
+  getCopyProjectService().getState());
+ipcMain.handle('copy-project-start-receive', (_event, payload = {}) =>
+  getCopyProjectService().startReceiver(payload.destinationPath));
+ipcMain.handle('copy-project-stop-receive', () =>
+  getCopyProjectService().stopReceiver());
+ipcMain.handle('copy-project-send', (_event, payload = {}) =>
+  getCopyProjectService().sendFolder(payload.sourcePath, payload.code));
+ipcMain.handle('copy-project-cancel', () =>
+  getCopyProjectService().cancel());
+ipcMain.handle('copy-project-open-destination', async () => {
+  const target = String(getCopyProjectService().getState().receivedPath || '').trim();
+  if (!target) throw new Error('Nenhuma pasta recebida está disponível.');
+  const error = await shell.openPath(target);
+  if (error) throw new Error(error);
+  return { ok: true };
+});
 
 async function openSupport() {
   const data = await fetchJson(SUPPORT_API_URL, { cache: 'no-store' });
@@ -6166,6 +6211,10 @@ function prepareForAppQuit() {
   }
   lyricsWindows.clear();
   stopBridgeServers();
+  if (copyProjectService) {
+    copyProjectService.stop().catch(() => {});
+    copyProjectService = null;
+  }
   if (checkTimer) clearInterval(checkTimer);
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
   if (updateReminderTimer) clearInterval(updateReminderTimer);

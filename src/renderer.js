@@ -9,6 +9,9 @@ let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
 let hookMidiState = null;
 let hookMidiBusy = false;
+let copyProjectState = null;
+let copyProjectSourceFolder = null;
+let copyProjectDestinationFolder = null;
 let combinedDownloadInProgress = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let selectedLyricsConfigSlot = 1;
@@ -1633,8 +1636,137 @@ async function installHookMidiComponentsFromUi() {
   }
 }
 
+function copyProjectIsBusy(data = copyProjectState) {
+  return ['discovering', 'preparing', 'checking', 'sending', 'receiving'].includes(
+    String(data?.phase || ''));
+}
+
+function renderCopyProjectState(nextState = copyProjectState) {
+  if (nextState) copyProjectState = nextState;
+  const data = copyProjectState || { phase: 'idle' };
+  const busy = copyProjectIsBusy(data);
+  const waiting = data.phase === 'waiting' && data.receiving === true;
+  const receiverActive = data.receiving === true;
+  const sourceButton = $('#copyProjectSelectSourceButton');
+  const destinationButton = $('#copyProjectSelectDestinationButton');
+  const sendButton = $('#copyProjectSendButton');
+  const receiveButton = $('#copyProjectReceiveButton');
+  const cancelButton = $('#copyProjectCancelButton');
+  const openButton = $('#copyProjectOpenDestinationButton');
+  const codeInput = $('#copyProjectReceiverCode');
+  const statusBadge = $('#copyProjectStatusBadge');
+  const progressBar = $('#copyProjectProgressBar');
+  const total = Math.max(0, Number(data.totalBytes) || 0);
+  const done = Math.max(0, Math.min(total, Number(data.bytesDone) || 0));
+  const percent = total > 0 ? Math.min(100, Math.round((done * 100) / total))
+    : data.phase === 'completed' ? 100 : 0;
+  const phaseLabels = {
+    idle: 'Parado', waiting: 'Aguardando emissor', discovering: 'Procurando receptor',
+    preparing: 'Analisando arquivos', checking: 'Comparando arquivos',
+    sending: 'Enviando', receiving: 'Recebendo',
+    completed: 'Concluído', error: 'Erro'
+  };
+  const titleLabels = {
+    idle: 'Aguardando', waiting: 'Pronto para receber', discovering: 'Localizando o outro PC',
+    preparing: 'Validando a pasta', checking: 'Conferindo o que já existe',
+    sending: 'Enviando arquivos', receiving: 'Recebendo arquivos',
+    completed: 'Transferência concluída', error: 'Falha na transferência'
+  };
+
+  if ($('#copyProjectSourceName')) {
+    $('#copyProjectSourceName').textContent = copyProjectSourceFolder?.name || 'Nenhuma pasta selecionada';
+    $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.path || 'Todos os arquivos e subpastas serão incluídos.';
+  }
+  if ($('#copyProjectDestinationName')) {
+    $('#copyProjectDestinationName').textContent = copyProjectDestinationFolder?.name || 'Nenhuma pasta selecionada';
+    $('#copyProjectDestinationPath').textContent = copyProjectDestinationFolder?.path || 'A pasta enviada será criada dentro deste local.';
+  }
+  if ($('#copyProjectReceiveCode')) $('#copyProjectReceiveCode').textContent = receiverActive ? (data.code || '------') : '------';
+  if (statusBadge) statusBadge.textContent = phaseLabels[data.phase] || 'Parado';
+  if ($('#copyProjectProgressTitle')) $('#copyProjectProgressTitle').textContent = titleLabels[data.phase] || 'Aguardando';
+  if ($('#copyProjectProgressPercent')) $('#copyProjectProgressPercent').textContent = `${percent}%`;
+  if (progressBar) {
+    progressBar.style.width = `${percent}%`;
+    progressBar.classList.toggle('copy-project-indeterminate',
+      busy && total === 0);
+  }
+  let detail = 'Escolha se este computador vai enviar ou receber.';
+  if (waiting) detail = 'Este computador está visível na rede. Digite o código no PC emissor.';
+  else if (data.phase === 'discovering') detail = 'Procurando o computador que exibiu este código...';
+  else if (data.phase === 'preparing') detail = 'Calculando SHA-256 para enviar somente o que estiver faltando.';
+  else if (data.phase === 'checking') detail = 'Comparando SHA-256 para pular os arquivos que já existem neste computador.';
+  else if (data.phase === 'sending' || data.phase === 'receiving') {
+    const doneMb = done / (1024 * 1024);
+    const totalMb = total / (1024 * 1024);
+    detail = `${doneMb.toFixed(1)} de ${totalMb.toFixed(1)} MB`;
+    if (data.fileCount > 0) detail += ` • Arquivo ${Math.min(data.fileIndex || 0, data.fileCount)} de ${data.fileCount}`;
+  } else if (data.phase === 'completed') detail = data.result || 'Transferência concluída.';
+  else if (data.phase === 'error') detail = data.error || 'Não foi possível concluir a transferência.';
+  if ($('#copyProjectProgressText')) $('#copyProjectProgressText').textContent = detail;
+  if ($('#copyProjectCurrentFile')) $('#copyProjectCurrentFile').textContent = data.currentFile || data.peerName || '';
+
+  const operationActive = busy || waiting;
+  if (sourceButton) sourceButton.disabled = operationActive;
+  if (destinationButton) destinationButton.disabled = operationActive;
+  if (codeInput) codeInput.disabled = operationActive;
+  if (sendButton) sendButton.disabled = operationActive || !copyProjectSourceFolder || String(codeInput?.value || '').length !== 6;
+  if (receiveButton) {
+    receiveButton.disabled = busy || (!waiting && !copyProjectDestinationFolder);
+    receiveButton.textContent = receiverActive ? 'Desativar recebimento' : 'Ativar recebimento';
+  }
+  cancelButton?.classList.toggle('hidden', !busy);
+  openButton?.classList.toggle('hidden', !(data.phase === 'completed' && data.receivedPath));
+}
+
+async function selectCopyProjectFolder(mode) {
+  try {
+    const result = await window.hookUpdateCenter.selectCopyProjectFolder(mode);
+    if (result?.canceled) return;
+    const folder = { path: result.path, name: result.name || result.path };
+    if (mode === 'receive') copyProjectDestinationFolder = folder;
+    else copyProjectSourceFolder = folder;
+    renderCopyProjectState();
+  } catch (error) {
+    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' });
+  }
+}
+
+async function toggleCopyProjectReceiver() {
+  try {
+    if (copyProjectState?.receiving) {
+      renderCopyProjectState(await window.hookUpdateCenter.stopCopyProjectReceive());
+      return;
+    }
+    if (!copyProjectDestinationFolder) return;
+    renderCopyProjectState(await window.hookUpdateCenter.startCopyProjectReceive({
+      destinationPath: copyProjectDestinationFolder.path
+    }));
+  } catch (error) {
+    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
+  }
+}
+
+async function sendCopyProjectFolder() {
+  if (!copyProjectSourceFolder || copyProjectIsBusy()) return;
+  const code = String($('#copyProjectReceiverCode')?.value || '').replace(/\D/g, '').slice(0, 6);
+  if (code.length !== 6) return;
+  try {
+    await window.hookUpdateCenter.sendCopyProject({
+      sourcePath: copyProjectSourceFolder.path, code
+    });
+  } catch (error) {
+    // O estado detalhado também chega pelo evento, mas o modal torna a falha
+    // de descoberta/rede inequívoca quando o usuário está em outra aba.
+    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível enviar a pasta.'), type: 'error' });
+  }
+}
+
+async function refreshCopyProjectState() {
+  try { renderCopyProjectState(await window.hookUpdateCenter.getCopyProjectState()); } catch (_) {}
+}
+
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'cable', 'midi', 'pingpong'];
+  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'pingpong'];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -1648,6 +1780,7 @@ function setToolsPanel(panelName = 'rename') {
   if (selectedToolsPanel === 'rename') updateHookRenameControls();
   if (selectedToolsPanel === 'cable') refreshDirectCableState();
   if (selectedToolsPanel === 'midi') refreshHookMidiState();
+  if (selectedToolsPanel === 'copy-project') refreshCopyProjectState();
   if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
 
@@ -1674,6 +1807,23 @@ function setupToolsSubmenu() {
     window.hookUpdateCenter.openExternal(
       'https://www.tobias-erichsen.de/software/loopmidi.html');
   });
+  $('#copyProjectSelectSourceButton')?.addEventListener('click', () => selectCopyProjectFolder('send'));
+  $('#copyProjectSelectDestinationButton')?.addEventListener('click', () => selectCopyProjectFolder('receive'));
+  $('#copyProjectSendButton')?.addEventListener('click', sendCopyProjectFolder);
+  $('#copyProjectReceiveButton')?.addEventListener('click', toggleCopyProjectReceiver);
+  $('#copyProjectCancelButton')?.addEventListener('click', async () => {
+    try { renderCopyProjectState(await window.hookUpdateCenter.cancelCopyProject()); } catch (_) {}
+  });
+  $('#copyProjectOpenDestinationButton')?.addEventListener('click', () => {
+    window.hookUpdateCenter.openCopyProjectDestination().catch((error) => {
+      showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
+    });
+  });
+  $('#copyProjectReceiverCode')?.addEventListener('input', (event) => {
+    event.currentTarget.value = String(event.currentTarget.value || '').replace(/\D/g, '').slice(0, 6);
+    renderCopyProjectState();
+  });
+  window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
   setupPingPongGame();
   setToolsPanel(selectedToolsPanel);
 }

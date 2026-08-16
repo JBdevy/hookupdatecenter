@@ -1398,11 +1398,7 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
-  async function materializeProjectSyncCachedMedia(cache, rppMediaBySha, file,
-    destination, ensureActive, onCandidate) {
-    if (String(file?.kind || '').toLowerCase() !== 'media') {
-      return false
-    }
+  function projectSyncReusableMediaCandidates(cache, rppMediaBySha, file) {
     const candidates = []
     for (const source of rppMediaBySha?.get(file.sha256) || []) {
       candidates.push({ source, managedRoot: '' })
@@ -1414,8 +1410,17 @@ function createTimecodeLanRelay(options = {}) {
         managedRoot: cache.root,
       })
     }
+    return candidates
+  }
+
+  async function findReusableProjectSyncMedia(cache, rppMediaBySha, file,
+    ensureActive, onCandidate) {
+    if (String(file?.kind || '').toLowerCase() !== 'media') {
+      return ''
+    }
     const seenSources = new Set()
-    for (const candidate of candidates) {
+    for (const candidate of projectSyncReusableMediaCandidates(
+      cache, rppMediaBySha, file)) {
       ensureActive()
       const source = pathUtil.resolve(candidate.source)
       const sourceIdentity = projectSyncLocalPathIdentity(source)
@@ -1439,46 +1444,53 @@ function createTimecodeLanRelay(options = {}) {
 
       if (typeof onCandidate === 'function') await onCandidate()
       ensureActive()
-      let temporaryPath = `${destination}.local-${
-        crypto.randomBytes(8).toString('hex')}.partial`
       try {
-        // COPYFILE_EXCL mais nome aleatorio impede reutilizar um parcial que
-        // tenha sido deixado por outro processo. Nao usa hardlink: o staging
-        // recebe uma copia independente da fonte local validada.
-        await fs.promises.copyFile(
-          source, temporaryPath, fs.constants.COPYFILE_EXCL)
-        ensureActive()
-        const copiedStat = await fs.promises.lstat(temporaryPath)
+        const digest = await sha256RegularFileNoFollow(source, file.size)
         const sourceAfter = await lstatRegularFileNoSymlinkPath(
           source, file.size)
-        if (!copiedStat.isFile() || copiedStat.isSymbolicLink() ||
-            copiedStat.size !== file.size ||
-            !sameFileVersion(sourceBefore, sourceAfter) ||
-            await sha256RegularFileNoFollow(
-              temporaryPath, file.size) !== file.sha256) {
-          continue
-        }
-        ensureActive()
-        try {
-          await fs.promises.lstat(destination)
-          continue
-        } catch (error) {
-          if (error?.code !== 'ENOENT') continue
-        }
-        await fs.promises.rename(temporaryPath, destination)
-        temporaryPath = ''
-        return true
+        if (sameFileVersion(sourceBefore, sourceAfter) &&
+            digest === file.sha256) return source
       } catch (_) {
-        // Fonte local ausente, alterada ou ilegivel nunca bloqueia o pacote. A
-        // rede continua sendo a fonte autoritativa e sera usada logo abaixo.
+        // Fonte local ausente, alterada ou ilegivel nunca bloqueia o pacote.
+        // A rede continua sendo a fonte autoritativa.
         ensureActive()
-      } finally {
-        if (temporaryPath) {
-          try { await fs.promises.unlink(temporaryPath) } catch (_) {}
-        }
       }
     }
-    return false
+    return ''
+  }
+
+  async function materializeProjectSyncCachedMedia(cache, rppMediaBySha, file,
+    destination, ensureActive, onCandidate) {
+    const source = await findReusableProjectSyncMedia(
+      cache, rppMediaBySha, file, ensureActive, onCandidate)
+    if (!source) return false
+    let temporaryPath = `${destination}.local-${
+      crypto.randomBytes(8).toString('hex')}.partial`
+    try {
+      // Compatibilidade com extensoes antigas: elas ainda exigem que toda
+      // midia exista fisicamente no staging.
+      await fs.promises.copyFile(
+        source, temporaryPath, fs.constants.COPYFILE_EXCL)
+      ensureActive()
+      if (await sha256RegularFileNoFollow(
+        temporaryPath, file.size) !== file.sha256) return false
+      try {
+        await fs.promises.lstat(destination)
+        return false
+      } catch (error) {
+        if (error?.code !== 'ENOENT') return false
+      }
+      await fs.promises.rename(temporaryPath, destination)
+      temporaryPath = ''
+      return true
+    } catch (_) {
+      ensureActive()
+      return false
+    } finally {
+      if (temporaryPath) {
+        try { await fs.promises.unlink(temporaryPath) } catch (_) {}
+      }
+    }
   }
 
   async function cleanupProjectSyncStaging(force = false) {
@@ -2057,10 +2069,6 @@ function createTimecodeLanRelay(options = {}) {
       const transferRoot = resolveInside(stagingRoot, bundleId)
       if (!transferRoot) throw new Error('Identificação de staging inválida.')
       await cleanupProjectSyncStaging(false)
-      const existingTransferBytes = await directorySizeNoFollow(
-        transferRoot, manifest.totalBytes)
-      await assertProjectSyncStagingCapacity(stagingRoot,
-        Math.max(0, manifest.totalBytes - existingTransferBytes))
       await ensureSafeDestinationDirectory(stagingRoot, transferRoot)
       try {
         const markerPath = pathUtil.join(transferRoot, '.vshook-staging.json')
@@ -2079,7 +2087,6 @@ function createTimecodeLanRelay(options = {}) {
         throw new Error(`Não foi possível preparar o staging: ${error?.message || error}`)
       }
 
-      let bytesDone = 0
       // Primeiro valida o que o staging de uma tentativa anterior já concluiu.
       // O inventário/hash do RPP B só é calculado se ainda houver mídia ausente.
       const completeFiles = new Set()
@@ -2097,6 +2104,7 @@ function createTimecodeLanRelay(options = {}) {
           if (error?.code !== 'ENOENT') throw error
         }
       }
+      const supportsLocalReuse = status?.projectSyncLocalMediaReuse === true
       const missingMedia = manifest.files.some((file) =>
         String(file.kind || '').toLowerCase() === 'media' &&
         !completeFiles.has(file.id))
@@ -2108,8 +2116,8 @@ function createTimecodeLanRelay(options = {}) {
         await report({
           state: 'verifying',
           bundleId,
-          bytesDone,
-          totalBytes: manifest.totalBytes,
+          bytesDone: 0,
+          totalBytes: 0,
           fileIndex: 0,
           fileCount: manifest.files.length,
         }, true)
@@ -2120,8 +2128,8 @@ function createTimecodeLanRelay(options = {}) {
               await report({
                 state: 'verifying',
                 bundleId,
-                bytesDone,
-                totalBytes: manifest.totalBytes,
+                bytesDone: 0,
+                totalBytes: 0,
                 fileIndex: 0,
                 fileCount: manifest.files.length,
               })
@@ -2130,6 +2138,54 @@ function createTimecodeLanRelay(options = {}) {
         managedMediaCache = localMediaSources[0]
         rppMediaBySha = localMediaSources[1]
       }
+
+      // Extensoes novas aceitam um mapa local assinado pelo manifesto: a
+      // midia que ja existe no projeto B e validada no proprio lugar e nao e
+      // duplicada no staging. Extensoes antigas continuam no fallback abaixo,
+      // que materializa a copia completa por compatibilidade.
+      const localReuseById = new Map()
+      if (supportsLocalReuse &&
+          (managedMediaCache || rppMediaBySha.size > 0)) {
+        for (let index = 0; index < manifest.files.length; index += 1) {
+          const file = manifest.files[index]
+          if (completeFiles.has(file.id) ||
+              String(file.kind || '').toLowerCase() !== 'media') continue
+          const source = await findReusableProjectSyncMedia(
+            managedMediaCache, rppMediaBySha, file, ensureActive, async () => {
+              await report({
+                state: 'verifying',
+                bundleId,
+                bytesDone: 0,
+                totalBytes: 0,
+                fileIndex: index + 1,
+                fileCount: manifest.files.length,
+              })
+            })
+          if (source) localReuseById.set(file.id, source)
+        }
+      }
+
+      let transferTotalBytes = 0
+      let requiredStagingBytes = 0
+      for (const file of manifest.files) {
+        if (completeFiles.has(file.id) || localReuseById.has(file.id)) continue
+        transferTotalBytes += file.size
+        const destination = resolveInside(transferRoot, file.relativePath)
+        if (!destination) throw new Error('Destino de arquivo inválido.')
+        let partialBytes = 0
+        try {
+          const partialStat = await fs.promises.lstat(`${destination}.partial`)
+          if (partialStat.isFile() && !partialStat.isSymbolicLink() &&
+              partialStat.size <= file.size) partialBytes = partialStat.size
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error
+        }
+        requiredStagingBytes += Math.max(0, file.size - partialBytes)
+      }
+      await assertProjectSyncStagingCapacity(
+        stagingRoot, requiredStagingBytes)
+
+      let bytesDone = 0
       for (let index = 0; index < manifest.files.length; index += 1) {
         ensureActive()
         const file = manifest.files[index]
@@ -2147,7 +2203,6 @@ function createTimecodeLanRelay(options = {}) {
           if (completeFiles.has(file.id) || (stat.size === file.size &&
               await sha256File(destination) === file.sha256)) {
             complete = true
-            bytesDone += file.size
           } else {
             await fs.promises.unlink(destination)
           }
@@ -2156,7 +2211,22 @@ function createTimecodeLanRelay(options = {}) {
               error?.message !== 'Arquivo de staging inseguro.') throw error
           if (error?.message === 'Arquivo de staging inseguro.') throw error
         }
-        if (!complete && String(file.kind || '').toLowerCase() === 'media' &&
+        if (!complete && localReuseById.has(file.id)) {
+          try { await fs.promises.unlink(partial) } catch (error) {
+            if (error?.code !== 'ENOENT') throw error
+          }
+          await report({
+            state: 'downloading',
+            bundleId,
+            bytesDone,
+            totalBytes: transferTotalBytes,
+            fileIndex: index + 1,
+            fileCount: manifest.files.length,
+          })
+          continue
+        }
+        if (!complete && !supportsLocalReuse &&
+            String(file.kind || '').toLowerCase() === 'media' &&
             (managedMediaCache || rppMediaBySha.size > 0)) {
           complete = await materializeProjectSyncCachedMedia(
             managedMediaCache, rppMediaBySha, file, destination,
@@ -2165,7 +2235,7 @@ function createTimecodeLanRelay(options = {}) {
                 state: 'verifying',
                 bundleId,
                 bytesDone,
-                totalBytes: manifest.totalBytes,
+                totalBytes: transferTotalBytes,
                 fileIndex: index + 1,
                 fileCount: manifest.files.length,
               }, true)
@@ -2184,7 +2254,7 @@ function createTimecodeLanRelay(options = {}) {
             state: 'downloading',
             bundleId,
             bytesDone,
-            totalBytes: manifest.totalBytes,
+            totalBytes: transferTotalBytes,
             fileIndex: index + 1,
             fileCount: manifest.files.length,
           })
@@ -2261,7 +2331,7 @@ function createTimecodeLanRelay(options = {}) {
             state: 'downloading',
             bundleId,
             bytesDone,
-            totalBytes: manifest.totalBytes,
+            totalBytes: transferTotalBytes,
             fileIndex: index + 1,
             fileCount: manifest.files.length,
           })
@@ -2270,7 +2340,7 @@ function createTimecodeLanRelay(options = {}) {
           state: 'verifying',
           bundleId,
           bytesDone,
-          totalBytes: manifest.totalBytes,
+          totalBytes: transferTotalBytes,
           fileIndex: index + 1,
           fileCount: manifest.files.length,
         }, true)
@@ -2329,8 +2399,22 @@ function createTimecodeLanRelay(options = {}) {
       const descriptorPath = pathUtil.join(
         transferRoot, 'bundle.descriptor.json')
       const descriptorPartial = `${descriptorPath}.partial`
+      const localDescriptor = localReuseById.size > 0
+        ? {
+            ...manifest,
+            localReuseFiles: manifest.files
+              .filter((file) => localReuseById.has(file.id))
+              .map((file) => ({
+                id: file.id,
+                absolutePath: localReuseById.get(file.id),
+                size: file.size,
+                sha256: file.sha256,
+              })),
+          }
+        : manifest
       await fs.promises.writeFile(descriptorPartial,
-        `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+        `${JSON.stringify(localDescriptor, null, 2)}\n`,
+        { encoding: 'utf8', mode: 0o600 })
       try { await fs.promises.unlink(descriptorPath) } catch (error) {
         if (error?.code !== 'ENOENT') throw error
       }
