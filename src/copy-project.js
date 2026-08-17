@@ -766,26 +766,39 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)
     beaconTimer = null
-    await ensureHttpServer()
-    update({ mode: 'share', phase: 'preparing', code: '', sourcePath: sourceRoot,
+    shareCode = randomCode()
+    sharedFolder = null
+    update({ mode: 'share', phase: 'preparing', code: shareCode, sourcePath: sourceRoot,
       destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
-      currentFile: '', error: '', result: '', receivedPath: '' })
-    const collected = await collectFolder(sourceRoot,
-      (patch) => update(patch), () => activeGeneration(generation))
-    activeGeneration(generation)
-    shareCode = randomCode()
-    sharedFolder = {
-      rootName: safeRootName(path.basename(sourceRoot)),
-      files: collected.files,
-      directories: collected.directories,
-      totalBytes: collected.totalBytes,
+      currentFile: 'Preparando a pasta...', error: '', result: '', receivedPath: '' })
+    try {
+      await ensureHttpServer()
+      const collected = await collectFolder(sourceRoot,
+        (patch) => update({ ...patch, code: shareCode }),
+        () => activeGeneration(generation))
+      activeGeneration(generation)
+      sharedFolder = {
+        rootName: safeRootName(path.basename(sourceRoot)),
+        files: collected.files,
+        directories: collected.directories,
+        totalBytes: collected.totalBytes,
+      }
+      return update({ mode: 'share', phase: 'sharing', code: shareCode,
+        sourcePath: sourceRoot, totalBytes: collected.totalBytes,
+        bytesDone: 0, fileIndex: 0, fileCount: collected.files.length,
+        currentFile: '', error: '',
+        result: 'Pasta disponível para o celular nesta rede local.' })
+    } catch (error) {
+      if (generation === operationGeneration) {
+        shareCode = ''
+        sharedFolder = null
+        update({ mode: 'share', phase: 'error', code: '',
+          currentFile: '', error: error?.message ||
+            'Não foi possível disponibilizar a pasta.' })
+      }
+      throw error
     }
-    return update({ mode: 'share', phase: 'sharing', code: shareCode,
-      sourcePath: sourceRoot, totalBytes: collected.totalBytes,
-      bytesDone: 0, fileIndex: 0, fileCount: collected.files.length,
-      currentFile: '', error: '',
-      result: 'Pasta disponível para o celular nesta rede local.' })
   }
 
   async function stopShare() {
