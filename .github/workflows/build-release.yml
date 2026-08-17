@@ -239,8 +239,17 @@ jobs:
             printf 'Encontrado: %s\n' "${KEEP_ASSETS[@]}"
             exit 1
           fi
-          API_PATH="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
-          if ! RELEASE_JSON="$(gh api "${API_PATH}" 2>/dev/null)"; then
+          RELEASES_PATH="repos/${GITHUB_REPOSITORY}/releases?per_page=100"
+          if ! RELEASES_JSON="$(gh api --paginate "${RELEASES_PATH}" 2>/dev/null)"; then
+            echo "Ainda nao existe Release para ${GITHUB_REF_NAME}; nada para limpar."
+            exit 0
+          fi
+          RELEASE_JSON="$(jq -s --arg tag "${GITHUB_REF_NAME}" '
+            add
+            | map(select(.tag_name == $tag))
+            | ((map(select(.draft == false)) | first) // (sort_by(.id) | first) // empty)
+          ' <<<"${RELEASES_JSON}")"
+          if [ -z "${RELEASE_JSON}" ]; then
             echo "Ainda nao existe Release para ${GITHUB_REF_NAME}; nada para limpar."
             exit 0
           fi
@@ -286,15 +295,29 @@ jobs:
               \( -name 'Hook-Center-*-Windows.exe' -o -name 'Hook-Center-*-macOS.dmg' \) \
               -printf '%f\n' | sort -u
           )
-          if [ "${#EXPECTED_ASSETS[@]}" -eq 0 ]; then
-            echo "Nenhum artefato local foi encontrado para validar o Release."
+          if [ "${#EXPECTED_ASSETS[@]}" -ne 2 ]; then
+            echo "Esperava exatamente um instalador Windows e um DMG macOS."
+            printf 'Encontrado: %s\n' "${EXPECTED_ASSETS[@]}"
             exit 1
           fi
 
-          API_PATH="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
+          RELEASES_PATH="repos/${GITHUB_REPOSITORY}/releases?per_page=100"
+          API_ERROR_FILE="$(mktemp)"
+          trap 'rm -f "${API_ERROR_FILE}"' EXIT
           for ATTEMPT in $(seq 1 12); do
             echo "Tentativa ${ATTEMPT}/12 de validar e finalizar ${GITHUB_REF_NAME}..."
-            if RELEASE_JSON="$(gh api "${API_PATH}" 2>/dev/null)"; then
+            : >"${API_ERROR_FILE}"
+            if RELEASES_JSON="$(gh api --paginate "${RELEASES_PATH}" 2>"${API_ERROR_FILE}")"; then
+              RELEASE_JSON="$(jq -s --arg tag "${GITHUB_REF_NAME}" '
+                add
+                | map(select(.tag_name == $tag))
+                | ((map(select(.draft == false)) | first) // (sort_by(.id) | first) // empty)
+              ' <<<"${RELEASES_JSON}")"
+              if [ -z "${RELEASE_JSON}" ]; then
+                echo "O Release draft da tag ainda nao apareceu na API."
+                sleep $((ATTEMPT * 5))
+                continue
+              fi
               MISSING=0
               for ASSET in "${EXPECTED_ASSETS[@]}"; do
                 if ! jq -e --arg name "${ASSET}" '.assets[]? | select(.name == $name)' \
@@ -308,17 +331,24 @@ jobs:
                 RELEASE_ID="$(jq -r '.id' <<<"${RELEASE_JSON}")"
                 IS_DRAFT="$(jq -r '.draft' <<<"${RELEASE_JSON}")"
                 if [ "${IS_DRAFT}" = "true" ]; then
-                  gh api --method PATCH \
-                    "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-                    -F draft=false >/dev/null
+                  if ! gh api --method PATCH \
+                      "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+                      -F draft=false >/dev/null; then
+                    echo "A API recusou a publicacao nesta tentativa."
+                    sleep $((ATTEMPT * 5))
+                    continue
+                  fi
                 fi
 
-                FINAL_JSON="$(gh api "${API_PATH}")"
-                if [ "$(jq -r '.draft' <<<"${FINAL_JSON}")" = "false" ]; then
+                if FINAL_JSON="$(gh api \
+                    "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" 2>/dev/null)" && \
+                    [ "$(jq -r '.draft' <<<"${FINAL_JSON}")" = "false" ]; then
                   echo "Release ${GITHUB_REF_NAME} publicado com todos os artefatos."
                   exit 0
                 fi
               fi
+            else
+              sed 's/^/GitHub API: /' "${API_ERROR_FILE}"
             fi
 
             sleep $((ATTEMPT * 5))
