@@ -3868,6 +3868,24 @@ function renderState(nextState) {
   $('#licenseActive').textContent = license.active ? 'Ativa' : 'Pendente';
   $('#licenseActive').classList.toggle('ok-text', !!license.active);
   $('#licenseDevices').textContent = `${license.devicesUsed || 0} de ${license.maxDevices || 0}`;
+  const planCard = $('#licensePlanCard');
+  const supportedPlanTypes = new Set(['lifetime', 'monthly', 'annual', 'mixed']);
+  const planType = supportedPlanTypes.has(String(license.planType || '').toLowerCase())
+    ? String(license.planType).toLowerCase()
+    : 'none';
+  const planDefaults = {
+    lifetime: { label: 'Vitalício', description: 'Compra única, sem renovação.' },
+    monthly: { label: 'Mensal', description: 'Assinatura com renovação mensal.' },
+    annual: { label: 'Anual', description: 'Assinatura com renovação anual.' },
+    mixed: { label: 'Mais de um plano', description: 'Esta licença reúne compras de tipos diferentes.' },
+    none: { label: 'Não identificado', description: 'Ative ou verifique a licença para consultar seu plano.' }
+  };
+  if (planCard) {
+    planCard.classList.remove('plan-none', 'plan-lifetime', 'plan-monthly', 'plan-annual', 'plan-mixed');
+    planCard.classList.add(`plan-${planType}`);
+  }
+  if ($('#licensePlanLabel')) $('#licensePlanLabel').textContent = license.planLabel || planDefaults[planType].label;
+  if ($('#licensePlanDescription')) $('#licensePlanDescription').textContent = planDefaults[planType].description;
   
   const licenseMessage = license.message || license.warning || '';
   if (licenseMessage) {

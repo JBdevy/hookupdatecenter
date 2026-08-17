@@ -8338,6 +8338,69 @@ body.previous-mode .content > .view.active {
   justify-content: center;
 }
 
+#licenseView .license-plan-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 14px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 12px 15px;
+  overflow: hidden;
+  border: 2px solid rgba(148, 163, 184, .38);
+  border-radius: 14px;
+  background: rgba(13, 17, 27, .78);
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+
+#licenseView .license-plan-caption {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+#licenseView .license-plan-card strong {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  font-size: 19px;
+  letter-spacing: .01em;
+}
+
+#licenseView .license-plan-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#licenseView .license-plan-card.plan-lifetime {
+  border-color: #ffd34e;
+  background: linear-gradient(135deg, rgba(255, 211, 78, .14), rgba(13, 17, 27, .82) 68%);
+  box-shadow: inset 0 0 0 1px rgba(255, 211, 78, .12), 0 0 18px rgba(255, 211, 78, .12);
+}
+#licenseView .license-plan-card.plan-lifetime strong { color: #ffe082; }
+
+#licenseView .license-plan-card.plan-monthly {
+  border-color: #22c7f2;
+  background: linear-gradient(135deg, rgba(34, 199, 242, .14), rgba(13, 17, 27, .82) 68%);
+  box-shadow: inset 0 0 0 1px rgba(34, 199, 242, .12), 0 0 18px rgba(34, 199, 242, .12);
+}
+#licenseView .license-plan-card.plan-monthly strong { color: #71dcf8; }
+
+#licenseView .license-plan-card.plan-annual {
+  border-color: #b967ff;
+  background: linear-gradient(135deg, rgba(185, 103, 255, .16), rgba(13, 17, 27, .82) 68%);
+  box-shadow: inset 0 0 0 1px rgba(185, 103, 255, .13), 0 0 18px rgba(185, 103, 255, .14);
+}
+#licenseView .license-plan-card.plan-annual strong { color: #d7a7ff; }
+
+#licenseView .license-plan-card.plan-mixed {
+  border-color: #ff9f43;
+  background: linear-gradient(135deg, rgba(255, 211, 78, .13), rgba(34, 199, 242, .11) 48%, rgba(185, 103, 255, .14));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08), 0 0 18px rgba(185, 103, 255, .12);
+}
+#licenseView .license-plan-card.plan-mixed strong { color: #ffd5a8; }
+
 /* O card da conexão ocupa toda a coluna disponível. */
 #bridgeView .compact-connection-card.bridge-card-inline {
   width: 100% !important;
