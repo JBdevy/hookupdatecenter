@@ -7276,12 +7276,39 @@ body.previous-mode .content > .view.active {
 
 .hook-tutorials-modal {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: min(900px, calc(100vw - 40px));
   height: min(720px, calc(100vh - 40px));
   max-width: 900px;
   max-height: calc(100vh - 40px);
   overflow: hidden;
+}
+
+.hook-tutorial-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .035);
+}
+
+.hook-tutorial-tabs button {
+  flex: 1;
+  min-height: 42px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.hook-tutorial-tabs button.active {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(187,57,255,.34), rgba(141,255,31,.15));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
 }
 
 .hook-tutorials-modal-header {

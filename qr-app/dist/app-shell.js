@@ -6,7 +6,7 @@ const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '1-0-1-chat-video-multiloop4-v18'
+const VSHOOK_ASSET_VERSION = '1-0-1-transfer-hook-v2'
 const VSHOOK_CHAT_BOOTSTRAP_KEY = 'vshook_chat_bootstrap_key'
 const VSHOOK_CHAT_MOBILE_SESSION_KEY = 'vshook_chat_mobile_session'
 let vshookDiscoveredProjects = []
@@ -109,6 +109,35 @@ function enterStoredChat() {
 
 function attachStoredChatHandler() {
   document.getElementById('openStoredChatBtn')?.addEventListener('click', enterStoredChat)
+}
+
+function renderStandaloneTransferHookButton() {
+  return '<button class="vshook-mode-button" id="openStandaloneTransferHookBtn">Abrir Transfer Hook</button>'
+}
+
+function enterStandaloneTransferHook() {
+  let host = ''
+  try { host = normalizeIp(localStorage.getItem('vshook_transfer_host') || '') } catch (_) {}
+  if (!host) host = normalizeIp(window.location.hostname)
+  if (!host) {
+    host = normalizeIp(window.prompt('Digite o IP do computador com a Hook Center aberta:') || '')
+  }
+  if (!host) return false
+  try { localStorage.setItem('vshook_transfer_host', host) } catch (_) {}
+  vshookDiscoveryRunId += 1
+  vshookProjectsRefreshRunId += 1
+  enterApp({
+    id: 'transfer-hook-local',
+    projectName: 'Transfer Hook',
+    directorUrl: `http://${host}:${VSHOOK_DIRECTOR_PORT}`,
+    musiciansUrl: `http://${host}:${VSHOOK_MUSICIANS_PORT}`,
+    projectTabIndex: 0,
+  }, 'transfer-hook', { skipProjectSwitch: true })
+  return true
+}
+
+function attachStandaloneTransferHookHandler() {
+  document.getElementById('openStandaloneTransferHookBtn')?.addEventListener('click', enterStandaloneTransferHook)
 }
 
 captureChatBootstrapKey()
@@ -396,9 +425,11 @@ function renderSearching() {
     <p class="vshook-shell-subtitle">Procurando sessões VS Hook disponíveis na rede Wi‑Fi...</p>
     <p class="vshook-shell-status">A busca continua em segundo plano. Se preferir, digite o IP do computador agora.</p>
     ${renderStoredChatButton()}
+    ${renderStandaloneTransferHookButton()}
     ${renderManualIpBox()}
   `)
   attachStoredChatHandler()
+  attachStandaloneTransferHookHandler()
   attachManualIpHandler()
 }
 
@@ -407,11 +438,13 @@ function renderNoProjects() {
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
-    <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
+    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Transfer Hook funciona somente com a Hook Center aberta.</p>
     ${renderStoredChatButton()}
+    ${renderStandaloneTransferHookButton()}
     ${renderManualIpBox()}
   `)
   attachStoredChatHandler()
+  attachStandaloneTransferHookHandler()
   attachManualIpHandler()
 }
 
@@ -432,6 +465,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
       <button class="vshook-mode-button" id="chooseChatHookBtn">Entrar no Chat Hook</button>
+      <button class="vshook-mode-button" id="chooseTransferHookBtn">Entrar no Transfer Hook</button>
     </div>
     <div class="vshook-app-version">Versão 1.0.1 app</div>
   `)
@@ -453,6 +487,11 @@ function renderModeFirst(projects) {
   document.getElementById('chooseChatHookBtn')?.addEventListener('click', () => {
     const selected = getDefaultMusicianProject(vshookDiscoveredProjects)
     if (selected) enterApp(selected, 'chat', { skipProjectSwitch: true })
+  })
+
+  document.getElementById('chooseTransferHookBtn')?.addEventListener('click', () => {
+    const selected = getDefaultMusicianProject(vshookDiscoveredProjects)
+    if (selected) enterApp(selected, 'transfer-hook', { skipProjectSwitch: true })
   })
 
 }
@@ -571,6 +610,8 @@ function loadModeStyles(mode) {
     ? './recados-app.css'
     : mode === 'chat'
       ? './chat-app.css'
+      : mode === 'transfer-hook'
+        ? './transfer-hook-app.css'
       : './stylediretor-app.css'
   const link = document.createElement('link')
   link.rel = 'stylesheet'
@@ -624,6 +665,8 @@ async function enterApp(project, mode, options = {}) {
     ? './recados.js'
     : mode === 'chat'
       ? './chat.js'
+      : mode === 'transfer-hook'
+        ? './transfer-hook.js'
       : './vsdiretor.js'
   script.src = `${scriptFile}?v=${VSHOOK_ASSET_VERSION}`
   script.setAttribute('data-vshook-mode-script', mode)
@@ -680,6 +723,7 @@ async function attemptManualIpEntry() {
   if (projects && projects.length) {
     renderModeFirst(projects)
   } else {
+    try { localStorage.setItem('vshook_transfer_host', ip) } catch (_) {}
     renderNoProjects()
     const nextInput = document.getElementById('manualIpInput')
     if (nextInput) {
@@ -981,11 +1025,13 @@ function renderBridgeNoProjects() {
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
-    <p class="vshook-shell-status">Abra o REAPER ou uma sessão no REAPER e verifique se o Hook Center está aberto.</p>
+    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Transfer Hook funciona somente com a Hook Center aberta.</p>
     ${renderStoredChatButton()}
+    ${renderStandaloneTransferHookButton()}
     <button class="vshook-secondary-button" id="refreshProjectsBtn">Atualizar</button>
   `)
   attachStoredChatHandler()
+  attachStandaloneTransferHookHandler()
   document.getElementById('refreshProjectsBtn')?.addEventListener('click', startBridgeBrowserMode)
 }
 

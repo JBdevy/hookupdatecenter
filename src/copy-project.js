@@ -5,10 +5,10 @@ const http = require('http')
 const dgram = require('dgram')
 const crypto = require('crypto')
 
-const COPY_PROJECT_VERSION = 1
+const COPY_PROJECT_VERSION = 2
 const COPY_PROJECT_HTTP_PORT = 47835
 const COPY_PROJECT_DISCOVERY_PORT = 47836
-const COPY_PROJECT_MAGIC = 'VS_HOOK_COPY_PROJECT_V1'
+const COPY_PROJECT_MAGIC = 'VS_HOOK_TRANSFER_HOOK_V2'
 const COPY_PROJECT_CHUNK_BYTES = 1024 * 1024
 const COPY_PROJECT_MAX_FILES = 100000
 const COPY_PROJECT_MAX_TOTAL_BYTES = 512 * 1024 * 1024 * 1024
@@ -25,6 +25,29 @@ function randomCode() {
 function safeToken(value) {
   const token = String(value || '').trim()
   return /^[a-f0-9]{64}$/i.test(token) ? token.toLowerCase() : ''
+}
+
+function safeTransferId(value) {
+  const id = String(value || '').trim().toLowerCase()
+  return /^[a-f0-9]{64}$/.test(id) ? id : ''
+}
+
+function waitMs(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function responseError(message, statusCode) {
+  const error = new Error(message)
+  error.statusCode = Number(statusCode) || 0
+  return error
+}
+
+function isRetryableNetworkError(error) {
+  if (Number(error?.statusCode) > 0) return false
+  return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH',
+    'ENETUNREACH', 'ENETDOWN', 'EPIPE', 'EAI_AGAIN'].includes(error?.code) ||
+    /tempo de rede|tempo de envio|socket hang up|network|fetch failed|pc receptor não encontrado/i
+      .test(String(error?.message || ''))
 }
 
 function safeCode(value) {
@@ -46,7 +69,7 @@ function safeRelativePath(value) {
 function safeRootName(value) {
   const name = String(value || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
     .replace(/[. ]+$/g, '').trim().slice(0, 180)
-  return name || 'Copy Project'
+  return name || 'Transfer Hook'
 }
 
 function pathIdentity(value) {
@@ -103,28 +126,6 @@ async function regularFileStat(filename, expectedSize = -1) {
   return before
 }
 
-async function sha256File(filename, expectedSize = -1, onProgress = null) {
-  const before = await regularFileStat(filename, expectedSize)
-  const hash = crypto.createHash('sha256')
-  let bytes = 0
-  await new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(filename)
-    stream.on('data', (chunk) => {
-      hash.update(chunk)
-      bytes += chunk.length
-      if (onProgress) onProgress(chunk.length)
-    })
-    stream.once('error', reject)
-    stream.once('end', resolve)
-  })
-  const after = await regularFileStat(filename, before.size)
-  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
-      before.ctimeMs !== after.ctimeMs || bytes !== before.size) {
-    throw new Error(`O arquivo mudou durante a leitura: ${path.basename(filename)}`)
-  }
-  return hash.digest('hex')
-}
-
 function broadcastAddresses() {
   const result = new Set(['255.255.255.255'])
   for (const entries of Object.values(os.networkInterfaces())) {
@@ -147,6 +148,9 @@ function jsonResponse(res, status, payload) {
     'content-type': 'application/json; charset=utf-8',
     'content-length': body.length,
     'cache-control': 'no-store',
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type, range, x-copy-token, x-copy-file-id, x-copy-offset',
   })
   res.end(body)
 }
@@ -190,7 +194,7 @@ async function requestJson(options, payload, timeoutMs = 10000) {
         let data = null
         try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch (_) {}
         if (res.statusCode < 200 || res.statusCode >= 300 || !data?.ok) {
-          reject(new Error(data?.error || `Falha de rede (${res.statusCode}).`))
+          reject(responseError(data?.error || `Falha de rede (${res.statusCode}).`, res.statusCode))
           return
         }
         resolve(data)
@@ -207,7 +211,7 @@ async function postChunk(options, buffer, timeoutMs = 30000) {
     const req = http.request({
       hostname: options.hostname,
       port: options.port,
-      path: '/copy-project/file',
+      path: '/transfer-hook/file',
       method: 'POST',
       headers: {
         'content-type': 'application/octet-stream',
@@ -215,8 +219,6 @@ async function postChunk(options, buffer, timeoutMs = 30000) {
         'x-copy-token': options.token,
         'x-copy-file-id': options.fileId,
         'x-copy-offset': String(options.offset),
-        'x-copy-chunk-sha256': crypto.createHash('sha256')
-          .update(buffer).digest('hex'),
       },
     }, (res) => {
       const chunks = []
@@ -225,7 +227,7 @@ async function postChunk(options, buffer, timeoutMs = 30000) {
         let data = null
         try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch (_) {}
         if (res.statusCode < 200 || res.statusCode >= 300 || !data?.ok) {
-          reject(new Error(data?.error || `Falha ao enviar bloco (${res.statusCode}).`))
+          reject(responseError(data?.error || `Falha ao enviar bloco (${res.statusCode}).`, res.statusCode))
           return
         }
         resolve(data)
@@ -272,23 +274,17 @@ async function collectFolder(sourceRoot, update, isActive) {
           absolutePath: absolute,
           size: stat.size,
           mtimeMs: stat.mtimeMs,
-          sha256: '',
+          ctimeMs: stat.ctimeMs,
         })
+        if (files.length === 1 || files.length % 25 === 0) {
+          update({ phase: 'preparing', fileIndex: files.length,
+            fileCount: files.length, currentFile: relative,
+            totalBytes, bytesDone: 0 })
+        }
       }
     }
   }
   await walk(sourceRoot, '')
-  let hashedBytes = 0
-  for (let index = 0; index < files.length; index += 1) {
-    isActive()
-    const file = files[index]
-    file.sha256 = await sha256File(file.absolutePath, file.size, (amount) => {
-      hashedBytes += amount
-      update({ phase: 'preparing', bytesDone: hashedBytes,
-        totalBytes, fileIndex: index + 1, fileCount: files.length,
-        currentFile: file.relativePath })
-    })
-  }
   return { files, directories, totalBytes }
 }
 
@@ -305,11 +301,14 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
   let receiverRoot = ''
   let receiverCode = ''
   let inbound = null
+  let sharedFolder = null
+  let shareCode = ''
   let operationGeneration = 0
   const discovered = new Map()
 
   function publicState() {
-    return { ...state, receiving: !!receiverCode, protocolVersion: COPY_PROJECT_VERSION }
+    return { ...state, receiving: !!receiverCode, sharing: !!shareCode,
+      shareCode, protocolVersion: COPY_PROJECT_VERSION }
   }
 
   function update(patch) {
@@ -408,33 +407,73 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     throw new Error('PC receptor não encontrado. Confira o código e a rede.')
   }
 
-  async function uniqueConflictPath(target) {
-    const extension = path.extname(target)
-    const base = target.slice(0, target.length - extension.length)
-    for (let index = 1; index <= 9999; index += 1) {
-      const candidate = `${base} (recebido ${index})${extension}`
-      try { await fs.promises.lstat(candidate) } catch (error) {
-        if (error?.code === 'ENOENT') return candidate
-        throw error
-      }
+  async function replaceFromPartial(partial, target, token) {
+    const backup = `${target}.vshook-${token.slice(0, 12)}.replaced`
+    let hadTarget = false
+    await fs.promises.unlink(backup).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error
+    })
+    try {
+      await regularFileStat(target)
+      await fs.promises.rename(target, backup)
+      hadTarget = true
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
     }
-    throw new Error('Não foi possível criar um nome livre no destino.')
+    try {
+      await fs.promises.rename(partial, target)
+    } catch (error) {
+      if (hadTarget) {
+        await fs.promises.rename(backup, target).catch(() => {})
+      }
+      throw error
+    }
+    if (hadTarget) await fs.promises.unlink(backup).catch(() => {})
   }
 
   async function prepareInbound(manifest, remoteAddress) {
     if (!receiverCode || !receiverRoot) throw new Error('O recebimento não está ativo.')
-    if (inbound && [...inbound.files.values()].some((file) => !file.complete)) {
-      throw new Error('Aguarde a transferência atual terminar.')
-    }
+    const transferId = safeTransferId(manifest?.transferId) ||
+      crypto.createHash('sha256').update(JSON.stringify({
+        code: safeCode(manifest?.code),
+        rootName: String(manifest?.rootName || ''),
+        files: Array.isArray(manifest?.files) ? manifest.files : [],
+        directories: Array.isArray(manifest?.directories) ? manifest.directories : []
+      })).digest('hex')
     if (!manifest || manifest.schemaVersion !== 1 ||
         safeCode(manifest.code) !== receiverCode ||
         !Array.isArray(manifest.files) || !Array.isArray(manifest.directories) ||
         manifest.files.length > COPY_PROJECT_MAX_FILES) {
       throw new Error('Manifesto de transferência inválido.')
     }
+    if (inbound && inbound.transferId === transferId &&
+        [...inbound.files.values()].every((file) => file.complete)) {
+      inbound.remoteAddress = remoteAddress
+      return { token: inbound.token, missing: [], offsets: {},
+        targetRoot: inbound.targetRoot, resumed: true, completed: true }
+    }
+    if (inbound && [...inbound.files.values()].some((file) => !file.complete)) {
+      if (inbound.transferId !== transferId) {
+        throw new Error('Aguarde a transferência atual terminar.')
+      }
+      inbound.remoteAddress = remoteAddress
+      const pending = [...inbound.files.values()].filter((file) => !file.complete)
+      update({ mode: 'receive', phase: 'receiving', error: '',
+        result: '', bytesDone: inbound.bytesDone,
+        totalBytes: inbound.totalBytes,
+        fileIndex: inbound.files.size - pending.length,
+        fileCount: inbound.files.size,
+        currentFile: pending[0]?.relativePath || '' })
+      return {
+        token: inbound.token,
+        missing: pending.map((file) => file.id),
+        offsets: Object.fromEntries(pending.map((file) => [file.id, file.offset])),
+        targetRoot: inbound.targetRoot,
+        resumed: true,
+      }
+    }
     const rootName = safeRootName(manifest.rootName)
-    const targetRoot = path.join(receiverRoot, rootName)
-    await ensureSafeDirectory(receiverRoot, targetRoot)
+    const targetRoot = receiverRoot
     for (const relative of manifest.directories) {
       const directory = resolveInside(targetRoot, relative)
       if (!directory) throw new Error('O manifesto contém uma pasta inválida.')
@@ -456,9 +495,8 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       const id = String(raw?.id || '')
       const relativePath = safeRelativePath(raw?.relativePath)
       const size = Number(raw?.size)
-      const sha256 = safeToken(raw?.sha256)
       if (!/^file-[1-9][0-9]*$/.test(id) || files.has(id) || !relativePath ||
-          !Number.isSafeInteger(size) || size < 0 || !sha256) {
+          !Number.isSafeInteger(size) || size < 0) {
         throw new Error('O manifesto contém um arquivo inválido.')
       }
       totalBytes += size
@@ -471,32 +509,22 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       update({ phase: 'checking', fileIndex: manifestIndex + 1,
         fileCount: manifest.files.length, currentFile: relativePath })
       let complete = false
-      try {
-        const stat = await regularFileStat(target)
-        if (stat.size === size && await sha256File(target, size) === sha256) {
-          complete = true
-        } else {
-          target = await uniqueConflictPath(target)
-        }
-      } catch (error) {
-        if (error?.code !== 'ENOENT' &&
-            error?.message !== 'Arquivo ausente, alterado ou inseguro.') throw error
-        if (error?.message === 'Arquivo ausente, alterado ou inseguro.') {
-          throw error
-        }
-      }
+      const partial = `${target}.vshook-${token.slice(0, 12)}.partial`
       if (!complete && size === 0) {
-        const handle = await fs.promises.open(target, 'wx')
+        await fs.promises.unlink(partial).catch((error) => {
+          if (error?.code !== 'ENOENT') throw error
+        })
+        const handle = await fs.promises.open(partial, 'wx')
         await handle.close()
+        await replaceFromPartial(partial, target, token)
         complete = true
       }
-      const partial = `${target}.vshook-${token.slice(0, 12)}.partial`
-      files.set(id, { id, relativePath, size, sha256, target, partial,
+      files.set(id, { id, relativePath, size, target, partial,
         offset: complete ? size : 0, complete })
       if (!complete) missing.push(id)
     }
     inbound = {
-      token, remoteAddress, rootName, targetRoot, files,
+      token, transferId, remoteAddress, rootName, targetRoot, files,
       totalBytes, bytesDone: totalBytes - missing.reduce((sum, id) =>
         sum + files.get(id).size, 0),
     }
@@ -505,33 +533,107 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       destinationPath: receiverRoot, totalBytes, bytesDone: inbound.bytesDone,
       fileCount: files.size, fileIndex: files.size - missing.length,
       currentFile: '', error: '',
-      result: missing.length ? '' : `Todos os arquivos já existiam em ${targetRoot}` })
-    return { token, missing, targetRoot }
+      result: missing.length ? '' : `Transferência concluída em ${targetRoot}` })
+    return { token, missing,
+      offsets: Object.fromEntries(missing.map((id) => [id, files.get(id).offset])),
+      targetRoot }
   }
 
   async function handleHttp(req, res) {
     const remoteAddress = normalizeAddress(req.socket.remoteAddress)
     const url = new URL(req.url, 'http://127.0.0.1')
     try {
-      if (req.method === 'GET' && url.pathname === '/copy-project/status') {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-headers': 'content-type, range, x-copy-token, x-copy-file-id, x-copy-offset',
+          'access-control-max-age': '600',
+        })
+        res.end()
+        return
+      }
+      if (req.method === 'GET' &&
+          ['/transfer-hook/status', '/copy-project/status'].includes(url.pathname)) {
         const code = safeCode(url.searchParams.get('code'))
         jsonResponse(res, 200, { ok: true, version: COPY_PROJECT_VERSION,
           available: !!receiverCode && code === receiverCode,
           name: String(getDeviceName?.() || os.hostname()) })
         return
       }
-      if (req.method === 'POST' && url.pathname === '/copy-project/start') {
+      if (req.method === 'GET' && url.pathname === '/transfer-hook/share/status') {
+        const code = safeCode(url.searchParams.get('code'))
+        jsonResponse(res, 200, { ok: true, version: COPY_PROJECT_VERSION,
+          available: !!sharedFolder && code === shareCode,
+          name: String(getDeviceName?.() || os.hostname()) })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/transfer-hook/share/manifest') {
+        const code = safeCode(url.searchParams.get('code'))
+        if (!sharedFolder || code !== shareCode) {
+          jsonResponse(res, 403, { ok: false, error: 'Código do Transfer Hook inválido.' })
+          return
+        }
+        jsonResponse(res, 200, { ok: true, schemaVersion: 1,
+          rootName: sharedFolder.rootName,
+          directories: sharedFolder.directories,
+          files: sharedFolder.files.map(({ absolutePath, mtimeMs, ctimeMs, ...file }) => file),
+          totalBytes: sharedFolder.totalBytes,
+          senderName: String(getDeviceName?.() || os.hostname()).slice(0, 120) })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/transfer-hook/share/file') {
+        const code = safeCode(url.searchParams.get('code'))
+        const id = String(url.searchParams.get('id') || '')
+        const file = sharedFolder?.files.find((entry) => entry.id === id)
+        if (!sharedFolder || code !== shareCode || !file) {
+          jsonResponse(res, 403, { ok: false, error: 'Arquivo ou código inválido.' })
+          return
+        }
+        const stat = await regularFileStat(file.absolutePath, file.size)
+        if (stat.mtimeMs !== file.mtimeMs || stat.ctimeMs !== file.ctimeMs) {
+          throw new Error(`O arquivo mudou depois de ser disponibilizado: ${file.relativePath}`)
+        }
+        const rangeMatch = String(req.headers.range || '').match(/^bytes=(\d+)-$/)
+        const rangeStart = rangeMatch ? Number(rangeMatch[1]) : 0
+        if (!Number.isSafeInteger(rangeStart) || rangeStart < 0 || rangeStart >= file.size && file.size > 0) {
+          res.writeHead(416, { 'content-range': `bytes */${file.size}`,
+            'access-control-allow-origin': '*' })
+          res.end()
+          return
+        }
+        const responseSize = Math.max(0, file.size - rangeStart)
+        res.writeHead(rangeStart > 0 ? 206 : 200, {
+          'content-type': 'application/octet-stream',
+          'content-length': responseSize,
+          'accept-ranges': 'bytes',
+          ...(rangeStart > 0
+            ? { 'content-range': `bytes ${rangeStart}-${file.size - 1}/${file.size}` }
+            : {}),
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(file.relativePath))}`,
+          'cache-control': 'no-store',
+          'access-control-allow-origin': '*',
+          'access-control-expose-headers': 'content-length, content-range, accept-ranges',
+        })
+        const stream = fs.createReadStream(file.absolutePath,
+          rangeStart > 0 ? { start: rangeStart } : undefined)
+        stream.once('error', () => res.destroy())
+        stream.pipe(res)
+        return
+      }
+      if (req.method === 'POST' &&
+          ['/transfer-hook/start', '/copy-project/start'].includes(url.pathname)) {
         const body = await readBody(req, COPY_PROJECT_MAX_MANIFEST_BYTES)
         const manifest = JSON.parse(body.toString('utf8'))
         const prepared = await prepareInbound(manifest, remoteAddress)
         jsonResponse(res, 200, { ok: true, ...prepared })
         return
       }
-      if (req.method === 'POST' && url.pathname === '/copy-project/file') {
+      if (req.method === 'POST' &&
+          ['/transfer-hook/file', '/copy-project/file'].includes(url.pathname)) {
         const token = safeToken(req.headers['x-copy-token'])
         const fileId = String(req.headers['x-copy-file-id'] || '')
         const offset = Number(req.headers['x-copy-offset'])
-        const chunkSha = safeToken(req.headers['x-copy-chunk-sha256'])
         if (!inbound || token !== inbound.token ||
             remoteAddress !== inbound.remoteAddress) {
           jsonResponse(res, 403, { ok: false, error: 'Sessão de recebimento inválida.' })
@@ -539,15 +641,14 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
         }
         const file = inbound.files.get(fileId)
         if (!file || file.complete || !Number.isSafeInteger(offset) ||
-            offset !== file.offset || !chunkSha) {
+            offset !== file.offset) {
           jsonResponse(res, 409, { ok: false, error: 'Bloco fora de sequência.' })
           return
         }
         const maximum = Math.min(COPY_PROJECT_CHUNK_BYTES, file.size - offset)
         const body = await readBody(req, maximum)
         if (body.length === 0 && file.size !== 0 ||
-            body.length > maximum ||
-            crypto.createHash('sha256').update(body).digest('hex') !== chunkSha) {
+            body.length > maximum) {
           throw new Error('Bloco recebido está corrompido.')
         }
         const handle = await fs.promises.open(file.partial, offset === 0 ? 'w' : 'r+')
@@ -560,15 +661,8 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
         file.offset += body.length
         inbound.bytesDone += body.length
         if (file.offset === file.size) {
-          if (await sha256File(file.partial, file.size) !== file.sha256) {
-            await fs.promises.unlink(file.partial).catch(() => {})
-            file.offset = 0
-            throw new Error(`SHA-256 inválido: ${file.relativePath}`)
-          }
-          try { await fs.promises.lstat(file.target); file.target = await uniqueConflictPath(file.target) } catch (error) {
-            if (error?.code !== 'ENOENT') throw error
-          }
-          await fs.promises.rename(file.partial, file.target)
+          await regularFileStat(file.partial, file.size)
+          await replaceFromPartial(file.partial, file.target, token)
           file.complete = true
         }
         const completed = [...inbound.files.values()].filter((item) => item.complete).length
@@ -578,7 +672,8 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
         jsonResponse(res, 200, { ok: true, offset: file.offset, complete: file.complete })
         return
       }
-      if (req.method === 'POST' && url.pathname === '/copy-project/finish') {
+      if (req.method === 'POST' &&
+          ['/transfer-hook/finish', '/copy-project/finish'].includes(url.pathname)) {
         const body = JSON.parse((await readBody(req, 4096)).toString('utf8'))
         if (!inbound || safeToken(body.token) !== inbound.token ||
             remoteAddress !== inbound.remoteAddress ||
@@ -592,14 +687,23 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
           fileCount: inbound.files.size, currentFile: '',
           result: `Pasta recebida em ${targetRoot}`,
           receivedPath: targetRoot })
-        inbound = null
         jsonResponse(res, 200, { ok: true, targetRoot })
         return
       }
-      jsonResponse(res, 404, { ok: false, error: 'Rota Copy Project não encontrada.' })
+      jsonResponse(res, 404, { ok: false, error: 'Rota Transfer Hook não encontrada.' })
     } catch (error) {
-      update({ phase: 'error', error: error?.message || 'Falha ao receber arquivos.' })
-      jsonResponse(res, 400, { ok: false, error: error?.message || 'Falha na transferência.' })
+      const interrupted = !!inbound && [...inbound.files.values()]
+        .some((file) => !file.complete) &&
+        (req.aborted || isRetryableNetworkError(error))
+      update(interrupted
+        ? { phase: 'paused', error: '', result: '',
+            currentFile: 'Rede desconectada. Aguardando reconexão...' }
+        : { phase: 'error', error: error?.message || 'Falha ao receber arquivos.' })
+      if (!res.headersSent && !res.destroyed) {
+        jsonResponse(res, interrupted ? 503 : 400, { ok: false,
+          error: interrupted ? 'Transferência pausada aguardando reconexão.'
+            : (error?.message || 'Falha na transferência.') })
+      }
     }
   }
 
@@ -623,6 +727,8 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     }
     receiverRoot = destination
     receiverCode = randomCode()
+    shareCode = ''
+    sharedFolder = null
     await cleanupInboundPartials()
     ++operationGeneration
     await Promise.all([ensureUdp(), ensureHttpServer()])
@@ -648,6 +754,49 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       currentFile: '', error: '', result: '', receivedPath: '' })
   }
 
+  async function startShare(sourcePath) {
+    const sourceRoot = path.resolve(String(sourcePath || ''))
+    const sourceStat = await fs.promises.lstat(sourceRoot)
+    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+      throw new Error('Escolha uma pasta válida para disponibilizar.')
+    }
+    const generation = ++operationGeneration
+    receiverCode = ''
+    receiverRoot = ''
+    await cleanupInboundPartials()
+    if (beaconTimer) clearInterval(beaconTimer)
+    beaconTimer = null
+    await ensureHttpServer()
+    update({ mode: 'share', phase: 'preparing', code: '', sourcePath: sourceRoot,
+      destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
+      bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
+      currentFile: '', error: '', result: '', receivedPath: '' })
+    const collected = await collectFolder(sourceRoot,
+      (patch) => update(patch), () => activeGeneration(generation))
+    activeGeneration(generation)
+    shareCode = randomCode()
+    sharedFolder = {
+      rootName: safeRootName(path.basename(sourceRoot)),
+      files: collected.files,
+      directories: collected.directories,
+      totalBytes: collected.totalBytes,
+    }
+    return update({ mode: 'share', phase: 'sharing', code: shareCode,
+      sourcePath: sourceRoot, totalBytes: collected.totalBytes,
+      bytesDone: 0, fileIndex: 0, fileCount: collected.files.length,
+      currentFile: '', error: '',
+      result: 'Pasta disponível para o celular nesta rede local.' })
+  }
+
+  async function stopShare() {
+    ++operationGeneration
+    shareCode = ''
+    sharedFolder = null
+    return update({ mode: '', phase: 'idle', code: '', sourcePath: '',
+      bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
+      currentFile: '', error: '', result: '' })
+  }
+
   async function sendFolder(sourcePath, codeValue) {
     const code = safeCode(codeValue)
     if (!code) throw new Error('Digite o código de 6 dígitos do PC receptor.')
@@ -662,75 +811,102 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
       currentFile: '', error: '', result: '', receivedPath: '' })
     try {
-      const peer = await findReceiver(code, generation)
+      let peer = await findReceiver(code, generation)
       activeGeneration(generation)
       update({ phase: 'preparing', peerName: peer.name || peer.address })
       const collected = await collectFolder(sourceRoot,
         (patch) => update(patch), () => activeGeneration(generation))
+      const transferId = crypto.randomBytes(32).toString('hex')
       const manifest = {
         schemaVersion: 1,
+        transferId,
         code,
         rootName: safeRootName(path.basename(sourceRoot)),
         senderName: String(getDeviceName?.() || os.hostname()).slice(0, 120),
         directories: collected.directories,
-        files: collected.files.map(({ absolutePath, mtimeMs, ...file }) => file),
+        files: collected.files.map(({ absolutePath, mtimeMs, ctimeMs, ...file }) => file),
         totalBytes: collected.totalBytes,
       }
-      const start = await requestJson({
-        hostname: peer.address, port: peer.port,
-        path: '/copy-project/start', method: 'POST',
-      }, manifest, 120000)
-      activeGeneration(generation)
-      const token = safeToken(start.token)
-      const missing = new Set(Array.isArray(start.missing) ? start.missing : [])
-      if (!token) throw new Error('O PC receptor não criou uma sessão segura.')
-      const transferTotal = collected.files
-        .filter((file) => missing.has(file.id))
-        .reduce((sum, file) => sum + file.size, 0)
-      let bytesDone = 0
-      let transferredFiles = 0
-      update({ phase: 'sending', bytesDone: 0, totalBytes: transferTotal,
-        fileIndex: 0, fileCount: missing.size })
-      for (const file of collected.files) {
-        if (!missing.has(file.id)) continue
+      let sessionEstablished = false
+      while (true) {
         activeGeneration(generation)
-        const before = await regularFileStat(file.absolutePath, file.size)
-        const handle = await fs.promises.open(file.absolutePath, 'r')
         try {
-          let offset = 0
-          while (offset < file.size) {
+          if (!peer) peer = await findReceiver(code, generation)
+          // A partir daqui o código/receptor já foi localizado. Se a rede cair
+          // durante o handshake, a mesma transferência será retomada.
+          sessionEstablished = true
+          const start = await requestJson({
+            hostname: peer.address, port: peer.port,
+            path: '/transfer-hook/start', method: 'POST',
+          }, manifest, 120000)
+          activeGeneration(generation)
+          const token = safeToken(start.token)
+          const missing = new Set(Array.isArray(start.missing) ? start.missing : [])
+          const offsets = start.offsets && typeof start.offsets === 'object'
+            ? start.offsets : {}
+          if (!token) throw new Error('O PC receptor não criou uma sessão segura.')
+          let bytesDone = collected.files.reduce((sum, file) => {
+            if (!missing.has(file.id)) return sum + file.size
+            const offset = Number(offsets[file.id]) || 0
+            return sum + Math.max(0, Math.min(file.size, offset))
+          }, 0)
+          let transferredFiles = collected.files.length - missing.size
+          update({ phase: 'sending', error: '', result: '', bytesDone,
+            totalBytes: collected.totalBytes, fileIndex: transferredFiles,
+            fileCount: collected.files.length })
+          for (const file of collected.files) {
+            if (!missing.has(file.id)) continue
             activeGeneration(generation)
-            const length = Math.min(COPY_PROJECT_CHUNK_BYTES, file.size - offset)
-            const buffer = Buffer.allocUnsafe(length)
-            const read = await handle.read(buffer, 0, length, offset)
-            if (read.bytesRead !== length) throw new Error(`Leitura incompleta: ${file.relativePath}`)
-            await postChunk({ hostname: peer.address, port: peer.port,
-              token, fileId: file.id, offset }, buffer)
-            offset += length
-            bytesDone += length
-            update({ phase: 'sending', bytesDone, totalBytes: transferTotal,
-              fileIndex: transferredFiles + 1, fileCount: missing.size,
-              currentFile: file.relativePath })
+            const before = await regularFileStat(file.absolutePath, file.size)
+            const handle = await fs.promises.open(file.absolutePath, 'r')
+            try {
+              let offset = Math.max(0, Math.min(file.size,
+                Number(offsets[file.id]) || 0))
+              while (offset < file.size) {
+                activeGeneration(generation)
+                const length = Math.min(COPY_PROJECT_CHUNK_BYTES, file.size - offset)
+                const buffer = Buffer.allocUnsafe(length)
+                const read = await handle.read(buffer, 0, length, offset)
+                if (read.bytesRead !== length) throw new Error(`Leitura incompleta: ${file.relativePath}`)
+                await postChunk({ hostname: peer.address, port: peer.port,
+                  token, fileId: file.id, offset }, buffer)
+                offset += length
+                bytesDone += length
+                update({ phase: 'sending', bytesDone,
+                  totalBytes: collected.totalBytes,
+                  fileIndex: transferredFiles + 1,
+                  fileCount: collected.files.length,
+                  currentFile: file.relativePath })
+              }
+            } finally {
+              await handle.close()
+            }
+            const after = await regularFileStat(file.absolutePath, file.size)
+            if (before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+              throw new Error(`O arquivo mudou durante o envio: ${file.relativePath}`)
+            }
+            transferredFiles += 1
           }
-        } finally {
-          await handle.close()
+          const finished = await requestJson({ hostname: peer.address,
+            port: peer.port, path: '/transfer-hook/finish', method: 'POST' }, { token })
+          activeGeneration(generation)
+          return update({ phase: 'completed', bytesDone: collected.totalBytes,
+            totalBytes: collected.totalBytes, fileIndex: collected.files.length,
+            fileCount: collected.files.length, currentFile: '',
+            result: `${collected.files.length} arquivo(s) enviado(s) para ${peer.name || peer.address}.`,
+            destinationPath: String(finished.targetRoot || start.targetRoot || '') })
+        } catch (error) {
+          if (generation !== operationGeneration) return publicState()
+          const canResume = sessionEstablished &&
+            (isRetryableNetworkError(error) || Number(error?.statusCode) === 409)
+          if (!canResume) throw error
+          update({ phase: 'paused', error: '', result: '',
+            currentFile: 'Rede desconectada. Aguardando reconexão...' })
+          discovered.delete(code)
+          peer = null
+          await waitMs(1000)
         }
-        const after = await regularFileStat(file.absolutePath, file.size)
-        if (before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
-          throw new Error(`O arquivo mudou durante o envio: ${file.relativePath}`)
-        }
-        transferredFiles += 1
       }
-      const finished = await requestJson({ hostname: peer.address,
-        port: peer.port, path: '/copy-project/finish', method: 'POST' }, { token })
-      activeGeneration(generation)
-      return update({ phase: 'completed', bytesDone: transferTotal,
-        totalBytes: transferTotal, fileIndex: missing.size,
-        fileCount: missing.size, currentFile: '',
-        result: missing.size
-          ? `${missing.size} arquivo(s) enviado(s) para ${peer.name || peer.address}.`
-          : 'Nenhum arquivo precisou ser enviado; todos já existiam no destino.',
-        destinationPath: String(finished.targetRoot || '') })
     } catch (error) {
       if (generation !== operationGeneration) {
         return publicState()
@@ -743,6 +919,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
   async function cancel() {
     ++operationGeneration
     if (state.mode === 'receive') return stopReceiver()
+    if (state.mode === 'share') return stopShare()
     return update({ mode: '', phase: 'idle', code: '', bytesDone: 0,
       totalBytes: 0, fileIndex: 0, fileCount: 0, currentFile: '', error: '',
       result: '', receivedPath: '' })
@@ -752,6 +929,8 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     ++operationGeneration
     receiverCode = ''
     receiverRoot = ''
+    shareCode = ''
+    sharedFolder = null
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)
     beaconTimer = null
@@ -767,7 +946,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
   }
 
   return { getState: publicState, startReceiver, stopReceiver,
-    sendFolder, cancel, stop }
+    startShare, stopShare, sendFolder, cancel, stop }
 }
 
 module.exports = { createCopyProjectService }

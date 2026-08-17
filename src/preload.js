@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   startCopyProjectReceive: (payload) => ipcRenderer.invoke('copy-project-start-receive', payload),
   stopCopyProjectReceive: () => ipcRenderer.invoke('copy-project-stop-receive'),
   sendCopyProject: (payload) => ipcRenderer.invoke('copy-project-send', payload),
+  startCopyProjectShare: (payload) => ipcRenderer.invoke('copy-project-start-share', payload),
+  stopCopyProjectShare: () => ipcRenderer.invoke('copy-project-stop-share'),
   cancelCopyProject: () => ipcRenderer.invoke('copy-project-cancel'),
   openCopyProjectDestination: () => ipcRenderer.invoke('copy-project-open-destination'),
   getBridgeState: () => ipcRenderer.invoke('get-bridge-state'),

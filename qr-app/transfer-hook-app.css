@@ -1,0 +1,26 @@
+:root { color-scheme: dark; }
+body { margin:0; background:#071019; color:#f8fafc; font-family:"Segoe UI",system-ui,sans-serif; }
+.transferHookApp { min-height:100vh; padding:max(16px,env(safe-area-inset-top)) 14px max(24px,env(safe-area-inset-bottom)); background:radial-gradient(circle at top,#17334b 0,transparent 35%),#071019; }
+.transferHookHeader { display:flex; align-items:center; gap:12px; max-width:680px; margin:0 auto 16px; }
+.transferHookBack { width:44px; height:44px; border:1px solid #3b5569; border-radius:14px; background:#111e29; color:#fff; font-size:25px; }
+.transferHookHeader h1 { margin:0; font-size:25px; }
+.transferHookHeader p { margin:3px 0 0; color:#9fb0bf; font-size:13px; }
+.transferHookGrid { display:grid; gap:14px; max-width:680px; margin:auto; }
+.transferHookCard { padding:17px; border:1px solid #263d4f; border-radius:20px; background:rgba(13,25,35,.96); box-shadow:0 16px 50px rgba(0,0,0,.24); }
+.transferHookCard h2 { margin:0 0 6px; font-size:20px; }
+.transferHookCard p { margin:0 0 14px; color:#a9bac7; line-height:1.4; }
+.transferHookCode { width:100%; min-height:52px; padding:10px; border:1px solid #466176; border-radius:14px; background:#08131c; color:#f8fafc; text-align:center; font-size:25px; font-weight:900; letter-spacing:.18em; outline:none; }
+.transferHookCode:focus { border-color:#facc15; box-shadow:0 0 0 3px rgba(250,204,21,.12); }
+.transferHookActions { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:12px; }
+.transferHookButton,.transferHookFileLabel { min-height:48px; padding:12px; border:0; border-radius:14px; background:linear-gradient(135deg,#facc15,#f59e0b); color:#111827; font-weight:900; text-align:center; display:flex; align-items:center; justify-content:center; }
+#transferReceiveButton { margin-top:16px; }
+.transferHookSecondary { background:#172936; color:#e8f0f6; border:1px solid #345065; }
+.transferHookFileLabel input { display:none; }
+.transferHookSelection { margin-top:11px; color:#dbe7ef; font-size:13px; overflow-wrap:anywhere; }
+.transferHookProgress { height:12px; margin-top:14px; overflow:hidden; border-radius:999px; background:#071019; border:1px solid #30485b; }
+.transferHookProgress > div { width:0; height:100%; background:linear-gradient(90deg,#22c55e,#facc15); transition:width .15s linear; }
+.transferHookStatus { min-height:20px; margin-top:9px; color:#b7c7d3; font-size:13px; line-height:1.4; }
+.transferHookStatus.error { color:#ff8181; }
+.transferHookStatus.success { color:#75e8a0; }
+.transferHookButton:disabled,.transferHookFileLabel.disabled { opacity:.45; pointer-events:none; }
+@media (max-width:430px) { .transferHookActions { grid-template-columns:1fr; } }

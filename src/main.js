@@ -5874,6 +5874,10 @@ ipcMain.handle('copy-project-stop-receive', () =>
   getCopyProjectService().stopReceiver());
 ipcMain.handle('copy-project-send', (_event, payload = {}) =>
   getCopyProjectService().sendFolder(payload.sourcePath, payload.code));
+ipcMain.handle('copy-project-start-share', (_event, payload = {}) =>
+  getCopyProjectService().startShare(payload.sourcePath));
+ipcMain.handle('copy-project-stop-share', () =>
+  getCopyProjectService().stopShare());
 ipcMain.handle('copy-project-cancel', () =>
   getCopyProjectService().cancel());
 ipcMain.handle('copy-project-open-destination', async () => {

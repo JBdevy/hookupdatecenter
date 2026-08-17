@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-chat-admin-tutorials-v19';
+const CACHE_NAME = 'vshook-mobile-1.0.1-transfer-hook-v2';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,8 @@ const APP_ASSETS = [
   './recados.webmanifest',
   './chat.js',
   './chat-app.css',
+  './transfer-hook.js',
+  './transfer-hook-app.css',
   './vshook-2.0.67',
   './vshook-2.0.67',
   './vsdiretor-icon-180.png',
@@ -59,7 +61,7 @@ self.addEventListener('fetch', (event) => {
     '/media', '/tp-media', '/teleprompt-media'
   ];
 
-  if (apiPaths.includes(url.pathname)) {
+  if (apiPaths.includes(url.pathname) || url.pathname.startsWith('/transfer-hook/')) {
     event.respondWith(fetch(req));
     return;
   }

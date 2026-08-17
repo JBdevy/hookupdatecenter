@@ -875,7 +875,7 @@
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Copy Project</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Transfer Hook</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
@@ -1077,7 +1077,7 @@
           <div class="hero-card tools-hero copy-project-hero">
             <div>
               <p class="eyebrow">Transferência direta pela rede</p>
-              <h1>Copy Project</h1>
+              <h1>Transfer Hook</h1>
               <p class="muted">Envie qualquer pasta e qualquer tipo de arquivo diretamente para outro computador com a Hook Center.</p>
             </div>
             <span id="copyProjectStatusBadge" class="badge">Parado</span>
@@ -1101,6 +1101,12 @@
                 <input id="copyProjectReceiverCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
               </label>
               <button id="copyProjectSendButton" class="primary-button" type="button" disabled>Enviar agora</button>
+              <div class="copy-project-code-display">
+                <span>Código para o celular receber</span>
+                <strong id="copyProjectShareCode">------</strong>
+                <small>Disponibilize a pasta e digite este código no Transfer Hook do celular.</small>
+              </div>
+              <button id="copyProjectShareButton" class="secondary-button" type="button" disabled>Disponibilizar para celular</button>
             </section>
 
             <section class="card copy-project-card">
@@ -1108,11 +1114,11 @@
                 <div><p class="eyebrow">PC receptor</p><h2>Receber pasta</h2></div>
                 <span class="badge">Receber</span>
               </div>
-              <p class="muted">Escolha onde a pasta será salva e ative o recebimento para gerar o código.</p>
+              <p class="muted">Escolha onde os arquivos serão salvos e ative o recebimento para gerar o código.</p>
               <div class="selected-folder-box">
                 <span>Pasta de destino</span>
                 <strong id="copyProjectDestinationName">Nenhuma pasta selecionada</strong>
-                <small id="copyProjectDestinationPath" class="muted">A pasta enviada será criada dentro deste local.</small>
+                <small id="copyProjectDestinationPath" class="muted">Arquivos com o mesmo nome serão substituídos neste local.</small>
               </div>
               <button id="copyProjectSelectDestinationButton" class="secondary-button" type="button">Escolher pasta de destino</button>
               <div class="copy-project-code-display">
@@ -1247,6 +1253,10 @@
   <div id="hookTutorialsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="hookTutorialsModalTitle">
     <div class="hook-modal hook-tutorials-modal">
       <div class="hook-tutorials-modal-header"><div><p class="eyebrow">VS Hook</p><h2 id="hookTutorialsModalTitle">Tutoriais e dúvidas</h2></div><button id="closeHookTutorialsModal" class="secondary-button" type="button">Fechar</button></div>
+      <div class="hook-tutorial-tabs" role="tablist">
+        <button type="button" class="active" data-hook-tutorial-category="tutorials">Tutoriais</button>
+        <button type="button" data-hook-tutorial-category="questions">Dúvidas</button>
+      </div>
       <div id="hookTutorialCards" class="hook-tutorial-cards"><p class="muted">Carregando tutoriais...</p></div>
     </div>
   </div>

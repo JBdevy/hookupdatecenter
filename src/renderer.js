@@ -41,6 +41,8 @@ let chatAdminPassword = '';
 let chatAdminPasswordResolver = null;
 let releaseNotesReadResolver = null;
 let releaseNotesReadScrollFrame = 0;
+let hookTutorialGroups = { tutorials: [], questions: [] };
+let hookTutorialCategory = 'tutorials';
 let pingPongResizeObserver = null;
 const chatHookMessagesById = new Map();
 function setLyricsConfigSlot(slot) {
@@ -1637,7 +1639,7 @@ async function installHookMidiComponentsFromUi() {
 }
 
 function copyProjectIsBusy(data = copyProjectState) {
-  return ['discovering', 'preparing', 'checking', 'sending', 'receiving'].includes(
+  return ['discovering', 'preparing', 'checking', 'sending', 'receiving', 'paused'].includes(
     String(data?.phase || ''));
 }
 
@@ -1653,6 +1655,7 @@ function renderCopyProjectState(nextState = copyProjectState) {
   const receiveButton = $('#copyProjectReceiveButton');
   const cancelButton = $('#copyProjectCancelButton');
   const openButton = $('#copyProjectOpenDestinationButton');
+  const shareButton = $('#copyProjectShareButton');
   const codeInput = $('#copyProjectReceiverCode');
   const statusBadge = $('#copyProjectStatusBadge');
   const progressBar = $('#copyProjectProgressBar');
@@ -1661,15 +1664,15 @@ function renderCopyProjectState(nextState = copyProjectState) {
   const percent = total > 0 ? Math.min(100, Math.round((done * 100) / total))
     : data.phase === 'completed' ? 100 : 0;
   const phaseLabels = {
-    idle: 'Parado', waiting: 'Aguardando emissor', discovering: 'Procurando receptor',
-    preparing: 'Analisando arquivos', checking: 'Comparando arquivos',
-    sending: 'Enviando', receiving: 'Recebendo',
+    idle: 'Parado', waiting: 'Aguardando emissor', sharing: 'Disponível na rede', discovering: 'Procurando receptor',
+    preparing: 'Preparando arquivos', checking: 'Preparando destino',
+    sending: 'Enviando', receiving: 'Recebendo', paused: 'Pausado',
     completed: 'Concluído', error: 'Erro'
   };
   const titleLabels = {
-    idle: 'Aguardando', waiting: 'Pronto para receber', discovering: 'Localizando o outro PC',
-    preparing: 'Validando a pasta', checking: 'Conferindo o que já existe',
-    sending: 'Enviando arquivos', receiving: 'Recebendo arquivos',
+    idle: 'Aguardando', waiting: 'Pronto para receber', sharing: 'Pronto para o celular', discovering: 'Localizando o outro PC',
+    preparing: 'Preparando a pasta', checking: 'Preparando o destino',
+    sending: 'Enviando arquivos', receiving: 'Recebendo arquivos', paused: 'Aguardando reconexão',
     completed: 'Transferência concluída', error: 'Falha na transferência'
   };
 
@@ -1679,9 +1682,10 @@ function renderCopyProjectState(nextState = copyProjectState) {
   }
   if ($('#copyProjectDestinationName')) {
     $('#copyProjectDestinationName').textContent = copyProjectDestinationFolder?.name || 'Nenhuma pasta selecionada';
-    $('#copyProjectDestinationPath').textContent = copyProjectDestinationFolder?.path || 'A pasta enviada será criada dentro deste local.';
+    $('#copyProjectDestinationPath').textContent = copyProjectDestinationFolder?.path || 'Arquivos com o mesmo nome serão substituídos neste local.';
   }
   if ($('#copyProjectReceiveCode')) $('#copyProjectReceiveCode').textContent = receiverActive ? (data.code || '------') : '------';
+  if ($('#copyProjectShareCode')) $('#copyProjectShareCode').textContent = data.sharing ? (data.shareCode || data.code || '------') : '------';
   if (statusBadge) statusBadge.textContent = phaseLabels[data.phase] || 'Parado';
   if ($('#copyProjectProgressTitle')) $('#copyProjectProgressTitle').textContent = titleLabels[data.phase] || 'Aguardando';
   if ($('#copyProjectProgressPercent')) $('#copyProjectProgressPercent').textContent = `${percent}%`;
@@ -1692,9 +1696,11 @@ function renderCopyProjectState(nextState = copyProjectState) {
   }
   let detail = 'Escolha se este computador vai enviar ou receber.';
   if (waiting) detail = 'Este computador está visível na rede. Digite o código no PC emissor.';
+  else if (data.phase === 'sharing') detail = 'A pasta está disponível somente nesta rede local. Digite o código no celular.';
+  else if (data.phase === 'paused') detail = 'Rede desconectada. A transferência continua automaticamente quando a conexão voltar.';
   else if (data.phase === 'discovering') detail = 'Procurando o computador que exibiu este código...';
-  else if (data.phase === 'preparing') detail = 'Calculando SHA-256 para enviar somente o que estiver faltando.';
-  else if (data.phase === 'checking') detail = 'Comparando SHA-256 para pular os arquivos que já existem neste computador.';
+  else if (data.phase === 'preparing') detail = 'Preparando a lista de arquivos para envio.';
+  else if (data.phase === 'checking') detail = 'Preparando os arquivos no destino.';
   else if (data.phase === 'sending' || data.phase === 'receiving') {
     const doneMb = done / (1024 * 1024);
     const totalMb = total / (1024 * 1024);
@@ -1705,7 +1711,7 @@ function renderCopyProjectState(nextState = copyProjectState) {
   if ($('#copyProjectProgressText')) $('#copyProjectProgressText').textContent = detail;
   if ($('#copyProjectCurrentFile')) $('#copyProjectCurrentFile').textContent = data.currentFile || data.peerName || '';
 
-  const operationActive = busy || waiting;
+  const operationActive = busy || waiting || data.sharing;
   if (sourceButton) sourceButton.disabled = operationActive;
   if (destinationButton) destinationButton.disabled = operationActive;
   if (codeInput) codeInput.disabled = operationActive;
@@ -1713,6 +1719,10 @@ function renderCopyProjectState(nextState = copyProjectState) {
   if (receiveButton) {
     receiveButton.disabled = busy || (!waiting && !copyProjectDestinationFolder);
     receiveButton.textContent = receiverActive ? 'Desativar recebimento' : 'Ativar recebimento';
+  }
+  if (shareButton) {
+    shareButton.disabled = busy || waiting || (!data.sharing && !copyProjectSourceFolder);
+    shareButton.textContent = data.sharing ? 'Parar de disponibilizar' : 'Disponibilizar para celular';
   }
   cancelButton?.classList.toggle('hidden', !busy);
   openButton?.classList.toggle('hidden', !(data.phase === 'completed' && data.receivedPath));
@@ -1727,7 +1737,7 @@ async function selectCopyProjectFolder(mode) {
     else copyProjectSourceFolder = folder;
     renderCopyProjectState();
   } catch (error) {
-    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' });
   }
 }
 
@@ -1742,7 +1752,7 @@ async function toggleCopyProjectReceiver() {
       destinationPath: copyProjectDestinationFolder.path
     }));
   } catch (error) {
-    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
   }
 }
 
@@ -1757,7 +1767,22 @@ async function sendCopyProjectFolder() {
   } catch (error) {
     // O estado detalhado também chega pelo evento, mas o modal torna a falha
     // de descoberta/rede inequívoca quando o usuário está em outra aba.
-    showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível enviar a pasta.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível enviar a pasta.'), type: 'error' });
+  }
+}
+
+async function toggleCopyProjectShare() {
+  try {
+    if (copyProjectState?.sharing) {
+      renderCopyProjectState(await window.hookUpdateCenter.stopCopyProjectShare());
+      return;
+    }
+    if (!copyProjectSourceFolder) return;
+    renderCopyProjectState(await window.hookUpdateCenter.startCopyProjectShare({
+      sourcePath: copyProjectSourceFolder.path
+    }));
+  } catch (error) {
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível disponibilizar a pasta.'), type: 'error' });
   }
 }
 
@@ -1810,13 +1835,14 @@ function setupToolsSubmenu() {
   $('#copyProjectSelectSourceButton')?.addEventListener('click', () => selectCopyProjectFolder('send'));
   $('#copyProjectSelectDestinationButton')?.addEventListener('click', () => selectCopyProjectFolder('receive'));
   $('#copyProjectSendButton')?.addEventListener('click', sendCopyProjectFolder);
+  $('#copyProjectShareButton')?.addEventListener('click', toggleCopyProjectShare);
   $('#copyProjectReceiveButton')?.addEventListener('click', toggleCopyProjectReceiver);
   $('#copyProjectCancelButton')?.addEventListener('click', async () => {
     try { renderCopyProjectState(await window.hookUpdateCenter.cancelCopyProject()); } catch (_) {}
   });
   $('#copyProjectOpenDestinationButton')?.addEventListener('click', () => {
     window.hookUpdateCenter.openCopyProjectDestination().catch((error) => {
-      showModal({ title: 'Copy Project', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
+      showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
     });
   });
   $('#copyProjectReceiverCode')?.addEventListener('input', (event) => {
@@ -2033,20 +2059,37 @@ function renderChatHookControls() {
       : '--';
 }
 
+function renderHookTutorialCategory(category = hookTutorialCategory) {
+  const cards = $('#hookTutorialCards');
+  if (!cards) return;
+  hookTutorialCategory = category === 'questions' ? 'questions' : 'tutorials';
+  $$('[data-hook-tutorial-category]').forEach((button) => button.classList.toggle('active',
+    button.dataset.hookTutorialCategory === hookTutorialCategory));
+  const items = hookTutorialGroups[hookTutorialCategory] || [];
+  const singular = hookTutorialCategory === 'questions' ? 'dúvida' : 'tutorial';
+  cards.innerHTML = items.length ? items.map((item) => `
+    <button class="hook-tutorial-card" type="button" data-tutorial-url="${escapeHtml(item.videoUrl || '')}">
+      <img src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(item.title || singular)}" />
+      <strong>${escapeHtml(item.title || `Assistir ${singular}`)}</strong>
+    </button>`).join('') : `<p class="muted">Nenhum card de ${hookTutorialCategory === 'questions' ? 'dúvidas' : 'tutorial'} cadastrado ainda.</p>`;
+}
+
 async function openHookTutorialsModal() {
   const modal = $('#hookTutorialsModal');
   const cards = $('#hookTutorialCards');
   if (!modal || !cards) return;
+  hookTutorialCategory = 'tutorials';
   modal.classList.remove('hidden');
+  $$('[data-hook-tutorial-category]').forEach((button) => button.classList.toggle('active',
+    button.dataset.hookTutorialCategory === 'tutorials'));
   cards.innerHTML = '<p class="muted">Carregando tutoriais...</p>';
   try {
     const result = await window.hookUpdateCenter.getHookTutorials();
-    const items = Array.isArray(result?.items) ? result.items : [];
-    cards.innerHTML = items.length ? items.map((item) => `
-      <button class="hook-tutorial-card" type="button" data-tutorial-url="${escapeHtml(item.videoUrl || '')}">
-        <img src="${escapeHtml(item.imageUrl || '')}" alt="${escapeHtml(item.title || 'Tutorial')}" />
-        <strong>${escapeHtml(item.title || 'Assistir tutorial')}</strong>
-      </button>`).join('') : '<p class="muted">Nenhum tutorial cadastrado ainda.</p>';
+    hookTutorialGroups = {
+      tutorials: Array.isArray(result?.tutorials) ? result.tutorials : (Array.isArray(result?.items) ? result.items : []),
+      questions: Array.isArray(result?.questions) ? result.questions : []
+    };
+    renderHookTutorialCategory('tutorials');
   } catch (error) {
     cards.innerHTML = `<p class="muted">${escapeHtml(friendlyError(error, 'Não foi possível carregar os tutoriais.'))}</p>`;
   }
@@ -4088,6 +4131,8 @@ async function init() {
     }
   });
   $('#hookTutorialsButton')?.addEventListener('click', openHookTutorialsModal);
+  $$('[data-hook-tutorial-category]').forEach((button) => button.addEventListener('click', () =>
+    renderHookTutorialCategory(button.dataset.hookTutorialCategory)));
   $('#closeHookTutorialsModal')?.addEventListener('click', () => $('#hookTutorialsModal')?.classList.add('hidden'));
   $('#hookTutorialCards')?.addEventListener('click', (event) => {
     const card = event.target.closest('[data-tutorial-url]');
