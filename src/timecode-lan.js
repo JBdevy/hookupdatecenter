@@ -994,7 +994,7 @@ function createTimecodeLanRelay(options = {}) {
 
   function preferredCablePrefix() {
     let ip = ''
-    try { ip = String(getDirectCableIp() || '').trim() } catch (_) {}
+    try { ip = String(getDirectCableIp(localStatus, relayChannel) || '').trim() } catch (_) {}
     const match = ip.match(/^(\d+\.\d+\.\d+)\.\d+$/)
     return match ? `${match[1]}.` : ''
   }

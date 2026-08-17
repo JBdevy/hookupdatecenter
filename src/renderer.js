@@ -1112,105 +1112,145 @@ function setupHookRename() {
 
 let directCableState = null;
 
-function renderDirectCableState(state = directCableState) {
-  const select = $('#directCableAdapterSelect');
-  const details = $('#directCableAdapterDetails');
-  const badge = $('#directCableLinkBadge');
+const directCableUiChannels = {
+  projectSync: {
+    label: 'Project Sync',
+    select: '#directCableProjectSyncAdapterSelect',
+    details: '#directCableProjectSyncDetails',
+    badge: '#directCableProjectSyncBadge',
+    configure: '#directCableProjectSyncConfigureButton',
+    restore: '#directCableProjectSyncRestoreButton',
+    result: '#directCableProjectSyncResult'
+  },
+  timecode: {
+    label: 'Time Code',
+    select: '#directCableTimecodeAdapterSelect',
+    details: '#directCableTimecodeDetails',
+    badge: '#directCableTimecodeBadge',
+    configure: '#directCableTimecodeConfigureButton',
+    restore: '#directCableTimecodeRestoreButton',
+    result: '#directCableTimecodeResult'
+  }
+};
+
+function renderDirectCableChannel(channel, state = directCableState) {
+  const ui = directCableUiChannels[channel];
+  const select = $(ui.select);
+  const details = $(ui.details);
+  const badge = $(ui.badge);
   if (!select) return;
   const previous = select.value;
   const adapters = Array.isArray(state?.adapters) ? state.adapters : [];
+  const configured = state?.channels?.[channel] || {};
   select.innerHTML = adapters.length
     ? adapters.map((adapter) => `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}</option>`).join('')
     : '<option value="">Nenhum adaptador Ethernet encontrado</option>';
   const wanted = adapters.some((item) => item.id === previous)
     ? previous
-    : (adapters.some((item) => item.id === state?.configuredAdapterId)
-        ? state.configuredAdapterId : (adapters[0]?.id || ''));
+    : (adapters.some((item) => item.id === configured.adapterId)
+        ? configured.adapterId : (adapters[0]?.id || ''));
   select.value = wanted;
   const adapter = adapters.find((item) => item.id === wanted);
   if (adapter) {
     const linkText = adapter.connected ? 'Cabo conectado' : 'Sem sinal do cabo';
-    badge.textContent = adapter.connected ? 'Conectado' : 'Aguardando cabo';
-    badge.classList.toggle('direct-cable-badge-online', adapter.connected);
+    const isFixed = configured.adapterId === adapter.id && !!configured.ip;
+    badge.textContent = isFixed
+      ? (adapter.connected ? 'Fixada e conectada' : 'Fixada — sem cabo')
+      : (adapter.connected ? 'Disponível' : 'Aguardando cabo');
+    badge.classList.toggle('direct-cable-badge-online', isFixed && adapter.connected);
     details.textContent = `${linkText}${adapter.linkSpeed ? ` • ${adapter.linkSpeed}` : ''}${adapter.ipv4 ? ` • IP atual ${adapter.ipv4}` : ' • Sem IPv4 configurado'}`;
   } else {
     badge.textContent = state?.supported === false ? 'Indisponível' : 'Não detectado';
     badge.classList.remove('direct-cable-badge-online');
     details.textContent = state?.error || 'Conecte um adaptador USB–Ethernet e clique em detectar novamente.';
   }
-  $('#directCableConfigureButton').disabled = !adapter;
-  $('#directCableRestoreButton').disabled = !adapter;
+  $(ui.configure).disabled = !adapter;
+  $(ui.restore).disabled = !configured.adapterId;
+  const result = $(ui.result);
+  if (result) {
+    result.textContent = configured.ip
+      ? `${ui.label} fixado em ${configured.ip}. Esta placa será usada automaticamente.`
+      : `Escolha e fixe a placa dedicada ao ${ui.label}.`;
+  }
+}
+
+function renderDirectCableState(state = directCableState) {
+  renderDirectCableChannel('projectSync', state);
+  renderDirectCableChannel('timecode', state);
 }
 
 async function refreshDirectCableState() {
-  const result = $('#directCableResult');
-  if (result) result.textContent = 'Detectando adaptadores Ethernet...';
+  for (const ui of Object.values(directCableUiChannels)) {
+    if ($(ui.result)) $(ui.result).textContent = 'Detectando adaptadores Ethernet...';
+  }
   try {
     directCableState = await window.hookUpdateCenter.getDirectCableState();
     renderDirectCableState(directCableState);
-    if (result) {
-      result.textContent = directCableState?.configuredIp
-        ? `Rede direta configurada neste computador em ${directCableState.configuredIp}.`
-        : 'Escolha o adaptador que está ligado ao outro computador.';
-    }
   } catch (error) {
     directCableState = { ok: false, adapters: [], error: friendlyError(error) };
     renderDirectCableState(directCableState);
-    if (result) result.textContent = directCableState.error;
   }
 }
 
-async function configureDirectCableFromUi() {
-  const adapterId = $('#directCableAdapterSelect')?.value || '';
+async function configureDirectCableFromUi(channel) {
+  const ui = directCableUiChannels[channel];
+  const adapterId = $(ui.select)?.value || '';
   if (!adapterId) {
-    showModal({ title: 'Conexão redundante', message: 'Escolha o adaptador ligado ao outro computador.', type: 'error' });
+    showModal({ title: ui.label, message: `Escolha a placa dedicada ao ${ui.label}.`, type: 'error' });
     return;
   }
   const confirmed = await confirmModal({
-    title: 'Configurar conexão redundante?',
-    message: 'A Hook Center configurará somente o adaptador selecionado. O sistema poderá pedir a senha de administrador. O Wi‑Fi e os demais adaptadores não serão alterados.',
+    title: `Fixar Placa ${ui.label}?`,
+    message: `A Hook Center reservará somente esta placa para ${ui.label}. O sistema poderá pedir a senha de administrador. O Wi‑Fi e os demais adaptadores não serão alterados.`,
     type: 'info',
-    okText: 'Configurar'
+    okText: 'Fixar placa'
   });
   if (!confirmed) return;
-  const button = $('#directCableConfigureButton');
-  const resultBox = $('#directCableResult');
+  const button = $(ui.configure);
+  const resultBox = $(ui.result);
   button.disabled = true;
   if (resultBox) resultBox.textContent = 'Aguardando autorização do sistema...';
   try {
-    const result = await window.hookUpdateCenter.configureDirectCable({ adapterId });
+    const result = await window.hookUpdateCenter.configureDirectCable({ channel, adapterId });
     directCableState = result.state;
     renderDirectCableState(directCableState);
-    if (resultBox) resultBox.textContent = `Rede direta configurada em ${result.ip}. Repita o processo no outro computador.`;
-    showModal({ title: 'Conexão redundante pronta', message: `Este computador está em ${result.ip}. Agora repita a configuração na outra Hook Center. Depois escolha Receive/Transmitter ou Project Sync dentro da extensão.`, type: 'success' });
+    if (resultBox) resultBox.textContent = `${ui.label} fixado em ${result.ip}.`;
+    const peer = channel === 'projectSync' ? 'PC B' : 'PC C';
+    showModal({ title: `Placa ${ui.label} pronta`, message: `Esta placa ficou fixa para ${ui.label}, usando ${result.ip}. Faça a mesma configuração na placa correspondente do ${peer}.`, type: 'success' });
   } catch (error) {
-    if (resultBox) resultBox.textContent = friendlyError(error, 'Não foi possível configurar o adaptador.');
-    showModal({ title: 'Conexão redundante', message: friendlyError(error, 'Não foi possível configurar o adaptador.'), type: 'error' });
+    if (resultBox) resultBox.textContent = friendlyError(error, `Não foi possível fixar a placa ${ui.label}.`);
+    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, `Não foi possível fixar a placa ${ui.label}.`), type: 'error' });
   } finally {
     button.disabled = false;
   }
 }
 
-async function restoreDirectCableFromUi() {
-  const adapterId = $('#directCableAdapterSelect')?.value || '';
+async function restoreDirectCableFromUi(channel) {
+  const ui = directCableUiChannels[channel];
+  const configured = directCableState?.channels?.[channel] || {};
+  const adapterId = configured.adapterId || $(ui.select)?.value || '';
   if (!adapterId) return;
   const confirmed = await confirmModal({
     title: 'Restaurar DHCP?',
-    message: 'O adaptador selecionado voltará a obter o endereço IP automaticamente.',
+    message: `A placa fixada para ${ui.label} voltará a obter o endereço IP automaticamente.`,
     type: 'info',
     okText: 'Restaurar'
   });
   if (!confirmed) return;
-  const button = $('#directCableRestoreButton');
-  const resultBox = $('#directCableResult');
+  const button = $(ui.restore);
+  const resultBox = $(ui.result);
   button.disabled = true;
   try {
-    const result = await window.hookUpdateCenter.restoreDirectCableDhcp({ adapterId });
+    const result = await window.hookUpdateCenter.restoreDirectCableDhcp({ channel, adapterId });
     directCableState = result.state;
     renderDirectCableState(directCableState);
-    if (resultBox) resultBox.textContent = 'DHCP restaurado. O adaptador voltou para configuração automática.';
+    if (resultBox) {
+      resultBox.textContent = result.sharedAdapterRetained
+        ? `${ui.label} foi liberado. A placa continua fixa para o outro canal.`
+        : 'DHCP restaurado. O adaptador voltou para configuração automática.';
+    }
   } catch (error) {
-    showModal({ title: 'Conexão redundante', message: friendlyError(error, 'Não foi possível restaurar o DHCP.'), type: 'error' });
+    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, 'Não foi possível restaurar o DHCP.'), type: 'error' });
   } finally {
     button.disabled = false;
   }
@@ -1685,8 +1725,9 @@ function renderCopyProjectState(nextState = copyProjectState) {
     $('#copyProjectDestinationName').textContent = copyProjectDestinationFolder?.name || 'Nenhuma pasta selecionada';
     $('#copyProjectDestinationPath').textContent = copyProjectDestinationFolder?.path || 'Arquivos com o mesmo nome serão substituídos neste local.';
   }
-  if ($('#copyProjectReceiveCode')) $('#copyProjectReceiveCode').textContent = receiverActive ? (data.code || '------') : '------';
-  if ($('#copyProjectShareCode')) $('#copyProjectShareCode').textContent = data.sharing ? (data.shareCode || data.code || '------') : '------';
+  const fixedCode = String(data.fixedCode || '');
+  if ($('#copyProjectReceiveCode')) $('#copyProjectReceiveCode').textContent = fixedCode || (receiverActive ? (data.code || '------') : '------');
+  if ($('#copyProjectShareCode')) $('#copyProjectShareCode').textContent = fixedCode || (data.sharing ? (data.shareCode || data.code || '------') : '------');
   if (statusBadge) statusBadge.textContent = phaseLabels[data.phase] || 'Parado';
   if ($('#copyProjectProgressTitle')) $('#copyProjectProgressTitle').textContent = titleLabels[data.phase] || 'Aguardando';
   if ($('#copyProjectProgressPercent')) $('#copyProjectProgressPercent').textContent = `${percent}%`;
@@ -1817,9 +1858,12 @@ function setupToolsSubmenu() {
     button.addEventListener('click', () => setToolsPanel(button.dataset.toolsPanel));
   });
   $('#directCableRefreshButton')?.addEventListener('click', refreshDirectCableState);
-  $('#directCableAdapterSelect')?.addEventListener('change', () => renderDirectCableState(directCableState));
-  $('#directCableConfigureButton')?.addEventListener('click', configureDirectCableFromUi);
-  $('#directCableRestoreButton')?.addEventListener('click', restoreDirectCableFromUi);
+  $('#directCableProjectSyncAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('projectSync', directCableState));
+  $('#directCableTimecodeAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('timecode', directCableState));
+  $('#directCableProjectSyncConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('projectSync'));
+  $('#directCableTimecodeConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('timecode'));
+  $('#directCableProjectSyncRestoreButton')?.addEventListener('click', () => restoreDirectCableFromUi('projectSync'));
+  $('#directCableTimecodeRestoreButton')?.addEventListener('click', () => restoreDirectCableFromUi('timecode'));
   $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
   $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
   $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);

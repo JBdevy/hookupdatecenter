@@ -320,7 +320,7 @@ async function collectTransferSource(sourcePath, update, isActive) {
   }
 }
 
-function createCopyProjectService({ getDeviceName, onState } = {}) {
+function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {}) {
   let state = {
     mode: '', phase: 'idle', code: '', sourcePath: '', destinationPath: '',
     rootName: '', peerName: '', bytesDone: 0, totalBytes: 0,
@@ -336,11 +336,14 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
   let sharedFolder = null
   let shareCode = ''
   let operationGeneration = 0
+  const fixedCode = (() => {
+    try { return safeCode(getFixedCode?.()) || randomCode() } catch (_) { return randomCode() }
+  })()
   const discovered = new Map()
 
   function publicState() {
     return { ...state, receiving: !!receiverCode, sharing: !!shareCode,
-      shareCode, protocolVersion: COPY_PROJECT_VERSION }
+      shareCode, fixedCode, protocolVersion: COPY_PROJECT_VERSION }
   }
 
   function update(patch) {
@@ -759,7 +762,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       throw new Error('Escolha uma pasta de destino válida.')
     }
     receiverRoot = destination
-    receiverCode = randomCode()
+    receiverCode = fixedCode
     shareCode = ''
     sharedFolder = null
     await cleanupInboundPartials()
@@ -800,7 +803,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)
     beaconTimer = null
-    shareCode = randomCode()
+    shareCode = fixedCode
     sharedFolder = null
     update({ mode: 'share', phase: 'preparing', code: shareCode, sourcePath: sourceRoot,
       destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',

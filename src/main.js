@@ -63,6 +63,7 @@ const store = new Store({
     deviceName: '',
     deviceLoginEmail: '',
     deviceLoginAt: null,
+    transferHookCode: '',
     autoStart: true,
     bridge: {
       scriptsDir: '',
@@ -103,10 +104,19 @@ const timecodeRelayPeerAddresses = { main: '', parallel: '' };
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
 
+function getTransferHookFixedCode() {
+  const savedCode = String(store.get('transferHookCode') || '').trim();
+  if (/^[0-9]{6}$/.test(savedCode)) return savedCode;
+  const createdCode = String(crypto.randomInt(100000, 1000000));
+  store.set('transferHookCode', createdCode);
+  return createdCode;
+}
+
 function getCopyProjectService() {
   if (!copyProjectService) {
     copyProjectService = createCopyProjectService({
       getDeviceName: getStoredDeviceName,
+      getFixedCode: getTransferHookFixedCode,
       onState: (state) => {
         if (isValidWindow(mainWindow)) {
           mainWindow.webContents.send('copy-project-state', state);
@@ -1739,6 +1749,55 @@ async function listMacDirectCableAdapters() {
   return adapters;
 }
 
+const DIRECT_CABLE_CHANNELS = Object.freeze({
+  projectSync: Object.freeze({ label: 'Project Sync', subnet: '192.168.77' }),
+  timecode: Object.freeze({ label: 'Time Code', subnet: '192.168.78' })
+});
+
+function normalizeDirectCableChannel(value) {
+  const channel = String(value || '').trim();
+  return Object.prototype.hasOwnProperty.call(DIRECT_CABLE_CHANNELS, channel)
+    ? channel : 'projectSync';
+}
+
+function migrateLegacyDirectCableConfiguration() {
+  const legacyAdapterId = String(store.get('directCable.adapterId') || '').trim();
+  const legacyIp = String(store.get('directCable.ip') || '').trim();
+  if (!legacyAdapterId || !legacyIp) return;
+  const legacyConfiguredAt = store.get('directCable.configuredAt') || null;
+  for (const channel of Object.keys(DIRECT_CABLE_CHANNELS)) {
+    const existing = store.get(`directCable.${channel}`);
+    if (existing && typeof existing === 'object' && existing.adapterId) continue;
+    store.set(`directCable.${channel}`, {
+      adapterId: legacyAdapterId,
+      ip: legacyIp,
+      configuredAt: legacyConfiguredAt,
+      legacyShared: true
+    });
+  }
+  store.delete('directCable.adapterId');
+  store.delete('directCable.ip');
+  store.delete('directCable.configuredAt');
+}
+
+function getStoredDirectCableChannel(channelValue) {
+  migrateLegacyDirectCableConfiguration();
+  const channel = normalizeDirectCableChannel(channelValue);
+  const stored = store.get(`directCable.${channel}`);
+  return stored && typeof stored === 'object'
+    ? {
+        adapterId: String(stored.adapterId || ''),
+        ip: String(stored.ip || ''),
+        configuredAt: stored.configuredAt || null,
+        legacyShared: stored.legacyShared === true
+      }
+    : { adapterId: '', ip: '', configuredAt: null, legacyShared: false };
+}
+
+function getDirectCableChannelIp(channel) {
+  return getStoredDirectCableChannel(channel).ip;
+}
+
 async function getDirectCableState() {
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
     return { ok: false, supported: false, platform: process.platform, adapters: [], error: 'Disponível apenas no Windows e macOS.' };
@@ -1747,13 +1806,17 @@ async function getDirectCableState() {
     const adapters = process.platform === 'win32'
       ? await listWindowsDirectCableAdapters()
       : await listMacDirectCableAdapters();
+    const projectSync = getStoredDirectCableChannel('projectSync');
+    const timecode = getStoredDirectCableChannel('timecode');
     return {
       ok: true,
       supported: true,
       platform: process.platform,
       adapters,
-      configuredAdapterId: String(store.get('directCable.adapterId') || ''),
-      configuredIp: String(store.get('directCable.ip') || '')
+      channels: { projectSync, timecode },
+      // Campos legados mantidos durante a transição para renderers antigos.
+      configuredAdapterId: projectSync.adapterId,
+      configuredIp: projectSync.ip
     };
   } catch (error) {
     return { ok: false, supported: true, platform: process.platform, adapters: [], error: error?.message || 'Não foi possível detectar os adaptadores de rede.' };
@@ -1770,17 +1833,34 @@ async function runWindowsElevatedPowerShell(script) {
 }
 
 async function configureDirectCable(payload = {}) {
+  const channel = normalizeDirectCableChannel(payload.channel);
+  const channelInfo = DIRECT_CABLE_CHANNELS[channel];
   const adapterId = String(payload.adapterId || '').trim();
   if (!adapterId) throw new Error('Escolha o adaptador USB/Ethernet que está ligado ao cabo.');
   const current = await getDirectCableState();
   const adapter = current.adapters.find((item) => item.id === adapterId);
   if (!adapter) throw new Error('O adaptador selecionado não está mais disponível. Reconecte-o e tente novamente.');
-  // Cada computador recebe um endereço estável derivado do próprio ID. Não há
-  // papel mestre/escravo na rede e nenhum usuário precisa escolher PC 1/PC 2.
+  const currentConfiguration = current.channels?.[channel] || {};
+  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
+  const otherConfiguration = current.channels?.[otherChannel] || {};
+  const splittingLegacySharedAdapter =
+    currentConfiguration.legacyShared === true &&
+    otherConfiguration.legacyShared === true &&
+    currentConfiguration.adapterId === otherConfiguration.adapterId;
+  if (currentConfiguration.adapterId &&
+      currentConfiguration.adapterId !== adapterId &&
+      !splittingLegacySharedAdapter) {
+    throw new Error(`Restaure primeiro o DHCP da placa atualmente fixada para ${channelInfo.label}. Depois fixe a nova placa.`);
+  }
+  if (String(otherConfiguration.adapterId || '') === adapterId) {
+    throw new Error(`Esta placa já está reservada para ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
+  }
+  // O host permanece estável por computador, mas cada canal recebe uma
+  // sub-rede própria para que duas placas do PC A não disputem a mesma rota.
   const machineId = await getMachineId();
   const hostHash = crypto.createHash('sha256').update(`direct-cable|${machineId}`).digest();
   const host = 10 + (hostHash.readUInt32BE(0) % 240);
-  const ip = `192.168.77.${host}`;
+  const ip = `${channelInfo.subnet}.${host}`;
   if (process.platform === 'win32') {
     const alias = psSingleQuoted(adapter.name);
     const script = [
@@ -1799,14 +1879,37 @@ async function configureDirectCable(payload = {}) {
   } else {
     throw new Error('Conexão redundante disponível apenas no Windows e macOS.');
   }
-  store.set('directCable', { adapterId, ip, configuredAt: new Date().toISOString() });
+  store.set(`directCable.${channel}`, {
+    adapterId,
+    ip,
+    configuredAt: new Date().toISOString(),
+    legacyShared: false
+  });
   try { await startBridgeServers(); } catch (_) {}
-  return { ok: true, ip, state: await getDirectCableState() };
+  return { ok: true, channel, ip, state: await getDirectCableState() };
 }
 
 async function restoreDirectCableDhcp(payload = {}) {
-  const adapterId = String(payload.adapterId || store.get('directCable.adapterId') || '').trim();
+  const channel = normalizeDirectCableChannel(payload.channel);
+  const configured = getStoredDirectCableChannel(channel);
+  const adapterId = String(payload.adapterId || configured.adapterId || '').trim();
   if (!adapterId) throw new Error('Escolha o adaptador que será restaurado para DHCP.');
+  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
+  const otherConfiguration = getStoredDirectCableChannel(otherChannel);
+  if (configured.legacyShared && otherConfiguration.legacyShared &&
+      otherConfiguration.adapterId === adapterId) {
+    // A instalação antiga usava uma única placa para os dois canais. Ao
+    // liberar apenas um deles, mantenha o IP na placa que continua em uso.
+    store.delete(`directCable.${channel}`);
+    try { await startBridgeServers(); } catch (_) {}
+    return {
+      ok: true,
+      channel,
+      clearedChannels: [channel],
+      sharedAdapterRetained: true,
+      state: await getDirectCableState()
+    };
+  }
   const current = await getDirectCableState();
   const adapter = current.adapters.find((item) => item.id === adapterId);
   if (!adapter) throw new Error('O adaptador selecionado não está disponível.');
@@ -1827,9 +1930,14 @@ async function restoreDirectCableDhcp(payload = {}) {
   } else {
     throw new Error('Restauração automática disponível apenas no Windows e macOS.');
   }
-  store.delete('directCable');
+  const clearedChannels = [];
+  for (const candidate of Object.keys(DIRECT_CABLE_CHANNELS)) {
+    if (getStoredDirectCableChannel(candidate).adapterId !== adapterId) continue;
+    store.delete(`directCable.${candidate}`);
+    clearedChannels.push(candidate);
+  }
   try { await startBridgeServers(); } catch (_) {}
-  return { ok: true, state: await getDirectCableState() };
+  return { ok: true, channel, clearedChannels, state: await getDirectCableState() };
 }
 
 const HOOK_MIDI_DOWNLOAD_URL = 'https://aka.ms/midi';
@@ -2310,10 +2418,13 @@ function saveBridgeConfig(config) {
 
 function getSelectedBridgeNetwork(config = readBridgeConfig()) {
   const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
-  const directCableIp = String(store.get('directCable.ip') || '').trim();
-  // O cabo fica reservado para redundancia. O QR Code e o app continuam
-  // anunciando Wi-Fi/LAN normal para o celular.
-  const appNetworks = networks.filter((item) => !directCableIp || item.ip !== directCableIp);
+  const reservedCableIps = new Set([
+    getDirectCableChannelIp('projectSync'),
+    getDirectCableChannelIp('timecode')
+  ].filter(Boolean));
+  // As duas placas dedicadas ficam reservadas para redundância. O QR Code e
+  // os apps continuam anunciando Wi-Fi/LAN normal para o celular.
+  const appNetworks = networks.filter((item) => !reservedCableIps.has(item.ip));
   const preferredIp = String(config?.preferredNetworkIp || '').trim();
   const preferredName = String(config?.preferredNetworkName || '').trim();
   const selected = appNetworks.find((item) => preferredIp && item.ip === preferredIp)
@@ -2586,7 +2697,12 @@ async function restartBridgeServersNow() {
     nativeBridgePort: 47830,
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
-    getDirectCableIp: () => String(store.get('directCable.ip') || ''),
+    getDirectCableIp: (status) => {
+      const mode = String(status?.mode || '');
+      if (!mode) return '';
+      return getDirectCableChannelIp(
+        mode === 'project_sync' ? 'projectSync' : 'timecode');
+    },
     // A raiz é definida somente pela Hook Center. Nenhum caminho recebido da
     // LAN pode escolher onde o bundle Project Sync será gravado.
     getProjectSyncStagingDir: () => path.join(
@@ -2602,7 +2718,7 @@ async function restartBridgeServersNow() {
     discoveryTargetPort: 47833,
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
-    getDirectCableIp: () => String(store.get('directCable.ip') || ''),
+    getDirectCableIp: () => getDirectCableChannelIp('timecode'),
     getProjectSyncStagingDir: () => path.join(
       app.getPath('userData'), 'project-sync-staging'),
     isLicenseActive: isVsHookLicenseActiveForBridge,

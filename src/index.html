@@ -973,7 +973,7 @@
             <div>
               <p class="eyebrow">Receive / Transmitter / Project Sync</p>
               <h1>Conexão redundante</h1>
-              <p class="muted">Configure automaticamente dois computadores ligados por RJ45, inclusive usando adaptadores USB–Ethernet. O Wi‑Fi continua livre para internet.</p>
+              <p class="muted">No PC A, fixe uma placa para o Project Sync com o PC B escravo e outra placa para o Time Code com o PC C. Cada canal permanece separado e automático.</p>
             </div>
             <button id="directCableRefreshButton" class="secondary-button" type="button">Detectar novamente</button>
           </div>
@@ -981,32 +981,45 @@
           <div class="direct-cable-grid">
             <div class="card direct-cable-card">
               <div class="tool-card-header">
-                <div><p class="eyebrow">Etapa 1</p><h2>Escolha o adaptador</h2></div>
-                <span id="directCableLinkBadge" class="badge">Verificando</span>
+                <div><p class="eyebrow">PC A ↔ PC B</p><h2>Placa Project Sync</h2></div>
+                <span id="directCableProjectSyncBadge" class="badge">Verificando</span>
               </div>
               <label>
-                Porta USB/Ethernet ligada ao outro computador
-                <select id="directCableAdapterSelect"><option value="">Detectando adaptadores...</option></select>
+                Porta USB/Ethernet ligada ao PC B
+                <select id="directCableProjectSyncAdapterSelect"><option value="">Detectando adaptadores...</option></select>
               </label>
-              <div id="directCableAdapterDetails" class="direct-cable-status muted">Conecte o cabo RJ45 nos dois computadores.</div>
+              <div id="directCableProjectSyncDetails" class="direct-cable-status muted">Conecte o cabo do Project Sync.</div>
+              <div class="actions direct-cable-actions">
+                <button id="directCableProjectSyncConfigureButton" class="primary-button" type="button">Fixar placa</button>
+                <button id="directCableProjectSyncRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
+              </div>
+              <div id="directCableProjectSyncResult" class="direct-cable-result muted">Nenhuma placa fixada.</div>
             </div>
 
-            <div class="card direct-cable-card direct-cable-action-card">
-              <div class="tool-card-header"><div><p class="eyebrow">Etapa 2</p><h2>Preparar a rede</h2></div></div>
-              <p class="muted">A Hook Center cria automaticamente um IP exclusivo neste computador. A rede não define mestre nem escravo e pode ser usada pelo Receive/Transmitter ou pelo Project Sync.</p>
-              <div class="actions direct-cable-actions">
-                <button id="directCableConfigureButton" class="primary-button" type="button">Configurar automaticamente</button>
-                <button id="directCableRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
+            <div class="card direct-cable-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">PC A ↔ PC C</p><h2>Placa Time Code</h2></div>
+                <span id="directCableTimecodeBadge" class="badge">Verificando</span>
               </div>
-              <div id="directCableResult" class="direct-cable-result muted">Aguardando configuração.</div>
+              <label>
+                Porta USB/Ethernet ligada ao PC C
+                <select id="directCableTimecodeAdapterSelect"><option value="">Detectando adaptadores...</option></select>
+              </label>
+              <div id="directCableTimecodeDetails" class="direct-cable-status muted">Conecte o cabo do Time Code.</div>
+              <div class="actions direct-cable-actions">
+                <button id="directCableTimecodeConfigureButton" class="primary-button" type="button">Fixar placa</button>
+                <button id="directCableTimecodeRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
+              </div>
+              <div id="directCableTimecodeResult" class="direct-cable-result muted">Nenhuma placa fixada.</div>
             </div>
 
             <div class="card direct-cable-card direct-cable-instructions">
               <div class="tool-card-header"><div><p class="eyebrow">Depois</p><h2>Conectar o VS Hook</h2></div></div>
               <ol>
-                <li>Repita esta configuração na Hook Center do outro computador.</li>
-                <li>Escolha Receive/Transmitter somente no menu da extensão, quando quiser esse modo.</li>
-                <li>No Project Sync, os dois computadores são equivalentes: comandos iniciados em qualquer um deles serão sincronizados.</li>
+                <li>No PC A e no PC B, fixe como Placa Project Sync a porta do cabo que liga os dois.</li>
+                <li>No PC A e no PC C, fixe como Placa Time Code a porta do segundo cabo.</li>
+                <li>No Project Sync, o PC A gera o código e controla o PC B escravo.</li>
+                <li>No canal Time Code, configure o PC A como Transmitter e o PC C como Receive.</li>
                 <li>A conexão continua totalmente local e não precisa de internet.</li>
               </ol>
             </div>
@@ -1105,19 +1118,19 @@
               </label>
               <button id="copyProjectSendButton" class="primary-button" type="button" disabled>Enviar agora</button>
               <div class="copy-project-code-display">
-                <span>Código para o celular receber</span>
+                <span>Código fixo para o celular receber</span>
                 <strong id="copyProjectShareCode">------</strong>
-                <small>Disponibilize o arquivo ou a pasta e digite este código no Transfer Hook do celular.</small>
+                <small>Este código não muda. Primeiro disponibilize o arquivo ou a pasta e depois informe o código no Transfer Hook do celular.</small>
               </div>
               <button id="copyProjectShareButton" class="secondary-button" type="button" disabled>Disponibilizar para celular</button>
             </section>
 
             <section class="card copy-project-card">
               <div class="tool-card-header">
-                <div><p class="eyebrow">PC receptor</p><h2>Receber pasta</h2></div>
+                <div><p class="eyebrow">PC receptor</p><h2>Receber arquivos</h2></div>
                 <span class="badge">Receber</span>
               </div>
-              <p class="muted">Escolha onde os arquivos serão salvos e ative o recebimento para gerar o código.</p>
+              <p class="muted">Escolha onde os arquivos serão salvos e ative o recebimento. O código deste computador permanece sempre o mesmo.</p>
               <div class="selected-folder-box">
                 <span>Pasta de destino</span>
                 <strong id="copyProjectDestinationName">Nenhuma pasta selecionada</strong>
@@ -1125,9 +1138,9 @@
               </div>
               <button id="copyProjectSelectDestinationButton" class="secondary-button" type="button">Escolher pasta de destino</button>
               <div class="copy-project-code-display">
-                <span>Código para receber</span>
+                <span>Código fixo para receber</span>
                 <strong id="copyProjectReceiveCode">------</strong>
-                <small>Informe este código ao computador emissor.</small>
+                <small>Informe sempre este código ao computador emissor.</small>
               </div>
               <button id="copyProjectReceiveButton" class="primary-button" type="button" disabled>Ativar recebimento</button>
             </section>
