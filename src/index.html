@@ -1078,7 +1078,7 @@
             <div>
               <p class="eyebrow">Transferência direta pela rede</p>
               <h1>Transfer Hook</h1>
-              <p class="muted">Envie qualquer pasta e qualquer tipo de arquivo diretamente para outro computador com a Hook Center.</p>
+              <p class="muted">Envie arquivos avulsos ou pastas completas diretamente para outro computador ou celular.</p>
             </div>
             <span id="copyProjectStatusBadge" class="badge">Parado</span>
           </div>
@@ -1086,16 +1086,19 @@
           <div class="copy-project-grid">
             <section class="card copy-project-card">
               <div class="tool-card-header">
-                <div><p class="eyebrow">PC emissor</p><h2>Enviar pasta</h2></div>
+                <div><p class="eyebrow">PC emissor</p><h2>Enviar arquivo ou pasta</h2></div>
                 <span class="badge">Enviar</span>
               </div>
-              <p class="muted">Escolha a pasta completa e digite o código mostrado no computador receptor.</p>
+              <p class="muted">Escolha um arquivo avulso ou uma pasta completa e digite o código mostrado no computador receptor.</p>
               <div class="selected-folder-box">
-                <span>Pasta que será enviada</span>
-                <strong id="copyProjectSourceName">Nenhuma pasta selecionada</strong>
-                <small id="copyProjectSourcePath" class="muted">Todos os arquivos e subpastas serão incluídos.</small>
+                <span>Arquivo ou pasta que será enviado</span>
+                <strong id="copyProjectSourceName">Nenhum arquivo ou pasta selecionado</strong>
+                <small id="copyProjectSourcePath" class="muted">Escolha um arquivo avulso ou uma pasta completa.</small>
               </div>
-              <button id="copyProjectSelectSourceButton" class="secondary-button" type="button">Escolher pasta para enviar</button>
+              <div class="copy-project-source-actions">
+                <button id="copyProjectSelectFileButton" class="secondary-button" type="button">Escolher arquivo</button>
+                <button id="copyProjectSelectSourceButton" class="secondary-button" type="button">Escolher pasta</button>
+              </div>
               <label class="copy-project-code-field" for="copyProjectReceiverCode">
                 Código do PC receptor
                 <input id="copyProjectReceiverCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
@@ -1104,7 +1107,7 @@
               <div class="copy-project-code-display">
                 <span>Código para o celular receber</span>
                 <strong id="copyProjectShareCode">------</strong>
-                <small>Disponibilize a pasta e digite este código no Transfer Hook do celular.</small>
+                <small>Disponibilize o arquivo ou a pasta e digite este código no Transfer Hook do celular.</small>
               </div>
               <button id="copyProjectShareButton" class="secondary-button" type="button" disabled>Disponibilizar para celular</button>
             </section>

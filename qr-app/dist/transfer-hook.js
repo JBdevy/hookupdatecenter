@@ -178,6 +178,20 @@
     setBusy(true)
     try {
       setStatus('Consultando o computador na rede local...')
+      while (true) {
+        try {
+          const availability = await readJson(await fetch(
+            `${transferBase}/transfer-hook/share/status?code=${encodeURIComponent(code)}`,
+            { cache: 'no-store' }))
+          if (availability.available) break
+          if (!availability.preparing) throw new Error('Código do Transfer Hook inválido.')
+          setStatus('O computador está preparando os arquivos. Aguarde...')
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        } catch (error) {
+          if (!canRetry(error)) throw error
+          await pauseForReconnect()
+        }
+      }
       const manifest = await readJson(await fetch(`${transferBase}/transfer-hook/share/manifest?code=${encodeURIComponent(code)}`, { cache: 'no-store' }))
       const total = Number(manifest.totalBytes) || 0
       let done = 0

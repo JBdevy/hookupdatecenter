@@ -1650,6 +1650,7 @@ function renderCopyProjectState(nextState = copyProjectState) {
   const waiting = data.phase === 'waiting' && data.receiving === true;
   const receiverActive = data.receiving === true;
   const sourceButton = $('#copyProjectSelectSourceButton');
+  const sourceFileButton = $('#copyProjectSelectFileButton');
   const destinationButton = $('#copyProjectSelectDestinationButton');
   const sendButton = $('#copyProjectSendButton');
   const receiveButton = $('#copyProjectReceiveButton');
@@ -1677,8 +1678,8 @@ function renderCopyProjectState(nextState = copyProjectState) {
   };
 
   if ($('#copyProjectSourceName')) {
-    $('#copyProjectSourceName').textContent = copyProjectSourceFolder?.name || 'Nenhuma pasta selecionada';
-    $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.path || 'Todos os arquivos e subpastas serão incluídos.';
+    $('#copyProjectSourceName').textContent = copyProjectSourceFolder?.name || 'Nenhum arquivo ou pasta selecionado';
+    $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.path || 'Escolha um arquivo avulso ou uma pasta completa.';
   }
   if ($('#copyProjectDestinationName')) {
     $('#copyProjectDestinationName').textContent = copyProjectDestinationFolder?.name || 'Nenhuma pasta selecionada';
@@ -1713,6 +1714,7 @@ function renderCopyProjectState(nextState = copyProjectState) {
 
   const operationActive = busy || waiting || data.sharing;
   if (sourceButton) sourceButton.disabled = operationActive;
+  if (sourceFileButton) sourceFileButton.disabled = operationActive;
   if (destinationButton) destinationButton.disabled = operationActive;
   if (codeInput) codeInput.disabled = operationActive;
   if (sendButton) sendButton.disabled = operationActive || !copyProjectSourceFolder || String(codeInput?.value || '').length !== 6;
@@ -1732,12 +1734,13 @@ async function selectCopyProjectFolder(mode) {
   try {
     const result = await window.hookUpdateCenter.selectCopyProjectFolder(mode);
     if (result?.canceled) return;
-    const folder = { path: result.path, name: result.name || result.path };
+    const folder = { path: result.path, name: result.name || result.path,
+      kind: result.kind || (mode === 'send-file' ? 'file' : 'folder') };
     if (mode === 'receive') copyProjectDestinationFolder = folder;
     else copyProjectSourceFolder = folder;
     renderCopyProjectState();
   } catch (error) {
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível escolher o arquivo ou a pasta.'), type: 'error' });
   }
 }
 
@@ -1767,7 +1770,7 @@ async function sendCopyProjectFolder() {
   } catch (error) {
     // O estado detalhado também chega pelo evento, mas o modal torna a falha
     // de descoberta/rede inequívoca quando o usuário está em outra aba.
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível enviar a pasta.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível enviar os arquivos.'), type: 'error' });
   }
 }
 
@@ -1782,7 +1785,7 @@ async function toggleCopyProjectShare() {
       sourcePath: copyProjectSourceFolder.path
     }));
   } catch (error) {
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível disponibilizar a pasta.'), type: 'error' });
+    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível disponibilizar os arquivos.'), type: 'error' });
   }
 }
 
@@ -1833,6 +1836,7 @@ function setupToolsSubmenu() {
       'https://www.tobias-erichsen.de/software/loopmidi.html');
   });
   $('#copyProjectSelectSourceButton')?.addEventListener('click', () => selectCopyProjectFolder('send'));
+  $('#copyProjectSelectFileButton')?.addEventListener('click', () => selectCopyProjectFolder('send-file'));
   $('#copyProjectSelectDestinationButton')?.addEventListener('click', () => selectCopyProjectFolder('receive'));
   $('#copyProjectSendButton')?.addEventListener('click', sendCopyProjectFolder);
   $('#copyProjectShareButton')?.addEventListener('click', toggleCopyProjectShare);

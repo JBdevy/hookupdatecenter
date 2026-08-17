@@ -44,6 +44,7 @@ button, input { font: inherit; }
   width: 100%; border: 0; border-radius: 18px; padding: 16px 18px; font-size: 17px; font-weight: 800;
 }
 .vshook-project-button, .vshook-mode-button { background: linear-gradient(135deg,#f7c948,#f59e0b); color:#111827; }
+#openStandaloneTransferHookBtn { margin-top:16px; }
 .vshook-secondary-button { margin-top:14px; background:rgba(255,255,255,.08); color:#f8fafc; border:1px solid rgba(255,255,255,.10); }
 .vshook-shell-status { color:#aab2c0; font-size:15px; line-height:1.45; margin:18px 0 0; }
 .vshook-error { color:#ff7676; font-size:14px; line-height:1.4; margin:0 0 14px; }

@@ -5856,15 +5856,17 @@ ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(paylo
 ipcMain.handle('hook-midi-open-components', () => installHookMidiComponents());
 ipcMain.handle('copy-project-select-folder', async (_event, payload = {}) => {
   const receiving = payload?.mode === 'receive';
+  const selectingFile = payload?.mode === 'send-file';
   const result = await dialog.showOpenDialog(mainWindow || undefined, {
     title: receiving
       ? 'Escolher pasta onde os arquivos serão recebidos'
-      : 'Escolher pasta para enviar',
-    properties: ['openDirectory', 'createDirectory']
+      : (selectingFile ? 'Escolher arquivo para enviar' : 'Escolher pasta para enviar'),
+    properties: selectingFile ? ['openFile'] : ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
-  const folderPath = path.resolve(result.filePaths[0]);
-  return { canceled: false, path: folderPath, name: path.basename(folderPath) };
+  const selectedPath = path.resolve(result.filePaths[0]);
+  return { canceled: false, path: selectedPath, name: path.basename(selectedPath),
+    kind: selectingFile ? 'file' : 'folder' };
 });
 ipcMain.handle('copy-project-get-state', () =>
   getCopyProjectService().getState());

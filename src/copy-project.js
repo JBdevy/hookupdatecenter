@@ -288,6 +288,38 @@ async function collectFolder(sourceRoot, update, isActive) {
   return { files, directories, totalBytes }
 }
 
+async function collectTransferSource(sourcePath, update, isActive) {
+  const sourceRoot = path.resolve(String(sourcePath || ''))
+  const sourceStat = await fs.promises.lstat(sourceRoot)
+  if (sourceStat.isSymbolicLink()) {
+    throw new Error('Links simbólicos não são aceitos na transferência.')
+  }
+  if (sourceStat.isDirectory()) {
+    return { ...(await collectFolder(sourceRoot, update, isActive)), sourceKind: 'folder' }
+  }
+  if (!sourceStat.isFile()) {
+    throw new Error('Escolha um arquivo ou uma pasta válida para transferir.')
+  }
+  isActive()
+  const stat = await regularFileStat(sourceRoot)
+  if (stat.size > COPY_PROJECT_MAX_TOTAL_BYTES) {
+    throw new Error('O arquivo excede o limite de 512 GB por transferência.')
+  }
+  const relativePath = safeRelativePath(path.basename(sourceRoot))
+  if (!relativePath) throw new Error('O nome do arquivo não é compatível com a transferência.')
+  update({ phase: 'preparing', fileIndex: 1, fileCount: 1,
+    currentFile: relativePath, totalBytes: stat.size, bytesDone: 0 })
+  return {
+    sourceKind: 'file',
+    directories: [],
+    totalBytes: stat.size,
+    files: [{
+      id: 'file-1', relativePath, absolutePath: sourceRoot,
+      size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs,
+    }],
+  }
+}
+
 function createCopyProjectService({ getDeviceName, onState } = {}) {
   let state = {
     mode: '', phase: 'idle', code: '', sourcePath: '', destinationPath: '',
@@ -565,6 +597,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
         const code = safeCode(url.searchParams.get('code'))
         jsonResponse(res, 200, { ok: true, version: COPY_PROJECT_VERSION,
           available: !!sharedFolder && code === shareCode,
+          preparing: !!shareCode && !sharedFolder && code === shareCode,
           name: String(getDeviceName?.() || os.hostname()) })
         return
       }
@@ -757,8 +790,9 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
   async function startShare(sourcePath) {
     const sourceRoot = path.resolve(String(sourcePath || ''))
     const sourceStat = await fs.promises.lstat(sourceRoot)
-    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
-      throw new Error('Escolha uma pasta válida para disponibilizar.')
+    if ((!sourceStat.isDirectory() && !sourceStat.isFile()) ||
+        sourceStat.isSymbolicLink()) {
+      throw new Error('Escolha um arquivo ou uma pasta válida para disponibilizar.')
     }
     const generation = ++operationGeneration
     receiverCode = ''
@@ -771,15 +805,16 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     update({ mode: 'share', phase: 'preparing', code: shareCode, sourcePath: sourceRoot,
       destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
-      currentFile: 'Preparando a pasta...', error: '', result: '', receivedPath: '' })
+      currentFile: 'Preparando os arquivos...', error: '', result: '', receivedPath: '' })
     try {
       await ensureHttpServer()
-      const collected = await collectFolder(sourceRoot,
+      const collected = await collectTransferSource(sourceRoot,
         (patch) => update({ ...patch, code: shareCode }),
         () => activeGeneration(generation))
       activeGeneration(generation)
       sharedFolder = {
         rootName: safeRootName(path.basename(sourceRoot)),
+        sourceKind: collected.sourceKind,
         files: collected.files,
         directories: collected.directories,
         totalBytes: collected.totalBytes,
@@ -788,14 +823,14 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
         sourcePath: sourceRoot, totalBytes: collected.totalBytes,
         bytesDone: 0, fileIndex: 0, fileCount: collected.files.length,
         currentFile: '', error: '',
-        result: 'Pasta disponível para o celular nesta rede local.' })
+        result: `${collected.sourceKind === 'file' ? 'Arquivo' : 'Pasta'} disponível para o celular nesta rede local.` })
     } catch (error) {
       if (generation === operationGeneration) {
         shareCode = ''
         sharedFolder = null
         update({ mode: 'share', phase: 'error', code: '',
           currentFile: '', error: error?.message ||
-            'Não foi possível disponibilizar a pasta.' })
+            'Não foi possível disponibilizar os arquivos.' })
       }
       throw error
     }
@@ -815,8 +850,9 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
     if (!code) throw new Error('Digite o código de 6 dígitos do PC receptor.')
     const sourceRoot = path.resolve(String(sourcePath || ''))
     const sourceStat = await fs.promises.lstat(sourceRoot)
-    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
-      throw new Error('Escolha uma pasta válida para enviar.')
+    if ((!sourceStat.isDirectory() && !sourceStat.isFile()) ||
+        sourceStat.isSymbolicLink()) {
+      throw new Error('Escolha um arquivo ou uma pasta válida para enviar.')
     }
     const generation = ++operationGeneration
     update({ mode: 'send', phase: 'discovering', code, sourcePath: sourceRoot,
@@ -827,7 +863,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       let peer = await findReceiver(code, generation)
       activeGeneration(generation)
       update({ phase: 'preparing', peerName: peer.name || peer.address })
-      const collected = await collectFolder(sourceRoot,
+      const collected = await collectTransferSource(sourceRoot,
         (patch) => update(patch), () => activeGeneration(generation))
       const transferId = crypto.randomBytes(32).toString('hex')
       const manifest = {
@@ -924,7 +960,7 @@ function createCopyProjectService({ getDeviceName, onState } = {}) {
       if (generation !== operationGeneration) {
         return publicState()
       }
-      update({ phase: 'error', error: error?.message || 'Falha ao enviar a pasta.' })
+      update({ phase: 'error', error: error?.message || 'Falha ao enviar os arquivos.' })
       throw error
     }
   }

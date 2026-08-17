@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-transfer-hook-v2';
+const CACHE_NAME = 'vshook-mobile-1.0.1-transfer-hook-v3';
 const APP_ASSETS = [
   './',
   './index.html',

@@ -6028,6 +6028,16 @@ body.previous-mode .content > .view.active {
   width: 100%;
 }
 
+.copy-project-source-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.copy-project-source-actions > button {
+  width: 100%;
+}
+
 .copy-project-code-field {
   display: grid;
   gap: 7px;
