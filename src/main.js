@@ -22,11 +22,21 @@ const {
   getLanIp,
   getAllLanIps,
   ensureJsonFile,
-  getNativeBridgeStateSnapshot
+  getNativeBridgeStateSnapshot,
+  getNativeTimecodeStatusSnapshot
 } = require('./bridge-server');
 const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createCopyProjectService } = require('./copy-project');
 const { createQrSvg } = require('./qr-svg');
+const {
+  buildResolumeMap,
+  generateGrandMa2Macro,
+  generateGrandMa2Timecode,
+  normalizeMarkers,
+  normalizeSettings: normalizeHookMarkerSettings,
+  safeFileStem,
+  testResolumeColumn
+} = require('./hook-marker');
 const appPackage = require('../package.json');
 
 const store = new Store({
@@ -74,6 +84,18 @@ const store = new Store({
     hookMidi: {
       ports: []
     },
+    hookMarker: {
+      fps: 30,
+      offset: '00:00:00:00',
+      sequence: 1,
+      executorPage: 1,
+      executor: 1,
+      timecodePool: 1,
+      timecodeSlot: 2,
+      resolumeHost: '127.0.0.1',
+      resolumePort: 7000,
+      resolumeFirstColumn: 1
+    },
     lyrics: {
       textColor: '#ffea00',
       clockColor: '#00ff55',
@@ -100,6 +122,18 @@ let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
 let parallelTimecodeLanRelay = null;
 let copyProjectService = null;
+let hookMarkerResolumeTimer = null;
+let hookMarkerResolumeTickRunning = false;
+let hookMarkerResolumeRuntime = {
+  active: false,
+  projectName: '',
+  settings: null,
+  cues: [],
+  lastPosition: 0,
+  wasRunning: false,
+  lastTriggeredCue: 0,
+  lastError: ''
+};
 const timecodeRelayPeerAddresses = { main: '', parallel: '' };
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
@@ -5845,6 +5879,234 @@ function summarizeHookRenameSkipped(skipped = []) {
   }, {});
 }
 
+function saveHookMarkerSettings(input = {}) {
+  const settings = normalizeHookMarkerSettings({
+    ...(store.get('hookMarker') || {}),
+    ...(input && typeof input === 'object' ? input : {})
+  });
+  store.set('hookMarker', settings);
+  return settings;
+}
+
+function hookMarkerProjectFromSnapshot(snapshot) {
+  if (!snapshot || snapshot.connected !== true) {
+    return {
+      connected: false,
+      projectName: '',
+      projectPath: '',
+      markers: []
+    };
+  }
+  const projectPath = String(snapshot.projectPath || '').trim();
+  const fallbackName = projectPath
+    ? path.basename(projectPath, path.extname(projectPath))
+    : 'Projeto VS Hook';
+  return {
+    connected: true,
+    projectName: String(snapshot.projectName || fallbackName).trim() || fallbackName,
+    projectPath,
+    markers: normalizeMarkers(snapshot.markers)
+  };
+}
+
+async function getHookMarkerState() {
+  const snapshot = await getNativeBridgeStateSnapshot(3000);
+  const project = hookMarkerProjectFromSnapshot(snapshot);
+  return {
+    ok: true,
+    ...project,
+    markerCount: project.markers.length,
+    settings: saveHookMarkerSettings()
+  };
+}
+
+async function requireHookMarkerProject() {
+  const snapshot = await getNativeBridgeStateSnapshot(3000);
+  const project = hookMarkerProjectFromSnapshot(snapshot);
+  if (!project.connected) {
+    throw new Error('Abra o REAPER com a extensão VS Hook ativa para carregar os marcadores.');
+  }
+  if (!project.markers.length) {
+    throw new Error('O projeto aberto no REAPER não possui marcadores para exportar.');
+  }
+  return project;
+}
+
+async function selectHookMarkerExportFolder(title) {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title,
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths?.[0]) return '';
+  return path.resolve(result.filePaths[0]);
+}
+
+async function exportHookMarkerGrandMa2(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  const targetFolder = await selectHookMarkerExportFolder(
+    'Escolher pasta para os arquivos grandMA2');
+  if (!targetFolder) return { ok: false, cancelled: true };
+  const stem = safeFileStem(project.projectName);
+  const macroPath = path.join(targetFolder, `${stem}-macro.xml`);
+  const timecodePath = path.join(targetFolder, `${stem}-timecode.xml`);
+  await fs.promises.writeFile(macroPath,
+    generateGrandMa2Macro(project, settings), 'utf8');
+  await fs.promises.writeFile(timecodePath,
+    generateGrandMa2Timecode(project, settings), 'utf8');
+  return {
+    ok: true,
+    folderPath: targetFolder,
+    macroPath,
+    timecodePath,
+    markerCount: project.markers.length
+  };
+}
+
+async function exportHookMarkerResolume(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  const stem = safeFileStem(project.projectName);
+  const options = {
+    title: 'Exportar mapa de cues do Resolume',
+    defaultPath: path.join(app.getPath('documents'), `${stem}-resolume.json`),
+    filters: [
+      { name: 'Mapa Resolume do Hook Marker', extensions: ['json'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ]
+  };
+  const result = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, options)
+    : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  const map = buildResolumeMap(project, settings);
+  await fs.promises.writeFile(result.filePath,
+    `${JSON.stringify(map, null, 2)}\n`, 'utf8');
+  return {
+    ok: true,
+    filePath: result.filePath,
+    markerCount: map.cues.length
+  };
+}
+
+async function testHookMarkerResolume(input = {}) {
+  const settings = saveHookMarkerSettings(input);
+  return testResolumeColumn(settings, settings.resolumeFirstColumn);
+}
+
+function getHookMarkerResolumeRuntimeState() {
+  const runtime = hookMarkerResolumeRuntime;
+  return {
+    active: runtime.active === true,
+    projectName: runtime.projectName || '',
+    cueCount: Array.isArray(runtime.cues) ? runtime.cues.length : 0,
+    lastPosition: Number(runtime.lastPosition) || 0,
+    lastTriggeredCue: Number(runtime.lastTriggeredCue) || 0,
+    lastError: runtime.lastError || ''
+  };
+}
+
+function publishHookMarkerResolumeRuntimeState() {
+  const runtimeState = getHookMarkerResolumeRuntimeState();
+  if (isValidWindow(mainWindow)) {
+    mainWindow.webContents.send('hook-marker-runtime-state', runtimeState);
+  }
+  return runtimeState;
+}
+
+function stopHookMarkerResolumeRuntime(error = '') {
+  if (hookMarkerResolumeTimer) {
+    clearInterval(hookMarkerResolumeTimer);
+    hookMarkerResolumeTimer = null;
+  }
+  hookMarkerResolumeTickRunning = false;
+  hookMarkerResolumeRuntime = {
+    active: false,
+    projectName: hookMarkerResolumeRuntime.projectName || '',
+    settings: hookMarkerResolumeRuntime.settings,
+    cues: hookMarkerResolumeRuntime.cues || [],
+    lastPosition: hookMarkerResolumeRuntime.lastPosition || 0,
+    wasRunning: false,
+    lastTriggeredCue: hookMarkerResolumeRuntime.lastTriggeredCue || 0,
+    lastError: String(error || '')
+  };
+  return publishHookMarkerResolumeRuntimeState();
+}
+
+async function hookMarkerResolumeTick() {
+  if (!hookMarkerResolumeRuntime.active || hookMarkerResolumeTickRunning) return;
+  hookMarkerResolumeTickRunning = true;
+  try {
+    const status = await getNativeTimecodeStatusSnapshot();
+    if (!status?.transport) {
+      const lastOk = Number(hookMarkerResolumeRuntime.lastSuccessfulTickAt) || Date.now();
+      if (Date.now() - lastOk > 3500) {
+        stopHookMarkerResolumeRuntime('A conexão com o REAPER foi encerrada.');
+      }
+      return;
+    }
+    hookMarkerResolumeRuntime.lastSuccessfulTickAt = Date.now();
+    const transport = status.transport;
+    const playState = Number(transport.playState) || 0;
+    const running = (playState & 1) === 1 || (playState & 4) === 4;
+    const position = Math.max(0, Number(transport.position) || 0);
+    let previous = Math.max(0, Number(hookMarkerResolumeRuntime.lastPosition) || 0);
+    if (position < previous - 0.08 || position > previous + 4) previous = position - 0.06;
+
+    if (running) {
+      const startedNow = !hookMarkerResolumeRuntime.wasRunning;
+      const lowerBound = startedNow ? Math.max(0, position - 0.08) : previous + 0.0005;
+      const dueCues = hookMarkerResolumeRuntime.cues.filter((cue) =>
+        cue.positionSeconds >= lowerBound && cue.positionSeconds <= position + 0.045);
+      for (const cue of dueCues) {
+        testResolumeColumn(hookMarkerResolumeRuntime.settings, cue.column)
+          .then(() => {
+            if (!hookMarkerResolumeRuntime.active) return;
+            hookMarkerResolumeRuntime.lastTriggeredCue = cue.cue;
+            hookMarkerResolumeRuntime.lastError = '';
+            publishHookMarkerResolumeRuntimeState();
+          })
+          .catch((error) => {
+            if (!hookMarkerResolumeRuntime.active) return;
+            hookMarkerResolumeRuntime.lastError = error?.message || 'Falha ao enviar OSC.';
+            publishHookMarkerResolumeRuntimeState();
+          });
+      }
+    }
+    hookMarkerResolumeRuntime.wasRunning = running;
+    hookMarkerResolumeRuntime.lastPosition = position;
+  } catch (error) {
+    hookMarkerResolumeRuntime.lastError = error?.message || 'Falha ao acompanhar o transporte.';
+  } finally {
+    hookMarkerResolumeTickRunning = false;
+  }
+}
+
+async function startHookMarkerResolumeRuntime(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  const cueMap = buildResolumeMap(project, settings);
+  if (!cueMap.cues.length) throw new Error('Nenhum marcador disponível para o Resolume.');
+  if (hookMarkerResolumeTimer) clearInterval(hookMarkerResolumeTimer);
+  const status = await getNativeTimecodeStatusSnapshot();
+  hookMarkerResolumeRuntime = {
+    active: true,
+    projectName: project.projectName,
+    settings,
+    cues: cueMap.cues,
+    lastPosition: Math.max(0, Number(status?.transport?.position) || 0),
+    wasRunning: false,
+    lastTriggeredCue: 0,
+    lastError: '',
+    lastSuccessfulTickAt: Date.now()
+  };
+  hookMarkerResolumeTimer = setInterval(hookMarkerResolumeTick, 35);
+  if (hookMarkerResolumeTimer.unref) hookMarkerResolumeTimer.unref();
+  publishHookMarkerResolumeRuntimeState();
+  hookMarkerResolumeTick().catch(() => {});
+  return getHookMarkerResolumeRuntimeState();
+}
+
 ipcMain.handle('hook-rename-select-folder', async () => {
   const result = await dialog.showOpenDialog(mainWindow || undefined, {
     title: 'Escolher pasta para o Hook Rename',
@@ -5970,6 +6232,23 @@ ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
 ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-open-components', () => installHookMidiComponents());
+ipcMain.handle('hook-marker-get-state', () => getHookMarkerState());
+ipcMain.handle('hook-marker-save-settings', (_event, payload = {}) => ({
+  ok: true,
+  settings: saveHookMarkerSettings(payload)
+}));
+ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
+  exportHookMarkerGrandMa2(payload));
+ipcMain.handle('hook-marker-export-resolume', (_event, payload = {}) =>
+  exportHookMarkerResolume(payload));
+ipcMain.handle('hook-marker-test-resolume', (_event, payload = {}) =>
+  testHookMarkerResolume(payload));
+ipcMain.handle('hook-marker-start-resolume', (_event, payload = {}) =>
+  startHookMarkerResolumeRuntime(payload));
+ipcMain.handle('hook-marker-stop-resolume', () =>
+  stopHookMarkerResolumeRuntime());
+ipcMain.handle('hook-marker-get-runtime-state', () =>
+  getHookMarkerResolumeRuntimeState());
 ipcMain.handle('copy-project-select-folder', async (_event, payload = {}) => {
   const receiving = payload?.mode === 'receive';
   const selectingFile = payload?.mode === 'send-file';
@@ -6332,6 +6611,7 @@ function prepareForAppQuit() {
     try { if (win && !win.isDestroyed()) win.destroy(); } catch (_) {}
   }
   lyricsWindows.clear();
+  stopHookMarkerResolumeRuntime();
   stopBridgeServers();
   if (copyProjectService) {
     copyProjectService.stop().catch(() => {});

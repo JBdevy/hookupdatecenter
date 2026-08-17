@@ -575,6 +575,13 @@ async function getNativeBridgeStateSnapshot(maxStaleMs = 3000) {
   return null
 }
 
+async function getNativeTimecodeStatusSnapshot() {
+  const result = await requestNativeBridgeJson(
+    '/timecode/status', { timeoutMs: 750 })
+  if (!result.ok || !result.data || result.data.ok === false) return null
+  return result.data
+}
+
 function retainNativeBridgeBackgroundPolling(licenseCheck) {
   if (typeof licenseCheck === 'function') {
     nativeBridgeLicenseChecks.add(licenseCheck)
@@ -2135,4 +2142,5 @@ module.exports = {
   getLanIp,
   getAllLanIps,
   getNativeBridgeStateSnapshot,
+  getNativeTimecodeStatusSnapshot,
 }

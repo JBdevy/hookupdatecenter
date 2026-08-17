@@ -876,6 +876,7 @@
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Transfer Hook</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">Hook Marker</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
@@ -1160,6 +1161,97 @@
               <div class="actions copy-project-actions">
                 <button id="copyProjectCancelButton" class="secondary-button hidden" type="button">Cancelar</button>
                 <button id="copyProjectOpenDestinationButton" class="secondary-button hidden" type="button">Mostrar pasta recebida</button>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div id="toolsHookMarkerPanel" class="tools-panel tools-hook-marker-panel" data-tools-panel-content="hook-marker" role="tabpanel">
+          <div class="hero-card tools-hero hook-marker-hero">
+            <div>
+              <p class="eyebrow">Marcadores do REAPER para o show</p>
+              <h1>Hook Marker</h1>
+              <p class="muted">Transforme os marcadores do projeto em cues para grandMA2 ou em colunas do Resolume.</p>
+            </div>
+            <div class="hook-marker-hero-actions">
+              <span id="hookMarkerStatusBadge" class="badge">Aguardando REAPER</span>
+              <button id="hookMarkerRefreshButton" class="secondary-button" type="button">Atualizar marcadores</button>
+            </div>
+          </div>
+
+          <div class="hook-marker-grid">
+            <section class="card hook-marker-project-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Projeto aberto</p><h2 id="hookMarkerProjectName">Nenhum projeto conectado</h2></div>
+                <span id="hookMarkerCountBadge" class="badge">0 marcadores</span>
+              </div>
+              <p id="hookMarkerProjectPath" class="muted hook-marker-project-path">Abra o REAPER e carregue um projeto com marcadores.</p>
+              <div class="form-grid hook-marker-common-settings">
+                <label>
+                  FPS do timecode
+                  <select id="hookMarkerFps">
+                    <option value="24">24 FPS</option>
+                    <option value="25">25 FPS</option>
+                    <option value="30" selected>30 FPS</option>
+                  </select>
+                </label>
+                <label>
+                  Offset do timecode
+                  <input id="hookMarkerOffset" type="text" value="00:00:00:00" inputmode="numeric" placeholder="00:00:00:00" autocomplete="off" />
+                </label>
+              </div>
+            </section>
+
+            <section class="card hook-marker-target-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Iluminação</p><h2>grandMA2</h2></div>
+                <span class="badge">XML</span>
+              </div>
+              <div class="hook-marker-ma2-fields">
+                <label>Sequence<input id="hookMarkerSequence" type="number" min="1" max="9999" value="1" /></label>
+                <label>Página<input id="hookMarkerExecutorPage" type="number" min="1" max="9999" value="1" /></label>
+                <label>Executor<input id="hookMarkerExecutor" type="number" min="1" max="9999" value="1" /></label>
+                <label>Timecode<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
+                <label>Slot MTC<input id="hookMarkerTimecodeSlot" type="number" min="1" max="8" value="2" /></label>
+              </div>
+              <p class="muted hook-marker-help">Gera o macro que cria os cues e importa o Timecode Show. O padrão é Slot 2, normalmente ligado à entrada MTC do grandMA2.</p>
+              <button id="hookMarkerExportGrandMa2Button" class="primary-button" type="button" disabled>Exportar grandMA2</button>
+              <ol class="hook-marker-ma2-steps">
+                <li>REAPER envia MTC pela saída <strong>Hook MIDI (A)</strong>.</li>
+                <li>grandMA2 recebe pela entrada <strong>Hook MIDI (B)</strong>.</li>
+                <li>O XML define qual cue será disparado em cada marcador.</li>
+              </ol>
+            </section>
+
+            <section class="card hook-marker-target-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Vídeo</p><h2>Resolume</h2></div>
+                <span class="badge">OSC</span>
+              </div>
+              <div class="hook-marker-resolume-fields">
+                <label>IP do Resolume<input id="hookMarkerResolumeHost" type="text" value="127.0.0.1" autocomplete="off" /></label>
+                <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
+                <label>Primeira coluna<input id="hookMarkerResolumeFirstColumn" type="number" min="1" max="99999" value="1" /></label>
+              </div>
+              <p class="muted hook-marker-help">Cada marcador é associado a uma coluna em ordem. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
+              <div class="actions hook-marker-actions">
+                <button id="hookMarkerTestResolumeButton" class="secondary-button" type="button">Testar primeira coluna</button>
+                <button id="hookMarkerExportResolumeButton" class="primary-button" type="button" disabled>Exportar mapa</button>
+                <button id="hookMarkerRunResolumeButton" class="secondary-button hook-marker-run-button" type="button" disabled>Ativar durante o Play</button>
+              </div>
+              <p id="hookMarkerResolumeRuntimeStatus" class="muted hook-marker-runtime-status">Execução automática desligada.</p>
+            </section>
+
+            <section class="card hook-marker-preview-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Prévia</p><h2>Cues encontrados</h2></div>
+                <span class="badge">REAPER → show</span>
+              </div>
+              <div class="hook-marker-preview-head" aria-hidden="true">
+                <span>Cue</span><span>Marcador</span><span>Tempo</span><span>Resolume</span>
+              </div>
+              <div id="hookMarkerPreviewList" class="hook-marker-preview-list">
+                <p class="muted">Conecte o REAPER para visualizar os marcadores.</p>
               </div>
             </section>
           </div>

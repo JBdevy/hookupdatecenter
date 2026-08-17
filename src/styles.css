@@ -5769,7 +5769,7 @@ body.previous-mode .content > .view.active {
 /* Menu interno da aba Ferramentas. */
 .tools-submenu {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   align-items: stretch;
   gap: 8px;
   width: 100%;
@@ -6134,6 +6134,226 @@ body.previous-mode .content > .view.active {
   }
   .copy-project-progress-card {
     grid-column: auto;
+  }
+}
+
+.tools-hook-marker-panel.active {
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 9px;
+  overflow: auto;
+}
+
+.hook-marker-hero,
+.hook-marker-hero-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hook-marker-hero h1,
+.hook-marker-project-card h2,
+.hook-marker-target-card h2,
+.hook-marker-preview-card h2 {
+  margin: 0;
+}
+
+.hook-marker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-height: 0;
+}
+
+.hook-marker-project-card,
+.hook-marker-preview-card {
+  grid-column: 1 / -1;
+}
+
+.hook-marker-project-card,
+.hook-marker-target-card,
+.hook-marker-preview-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.hook-marker-project-path {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-marker-common-settings,
+.hook-marker-ma2-fields,
+.hook-marker-resolume-fields {
+  display: grid;
+  gap: 9px;
+}
+
+.hook-marker-common-settings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hook-marker-ma2-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hook-marker-resolume-fields {
+  grid-template-columns: minmax(0, 1.45fr) repeat(2, minmax(0, .75fr));
+}
+
+.hook-marker-ma2-fields label,
+.hook-marker-resolume-fields label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.hook-marker-help {
+  min-height: 34px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.hook-marker-target-card > .primary-button {
+  width: 100%;
+  margin-top: auto;
+}
+
+.hook-marker-ma2-steps {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 9px 9px 9px 27px;
+  border: 1px solid rgba(158, 255, 0, .13);
+  border-radius: 9px;
+  background: rgba(158, 255, 0, .035);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.hook-marker-ma2-steps strong {
+  color: var(--green);
+}
+
+.hook-marker-actions {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: auto;
+}
+
+.hook-marker-actions button {
+  width: 100%;
+}
+
+.hook-marker-run-button {
+  grid-column: 1 / -1;
+}
+
+.hook-marker-run-button.is-running {
+  border-color: rgba(158, 255, 0, .62) !important;
+  background: rgba(158, 255, 0, .14) !important;
+  color: var(--green) !important;
+}
+
+.hook-marker-runtime-status {
+  min-height: 16px;
+  margin: -3px 0 0;
+  font-size: 10px;
+  text-align: center;
+}
+
+.hook-marker-runtime-status.is-error {
+  color: #ff7b8d;
+}
+
+.hook-marker-preview-head,
+.hook-marker-preview-item {
+  display: grid;
+  grid-template-columns: 58px minmax(180px, 1fr) 110px 96px;
+  align-items: center;
+  gap: 10px;
+}
+
+.hook-marker-preview-head {
+  padding: 0 11px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.hook-marker-preview-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 80px;
+  max-height: 245px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.hook-marker-preview-item {
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 255, 255, .075);
+  border-radius: 9px;
+  background: rgba(5, 7, 12, .52);
+  font-size: 11px;
+}
+
+.hook-marker-preview-item strong {
+  color: var(--green);
+}
+
+.hook-marker-preview-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-marker-preview-item code {
+  color: #ffea00;
+  font: 800 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+@media (max-width: 900px) {
+  .hook-marker-grid {
+    grid-template-columns: 1fr;
+  }
+  .hook-marker-project-card,
+  .hook-marker-preview-card {
+    grid-column: auto;
+  }
+  .hook-marker-ma2-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .hook-marker-hero,
+  .hook-marker-hero-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .hook-marker-common-settings,
+  .hook-marker-resolume-fields,
+  .hook-marker-actions {
+    grid-template-columns: 1fr;
+  }
+  .hook-marker-preview-head {
+    display: none;
+  }
+  .hook-marker-preview-item {
+    grid-template-columns: 42px minmax(0, 1fr);
   }
 }
 

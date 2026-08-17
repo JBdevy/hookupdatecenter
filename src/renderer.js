@@ -9,6 +9,9 @@ let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
 let hookMidiState = null;
 let hookMidiBusy = false;
+let hookMarkerState = null;
+let hookMarkerBusy = false;
+let hookMarkerRuntimeState = { active: false };
 let copyProjectState = null;
 let copyProjectSourceFolder = null;
 let copyProjectDestinationFolder = null;
@@ -1834,8 +1837,230 @@ async function refreshCopyProjectState() {
   try { renderCopyProjectState(await window.hookUpdateCenter.getCopyProjectState()); } catch (_) {}
 }
 
+function readHookMarkerSettings() {
+  return {
+    fps: Number($('#hookMarkerFps')?.value || 30),
+    offset: String($('#hookMarkerOffset')?.value || '00:00:00:00').trim(),
+    sequence: Number($('#hookMarkerSequence')?.value || 1),
+    executorPage: Number($('#hookMarkerExecutorPage')?.value || 1),
+    executor: Number($('#hookMarkerExecutor')?.value || 1),
+    timecodePool: Number($('#hookMarkerTimecodePool')?.value || 1),
+    timecodeSlot: Number($('#hookMarkerTimecodeSlot')?.value || 2),
+    resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
+    resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
+    resolumeFirstColumn: Number($('#hookMarkerResolumeFirstColumn')?.value || 1)
+  };
+}
+
+function applyHookMarkerSettings(settings = {}) {
+  const fields = {
+    hookMarkerFps: settings.fps,
+    hookMarkerOffset: settings.offset,
+    hookMarkerSequence: settings.sequence,
+    hookMarkerExecutorPage: settings.executorPage,
+    hookMarkerExecutor: settings.executor,
+    hookMarkerTimecodePool: settings.timecodePool,
+    hookMarkerTimecodeSlot: settings.timecodeSlot,
+    hookMarkerResolumeHost: settings.resolumeHost,
+    hookMarkerResolumePort: settings.resolumePort,
+    hookMarkerResolumeFirstColumn: settings.resolumeFirstColumn
+  };
+  Object.entries(fields).forEach(([id, value]) => {
+    const input = $(`#${id}`);
+    if (input && value !== undefined && value !== null) input.value = String(value);
+  });
+}
+
+function hookMarkerTimecode(seconds, fps) {
+  const rate = Math.max(1, Math.round(Number(fps) || 30));
+  let framesTotal = Math.max(0, Math.round((Number(seconds) || 0) * rate));
+  const frames = framesTotal % rate;
+  framesTotal = Math.floor(framesTotal / rate);
+  const secs = framesTotal % 60;
+  framesTotal = Math.floor(framesTotal / 60);
+  const minutes = framesTotal % 60;
+  const hours = Math.floor(framesTotal / 60);
+  return [hours, minutes, secs, frames]
+    .map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function parseHookMarkerOffset(value, fps) {
+  const parts = String(value || '').trim().split(':').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part) || part < 0)) return 0;
+  return parts[0] * 3600 + parts[1] * 60 + parts[2] + parts[3] / Math.max(1, fps);
+}
+
+function renderHookMarkerPreview() {
+  const list = $('#hookMarkerPreviewList');
+  if (!list) return;
+  const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
+  if (!hookMarkerState?.connected) {
+    list.innerHTML = '<p class="muted">Conecte o REAPER para visualizar os marcadores.</p>';
+    return;
+  }
+  if (!markers.length) {
+    list.innerHTML = '<p class="muted">O projeto aberto não possui marcadores.</p>';
+    return;
+  }
+  const settings = readHookMarkerSettings();
+  const fps = Math.max(1, Math.round(settings.fps || 30));
+  const offset = parseHookMarkerOffset(settings.offset, fps);
+  const firstColumn = Math.max(1, Math.round(settings.resolumeFirstColumn || 1));
+  list.innerHTML = markers.map((marker, index) => `
+    <div class="hook-marker-preview-item">
+      <strong>${index + 1}</strong>
+      <span title="${escapeHtml(marker.name || '')}">${escapeHtml(marker.name || `Marcador ${index + 1}`)}</span>
+      <code>${hookMarkerTimecode((Number(marker.position) || 0) + offset, fps)}</code>
+      <span>Coluna ${firstColumn + index}</span>
+    </div>`).join('');
+}
+
+function renderHookMarkerRuntimeState(nextState) {
+  if (nextState) hookMarkerRuntimeState = nextState;
+  const active = hookMarkerRuntimeState?.active === true;
+  const button = $('#hookMarkerRunResolumeButton');
+  const status = $('#hookMarkerResolumeRuntimeStatus');
+  if (button) {
+    button.textContent = active ? 'Desativar execução' : 'Ativar durante o Play';
+    button.classList.toggle('is-running', active);
+  }
+  if (status) {
+    if (hookMarkerRuntimeState?.lastError) {
+      status.textContent = hookMarkerRuntimeState.lastError;
+      status.classList.add('is-error');
+    } else if (active) {
+      const lastCue = Number(hookMarkerRuntimeState.lastTriggeredCue) || 0;
+      status.textContent = lastCue > 0
+        ? `Ativo. Último cue enviado: ${lastCue}.`
+        : `Ativo com ${hookMarkerRuntimeState.cueCount || 0} cues. Aguardando o Play do REAPER.`;
+      status.classList.remove('is-error');
+    } else {
+      status.textContent = 'Execução automática desligada.';
+      status.classList.remove('is-error');
+    }
+  }
+}
+
+function renderHookMarkerState(nextState, { applySettings = false } = {}) {
+  if (nextState) hookMarkerState = nextState;
+  if (applySettings && hookMarkerState?.settings) applyHookMarkerSettings(hookMarkerState.settings);
+  const connected = hookMarkerState?.connected === true;
+  const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
+  const badge = $('#hookMarkerStatusBadge');
+  if (badge) badge.textContent = connected ? 'REAPER conectado' : 'Aguardando REAPER';
+  $('#hookMarkerProjectName').textContent = connected
+    ? (hookMarkerState.projectName || 'Projeto sem nome')
+    : 'Nenhum projeto conectado';
+  $('#hookMarkerProjectPath').textContent = connected
+    ? (hookMarkerState.projectPath || 'Projeto ainda não foi salvo em disco.')
+    : 'Abra o REAPER e carregue um projeto com marcadores.';
+  $('#hookMarkerCountBadge').textContent = `${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
+  const canExport = connected && markers.length > 0 && !hookMarkerBusy;
+  $('#hookMarkerExportGrandMa2Button').disabled = !canExport;
+  $('#hookMarkerExportResolumeButton').disabled = !canExport;
+  $('#hookMarkerRunResolumeButton').disabled = !canExport && hookMarkerRuntimeState?.active !== true;
+  $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
+  $('#hookMarkerTestResolumeButton').disabled = hookMarkerBusy;
+  renderHookMarkerPreview();
+}
+
+async function refreshHookMarkerState({ applySettings = true } = {}) {
+  try {
+    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), { applySettings });
+    renderHookMarkerRuntimeState(await window.hookUpdateCenter.getHookMarkerRuntimeState());
+  } catch (error) {
+    hookMarkerState = { connected: false, markers: [] };
+    renderHookMarkerState();
+    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível ler os marcadores do REAPER.'), type: 'error' });
+  }
+}
+
+async function toggleHookMarkerResolumeRuntime() {
+  if (hookMarkerBusy) return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  try {
+    const runtime = hookMarkerRuntimeState?.active
+      ? await window.hookUpdateCenter.stopHookMarkerResolume()
+      : await window.hookUpdateCenter.startHookMarkerResolume(readHookMarkerSettings());
+    renderHookMarkerRuntimeState(runtime);
+  } catch (error) {
+    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível alterar a execução automática do Resolume.'), type: 'error' });
+  } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function saveHookMarkerSettingsFromUi() {
+  renderHookMarkerPreview();
+  try {
+    await window.hookUpdateCenter.saveHookMarkerSettings(readHookMarkerSettings());
+    if (hookMarkerRuntimeState?.active) {
+      renderHookMarkerRuntimeState(await window.hookUpdateCenter.stopHookMarkerResolume());
+    }
+  } catch (_) {}
+}
+
+async function exportHookMarkerGrandMa2() {
+  if (hookMarkerBusy) return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  try {
+    const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2(readHookMarkerSettings());
+    if (!result?.cancelled) showModal({
+      title: 'Arquivos grandMA2 prontos',
+      message: `${result.markerCount} cues exportados. Copie o arquivo de timecode para importexport e o arquivo de macro para macros no grandMA2.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível exportar os arquivos grandMA2.'), type: 'error' });
+  } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function exportHookMarkerResolume() {
+  if (hookMarkerBusy) return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  try {
+    const result = await window.hookUpdateCenter.exportHookMarkerResolume(readHookMarkerSettings());
+    if (!result?.cancelled) showModal({
+      title: 'Mapa Resolume pronto',
+      message: `${result.markerCount} cues exportados com os endereços OSC das colunas.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível exportar o mapa do Resolume.'), type: 'error' });
+  } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function testHookMarkerResolume() {
+  if (hookMarkerBusy) return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  try {
+    const result = await window.hookUpdateCenter.testHookMarkerResolume(readHookMarkerSettings());
+    showModal({
+      title: 'Comando enviado ao Resolume',
+      message: `A coluna ${result.column} foi acionada em ${result.host}:${result.port}.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível enviar o comando OSC ao Resolume.'), type: 'error' });
+  } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'pingpong'];
+  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'hook-marker', 'pingpong'];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -1850,6 +2075,7 @@ function setToolsPanel(panelName = 'rename') {
   if (selectedToolsPanel === 'cable') refreshDirectCableState();
   if (selectedToolsPanel === 'midi') refreshHookMidiState();
   if (selectedToolsPanel === 'copy-project') refreshCopyProjectState();
+  if (selectedToolsPanel === 'hook-marker') refreshHookMarkerState();
   if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
 
@@ -1897,7 +2123,24 @@ function setupToolsSubmenu() {
     event.currentTarget.value = String(event.currentTarget.value || '').replace(/\D/g, '').slice(0, 6);
     renderCopyProjectState();
   });
+  $('#hookMarkerRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({ applySettings: false }));
+  $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);
+  $('#hookMarkerExportResolumeButton')?.addEventListener('click', exportHookMarkerResolume);
+  $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
+  $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
+  [
+    '#hookMarkerFps', '#hookMarkerOffset', '#hookMarkerSequence',
+    '#hookMarkerExecutorPage', '#hookMarkerExecutor', '#hookMarkerTimecodePool',
+    '#hookMarkerTimecodeSlot',
+    '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
+    '#hookMarkerResolumeFirstColumn'
+  ].forEach((selector) => {
+    $(selector)?.addEventListener('change', saveHookMarkerSettingsFromUi);
+  });
+  $('#hookMarkerOffset')?.addEventListener('input', renderHookMarkerPreview);
+  $('#hookMarkerResolumeFirstColumn')?.addEventListener('input', renderHookMarkerPreview);
   window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
+  window.hookUpdateCenter.onHookMarkerRuntimeState(renderHookMarkerRuntimeState);
   setupPingPongGame();
   setToolsPanel(selectedToolsPanel);
 }
