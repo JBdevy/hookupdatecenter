@@ -888,8 +888,7 @@
             <p class="muted">Renomeie arquivos com sufixo, prévia antes de executar e modo em massa por nome de pasta.</p>
           </div>
           <div class="tools-hero-actions">
-            <button id="hookRenameSelectFolderButton" class="primary-button" type="button">Escolher pasta</button>
-            <button id="hookRenameSelectManyFoldersButton" class="secondary-button" type="button">Escolher multipastas</button>
+            <button id="hookRenameSelectManyFoldersButton" class="primary-button" type="button">Escolher pastas</button>
           </div>
           </div>
 
@@ -904,9 +903,9 @@
             </div>
 
             <div class="selected-folder-box">
-              <span>Pasta selecionada</span>
+              <span>Pastas selecionadas</span>
               <strong id="hookRenameFolderLabel">Nenhuma pasta selecionada</strong>
-              <small id="hookRenameFolderPath" class="muted">Escolha uma pasta para começar.</small>
+              <small id="hookRenameFolderPath" class="muted">Escolha uma ou mais pastas para começar.</small>
             </div>
 
             <div class="form-grid hook-rename-form">
@@ -963,7 +962,7 @@
             </div>
             <div id="hookRenameSummary" class="hook-rename-summary muted">Nenhuma prévia gerada ainda.</div>
             <div id="hookRenamePreviewList" class="hook-rename-preview-list">
-              <p class="muted">Escolha uma pasta e clique em gerar prévia.</p>
+              <p class="muted">Escolha uma ou mais pastas e clique em gerar prévia.</p>
             </div>
           </div>
           </div>
@@ -1171,7 +1170,7 @@
             <div>
               <p class="eyebrow">Marcadores do REAPER para o show</p>
               <h1>Hook Marker</h1>
-              <p class="muted">Transforme os marcadores do projeto em cues para grandMA2 ou em colunas do Resolume.</p>
+              <p class="muted">Gere os cues de cada música do projeto para grandMA2 ou transforme os marcadores em colunas do Resolume.</p>
             </div>
             <div class="hook-marker-hero-actions">
               <span id="hookMarkerStatusBadge" class="badge">Aguardando REAPER</span>
@@ -1183,7 +1182,7 @@
             <section class="card hook-marker-project-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Projeto aberto</p><h2 id="hookMarkerProjectName">Nenhum projeto conectado</h2></div>
-                <span id="hookMarkerCountBadge" class="badge">0 marcadores</span>
+                <span id="hookMarkerCountBadge" class="badge">0 músicas · 0 marcadores</span>
               </div>
               <p id="hookMarkerProjectPath" class="muted hook-marker-project-path">Abra o REAPER e carregue um projeto com marcadores.</p>
               <div class="form-grid hook-marker-common-settings">
@@ -1208,18 +1207,18 @@
                 <span class="badge">XML</span>
               </div>
               <div class="hook-marker-ma2-fields">
-                <label>Sequence<input id="hookMarkerSequence" type="number" min="1" max="9999" value="1" /></label>
+                <label>Sequence inicial<input id="hookMarkerSequence" type="number" min="1" max="9999" value="1" /></label>
                 <label>Página<input id="hookMarkerExecutorPage" type="number" min="1" max="9999" value="1" /></label>
-                <label>Executor<input id="hookMarkerExecutor" type="number" min="1" max="9999" value="1" /></label>
-                <label>Timecode<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
+                <label>Executor inicial<input id="hookMarkerExecutor" type="number" min="1" max="9999" value="1" /></label>
+                <label>Timecode inicial<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
                 <label>Slot MTC<input id="hookMarkerTimecodeSlot" type="number" min="1" max="8" value="2" /></label>
               </div>
-              <p class="muted hook-marker-help">Gera o macro que cria os cues e importa o Timecode Show. O padrão é Slot 2, normalmente ligado à entrada MTC do grandMA2.</p>
+              <p class="muted hook-marker-help">Gera um macro e um Timecode XML para cada região de música. O início da própria região é sempre a Cue 1; os marcadores internos vêm depois. Sequence, Executor e Timecode avançam automaticamente a cada música. O padrão MTC é o Slot 2.</p>
               <button id="hookMarkerExportGrandMa2Button" class="primary-button" type="button" disabled>Exportar grandMA2</button>
               <ol class="hook-marker-ma2-steps">
                 <li>REAPER envia MTC pela saída <strong>Hook MIDI (A)</strong>.</li>
                 <li>grandMA2 recebe pela entrada <strong>Hook MIDI (B)</strong>.</li>
-                <li>O XML define qual cue será disparado em cada marcador.</li>
+                <li>Cada música recebe seus próprios XMLs, começando pela cue do início da região.</li>
               </ol>
             </section>
 

@@ -6302,12 +6302,42 @@ body.previous-mode .content > .view.active {
   padding-right: 3px;
 }
 
+.hook-marker-song-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 8px 10px 3px;
+  border-top: 1px solid rgba(255, 234, 0, .22);
+}
+
+.hook-marker-song-heading:first-child {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.hook-marker-song-heading strong {
+  color: #ffea00;
+}
+
+.hook-marker-song-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
 .hook-marker-preview-item {
   padding: 9px 11px;
   border: 1px solid rgba(255, 255, 255, .075);
   border-radius: 9px;
   background: rgba(5, 7, 12, .52);
   font-size: 11px;
+}
+
+.hook-marker-preview-item.is-region-start {
+  border-color: rgba(255, 234, 0, .25);
+  background: rgba(255, 234, 0, .055);
 }
 
 .hook-marker-preview-item strong {

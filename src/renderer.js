@@ -829,7 +829,7 @@ function getHookRenamePayload() {
 
 function formatHookRenameSelectedPaths(result) {
   const paths = Array.isArray(result?.folderPaths) ? result.folderPaths : (result?.folderPath ? [result.folderPath] : []);
-  if (!paths.length) return 'Escolha uma pasta para começar.';
+  if (!paths.length) return 'Escolha uma ou mais pastas para começar.';
   if (!result?.multiple) return paths[0] || '';
 
   const names = Array.isArray(result.folderNames) && result.folderNames.length
@@ -904,7 +904,7 @@ function renderHookRenamePreview(preview = null) {
 
   if (!preview) {
     summary.textContent = 'Nenhuma prévia gerada ainda.';
-    list.innerHTML = '<p class="muted">Escolha uma pasta e clique em gerar prévia.</p>';
+    list.innerHTML = '<p class="muted">Escolha uma ou mais pastas e clique em gerar prévia.</p>';
     updateHookRenameControls();
     return;
   }
@@ -969,7 +969,7 @@ function clearHookRename() {
   hookRenameFolder = null;
   hookRenameLastPreview = null;
   $('#hookRenameFolderLabel').textContent = 'Nenhuma pasta selecionada';
-  $('#hookRenameFolderPath').textContent = 'Escolha uma pasta para começar.';
+  $('#hookRenameFolderPath').textContent = 'Escolha uma ou mais pastas para começar.';
   $('#hookRenameSuffixInput').value = '';
   $('#hookRenameSuggestedSuffixInput').value = '';
   $('#hookRenameUseFolderSuffixCheck').checked = false;
@@ -988,12 +988,6 @@ function applyHookRenameSelection(result) {
   resetHookRenameProgress();
   renderHookRenamePreview(null);
   updateHookRenameControls();
-}
-
-async function selectHookRenameFolder() {
-  const result = await window.hookUpdateCenter.selectHookRenameFolder();
-  if (!result?.ok) return;
-  applyHookRenameSelection(result);
 }
 
 async function selectManyHookRenameFolders() {
@@ -1079,9 +1073,6 @@ async function runHookRename() {
 }
 
 function setupHookRename() {
-  $('#hookRenameSelectFolderButton')?.addEventListener('click', async () => {
-    try { await selectHookRenameFolder(); } catch (error) { showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível escolher a pasta.'), type: 'error' }); }
-  });
   $('#hookRenameSelectManyFoldersButton')?.addEventListener('click', async () => {
     try { await selectManyHookRenameFolders(); } catch (error) { showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível escolher as pastas.'), type: 'error' }); }
   });
@@ -1894,25 +1885,55 @@ function renderHookMarkerPreview() {
   const list = $('#hookMarkerPreviewList');
   if (!list) return;
   const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
+  const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
   if (!hookMarkerState?.connected) {
     list.innerHTML = '<p class="muted">Conecte o REAPER para visualizar os marcadores.</p>';
     return;
   }
-  if (!markers.length) {
-    list.innerHTML = '<p class="muted">O projeto aberto não possui marcadores.</p>';
+  if (!songs.length && !markers.length) {
+    list.innerHTML = '<p class="muted">O projeto aberto não possui regiões de música nem marcadores.</p>';
     return;
   }
   const settings = readHookMarkerSettings();
   const fps = Math.max(1, Math.round(settings.fps || 30));
   const offset = parseHookMarkerOffset(settings.offset, fps);
   const firstColumn = Math.max(1, Math.round(settings.resolumeFirstColumn || 1));
-  list.innerHTML = markers.map((marker, index) => `
+  const markerGlobalIndex = new Map(markers.map((marker, index) => [String(marker.id), index]));
+  const songHtml = songs.map((song, songIndex) => {
+    const start = Number(song.start) || 0;
+    const end = Math.max(start, Number(song.end) || start);
+    const contained = markers.filter((marker) => {
+      const position = Number(marker.position) || 0;
+      return position > start + 0.0005 && position < end - 0.0005;
+    });
+    const cues = [
+      { id: `region-${song.id}`, name: song.name, position: 0, regionStart: true },
+      ...contained.map((marker) => ({ ...marker, position: Math.max(0, (Number(marker.position) || 0) - start) }))
+    ];
+    return `
+      <div class="hook-marker-song-heading">
+        <strong>${escapeHtml(song.name || `Música ${songIndex + 1}`)}</strong>
+        <span>Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}</span>
+      </div>
+      ${cues.map((cue, cueIndex) => {
+        const resolumeIndex = markerGlobalIndex.get(String(cue.id));
+        return `
+          <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}">
+            <strong>${cueIndex + 1}</strong>
+            <span title="${escapeHtml(cue.name || '')}">${escapeHtml(cue.name || `Cue ${cueIndex + 1}`)}${cue.regionStart ? ' — início da região' : ''}</span>
+            <code>${hookMarkerTimecode((Number(cue.position) || 0) + offset, fps)}</code>
+            <span>${cue.regionStart || resolumeIndex === undefined ? 'Início' : `Coluna ${firstColumn + resolumeIndex}`}</span>
+          </div>`;
+      }).join('')}`;
+  }).join('');
+  const markerHtml = markers.map((marker, index) => `
     <div class="hook-marker-preview-item">
       <strong>${index + 1}</strong>
       <span title="${escapeHtml(marker.name || '')}">${escapeHtml(marker.name || `Marcador ${index + 1}`)}</span>
       <code>${hookMarkerTimecode((Number(marker.position) || 0) + offset, fps)}</code>
       <span>Coluna ${firstColumn + index}</span>
     </div>`).join('');
+  list.innerHTML = songHtml || markerHtml;
 }
 
 function renderHookMarkerRuntimeState(nextState) {
@@ -1946,6 +1967,7 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   if (applySettings && hookMarkerState?.settings) applyHookMarkerSettings(hookMarkerState.settings);
   const connected = hookMarkerState?.connected === true;
   const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
+  const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
   const badge = $('#hookMarkerStatusBadge');
   if (badge) badge.textContent = connected ? 'REAPER conectado' : 'Aguardando REAPER';
   $('#hookMarkerProjectName').textContent = connected
@@ -1954,11 +1976,12 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   $('#hookMarkerProjectPath').textContent = connected
     ? (hookMarkerState.projectPath || 'Projeto ainda não foi salvo em disco.')
     : 'Abra o REAPER e carregue um projeto com marcadores.';
-  $('#hookMarkerCountBadge').textContent = `${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
-  const canExport = connected && markers.length > 0 && !hookMarkerBusy;
-  $('#hookMarkerExportGrandMa2Button').disabled = !canExport;
-  $('#hookMarkerExportResolumeButton').disabled = !canExport;
-  $('#hookMarkerRunResolumeButton').disabled = !canExport && hookMarkerRuntimeState?.active !== true;
+  $('#hookMarkerCountBadge').textContent = `${songs.length} música${songs.length === 1 ? '' : 's'} · ${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
+  const canExportGrandMa2 = connected && songs.length > 0 && !hookMarkerBusy;
+  const canUseResolume = connected && markers.length > 0 && !hookMarkerBusy;
+  $('#hookMarkerExportGrandMa2Button').disabled = !canExportGrandMa2;
+  $('#hookMarkerExportResolumeButton').disabled = !canUseResolume;
+  $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
   $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
   $('#hookMarkerTestResolumeButton').disabled = hookMarkerBusy;
   renderHookMarkerPreview();
@@ -1969,7 +1992,7 @@ async function refreshHookMarkerState({ applySettings = true } = {}) {
     renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), { applySettings });
     renderHookMarkerRuntimeState(await window.hookUpdateCenter.getHookMarkerRuntimeState());
   } catch (error) {
-    hookMarkerState = { connected: false, markers: [] };
+    hookMarkerState = { connected: false, markers: [], songs: [] };
     renderHookMarkerState();
     showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível ler os marcadores do REAPER.'), type: 'error' });
   }
@@ -2010,7 +2033,7 @@ async function exportHookMarkerGrandMa2() {
     const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2(readHookMarkerSettings());
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.markerCount} cues exportados. Copie o arquivo de timecode para importexport e o arquivo de macro para macros no grandMA2.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Para cada música, copie o timecode para importexport e o macro para macros no grandMA2.`,
       type: 'success'
     });
   } catch (error) {

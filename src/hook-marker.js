@@ -64,6 +64,49 @@ function normalizeMarkers(rawMarkers) {
     .map((marker, cueIndex) => ({ ...marker, cue: cueIndex + 1 }));
 }
 
+function normalizeSongs(rawRegions) {
+  if (!Array.isArray(rawRegions)) return [];
+  return rawRegions
+    .filter((region) => region && region.isBlock !== true && region.isHashParent !== true)
+    .map((region, sourceIndex) => {
+      const start = Math.max(0, finiteNumber(
+        region.startPos ?? region.start ?? region.position, 0));
+      const end = Math.max(start, finiteNumber(
+        region.endPos ?? region.end, start));
+      return {
+        id: String(region.id || region.uid || `song-${sourceIndex + 1}`),
+        name: cleanLabel(region.name ?? region.label, `Música ${sourceIndex + 1}`),
+        start,
+        end,
+        sourceIndex
+      };
+    })
+    .filter((song) => song.end > song.start + 0.0005)
+    .sort((left, right) => left.start - right.start || left.sourceIndex - right.sourceIndex);
+}
+
+function markersForSong(song, rawMarkers) {
+  const contained = normalizeMarkers(rawMarkers)
+    .filter((marker) =>
+      marker.position > song.start + 0.0005 &&
+      marker.position < song.end - 0.0005)
+    .map((marker) => ({
+      ...marker,
+      position: Math.max(0, marker.position - song.start)
+    }));
+  return [
+    {
+      id: `region-${song.id}`,
+      number: 1,
+      name: song.name,
+      position: 0,
+      color: '',
+      regionStart: true
+    },
+    ...contained
+  ].map((marker, index) => ({ ...marker, cue: index + 1 }));
+}
+
 function parseOffset(value, fps = 30) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return Math.max(0, value);
@@ -156,7 +199,7 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
   const settings = normalizeSettings(inputSettings);
   const markers = normalizeMarkers(project.markers);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
-  const fileStem = safeFileStem(projectName);
+  const fileStem = safeFileStem(project.fileStem || projectName);
   const commands = [
     `Store Sequence ${settings.sequence} /o`,
     `Label Sequence ${settings.sequence} \"${projectName}\"`,
@@ -179,6 +222,45 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
   lines.push('  </Macro>');
   lines.push('</MA>');
   return `${lines.join('\r\n')}\r\n`;
+}
+
+function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
+  const baseSettings = normalizeSettings(inputSettings);
+  const songs = normalizeSongs(project.songs || project.regions);
+  const lastSongOffset = Math.max(0, songs.length - 1);
+  if (baseSettings.sequence + lastSongOffset > 9999 ||
+      baseSettings.executor + lastSongOffset > 9999 ||
+      baseSettings.timecodePool + lastSongOffset > 9999) {
+    throw new Error('A numeração inicial não tem espaço suficiente para todas as músicas. Reduza Sequence, Executor ou Timecode inicial.');
+  }
+  const usedStems = new Map();
+  return songs.map((song, index) => {
+    const baseStem = safeFileStem(song.name);
+    const occurrence = (usedStems.get(baseStem.toLocaleLowerCase()) || 0) + 1;
+    usedStems.set(baseStem.toLocaleLowerCase(), occurrence);
+    const stem = occurrence === 1 ? baseStem : `${baseStem}-${occurrence}`;
+    const settings = normalizeSettings({
+      ...baseSettings,
+      sequence: baseSettings.sequence + index,
+      executor: baseSettings.executor + index,
+      timecodePool: baseSettings.timecodePool + index
+    });
+    const songProject = {
+      projectName: song.name,
+      fileStem: stem,
+      markers: markersForSong(song, project.markers)
+    };
+    return {
+      song,
+      stem,
+      settings,
+      markerCount: songProject.markers.length,
+      macroFileName: `${stem}-macro.xml`,
+      timecodeFileName: `${stem}-timecode.xml`,
+      macroXml: generateGrandMa2Macro(songProject, settings),
+      timecodeXml: generateGrandMa2Timecode(songProject, settings)
+    };
+  });
 }
 
 function buildResolumeMap(project = {}, inputSettings = {}) {
@@ -255,11 +337,13 @@ async function testResolumeColumn(inputSettings = {}, columnOverride = null) {
 }
 
 module.exports = {
+  buildGrandMa2SongExports,
   buildResolumeMap,
   encodeOscInt,
   generateGrandMa2Macro,
   generateGrandMa2Timecode,
   normalizeMarkers,
+  normalizeSongs,
   normalizeSettings,
   parseOffset,
   safeFileStem,

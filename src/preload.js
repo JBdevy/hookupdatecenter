@@ -41,7 +41,6 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   removeLicenseDevice: (payload) => ipcRenderer.invoke('remove-license-device', payload),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   openSupport: () => ipcRenderer.invoke('open-support'),
-  selectHookRenameFolder: () => ipcRenderer.invoke('hook-rename-select-folder'),
   selectManyHookRenameFolders: () => ipcRenderer.invoke('hook-rename-select-many-folders'),
   previewHookRename: (payload) => ipcRenderer.invoke('hook-rename-preview', payload),
   runHookRename: (payload) => ipcRenderer.invoke('hook-rename-run', payload),

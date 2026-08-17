@@ -29,10 +29,10 @@ const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createCopyProjectService } = require('./copy-project');
 const { createQrSvg } = require('./qr-svg');
 const {
+  buildGrandMa2SongExports,
   buildResolumeMap,
-  generateGrandMa2Macro,
-  generateGrandMa2Timecode,
   normalizeMarkers,
+  normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
   safeFileStem,
   testResolumeColumn
@@ -5894,7 +5894,8 @@ function hookMarkerProjectFromSnapshot(snapshot) {
       connected: false,
       projectName: '',
       projectPath: '',
-      markers: []
+      markers: [],
+      songs: []
     };
   }
   const projectPath = String(snapshot.projectPath || '').trim();
@@ -5905,7 +5906,8 @@ function hookMarkerProjectFromSnapshot(snapshot) {
     connected: true,
     projectName: String(snapshot.projectName || fallbackName).trim() || fallbackName,
     projectPath,
-    markers: normalizeMarkers(snapshot.markers)
+    markers: normalizeMarkers(snapshot.markers),
+    songs: normalizeSongs(snapshot.regions)
   };
 }
 
@@ -5916,6 +5918,7 @@ async function getHookMarkerState() {
     ok: true,
     ...project,
     markerCount: project.markers.length,
+    songCount: project.songs.length,
     settings: saveHookMarkerSettings()
   };
 }
@@ -5925,9 +5928,6 @@ async function requireHookMarkerProject() {
   const project = hookMarkerProjectFromSnapshot(snapshot);
   if (!project.connected) {
     throw new Error('Abra o REAPER com a extensão VS Hook ativa para carregar os marcadores.');
-  }
-  if (!project.markers.length) {
-    throw new Error('O projeto aberto no REAPER não possui marcadores para exportar.');
   }
   return project;
 }
@@ -5944,27 +5944,44 @@ async function selectHookMarkerExportFolder(title) {
 async function exportHookMarkerGrandMa2(input = {}) {
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
+  const songExports = buildGrandMa2SongExports(project, settings);
+  if (!songExports.length) {
+    throw new Error('O projeto aberto no REAPER não possui regiões de música para exportar.');
+  }
   const targetFolder = await selectHookMarkerExportFolder(
     'Escolher pasta para os arquivos grandMA2');
   if (!targetFolder) return { ok: false, cancelled: true };
-  const stem = safeFileStem(project.projectName);
-  const macroPath = path.join(targetFolder, `${stem}-macro.xml`);
-  const timecodePath = path.join(targetFolder, `${stem}-timecode.xml`);
-  await fs.promises.writeFile(macroPath,
-    generateGrandMa2Macro(project, settings), 'utf8');
-  await fs.promises.writeFile(timecodePath,
-    generateGrandMa2Timecode(project, settings), 'utf8');
+  const files = [];
+  for (const songExport of songExports) {
+    const macroPath = path.join(targetFolder, songExport.macroFileName);
+    const timecodePath = path.join(targetFolder, songExport.timecodeFileName);
+    await fs.promises.writeFile(macroPath, songExport.macroXml, 'utf8');
+    await fs.promises.writeFile(timecodePath, songExport.timecodeXml, 'utf8');
+    files.push({
+      songName: songExport.song.name,
+      macroPath,
+      timecodePath,
+      cueCount: songExport.markerCount,
+      sequence: songExport.settings.sequence,
+      executor: songExport.settings.executor,
+      timecodePool: songExport.settings.timecodePool
+    });
+  }
   return {
     ok: true,
     folderPath: targetFolder,
-    macroPath,
-    timecodePath,
-    markerCount: project.markers.length
+    songCount: songExports.length,
+    markerCount: songExports.reduce((total, item) => total + item.markerCount, 0),
+    fileCount: files.length * 2,
+    files
   };
 }
 
 async function exportHookMarkerResolume(input = {}) {
   const project = await requireHookMarkerProject();
+  if (!project.markers.length) {
+    throw new Error('O projeto aberto no REAPER não possui marcadores para exportar ao Resolume.');
+  }
   const settings = saveHookMarkerSettings(input);
   const stem = safeFileStem(project.projectName);
   const options = {
@@ -6084,6 +6101,9 @@ async function hookMarkerResolumeTick() {
 
 async function startHookMarkerResolumeRuntime(input = {}) {
   const project = await requireHookMarkerProject();
+  if (!project.markers.length) {
+    throw new Error('O projeto aberto no REAPER não possui marcadores para enviar ao Resolume.');
+  }
   const settings = saveHookMarkerSettings(input);
   const cueMap = buildResolumeMap(project, settings);
   if (!cueMap.cues.length) throw new Error('Nenhum marcador disponível para o Resolume.');
@@ -6107,30 +6127,9 @@ async function startHookMarkerResolumeRuntime(input = {}) {
   return getHookMarkerResolumeRuntimeState();
 }
 
-ipcMain.handle('hook-rename-select-folder', async () => {
-  const result = await dialog.showOpenDialog(mainWindow || undefined, {
-    title: 'Escolher pasta para o Hook Rename',
-    properties: ['openDirectory']
-  });
-
-  if (result.canceled || !result.filePaths?.[0]) {
-    return { ok: false, cancelled: true };
-  }
-
-  const folderPath = result.filePaths[0];
-  return {
-    ok: true,
-    multiple: false,
-    folderPath,
-    folderPaths: [folderPath],
-    folderName: path.basename(folderPath),
-    suggestedSuffix: getHookRenameSuggestedSuffix(folderPath)
-  };
-});
-
 ipcMain.handle('hook-rename-select-many-folders', async () => {
   const result = await dialog.showOpenDialog(mainWindow || undefined, {
-    title: 'Escolher multipastas para o Hook Rename',
+    title: 'Escolher uma ou mais pastas para o Hook Rename',
     properties: ['openDirectory', 'multiSelections']
   });
 
@@ -6139,14 +6138,19 @@ ipcMain.handle('hook-rename-select-many-folders', async () => {
   }
 
   const folderPaths = normalizeHookRenameFolderPaths({ folderPaths: result.filePaths });
+  const multiple = folderPaths.length > 1;
   return {
     ok: true,
-    multiple: true,
+    multiple,
     folderPath: folderPaths[0] || '',
     folderPaths,
-    folderName: `${folderPaths.length} pasta(s) selecionada(s)`,
+    folderName: multiple
+      ? `${folderPaths.length} pastas selecionadas`
+      : path.basename(folderPaths[0] || ''),
     folderNames: folderPaths.map((folderPath) => path.basename(folderPath)),
-    suggestedSuffix: 'Nome de cada pasta'
+    suggestedSuffix: multiple
+      ? 'Nome de cada pasta'
+      : getHookRenameSuggestedSuffix(folderPaths[0] || '')
   };
 });
 
