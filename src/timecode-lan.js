@@ -29,6 +29,8 @@ const PROJECT_SYNC_BUNDLE_MAX_FILES = 16384
 const PROJECT_SYNC_BUNDLE_MAX_FILE_BYTES = 64 * 1024 * 1024 * 1024
 const PROJECT_SYNC_BUNDLE_MAX_TOTAL_BYTES = 256 * 1024 * 1024 * 1024
 const PROJECT_SYNC_BUNDLE_PROGRESS_INTERVAL_MS = 120
+const PROJECT_SYNC_CHUNK_RETRY_WINDOW_MS = 2 * 60 * 1000
+const PROJECT_SYNC_CHUNK_RETRY_MAX_DELAY_MS = 3000
 const PROJECT_SYNC_STAGING_TTL_MS = 24 * 60 * 60 * 1000
 const PROJECT_SYNC_STAGING_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 const PROJECT_SYNC_STAGING_QUOTA_BYTES = 64 * 1024 * 1024 * 1024
@@ -465,8 +467,15 @@ function requestBinary({ hostname, port, path, payload = null,
         if ((res.statusCode || 500) < 200 || (res.statusCode || 500) >= 300) {
           let message = 'Falha ao transferir arquivo do Project Sync.'
           try {
-            message = JSON.parse(data.toString('utf8')).error || message
+            const remoteError = String(
+              JSON.parse(data.toString('utf8')).error ?? '').trim()
+            if (remoteError && remoteError !== '0' &&
+                remoteError.toLowerCase() !== 'false' &&
+                remoteError.toLowerCase() !== 'null') {
+              message = remoteError
+            }
           } catch (_) {}
+          message = `${message} (HTTP ${res.statusCode || 500})`
           const error = new Error(message)
           error.status = res.statusCode || 500
           reject(error)
@@ -815,6 +824,23 @@ function createTimecodeLanRelay(options = {}) {
   function projectSyncPairRequestId(status) {
     const sessionId = String(status?.sessionId || '').trim()
     const structuralRevision = projectSyncStructuralRevision(status)
+    // Um preflight bloqueado continua sendo a sessao autenticada usada pelo
+    // botao "Aplicar modificacoes". Enquanto essa autorizacao estiver viva,
+    // as sondagens UDP/TCP automaticas precisam reutilizar o mesmo requestId.
+    // Gerar outro ID durante a verificacao local do PC B substitui o token no
+    // PC A e faz o primeiro arquivo realmente ausente falhar com HTTP 403.
+    if (applyPeerIsCurrent(projectSyncApplyPeer) &&
+        projectSyncApplyPeer.localSessionId === sessionId &&
+        String(projectSyncApplyPeer.code || '') === String(status?.code || '')) {
+      projectSyncPairAttempt = {
+        requestId: projectSyncApplyPeer.requestId,
+        sessionId,
+        structuralRevision: projectSyncApplyPeer.localStructuralRevision ||
+          structuralRevision,
+        createdAt: Date.now(),
+      }
+      return projectSyncApplyPeer.requestId
+    }
     if (!projectSyncPairAttempt ||
         projectSyncPairAttempt.sessionId !== sessionId ||
         projectSyncPairAttempt.structuralRevision !== structuralRevision ||
@@ -1157,6 +1183,13 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   async function notifyProjectSyncBundleProgress(payload) {
+    const rawError = String(payload.error ?? '').trim()
+    const progressError = rawError && rawError !== '0' &&
+      rawError.toLowerCase() !== 'false' &&
+      rawError.toLowerCase() !== 'null'
+      ? rawError.slice(0, 1000)
+      : (String(payload.state || '').toLowerCase() === 'error'
+          ? 'A transferencia Project Sync foi interrompida.' : '')
     return sendLocalCommand({
       type: 'project_sync_bundle_progress',
       requestId: String(payload.requestId || ''),
@@ -1166,7 +1199,7 @@ function createTimecodeLanRelay(options = {}) {
       totalBytes: Math.max(0, Number(payload.totalBytes) || 0),
       fileIndex: Math.max(0, Math.trunc(Number(payload.fileIndex) || 0)),
       fileCount: Math.max(0, Math.trunc(Number(payload.fileCount) || 0)),
-      error: String(payload.error || '').slice(0, 1000),
+      error: progressError,
     })
   }
 
@@ -1689,6 +1722,16 @@ function createTimecodeLanRelay(options = {}) {
         .update(projectSyncBundleAuthCanonical(payload), 'utf8')
         .digest('hex')
       : ''
+    // Depois que o bundle foi preparado, ele e um snapshot imutavel e
+    // assinado da revisao confirmada no pareamento. Alteracoes posteriores no
+    // projeto aberto nao podem invalidar os chunks desse snapshot no meio da
+    // transferencia; session/token/requestId e a versao de cada arquivo ainda
+    // sao verificados abaixo e em handleProjectSyncBundleFile().
+    const frozenBundleAuthorized = !!projectSyncExportBundle && !!peer &&
+      projectSyncExportBundle.requestId === peer.requestId &&
+      projectSyncExportBundle.sourceSessionId === peer.localSessionId &&
+      projectSyncExportBundle.sourceStructuralRevision ===
+        peer.localStructuralRevision
     if (!licenseIsActive() || !statusCanTransmit(status) ||
         status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'primary' ||
@@ -1703,7 +1746,9 @@ function createTimecodeLanRelay(options = {}) {
         String(payload?.sourceSessionId || '') !== peer.localSessionId ||
         String(payload?.receiverSessionId || '') !== peer.remoteSessionId ||
         String(status.sessionId || '').trim() !== peer.localSessionId ||
-        projectSyncStructuralRevision(status) !== peer.localStructuralRevision ||
+        (!frozenBundleAuthorized &&
+          projectSyncStructuralRevision(status) !==
+            peer.localStructuralRevision) ||
         !Number.isSafeInteger(authTimestamp) ||
         Math.abs(Date.now() - authTimestamp) > 30000 ||
         !/^[a-f0-9]{32}$/.test(authNonce) || !authMac ||
@@ -2283,37 +2328,75 @@ function createTimecodeLanRelay(options = {}) {
           ensureActive()
           const length = Math.min(
             PROJECT_SYNC_BUNDLE_CHUNK_BYTES, file.size - offset)
-          const chunk = await requestBinary({
-            hostname: session.address,
-            port: session.port,
-            path: `${outboundLinkPrefix}/project-sync/bundle/file`,
-            payload: projectSyncAuthPayload(session, status, {
-              bundleId,
-              fileId: file.id,
-              offset,
-              length,
-            }),
-            timeoutMs: 30000,
-            maxResponseBytes: PROJECT_SYNC_BUNDLE_CHUNK_BYTES,
-          })
-          ensureActive()
-          const responseOffset = Number(chunk.headers['x-vshook-offset'])
-          const responseSize = Number(chunk.headers['x-vshook-file-size'])
-          const responseChunkHash = safeSha256(
-            chunk.headers['x-vshook-chunk-sha256'])
-          const responseChunkMac = safeSha256(
-            chunk.headers['x-vshook-chunk-mac'])
-          const computedChunkHash = crypto.createHash('sha256')
-            .update(chunk.data).digest('hex')
-          const expectedChunkMac = projectSyncBundleMac(
-            session.token, 'chunk', [session.requestId, bundleId,
-              file.id, offset, computedChunkHash])
-          if (responseOffset !== offset || responseSize !== file.size ||
-              chunk.data.length !== length || !responseChunkHash ||
-              !tokenMatches(responseChunkHash, computedChunkHash) ||
-              !responseChunkMac ||
-              !tokenMatches(responseChunkMac, expectedChunkMac)) {
-            throw new Error(`Bloco corrompido: ${file.relativePath}`)
+          const retryDeadline = Date.now() +
+            PROJECT_SYNC_CHUNK_RETRY_WINDOW_MS
+          let retryAttempt = 0
+          let chunk = null
+          let lastChunkError = null
+          while (!chunk) {
+            ensureActive()
+            try {
+              const candidate = await requestBinary({
+                hostname: session.address,
+                port: session.port,
+                path: `${outboundLinkPrefix}/project-sync/bundle/file`,
+                payload: projectSyncAuthPayload(session, status, {
+                  bundleId,
+                  fileId: file.id,
+                  offset,
+                  length,
+                }),
+                timeoutMs: 30000,
+                maxResponseBytes: PROJECT_SYNC_BUNDLE_CHUNK_BYTES,
+              })
+              ensureActive()
+              const responseOffset = Number(
+                candidate.headers['x-vshook-offset'])
+              const responseSize = Number(
+                candidate.headers['x-vshook-file-size'])
+              const responseChunkHash = safeSha256(
+                candidate.headers['x-vshook-chunk-sha256'])
+              const responseChunkMac = safeSha256(
+                candidate.headers['x-vshook-chunk-mac'])
+              const computedChunkHash = crypto.createHash('sha256')
+                .update(candidate.data).digest('hex')
+              const expectedChunkMac = projectSyncBundleMac(
+                session.token, 'chunk', [session.requestId, bundleId,
+                  file.id, offset, computedChunkHash])
+              if (responseOffset !== offset || responseSize !== file.size ||
+                  candidate.data.length !== length || !responseChunkHash ||
+                  !tokenMatches(responseChunkHash, computedChunkHash) ||
+                  !responseChunkMac ||
+                  !tokenMatches(responseChunkMac, expectedChunkMac)) {
+                throw new Error(
+                  `Bloco corrompido: ${file.relativePath}`)
+              }
+              chunk = candidate
+            } catch (error) {
+              lastChunkError = error
+              const statusCode = Number(error?.status) || 0
+              const retryable = statusCode === 0 || statusCode === 408 ||
+                statusCode === 429 || statusCode >= 500
+              if (!retryable || Date.now() >= retryDeadline) {
+                const detail = String(lastChunkError?.message ||
+                  'Falha temporaria sem detalhe.').trim()
+                throw new Error(
+                  `Falha ao receber ${file.relativePath} no byte ${offset}: ${detail}`)
+              }
+              retryAttempt += 1
+              await report({
+                state: 'downloading',
+                bundleId,
+                bytesDone,
+                totalBytes: transferTotalBytes,
+                fileIndex: index + 1,
+                fileCount: manifest.files.length,
+              }, true)
+              const retryDelay = Math.min(
+                PROJECT_SYNC_CHUNK_RETRY_MAX_DELAY_MS,
+                250 * Math.pow(2, Math.min(4, retryAttempt - 1)))
+              await wait(retryDelay)
+            }
           }
           const handle = await fs.promises.open(partial, 'r+')
           try {
@@ -2958,6 +3041,12 @@ function createTimecodeLanRelay(options = {}) {
   async function transmitTick(status) {
     const now = Date.now()
     if (!transmitterPeer || !transmitterPeer.connected) {
+      if (status.mode === 'project_sync' && projectSyncExportBundle &&
+          applyPeerIsCurrent(projectSyncApplyPeer)) {
+        // O PC B ja confirmou e esta consumindo o snapshot preparado. Nao
+        // dispara outro /pair enquanto os chunks desse bundle estao ativos.
+        return
+      }
       if (now - lastDiscoveryAt >= DISCOVERY_INTERVAL_MS) {
         lastDiscoveryAt = now
         broadcastDiscovery(status)
@@ -3424,6 +3513,24 @@ function createTimecodeLanRelay(options = {}) {
         })
         return
       }
+      const activeApplyRequestId = safePreflightRequestId(
+        projectSyncApplySession?.requestId)
+      if (activeApplyRequestId &&
+          activeApplyRequestId !== proposedRequestId &&
+          projectSyncApplySession.transmitterId === transmitterId &&
+          normalizePeerAddress(projectSyncApplySession.address) ===
+            incomingPeerAddress &&
+          projectSyncApplyIsActive(status, activeApplyRequestId)) {
+        // Nunca substitui token/requestId enquanto o usuario ja confirmou e o
+        // PC B esta verificando, baixando ou aplicando o snapshot anterior.
+        sendJson(res, 409, {
+          ok: false,
+          ready: false,
+          requestId: activeApplyRequestId,
+          error: 'A aplicacao Project Sync confirmada ainda esta em andamento.',
+        })
+        return
+      }
       const manifestRevision = String(
         payload.manifestRevision || '').trim().slice(0, 256)
       const localSessionId = String(status.sessionId || '').trim()
@@ -3434,6 +3541,32 @@ function createTimecodeLanRelay(options = {}) {
       const localStructuralRevision =
         projectSyncStructuralRevision(status)
       const incomingAddress = normalizePeerAddress(req.socket?.remoteAddress)
+      if (projectSyncApplySession &&
+          projectSyncApplySession.requestId === proposedRequestId &&
+          projectSyncApplySession.transmitterId === transmitterId &&
+          normalizePeerAddress(projectSyncApplySession.address) ===
+            incomingAddress &&
+          projectSyncApplyIsActive(status, proposedRequestId)) {
+        // Resposta idempotente durante a aplicacao. Nao recria pending/token
+        // mesmo se alguma revisao viva mudar enquanto o snapshot e transferido.
+        sendJson(res, 200, {
+          ok: true,
+          projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+          completed: true,
+          pending: false,
+          requestId: proposedRequestId,
+          receiverId: instanceId,
+          receiverName: deviceName(),
+          receiverSessionId: localSessionId,
+          projectSyncRole: 'secondary',
+          ready: false,
+          diff: status?.projectSyncDiff || null,
+          manifestRevision: localManifestRevision,
+          structuralManifestRevision: localStructuralRevision,
+          applyToken: projectSyncApplySession.token,
+        })
+        return
+      }
       if (projectSyncApplySession &&
           Date.now() - projectSyncApplySession.createdAt <
             PROJECT_SYNC_APPLY_TTL_MS &&
