@@ -911,8 +911,6 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   function projectSyncTransportForSend(status, peer, transport) {
-    if (status?.mode !== 'project_sync') return transport
-    const healthy = transportAudioHealthy(status, transport)
     const snapshot = transportSnapshot(transport)
     if (!snapshot) return null
     const observedControlSequence = Number.isFinite(
@@ -923,6 +921,15 @@ function createTimecodeLanRelay(options = {}) {
       snapshot.controlSequence > observedControlSequence
     peer.lastObservedControlSequence = Math.max(
       observedControlSequence, snapshot.controlSequence)
+    // Receive/Transmitter usa o mesmo envelope sem o gate de saude do SW8,
+    // mas conserva a intencao explicita para a extensao receptora distinguir
+    // um Play/Stop humano de uma simples amostra periodica.
+    if (status?.mode !== 'project_sync') {
+      return explicitControl
+        ? { ...transport, explicitControl: true }
+        : transport
+    }
+    const healthy = transportAudioHealthy(status, transport)
     if (!healthy) {
       const previous = peer.lastHealthyTransport
       // Contrato com a extensão: controlSequence sobe no hook da ação local,
@@ -2580,6 +2587,7 @@ function createTimecodeLanRelay(options = {}) {
       type: 'timecode_peer_status',
       connected: !!connected,
       peerName: connected ? safeName(peerName, 'VS Hook') : '',
+      ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
     })) {
       lastNotifiedPeer = marker
     }
