@@ -137,7 +137,10 @@ let hookMarkerResolumeRuntime = {
   lastTriggeredCue: 0,
   lastError: ''
 };
-const timecodeRelayPeerAddresses = { main: '', parallel: '' };
+const timecodeRelayPeers = {
+  main: { address: '', peerId: '' },
+  parallel: { address: '', peerId: '' }
+};
 const lyricsWindows = new Map();
 const legacyWindowDragSessions = new Map();
 
@@ -147,6 +150,15 @@ function getTransferHookFixedCode() {
   const createdCode = String(crypto.randomInt(100000, 1000000));
   store.set('transferHookCode', createdCode);
   return createdCode;
+}
+
+function getTimecodeLanDeviceId() {
+  const savedId = String(store.get('timecodeLanDeviceId') || '')
+    .trim().toLowerCase();
+  if (/^[a-f0-9]{64}$/.test(savedId)) return savedId;
+  const createdId = crypto.randomBytes(32).toString('hex');
+  store.set('timecodeLanDeviceId', createdId);
+  return createdId;
 }
 
 function getCopyProjectService() {
@@ -1868,9 +1880,10 @@ async function getDirectCableState() {
 
 async function runWindowsElevatedPowerShell(script) {
   const encoded = Buffer.from(String(script || ''), 'utf16le').toString('base64');
-  const launcher = `$p=Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'); exit $p.ExitCode`;
+  const launcher = `$p=Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -Verb RunAs -Wait -PassThru -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'); exit $p.ExitCode`;
   return runProcess('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+    '-ExecutionPolicy', 'Bypass',
     '-Command', launcher
   ], { timeout: 120000 });
 }
@@ -1893,10 +1906,10 @@ async function configureDirectCable(payload = {}) {
   if (currentConfiguration.adapterId &&
       currentConfiguration.adapterId !== adapterId &&
       !splittingLegacySharedAdapter) {
-    throw new Error(`Restaure primeiro o DHCP da placa atualmente fixada para ${channelInfo.label}. Depois fixe a nova placa.`);
+    throw new Error(`Restaure primeiro o DHCP da placa conectada ao ${channelInfo.label}. Depois conecte a nova placa.`);
   }
   if (String(otherConfiguration.adapterId || '') === adapterId) {
-    throw new Error(`Esta placa já está reservada para ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
+    throw new Error(`Esta placa já está conectada ao ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
   }
   // O host permanece estável por computador, mas cada canal recebe uma
   // sub-rede própria para que duas placas do PC A não disputem a mesma rota.
@@ -2708,8 +2721,8 @@ async function stopBridgeServers() {
   bridgeInfos = [];
   timecodeLanRelay = null;
   parallelTimecodeLanRelay = null;
-  timecodeRelayPeerAddresses.main = '';
-  timecodeRelayPeerAddresses.parallel = '';
+  timecodeRelayPeers.main = { address: '', peerId: '' };
+  timecodeRelayPeers.parallel = { address: '', peerId: '' };
   await Promise.allSettled([
     ...running.map((server) => server.stop()),
     ...(runningTimecodeRelay ? [runningTimecodeRelay.stop()] : []),
@@ -2722,24 +2735,40 @@ async function restartBridgeServersNow() {
   await stopBridgeServers();
   bridgeConfig = readBridgeConfig();
   fs.mkdirSync(resolveBridgeScriptsDir(bridgeConfig), { recursive: true });
-  const relayCanUsePeerAddress = (channel, address) => {
+  const relayCanUsePeerAddress = (channel, address, peerId = '') => {
     const normalized = String(address || '').replace(/^::ffff:/, '').trim();
+    const normalizedPeerId = String(peerId || '').trim().toLowerCase();
     if (!normalized) return false;
     const other = channel === 'parallel' ? 'main' : 'parallel';
-    return !timecodeRelayPeerAddresses[other] ||
-      timecodeRelayPeerAddresses[other] !== normalized;
+    const otherPeer = timecodeRelayPeers[other] || { address: '', peerId: '' };
+    if (normalizedPeerId && otherPeer.peerId &&
+        normalizedPeerId === otherPeer.peerId) return false;
+    return !otherPeer.address || otherPeer.address !== normalized;
   };
-  const relayPeerConnectionChanged = (channel, address, connected) => {
+  const relayPeerConnectionChanged = (
+    channel, address, connected, peerId = '') => {
     if (channel !== 'main' && channel !== 'parallel') return;
     const normalized = String(address || '').replace(/^::ffff:/, '').trim();
+    const normalizedPeerId = String(peerId || '').trim().toLowerCase();
     if (connected) {
-      timecodeRelayPeerAddresses[channel] = normalized;
-    } else if (!normalized ||
-        timecodeRelayPeerAddresses[channel] === normalized) {
-      timecodeRelayPeerAddresses[channel] = '';
+      timecodeRelayPeers[channel] = {
+        address: normalized,
+        peerId: normalizedPeerId
+      };
+    } else {
+      const current = timecodeRelayPeers[channel] || {
+        address: '', peerId: ''
+      };
+      if ((!normalized && !normalizedPeerId) ||
+          (normalized && current.address === normalized) ||
+          (normalizedPeerId && current.peerId === normalizedPeerId)) {
+        timecodeRelayPeers[channel] = { address: '', peerId: '' };
+      }
     }
   };
+  const timecodeLanDeviceId = getTimecodeLanDeviceId();
   timecodeLanRelay = createTimecodeLanRelay({
+    instanceId: timecodeLanDeviceId,
     nativeBridgePort: 47830,
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
@@ -2758,6 +2787,7 @@ async function restartBridgeServersNow() {
     onPeerConnectionChanged: relayPeerConnectionChanged,
   });
   parallelTimecodeLanRelay = createTimecodeLanRelay({
+    instanceId: timecodeLanDeviceId,
     channel: 'parallel',
     nativeBridgePort: 47830,
     discoveryPort: 47834,

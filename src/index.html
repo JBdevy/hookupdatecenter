@@ -39,6 +39,14 @@
           <p class="home-header-installed-version">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
           <button id="checkButton" class="primary-button">Verificar atualização</button>
         </div>
+        <div id="homeProgressArea" class="inline-progress-area update-top-progress hidden" aria-live="polite">
+          <div class="progress-shell">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <div class="progress-row">
+            <span id="progressText">0%</span>
+          </div>
+        </div>
         <div class="home-learning-actions">
           <button id="hookCenterLearnButton" class="primary-button home-learn-pulse-button hidden" type="button">Quero aprender tudo sobre o VS Hook</button>
           <button id="hookTutorialsButton" class="secondary-button home-tutorials-button" type="button">Tutoriais e dúvidas</button>
@@ -76,14 +84,6 @@
               <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar</button>
                 <button id="installButton" class="primary-button hidden" type="button">Instalar</button>
-              </div>
-              <div id="homeProgressArea" class="inline-progress-area hidden">
-                <div class="progress-shell">
-                  <div id="progressBar" class="progress-bar"></div>
-                </div>
-                <div class="progress-row">
-                  <span id="progressText">0%</span>
-                </div>
               </div>
             </div>
           </div>
@@ -978,7 +978,7 @@
             <div>
               <p class="eyebrow">Receive / Transmitter / Project Sync</p>
               <h1>Conexão redundante</h1>
-              <p class="muted">No PC A, fixe uma placa para o Project Sync com o PC B escravo e outra placa para o Time Code com o PC C. Cada canal permanece separado e automático.</p>
+              <p class="muted">No PC A, conecte uma placa ao PC B escravo para o Project Sync e outra placa ao PC C para o Time Code. Cada canal permanece separado e automático.</p>
             </div>
             <button id="directCableRefreshButton" class="secondary-button" type="button">Detectar novamente</button>
           </div>
@@ -995,10 +995,10 @@
               </label>
               <div id="directCableProjectSyncDetails" class="direct-cable-status muted">Conecte o cabo do Project Sync.</div>
               <div class="actions direct-cable-actions">
-                <button id="directCableProjectSyncConfigureButton" class="primary-button" type="button">Fixar placa</button>
+                <button id="directCableProjectSyncConfigureButton" class="primary-button" type="button">Conectar</button>
                 <button id="directCableProjectSyncRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
               </div>
-              <div id="directCableProjectSyncResult" class="direct-cable-result muted">Nenhuma placa fixada.</div>
+              <div id="directCableProjectSyncResult" class="direct-cable-result muted">Nenhuma placa conectada.</div>
             </div>
 
             <div class="card direct-cable-card">
@@ -1012,17 +1012,17 @@
               </label>
               <div id="directCableTimecodeDetails" class="direct-cable-status muted">Conecte o cabo do Time Code.</div>
               <div class="actions direct-cable-actions">
-                <button id="directCableTimecodeConfigureButton" class="primary-button" type="button">Fixar placa</button>
+                <button id="directCableTimecodeConfigureButton" class="primary-button" type="button">Conectar</button>
                 <button id="directCableTimecodeRestoreButton" class="secondary-button" type="button">Restaurar DHCP</button>
               </div>
-              <div id="directCableTimecodeResult" class="direct-cable-result muted">Nenhuma placa fixada.</div>
+              <div id="directCableTimecodeResult" class="direct-cable-result muted">Nenhuma placa conectada.</div>
             </div>
 
             <div class="card direct-cable-card direct-cable-instructions">
               <div class="tool-card-header"><div><p class="eyebrow">Depois</p><h2>Conectar o VS Hook</h2></div></div>
               <ol>
-                <li>No PC A e no PC B, fixe como Placa Project Sync a porta do cabo que liga os dois.</li>
-                <li>No PC A e no PC C, fixe como Placa Time Code a porta do segundo cabo.</li>
+                <li>No PC A e no PC B, escolha a Placa Project Sync e clique em Conectar.</li>
+                <li>No PC A e no PC C, escolha a Placa Time Code e clique em Conectar.</li>
                 <li>No Project Sync, o PC A gera o código e controla o PC B escravo.</li>
                 <li>No canal Time Code, configure o PC A como Transmitter e o PC C como Receive.</li>
                 <li>A conexão continua totalmente local e não precisa de internet.</li>
@@ -1299,6 +1299,14 @@
       </section>
 
       <section id="statusView" class="view">
+        <div id="statusProgressCard" class="status-progress-area update-top-progress hidden" aria-live="polite">
+          <div class="progress-shell">
+            <div id="statusProgressBar" class="progress-bar"></div>
+          </div>
+          <div class="progress-row">
+            <span id="statusProgressText">0%</span>
+          </div>
+        </div>
         <div class="card">
           <h2>Status da Central</h2>
           <div class="status-grid">
@@ -1346,14 +1354,6 @@
           <div class="actions">
             <button id="statusDownloadButton" class="primary-button" type="button">Baixar</button>
             <button id="statusInstallButton" class="secondary-button hidden" type="button">Instalar</button>
-          </div>
-          <div id="statusProgressCard" class="status-progress-area hidden">
-            <div class="progress-shell">
-              <div id="statusProgressBar" class="progress-bar"></div>
-            </div>
-            <div class="progress-row">
-              <span id="statusProgressText">0%</span>
-            </div>
           </div>
         </div>
 

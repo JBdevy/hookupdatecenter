@@ -142,6 +142,35 @@ function sameFileVersion(left, right) {
   return true
 }
 
+const projectSyncLocalHashCache = new Map()
+
+function projectSyncLocalHashCacheKey(filename) {
+  const resolved = pathUtil.resolve(String(filename || ''))
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+async function projectSyncCachedLocalSha256(filename, expectedStat) {
+  const key = projectSyncLocalHashCacheKey(filename)
+  const cached = projectSyncLocalHashCache.get(key)
+  if (cached && sameFileVersion(cached.stat, expectedStat) &&
+      /^[a-f0-9]{64}$/i.test(cached.sha256)) {
+    return cached.sha256
+  }
+  const sha256 = await sha256RegularFileNoFollow(
+    filename, expectedStat.size)
+  const finalStat = await lstatRegularFileNoSymlinkPath(
+    filename, expectedStat.size)
+  if (!sameFileVersion(expectedStat, finalStat)) {
+    throw new Error('A midia local mudou durante a verificacao.')
+  }
+  if (projectSyncLocalHashCache.size >= 32768 &&
+      !projectSyncLocalHashCache.has(key)) {
+    projectSyncLocalHashCache.clear()
+  }
+  projectSyncLocalHashCache.set(key, { stat: finalStat, sha256 })
+  return sha256
+}
+
 async function lstatRegularFileNoSymlinkPath(filename, expectedSize = null) {
   if (!filename || String(filename).includes('\u0000') ||
       !pathUtil.isAbsolute(filename)) {
@@ -180,6 +209,33 @@ async function lstatRegularFileNoSymlinkPath(filename, expectedSize = null) {
     throw new Error('Tamanho da midia local nao confere.')
   }
   return result
+}
+
+async function lstatDirectoryNoSymlinkPath(dirname) {
+  if (!dirname || String(dirname).includes('\u0000') ||
+      !pathUtil.isAbsolute(dirname)) {
+    throw new Error('Pasta local invalida.')
+  }
+  const resolved = pathUtil.resolve(dirname)
+  const root = pathUtil.parse(resolved).root
+  const relative = pathUtil.relative(root, resolved)
+  if (!root || relative === '..' || relative.startsWith(`..${pathUtil.sep}`) ||
+      pathUtil.isAbsolute(relative)) {
+    throw new Error('Pasta local invalida.')
+  }
+  let cursor = root
+  if (!relative) return fs.promises.lstat(root)
+  for (const component of relative.split(pathUtil.sep)) {
+    if (!component || component === '.' || component === '..') {
+      throw new Error('Pasta local invalida.')
+    }
+    cursor = pathUtil.join(cursor, component)
+    const stat = await fs.promises.lstat(cursor)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Pasta local invalida.')
+    }
+  }
+  return fs.promises.lstat(resolved)
 }
 
 async function readRegularFileLimitedNoFollow(filename, maximumSize) {
@@ -646,7 +702,13 @@ function createTimecodeLanRelay(options = {}) {
     typeof options.getProjectSyncStagingDir === 'function'
       ? options.getProjectSyncStagingDir
       : () => ''
-  const instanceId = crypto.randomBytes(16).toString('hex')
+  // Os dois canais da mesma Hook Center recebem a mesma identidade persistente
+  // de main.js. Assim o mesmo computador nao pode ocupar simultaneamente os
+  // papeis PC B (Project Sync) e PC C (Timecode), mesmo por placas/IPs distintos.
+  const suppliedInstanceId = String(options.instanceId || '').trim().toLowerCase()
+  const instanceId = /^[a-f0-9]{32,128}$/.test(suppliedInstanceId)
+    ? suppliedInstanceId
+    : crypto.randomBytes(16).toString('hex')
 
   let socket = null
   let tickTimer = null
@@ -1196,9 +1258,7 @@ function createTimecodeLanRelay(options = {}) {
     const progressError = rawError && rawError !== '0' &&
       rawError.toLowerCase() !== 'false' &&
       rawError.toLowerCase() !== 'null'
-      ? rawError.slice(0, 1000)
-      : (String(payload.state || '').toLowerCase() === 'error'
-          ? 'A transferencia Project Sync foi interrompida.' : '')
+      ? rawError.slice(0, 1000) : ''
     return sendLocalCommand({
       type: 'project_sync_bundle_progress',
       requestId: String(payload.requestId || ''),
@@ -1227,10 +1287,11 @@ function createTimecodeLanRelay(options = {}) {
     return root
   }
 
-  async function projectSyncLocalProjectPath() {
+  async function projectSyncLocalProjectContext() {
     // /state e localhost-only e e a unica fonte aceita. Assim nenhum caminho
     // publicado pelo peer ou recebido no manifesto pode escolher arquivos do B.
     let projectPath = ''
+    let mediaPath = ''
     try {
       const result = await requestJson({
         hostname: '127.0.0.1',
@@ -1242,17 +1303,28 @@ function createTimecodeLanRelay(options = {}) {
       if (result.ok && result.data && typeof result.data === 'object') {
         projectPath = String(
           result.data.projectPath || result.data.activeProjectPath || '').trim()
+        mediaPath = String(result.data.projectMediaPath || '').trim()
       }
     } catch (_) {}
     if (!projectPath || projectPath.includes('\u0000') ||
-        !pathUtil.isAbsolute(projectPath)) return ''
+        !pathUtil.isAbsolute(projectPath)) return null
     const resolved = pathUtil.resolve(projectPath)
     try {
       await lstatRegularFileNoSymlinkPath(resolved)
     } catch (_) {
-      return ''
+      return null
     }
-    return resolved
+    let resolvedMediaPath = ''
+    if (mediaPath && !mediaPath.includes('\u0000') &&
+        pathUtil.isAbsolute(mediaPath)) {
+      try {
+        resolvedMediaPath = pathUtil.resolve(mediaPath)
+        await lstatDirectoryNoSymlinkPath(resolvedMediaPath)
+      } catch (_) {
+        resolvedMediaPath = ''
+      }
+    }
+    return { projectPath: resolved, mediaPath: resolvedMediaPath }
   }
 
   function projectSyncRppFileReferences(rpp) {
@@ -1373,8 +1445,8 @@ function createTimecodeLanRelay(options = {}) {
           }
         }
         ensureActive()
-        const digest = await sha256RegularFileNoFollow(
-          candidate, candidateStat.size)
+        const digest = await projectSyncCachedLocalSha256(
+          candidate, candidateStat)
         ensureActive()
         if (!allowedHashes.has(digest)) continue
         if (!mediaBySha.has(digest)) mediaBySha.set(digest, [])
@@ -1385,6 +1457,84 @@ function createTimecodeLanRelay(options = {}) {
       }
     }
     return mediaBySha
+  }
+
+  async function projectSyncMediaDirectoryIndex(mediaPath, manifest,
+    knownBySha, ensureActive, onCandidate) {
+    const mediaBySha = new Map()
+    if (!mediaPath) return mediaBySha
+    const allowedHashesBySize = new Map()
+    for (const file of manifest.files) {
+      if (String(file.kind || '').toLowerCase() !== 'media') continue
+      if (knownBySha?.has(file.sha256)) continue
+      if (!allowedHashesBySize.has(file.size)) {
+        allowedHashesBySize.set(file.size, new Set())
+      }
+      allowedHashesBySize.get(file.size).add(file.sha256)
+    }
+    if (allowedHashesBySize.size === 0) return mediaBySha
+    try { await lstatDirectoryNoSymlinkPath(mediaPath) } catch (_) {
+      return mediaBySha
+    }
+
+    const pending = [{ directory: mediaPath, depth: 0 }]
+    let visited = 0
+    while (pending.length > 0 && visited < 32768) {
+      ensureActive()
+      const current = pending.shift()
+      let entries = []
+      try {
+        entries = await fs.promises.readdir(current.directory, {
+          withFileTypes: true,
+        })
+      } catch (_) {
+        continue
+      }
+      for (const entry of entries) {
+        if (++visited > 32768) break
+        ensureActive()
+        const candidate = pathUtil.join(current.directory, entry.name)
+        if (entry.isSymbolicLink()) continue
+        if (entry.isDirectory()) {
+          if (current.depth < 4) {
+            pending.push({ directory: candidate, depth: current.depth + 1 })
+          }
+          continue
+        }
+        if (!entry.isFile()) continue
+        try {
+          const stat = await lstatRegularFileNoSymlinkPath(candidate)
+          const allowedHashes = allowedHashesBySize.get(stat.size)
+          if (!allowedHashes) continue
+          if (typeof onCandidate === 'function') {
+            try { await onCandidate(candidate, stat) } catch (_) {
+              ensureActive()
+            }
+          }
+          const digest = await projectSyncCachedLocalSha256(candidate, stat)
+          if (!allowedHashes.has(digest)) continue
+          if (!mediaBySha.has(digest)) mediaBySha.set(digest, [])
+          mediaBySha.get(digest).push(candidate)
+        } catch (_) {
+          ensureActive()
+        }
+      }
+    }
+    return mediaBySha
+  }
+
+  function mergeProjectSyncMediaIndexes(...indexes) {
+    const merged = new Map()
+    for (const index of indexes) {
+      for (const [sha256, filenames] of index || []) {
+        if (!merged.has(sha256)) merged.set(sha256, [])
+        const target = merged.get(sha256)
+        for (const filename of filenames || []) {
+          if (!target.includes(filename)) target.push(filename)
+        }
+      }
+    }
+    return merged
   }
 
   function projectSyncManagedBaseDirectory(projectPath) {
@@ -1487,7 +1637,8 @@ function createTimecodeLanRelay(options = {}) {
       if (typeof onCandidate === 'function') await onCandidate()
       ensureActive()
       try {
-        const digest = await sha256RegularFileNoFollow(source, file.size)
+        const digest = await projectSyncCachedLocalSha256(
+          source, sourceBefore)
         const sourceAfter = await lstatRegularFileNoSymlinkPath(
           source, file.size)
         if (sameFileVersion(sourceBefore, sourceAfter) &&
@@ -2162,8 +2313,9 @@ function createTimecodeLanRelay(options = {}) {
       const missingMedia = manifest.files.some((file) =>
         String(file.kind || '').toLowerCase() === 'media' &&
         !completeFiles.has(file.id))
-      const localProjectPath = missingMedia
-        ? await projectSyncLocalProjectPath() : ''
+      const localProject = missingMedia
+        ? await projectSyncLocalProjectContext() : null
+      const localProjectPath = localProject?.projectPath || ''
       let managedMediaCache = null
       let rppMediaBySha = new Map()
       if (localProjectPath) {
@@ -2187,10 +2339,23 @@ function createTimecodeLanRelay(options = {}) {
                 fileIndex: 0,
                 fileCount: manifest.files.length,
               })
-            }),
+              }),
         ])
         managedMediaCache = localMediaSources[0]
-        rppMediaBySha = localMediaSources[1]
+        const mediaDirectoryBySha = await projectSyncMediaDirectoryIndex(
+          localProject?.mediaPath || '', manifest, localMediaSources[1],
+          ensureActive, async () => {
+            await report({
+              state: 'verifying',
+              bundleId,
+              bytesDone: 0,
+              totalBytes: 0,
+              fileIndex: 0,
+              fileCount: manifest.files.length,
+            })
+          })
+        rppMediaBySha = mergeProjectSyncMediaIndexes(
+          localMediaSources[1], mediaDirectoryBySha)
       }
 
       // Extensoes novas aceitam um mapa local assinado pelo manifesto: a
@@ -2604,18 +2769,26 @@ function createTimecodeLanRelay(options = {}) {
 
   function resetTransmitterPeer(notify = true) {
     const previousAddress = normalizePeerAddress(transmitterPeer?.address)
+    const previousPeerId = String(transmitterPeer?.receiverId || '').trim()
     transmitterPeer = null
     if (previousAddress) {
-      try { onPeerConnectionChanged(relayChannel, previousAddress, false) } catch (_) {}
+      try {
+        onPeerConnectionChanged(
+          relayChannel, previousAddress, false, previousPeerId)
+      } catch (_) {}
     }
     if (notify) notifyLocalPeer(false).catch(() => {})
   }
 
   function resetReceiverSession(notify = true) {
     const previousAddress = normalizePeerAddress(receiverSession?.address)
+    const previousPeerId = String(receiverSession?.transmitterId || '').trim()
     receiverSession = null
     if (previousAddress) {
-      try { onPeerConnectionChanged(relayChannel, previousAddress, false) } catch (_) {}
+      try {
+        onPeerConnectionChanged(
+          relayChannel, previousAddress, false, previousPeerId)
+      } catch (_) {}
     }
     if (notify) notifyLocalPeer(false).catch(() => {})
   }
@@ -2693,9 +2866,11 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   async function pairWithReceiver(status, address, remotePort, receiver = {}) {
+    const offeredReceiverId = String(receiver.id || '').trim()
     if (!statusCanTransmit(status) || !isPairCode(status.code) ||
         transmitterPeer?.connected || stopped || !peerAddressAllowed(address) ||
-        !canUsePeerAddress(relayChannel, normalizePeerAddress(address))) return false
+        !canUsePeerAddress(
+          relayChannel, normalizePeerAddress(address), offeredReceiverId)) return false
     if (status.mode === 'project_sync' &&
         applyPeerIsCurrent(projectSyncApplyPeer) &&
         normalizePeerAddress(address) !==
@@ -2923,6 +3098,10 @@ function createTimecodeLanRelay(options = {}) {
       }
       projectSyncExportBundle = null
       const remoteId = String(result.data.receiverId || receiver.id || '')
+      if (!remoteId || !canUsePeerAddress(
+        relayChannel, normalizePeerAddress(address), remoteId)) {
+        return false
+      }
       transmitterPeer = {
         address,
         port: remotePort,
@@ -2959,7 +3138,7 @@ function createTimecodeLanRelay(options = {}) {
       }
       try {
         onPeerConnectionChanged(
-          relayChannel, normalizePeerAddress(address), true)
+          relayChannel, normalizePeerAddress(address), true, remoteId)
       } catch (_) {}
       // Project Sync e estritamente A -> B. O PC A nunca cria uma sessao de
       // recepcao reversa e, portanto, o escravo nao pode devolver comandos.
@@ -3387,7 +3566,8 @@ function createTimecodeLanRelay(options = {}) {
       }
       try {
         onPeerConnectionChanged(
-          relayChannel, normalizePeerAddress(pending.address), true)
+          relayChannel, normalizePeerAddress(pending.address), true,
+          pending.transmitterId)
       } catch (_) {}
       await notifyLocalPeer(true, pending.name)
     } else {
@@ -3468,10 +3648,12 @@ function createTimecodeLanRelay(options = {}) {
     const incomingPeerAddress = normalizePeerAddress(
       req.socket?.remoteAddress)
     if (!peerAddressAllowed(req.socket?.remoteAddress)) {
-      sendJson(res, 409, { ok: false, error: 'A conexão redundante deve usar o cabo configurado.' })
+      sendJson(res, 409, { ok: false, error: 'A conexão redundante deve usar o cabo conectado.' })
       return
     }
-    if (!canUsePeerAddress(relayChannel, incomingPeerAddress)) {
+    const incomingTransmitterId = String(payload.transmitterId || '').trim()
+    if (!canUsePeerAddress(
+      relayChannel, incomingPeerAddress, incomingTransmitterId)) {
       sendJson(res, 409, {
         ok: false,
         error: 'Este computador já está conectado no outro canal VS Hook.',
@@ -3722,7 +3904,7 @@ function createTimecodeLanRelay(options = {}) {
     if (projectSyncReady) {
       try {
         onPeerConnectionChanged(
-          relayChannel, incomingPeerAddress, true)
+          relayChannel, incomingPeerAddress, true, transmitterId)
       } catch (_) {}
       await notifyLocalPeer(true, receiverSession.name)
     }
@@ -3752,7 +3934,7 @@ function createTimecodeLanRelay(options = {}) {
     if (!peerAddressAllowed(req.socket?.remoteAddress)) {
       sendJson(res, 409, {
         ok: false,
-        error: 'A conexão redundante deve usar o cabo configurado.',
+        error: 'A conexão redundante deve usar o cabo conectado.',
       })
       return
     }

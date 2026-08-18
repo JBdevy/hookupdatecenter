@@ -583,15 +583,6 @@ function resetVsHookProgress() {
   $('#statusInstallButton')?.classList.add('hidden');
 }
 
-function setHomeDownloadButtonProgress(progress, active) {
-  const button = $('#downloadButton');
-  if (!button) return;
-  const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
-  button.style.setProperty('--download-progress', `${safeProgress}%`);
-  button.classList.toggle('download-progress-active', active === true);
-  if (active === true) button.textContent = `Baixando ${safeProgress}%`;
-}
-
 function updateVsHookProgress(progress) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
   ['#progressBar', '#statusProgressBar'].forEach((selector) => {
@@ -602,7 +593,6 @@ function updateVsHookProgress(progress) {
     const el = $(selector);
     if (el) el.textContent = `${safeProgress}%`;
   });
-  if (combinedDownloadInProgress) setHomeDownloadButtonProgress(safeProgress, true);
   if (safeProgress >= 100 && !combinedDownloadInProgress) {
     $('#installButton')?.classList.remove('hidden');
     $('#statusInstallButton')?.classList.remove('hidden');
@@ -673,7 +663,9 @@ async function startCombinedUpdateDownload() {
         button.disabled = true;
         if (downloadingFromInternet) {
           combinedDownloadInProgress = true;
-          setHomeDownloadButtonProgress(0, true);
+          setProgressVisible(true);
+          resetVsHookProgress();
+          button.textContent = 'Baixando...';
         } else {
           button.textContent = 'Preparando...';
         }
@@ -712,11 +704,11 @@ async function startCombinedUpdateDownload() {
 
   combinedDownloadInProgress = true;
   combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
-  $('#homeProgressArea')?.classList.add('hidden');
+  setProgressVisible(true);
   resetVsHookProgress();
   if (button) {
     button.disabled = true;
-    setHomeDownloadButtonProgress(0, true);
+    button.textContent = 'Baixando...';
   }
 
   try {
@@ -1149,7 +1141,7 @@ function renderDirectCableChannel(channel, state = directCableState) {
     const linkText = adapter.connected ? 'Cabo conectado' : 'Sem sinal do cabo';
     const isFixed = configured.adapterId === adapter.id && !!configured.ip;
     badge.textContent = isFixed
-      ? (adapter.connected ? 'Fixada e conectada' : 'Fixada — sem cabo')
+      ? (adapter.connected ? 'Conectada' : 'Configurada — sem cabo')
       : (adapter.connected ? 'Disponível' : 'Aguardando cabo');
     badge.classList.toggle('direct-cable-badge-online', isFixed && adapter.connected);
     details.textContent = `${linkText}${adapter.linkSpeed ? ` • ${adapter.linkSpeed}` : ''}${adapter.ipv4 ? ` • IP atual ${adapter.ipv4}` : ' • Sem IPv4 configurado'}`;
@@ -1163,8 +1155,8 @@ function renderDirectCableChannel(channel, state = directCableState) {
   const result = $(ui.result);
   if (result) {
     result.textContent = configured.ip
-      ? `${ui.label} fixado em ${configured.ip}. Esta placa será usada automaticamente.`
-      : `Escolha e fixe a placa dedicada ao ${ui.label}.`;
+      ? `${ui.label} conectado em ${configured.ip}. Esta placa será usada automaticamente.`
+      : `Escolha a placa dedicada ao ${ui.label} e clique em Conectar.`;
   }
 }
 
@@ -1194,10 +1186,10 @@ async function configureDirectCableFromUi(channel) {
     return;
   }
   const confirmed = await confirmModal({
-    title: `Fixar Placa ${ui.label}?`,
-    message: `A Hook Center reservará somente esta placa para ${ui.label}. O sistema poderá pedir a senha de administrador. O Wi‑Fi e os demais adaptadores não serão alterados.`,
+    title: `Conectar Placa ${ui.label}?`,
+    message: `A Hook Center configurará esta placa para conectar o ${ui.label}. O sistema poderá pedir a senha de administrador. O Wi‑Fi e os demais adaptadores não serão alterados.`,
     type: 'info',
-    okText: 'Fixar placa'
+    okText: 'Conectar'
   });
   if (!confirmed) return;
   const button = $(ui.configure);
@@ -1208,12 +1200,12 @@ async function configureDirectCableFromUi(channel) {
     const result = await window.hookUpdateCenter.configureDirectCable({ channel, adapterId });
     directCableState = result.state;
     renderDirectCableState(directCableState);
-    if (resultBox) resultBox.textContent = `${ui.label} fixado em ${result.ip}.`;
+    if (resultBox) resultBox.textContent = `${ui.label} conectado em ${result.ip}.`;
     const peer = channel === 'projectSync' ? 'PC B' : 'PC C';
-    showModal({ title: `Placa ${ui.label} pronta`, message: `Esta placa ficou fixa para ${ui.label}, usando ${result.ip}. Faça a mesma configuração na placa correspondente do ${peer}.`, type: 'success' });
+    showModal({ title: `Placa ${ui.label} conectada`, message: `A placa do ${ui.label} foi conectada usando ${result.ip}. Faça a mesma conexão na placa correspondente do ${peer}.`, type: 'success' });
   } catch (error) {
-    if (resultBox) resultBox.textContent = friendlyError(error, `Não foi possível fixar a placa ${ui.label}.`);
-    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, `Não foi possível fixar a placa ${ui.label}.`), type: 'error' });
+    if (resultBox) resultBox.textContent = friendlyError(error, `Não foi possível conectar a placa ${ui.label}.`);
+    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, `Não foi possível conectar a placa ${ui.label}.`), type: 'error' });
   } finally {
     button.disabled = false;
   }
@@ -1226,7 +1218,7 @@ async function restoreDirectCableFromUi(channel) {
   if (!adapterId) return;
   const confirmed = await confirmModal({
     title: 'Restaurar DHCP?',
-    message: `A placa fixada para ${ui.label} voltará a obter o endereço IP automaticamente.`,
+    message: `A placa conectada ao ${ui.label} voltará a obter o endereço IP automaticamente.`,
     type: 'info',
     okText: 'Restaurar'
   });
@@ -1240,7 +1232,7 @@ async function restoreDirectCableFromUi(channel) {
     renderDirectCableState(directCableState);
     if (resultBox) {
       resultBox.textContent = result.sharedAdapterRetained
-        ? `${ui.label} foi liberado. A placa continua fixa para o outro canal.`
+        ? `${ui.label} foi desconectado. A placa continua conectada ao outro canal.`
         : 'DHCP restaurado. O adaptador voltou para configuração automática.';
     }
   } catch (error) {
