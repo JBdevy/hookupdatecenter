@@ -735,9 +735,18 @@ function createTimecodeLanRelay(options = {}) {
   let lastProjectSyncStagingCleanupAt = 0
   let projectSyncStagingCleanupPromise = null
   const projectSyncProtocolNotices = new Set()
+  const pairingCandidateNotices = new Set()
   function projectSyncRole(status) {
     const role = String(status?.projectSyncRole || '').trim().toLowerCase()
     return role === 'primary' || role === 'secondary' ? role : ''
+  }
+
+  function selectedPeerId(status) {
+    return String(status?.selectedPeerId || '').trim().toLowerCase()
+  }
+
+  function rejectedPeerId(status) {
+    return String(status?.rejectedPeerId || '').trim().toLowerCase()
   }
 
   function statusCanTransmit(status) {
@@ -2866,8 +2875,9 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   async function pairWithReceiver(status, address, remotePort, receiver = {}) {
-    const offeredReceiverId = String(receiver.id || '').trim()
+    const offeredReceiverId = String(receiver.id || '').trim().toLowerCase()
     if (!statusCanTransmit(status) || !isPairCode(status.code) ||
+        !offeredReceiverId || selectedPeerId(status) !== offeredReceiverId ||
         transmitterPeer?.connected || stopped || !peerAddressAllowed(address) ||
         !canUsePeerAddress(
           relayChannel, normalizePeerAddress(address), offeredReceiverId)) return false
@@ -3155,6 +3165,39 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
+  async function considerReceiverCandidate(status, address, remotePort,
+    receiver = {}) {
+    const receiverId = String(receiver.id || '').trim().toLowerCase()
+    if (!receiverId || receiverId === instanceId ||
+        !statusCanTransmit(status) || transmitterPeer?.connected || stopped ||
+        !peerAddressAllowed(address) || !canUsePeerAddress(
+          relayChannel, normalizePeerAddress(address), receiverId)) return false
+    if (status.mode === 'project_sync' &&
+        !projectSyncRolesMatch(
+          projectSyncRole(status), receiver.projectSyncRole)) return false
+
+    const selected = selectedPeerId(status)
+    if (selected) {
+      if (selected !== receiverId) return false
+      return pairWithReceiver(status, address, remotePort, receiver)
+    }
+    if (rejectedPeerId(status) === receiverId) return false
+
+    const noticeKey = [relayChannel, status.mode,
+      projectSyncRole(status), receiverId].join('|')
+    if (!pairingCandidateNotices.has(noticeKey)) {
+      pairingCandidateNotices.add(noticeKey)
+      const accepted = await sendLocalCommand({
+        type: 'timecode_pair_candidate',
+        peerId: receiverId,
+        peerName: safeName(receiver.name,
+          status.mode === 'project_sync' ? 'PC B' : 'Receiver'),
+      })
+      if (!accepted) pairingCandidateNotices.delete(noticeKey)
+    }
+    return false
+  }
+
   async function acceptOffer(message, rinfo) {
     const status = await readLocalStatus()
     if (!statusCanTransmit(status) || !isPairCode(status.code)) return
@@ -3169,9 +3212,10 @@ function createTimecodeLanRelay(options = {}) {
         !projectSyncRolesMatch(
           projectSyncRole(status), message.projectSyncRole)) return
     const remotePort = Math.max(1, Math.min(65535, Number(message.port) || 47831))
-    await pairWithReceiver(status, rinfo.address, remotePort, {
-      id: String(message.receiverId || ''),
+    await considerReceiverCandidate(status, rinfo.address, remotePort, {
+      id: String(message.receiverId || '').trim().toLowerCase(),
       name: message.receiverName,
+      projectSyncRole: message.projectSyncRole,
     })
   }
 
@@ -3184,8 +3228,30 @@ function createTimecodeLanRelay(options = {}) {
     ])]
     for (let offset = 0; offset < addresses.length && !transmitterPeer?.connected && !stopped; offset += DIRECT_DISCOVERY_BATCH_SIZE) {
       const batch = addresses.slice(offset, offset + DIRECT_DISCOVERY_BATCH_SIZE)
-      await Promise.allSettled(batch.flatMap((address) => ports.map((port) =>
-        pairWithReceiver(status, address, port, { timeoutMs: DIRECT_DISCOVERY_TIMEOUT_MS })
+      await Promise.allSettled(batch.flatMap((address) => ports.map(
+        async (port) => {
+          const result = await requestJson({
+            hostname: address,
+            port,
+            path: `${outboundLinkPrefix}/availability`,
+            method: 'POST',
+            payload: {
+              transmitterId: instanceId,
+              mode: status.mode,
+              projectSyncRole: projectSyncRole(status),
+            },
+            timeoutMs: DIRECT_DISCOVERY_TIMEOUT_MS,
+          })
+          if (!result.ok || !result.data?.ok ||
+              result.data.available !== true) return false
+          return considerReceiverCandidate(status, address,
+            Number(result.data.port) || port, {
+              id: String(result.data.receiverId || '').trim().toLowerCase(),
+              name: result.data.receiverName,
+              projectSyncRole: result.data.projectSyncRole,
+              timeoutMs: DIRECT_DISCOVERY_TIMEOUT_MS,
+            })
+        }
       )))
     }
   }
@@ -3415,6 +3481,7 @@ function createTimecodeLanRelay(options = {}) {
         if (transmitterPeer) resetTransmitterPeer(true)
         if (receiverSession) resetReceiverSession(true)
         clearProjectSyncTransientState()
+        pairingCandidateNotices.clear()
         return
       }
 
@@ -3635,6 +3702,37 @@ function createTimecodeLanRelay(options = {}) {
     const result = preflightResultFromStatus(status, pending.requestId)
     if (!result) return null
     return completePendingProjectSyncPreflight(status, pending, result)
+  }
+
+  async function handleAvailability(req, res) {
+    const payload = await readJsonBody(req, 32 * 1024)
+    const status = await readLocalStatus(true)
+    const transmitterId = String(
+      payload.transmitterId || '').trim().toLowerCase()
+    const senderMode = String(payload.mode || '').trim().toLowerCase()
+    const address = normalizePeerAddress(req.socket?.remoteAddress)
+    const rolesCompatible = senderMode !== 'project_sync' ||
+      projectSyncRolesMatch(payload.projectSyncRole,
+        projectSyncRole(status))
+    const modesCompatible =
+      (senderMode === 'transmitter' && status?.mode === 'receive') ||
+      (senderMode === 'project_sync' &&
+        status?.mode === 'project_sync' && rolesCompatible)
+    const occupiedByAnother = !!receiverSession &&
+      receiverSession.transmitterId !== transmitterId
+    const available = licenseIsActive() && statusCanReceive(status) &&
+      isPairCode(status?.code) && modesCompatible && !!transmitterId &&
+      transmitterId !== instanceId && !occupiedByAnother &&
+      peerAddressAllowed(address) && canUsePeerAddress(
+        relayChannel, address, transmitterId)
+    sendJson(res, 200, {
+      ok: true,
+      available,
+      receiverId: available ? instanceId : '',
+      receiverName: available ? deviceName() : '',
+      port: available ? (Number(getDirectorPort()) || 47831) : 0,
+      projectSyncRole: available ? projectSyncRole(status) : '',
+    })
   }
 
   async function handlePair(req, res) {
@@ -4145,6 +4243,9 @@ function tokenMatches(left, right) {
           projectSyncPreflight: true,
           projectSyncDirection: 'primary_to_secondary',
         })
+      } else if (req.method === 'POST' &&
+          pathname === `${linkPrefix}/availability`) {
+        await handleAvailability(req, res)
       } else if (req.method === 'POST' && pathname === `${linkPrefix}/pair`) {
         await handlePair(req, res)
       } else if (req.method === 'POST' && pathname === `${linkPrefix}/preflight`) {
