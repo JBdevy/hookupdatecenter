@@ -969,7 +969,9 @@ function createTimecodeLanRelay(options = {}) {
       peer.resumeControlSequenceFloor = null
     }
     peer.lastHealthyTransport = snapshot
-    return transport
+    return explicitControl
+      ? { ...transport, explicitControl: true }
+      : transport
   }
 
   function projectSyncTransportForReceive(session, status, payload, transport) {
