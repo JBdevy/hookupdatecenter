@@ -1105,7 +1105,8 @@ const directCableUiChannels = {
     details: '#directCableProjectSyncDetails',
     badge: '#directCableProjectSyncBadge',
     configure: '#directCableProjectSyncConfigureButton',
-    restore: '#directCableProjectSyncRestoreButton',
+    restart: '#directCableProjectSyncRestartButton',
+    disconnect: '#directCableProjectSyncDisconnectButton',
     result: '#directCableProjectSyncResult'
   },
   timecode: {
@@ -1114,7 +1115,8 @@ const directCableUiChannels = {
     details: '#directCableTimecodeDetails',
     badge: '#directCableTimecodeBadge',
     configure: '#directCableTimecodeConfigureButton',
-    restore: '#directCableTimecodeRestoreButton',
+    restart: '#directCableTimecodeRestartButton',
+    disconnect: '#directCableTimecodeDisconnectButton',
     result: '#directCableTimecodeResult'
   }
 };
@@ -1128,35 +1130,79 @@ function renderDirectCableChannel(channel, state = directCableState) {
   const previous = select.value;
   const adapters = Array.isArray(state?.adapters) ? state.adapters : [];
   const configured = state?.channels?.[channel] || {};
+  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
+  const otherLabel = directCableUiChannels[otherChannel].label;
+  const otherConfigured = state?.channels?.[otherChannel] || {};
+  const adapterBelongsToOtherChannel = (adapter) => !!adapter && (
+    adapter.id === otherConfigured.detectedAdapterId ||
+    (Array.isArray(otherConfigured.candidateAdapterIds) &&
+      otherConfigured.candidateAdapterIds.includes(adapter.id)) ||
+    (!otherConfigured.detectedAdapterId &&
+      adapter.id === otherConfigured.adapterId));
+  const configuredAdapter = adapters.find((item) =>
+    item.id === configured.detectedAdapterId) ||
+    (!configured.detectedAdapterId && !configured.adapterAmbiguous
+      ? adapters.find((item) => item.id === configured.adapterId) : null);
   select.innerHTML = adapters.length
-    ? adapters.map((adapter) => `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}</option>`).join('')
+    ? adapters.map((adapter) => `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}${adapterBelongsToOtherChannel(adapter) ? ` — em uso no ${escapeHtml(otherLabel)}` : ''}</option>`).join('')
     : '<option value="">Nenhum adaptador Ethernet encontrado</option>';
   const wanted = adapters.some((item) => item.id === previous)
     ? previous
-    : (adapters.some((item) => item.id === configured.adapterId)
-        ? configured.adapterId : (adapters[0]?.id || ''));
+    : (configuredAdapter?.id || adapters[0]?.id || '');
   select.value = wanted;
   const adapter = adapters.find((item) => item.id === wanted);
-  if (adapter) {
-    const linkText = adapter.connected ? 'Cabo conectado' : 'Sem sinal do cabo';
-    const isFixed = configured.adapterId === adapter.id && !!configured.ip;
-    badge.textContent = isFixed
-      ? (adapter.connected ? 'Conectada' : 'Configurada — sem cabo')
-      : (adapter.connected ? 'Disponível' : 'Aguardando cabo');
-    badge.classList.toggle('direct-cable-badge-online', isFixed && adapter.connected);
-    details.textContent = `${linkText}${adapter.linkSpeed ? ` • ${adapter.linkSpeed}` : ''}${adapter.ipv4 ? ` • IP atual ${adapter.ipv4}` : ' • Sem IPv4 configurado'}`;
+  const selectedBelongsToOtherChannel = adapterBelongsToOtherChannel(adapter);
+  const hasConfiguration = !!configured.ip;
+  const addressReady = !!configuredAdapter &&
+    configuredAdapter.ipv4 === configured.ip;
+  const linkReady = addressReady && configuredAdapter.connected;
+  if (hasConfiguration && !configuredAdapter) {
+    badge.textContent = configured.adapterAmbiguous
+      ? 'Escolha a placa correta' : 'Adaptador desconectado';
+    badge.classList.remove('direct-cable-badge-online');
+    details.textContent = configured.adapterAmbiguous
+      ? 'Dois adaptadores possuem a mesma identificação de fábrica. Selecione abaixo qual deles será usado neste canal.'
+      : `${configured.adapterName || configured.adapterId || 'A placa configurada'} foi removida do computador.`;
+  } else if (hasConfiguration && configuredAdapter) {
+    badge.textContent = linkReady
+      ? 'Conectada'
+      : (configuredAdapter.connected ? 'Reinicie a conexão' : 'Cabo desconectado');
+    badge.classList.toggle('direct-cable-badge-online', linkReady);
+    details.textContent = configuredAdapter.connected
+      ? `${addressReady ? 'Cabo conectado' : 'Configuração da placa precisa ser renovada'}${configuredAdapter.linkSpeed ? ` • ${configuredAdapter.linkSpeed}` : ''}`
+      : 'O adaptador está conectado ao computador, mas o cabo de rede foi desconectado.';
+  } else if (adapter) {
+    badge.textContent = adapter.connected ? 'Disponível' : 'Aguardando cabo';
+    badge.classList.remove('direct-cable-badge-online');
+    details.textContent = `${adapter.connected ? 'Cabo conectado' : 'Sem sinal do cabo'}${adapter.linkSpeed ? ` • ${adapter.linkSpeed}` : ''}`;
   } else {
     badge.textContent = state?.supported === false ? 'Indisponível' : 'Não detectado';
     badge.classList.remove('direct-cable-badge-online');
     details.textContent = state?.error || 'Conecte um adaptador USB–Ethernet e clique em detectar novamente.';
   }
-  $(ui.configure).disabled = !adapter;
-  $(ui.restore).disabled = !configured.adapterId;
+  const configureButton = $(ui.configure);
+  configureButton.textContent = hasConfiguration
+    ? (configuredAdapter ? 'Conectada' : 'Conectar nova placa')
+    : 'Conectar';
+  configureButton.disabled = !adapter || selectedBelongsToOtherChannel ||
+    (hasConfiguration && !!configuredAdapter);
+  $(ui.restart).disabled = !hasConfiguration;
+  $(ui.disconnect).disabled = !hasConfiguration;
   const result = $(ui.result);
   if (result) {
-    result.textContent = configured.ip
-      ? `${ui.label} conectado em ${configured.ip}. Esta placa será usada automaticamente.`
-      : `Escolha a placa dedicada ao ${ui.label} e clique em Conectar.`;
+    result.classList.toggle('is-success', linkReady);
+    result.classList.toggle('is-error', hasConfiguration && !linkReady);
+    result.textContent = selectedBelongsToOtherChannel && !configuredAdapter
+      ? `Esta placa já está sendo usada no ${otherLabel}. Conecte outro adaptador para o ${ui.label}.`
+      : (linkReady
+      ? `${ui.label} conectado. Se o cabo ou adaptador for retirado, a conexão voltará automaticamente ao reconectar.`
+      : (hasConfiguration
+          ? (configuredAdapter
+              ? 'Conexão interrompida. Aguardando o cabo voltar; use Reiniciar conexão se necessário.'
+              : (configured.adapterAmbiguous
+                  ? 'Escolha a placa correta e clique em Conectar nova placa. A Hook Center gravará o GUID exclusivo dela.'
+                  : 'O adaptador configurado foi desconectado. Reconecte-o ou escolha outra placa e clique em Conectar nova placa.'))
+          : `Escolha a placa dedicada ao ${ui.label} e clique em Conectar.`));
   }
 }
 
@@ -1211,32 +1257,54 @@ async function configureDirectCableFromUi(channel) {
   }
 }
 
-async function restoreDirectCableFromUi(channel) {
+async function disconnectDirectCableFromUi(channel) {
   const ui = directCableUiChannels[channel];
   const configured = directCableState?.channels?.[channel] || {};
   const adapterId = configured.adapterId || $(ui.select)?.value || '';
   if (!adapterId) return;
   const confirmed = await confirmModal({
-    title: 'Restaurar DHCP?',
-    message: `A placa conectada ao ${ui.label} voltará a obter o endereço IP automaticamente.`,
+    title: `Desconectar Placa ${ui.label}?`,
+    message: `A Hook Center deixará de usar esta placa para o ${ui.label}. O Wi-Fi e os demais adaptadores não serão alterados.`,
     type: 'info',
-    okText: 'Restaurar'
+    okText: 'Desconectar'
   });
   if (!confirmed) return;
-  const button = $(ui.restore);
+  const button = $(ui.disconnect);
   const resultBox = $(ui.result);
   button.disabled = true;
   try {
-    const result = await window.hookUpdateCenter.restoreDirectCableDhcp({ channel, adapterId });
+    const result = await window.hookUpdateCenter.disconnectDirectCable({ channel, adapterId });
     directCableState = result.state;
     renderDirectCableState(directCableState);
     if (resultBox) {
-      resultBox.textContent = result.sharedAdapterRetained
-        ? `${ui.label} foi desconectado. A placa continua conectada ao outro canal.`
-        : 'DHCP restaurado. O adaptador voltou para configuração automática.';
+      resultBox.textContent = `${ui.label} desconectado.`;
     }
   } catch (error) {
-    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, 'Não foi possível restaurar o DHCP.'), type: 'error' });
+    showModal({ title: `Placa ${ui.label}`, message: friendlyError(error, 'Não foi possível desconectar a placa.'), type: 'error' });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function restartDirectCableFromUi(channel) {
+  const ui = directCableUiChannels[channel];
+  const button = $(ui.restart);
+  const resultBox = $(ui.result);
+  button.disabled = true;
+  if (resultBox) resultBox.textContent = `Reiniciando a conexão ${ui.label}...`;
+  try {
+    const result = await window.hookUpdateCenter.restartDirectCable({ channel });
+    directCableState = result.state;
+    renderDirectCableState(directCableState);
+    if (resultBox) {
+      resultBox.textContent = result.connected
+        ? `${ui.label} reconectado.`
+        : `${ui.label} reiniciado e aguardando o cabo ou o outro computador.`;
+    }
+  } catch (error) {
+    const message = friendlyError(error, `Não foi possível reiniciar a conexão ${ui.label}.`);
+    if (resultBox) resultBox.textContent = message;
+    showModal({ title: `Placa ${ui.label}`, message, type: 'error' });
   } finally {
     button.disabled = false;
   }
@@ -2103,8 +2171,10 @@ function setupToolsSubmenu() {
   $('#directCableTimecodeAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('timecode', directCableState));
   $('#directCableProjectSyncConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('projectSync'));
   $('#directCableTimecodeConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('timecode'));
-  $('#directCableProjectSyncRestoreButton')?.addEventListener('click', () => restoreDirectCableFromUi('projectSync'));
-  $('#directCableTimecodeRestoreButton')?.addEventListener('click', () => restoreDirectCableFromUi('timecode'));
+  $('#directCableProjectSyncRestartButton')?.addEventListener('click', () => restartDirectCableFromUi('projectSync'));
+  $('#directCableTimecodeRestartButton')?.addEventListener('click', () => restartDirectCableFromUi('timecode'));
+  $('#directCableProjectSyncDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('projectSync'));
+  $('#directCableTimecodeDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('timecode'));
   $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
   $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
   $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
@@ -2156,6 +2226,10 @@ function setupToolsSubmenu() {
   $('#hookMarkerResolumeFirstColumn')?.addEventListener('input', renderHookMarkerPreview);
   window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
   window.hookUpdateCenter.onHookMarkerRuntimeState(renderHookMarkerRuntimeState);
+  window.hookUpdateCenter.onDirectCableStatus?.((state) => {
+    directCableState = state;
+    if (selectedToolsPanel === 'cable') renderDirectCableState(state);
+  });
   setupPingPongGame();
   setToolsPanel(selectedToolsPanel);
 }

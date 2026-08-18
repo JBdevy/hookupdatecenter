@@ -4194,6 +4194,11 @@ function tokenMatches(left, right) {
         finish()
       })
     })
+    // Limpa um indicador que possa ter ficado preso na extensão se a Hook
+    // Center anterior foi encerrada à força. A extensão só avisa quando o
+    // estado anterior era realmente conectado, portanto o primeiro start não
+    // cria um falso alerta.
+    await notifyLocalPeer(false).catch(() => {})
     tickTimer = setInterval(() => tick().catch(() => {}), TRANSMIT_INTERVAL_MS)
     tick().catch(() => {})
   }
@@ -4203,6 +4208,13 @@ function tokenMatches(left, right) {
     relayLifecycleSequence += 1
     if (tickTimer) clearInterval(tickTimer)
     tickTimer = null
+    const hadConnectedPeer = !!transmitterPeer?.connected || !!receiverSession
+    // Reiniciar/fechar a Hook Center também precisa limpar o indicador da
+    // extensão. Sem isso, A/B/C continuavam aparecendo como pareados até a
+    // próxima conexão, mesmo com o relay já encerrado.
+    if (hadConnectedPeer) {
+      try { await notifyLocalPeer(false) } catch (_) {}
+    }
     resetTransmitterPeer(false)
     resetReceiverSession(false)
     pendingProjectSyncPreflight = null

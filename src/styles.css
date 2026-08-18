@@ -6606,8 +6606,12 @@ body.previous-mode .content > .view.active {
 
 .direct-cable-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
+}
+
+.direct-cable-actions button {
+  min-width: 0;
 }
 
 .direct-cable-instructions {
@@ -6638,6 +6642,10 @@ body.previous-mode .content > .view.active {
 
   .direct-cable-instructions {
     grid-column: auto;
+  }
+
+  .direct-cable-actions {
+    grid-template-columns: 1fr;
   }
 }
 

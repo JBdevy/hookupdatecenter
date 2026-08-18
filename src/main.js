@@ -121,6 +121,9 @@ let bridgeInfos = [];
 let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
+let directCableWatchTimer = null;
+let directCableWatchRunning = false;
+let directCableWatchSnapshot = null;
 let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
 let parallelTimecodeLanRelay = null;
@@ -1746,7 +1749,7 @@ async function listWindowsDirectCableAdapters() {
     "$ErrorActionPreference='Stop'",
     "$items = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.HardwareInterface -eq $true -and $_.Name -notmatch '(?i)wi-?fi|wlan|wireless|bluetooth' } | ForEach-Object {",
     "  $ip = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress",
-    "  [pscustomobject]@{ id=$_.Name; name=$_.Name; description=$_.InterfaceDescription; device=$_.Name; status=$_.Status.ToString(); linkSpeed=$_.LinkSpeed; ipv4=([string]$ip) }",
+    "  [pscustomobject]@{ id=$_.Name; name=$_.Name; description=$_.InterfaceDescription; device=$_.Name; status=$_.Status.ToString(); linkSpeed=$_.LinkSpeed; ipv4=([string]$ip); hardwareAddress=([string]$_.MacAddress); interfaceGuid=([string]$_.InterfaceGuid); pnpDeviceId=([string]$_.PnPDeviceID) }",
     "}",
     "@($items) | ConvertTo-Json -Compress"
   ].join('; ');
@@ -1765,7 +1768,10 @@ async function listWindowsDirectCableAdapters() {
     connected: /up/i.test(String(item.status || '')),
     status: String(item.status || ''),
     linkSpeed: String(item.linkSpeed || ''),
-    ipv4: String(item.ipv4 || '')
+    ipv4: String(item.ipv4 || ''),
+    hardwareAddress: String(item.hardwareAddress || '').replace(/[^a-f0-9]/gi, '').toLowerCase(),
+    interfaceGuid: String(item.interfaceGuid || '').trim().toLowerCase(),
+    pnpDeviceId: String(item.pnpDeviceId || '').trim().toLowerCase()
   }));
 }
 
@@ -1788,6 +1794,7 @@ async function listMacDirectCableAdapters() {
     let ifconfig = '';
     try { ifconfig = await runProcess('/sbin/ifconfig', [device], { timeout: 4000 }); } catch (_) {}
     const ipMatch = ifconfig.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)/);
+    const hardwareMatch = ifconfig.match(/\bether\s+([0-9a-f:]+)/i);
     adapters.push({
       id: device,
       name: service,
@@ -1797,7 +1804,11 @@ async function listMacDirectCableAdapters() {
       connected: /status:\s*active/i.test(ifconfig),
       status: /status:\s*active/i.test(ifconfig) ? 'Up' : 'Down',
       linkSpeed: '',
-      ipv4: ipMatch ? ipMatch[1] : ''
+      ipv4: ipMatch ? ipMatch[1] : '',
+      hardwareAddress: hardwareMatch
+        ? hardwareMatch[1].replace(/[^a-f0-9]/gi, '').toLowerCase() : '',
+      interfaceGuid: '',
+      pnpDeviceId: ''
     });
     service = '';
   }
@@ -1840,13 +1851,105 @@ function getStoredDirectCableChannel(channelValue) {
   const channel = normalizeDirectCableChannel(channelValue);
   const stored = store.get(`directCable.${channel}`);
   return stored && typeof stored === 'object'
-    ? {
+      ? {
         adapterId: String(stored.adapterId || ''),
+        adapterName: String(stored.adapterName || stored.adapterId || ''),
+        adapterDescription: String(stored.adapterDescription || ''),
+        hardwareAddress: String(stored.hardwareAddress || '').replace(/[^a-f0-9]/gi, '').toLowerCase(),
+        interfaceGuid: String(stored.interfaceGuid || '').trim().toLowerCase(),
+        pnpDeviceId: String(stored.pnpDeviceId || '').trim().toLowerCase(),
         ip: String(stored.ip || ''),
         configuredAt: stored.configuredAt || null,
         legacyShared: stored.legacyShared === true
       }
-    : { adapterId: '', ip: '', configuredAt: null, legacyShared: false };
+    : { adapterId: '', adapterName: '', adapterDescription: '', hardwareAddress: '', interfaceGuid: '', pnpDeviceId: '', ip: '', configuredAt: null, legacyShared: false };
+}
+
+function matchConfiguredDirectCableAdapter(configuration, adapters = []) {
+  if (!configuration || !Array.isArray(adapters)) {
+    return { adapter: null, ambiguous: false };
+  }
+  const byGuid = configuration.interfaceGuid && adapters.find((item) =>
+    item.interfaceGuid === configuration.interfaceGuid);
+  if (byGuid) return { adapter: byGuid, ambiguous: false };
+
+  const byPnp = configuration.pnpDeviceId && adapters.find((item) =>
+    item.pnpDeviceId === configuration.pnpDeviceId);
+  if (byPnp) return { adapter: byPnp, ambiguous: false };
+
+  if (configuration.hardwareAddress) {
+    const byMac = adapters.filter((item) =>
+      item.hardwareAddress === configuration.hardwareAddress);
+    if (byMac.length === 1) return { adapter: byMac[0], ambiguous: false };
+    if (byMac.length > 1) {
+      // Adaptadores de baixa qualidade podem compartilhar o mesmo MAC. Nesse
+      // caso o nome anterior só desempata se ainda apontar para um integrante
+      // desse mesmo grupo; nunca escolhemos simplesmente o primeiro.
+      const exactName = byMac.find((item) => item.id === configuration.adapterId);
+      return { adapter: exactName || null, ambiguous: !exactName };
+    }
+  }
+
+  // Configurações antigas ainda não possuem GUID/PnP/MAC. O nome é usado uma
+  // única vez; ao conectar novamente, todos os identificadores são gravados.
+  const legacyByName = !configuration.interfaceGuid &&
+    !configuration.pnpDeviceId && !configuration.hardwareAddress
+    ? adapters.find((item) => item.id === configuration.adapterId) : null;
+  return { adapter: legacyByName || null, ambiguous: false };
+}
+
+function findConfiguredDirectCableAdapter(configuration, adapters = []) {
+  return matchConfiguredDirectCableAdapter(configuration, adapters).adapter;
+}
+
+function directCableCandidateAdapterIds(configuration, adapters = []) {
+  if (!configuration || !Array.isArray(adapters)) return [];
+  const byGuid = configuration.interfaceGuid
+    ? adapters.filter((item) =>
+      item.interfaceGuid === configuration.interfaceGuid) : [];
+  if (byGuid.length) return byGuid.map((item) => item.id);
+
+  const byPnp = configuration.pnpDeviceId
+    ? adapters.filter((item) => item.pnpDeviceId === configuration.pnpDeviceId)
+    : [];
+  if (byPnp.length) return byPnp.map((item) => item.id);
+
+  const byMac = configuration.hardwareAddress
+    ? adapters.filter((item) =>
+      item.hardwareAddress === configuration.hardwareAddress) : [];
+  if (byMac.length) return byMac.map((item) => item.id);
+
+  return !configuration.interfaceGuid && !configuration.pnpDeviceId &&
+      !configuration.hardwareAddress
+    ? adapters.filter((item) => item.id === configuration.adapterId)
+      .map((item) => item.id)
+    : [];
+}
+
+function directCableChannelState(configuration, adapters = []) {
+  const match = matchConfiguredDirectCableAdapter(configuration, adapters);
+  const adapter = match.adapter;
+  const configured = !!configuration?.ip;
+  const adapterPresent = !!adapter;
+  const cableConnected = !!adapter?.connected;
+  const addressReady = !!adapter && adapter.ipv4 === configuration.ip;
+  const connectionStatus = !configured ? 'disconnected'
+    : (match.ambiguous ? 'adapter-ambiguous'
+      : (!adapterPresent ? 'adapter-disconnected'
+      : (!cableConnected ? 'cable-disconnected'
+        : (!addressReady ? 'restart-required' : 'connected'))));
+  return {
+    ...configuration,
+    adapterPresent,
+    cableConnected,
+    addressReady,
+    adapterAmbiguous: match.ambiguous,
+    connectionStatus,
+    candidateAdapterIds: directCableCandidateAdapterIds(
+      configuration, adapters),
+    detectedAdapterId: adapter?.id || '',
+    detectedAdapterName: adapter?.name || ''
+  };
 }
 
 function getDirectCableChannelIp(channel) {
@@ -1861,8 +1964,10 @@ async function getDirectCableState() {
     const adapters = process.platform === 'win32'
       ? await listWindowsDirectCableAdapters()
       : await listMacDirectCableAdapters();
-    const projectSync = getStoredDirectCableChannel('projectSync');
-    const timecode = getStoredDirectCableChannel('timecode');
+    const projectSync = directCableChannelState(
+      getStoredDirectCableChannel('projectSync'), adapters);
+    const timecode = directCableChannelState(
+      getStoredDirectCableChannel('timecode'), adapters);
     return {
       ok: true,
       supported: true,
@@ -1903,12 +2008,18 @@ async function configureDirectCable(payload = {}) {
     currentConfiguration.legacyShared === true &&
     otherConfiguration.legacyShared === true &&
     currentConfiguration.adapterId === otherConfiguration.adapterId;
-  if (currentConfiguration.adapterId &&
-      currentConfiguration.adapterId !== adapterId &&
-      !splittingLegacySharedAdapter) {
-    throw new Error(`Restaure primeiro o DHCP da placa conectada ao ${channelInfo.label}. Depois conecte a nova placa.`);
+  const currentAdapter = findConfiguredDirectCableAdapter(
+    currentConfiguration, current.adapters);
+  if (currentConfiguration.adapterId && currentAdapter &&
+      currentAdapter.id !== adapterId && !splittingLegacySharedAdapter) {
+    throw new Error(`Desconecte primeiro a placa atual do ${channelInfo.label}. Depois conecte a nova placa.`);
   }
-  if (String(otherConfiguration.adapterId || '') === adapterId) {
+  const otherAdapter = findConfiguredDirectCableAdapter(
+    otherConfiguration, current.adapters);
+  if ((otherAdapter && otherAdapter.id === adapterId) ||
+      (Array.isArray(otherConfiguration.candidateAdapterIds) &&
+        otherConfiguration.candidateAdapterIds.includes(adapterId)) ||
+      (!otherAdapter && String(otherConfiguration.adapterId || '') === adapterId)) {
     throw new Error(`Esta placa já está conectada ao ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
   }
   // O host permanece estável por computador, mas cada canal recebe uma
@@ -1928,7 +2039,9 @@ async function configureDirectCable(payload = {}) {
     ].join('; ');
     await runWindowsElevatedPowerShell(script);
   } else if (process.platform === 'darwin') {
-    const script = `/sbin/ifconfig ${JSON.stringify(adapter.device)} inet ${ip} netmask 255.255.255.0 up`;
+    // networksetup grava a configuração no serviço de rede. Assim o IP volta
+    // sozinho quando o adaptador USB/Ethernet é retirado e reconectado.
+    const script = `/usr/sbin/networksetup -setmanual ${JSON.stringify(adapter.service)} ${JSON.stringify(ip)} 255.255.255.0 0.0.0.0`;
     await runProcess('/usr/bin/osascript', [
       '-e', `do shell script ${JSON.stringify(script)} with administrator privileges`
     ], { timeout: 120000 });
@@ -1937,6 +2050,11 @@ async function configureDirectCable(payload = {}) {
   }
   store.set(`directCable.${channel}`, {
     adapterId,
+    adapterName: adapter.name,
+    adapterDescription: adapter.description || '',
+    hardwareAddress: adapter.hardwareAddress || '',
+    interfaceGuid: adapter.interfaceGuid || '',
+    pnpDeviceId: adapter.pnpDeviceId || '',
     ip,
     configuredAt: new Date().toISOString(),
     legacyShared: false
@@ -1945,11 +2063,11 @@ async function configureDirectCable(payload = {}) {
   return { ok: true, channel, ip, state: await getDirectCableState() };
 }
 
-async function restoreDirectCableDhcp(payload = {}) {
+async function disconnectDirectCable(payload = {}) {
   const channel = normalizeDirectCableChannel(payload.channel);
   const configured = getStoredDirectCableChannel(channel);
   const adapterId = String(payload.adapterId || configured.adapterId || '').trim();
-  if (!adapterId) throw new Error('Escolha o adaptador que será restaurado para DHCP.');
+  if (!adapterId) throw new Error('Escolha o adaptador que será desconectado.');
   const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
   const otherConfiguration = getStoredDirectCableChannel(otherChannel);
   if (configured.legacyShared && otherConfiguration.legacyShared &&
@@ -1967,8 +2085,22 @@ async function restoreDirectCableDhcp(payload = {}) {
     };
   }
   const current = await getDirectCableState();
-  const adapter = current.adapters.find((item) => item.id === adapterId);
-  if (!adapter) throw new Error('O adaptador selecionado não está disponível.');
+  const adapter = findConfiguredDirectCableAdapter(configured, current.adapters) ||
+    current.adapters.find((item) => item.id === adapterId);
+  // Um adaptador USB removido não pode receber o comando do sistema. Mesmo
+  // assim a configuração órfã deve poder ser apagada para não bloquear outra
+  // placa. Quando a placa antiga voltar, o próprio sistema manterá seu perfil.
+  if (!adapter) {
+    store.delete(`directCable.${channel}`);
+    try { await startBridgeServers(); } catch (_) {}
+    return {
+      ok: true,
+      channel,
+      clearedChannels: [channel],
+      adapterMissing: true,
+      state: await getDirectCableState()
+    };
+  }
   if (process.platform === 'win32') {
     const alias = psSingleQuoted(adapter.name);
     await runWindowsElevatedPowerShell([
@@ -1994,6 +2126,90 @@ async function restoreDirectCableDhcp(payload = {}) {
   }
   try { await startBridgeServers(); } catch (_) {}
   return { ok: true, channel, clearedChannels, state: await getDirectCableState() };
+}
+
+async function restartDirectCableConnection(payload = {}) {
+  const channel = normalizeDirectCableChannel(payload.channel);
+  const configured = getStoredDirectCableChannel(channel);
+  if (!configured.ip) {
+    throw new Error(`A placa do ${DIRECT_CABLE_CHANNELS[channel].label} ainda não foi conectada.`);
+  }
+  const current = await getDirectCableState();
+  const adapter = findConfiguredDirectCableAdapter(configured, current.adapters);
+  if (!adapter) {
+    throw new Error('O adaptador configurado foi desconectado do computador. Reconecte-o ou escolha outra placa.');
+  }
+  if (adapter.ipv4 !== configured.ip) {
+    const result = await configureDirectCable({ channel, adapterId: adapter.id });
+    const nextChannel = result.state?.channels?.[channel] || {};
+    return { ...result, connected: nextChannel.connectionStatus === 'connected' };
+  }
+  await startBridgeServers();
+  const state = await getDirectCableState();
+  return {
+    ok: true,
+    channel,
+    connected: state.channels?.[channel]?.connectionStatus === 'connected',
+    state
+  };
+}
+
+function directCableWatchMarkers(state) {
+  const markers = {};
+  for (const channel of Object.keys(DIRECT_CABLE_CHANNELS)) {
+    const value = state?.channels?.[channel] || {};
+    markers[channel] = `${value.adapterId || ''}|${value.ip || ''}|${value.connectionStatus || 'disconnected'}`;
+  }
+  return markers;
+}
+
+function notifyDirectCableTransition(channel, previousMarker, current) {
+  if (!previousMarker || !current?.ip || !Notification.isSupported()) return;
+  const previousStatus = String(previousMarker).split('|').pop();
+  const currentStatus = current.connectionStatus;
+  if (previousStatus === currentStatus) return;
+  const label = DIRECT_CABLE_CHANNELS[channel].label;
+  let body = '';
+  if (currentStatus === 'adapter-disconnected') {
+    body = `O adaptador do ${label} foi desconectado. Aguardando ele ser reconectado.`;
+  } else if (currentStatus === 'adapter-ambiguous') {
+    body = `Foram encontrados adaptadores iguais no ${label}. Abra Conexão redundante e escolha a placa correta.`;
+  } else if (currentStatus === 'cable-disconnected') {
+    body = `O cabo do ${label} foi desconectado. A conexão voltará automaticamente quando o cabo retornar.`;
+  } else if (currentStatus === 'restart-required') {
+    body = `A placa do ${label} voltou sem a configuração necessária. Abra Conexão redundante e clique em Reiniciar conexão.`;
+  } else if (currentStatus === 'connected' && previousStatus !== 'disconnected') {
+    body = `A placa do ${label} foi reconectada.`;
+  }
+  if (!body) return;
+  const notice = new Notification({ title: 'Hook Center — Conexão redundante', body, silent: false });
+  notice.on('click', showMainWindow);
+  notice.show();
+}
+
+async function pollDirectCableConnections() {
+  if (directCableWatchRunning) return;
+  directCableWatchRunning = true;
+  try {
+    const state = await getDirectCableState();
+    const markers = directCableWatchMarkers(state);
+    if (directCableWatchSnapshot) {
+      for (const channel of Object.keys(DIRECT_CABLE_CHANNELS)) {
+        if (markers[channel] !== directCableWatchSnapshot[channel]) {
+          notifyDirectCableTransition(channel,
+            directCableWatchSnapshot[channel], state.channels?.[channel]);
+        }
+      }
+    }
+    directCableWatchSnapshot = markers;
+    if (isValidWindow(mainWindow)) {
+      mainWindow.webContents.send('direct-cable-status', state);
+    }
+  } catch (_) {
+    // Uma leitura transitória não apaga a última condição conhecida.
+  } finally {
+    directCableWatchRunning = false;
+  }
 }
 
 const HOOK_MIDI_DOWNLOAD_URL = 'https://aka.ms/midi';
@@ -6273,7 +6489,8 @@ ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
 });
 ipcMain.handle('direct-cable-get-state', () => getDirectCableState());
 ipcMain.handle('direct-cable-configure', (_event, payload) => configureDirectCable(payload || {}));
-ipcMain.handle('direct-cable-restore-dhcp', (_event, payload) => restoreDirectCableDhcp(payload || {}));
+ipcMain.handle('direct-cable-disconnect', (_event, payload) => disconnectDirectCable(payload || {}));
+ipcMain.handle('direct-cable-restart', (_event, payload) => restartDirectCableConnection(payload || {}));
 ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
 ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
@@ -6668,9 +6885,11 @@ function prepareForAppQuit() {
   }
   if (checkTimer) clearInterval(checkTimer);
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
+  if (directCableWatchTimer) clearInterval(directCableWatchTimer);
   if (updateReminderTimer) clearInterval(updateReminderTimer);
   checkTimer = null;
   bridgeWatchTimer = null;
+  directCableWatchTimer = null;
   updateReminderTimer = null;
 }
 
@@ -6720,6 +6939,14 @@ app.whenReady().then(async () => {
       console.error('[Hook Center] Tentativa de religar conexão via app falhou:', error?.message || error);
     });
   }, 30000);
+
+  // Detecta retirada e retorno do cabo/adaptador sem exigir que o usuário
+  // permaneça com a aba Conexão redundante aberta. O relay fica ativo e tenta
+  // parear novamente em paralelo; esta rotina cuida apenas do estado visual.
+  await pollDirectCableConnections();
+  directCableWatchTimer = setInterval(() => {
+    pollDirectCableConnections().catch(() => {});
+  }, 3000);
 
   checkTimer = setInterval(async () => {
     await ensureBridgeServersRunning().catch(() => {});
