@@ -978,7 +978,7 @@
             <div>
               <p class="eyebrow">Receive / Transmitter / Project Sync</p>
               <h1>Conexão redundante</h1>
-              <p class="muted">No PC A, conecte uma placa ao PC B escravo para o Project Sync e outra placa ao PC C para o Time Code. Cada canal permanece separado e automático.</p>
+              <p class="muted">Use três redes separadas: Project Sync entre A e B, Time Code principal entre A e C e Time Code reserva entre B e C. Se A cair, B mantém o MTC do PC C.</p>
             </div>
             <button id="directCableRefreshButton" class="secondary-button" type="button">Detectar novamente</button>
           </div>
@@ -1020,14 +1020,33 @@
               <div id="directCableTimecodeResult" class="direct-cable-result muted">Nenhuma placa conectada.</div>
             </div>
 
+            <div class="card direct-cable-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">PC B ↔ PC C</p><h2>Placa Time Code reserva</h2></div>
+                <span id="directCableTimecodeBackupBadge" class="badge">Verificando</span>
+              </div>
+              <label>
+                Porta USB/Ethernet do segundo cabo ligado ao PC C
+                <select id="directCableTimecodeBackupAdapterSelect"><option value="">Detectando adaptadores...</option></select>
+              </label>
+              <div id="directCableTimecodeBackupDetails" class="direct-cable-status muted">Conecte o cabo reserva entre PC B e PC C.</div>
+              <div class="actions direct-cable-actions">
+                <button id="directCableTimecodeBackupConfigureButton" class="primary-button" type="button">Conectar</button>
+                <button id="directCableTimecodeBackupRestartButton" class="secondary-button" type="button">Reiniciar conexão</button>
+                <button id="directCableTimecodeBackupDisconnectButton" class="secondary-button danger-button" type="button">Desconectar</button>
+              </div>
+              <div id="directCableTimecodeBackupResult" class="direct-cable-result muted">Nenhuma placa conectada.</div>
+            </div>
+
             <div class="card direct-cable-card direct-cable-instructions">
               <div class="tool-card-header"><div><p class="eyebrow">Depois</p><h2>Conectar o VS Hook</h2></div></div>
               <ol>
-                <li>No PC A e no PC B, escolha a Placa Project Sync e clique em Conectar.</li>
-                <li>No PC A e no PC C, escolha a Placa Time Code e clique em Conectar.</li>
+                <li>No PC A e no PC B, conecte a Placa Project Sync.</li>
+                <li>No PC A e no PC C, conecte a Placa Time Code principal.</li>
+                <li>No PC B e no PC C, conecte a Placa Time Code reserva.</li>
                 <li>No Project Sync, escolha PC A Mestre ou PC B Escravo. O PC A encontra o PC B pelo nome do dispositivo e inicia a conexão.</li>
-                <li>No canal Time Code, configure o PC A como Transmitter e o PC C como Receive.</li>
-                <li>A conexão continua totalmente local e não precisa de internet.</li>
+                <li>No Time Code, configure A e B como Transmitter e C como Receive. No PC C, escolha a saída MIDI já criada pelo usuário.</li>
+                <li>O switch prefere A, assume B se A falhar e não volta sozinho durante a música. Tudo funciona localmente, sem internet.</li>
               </ol>
             </div>
           </div>
@@ -1068,6 +1087,40 @@
                 <p class="muted">Nenhuma porta criada pela Hook Center.</p>
               </div>
               <p class="hook-midi-footnote muted">Envie MIDI para uma ponta e receba na outra. As portas temporárias permanecem até serem removidas, o serviço MIDI reiniciar ou o Windows reiniciar.</p>
+            </div>
+            <div class="card tools-midi-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Redundância de transporte</p><h2>MTC: PC A + PC B → PC C</h2></div>
+                <span id="hookMidiMtcBadge" class="badge">Escolha a saída</span>
+              </div>
+              <label class="hook-midi-name-field" for="hookMidiMtcOutputName">
+                Saída MIDI usada pelo VS Hook
+                <input id="hookMidiMtcOutputName" type="text" maxlength="160" value="Hook MIDI (A)" list="hookMidiMtcOutputOptions" autocomplete="off" />
+                <datalist id="hookMidiMtcOutputOptions"></datalist>
+                <small>No PC B, o REAPER recebe pela outra ponta. No PC C, o grandMA2 recebe pela outra ponta.</small>
+              </label>
+              <div class="actions hook-midi-actions">
+                <button id="hookMidiMtcSaveButton" class="primary-button" type="button">Usar esta saída MTC</button>
+              </div>
+              <div class="hook-midi-port-item">
+                <div class="hook-midi-port-names">
+                  <strong id="hookMidiMtcActiveSource">Aguardando PC A e PC B</strong>
+                  <span id="hookMidiMtcSourcesStatus">PC A: desconectado · PC B: desconectado</span>
+                </div>
+              </div>
+              <div class="actions hook-midi-actions">
+                <button id="hookMidiMtcAutoButton" class="secondary-button" type="button">Switch automático</button>
+                <button id="hookMidiMtcBackupButton" class="secondary-button" type="button">Testar PC B</button>
+                <button id="hookMidiMtcPrimaryButton" class="secondary-button" type="button">Voltar para PC A</button>
+              </div>
+              <ol class="tools-instructions-list">
+                <li>Configure nos dois computadores o mesmo FPS de timecode: 24, 25, 29,97 ou 30 FPS.</li>
+                <li>PC A e PC B devem manter o Transmitter Time Code ativo para o PC C.</li>
+                <li>No PC B, selecione a ponta receptora como fonte externa MTC do REAPER e ative Jam Sync/freewheel.</li>
+                <li>No PC C, selecione a ponta receptora como entrada MIDI do grandMA2. O VS Hook entrega somente A ou B por vez.</li>
+                <li>Se A falhar, C muda para B e permanece na reserva até o transporte parar.</li>
+              </ol>
+              <p class="hook-midi-footnote muted"><strong>Importante:</strong> a Hook Center não cria essa porta automaticamente. Crie o par acima no Windows 11 ou um barramento Hook MIDI no Driver IAC do macOS e depois escolha aqui a ponta de saída.</p>
             </div>
             <div id="hookMidiWindows10Card" class="card tools-midi-card hidden">
               <div class="tool-card-header">
@@ -1301,14 +1354,6 @@
       </section>
 
       <section id="statusView" class="view">
-        <div id="statusProgressCard" class="status-progress-area update-top-progress hidden" aria-live="polite">
-          <div class="progress-shell">
-            <div id="statusProgressBar" class="progress-bar"></div>
-          </div>
-          <div class="progress-row">
-            <span id="statusProgressText">0%</span>
-          </div>
-        </div>
         <div class="card">
           <h2>Status da Central</h2>
           <div class="status-grid">

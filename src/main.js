@@ -127,6 +127,9 @@ let directCableWatchSnapshot = null;
 let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
 let parallelTimecodeLanRelay = null;
+let mtcRedundantUiState = {
+  activeSource: '', activeRole: '', automatic: true, changedAt: ''
+};
 let copyProjectService = null;
 let hookMarkerResolumeTimer = null;
 let hookMarkerResolumeTickRunning = false;
@@ -1817,7 +1820,8 @@ async function listMacDirectCableAdapters() {
 
 const DIRECT_CABLE_CHANNELS = Object.freeze({
   projectSync: Object.freeze({ label: 'Project Sync', subnet: '192.168.77' }),
-  timecode: Object.freeze({ label: 'Time Code', subnet: '192.168.78' })
+  timecode: Object.freeze({ label: 'Time Code principal', subnet: '192.168.78' }),
+  timecodeBackup: Object.freeze({ label: 'Time Code reserva', subnet: '192.168.79' })
 });
 
 function normalizeDirectCableChannel(value) {
@@ -1831,7 +1835,9 @@ function migrateLegacyDirectCableConfiguration() {
   const legacyIp = String(store.get('directCable.ip') || '').trim();
   if (!legacyAdapterId || !legacyIp) return;
   const legacyConfiguredAt = store.get('directCable.configuredAt') || null;
-  for (const channel of Object.keys(DIRECT_CABLE_CHANNELS)) {
+  // A configuração antiga compartilhava somente Project Sync e Time Code.
+  // A placa reserva é um terceiro cabo físico e nunca pode herdar esse perfil.
+  for (const channel of ['projectSync', 'timecode']) {
     const existing = store.get(`directCable.${channel}`);
     if (existing && typeof existing === 'object' && existing.adapterId) continue;
     store.set(`directCable.${channel}`, {
@@ -1968,12 +1974,14 @@ async function getDirectCableState() {
       getStoredDirectCableChannel('projectSync'), adapters);
     const timecode = directCableChannelState(
       getStoredDirectCableChannel('timecode'), adapters);
+    const timecodeBackup = directCableChannelState(
+      getStoredDirectCableChannel('timecodeBackup'), adapters);
     return {
       ok: true,
       supported: true,
       platform: process.platform,
       adapters,
-      channels: { projectSync, timecode },
+      channels: { projectSync, timecode, timecodeBackup },
       // Campos legados mantidos durante a transição para renderers antigos.
       configuredAdapterId: projectSync.adapterId,
       configuredIp: projectSync.ip
@@ -2002,25 +2010,30 @@ async function configureDirectCable(payload = {}) {
   const adapter = current.adapters.find((item) => item.id === adapterId);
   if (!adapter) throw new Error('O adaptador selecionado não está mais disponível. Reconecte-o e tente novamente.');
   const currentConfiguration = current.channels?.[channel] || {};
-  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
-  const otherConfiguration = current.channels?.[otherChannel] || {};
-  const splittingLegacySharedAdapter =
-    currentConfiguration.legacyShared === true &&
-    otherConfiguration.legacyShared === true &&
-    currentConfiguration.adapterId === otherConfiguration.adapterId;
+  const otherChannels = Object.keys(DIRECT_CABLE_CHANNELS)
+    .filter((candidate) => candidate !== channel);
+  const splittingLegacySharedAdapter = currentConfiguration.legacyShared === true &&
+    otherChannels.some((candidate) => {
+      const other = current.channels?.[candidate] || {};
+      return other.legacyShared === true &&
+        currentConfiguration.adapterId === other.adapterId;
+    });
   const currentAdapter = findConfiguredDirectCableAdapter(
     currentConfiguration, current.adapters);
   if (currentConfiguration.adapterId && currentAdapter &&
       currentAdapter.id !== adapterId && !splittingLegacySharedAdapter) {
     throw new Error(`Desconecte primeiro a placa atual do ${channelInfo.label}. Depois conecte a nova placa.`);
   }
-  const otherAdapter = findConfiguredDirectCableAdapter(
-    otherConfiguration, current.adapters);
-  if ((otherAdapter && otherAdapter.id === adapterId) ||
-      (Array.isArray(otherConfiguration.candidateAdapterIds) &&
-        otherConfiguration.candidateAdapterIds.includes(adapterId)) ||
-      (!otherAdapter && String(otherConfiguration.adapterId || '') === adapterId)) {
-    throw new Error(`Esta placa já está conectada ao ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
+  for (const otherChannel of otherChannels) {
+    const otherConfiguration = current.channels?.[otherChannel] || {};
+    const otherAdapter = findConfiguredDirectCableAdapter(
+      otherConfiguration, current.adapters);
+    if ((otherAdapter && otherAdapter.id === adapterId) ||
+        (Array.isArray(otherConfiguration.candidateAdapterIds) &&
+          otherConfiguration.candidateAdapterIds.includes(adapterId)) ||
+        (!otherAdapter && String(otherConfiguration.adapterId || '') === adapterId)) {
+      throw new Error(`Esta placa já está conectada ao ${DIRECT_CABLE_CHANNELS[otherChannel].label}. Escolha outra placa para ${channelInfo.label}.`);
+    }
   }
   // O host permanece estável por computador, mas cada canal recebe uma
   // sub-rede própria para que duas placas do PC A não disputem a mesma rota.
@@ -2068,10 +2081,12 @@ async function disconnectDirectCable(payload = {}) {
   const configured = getStoredDirectCableChannel(channel);
   const adapterId = String(payload.adapterId || configured.adapterId || '').trim();
   if (!adapterId) throw new Error('Escolha o adaptador que será desconectado.');
-  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
-  const otherConfiguration = getStoredDirectCableChannel(otherChannel);
-  if (configured.legacyShared && otherConfiguration.legacyShared &&
-      otherConfiguration.adapterId === adapterId) {
+  const legacySharedSibling = Object.keys(DIRECT_CABLE_CHANNELS)
+    .filter((candidate) => candidate !== channel)
+    .map((candidate) => getStoredDirectCableChannel(candidate))
+    .find((other) => configured.legacyShared && other.legacyShared &&
+      other.adapterId === adapterId);
+  if (legacySharedSibling) {
     // A instalação antiga usava uma única placa para os dois canais. Ao
     // liberar apenas um deles, mantenha o IP na placa que continua em uso.
     store.delete(`directCable.${channel}`);
@@ -2254,6 +2269,62 @@ function hookMidiSavePorts(ports) {
   store.set('hookMidi.ports', Array.isArray(ports) ? ports.slice(0, 16) : []);
 }
 
+function hookMidiMtcOutputName() {
+  return String(store.get('hookMidi.mtcOutputName') || 'Hook MIDI (A)')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160) || 'Hook MIDI (A)';
+}
+
+function hookMidiSendNativeCommand(command) {
+  const body = Buffer.from(JSON.stringify(command || {}), 'utf8');
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: 47830,
+      path: '/command',
+      method: 'POST',
+      timeout: 1500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': body.length,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let data = null;
+        try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+        if (response.statusCode >= 200 && response.statusCode < 300 &&
+            data?.ok !== false) {
+          resolve(data || { ok: true });
+        } else {
+          reject(new Error(data?.error ||
+            'A extensão VS Hook não aceitou a configuração MTC.'));
+        }
+      });
+    });
+    request.once('timeout', () => request.destroy(
+      new Error('Abra o REAPER e a extensão VS Hook antes de configurar o MTC.')));
+    request.once('error', reject);
+    request.end(body);
+  });
+}
+
+async function setHookMidiMtcOutput(payload = {}) {
+  const name = String(payload.name || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+  if (!name) throw new Error('Escolha ou informe uma porta MIDI de saída.');
+  await hookMidiSendNativeCommand({ type: 'mtc_output_set', name });
+  store.set('hookMidi.mtcOutputName', name);
+  return { ok: true, name, state: await getHookMidiState() };
+}
+
 function hookMidiFindConsole() {
   if (process.platform !== 'win32') return '';
   const candidates = [];
@@ -2398,7 +2469,10 @@ async function getHookMidiState() {
       consoleInstalled: true,
       serviceRunning: true,
       busy: false,
-      ports: []
+      ports: [],
+      mtcOutputName: hookMidiMtcOutputName(),
+      mtcSwitch: timecodeLanRelay?.getMtcSwitchState?.() ||
+        mtcRedundantUiState
     };
   }
   const build = hookMidiWindowsBuild();
@@ -2426,6 +2500,9 @@ async function getHookMidiState() {
     serviceRunning: service.running,
     busy: hookMidiOperationInProgress,
     ports,
+    mtcOutputName: hookMidiMtcOutputName(),
+    mtcSwitch: timecodeLanRelay?.getMtcSwitchState?.() ||
+      mtcRedundantUiState,
     downloadUrl: HOOK_MIDI_DOWNLOAD_URL,
     loopMidiUrl: HOOK_MIDI_LOOPMIDI_URL
   };
@@ -2695,9 +2772,10 @@ function getSelectedBridgeNetwork(config = readBridgeConfig()) {
   const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
   const reservedCableIps = new Set([
     getDirectCableChannelIp('projectSync'),
-    getDirectCableChannelIp('timecode')
+    getDirectCableChannelIp('timecode'),
+    getDirectCableChannelIp('timecodeBackup')
   ].filter(Boolean));
-  // As duas placas dedicadas ficam reservadas para redundância. O QR Code e
+  // As placas dedicadas ficam reservadas para redundância. O QR Code e
   // os apps continuam anunciando Wi-Fi/LAN normal para o celular.
   const appNetworks = networks.filter((item) => !reservedCableIps.has(item.ip));
   const preferredIp = String(config?.preferredNetworkIp || '').trim();
@@ -3001,6 +3079,13 @@ async function restartBridgeServersNow() {
     isLicenseActive: isVsHookLicenseActiveForBridge,
     canUsePeerAddress: relayCanUsePeerAddress,
     onPeerConnectionChanged: relayPeerConnectionChanged,
+    onMtcSwitchChanged: (state) => {
+      mtcRedundantUiState = { ...mtcRedundantUiState, ...(state || {}) };
+      if (isValidWindow(mainWindow)) {
+        mainWindow.webContents.send('hook-midi-mtc-switch',
+          timecodeLanRelay?.getMtcSwitchState?.() || mtcRedundantUiState);
+      }
+    },
   });
   parallelTimecodeLanRelay = createTimecodeLanRelay({
     instanceId: timecodeLanDeviceId,
@@ -6495,6 +6580,14 @@ ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
 ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-open-components', () => installHookMidiComponents());
+ipcMain.handle('hook-midi-set-mtc-output', (_event, payload) =>
+  setHookMidiMtcOutput(payload || {}));
+ipcMain.handle('hook-midi-mtc-switch-source', (_event, payload) => {
+  if (!timecodeLanRelay?.setMtcSwitchSource) {
+    throw new Error('O relay MTC ainda não está ativo.');
+  }
+  return timecodeLanRelay.setMtcSwitchSource(payload?.source || 'auto');
+});
 ipcMain.handle('hook-marker-get-state', () => getHookMarkerState());
 ipcMain.handle('hook-marker-save-settings', (_event, payload = {}) => ({
   ok: true,

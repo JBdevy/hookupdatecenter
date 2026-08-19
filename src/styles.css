@@ -2800,10 +2800,6 @@ body.lyrics-mode .content {
   margin-top: 14px;
 }
 
-.status-progress-area {
-  margin-top: 14px;
-}
-
 #statusView .installed-version-line {
   margin-top: 8px;
 }
@@ -2906,19 +2902,16 @@ body.lyrics-mode .content {
   flex: 0 0 auto !important;
 }
 
-.inline-progress-area,
-.status-progress-area {
+.inline-progress-area {
   margin-top: 8px !important;
 }
 
-.inline-progress-area .progress-shell,
-.status-progress-area .progress-shell {
+.inline-progress-area .progress-shell {
   height: 8px !important;
   border-radius: 999px !important;
 }
 
-.inline-progress-area .progress-row,
-.status-progress-area .progress-row {
+.inline-progress-area .progress-row {
   margin-top: 4px !important;
   font-size: 12px !important;
 }
@@ -7014,8 +7007,8 @@ body.previous-mode .content > .view.active {
   transition: background .16s linear !important;
 }
 
-/* Progresso de atualização sempre visível no alto das abas. O botão de
-   download volta a ser somente uma ação e não funciona como barra. */
+/* Progresso de atualização visível somente no alto da aba Atualização. O
+   botão de download volta a ser somente uma ação e não funciona como barra. */
 .update-top-progress {
   position: sticky;
   top: 0;

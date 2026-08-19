@@ -8,6 +8,9 @@ const pathUtil = require('path')
 const DISCOVERY_PORT = 47833
 const DISCOVER_MAGIC = 'VSHOOK_TIMECODE_DISCOVER_V1'
 const OFFER_MAGIC = 'VSHOOK_TIMECODE_OFFER_V1'
+const MTC_REDUNDANT_MAGIC = 'VSHOOK_MTC_REDUNDANT_V1'
+const MTC_REDUNDANT_ACK_MAGIC = 'VSHOOK_MTC_REDUNDANT_ACK_V1'
+const MTC_SOURCE_TIMEOUT_MS = 280
 const PROJECT_SYNC_PROTOCOL_VERSION = 2
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 const LOCAL_STATUS_INTERVAL_MS = 18
@@ -695,6 +698,10 @@ function createTimecodeLanRelay(options = {}) {
     typeof options.onPeerConnectionChanged === 'function'
       ? options.onPeerConnectionChanged
       : () => {}
+  const onMtcSwitchChanged =
+    typeof options.onMtcSwitchChanged === 'function'
+      ? options.onMtcSwitchChanged
+      : () => {}
   // main.js deve devolver uma pasta privada e persistente da Hook Center,
   // atualmente app.getPath('userData')/project-sync-staging. O relay nunca
   // aceita uma raiz de staging vinda da rede.
@@ -736,6 +743,12 @@ function createTimecodeLanRelay(options = {}) {
   let projectSyncStagingCleanupPromise = null
   const projectSyncProtocolNotices = new Set()
   const pairingCandidateNotices = new Set()
+  const mtcRedundantSources = new Map()
+  let mtcActiveRole = ''
+  let mtcBackupLatched = false
+  let mtcPrimaryStableSince = 0
+  let lastMtcRedundantAckAt = 0
+  let mtcManualRole = ''
   function projectSyncRole(status) {
     const role = String(status?.projectSyncRole || '').trim().toLowerCase()
     return role === 'primary' || role === 'secondary' ? role : ''
@@ -978,6 +991,10 @@ function createTimecodeLanRelay(options = {}) {
         Math.trunc(Number(transport.playState) || 0)),
       position: Math.max(0, Number(transport.position) || 0),
       sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
+      audioHealthy: transport.audioHealthy !== false,
+      frameRate: Math.max(20, Math.min(60,
+        Number(transport.frameRate) || 30)),
+      dropFrame: transport.dropFrame === true,
     }
   }
 
@@ -2826,6 +2843,141 @@ function createTimecodeLanRelay(options = {}) {
     for (const address of getBroadcastAddresses()) sendUdp(payload, address)
   }
 
+  function redundantMtcRole(status) {
+    const role = String(status?.redundancyRole ||
+      status?.projectSyncRole || '').trim().toLowerCase()
+    return role === 'primary' ? 'a' : role === 'secondary' ? 'b' : ''
+  }
+
+  function broadcastRedundantMtc(status) {
+    if (relayChannel !== 'parallel' || status?.mode !== 'transmitter') return
+    const sourceRole = redundantMtcRole(status)
+    const transport = transportSnapshot(status.transport)
+    if (!sourceRole || !transport || !isPairCode(status.code)) return
+    const payload = {
+      magic: MTC_REDUNDANT_MAGIC,
+      version: 1,
+      code: String(status.code || ''),
+      sourceId: instanceId,
+      sourceName: deviceName(),
+      sourceRole,
+      replyPort: discoveryPort,
+      sentAtMs: Date.now(),
+      transport,
+    }
+    for (const address of getBroadcastAddresses()) {
+      // O receptor PC C usa a porta principal 47833. Os transmissores
+      // paralelos A/B escutam em 47834 e nao consomem o proprio anuncio.
+      sendUdp(payload, address, DISCOVERY_PORT)
+    }
+  }
+
+  function chooseRedundantMtcSource(now) {
+    const primary = mtcRedundantSources.get('a')
+    const backup = mtcRedundantSources.get('b')
+    const primaryPlaying = Number(primary?.transport?.playState) !== 0
+    const backupPlaying = Number(backup?.transport?.playState) !== 0
+    // Parado, alguns drivers fecham o dispositivo por preferencia do REAPER;
+    // isso nao e falha. Durante playback, se A perde audio enquanto B continua,
+    // A deixa imediatamente de ser uma fonte valida mesmo com rede ativa.
+    const primaryOperational = primary?.transport?.audioHealthy !== false ||
+      (!primaryPlaying && !backupPlaying)
+    const backupOperational = backup?.transport?.audioHealthy !== false
+    const primaryFresh = !!primary &&
+      now - primary.receivedAt <= MTC_SOURCE_TIMEOUT_MS &&
+      primaryOperational
+    const backupFresh = !!backup &&
+      now - backup.receivedAt <= MTC_SOURCE_TIMEOUT_MS &&
+      backupOperational
+    if (mtcManualRole === 'a' && primaryFresh) return primary
+    if (mtcManualRole === 'b' && backupFresh) return backup
+    if (primaryFresh) {
+      if (!mtcPrimaryStableSince) mtcPrimaryStableSince = now
+    } else {
+      mtcPrimaryStableSince = 0
+    }
+
+    if (mtcBackupLatched) {
+      // Durante o show nunca retorna sozinho para A. O retorno automatico so
+      // acontece parado e depois de A permanecer estavel por dois segundos.
+      if (primaryFresh && !backupPlaying && !primaryPlaying &&
+          now - mtcPrimaryStableSince >= 2000) {
+        mtcBackupLatched = false
+      } else if (backupFresh) {
+        return backup
+      } else if (primaryFresh) {
+        // Se a propria reserva cair, A volta a ser melhor que perder o MTC.
+        mtcBackupLatched = false
+        return primary
+      }
+    }
+    if (primaryFresh) return primary
+    if (backupFresh) {
+      mtcBackupLatched = true
+      return backup
+    }
+    return null
+  }
+
+  async function handleRedundantMtc(message, rinfo) {
+    if (relayChannel !== 'main' || !licenseIsActive()) return
+    const status = await readLocalStatus()
+    if (status?.mode !== 'receive' || !isPairCode(status.code) ||
+        String(message.code || '') !== String(status.code)) return
+    const sourceRole = String(message.sourceRole || '').trim().toLowerCase()
+    const sourceId = String(message.sourceId || '').trim().toLowerCase()
+    const transport = transportSnapshot(message.transport)
+    if ((sourceRole !== 'a' && sourceRole !== 'b') ||
+        !/^[a-f0-9]{32,128}$/.test(sourceId) || !transport) return
+    const now = Date.now()
+    mtcRedundantSources.set(sourceRole, {
+      sourceRole,
+      sourceId,
+      sourceName: safeName(message.sourceName,
+        sourceRole === 'a' ? 'PC A' : 'PC B'),
+      transport,
+      receivedAt: now,
+    })
+    sendUdp({
+      magic: MTC_REDUNDANT_ACK_MAGIC,
+      version: 1,
+      receiverId: instanceId,
+      sourceId,
+      activeRole: mtcActiveRole,
+    }, normalizePeerAddress(rinfo?.address),
+    Math.max(1, Math.min(65535,
+      Number(message.replyPort) || 47834)))
+    const active = chooseRedundantMtcSource(now)
+    if (!active || active.sourceRole !== sourceRole) return
+    const sourceChanged = mtcActiveRole !== active.sourceRole
+    mtcActiveRole = active.sourceRole
+    if (sourceChanged) {
+      try {
+        onMtcSwitchChanged({
+          activeSource: active.sourceRole === 'a' ? 'PC A' : 'PC B',
+          activeRole: active.sourceRole,
+          automatic: !mtcManualRole,
+          changedAt: new Date().toISOString(),
+        })
+      } catch (_) {}
+    }
+    await sendLocalCommand({
+      type: 'timecode_transport_sync',
+      playState: active.transport.playState,
+      position: active.transport.position,
+      sequence: active.transport.sequence,
+      controlSequence: active.transport.controlSequence,
+      sampledAtMs: active.transport.sampledAtMs,
+      audioHealthy: true,
+      frameRate: active.transport.frameRate,
+      dropFrame: active.transport.dropFrame,
+      mtcTransport: true,
+      mtcSource: active.sourceRole === 'a' ? 'PC A' : 'PC B',
+      mtcSourceChanged: sourceChanged,
+      __vshookLanRemote: true,
+    })
+  }
+
   async function pollRemoteProjectSyncPreflight({
     address,
     port,
@@ -3261,6 +3413,20 @@ function createTimecodeLanRelay(options = {}) {
     try { message = JSON.parse(buffer.toString('utf8')) } catch (_) { return }
     if (!message || typeof message !== 'object') return
 
+    if (message.magic === MTC_REDUNDANT_MAGIC) {
+      await handleRedundantMtc(message, rinfo)
+      return
+    }
+    if (message.magic === MTC_REDUNDANT_ACK_MAGIC) {
+      if (relayChannel !== 'parallel' ||
+          String(message.sourceId || '').trim().toLowerCase() !== instanceId) {
+        return
+      }
+      lastMtcRedundantAckAt = Date.now()
+      await notifyLocalPeer(true, 'PC C (MTC redundante)')
+      return
+    }
+
     if (message.magic === discoverMagic) {
       if (String(message.transmitterId || '') === instanceId || !licenseIsActive()) return
       const status = await readLocalStatus()
@@ -3377,8 +3543,15 @@ function createTimecodeLanRelay(options = {}) {
       // produz e aplica o payload generico (cores, Teleprompt e demais ajustes).
       const rawTransport = packet.transport || status.transport || {}
       const audioHealthy = transportAudioHealthy(status, rawTransport)
-      const transport = projectSyncTransportForSend(
-        status, transmitterPeer, rawTransport)
+      // Em redundancia MTC, o relogio continuo chega pelo switch A/B. A
+      // sessao HTTP do PC A continua levando apenas os comandos semanticos
+      // (Parts, fila, selecao etc.), sem criar um segundo transporte paralelo.
+      const mtcRole = relayChannel === 'parallel'
+        ? redundantMtcRole(status) : ''
+      const transport = mtcRole
+        ? null
+        : projectSyncTransportForSend(
+          status, transmitterPeer, rawTransport)
       const transportSequence = transport
         ? safeSequence(transport.sequence)
         : (transmitterPeer.lastTransportSequence || 0)
@@ -3482,6 +3655,25 @@ function createTimecodeLanRelay(options = {}) {
         if (receiverSession) resetReceiverSession(true)
         clearProjectSyncTransientState()
         pairingCandidateNotices.clear()
+        return
+      }
+
+      // A e B anunciam seus relogios mesmo quando o C ja esta pareado com A.
+      // O canal reserva nao precisa tomar a sessao HTTP para permanecer pronto.
+      broadcastRedundantMtc(status)
+      if (relayChannel === 'parallel' && lastMtcRedundantAckAt &&
+          Date.now() - lastMtcRedundantAckAt > RECEIVER_TIMEOUT_MS &&
+          !transmitterPeer?.connected) {
+        lastMtcRedundantAckAt = 0
+        await notifyLocalPeer(false)
+      }
+
+      // O PC B e somente a fonte de relogio reserva. Ele nunca disputa com A
+      // o peer HTTP do PC C nem encaminha comandos semanticos locais.
+      if (relayChannel === 'parallel' && status.mode === 'transmitter' &&
+          redundantMtcRole(status) === 'b') {
+        if (transmitterPeer) resetTransmitterPeer(false)
+        if (receiverSession) resetReceiverSession(false)
         return
       }
 
@@ -4191,6 +4383,11 @@ function tokenMatches(left, right) {
         sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
         audioHealthy: transportAudioHealthy(payload, transport),
         explicitControl: transport.explicitControl === true,
+        frameRate: Math.max(20, Math.min(60,
+          Number(transport.frameRate) || 30)),
+        dropFrame: transport.dropFrame === true,
+        mtcTransport: true,
+        mtcSource: 'PC A',
         ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
         __vshookLanRemote: true,
       }))
@@ -4327,6 +4524,11 @@ function tokenMatches(left, right) {
     projectSyncProtocolNotices.clear()
     localStatus = null
     lastNotifiedPeer = ''
+    mtcRedundantSources.clear()
+    mtcActiveRole = ''
+    mtcBackupLatched = false
+    mtcPrimaryStableSince = 0
+    mtcManualRole = ''
     directDiscoveryRunning = false
     const currentSocket = socket
     socket = null
@@ -4336,7 +4538,36 @@ function tokenMatches(left, right) {
     })
   }
 
-  return { start, stop, handleHttp }
+  function getMtcSwitchState() {
+    const now = Date.now()
+    const sourceState = (role) => {
+      const source = mtcRedundantSources.get(role)
+      return {
+        connected: !!source && now - source.receivedAt <=
+          MTC_SOURCE_TIMEOUT_MS * 4,
+        name: source?.sourceName || '',
+        lastSeenMs: source ? Math.max(0, now - source.receivedAt) : 0,
+      }
+    }
+    return {
+      activeSource: mtcActiveRole === 'a' ? 'PC A' :
+        mtcActiveRole === 'b' ? 'PC B' : '',
+      activeRole: mtcActiveRole,
+      manualRole: mtcManualRole,
+      backupLatched: mtcBackupLatched,
+      primary: sourceState('a'),
+      backup: sourceState('b'),
+    }
+  }
+
+  function setMtcSwitchSource(value) {
+    const role = String(value || '').trim().toLowerCase()
+    mtcManualRole = role === 'a' || role === 'b' ? role : ''
+    if (!mtcManualRole) mtcBackupLatched = false
+    return getMtcSwitchState()
+  }
+
+  return { start, stop, handleHttp, getMtcSwitchState, setMtcSwitchSource }
 }
 
 module.exports = { createTimecodeLanRelay }

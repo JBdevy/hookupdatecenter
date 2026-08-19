@@ -16,6 +16,7 @@ let copyProjectState = null;
 let copyProjectSourceFolder = null;
 let copyProjectDestinationFolder = null;
 let combinedDownloadInProgress = false;
+let directedDownloadReady = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
@@ -566,34 +567,26 @@ function updateDownloadCompactMode() {
 
 function setProgressVisible(visible) {
   $('#homeProgressArea')?.classList.toggle('hidden', !visible);
-  $('#statusProgressCard')?.classList.toggle('hidden', !visible);
   updateDownloadCompactMode();
 }
 
 function resetVsHookProgress() {
-  ['#progressBar', '#statusProgressBar'].forEach((selector) => {
-    const el = $(selector);
-    if (el) el.style.width = '0%';
-  });
-  ['#progressText', '#statusProgressText'].forEach((selector) => {
-    const el = $(selector);
-    if (el) el.textContent = '0%';
-  });
+  const progressBar = $('#progressBar');
+  if (progressBar) progressBar.style.width = '0%';
+  const progressText = $('#progressText');
+  if (progressText) progressText.textContent = '0%';
   $('#installButton')?.classList.add('hidden');
   $('#statusInstallButton')?.classList.add('hidden');
 }
 
 function updateVsHookProgress(progress) {
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
-  ['#progressBar', '#statusProgressBar'].forEach((selector) => {
-    const el = $(selector);
-    if (el) el.style.width = `${safeProgress}%`;
-  });
-  ['#progressText', '#statusProgressText'].forEach((selector) => {
-    const el = $(selector);
-    if (el) el.textContent = `${safeProgress}%`;
-  });
-  if (safeProgress >= 100 && !combinedDownloadInProgress) {
+  const progressBar = $('#progressBar');
+  if (progressBar) progressBar.style.width = `${safeProgress}%`;
+  const progressText = $('#progressText');
+  if (progressText) progressText.textContent = `${safeProgress}%`;
+  if (safeProgress >= 100 &&
+      (directedDownloadReady || combinedDownloadReady.package)) {
     $('#installButton')?.classList.remove('hidden');
     $('#statusInstallButton')?.classList.remove('hidden');
   }
@@ -606,6 +599,7 @@ async function startVsHookDownload(updateOverride = null) {
     if (!(await ensureDeviceName())) return;
     setProgressVisible(true);
     resetVsHookProgress();
+    directedDownloadReady = false;
     const buttons = [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean);
     buttons.forEach((button) => {
       button.disabled = true;
@@ -623,6 +617,8 @@ async function startVsHookDownload(updateOverride = null) {
       // guarda extensão + instalador juntos para o botão Instalar executar o
       // mesmo fluxo seguro da atualização oficial.
       await window.hookUpdateCenter.cacheUpdatePackage({ update: updateOverride });
+      directedDownloadReady = true;
+      updateVsHookProgress(100);
       // Conserva exatamente a publicação direcionada que acabou de ser
       // guardada. A referência durável fica no processo principal/Store; o
       // botão Instalar não depende mais do estado online desta tela.
@@ -790,6 +786,7 @@ async function installVsHookDownloadedUpdate() {
       resetVsHookProgress();
       showModal({ title: 'Instalação concluída', message: `${result.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
     }
+    directedDownloadReady = false;
   } catch (error) {
     showModal({ title: 'Erro ao instalar', message: friendlyError(error, 'Não foi possível instalar a atualização.'), type: 'error' });
   }
@@ -1110,7 +1107,7 @@ const directCableUiChannels = {
     result: '#directCableProjectSyncResult'
   },
   timecode: {
-    label: 'Time Code',
+    label: 'Time Code principal',
     select: '#directCableTimecodeAdapterSelect',
     details: '#directCableTimecodeDetails',
     badge: '#directCableTimecodeBadge',
@@ -1118,6 +1115,16 @@ const directCableUiChannels = {
     restart: '#directCableTimecodeRestartButton',
     disconnect: '#directCableTimecodeDisconnectButton',
     result: '#directCableTimecodeResult'
+  },
+  timecodeBackup: {
+    label: 'Time Code reserva',
+    select: '#directCableTimecodeBackupAdapterSelect',
+    details: '#directCableTimecodeBackupDetails',
+    badge: '#directCableTimecodeBackupBadge',
+    configure: '#directCableTimecodeBackupConfigureButton',
+    restart: '#directCableTimecodeBackupRestartButton',
+    disconnect: '#directCableTimecodeBackupDisconnectButton',
+    result: '#directCableTimecodeBackupResult'
   }
 };
 
@@ -1130,28 +1137,38 @@ function renderDirectCableChannel(channel, state = directCableState) {
   const previous = select.value;
   const adapters = Array.isArray(state?.adapters) ? state.adapters : [];
   const configured = state?.channels?.[channel] || {};
-  const otherChannel = channel === 'projectSync' ? 'timecode' : 'projectSync';
-  const otherLabel = directCableUiChannels[otherChannel].label;
-  const otherConfigured = state?.channels?.[otherChannel] || {};
-  const adapterBelongsToOtherChannel = (adapter) => !!adapter && (
-    adapter.id === otherConfigured.detectedAdapterId ||
-    (Array.isArray(otherConfigured.candidateAdapterIds) &&
-      otherConfigured.candidateAdapterIds.includes(adapter.id)) ||
-    (!otherConfigured.detectedAdapterId &&
-      adapter.id === otherConfigured.adapterId));
+  const otherChannels = Object.keys(directCableUiChannels)
+    .filter((candidate) => candidate !== channel);
+  const adapterOtherChannel = (adapter) => {
+    if (!adapter) return '';
+    return otherChannels.find((candidate) => {
+      const other = state?.channels?.[candidate] || {};
+      return adapter.id === other.detectedAdapterId ||
+        (Array.isArray(other.candidateAdapterIds) &&
+          other.candidateAdapterIds.includes(adapter.id)) ||
+        (!other.detectedAdapterId && adapter.id === other.adapterId);
+    }) || '';
+  };
   const configuredAdapter = adapters.find((item) =>
     item.id === configured.detectedAdapterId) ||
     (!configured.detectedAdapterId && !configured.adapterAmbiguous
       ? adapters.find((item) => item.id === configured.adapterId) : null);
   select.innerHTML = adapters.length
-    ? adapters.map((adapter) => `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}${adapterBelongsToOtherChannel(adapter) ? ` — em uso no ${escapeHtml(otherLabel)}` : ''}</option>`).join('')
+    ? adapters.map((adapter) => {
+      const owner = adapterOtherChannel(adapter);
+      const ownerLabel = owner ? directCableUiChannels[owner].label : '';
+      return `<option value="${escapeHtml(adapter.id)}">${escapeHtml(adapter.name)}${adapter.description && adapter.description !== adapter.name ? ` — ${escapeHtml(adapter.description)}` : ''}${ownerLabel ? ` — em uso no ${escapeHtml(ownerLabel)}` : ''}</option>`;
+    }).join('')
     : '<option value="">Nenhum adaptador Ethernet encontrado</option>';
   const wanted = adapters.some((item) => item.id === previous)
     ? previous
     : (configuredAdapter?.id || adapters[0]?.id || '');
   select.value = wanted;
   const adapter = adapters.find((item) => item.id === wanted);
-  const selectedBelongsToOtherChannel = adapterBelongsToOtherChannel(adapter);
+  const selectedOtherChannel = adapterOtherChannel(adapter);
+  const selectedBelongsToOtherChannel = !!selectedOtherChannel;
+  const otherLabel = selectedOtherChannel
+    ? directCableUiChannels[selectedOtherChannel].label : '';
   const hasConfiguration = !!configured.ip;
   const addressReady = !!configuredAdapter &&
     configuredAdapter.ipv4 === configured.ip;
@@ -1209,6 +1226,7 @@ function renderDirectCableChannel(channel, state = directCableState) {
 function renderDirectCableState(state = directCableState) {
   renderDirectCableChannel('projectSync', state);
   renderDirectCableChannel('timecode', state);
+  renderDirectCableChannel('timecodeBackup', state);
 }
 
 async function refreshDirectCableState() {
@@ -1558,6 +1576,9 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
   const portsCard = $('#hookMidiPortsCard');
   const portsList = $('#hookMidiPortsList');
   const countBadge = $('#hookMidiPortCountBadge');
+  const mtcOutputInput = $('#hookMidiMtcOutputName');
+  const mtcOutputOptions = $('#hookMidiMtcOutputOptions');
+  const mtcBadge = $('#hookMidiMtcBadge');
   const ports = Array.isArray(data.ports) ? data.ports : [];
   const busy = hookMidiBusy || data.busy === true;
   const macos = data.macos === true || data.platform === 'darwin';
@@ -1624,7 +1645,94 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
         </div>`).join('')
       : '<p class="muted">Nenhuma porta criada pela Hook Center nesta sessão do Windows.</p>';
   }
+  if (mtcOutputOptions) {
+    mtcOutputOptions.innerHTML = ports.map((port) =>
+      `<option value="${escapeHtml(port.endpointA || `${port.rootName} (A)`)}"></option>`).join('');
+  }
+  if (mtcOutputInput && document.activeElement !== mtcOutputInput) {
+    mtcOutputInput.value = String(data.mtcOutputName ||
+      (macos ? 'Hook MIDI' : 'Hook MIDI (A)'));
+  }
+  if (mtcBadge) {
+    const activeSource = String(data.mtcSwitch?.activeSource || '');
+    mtcBadge.textContent = activeSource
+      ? `MTC ativo: ${activeSource}`
+      : data.mtcOutputName
+        ? `Saída: ${data.mtcOutputName}` : 'Escolha a saída';
+  }
+  renderHookMidiMtcSwitch(data.mtcSwitch || {});
   updateHookMidiNamePreview();
+}
+
+function renderHookMidiMtcSwitch(state = {}) {
+  const active = $('#hookMidiMtcActiveSource');
+  const status = $('#hookMidiMtcSourcesStatus');
+  const autoButton = $('#hookMidiMtcAutoButton');
+  const backupButton = $('#hookMidiMtcBackupButton');
+  const primaryButton = $('#hookMidiMtcPrimaryButton');
+  const activeSource = String(state.activeSource || '');
+  const manualRole = String(state.manualRole || '');
+  if (active) {
+    active.textContent = activeSource
+      ? `Fonte entregue ao grandMA2: ${activeSource}`
+      : 'Aguardando PC A e PC B';
+  }
+  if (status) {
+    status.textContent = `PC A: ${state.primary?.connected ? 'conectado' : 'desconectado'} · ` +
+      `PC B: ${state.backup?.connected ? 'conectado' : 'desconectado'}`;
+  }
+  autoButton?.classList.toggle('active', !manualRole);
+  backupButton?.classList.toggle('active', manualRole === 'b');
+  primaryButton?.classList.toggle('active', manualRole === 'a');
+}
+
+async function setHookMidiMtcSwitchSource(source) {
+  try {
+    const state = await window.hookUpdateCenter.setHookMidiMtcSwitchSource({ source });
+    hookMidiState = { ...(hookMidiState || {}), mtcSwitch: state };
+    renderHookMidiAvailability();
+  } catch (error) {
+    showModal({
+      title: 'Switch MTC',
+      message: hookMidiErrorMessage(error,
+        'Não foi possível alterar a fonte MTC.'),
+      type: 'error'
+    });
+  }
+}
+
+async function saveHookMidiMtcOutputFromUi() {
+  const button = $('#hookMidiMtcSaveButton');
+  const name = String($('#hookMidiMtcOutputName')?.value || '').trim();
+  if (!name || hookMidiBusy) return;
+  hookMidiBusy = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Configurando...';
+  }
+  try {
+    const result = await window.hookUpdateCenter.setHookMidiMtcOutput({ name });
+    hookMidiState = result?.state || hookMidiState;
+    renderHookMidiAvailability();
+    showModal({
+      title: 'Saída MTC configurada',
+      message: `O VS Hook usará ${result.name}. A porta precisa permanecer ativa durante o show.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({
+      title: 'Não foi possível configurar o MTC',
+      message: hookMidiErrorMessage(error,
+        'Abra o REAPER, crie a porta MIDI e tente novamente.'),
+      type: 'error'
+    });
+  } finally {
+    hookMidiBusy = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Usar esta saída MTC';
+    }
+  }
 }
 
 function hookMidiErrorMessage(error, fallback) {
@@ -2169,15 +2277,29 @@ function setupToolsSubmenu() {
   $('#directCableRefreshButton')?.addEventListener('click', refreshDirectCableState);
   $('#directCableProjectSyncAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('projectSync', directCableState));
   $('#directCableTimecodeAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('timecode', directCableState));
+  $('#directCableTimecodeBackupAdapterSelect')?.addEventListener('change', () => renderDirectCableChannel('timecodeBackup', directCableState));
   $('#directCableProjectSyncConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('projectSync'));
   $('#directCableTimecodeConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('timecode'));
+  $('#directCableTimecodeBackupConfigureButton')?.addEventListener('click', () => configureDirectCableFromUi('timecodeBackup'));
   $('#directCableProjectSyncRestartButton')?.addEventListener('click', () => restartDirectCableFromUi('projectSync'));
   $('#directCableTimecodeRestartButton')?.addEventListener('click', () => restartDirectCableFromUi('timecode'));
+  $('#directCableTimecodeBackupRestartButton')?.addEventListener('click', () => restartDirectCableFromUi('timecodeBackup'));
   $('#directCableProjectSyncDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('projectSync'));
   $('#directCableTimecodeDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('timecode'));
+  $('#directCableTimecodeBackupDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('timecodeBackup'));
   $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
   $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
   $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
+  $('#hookMidiMtcSaveButton')?.addEventListener('click', saveHookMidiMtcOutputFromUi);
+  $('#hookMidiMtcOutputName')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') saveHookMidiMtcOutputFromUi();
+  });
+  $('#hookMidiMtcAutoButton')?.addEventListener('click', () =>
+    setHookMidiMtcSwitchSource('auto'));
+  $('#hookMidiMtcBackupButton')?.addEventListener('click', () =>
+    setHookMidiMtcSwitchSource('b'));
+  $('#hookMidiMtcPrimaryButton')?.addEventListener('click', () =>
+    setHookMidiMtcSwitchSource('a'));
   $('#hookMidiPortName')?.addEventListener('input', updateHookMidiNamePreview);
   $('#hookMidiPortName')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') createHookMidiPortFromUi();
@@ -2225,6 +2347,10 @@ function setupToolsSubmenu() {
   $('#hookMarkerOffset')?.addEventListener('input', renderHookMarkerPreview);
   $('#hookMarkerResolumeFirstColumn')?.addEventListener('input', renderHookMarkerPreview);
   window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
+  window.hookUpdateCenter.onHookMidiMtcSwitch((state) => {
+    hookMidiState = { ...(hookMidiState || {}), mtcSwitch: state || {} };
+    renderHookMidiAvailability();
+  });
   window.hookUpdateCenter.onHookMarkerRuntimeState(renderHookMarkerRuntimeState);
   window.hookUpdateCenter.onDirectCableStatus?.((state) => {
     directCableState = state;
@@ -4514,9 +4640,16 @@ async function init() {
       showModal({ title:'Cliente teste', message:'Nenhuma atualização teste disponível para este computador.', type:'info' });
       return;
     }
+    setView('home');
     startVsHookDownload(testUpdate);
   });
-  $('#installButton').addEventListener('click', installCombinedDownloadedUpdates);
+  $('#installButton').addEventListener('click', () => {
+    if (directedDownloadReady) {
+      installVsHookDownloadedUpdate();
+      return;
+    }
+    installCombinedDownloadedUpdates();
+  });
   $('#statusInstallButton')?.addEventListener('click', installVsHookDownloadedUpdate);
 
   $('#hookCenterLearnButton')?.addEventListener('click', async () => {
