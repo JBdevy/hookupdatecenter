@@ -1221,6 +1221,7 @@ function createTimecodeLanRelay(options = {}) {
       sequence: safeSequence(
         apply?.sequence ?? status?.projectSyncApplySequence),
       automatic: apply?.automatic === true,
+      differencePlan: String(apply?.differencePlan || '').slice(0, 128 * 1024),
     }
   }
 
@@ -1980,6 +1981,7 @@ function createTimecodeLanRelay(options = {}) {
       peerName: peer.name || 'PC B',
       automatic: peer.automatic === true,
       supportsSourceMap: true,
+      differencePlan: String(peer.differencePlan || '').slice(0, 128 * 1024),
     })
     if (!accepted) {
       throw new Error('A extensão do PC A não iniciou a preparação do projeto.')
@@ -2767,7 +2769,8 @@ function createTimecodeLanRelay(options = {}) {
     lastProjectSyncApplyKey = key
     projectSyncBundlePullPromise = downloadProjectSyncBundle(
       status, { ...projectSyncApplySession,
-        automatic: apply.automatic === true })
+        automatic: apply.automatic === true,
+        differencePlan: apply.differencePlan })
       .catch(() => {})
       .finally(() => { projectSyncBundlePullPromise = null })
   }
