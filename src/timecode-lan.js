@@ -42,6 +42,7 @@ const PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS = 30 * 60 * 1000
 const PROJECT_SYNC_LOCAL_RPP_MAX_BYTES = 128 * 1024 * 1024
 const PROJECT_SYNC_LOCAL_RPP_MAX_REFERENCES = 65536
 const PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS = 32768
+const PROJECT_SYNC_LIVE_MANIFEST_BYTES = 640 * 1024
 
 // A ponta LAN e um servidor Node e aceita conexao persistente. Reutilizar o
 // socket remove o custo de um novo TCP handshake em cada pulso do Project Sync.
@@ -3285,6 +3286,11 @@ function createTimecodeLanRelay(options = {}) {
         localStructuralRevision: status.mode === 'project_sync'
           ? localStructuralRevision
           : '',
+        // O manifesto usado no handshake ja chegou ao PC B. A partir daqui,
+        // somente uma revisao nova precisa ser reenviada pelo canal vivo.
+        lastManifestSnapshotRevision: status.mode === 'project_sync'
+          ? projectSyncManifestRevision(status)
+          : '',
         remoteSessionId: status.mode === 'project_sync'
           ? String(result.data.receiverSessionId || '').trim()
           : '',
@@ -3555,7 +3561,29 @@ function createTimecodeLanRelay(options = {}) {
       const transportSequence = transport
         ? safeSequence(transport.sequence)
         : (transmitterPeer.lastTransportSequence || 0)
-      const shouldSend = events.length > 0 ||
+      const liveManifest = status.mode === 'project_sync'
+        ? String(status.manifest || '')
+        : ''
+      const manifestSnapshot = status.mode === 'project_sync' &&
+        currentLocalManifestRevision &&
+        currentLocalManifestRevision !==
+          transmitterPeer.lastManifestSnapshotRevision &&
+        liveManifest &&
+        Buffer.byteLength(liveManifest, 'utf8') <=
+          PROJECT_SYNC_LIVE_MANIFEST_BYTES
+        ? {
+            manifest: liveManifest,
+            manifestRevision: currentLocalManifestRevision,
+            structuralManifestRevision: currentLocalStructuralRevision,
+          }
+        : null
+      // O snapshot vai sozinho. Depois que o PC B confirmar que o enfileirou,
+      // o tick seguinte entrega o resync e os demais eventos. Isso garante a
+      // ordem arquivo/manifesto antes da aplicacao e evita exceder 2 MiB ao
+      // somar um manifesto grande a chunks de comandos pendentes.
+      const eventsForSend = manifestSnapshot ? [] : events
+      const shouldSend = eventsForSend.length > 0 ||
+        !!manifestSnapshot ||
         (!!transport && transportSequence !==
           (transmitterPeer.lastTransportSequence || 0)) ||
         now - (transmitterPeer.lastPacketAt || 0) >=
@@ -3582,7 +3610,8 @@ function createTimecodeLanRelay(options = {}) {
           structuralRevision: status.mode === 'project_sync'
             ? currentLocalStructuralRevision
             : undefined,
-          events,
+          manifestSnapshot: manifestSnapshot || undefined,
+          events: eventsForSend,
           transport,
           audioHealthy,
         },
@@ -3619,9 +3648,16 @@ function createTimecodeLanRelay(options = {}) {
               remoteStructuralRevision
           }
         }
+        const acceptedManifestSnapshotRevision = String(
+          remoteResult.data.manifestSnapshotRevision || '').trim()
+        if (manifestSnapshot && acceptedManifestSnapshotRevision ===
+            currentLocalManifestRevision) {
+          transmitterPeer.lastManifestSnapshotRevision =
+            acceptedManifestSnapshotRevision
+        }
       }
       const acknowledged = Number(remoteResult.data.acceptedSequence)
-      const highestSentSequence = events.reduce((highest, event) => {
+      const highestSentSequence = eventsForSend.reduce((highest, event) => {
         const sequence = Number(event?.sequence)
         return Number.isSafeInteger(sequence) && sequence >= 0
           ? Math.max(highest, sequence)
@@ -4345,8 +4381,34 @@ function tokenMatches(left, right) {
       }
     }
 
-    const incoming = Array.isArray(payload.events) ? payload.events.slice(0, 256) : []
     const commands = []
+    let manifestSnapshotRevision = ''
+    if (status.mode === 'project_sync' &&
+        payload.manifestSnapshot &&
+        typeof payload.manifestSnapshot === 'object') {
+      const snapshotManifest = String(
+        payload.manifestSnapshot.manifest || '')
+      const snapshotRevision = String(
+        payload.manifestSnapshot.manifestRevision || '').trim().slice(0, 256)
+      const snapshotStructuralRevision = String(
+        payload.manifestSnapshot.structuralManifestRevision || '').trim()
+        .slice(0, 256)
+      if (snapshotManifest && snapshotRevision &&
+          snapshotRevision === String(payload.manifestRevision || '').trim() &&
+          Buffer.byteLength(snapshotManifest, 'utf8') <=
+            PROJECT_SYNC_LIVE_MANIFEST_BYTES) {
+        commands.push(JSON.stringify({
+          type: 'project_sync_manifest_snapshot',
+          schemaVersion: 1,
+          manifest: snapshotManifest,
+          manifestRevision: snapshotRevision,
+          structuralManifestRevision: snapshotStructuralRevision,
+          __vshookLanRemote: true,
+        }))
+        manifestSnapshotRevision = snapshotRevision
+      }
+    }
+    const incoming = Array.isArray(payload.events) ? payload.events.slice(0, 256) : []
     let acceptedSequence = receiverSession.lastSequence
     for (const event of incoming) {
       const sequence = safeSequence(event?.sequence, -1)
@@ -4401,7 +4463,8 @@ function tokenMatches(left, right) {
         body: commands.join('\n'),
         timeoutMs: 700,
       })
-      if (!localResult.ok || !localResult.data?.ok) {
+      if (!localResult.ok || !localResult.data?.ok ||
+          Number(localResult.data?.queued) !== commands.length) {
         sendJson(res, 503, { ok: false, error: 'Extensão VS Hook local indisponível.' })
         return
       }
@@ -4414,6 +4477,7 @@ function tokenMatches(left, right) {
     sendJson(res, 200, {
       ok: true,
       acceptedSequence,
+      manifestSnapshotRevision: manifestSnapshotRevision || undefined,
       receiverSessionId: status.mode === 'project_sync'
         ? String(status.sessionId || '').trim()
         : undefined,
