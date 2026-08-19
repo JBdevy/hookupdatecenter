@@ -739,6 +739,7 @@ function createTimecodeLanRelay(options = {}) {
   let projectSyncExportBundle = null
   let projectSyncBundlePullPromise = null
   let lastProjectSyncApplyKey = ''
+  let projectSyncAutomaticRetry = null
   let relayLifecycleSequence = 0
   let lastProjectSyncStagingCleanupAt = 0
   let projectSyncStagingCleanupPromise = null
@@ -1010,17 +1011,11 @@ function createTimecodeLanRelay(options = {}) {
       snapshot.controlSequence > observedControlSequence
     peer.lastObservedControlSequence = Math.max(
       observedControlSequence, snapshot.controlSequence)
-    // Receive/Transmitter usa o mesmo envelope sem o gate de saude do SW8,
-    // mas conserva a intencao explicita para a extensao receptora distinguir
-    // um Play/Stop humano de uma simples amostra periodica.
-    if (status?.mode !== 'project_sync') {
-      return explicitControl
-        ? { ...transport, explicitControl: true }
-        : transport
-    }
+    // A protecao da placa vale nos dois canais. Project Sync protege o PC B e
+    // Receive/Transmitter protege o PC C: uma queda fisica nunca pode virar
+    // Stop/seek remoto nem manter o receptor preso numa amostra congelada.
     const healthy = transportAudioHealthy(status, transport)
     if (!healthy) {
-      const previous = peer.lastHealthyTransport
       // Contrato com a extensão: controlSequence sobe no hook da ação local,
       // antes que um Stop possa fechar a placa. Assim um Stop intencional ainda
       // atravessa uma única vez; queda física sem gesto mantém a revisão e é
@@ -1037,6 +1032,17 @@ function createTimecodeLanRelay(options = {}) {
 
     if (peer.audioHealthy === false) {
       peer.audioHealthy = true
+      // A primeira ordem humana depois da falha e autoritativa. Sem este caso,
+      // um Play feito quando o driver acabou de reabrir podia ser confundido
+      // com a recuperacao tecnica e ficar bloqueado ate a proxima acao.
+      if (explicitControl) {
+        peer.resumeControlSequenceFloor = null
+        peer.lastHealthyTransport = snapshot
+        return {
+          ...transport,
+          explicitControl: true,
+        }
+      }
       const previous = peer.lastHealthyTransport
       // Se a placa derrubou o transporte no PC A, nao propaga esse Stop quando
       // ela volta. O B permanece tocando ate uma nova acao explicita do usuario.
@@ -1071,11 +1077,18 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   function projectSyncTransportForReceive(session, status, payload, transport) {
-    if (status?.mode !== 'project_sync') return transport
     if (!transport) return null
     const healthy = transportAudioHealthy(payload, transport)
     const explicitControl = transport.explicitControl === true
-    if (!healthy && !explicitControl) return null
+    if (!healthy && !explicitControl) {
+      session.audioHealthy = false
+      return null
+    }
+    session.audioHealthy = healthy
+    // No canal tradicional, o emissor atual ja fez o gate completo. Mantemos
+    // aqui a compatibilidade com transmissores antigos, mas nunca aceitamos
+    // deles uma amostra explicitamente marcada como audio indisponivel.
+    if (status?.mode !== 'project_sync') return transport
     const current = transportSnapshot(transport)
     if (!current) return null
     const previous = session.lastSourceTransport
@@ -2744,11 +2757,55 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
-  function maybeStartProjectSyncBundlePull(status) {
+  async function maybeStartProjectSyncBundlePull(status) {
     const apply = projectSyncApplyRequest(status)
     if (!apply) {
       if (!projectSyncBundlePullPromise) lastProjectSyncApplyKey = ''
+      const failed = status?.projectSyncApply
+      const failedState = String(failed?.state || '').trim().toLowerCase()
+      const failedRequestId = safePreflightRequestId(failed?.requestId)
+      const failedSequence = safeSequence(failed?.sequence)
+      if (failedState === 'error' && failed?.automatic === true &&
+          failedRequestId && projectSyncApplySession &&
+          failedRequestId === projectSyncApplySession.requestId &&
+          status?.mode === 'project_sync' &&
+          projectSyncRole(status) === 'secondary') {
+        const retryKey = `${failedRequestId}:${failedSequence}`
+        if (!projectSyncAutomaticRetry ||
+            projectSyncAutomaticRetry.key !== retryKey) {
+          projectSyncAutomaticRetry = {
+            key: retryKey,
+            attempts: 0,
+            nextAt: Date.now() + 800,
+          }
+        }
+        // Transferencias automaticas de item novo nao podem depender de o
+        // usuario abrir Conferencia/Progresso e clicar em Tentar novamente.
+        // Repete falhas transitórias com atraso crescente; depois de quatro
+        // tentativas conserva o erro real para não mascarar arquivo ausente.
+        if (!projectSyncBundlePullPromise &&
+            projectSyncAutomaticRetry.attempts < 4 &&
+            Date.now() >= projectSyncAutomaticRetry.nextAt) {
+          const attempt = projectSyncAutomaticRetry.attempts + 1
+          projectSyncAutomaticRetry.attempts = attempt
+          projectSyncAutomaticRetry.nextAt = Date.now() +
+            Math.min(15000, 1000 * (2 ** attempt))
+          lastProjectSyncApplyKey = ''
+          await sendLocalCommand({
+            type: 'project_sync_bundle_progress',
+            requestId: failedRequestId,
+            state: 'requested',
+          })
+        }
+      } else {
+        projectSyncAutomaticRetry = null
+      }
       return
+    }
+    const applyRetryKey = `${apply.requestId}:${apply.sequence}`
+    if (projectSyncAutomaticRetry &&
+        projectSyncAutomaticRetry.key !== applyRetryKey) {
+      projectSyncAutomaticRetry = null
     }
     if (projectSyncBundlePullPromise || status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'secondary' ||
@@ -2795,6 +2852,7 @@ function createTimecodeLanRelay(options = {}) {
     projectSyncApplySession = null
     projectSyncExportBundle = null
     lastProjectSyncApplyKey = ''
+    projectSyncAutomaticRetry = null
   }
 
   function resetTransmitterPeer(notify = true) {
@@ -3766,7 +3824,7 @@ function createTimecodeLanRelay(options = {}) {
                 PROJECT_SYNC_PREFLIGHT_TTL_MS) {
             pendingProjectSyncPreflight = null
           }
-          maybeStartProjectSyncBundlePull(status)
+          await maybeStartProjectSyncBundlePull(status)
         } else {
           // Versoes anteriores nao gravavam o papel A/B. Obriga o usuario a
           // reabrir Project Sync e gerar/digitar o codigo uma unica vez.
@@ -3824,6 +3882,7 @@ function createTimecodeLanRelay(options = {}) {
       // A conferência humana continua exclusiva deste primeiro pareamento.
       response.applyToken = pending.token
       lastProjectSyncApplyKey = ''
+      projectSyncAutomaticRetry = null
       pending.completedResponse = null
       receiverSession = {
         token: pending.token,
@@ -3841,6 +3900,7 @@ function createTimecodeLanRelay(options = {}) {
         lastTransportSequence: 0,
         lastControlSequence: -1,
         lastSourceTransport: null,
+        audioHealthy: true,
         lastSeenAt: Date.now(),
       }
       // Project Sync e estritamente A -> B. B jamais cria o canal reverso.
@@ -4228,6 +4288,9 @@ function createTimecodeLanRelay(options = {}) {
       lastSourceTransport: sameTransmitter
         ? (receiverSession.lastSourceTransport || null)
         : null,
+      audioHealthy: sameTransmitter
+        ? receiverSession.audioHealthy !== false
+        : true,
       lastSeenAt: Date.now(),
     }
     if (projectSyncReady) {
@@ -4427,6 +4490,12 @@ function tokenMatches(left, right) {
     const rawTransport = payload.transport && typeof payload.transport === 'object'
       ? payload.transport
       : null
+    // Mesmo quando A omite completamente o transporte congelado, conserva o
+    // estado de falha na sessao receptora. Assim um pacote atrasado nao pode
+    // reativar correcoes enquanto o link ainda declara audio indisponivel.
+    if (!transportAudioHealthy(payload, rawTransport)) {
+      receiverSession.audioHealthy = false
+    }
     const transportSequence = safeSequence(rawTransport?.sequence)
     const lastTransportSequence = safeSequence(
       receiverSession.lastTransportSequence)
@@ -4588,6 +4657,7 @@ function tokenMatches(left, right) {
     projectSyncApplySession = null
     projectSyncExportBundle = null
     lastProjectSyncApplyKey = ''
+    projectSyncAutomaticRetry = null
     projectSyncProtocolNotices.clear()
     localStatus = null
     lastNotifiedPeer = ''
