@@ -1572,7 +1572,37 @@ async function downloadHookCenterUpdateInstaller() {
   return { ok: true, downloaded };
 }
 
-function launchWindowsUpdateInstaller(installerPath) {
+function spawnWindowsUpdateInstaller(installerPath) {
+  return new Promise((resolve, reject) => {
+    let launcher;
+    try {
+      launcher = spawn(installerPath, ['--updated'], {
+        cwd: path.dirname(installerPath),
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    launcher.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    launcher.once('spawn', () => {
+      if (settled) return;
+      settled = true;
+      launcher.unref();
+      resolve();
+    });
+  });
+}
+
+async function launchWindowsUpdateInstaller(installerPath) {
   const requestedInstaller = String(installerPath || '').trim();
   const resolvedInstaller = requestedInstaller ? path.resolve(requestedInstaller) : '';
   if (
@@ -1583,20 +1613,38 @@ function launchWindowsUpdateInstaller(installerPath) {
     throw new Error('O instalador da atualização da Hook Center não foi encontrado.');
   }
 
-  // O NSIS do electron-builder entende --updated: ele aguarda/encerra a
-  // instância anterior antes de substituir os arquivos. O processo precisa
-  // nascer diretamente; um PowerShell intermediário pode morrer junto com o
-  // Electron antes de conseguir abrir o instalador.
-  const launcher = spawn(resolvedInstaller, ['--updated'], {
-    cwd: path.dirname(resolvedInstaller),
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false
-  });
-  if (!launcher.pid) {
-    throw new Error('Não foi possível abrir o instalador da Hook Center.');
+  // Instaladores grandes podem ficar bloqueados por alguns segundos enquanto
+  // Defender/SmartScreen terminam a inspeção. Já EACCES/EPERM normalmente
+  // indicam que o NSIS per-machine precisa abrir o UAC via ShellExecute; nesses
+  // casos não adianta repetir CreateProcess. Todo erro de spawn chega de forma
+  // assíncrona e precisa ser aguardado para nunca derrubar o processo principal.
+  const retryDelaysMs = [0, 500, 1000, 2000, 3500];
+  let lastError = null;
+  for (const delayMs of retryDelaysMs) {
+    if (delayMs) await sleep(delayMs);
+    try {
+      await spawnWindowsUpdateInstaller(resolvedInstaller);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (String(error?.code || '').toUpperCase() !== 'EBUSY') {
+        break;
+      }
+    }
   }
-  launcher.unref();
+
+  // ShellExecute é a alternativa nativa do Windows e permite que SmartScreen
+  // ou o UAC apresentem sua interface normalmente quando CreateProcess foi
+  // recusado. O NSIS também funciona sem o argumento opcional --updated.
+  const shellError = await shell.openPath(resolvedInstaller);
+  if (!shellError) return;
+
+  const code = String(lastError?.code || '').trim();
+  const detail = String(shellError || lastError?.message || '').trim();
+  throw new Error(
+    `O Windows não permitiu abrir o instalador${code ? ` (${code})` : ''}. ` +
+    `${detail || 'Aguarde a verificação do antivírus e tente novamente.'}`
+  );
 }
 
 function quitAfterWindowsInstallerIsQueued() {
@@ -1662,7 +1710,7 @@ async function installDownloadedHookCenterUpdate() {
   }
 
   if (process.platform === 'win32') {
-    launchWindowsUpdateInstaller(dest);
+    await launchWindowsUpdateInstaller(dest);
     quitAfterWindowsInstallerIsQueued();
     return { ok: true, action: 'installer-started' };
   }
@@ -5261,7 +5309,14 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     queuedAt: new Date().toISOString()
   });
   if (process.platform === 'win32') {
-    launchWindowsUpdateInstaller(cachedFiles.installer);
+    try {
+      await launchWindowsUpdateInstaller(cachedFiles.installer);
+    } catch (error) {
+      // Não deixe a central atual concluir a instalação da extensão como se a
+      // nova Hook Center tivesse sido instalada quando o EXE nem chegou a abrir.
+      store.set('pendingPostCenterUpdateInstall', null);
+      throw error;
+    }
     quitAfterWindowsInstallerIsQueued();
     return {
       ok: true,
