@@ -1180,7 +1180,7 @@
                 <div><p class="eyebrow">PC emissor</p><h2>Enviar arquivo ou pasta</h2></div>
                 <span class="badge">Enviar</span>
               </div>
-              <p class="muted">Escolha um arquivo avulso ou uma pasta completa e digite o código mostrado no computador receptor.</p>
+              <p class="muted">Escolha um arquivo ou pasta e selecione automaticamente o computador que receberá pela rede local.</p>
               <div class="selected-folder-box">
                 <span>Arquivo ou pasta que será enviado</span>
                 <strong id="copyProjectSourceName">Nenhum arquivo ou pasta selecionado</strong>
@@ -1190,10 +1190,15 @@
                 <button id="copyProjectSelectFileButton" class="secondary-button" type="button">Escolher arquivo</button>
                 <button id="copyProjectSelectSourceButton" class="secondary-button" type="button">Escolher pasta</button>
               </div>
-              <label class="copy-project-code-field" for="copyProjectReceiverCode">
-                Código do PC receptor
-                <input id="copyProjectReceiverCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
-              </label>
+              <div class="copy-project-device-picker">
+                <div class="copy-project-device-heading">
+                  <div><span>Computadores disponíveis</span><small>O outro computador aparece automaticamente enquanto a Hook Center estiver aberta.</small></div>
+                  <button id="copyProjectRefreshDevicesButton" class="secondary-button" type="button">Atualizar</button>
+                </div>
+                <div id="copyProjectDevicesList" class="copy-project-devices-list" role="radiogroup" aria-label="Escolha o computador receptor">
+                  <p class="muted">Procurando dispositivos na rede local...</p>
+                </div>
+              </div>
               <button id="copyProjectSendButton" class="primary-button" type="button" disabled>Enviar agora</button>
               <div class="copy-project-code-display">
                 <span>Código fixo para o celular receber</span>
@@ -1206,9 +1211,9 @@
             <section class="card copy-project-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">PC receptor</p><h2>Receber arquivos</h2></div>
-                <span class="badge">Receber</span>
+                <span class="badge">Sempre ativo</span>
               </div>
-              <p class="muted">Escolha onde os arquivos serão salvos e ative o recebimento. O código deste computador permanece sempre o mesmo.</p>
+              <p class="muted">Escolha onde os arquivos serão salvos e ative o recebimento. Este computador aparecerá automaticamente nos outros computadores da rede.</p>
               <div class="selected-folder-box">
                 <span>Pasta de destino</span>
                 <strong id="copyProjectDestinationName">Nenhuma pasta selecionada</strong>
@@ -1216,11 +1221,10 @@
               </div>
               <button id="copyProjectSelectDestinationButton" class="secondary-button" type="button">Escolher pasta de destino</button>
               <div class="copy-project-code-display">
-                <span>Código fixo para receber</span>
+                <span>Código fixo para o celular enviar</span>
                 <strong id="copyProjectReceiveCode">------</strong>
-                <small>Informe sempre este código ao computador emissor.</small>
+                <small>Use este código somente no Drop Hook do aplicativo no celular.</small>
               </div>
-              <button id="copyProjectReceiveButton" class="primary-button" type="button" disabled>Ativar recebimento</button>
             </section>
 
           </div>

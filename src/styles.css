@@ -6084,6 +6084,95 @@ body.tools-mode .copy-project-card .selected-folder-box {
   box-shadow: 0 0 0 3px rgba(158, 255, 0, .08);
 }
 
+.copy-project-device-picker {
+  display: grid;
+  gap: 6px;
+  min-height: 86px;
+  padding: 7px;
+  border: 1px solid rgba(158, 255, 0, .2);
+  border-radius: 12px;
+  background: rgba(16, 17, 26, .82);
+}
+
+.copy-project-device-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.copy-project-device-heading > div {
+  display: grid;
+  gap: 1px;
+}
+
+.copy-project-device-heading span {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.copy-project-device-heading small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.copy-project-device-heading button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 9px;
+  font-size: 10px;
+}
+
+.copy-project-devices-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.copy-project-devices-list > .muted {
+  grid-column: 1 / -1;
+  margin: 4px;
+  font-size: 10px;
+}
+
+.copy-project-device {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .035);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.copy-project-device:hover,
+.copy-project-device.selected {
+  border-color: rgba(158, 255, 0, .62);
+  background: rgba(158, 255, 0, .09);
+}
+
+.copy-project-device span,
+.copy-project-device small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-project-device span {
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.copy-project-device small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .copy-project-code-display {
   display: grid;
   place-items: center;

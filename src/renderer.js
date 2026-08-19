@@ -15,6 +15,7 @@ let hookMarkerRuntimeState = { active: false };
 let copyProjectState = null;
 let copyProjectSourceFolder = null;
 let copyProjectDestinationFolder = null;
+let copyProjectSelectedDeviceId = '';
 let combinedDownloadInProgress = false;
 let testDownloadInProgress = false;
 let directedDownloadReady = false;
@@ -1868,11 +1869,11 @@ function renderCopyProjectState(nextState = copyProjectState) {
   const sourceFileButton = $('#copyProjectSelectFileButton');
   const destinationButton = $('#copyProjectSelectDestinationButton');
   const sendButton = $('#copyProjectSendButton');
-  const receiveButton = $('#copyProjectReceiveButton');
   const cancelButton = $('#copyProjectCancelButton');
   const openButton = $('#copyProjectOpenDestinationButton');
   const shareButton = $('#copyProjectShareButton');
-  const codeInput = $('#copyProjectReceiverCode');
+  const devicesList = $('#copyProjectDevicesList');
+  const refreshDevicesButton = $('#copyProjectRefreshDevicesButton');
   const statusBadge = $('#copyProjectStatusBadge');
   const progressBar = $('#copyProjectProgressBar');
   const total = Math.max(0, Number(data.totalBytes) || 0);
@@ -1897,6 +1898,14 @@ function renderCopyProjectState(nextState = copyProjectState) {
     $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.path || 'Escolha um arquivo avulso ou uma pasta completa.';
   }
   if ($('#copyProjectDestinationName')) {
+    if (data.destinationPath && copyProjectDestinationFolder?.path !== data.destinationPath) {
+      const parts = String(data.destinationPath).split(/[\\/]/).filter(Boolean);
+      copyProjectDestinationFolder = {
+        path: data.destinationPath,
+        name: parts.at(-1) || data.destinationPath,
+        kind: 'folder'
+      };
+    }
     $('#copyProjectDestinationName').textContent = copyProjectDestinationFolder?.name || 'Nenhuma pasta selecionada';
     $('#copyProjectDestinationPath').textContent = copyProjectDestinationFolder?.path || 'Arquivos com o mesmo nome serão substituídos neste local.';
   }
@@ -1912,10 +1921,10 @@ function renderCopyProjectState(nextState = copyProjectState) {
       busy && total === 0);
   }
   let detail = 'Escolha se este computador vai enviar ou receber.';
-  if (waiting) detail = 'Este computador está visível na rede. Digite o código no PC emissor.';
+  if (waiting) detail = 'Este computador está visível e pronto para receber pela rede local.';
   else if (data.phase === 'sharing') detail = 'A pasta está disponível somente nesta rede local. Digite o código no celular.';
   else if (data.phase === 'paused') detail = 'Rede desconectada. A transferência continua automaticamente quando a conexão voltar.';
-  else if (data.phase === 'discovering') detail = 'Procurando o computador que exibiu este código...';
+  else if (data.phase === 'discovering') detail = 'Conectando ao computador escolhido...';
   else if (data.phase === 'preparing') detail = 'Preparando a lista de arquivos para envio.';
   else if (data.phase === 'checking') detail = 'Preparando os arquivos no destino.';
   else if (data.phase === 'sending' || data.phase === 'receiving') {
@@ -1928,16 +1937,29 @@ function renderCopyProjectState(nextState = copyProjectState) {
   if ($('#copyProjectProgressText')) $('#copyProjectProgressText').textContent = detail;
   if ($('#copyProjectCurrentFile')) $('#copyProjectCurrentFile').textContent = data.currentFile || data.peerName || '';
 
-  const operationActive = busy || waiting || data.sharing;
+  const devices = Array.isArray(data.devices) ? data.devices.filter((device) => device?.id) : [];
+  if (data.targetDeviceId) copyProjectSelectedDeviceId = String(data.targetDeviceId);
+  if (!devices.some((device) => device.id === copyProjectSelectedDeviceId) && !busy) {
+    copyProjectSelectedDeviceId = devices.length === 1 ? String(devices[0].id) : '';
+  }
+  if (devicesList) {
+    devicesList.innerHTML = devices.length
+      ? devices.map((device) => {
+          const selected = device.id === copyProjectSelectedDeviceId;
+          return `<button class="copy-project-device${selected ? ' selected' : ''}" type="button" ` +
+            `role="radio" aria-checked="${selected}" data-copy-project-device-id="${device.id}">` +
+            `<span>${escapeHtml(device.name || 'Hook Center')}</span>` +
+            `<small>${escapeHtml(device.address || 'Rede local')}</small></button>`;
+        }).join('')
+      : '<p class="muted">Nenhum computador disponível. Abra o Drop Hook no outro PC.</p>';
+  }
+
+  const operationActive = busy || data.sharing;
   if (sourceButton) sourceButton.disabled = operationActive;
   if (sourceFileButton) sourceFileButton.disabled = operationActive;
   if (destinationButton) destinationButton.disabled = operationActive;
-  if (codeInput) codeInput.disabled = operationActive;
-  if (sendButton) sendButton.disabled = operationActive || !copyProjectSourceFolder || String(codeInput?.value || '').length !== 6;
-  if (receiveButton) {
-    receiveButton.disabled = busy || (!waiting && !copyProjectDestinationFolder);
-    receiveButton.textContent = receiverActive ? 'Desativar recebimento' : 'Ativar recebimento';
-  }
+  if (refreshDevicesButton) refreshDevicesButton.disabled = operationActive;
+  if (sendButton) sendButton.disabled = operationActive || !copyProjectSourceFolder || !copyProjectSelectedDeviceId;
   if (shareButton) {
     shareButton.disabled = busy || waiting || (!data.sharing && !copyProjectSourceFolder);
     shareButton.textContent = data.sharing ? 'Parar de disponibilizar' : 'Disponibilizar para celular';
@@ -1952,36 +1974,27 @@ async function selectCopyProjectFolder(mode) {
     if (result?.canceled) return;
     const folder = { path: result.path, name: result.name || result.path,
       kind: result.kind || (mode === 'send-file' ? 'file' : 'folder') };
-    if (mode === 'receive') copyProjectDestinationFolder = folder;
-    else copyProjectSourceFolder = folder;
-    renderCopyProjectState();
+    if (mode === 'receive') {
+      copyProjectDestinationFolder = folder;
+      renderCopyProjectState(await window.hookUpdateCenter.startCopyProjectReceive({
+        destinationPath: folder.path
+      }));
+    } else {
+      copyProjectSourceFolder = folder;
+      renderCopyProjectState();
+    }
   } catch (error) {
     showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível escolher o arquivo ou a pasta.'), type: 'error' });
   }
 }
 
-async function toggleCopyProjectReceiver() {
-  try {
-    if (copyProjectState?.receiving) {
-      renderCopyProjectState(await window.hookUpdateCenter.stopCopyProjectReceive());
-      return;
-    }
-    if (!copyProjectDestinationFolder) return;
-    renderCopyProjectState(await window.hookUpdateCenter.startCopyProjectReceive({
-      destinationPath: copyProjectDestinationFolder.path
-    }));
-  } catch (error) {
-    showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
-  }
-}
-
 async function sendCopyProjectFolder() {
   if (!copyProjectSourceFolder || copyProjectIsBusy()) return;
-  const code = String($('#copyProjectReceiverCode')?.value || '').replace(/\D/g, '').slice(0, 6);
-  if (code.length !== 6) return;
+  if (!copyProjectSelectedDeviceId) return;
   try {
     await window.hookUpdateCenter.sendCopyProject({
-      sourcePath: copyProjectSourceFolder.path, code
+      sourcePath: copyProjectSourceFolder.path,
+      deviceId: copyProjectSelectedDeviceId
     });
   } catch (error) {
     // O estado detalhado também chega pelo evento, mas o modal torna a falha
@@ -2330,7 +2343,15 @@ function setupToolsSubmenu() {
   $('#copyProjectSelectDestinationButton')?.addEventListener('click', () => selectCopyProjectFolder('receive'));
   $('#copyProjectSendButton')?.addEventListener('click', sendCopyProjectFolder);
   $('#copyProjectShareButton')?.addEventListener('click', toggleCopyProjectShare);
-  $('#copyProjectReceiveButton')?.addEventListener('click', toggleCopyProjectReceiver);
+  $('#copyProjectRefreshDevicesButton')?.addEventListener('click', async () => {
+    try { renderCopyProjectState(await window.hookUpdateCenter.refreshCopyProjectDevices()); } catch (_) {}
+  });
+  $('#copyProjectDevicesList')?.addEventListener('click', (event) => {
+    const device = event.target.closest('[data-copy-project-device-id]');
+    if (!device || copyProjectIsBusy()) return;
+    copyProjectSelectedDeviceId = String(device.dataset.copyProjectDeviceId || '');
+    renderCopyProjectState();
+  });
   $('#copyProjectCancelButton')?.addEventListener('click', async () => {
     try { renderCopyProjectState(await window.hookUpdateCenter.cancelCopyProject()); } catch (_) {}
   });
@@ -2338,10 +2359,6 @@ function setupToolsSubmenu() {
     window.hookUpdateCenter.openCopyProjectDestination().catch((error) => {
       showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
     });
-  });
-  $('#copyProjectReceiverCode')?.addEventListener('input', (event) => {
-    event.currentTarget.value = String(event.currentTarget.value || '').replace(/\D/g, '').slice(0, 6);
-    renderCopyProjectState();
   });
   $('#hookMarkerRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({ applySettings: false }));
   $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);

@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getHookMarkerRuntimeState: () => ipcRenderer.invoke('hook-marker-get-runtime-state'),
   selectCopyProjectFolder: (mode) => ipcRenderer.invoke('copy-project-select-folder', { mode }),
   getCopyProjectState: () => ipcRenderer.invoke('copy-project-get-state'),
+  refreshCopyProjectDevices: () => ipcRenderer.invoke('copy-project-refresh-devices'),
   startCopyProjectReceive: (payload) => ipcRenderer.invoke('copy-project-start-receive', payload),
   stopCopyProjectReceive: () => ipcRenderer.invoke('copy-project-stop-receive'),
   sendCopyProject: (payload) => ipcRenderer.invoke('copy-project-send', payload),

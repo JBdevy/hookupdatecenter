@@ -320,18 +320,21 @@ async function collectTransferSource(sourcePath, update, isActive) {
   }
 }
 
-function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {}) {
+function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, onState } = {}) {
   let state = {
     mode: '', phase: 'idle', code: '', sourcePath: '', destinationPath: '',
     rootName: '', peerName: '', bytesDone: 0, totalBytes: 0,
     fileIndex: 0, fileCount: 0, currentFile: '', error: '', result: '',
-    receivedPath: '',
+    receivedPath: '', targetDeviceId: '',
   }
   let httpServer = null
   let udpSocket = null
+  let udpReadyPromise = null
   let beaconTimer = null
+  let discoveryTimer = null
   let receiverRoot = ''
   let receiverCode = ''
+  let receiverToken = ''
   let inbound = null
   let sharedFolder = null
   let shareCode = ''
@@ -339,11 +342,30 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
   const fixedCode = (() => {
     try { return safeCode(getFixedCode?.()) || randomCode() } catch (_) { return randomCode() }
   })()
+  const localDeviceId = (() => {
+    try { return safeToken(getDeviceId?.()) || crypto.randomBytes(32).toString('hex') }
+    catch (_) { return crypto.randomBytes(32).toString('hex') }
+  })()
   const discovered = new Map()
+  let lastDevicesSignature = ''
+
+  function availableDevices() {
+    const now = Date.now()
+    for (const [id, peer] of discovered) {
+      if (!peer || now - Number(peer.at || 0) > 10000) discovered.delete(id)
+    }
+    return [...discovered.values()]
+      .filter((peer) => peer.id && peer.id !== localDeviceId)
+      .sort((left, right) => String(left.name || left.address)
+        .localeCompare(String(right.name || right.address), 'pt-BR'))
+      .map((peer) => ({ id: peer.id, name: peer.name || 'Hook Center',
+        address: peer.address, port: peer.port, lastSeenAt: peer.at }))
+  }
 
   function publicState() {
     return { ...state, receiving: !!receiverCode, sharing: !!shareCode,
-      shareCode, fixedCode, protocolVersion: COPY_PROJECT_VERSION }
+      shareCode, fixedCode, localDeviceId, devices: availableDevices(),
+      protocolVersion: COPY_PROJECT_VERSION }
   }
 
   function update(patch) {
@@ -354,6 +376,15 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
 
   function activeGeneration(generation) {
     if (generation !== operationGeneration) throw new Error('Transferência cancelada.')
+  }
+
+  function notifyDevicesIfChanged() {
+    const devices = availableDevices()
+    const signature = JSON.stringify(devices.map((peer) =>
+      [peer.id, peer.name, peer.address]))
+    if (signature === lastDevicesSignature) return
+    lastDevicesSignature = signature
+    if (typeof onState === 'function') onState({ ...publicState(), devices })
   }
 
   async function cleanupInboundPartials() {
@@ -373,6 +404,8 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       magic: COPY_PROJECT_MAGIC,
       version: COPY_PROJECT_VERSION,
       role: 'receiver',
+      deviceId: localDeviceId,
+      receiverToken,
       code: receiverCode,
       port: COPY_PROJECT_HTTP_PORT,
       name: String(getDeviceName?.() || os.hostname() || 'Hook Center').slice(0, 120),
@@ -381,7 +414,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
   }
 
   function sendBeacon(address = '') {
-    if (!udpSocket || !receiverCode) return
+    if (!udpSocket || !receiverCode || !receiverToken) return
     const payload = beaconPayload()
     const targets = address ? [address] : broadcastAddresses()
     for (const target of targets) {
@@ -389,7 +422,21 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
     }
   }
 
+  function sendDiscoveryQuery() {
+    if (!udpSocket) return
+    const payload = Buffer.from(JSON.stringify({
+      magic: COPY_PROJECT_MAGIC,
+      version: COPY_PROJECT_VERSION,
+      role: 'query',
+      deviceId: localDeviceId,
+    }), 'utf8')
+    for (const target of broadcastAddresses()) {
+      try { udpSocket.send(payload, COPY_PROJECT_DISCOVERY_PORT, target) } catch (_) {}
+    }
+  }
+
   async function ensureUdp() {
+    if (udpReadyPromise) return udpReadyPromise
     if (udpSocket) return
     udpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
     udpSocket.on('message', (message, remote) => {
@@ -399,20 +446,24 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       if (payload?.magic !== COPY_PROJECT_MAGIC ||
           Number(payload.version) !== COPY_PROJECT_VERSION) return
       if (payload.role === 'query') {
-        if (receiverCode && safeCode(payload.code) === receiverCode) {
+        if (receiverCode && receiverToken && safeToken(payload.deviceId) !== localDeviceId) {
           sendBeacon(normalizeAddress(remote.address))
         }
         return
       }
       if (payload.role !== 'receiver') return
-      const code = safeCode(payload.code)
+      const id = safeToken(payload.deviceId)
+      const token = safeToken(payload.receiverToken)
       const address = normalizeAddress(remote.address)
       const port = Number(payload.port)
-      if (!code || !address || port !== COPY_PROJECT_HTTP_PORT) return
-      discovered.set(code, { address, port, name: String(payload.name || ''), at: Date.now() })
+      if (!id || id === localDeviceId || !token || !address ||
+          port !== COPY_PROJECT_HTTP_PORT) return
+      discovered.set(id, { id, receiverToken: token, address, port,
+        name: String(payload.name || '').slice(0, 120), at: Date.now() })
+      notifyDevicesIfChanged()
     })
     udpSocket.on('error', () => {})
-    await new Promise((resolve, reject) => {
+    udpReadyPromise = new Promise((resolve, reject) => {
       udpSocket.once('error', reject)
       udpSocket.bind(COPY_PROJECT_DISCOVERY_PORT, '0.0.0.0', () => {
         udpSocket.removeListener('error', reject)
@@ -420,26 +471,29 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
         resolve()
       })
     })
+    try {
+      await udpReadyPromise
+    } catch (error) {
+      try { udpSocket?.close() } catch (_) {}
+      udpSocket = null
+      udpReadyPromise = null
+      throw error
+    }
   }
 
-  async function findReceiver(code, generation) {
+  async function findReceiver(deviceId, generation) {
+    const targetId = safeToken(deviceId)
+    if (!targetId) throw new Error('Escolha o computador que receberá os arquivos.')
     await ensureUdp()
     const deadline = Date.now() + 8000
     while (Date.now() < deadline) {
       activeGeneration(generation)
-      const peer = discovered.get(code)
+      const peer = discovered.get(targetId)
       if (peer && Date.now() - peer.at < 10000) return peer
-      const query = Buffer.from(JSON.stringify({
-        magic: COPY_PROJECT_MAGIC,
-        version: COPY_PROJECT_VERSION,
-        role: 'query', code,
-      }), 'utf8')
-      for (const target of broadcastAddresses()) {
-        try { udpSocket.send(query, COPY_PROJECT_DISCOVERY_PORT, target) } catch (_) {}
-      }
+      sendDiscoveryQuery()
       await new Promise((resolve) => setTimeout(resolve, 400))
     }
-    throw new Error('PC receptor não encontrado. Confira o código e a rede.')
+    throw new Error('O computador escolhido não está mais disponível na rede.')
   }
 
   async function replaceFromPartial(partial, target, token) {
@@ -468,15 +522,19 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
 
   async function prepareInbound(manifest, remoteAddress) {
     if (!receiverCode || !receiverRoot) throw new Error('O recebimento não está ativo.')
+    const authorizedComputer = !!receiverToken &&
+      safeToken(manifest?.receiverToken) === receiverToken
+    const authorizedMobile = safeCode(manifest?.code) === receiverCode
     const transferId = safeTransferId(manifest?.transferId) ||
       crypto.createHash('sha256').update(JSON.stringify({
         code: safeCode(manifest?.code),
+        receiverToken: safeToken(manifest?.receiverToken),
         rootName: String(manifest?.rootName || ''),
         files: Array.isArray(manifest?.files) ? manifest.files : [],
         directories: Array.isArray(manifest?.directories) ? manifest.directories : []
       })).digest('hex')
     if (!manifest || manifest.schemaVersion !== 1 ||
-        safeCode(manifest.code) !== receiverCode ||
+        (!authorizedComputer && !authorizedMobile) ||
         !Array.isArray(manifest.files) || !Array.isArray(manifest.directories) ||
         manifest.files.length > COPY_PROJECT_MAX_FILES) {
       throw new Error('Manifesto de transferência inválido.')
@@ -763,8 +821,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
     }
     receiverRoot = destination
     receiverCode = fixedCode
-    shareCode = ''
-    sharedFolder = null
+    receiverToken = crypto.randomBytes(32).toString('hex')
     await cleanupInboundPartials()
     ++operationGeneration
     await Promise.all([ensureUdp(), ensureHttpServer()])
@@ -780,6 +837,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
 
   async function stopReceiver() {
     receiverCode = ''
+    receiverToken = ''
     receiverRoot = ''
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)
@@ -798,11 +856,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       throw new Error('Escolha um arquivo ou uma pasta válida para disponibilizar.')
     }
     const generation = ++operationGeneration
-    receiverCode = ''
-    receiverRoot = ''
     await cleanupInboundPartials()
-    if (beaconTimer) clearInterval(beaconTimer)
-    beaconTimer = null
     shareCode = fixedCode
     sharedFolder = null
     update({ mode: 'share', phase: 'preparing', code: shareCode, sourcePath: sourceRoot,
@@ -843,14 +897,16 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
     ++operationGeneration
     shareCode = ''
     sharedFolder = null
-    return update({ mode: '', phase: 'idle', code: '', sourcePath: '',
+    return update({ mode: receiverCode ? 'receive' : '',
+      phase: receiverCode ? 'waiting' : 'idle', code: receiverCode,
+      sourcePath: '', destinationPath: receiverRoot,
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
       currentFile: '', error: '', result: '' })
   }
 
-  async function sendFolder(sourcePath, codeValue) {
-    const code = safeCode(codeValue)
-    if (!code) throw new Error('Digite o código de 6 dígitos do PC receptor.')
+  async function sendFolder(sourcePath, deviceIdValue) {
+    const targetDeviceId = safeToken(deviceIdValue)
+    if (!targetDeviceId) throw new Error('Escolha o computador que receberá os arquivos.')
     const sourceRoot = path.resolve(String(sourcePath || ''))
     const sourceStat = await fs.promises.lstat(sourceRoot)
     if ((!sourceStat.isDirectory() && !sourceStat.isFile()) ||
@@ -858,12 +914,13 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       throw new Error('Escolha um arquivo ou uma pasta válida para enviar.')
     }
     const generation = ++operationGeneration
-    update({ mode: 'send', phase: 'discovering', code, sourcePath: sourceRoot,
+    update({ mode: 'send', phase: 'discovering', code: '',
+      targetDeviceId, sourcePath: sourceRoot,
       destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
       currentFile: '', error: '', result: '', receivedPath: '' })
     try {
-      let peer = await findReceiver(code, generation)
+      let peer = await findReceiver(targetDeviceId, generation)
       activeGeneration(generation)
       update({ phase: 'preparing', peerName: peer.name || peer.address })
       const collected = await collectTransferSource(sourceRoot,
@@ -872,7 +929,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       const manifest = {
         schemaVersion: 1,
         transferId,
-        code,
+        receiverToken: peer.receiverToken,
         rootName: safeRootName(path.basename(sourceRoot)),
         senderName: String(getDeviceName?.() || os.hostname()).slice(0, 120),
         directories: collected.directories,
@@ -883,7 +940,10 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       while (true) {
         activeGeneration(generation)
         try {
-          if (!peer) peer = await findReceiver(code, generation)
+          if (!peer) {
+            peer = await findReceiver(targetDeviceId, generation)
+            manifest.receiverToken = peer.receiverToken
+          }
           // A partir daqui o código/receptor já foi localizado. Se a rede cair
           // durante o handshake, a mesma transferência será retomada.
           sessionEstablished = true
@@ -954,7 +1014,8 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
           if (!canResume) throw error
           update({ phase: 'paused', error: '', result: '',
             currentFile: 'Rede desconectada. Aguardando reconexão...' })
-          discovered.delete(code)
+          discovered.delete(targetDeviceId)
+          notifyDevicesIfChanged()
           peer = null
           await waitMs(1000)
         }
@@ -970,9 +1031,17 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
 
   async function cancel() {
     ++operationGeneration
-    if (state.mode === 'receive') return stopReceiver()
+    if (state.mode === 'receive') {
+      await cleanupInboundPartials()
+      return update({ mode: 'receive', phase: 'waiting', code: receiverCode,
+        destinationPath: receiverRoot, targetDeviceId: '', bytesDone: 0,
+        totalBytes: 0, fileIndex: 0, fileCount: 0, currentFile: '', error: '',
+        result: '', receivedPath: '' })
+    }
     if (state.mode === 'share') return stopShare()
-    return update({ mode: '', phase: 'idle', code: '', bytesDone: 0,
+    return update({ mode: receiverCode ? 'receive' : '',
+      phase: receiverCode ? 'waiting' : 'idle', code: receiverCode,
+      destinationPath: receiverRoot, targetDeviceId: '', bytesDone: 0,
       totalBytes: 0, fileIndex: 0, fileCount: 0, currentFile: '', error: '',
       result: '', receivedPath: '' })
   }
@@ -980,16 +1049,20 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
   async function stop() {
     ++operationGeneration
     receiverCode = ''
+    receiverToken = ''
     receiverRoot = ''
     shareCode = ''
     sharedFolder = null
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)
     beaconTimer = null
+    if (discoveryTimer) clearInterval(discoveryTimer)
+    discoveryTimer = null
     if (udpSocket) {
       try { udpSocket.close() } catch (_) {}
       udpSocket = null
     }
+    udpReadyPromise = null
     if (httpServer) {
       const server = httpServer
       httpServer = null
@@ -997,7 +1070,26 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
     }
   }
 
-  return { getState: publicState, startReceiver, stopReceiver,
+  async function refreshDevices() {
+    await ensureUdp()
+    sendDiscoveryQuery()
+    await waitMs(350)
+    notifyDevicesIfChanged()
+    return publicState()
+  }
+
+  // A descoberta de computadores é contínua e não depende de clicar em Enviar.
+  // O receptor só aparece quando o usuário ativa explicitamente o recebimento.
+  ensureUdp().then(() => {
+    sendDiscoveryQuery()
+    discoveryTimer = setInterval(() => {
+      sendDiscoveryQuery()
+      notifyDevicesIfChanged()
+    }, 2000)
+    discoveryTimer.unref?.()
+  }).catch(() => {})
+
+  return { getState: publicState, refreshDevices, startReceiver, stopReceiver,
     startShare, stopShare, sendFolder, cancel, stop }
 }
 

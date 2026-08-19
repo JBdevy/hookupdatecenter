@@ -77,6 +77,7 @@ const store = new Store({
     deviceLoginEmail: '',
     deviceLoginAt: null,
     transferHookCode: '',
+    dropHookDestinationPath: '',
     autoStart: true,
     bridge: {
       scriptsDir: '',
@@ -167,15 +168,39 @@ function getTimecodeLanDeviceId() {
   return createdId;
 }
 
+function getDropHookDestinationPath() {
+  const saved = String(store.get('dropHookDestinationPath') || '').trim();
+  if (saved) {
+    try {
+      const resolved = path.resolve(saved);
+      const stat = fs.lstatSync(resolved);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) return resolved;
+    } catch (_) {}
+  }
+  const fallback = path.join(app.getPath('downloads'), 'Drop Hook');
+  fs.mkdirSync(fallback, { recursive: true });
+  store.set('dropHookDestinationPath', fallback);
+  return fallback;
+}
+
 function getCopyProjectService() {
   if (!copyProjectService) {
     copyProjectService = createCopyProjectService({
       getDeviceName: getStoredDeviceName,
+      getDeviceId: getTimecodeLanDeviceId,
       getFixedCode: getTransferHookFixedCode,
       onState: (state) => {
         if (isValidWindow(mainWindow)) {
           mainWindow.webContents.send('copy-project-state', state);
         }
+      }
+    });
+    copyProjectService.startReceiver(getDropHookDestinationPath()).catch((error) => {
+      if (isValidWindow(mainWindow)) {
+        mainWindow.webContents.send('copy-project-state', {
+          ...copyProjectService.getState(), phase: 'error',
+          error: error?.message || 'Não foi possível ativar o recebimento do Drop Hook.'
+        });
       }
     });
   }
@@ -6671,17 +6696,20 @@ ipcMain.handle('copy-project-select-folder', async (_event, payload = {}) => {
   });
   if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
   const selectedPath = path.resolve(result.filePaths[0]);
+  if (receiving) store.set('dropHookDestinationPath', selectedPath);
   return { canceled: false, path: selectedPath, name: path.basename(selectedPath),
     kind: selectingFile ? 'file' : 'folder' };
 });
 ipcMain.handle('copy-project-get-state', () =>
   getCopyProjectService().getState());
+ipcMain.handle('copy-project-refresh-devices', () =>
+  getCopyProjectService().refreshDevices());
 ipcMain.handle('copy-project-start-receive', (_event, payload = {}) =>
   getCopyProjectService().startReceiver(payload.destinationPath));
 ipcMain.handle('copy-project-stop-receive', () =>
   getCopyProjectService().stopReceiver());
 ipcMain.handle('copy-project-send', (_event, payload = {}) =>
-  getCopyProjectService().sendFolder(payload.sourcePath, payload.code));
+  getCopyProjectService().sendFolder(payload.sourcePath, payload.deviceId));
 ipcMain.handle('copy-project-start-share', (_event, payload = {}) =>
   getCopyProjectService().startShare(payload.sourcePath));
 ipcMain.handle('copy-project-stop-share', () =>
@@ -7060,6 +7088,9 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   if (!isValidWindow(mainWindow)) createWindow();
   if (!tray) createTray();
+  // O Drop Hook fica visível para os outros computadores enquanto a Hook
+  // Center estiver aberta, mesmo antes de o usuário visitar a aba Ferramentas.
+  getCopyProjectService();
   await completePendingPostCenterUpdateInstall().catch((error) => {
     console.error('[Hook Center] Não concluiu a instalação após atualizar a central:',
       error?.message || error);
