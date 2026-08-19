@@ -1379,8 +1379,17 @@
               <strong id="updateStatus">--</strong>
             </div>
           </div>
-          <div class="actions status-actions">
-            <button id="statusCheckUpdateButton" class="primary-button" type="button">Verificar atualização</button>
+        <div class="actions status-actions">
+          <button id="statusCheckUpdateButton" class="primary-button" type="button">Verificar atualização</button>
+        </div>
+      </div>
+
+        <div id="statusProgressArea" class="inline-progress-area update-top-progress hidden" aria-live="polite">
+          <div class="progress-shell">
+            <div id="statusProgressBar" class="progress-bar"></div>
+          </div>
+          <div class="progress-row">
+            <span id="statusProgressText">0%</span>
           </div>
         </div>
 

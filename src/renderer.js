@@ -16,8 +16,10 @@ let copyProjectState = null;
 let copyProjectSourceFolder = null;
 let copyProjectDestinationFolder = null;
 let combinedDownloadInProgress = false;
+let testDownloadInProgress = false;
 let directedDownloadReady = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
+let activeUpdateDownloadSurface = '';
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
 let recadosHubSelectedSlot = 'global';
@@ -570,25 +572,31 @@ function setProgressVisible(visible) {
   updateDownloadCompactMode();
 }
 
-function resetVsHookProgress() {
-  const progressBar = $('#progressBar');
-  if (progressBar) progressBar.style.width = '0%';
-  const progressText = $('#progressText');
-  if (progressText) progressText.textContent = '0%';
-  $('#installButton')?.classList.add('hidden');
-  $('#statusInstallButton')?.classList.add('hidden');
+function setTestProgressVisible(visible) {
+  $('#statusProgressArea')?.classList.toggle('hidden', !visible);
 }
 
-function updateVsHookProgress(progress) {
+function resetVsHookProgress(surface = 'home') {
+  const testSurface = surface === 'test';
+  const progressBar = $(testSurface ? '#statusProgressBar' : '#progressBar');
+  if (progressBar) progressBar.style.width = '0%';
+  const progressText = $(testSurface ? '#statusProgressText' : '#progressText');
+  if (progressText) progressText.textContent = '0%';
+  $(testSurface ? '#statusInstallButton' : '#installButton')?.classList.add('hidden');
+}
+
+function updateVsHookProgress(progress, surface = activeUpdateDownloadSurface || 'home') {
+  const testSurface = surface === 'test';
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
-  const progressBar = $('#progressBar');
+  const progressBar = $(testSurface ? '#statusProgressBar' : '#progressBar');
   if (progressBar) progressBar.style.width = `${safeProgress}%`;
-  const progressText = $('#progressText');
+  const progressText = $(testSurface ? '#statusProgressText' : '#progressText');
   if (progressText) progressText.textContent = `${safeProgress}%`;
-  if (safeProgress >= 100 &&
-      (directedDownloadReady || combinedDownloadReady.package)) {
-    $('#installButton')?.classList.remove('hidden');
-    $('#statusInstallButton')?.classList.remove('hidden');
+  const ready = testSurface
+    ? directedDownloadReady : combinedDownloadReady.package;
+  if (safeProgress >= 100 && ready) {
+    $(testSurface ? '#statusInstallButton' : '#installButton')
+      ?.classList.remove('hidden');
   }
 }
 
@@ -597,10 +605,12 @@ async function startVsHookDownload(updateOverride = null) {
     if (!(await ensureLicenseActiveForDownload())) return;
     if (!(await showDownloadDescriptionNotice(updateOverride))) return;
     if (!(await ensureDeviceName())) return;
-    setProgressVisible(true);
-    resetVsHookProgress();
+    activeUpdateDownloadSurface = 'test';
+    testDownloadInProgress = true;
+    setTestProgressVisible(true);
+    resetVsHookProgress('test');
     directedDownloadReady = false;
-    const buttons = [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean);
+    const buttons = [$('#statusDownloadButton')].filter(Boolean);
     buttons.forEach((button) => {
       button.disabled = true;
       button.dataset.originalText = button.textContent;
@@ -618,7 +628,7 @@ async function startVsHookDownload(updateOverride = null) {
       // mesmo fluxo seguro da atualização oficial.
       await window.hookUpdateCenter.cacheUpdatePackage({ update: updateOverride });
       directedDownloadReady = true;
-      updateVsHookProgress(100);
+      updateVsHookProgress(100, 'test');
       // Conserva exatamente a publicação direcionada que acabou de ser
       // guardada. A referência durável fica no processo principal/Store; o
       // botão Instalar não depende mais do estado online desta tela.
@@ -628,7 +638,8 @@ async function startVsHookDownload(updateOverride = null) {
   } catch (error) {
     showModal({ title: 'Erro no download', message: friendlyError(error, 'Não foi possível baixar a atualização.'), type: 'error' });
   } finally {
-    [$('#downloadButton'), $('#statusDownloadButton')].filter(Boolean).forEach((button) => {
+    testDownloadInProgress = false;
+    [$('#statusDownloadButton')].filter(Boolean).forEach((button) => {
       button.disabled = false;
       button.textContent = button.dataset.originalText || 'Baixar';
       delete button.dataset.originalText;
@@ -658,6 +669,7 @@ async function startCombinedUpdateDownload() {
       if (button) {
         button.disabled = true;
         if (downloadingFromInternet) {
+          activeUpdateDownloadSurface = 'home';
           combinedDownloadInProgress = true;
           setProgressVisible(true);
           resetVsHookProgress();
@@ -699,6 +711,7 @@ async function startCombinedUpdateDownload() {
   }
 
   combinedDownloadInProgress = true;
+  activeUpdateDownloadSurface = 'home';
   combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
   setProgressVisible(true);
   resetVsHookProgress();
@@ -782,8 +795,8 @@ async function installVsHookDownloadedUpdate() {
     const result = await window.hookUpdateCenter.installUpdate();
     if (result.ok && !String(result.action || '').startsWith('center-first-')) {
       renderState(await window.hookUpdateCenter.getState());
-      setProgressVisible(false);
-      resetVsHookProgress();
+      setTestProgressVisible(false);
+      resetVsHookProgress('test');
       showModal({ title: 'Instalação concluída', message: `${result.installedVersion || 'VS Hook'} foi instalado com sucesso.`, type: 'success' });
     }
     directedDownloadReady = false;
@@ -4035,8 +4048,10 @@ function renderState(nextState) {
     document.querySelectorAll('#statusUpdateInstallCard .description, #statusUpdateDescription').forEach((el) => el.remove());
     const statusDownloadButton = $('#statusDownloadButton');
     if (statusDownloadButton) {
-      statusDownloadButton.disabled = !hasInstallableFiles(update);
-      statusDownloadButton.textContent = 'Baixar';
+      statusDownloadButton.disabled = testDownloadInProgress ||
+        !hasInstallableFiles(update);
+      statusDownloadButton.textContent = testDownloadInProgress
+        ? 'Baixando...' : 'Baixar';
     }
   } else {
     const statusTitle = $('#statusUpdateTitle');
