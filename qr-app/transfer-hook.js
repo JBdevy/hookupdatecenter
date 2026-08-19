@@ -28,7 +28,7 @@
     <main class="transferHookApp">
       <header class="transferHookHeader">
         <button id="transferHookBack" class="transferHookBack" type="button" aria-label="Voltar">‹</button>
-        <div><h1>Transfer Hook</h1><p>Transferência direta pela rede local. Não usa internet.</p></div>
+        <div><h1>Drop Hook</h1><p>Transferência direta pela rede local. Não usa internet.</p></div>
       </header>
       <div class="transferHookGrid">
         <section class="transferHookCard">
@@ -117,7 +117,7 @@
       setProgress(0, total)
       const manifest = {
         schemaVersion: 1, transferId: randomTransferId(), code,
-        rootName: 'Transfer Hook', senderName: 'Celular', directories: [],
+        rootName: 'Drop Hook', senderName: 'Celular', directories: [],
         files: selectedFiles.map((entry, index) => ({ id: `file-${index + 1}`, relativePath: entry.name, size: entry.file.size })),
         totalBytes: total,
       }
@@ -184,7 +184,7 @@
             `${transferBase}/transfer-hook/share/status?code=${encodeURIComponent(code)}`,
             { cache: 'no-store' }))
           if (availability.available) break
-          if (!availability.preparing) throw new Error('Código do Transfer Hook inválido.')
+          if (!availability.preparing) throw new Error('Código do Drop Hook inválido.')
           setStatus('O computador está preparando os arquivos. Aguarde...')
           await new Promise((resolve) => setTimeout(resolve, 500))
         } catch (error) {

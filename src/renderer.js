@@ -1943,7 +1943,7 @@ async function selectCopyProjectFolder(mode) {
     else copyProjectSourceFolder = folder;
     renderCopyProjectState();
   } catch (error) {
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível escolher o arquivo ou a pasta.'), type: 'error' });
+    showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível escolher o arquivo ou a pasta.'), type: 'error' });
   }
 }
 
@@ -1958,7 +1958,7 @@ async function toggleCopyProjectReceiver() {
       destinationPath: copyProjectDestinationFolder.path
     }));
   } catch (error) {
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
+    showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível ativar o recebimento.'), type: 'error' });
   }
 }
 
@@ -1973,7 +1973,7 @@ async function sendCopyProjectFolder() {
   } catch (error) {
     // O estado detalhado também chega pelo evento, mas o modal torna a falha
     // de descoberta/rede inequívoca quando o usuário está em outra aba.
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível enviar os arquivos.'), type: 'error' });
+    showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível enviar os arquivos.'), type: 'error' });
   }
 }
 
@@ -1988,7 +1988,7 @@ async function toggleCopyProjectShare() {
       sourcePath: copyProjectSourceFolder.path
     }));
   } catch (error) {
-    showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível disponibilizar os arquivos.'), type: 'error' });
+    showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível disponibilizar os arquivos.'), type: 'error' });
   }
 }
 
@@ -2323,7 +2323,7 @@ function setupToolsSubmenu() {
   });
   $('#copyProjectOpenDestinationButton')?.addEventListener('click', () => {
     window.hookUpdateCenter.openCopyProjectDestination().catch((error) => {
-      showModal({ title: 'Transfer Hook', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
+      showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
     });
   });
   $('#copyProjectReceiverCode')?.addEventListener('input', (event) => {

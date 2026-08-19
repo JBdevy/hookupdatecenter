@@ -112,7 +112,7 @@ function attachStoredChatHandler() {
 }
 
 function renderStandaloneTransferHookButton() {
-  return '<button class="vshook-mode-button" id="openStandaloneTransferHookBtn">Abrir Transfer Hook</button>'
+  return '<button class="vshook-mode-button" id="openStandaloneTransferHookBtn">Abrir Drop Hook</button>'
 }
 
 function enterStandaloneTransferHook() {
@@ -128,7 +128,7 @@ function enterStandaloneTransferHook() {
   vshookProjectsRefreshRunId += 1
   enterApp({
     id: 'transfer-hook-local',
-    projectName: 'Transfer Hook',
+    projectName: 'Drop Hook',
     directorUrl: `http://${host}:${VSHOOK_DIRECTOR_PORT}`,
     musiciansUrl: `http://${host}:${VSHOOK_MUSICIANS_PORT}`,
     projectTabIndex: 0,
@@ -438,7 +438,7 @@ function renderNoProjects() {
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
-    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Transfer Hook funciona somente com a Hook Center aberta.</p>
+    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Drop Hook funciona somente com a Hook Center aberta.</p>
     ${renderStoredChatButton()}
     ${renderStandaloneTransferHookButton()}
     ${renderManualIpBox()}
@@ -465,7 +465,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
       <button class="vshook-mode-button" id="chooseChatHookBtn">Entrar no Chat Hook</button>
-      <button class="vshook-mode-button" id="chooseTransferHookBtn">Entrar no Transfer Hook</button>
+      <button class="vshook-mode-button" id="chooseTransferHookBtn">Entrar no Drop Hook</button>
     </div>
     <div class="vshook-app-version">Versão 1.0.1 app</div>
   `)
@@ -1025,7 +1025,7 @@ function renderBridgeNoProjects() {
     ${getLogoHtml()}
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
-    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Transfer Hook funciona somente com a Hook Center aberta.</p>
+    <p class="vshook-shell-status">Diretor e Músico precisam do REAPER. O Drop Hook funciona somente com a Hook Center aberta.</p>
     ${renderStoredChatButton()}
     ${renderStandaloneTransferHookButton()}
     <button class="vshook-secondary-button" id="refreshProjectsBtn">Atualizar</button>

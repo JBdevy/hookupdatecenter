@@ -5984,8 +5984,8 @@ body.previous-mode .content > .view.active {
 }
 
 .tools-copy-project-panel.active {
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 9px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 7px;
   overflow: auto;
 }
 
@@ -6005,7 +6005,7 @@ body.previous-mode .content > .view.active {
 .copy-project-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 7px;
   min-height: 0;
 }
 
@@ -6014,7 +6014,32 @@ body.previous-mode .content > .view.active {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+}
+
+body.tools-mode .copy-project-hero {
+  min-height: 48px;
+  padding: 6px 10px;
+}
+
+body.tools-mode .copy-project-card {
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+body.tools-mode .copy-project-card .tool-card-header,
+body.tools-mode .copy-project-progress-card .tool-card-header {
+  margin-bottom: 0;
+}
+
+body.tools-mode .copy-project-card > .muted {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+body.tools-mode .copy-project-card .selected-folder-box {
+  padding: 5px 8px;
 }
 
 .copy-project-card > button {
@@ -6024,7 +6049,7 @@ body.previous-mode .content > .view.active {
 .copy-project-source-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 6px;
 }
 
 .copy-project-source-actions > button {
@@ -6033,7 +6058,7 @@ body.previous-mode .content > .view.active {
 
 .copy-project-code-field {
   display: grid;
-  gap: 7px;
+  gap: 4px;
   color: var(--text);
   font-size: 12px;
   font-weight: 850;
@@ -6041,14 +6066,14 @@ body.previous-mode .content > .view.active {
 
 .copy-project-code-field input {
   width: 100%;
-  min-height: 46px;
-  padding: 8px 12px;
+  min-height: 38px;
+  padding: 5px 10px;
   border: 1px solid rgba(158, 255, 0, .28);
   border-radius: 11px;
   outline: none;
   background: #10111a;
   color: #fff;
-  font-size: 23px;
+  font-size: 20px;
   font-weight: 950;
   letter-spacing: .28em;
   text-align: center;
@@ -6063,8 +6088,8 @@ body.previous-mode .content > .view.active {
   display: grid;
   place-items: center;
   gap: 4px;
-  min-height: 92px;
-  padding: 10px;
+  min-height: 64px;
+  padding: 6px 9px;
   border: 1px solid rgba(187, 57, 255, .3);
   border-radius: 12px;
   background: linear-gradient(135deg, rgba(187, 57, 255, .1), rgba(158, 255, 0, .055));
@@ -6078,23 +6103,28 @@ body.previous-mode .content > .view.active {
 
 .copy-project-code-display strong {
   color: var(--green);
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 950;
   letter-spacing: .24em;
 }
 
 .copy-project-progress-card {
-  grid-column: 1 / -1;
+  padding: 7px 11px;
+  border-radius: 12px;
+  gap: 5px;
 }
 
 .copy-project-progress-shell {
-  height: 16px;
+  height: 13px;
   overflow: hidden;
 }
 
 .copy-project-progress-details {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
 }
 
 .copy-project-progress-details strong,
@@ -6106,6 +6136,7 @@ body.previous-mode .content > .view.active {
 
 .copy-project-actions {
   justify-content: flex-end;
+  margin-top: 0;
 }
 
 .copy-project-indeterminate {
@@ -6125,8 +6156,9 @@ body.previous-mode .content > .view.active {
   .copy-project-grid {
     grid-template-columns: 1fr;
   }
-  .copy-project-progress-card {
-    grid-column: auto;
+  .copy-project-progress-details {
+    display: grid;
+    gap: 2px;
   }
 }
 

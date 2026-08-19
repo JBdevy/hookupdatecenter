@@ -880,7 +880,7 @@
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Transfer Hook</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">Hook Marker</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
@@ -1150,11 +1150,29 @@
           <div class="hero-card tools-hero copy-project-hero">
             <div>
               <p class="eyebrow">Transferência direta pela rede</p>
-              <h1>Transfer Hook</h1>
+              <h1>Drop Hook</h1>
               <p class="muted">Envie arquivos avulsos ou pastas completas diretamente para outro computador ou celular.</p>
             </div>
             <span id="copyProjectStatusBadge" class="badge">Parado</span>
           </div>
+
+          <section class="card copy-project-progress-card">
+            <div class="tool-card-header">
+              <div><p class="eyebrow">Atividade</p><h2 id="copyProjectProgressTitle">Aguardando</h2></div>
+              <span id="copyProjectProgressPercent" class="badge">0%</span>
+            </div>
+            <div class="progress-shell copy-project-progress-shell">
+              <div id="copyProjectProgressBar" class="progress-bar"></div>
+            </div>
+            <div class="copy-project-progress-details">
+              <strong id="copyProjectProgressText">Escolha se este computador vai enviar ou receber.</strong>
+              <span id="copyProjectCurrentFile" class="muted"></span>
+            </div>
+            <div class="actions copy-project-actions">
+              <button id="copyProjectCancelButton" class="secondary-button hidden" type="button">Cancelar</button>
+              <button id="copyProjectOpenDestinationButton" class="secondary-button hidden" type="button">Mostrar pasta recebida</button>
+            </div>
+          </section>
 
           <div class="copy-project-grid">
             <section class="card copy-project-card">
@@ -1180,7 +1198,7 @@
               <div class="copy-project-code-display">
                 <span>Código fixo para o celular receber</span>
                 <strong id="copyProjectShareCode">------</strong>
-                <small>Este código não muda. Primeiro disponibilize o arquivo ou a pasta e depois informe o código no Transfer Hook do celular.</small>
+                <small>Este código não muda. Primeiro disponibilize o arquivo ou a pasta e depois informe o código no Drop Hook do celular.</small>
               </div>
               <button id="copyProjectShareButton" class="secondary-button" type="button" disabled>Disponibilizar para celular</button>
             </section>
@@ -1205,23 +1223,6 @@
               <button id="copyProjectReceiveButton" class="primary-button" type="button" disabled>Ativar recebimento</button>
             </section>
 
-            <section class="card copy-project-progress-card">
-              <div class="tool-card-header">
-                <div><p class="eyebrow">Atividade</p><h2 id="copyProjectProgressTitle">Aguardando</h2></div>
-                <span id="copyProjectProgressPercent" class="badge">0%</span>
-              </div>
-              <div class="progress-shell copy-project-progress-shell">
-                <div id="copyProjectProgressBar" class="progress-bar"></div>
-              </div>
-              <div class="copy-project-progress-details">
-                <strong id="copyProjectProgressText">Escolha se este computador vai enviar ou receber.</strong>
-                <span id="copyProjectCurrentFile" class="muted"></span>
-              </div>
-              <div class="actions copy-project-actions">
-                <button id="copyProjectCancelButton" class="secondary-button hidden" type="button">Cancelar</button>
-                <button id="copyProjectOpenDestinationButton" class="secondary-button hidden" type="button">Mostrar pasta recebida</button>
-              </div>
-            </section>
           </div>
         </div>
 

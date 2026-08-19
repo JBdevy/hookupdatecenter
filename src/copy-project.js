@@ -69,7 +69,7 @@ function safeRelativePath(value) {
 function safeRootName(value) {
   const name = String(value || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
     .replace(/[. ]+$/g, '').trim().slice(0, 180)
-  return name || 'Transfer Hook'
+  return name || 'Drop Hook'
 }
 
 function pathIdentity(value) {
@@ -607,7 +607,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
       if (req.method === 'GET' && url.pathname === '/transfer-hook/share/manifest') {
         const code = safeCode(url.searchParams.get('code'))
         if (!sharedFolder || code !== shareCode) {
-          jsonResponse(res, 403, { ok: false, error: 'Código do Transfer Hook inválido.' })
+          jsonResponse(res, 403, { ok: false, error: 'Código do Drop Hook inválido.' })
           return
         }
         jsonResponse(res, 200, { ok: true, schemaVersion: 1,
@@ -726,7 +726,7 @@ function createCopyProjectService({ getDeviceName, getFixedCode, onState } = {})
         jsonResponse(res, 200, { ok: true, targetRoot })
         return
       }
-      jsonResponse(res, 404, { ok: false, error: 'Rota Transfer Hook não encontrada.' })
+      jsonResponse(res, 404, { ok: false, error: 'Rota Drop Hook não encontrada.' })
     } catch (error) {
       const interrupted = !!inbound && [...inbound.files.values()]
         .some((file) => !file.complete) &&
