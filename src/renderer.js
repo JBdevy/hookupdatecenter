@@ -4640,7 +4640,6 @@ async function init() {
       showModal({ title:'Cliente teste', message:'Nenhuma atualização teste disponível para este computador.', type:'info' });
       return;
     }
-    setView('home');
     startVsHookDownload(testUpdate);
   });
   $('#installButton').addEventListener('click', () => {
