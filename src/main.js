@@ -1831,9 +1831,15 @@ function runProcess(command, args = [], options = {}) {
 async function getMacShowModeState() {
   if (process.platform === 'win32') {
     try {
+      // Os aliases LIDACTION/SUB_BUTTONS nao estao presentes em todas as
+      // edicoes/idiomas do Windows, especialmente em planos OEM. Os GUIDs
+      // abaixo sao a API estavel do powercfg para a acao da tampa.
+      const powerButtonsGroup = '4f971e89-eebd-4455-a8de-9e59040e7347';
+      const lidActionSetting = '5ca83367-6e45-459f-a27b-476b1d01c936';
       const output = await runProcess('powercfg.exe', [
-        '/query', 'SCHEME_CURRENT', 'SUB_BUTTONS', 'LIDACTION'
+        '/query', 'SCHEME_CURRENT', powerButtonsGroup, lidActionSetting
       ], { timeout: 12000 });
+      const lidActionAvailable = output.toLowerCase().includes(lidActionSetting);
       const ac = output.match(/Current AC Power Setting Index:\s*0x([0-9a-f]+)/i);
       const dc = output.match(/Current DC Power Setting Index:\s*0x([0-9a-f]+)/i);
       // powercfg localiza essas etiquetas conforme o idioma do Windows. Os
@@ -1849,10 +1855,16 @@ async function getMacShowModeState() {
       return {
         ok: true,
         supported: true,
-        enabled: lidActionAc === 0 && lidActionDc === 0,
+        // Em desktop o Windows nao expoe acao de tampa. Nesse caso, o
+        // bloqueador do Electron ainda e o modo valido para repouso enquanto
+        // a Central estiver aberta.
+        enabled: lidActionAvailable
+          ? lidActionAc === 0 && lidActionDc === 0
+          : powerBlockerActive,
         platform: 'win32',
         lidActionAc,
         lidActionDc,
+        lidActionAvailable,
         powerBlockerActive,
         message: 'No Windows, o Modo Show impede repouso por inatividade e define “não fazer nada” ao fechar a tampa.'
       };
@@ -1886,6 +1898,8 @@ async function setMacShowMode(enabled) {
     const current = await getMacShowModeState();
     if (!current.ok) throw new Error(current.error || 'Não foi possível consultar o plano de energia do Windows.');
     const saved = store.get('showModeWindows') || {};
+    const powerButtonsGroup = '4f971e89-eebd-4455-a8de-9e59040e7347';
+    const lidActionSetting = '5ca83367-6e45-459f-a27b-476b1d01c936';
     if (enabled) {
       if (!Number.isInteger(saved.originalLidActionAc) || !Number.isInteger(saved.originalLidActionDc)) {
         store.set('showModeWindows', {
@@ -1893,21 +1907,25 @@ async function setMacShowMode(enabled) {
           originalLidActionDc: Number.isInteger(current.lidActionDc) ? current.lidActionDc : 1
         });
       }
-      await runWindowsElevatedPowerShell([
-        "$ErrorActionPreference='Stop'",
-        'powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0',
-        'powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0',
-        'powercfg.exe /setactive SCHEME_CURRENT'
-      ].join('; '));
+      if (current.lidActionAvailable) {
+        await runWindowsElevatedPowerShell([
+          "$ErrorActionPreference='Stop'",
+          `powercfg.exe /setacvalueindex SCHEME_CURRENT ${powerButtonsGroup} ${lidActionSetting} 0`,
+          `powercfg.exe /setdcvalueindex SCHEME_CURRENT ${powerButtonsGroup} ${lidActionSetting} 0`,
+          'powercfg.exe /setactive SCHEME_CURRENT'
+        ].join('; '));
+      }
     } else {
       const ac = Number.isInteger(saved.originalLidActionAc) ? saved.originalLidActionAc : 1;
       const dc = Number.isInteger(saved.originalLidActionDc) ? saved.originalLidActionDc : 1;
-      await runWindowsElevatedPowerShell([
-        "$ErrorActionPreference='Stop'",
-        `powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION ${ac}`,
-        `powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION ${dc}`,
-        'powercfg.exe /setactive SCHEME_CURRENT'
-      ].join('; '));
+      if (current.lidActionAvailable) {
+        await runWindowsElevatedPowerShell([
+          "$ErrorActionPreference='Stop'",
+          `powercfg.exe /setacvalueindex SCHEME_CURRENT ${powerButtonsGroup} ${lidActionSetting} ${ac}`,
+          `powercfg.exe /setdcvalueindex SCHEME_CURRENT ${powerButtonsGroup} ${lidActionSetting} ${dc}`,
+          'powercfg.exe /setactive SCHEME_CURRENT'
+        ].join('; '));
+      }
       store.set('showModeWindows', { originalLidActionAc: null, originalLidActionDc: null });
     }
     const active = Number.isInteger(showModePowerSaveBlockerId) &&

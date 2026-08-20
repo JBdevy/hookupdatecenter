@@ -2054,7 +2054,12 @@ function renderCopyProjectState(nextState = copyProjectState) {
   if (refreshDevicesButton) refreshDevicesButton.disabled = operationActive;
   if (sendButton) sendButton.disabled = operationActive || !copyProjectSourceFolder || !copyProjectSelectedDeviceId;
   if (shareButton) {
-    shareButton.disabled = busy || waiting || (!data.sharing && !copyProjectSourceFolder);
+    // O receptor fica permanentemente em "waiting" para aceitar celular/PC.
+    // Isso nao conflita com disponibilizar um arquivo para o celular: somente
+    // uma transferencia realmente ativa (sending/receiving/preparing) deve
+    // bloquear esta acao. Antes, o waiting obrigava o usuario a clicar em
+    // Enviar para outro PC apenas para liberar este botao.
+    shareButton.disabled = busy || (!data.sharing && !copyProjectSourceFolder);
     shareButton.textContent = data.sharing ? 'Parar de disponibilizar' : 'Disponibilizar para celular';
   }
   cancelButton?.classList.toggle('hidden', !busy);
