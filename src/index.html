@@ -1089,7 +1089,7 @@
               </div>
               <p class="hook-midi-footnote muted">Envie MIDI para uma ponta e receba na outra. As portas temporárias permanecem até serem removidas, o serviço MIDI reiniciar ou o Windows reiniciar.</p>
             </div>
-            <div class="card tools-midi-card">
+            <div class="card tools-midi-card hook-midi-mtc-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Redundância de transporte</p><h2>MTC: PC A + PC B → PC C</h2></div>
                 <span id="hookMidiMtcBadge" class="badge">Escolha a saída</span>
@@ -1150,9 +1150,9 @@
         <div id="toolsMacShowModePanel" class="tools-panel tools-mac-show-mode-panel" data-tools-panel-content="show-mode" role="tabpanel">
           <div class="hero-card tools-hero tools-midi-hero">
             <div>
-              <p class="eyebrow">macOS</p>
+              <p class="eyebrow">Energia do sistema</p>
               <h1>Modo Show</h1>
-              <p class="muted">Mantenha o áudio e o REAPER ativos mesmo ao fechar a tampa do MacBook, sem precisar de monitor externo.</p>
+              <p class="muted">Evite repouso durante o show. No Mac e no Windows mantém o áudio ativo mesmo com a tampa fechada.</p>
             </div>
             <span id="macShowModeBadge" class="badge">Verificando</span>
           </div>
@@ -1161,7 +1161,7 @@
               <div class="tool-card-header">
                 <div><p class="eyebrow">Tampa fechada</p><h2 id="macShowModeTitle">Verificando Modo Show</h2></div>
               </div>
-              <p id="macShowModeDescription" class="muted">Consultando a configuração de energia do macOS.</p>
+              <p id="macShowModeDescription" class="muted">Consultando a configuração de energia do sistema.</p>
               <div class="actions hook-midi-actions">
                 <button id="macShowModeToggleButton" class="primary-button" type="button" disabled>Ativar Modo Show</button>
                 <button id="macShowModeRefreshButton" class="secondary-button" type="button">Atualizar</button>
@@ -1170,10 +1170,11 @@
             <section class="card tools-midi-card">
               <div class="tool-card-header"><div><p class="eyebrow">Uso seguro</p><h2>Antes e depois do show</h2></div></div>
               <ol class="tools-instructions-list">
-                <li>Clique em <strong>Ativar Modo Show</strong> e confirme a senha do administrador do Mac.</li>
-                <li>Feche a tampa: o áudio, REAPER e VS Hook continuam funcionando.</li>
-                <li>Ao finalizar, volte aqui e clique em <strong>Desativar Modo Show</strong>.</li>
-                <li>Nunca coloque o Mac fechado em mochila, case ou local sem ventilação enquanto o modo estiver ativo.</li>
+                <li>No Mac, clique em <strong>Ativar Modo Show</strong> e confirme a senha do administrador.</li>
+                <li>No Windows, confirme o aviso do sistema: fechar a tampa passa a não fazer nada tanto na tomada quanto na bateria.</li>
+                <li>No Mac e no Windows, fechar a tampa não interrompe o áudio, REAPER ou VS Hook.</li>
+                <li>Ao finalizar, volte aqui e clique em <strong>Desativar Modo Show</strong>. No Windows, a ação da tampa permanece alterada até você desativar.</li>
+                <li>Nunca coloque o notebook fechado em mochila, case ou local sem ventilação enquanto o modo estiver ativo.</li>
               </ol>
             </section>
           </div>

@@ -1764,26 +1764,32 @@ function renderMacShowMode(nextState = macShowModeState) {
   const description = $('#macShowModeDescription');
   const toggle = $('#macShowModeToggleButton');
   const refresh = $('#macShowModeRefreshButton');
-  const macos = data.platform === 'darwin' || window.hookUpdateCenter?.platform === 'darwin';
-  const supported = macos && data.supported !== false;
+  const platform = data.platform || window.hookUpdateCenter?.platform;
+  const macos = platform === 'darwin';
+  const windows = platform === 'win32';
+  const supported = (macos || windows) && data.supported !== false;
   const enabled = data.enabled === true;
 
-  if (!macos) {
-    if (badge) badge.textContent = 'Somente macOS';
+  if (!supported) {
+    if (badge) badge.textContent = 'Indisponível';
     if (title) title.textContent = 'Indisponível neste sistema';
-    if (description) description.textContent = 'O Modo Show de tampa fechada é exclusivo para MacBook com macOS.';
+    if (description) description.textContent = 'O Modo Show está disponível no Windows e no macOS.';
   } else if (data.ok === false) {
     if (badge) badge.textContent = 'Não foi possível consultar';
     if (title) title.textContent = 'Estado não confirmado';
     if (description) description.textContent = data.error || 'Não foi possível consultar a configuração de energia do macOS.';
   } else if (enabled) {
     if (badge) badge.textContent = 'Modo Show ativo';
-    if (title) title.textContent = 'Tampa fechada liberada';
-    if (description) description.textContent = 'O Mac continuará ativo ao fechar a tampa, mesmo sem monitor externo. Desative ao terminar o show.';
+    if (title) title.textContent = macos ? 'Tampa fechada liberada' : 'Repouso por inatividade bloqueado';
+    if (description) description.textContent = macos
+      ? 'O Mac continuará ativo ao fechar a tampa, mesmo sem monitor externo. Desative ao terminar o show.'
+      : 'O Windows não entrará em repouso e fechar a tampa não fará nada, tanto na tomada quanto na bateria. Desative ao terminar o show.';
   } else {
     if (badge) badge.textContent = 'Modo Show desligado';
-    if (title) title.textContent = 'Tampa fechada suspende o Mac';
-    if (description) description.textContent = 'Ative antes do show para manter o REAPER e o áudio funcionando com a tampa fechada.';
+    if (title) title.textContent = macos ? 'Tampa fechada suspende o Mac' : 'Repouso normal habilitado';
+    if (description) description.textContent = macos
+      ? 'Ative antes do show para manter o REAPER e o áudio funcionando com a tampa fechada.'
+      : 'Ative antes do show para impedir que o Windows suspenda o REAPER por inatividade.';
   }
   if (toggle) {
     toggle.textContent = enabled ? 'Desativar Modo Show' : 'Ativar Modo Show';
@@ -1807,12 +1813,14 @@ async function refreshMacShowMode() {
 }
 
 async function toggleMacShowMode() {
-  if (macShowModeBusy || window.hookUpdateCenter?.platform !== 'darwin') return;
+  if (macShowModeBusy || !['darwin', 'win32'].includes(window.hookUpdateCenter?.platform)) return;
   const enabling = macShowModeState?.enabled !== true;
   if (enabling) {
     const confirmed = await confirmModal({
       title: 'Ativar Modo Show?',
-      message: 'O Mac continuará ligado e reproduzindo áudio mesmo com a tampa fechada, sem monitor externo. Não o coloque em mochila, case ou local sem ventilação enquanto este modo estiver ativo.',
+      message: window.hookUpdateCenter?.platform === 'darwin'
+        ? 'O Mac continuará ligado e reproduzindo áudio mesmo com a tampa fechada, sem monitor externo. Não o coloque em mochila, case ou local sem ventilação enquanto este modo estiver ativo.'
+        : 'O Windows não entrará em repouso por inatividade e fechar a tampa não fará nada, na tomada ou bateria. A Hook Center pedirá autorização do Windows para aplicar essa configuração.',
       type: 'info',
       okText: 'Ativar',
       cancelText: 'Cancelar'

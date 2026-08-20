@@ -5983,6 +5983,51 @@ body.previous-mode .content > .view.active {
   line-height: 1.45;
 }
 
+/* A regra compacta usada pelo Hook Rename fixa `.tools-grid` em uma única
+   linha. A aba Hook MIDI tem três cards e, sem esta excecao, o terceiro era
+   desenhado por cima dos dois primeiros em janelas baixas. */
+body.tools-mode .tools-midi-panel.active {
+  grid-template-rows: auto auto;
+  align-content: start;
+  overflow: auto;
+}
+
+body.tools-mode .tools-midi-panel .tools-midi-grid {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: none;
+  align-items: start;
+  align-content: start;
+  gap: 9px;
+}
+
+body.tools-mode .tools-midi-panel .tools-midi-card {
+  min-height: 0;
+  padding: 10px 12px;
+  gap: 9px;
+}
+
+body.tools-mode .tools-midi-panel .hook-midi-mtc-card {
+  grid-column: 1 / -1;
+}
+
+body.tools-mode .tools-midi-panel .hook-midi-mtc-card .tools-instructions-list {
+  margin: 1px 0 0;
+}
+
+@media (max-width: 820px) {
+  body.tools-mode .tools-midi-panel .tools-midi-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  body.tools-mode .tools-midi-panel .hook-midi-mtc-card {
+    grid-column: auto;
+  }
+}
+
 @media (max-width: 820px) {
   .tools-midi-grid {
     grid-template-columns: 1fr;

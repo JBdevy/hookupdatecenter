@@ -739,6 +739,8 @@ function createTimecodeLanRelay(options = {}) {
   let projectSyncExportBundle = null
   let projectSyncBundlePullPromise = null
   let lastProjectSyncApplyKey = ''
+  let projectSyncRoleHandoverPromise = null
+  let lastProjectSyncRoleHandoverKey = ''
   let projectSyncAutomaticRetry = null
   let relayLifecycleSequence = 0
   let lastProjectSyncStagingCleanupAt = 0
@@ -1236,6 +1238,16 @@ function createTimecodeLanRelay(options = {}) {
       automatic: apply?.automatic === true,
       differencePlan: String(apply?.differencePlan || '').slice(0, 128 * 1024),
     }
+  }
+
+  function projectSyncRoleHandoverRequest(status) {
+    const handover = status?.projectSyncRoleHandover
+    if (!handover || typeof handover !== 'object' ||
+        String(handover.state || '').trim().toLowerCase() !== 'requested') {
+      return null
+    }
+    const requestId = safePreflightRequestId(handover.requestId)
+    return requestId ? { requestId } : null
   }
 
   function projectSyncApplyIsActive(status, requestId) {
@@ -2881,6 +2893,71 @@ function createTimecodeLanRelay(options = {}) {
     if (notify) notifyLocalPeer(false).catch(() => {})
   }
 
+  async function publishProjectSyncRoleHandoverState(requestId, state, error = '') {
+    await sendLocalCommand({
+      type: 'project_sync_role_handover_state',
+      requestId,
+      state,
+      error: String(error || '').slice(0, 1000),
+    })
+  }
+
+  async function maybeHandoverProjectSyncRole(status) {
+    const request = projectSyncRoleHandoverRequest(status)
+    if (!request || status?.mode !== 'project_sync' ||
+        projectSyncRole(status) !== 'primary' ||
+        !transmitterPeer?.connected || !transmitterPeer?.token ||
+        !transmitterPeer?.remoteSessionId || !transmitterPeer?.localSessionId) {
+      return false
+    }
+    const key = `${request.requestId}|${transmitterPeer.receiverId}|${transmitterPeer.remoteSessionId}`
+    if (key === lastProjectSyncRoleHandoverKey || projectSyncRoleHandoverPromise) return true
+    lastProjectSyncRoleHandoverKey = key
+    projectSyncRoleHandoverPromise = (async () => {
+      try {
+        const result = await requestJson({
+          hostname: transmitterPeer.address,
+          port: transmitterPeer.port,
+          path: `${outboundLinkPrefix}/project-sync/handover`,
+          method: 'POST',
+          payload: {
+            code: String(status.code || ''),
+            requestId: request.requestId,
+            transmitterId: instanceId,
+            sourceSessionId: transmitterPeer.localSessionId,
+            receiverSessionId: transmitterPeer.remoteSessionId,
+            token: transmitterPeer.token,
+            projectSyncRole: 'primary',
+          },
+          timeoutMs: 1400,
+        })
+        if (!result.ok || result.data?.ok !== true) {
+          throw new Error(result.data?.error || 'O PC B não confirmou a troca de mestre.')
+        }
+        const localQueued = await sendLocalCommand({
+          type: 'project_sync_role_handover',
+          role: 'secondary',
+          requestId: request.requestId,
+        })
+        if (!localQueued) {
+          throw new Error('Não foi possível alterar este computador para PC B.')
+        }
+        // A extensão consome o comando no próximo ciclo principal. Encerrar o
+        // peer antigo evita que um último pacote A -> B atravesse a troca.
+        resetTransmitterPeer(true)
+        await publishProjectSyncRoleHandoverState(request.requestId, 'completed')
+      } catch (error) {
+        lastProjectSyncRoleHandoverKey = ''
+        await publishProjectSyncRoleHandoverState(
+          request.requestId, 'error', error?.message || 'Falha ao transferir mestre.')
+      } finally {
+        projectSyncRoleHandoverPromise = null
+      }
+    })()
+    await projectSyncRoleHandoverPromise
+    return true
+  }
+
   function sendUdp(payload, address, port = discoveryTargetPort) {
     if (!socket) return
     const data = Buffer.from(JSON.stringify(payload), 'utf8')
@@ -3716,6 +3793,37 @@ function createTimecodeLanRelay(options = {}) {
           transmitterPeer.lastManifestSnapshotRevision =
             acceptedManifestSnapshotRevision
         }
+
+        // O manifesto vivo e comparado no PC B. Devolve o resultado para o
+        // PC A pelo mesmo canal, sem novo pareamento e sem abrir a janela.
+        // Assim uma Conferencia que nasceu quando A estava em uma aba/projeto
+        // vazio deixa de exibir o diff antigo assim que A abre a aba certa.
+        const remotePreflightRequestId = String(
+          remoteResult.data.projectSyncPreflightRequestId || '').trim()
+        const localPreflightRequestId = String(
+          status.projectSyncPreflightRequestId ||
+          status.projectSyncRequestId || '').trim()
+        const remoteDiff = remoteResult.data.projectSyncDiff
+        if (remotePreflightRequestId &&
+            remotePreflightRequestId === localPreflightRequestId &&
+            remoteDiff && typeof remoteDiff === 'object') {
+          const remoteConferenceKey = `${remotePreflightRequestId}|` +
+            `${remoteManifestRevision}|${JSON.stringify(remoteDiff)}`
+          if (transmitterPeer.lastRemoteConferenceKey !==
+              remoteConferenceKey) {
+            transmitterPeer.lastRemoteConferenceKey = remoteConferenceKey
+            await sendLocalCommand({
+              type: 'project_sync_preflight',
+              phase: 'live',
+              showConference: false,
+              role: 'primary',
+              requestId: remotePreflightRequestId,
+              ready: remoteResult.data.projectSyncReady === true,
+              diff: remoteDiff,
+              remoteManifestRevision,
+            })
+          }
+        }
       }
       const acknowledged = Number(remoteResult.data.acceptedSequence)
       const highestSentSequence = eventsForSend.reduce((highest, event) => {
@@ -3790,6 +3898,7 @@ function createTimecodeLanRelay(options = {}) {
         }
       } else if (status.mode === 'project_sync') {
         if (projectSyncRole(status) === 'primary') {
+          if (await maybeHandoverProjectSyncRole(status)) return
           pendingProjectSyncPreflight = null
           projectSyncApplySession = null
           if (receiverSession) resetReceiverSession(false)
@@ -4383,6 +4492,48 @@ function tokenMatches(left, right) {
     return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b)
   }
 
+  async function handleProjectSyncRoleHandover(req, res) {
+    const payload = await readJsonBody(req)
+    const status = await readLocalStatus(false)
+    const requestId = safePreflightRequestId(payload.requestId)
+    if (!licenseIsActive() || !requestId ||
+        status?.mode !== 'project_sync' ||
+        projectSyncRole(status) !== 'secondary' ||
+        !receiverSession ||
+        String(payload.code || '') !== String(status.code || '') ||
+        String(payload.transmitterId || '') !== receiverSession.transmitterId ||
+        String(payload.sourceSessionId || '') !== receiverSession.remoteSessionId ||
+        String(payload.receiverSessionId || '') !== receiverSession.localSessionId ||
+        String(payload.projectSyncRole || '') !== 'primary' ||
+        !tokenMatches(payload.token, receiverSession.token)) {
+      sendJson(res, 403, { ok: false, error: 'Troca de mestre não autorizada.' })
+      return
+    }
+    const activeApplyRequestId = safePreflightRequestId(
+      projectSyncApplySession?.requestId)
+    if (activeApplyRequestId &&
+        projectSyncApplyIsActive(status, activeApplyRequestId)) {
+      sendJson(res, 409, {
+        ok: false,
+        error: 'A aplicação de modificações ainda está em andamento.'
+      })
+      return
+    }
+    const queued = await sendLocalCommand({
+      type: 'project_sync_role_handover',
+      role: 'primary',
+      requestId,
+    })
+    if (!queued) {
+      sendJson(res, 503, { ok: false, error: 'A extensão VS Hook do PC B não respondeu.' })
+      return
+    }
+    // Impede que o relay B aceite mais um pacote A -> B enquanto a extensão
+    // troca o papel. A próxima descoberta nasce automaticamente como novo A.
+    resetReceiverSession(true)
+    sendJson(res, 200, { ok: true, requestId })
+  }
+
   async function handleEvents(req, res) {
     const payload = await readJsonBody(req)
     const status = await readLocalStatus(false)
@@ -4559,6 +4710,17 @@ function tokenMatches(left, right) {
       structuralManifestRevision: status.mode === 'project_sync'
         ? projectSyncStructuralRevision(status)
         : undefined,
+      projectSyncReady: status.mode === 'project_sync'
+        ? status.projectSyncReady === true
+        : undefined,
+      projectSyncDiff: status.mode === 'project_sync' &&
+          status.projectSyncDiff && typeof status.projectSyncDiff === 'object'
+        ? status.projectSyncDiff
+        : undefined,
+      projectSyncPreflightRequestId: status.mode === 'project_sync'
+        ? String(status.projectSyncPreflightRequestId ||
+          status.projectSyncRequestId || '').trim()
+        : undefined,
     })
   }
 
@@ -4592,6 +4754,9 @@ function tokenMatches(left, right) {
       } else if (req.method === 'POST' &&
           pathname === `${linkPrefix}/project-sync/bundle/consumed`) {
         await handleProjectSyncBundleConsumed(req, res)
+      } else if (req.method === 'POST' &&
+          pathname === `${linkPrefix}/project-sync/handover`) {
+        await handleProjectSyncRoleHandover(req, res)
       } else if (req.method === 'POST' && pathname === `${linkPrefix}/events`) {
         await handleEvents(req, res)
       } else {

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 // O Electron intercepta caminhos terminados em .asar no módulo fs comum.
@@ -38,6 +38,10 @@ const {
   testResolumeColumn
 } = require('./hook-marker');
 const appPackage = require('../package.json');
+
+// No Windows o Modo Show é uma asserção válida somente enquanto a Central
+// está aberta. No macOS a tampa fechada exige o ajuste persistente do pmset.
+let showModePowerSaveBlockerId = null;
 
 const store = new Store({
   defaults: {
@@ -87,6 +91,10 @@ const store = new Store({
     },
     hookMidi: {
       ports: []
+    },
+    showModeWindows: {
+      originalLidActionAc: null,
+      originalLidActionDc: null
     },
     hookMarker: {
       fps: 30,
@@ -1821,6 +1829,40 @@ function runProcess(command, args = [], options = {}) {
 }
 
 async function getMacShowModeState() {
+  if (process.platform === 'win32') {
+    try {
+      const output = await runProcess('powercfg.exe', [
+        '/query', 'SCHEME_CURRENT', 'SUB_BUTTONS', 'LIDACTION'
+      ], { timeout: 12000 });
+      const ac = output.match(/Current AC Power Setting Index:\s*0x([0-9a-f]+)/i);
+      const dc = output.match(/Current DC Power Setting Index:\s*0x([0-9a-f]+)/i);
+      // powercfg localiza essas etiquetas conforme o idioma do Windows. Os
+      // dois últimos valores hexadecimais são sempre os índices AC e DC.
+      const indexes = [...output.matchAll(/\b0x([0-9a-f]+)\b/gi)]
+        .map((match) => Number.parseInt(match[1], 16));
+      const lidActionAc = ac ? Number.parseInt(ac[1], 16)
+        : (indexes.length >= 2 ? indexes[indexes.length - 2] : null);
+      const lidActionDc = dc ? Number.parseInt(dc[1], 16)
+        : (indexes.length >= 1 ? indexes[indexes.length - 1] : null);
+      const powerBlockerActive = Number.isInteger(showModePowerSaveBlockerId) &&
+        powerSaveBlocker.isStarted(showModePowerSaveBlockerId);
+      return {
+        ok: true,
+        supported: true,
+        enabled: lidActionAc === 0 && lidActionDc === 0,
+        platform: 'win32',
+        lidActionAc,
+        lidActionDc,
+        powerBlockerActive,
+        message: 'No Windows, o Modo Show impede repouso por inatividade e define “não fazer nada” ao fechar a tampa.'
+      };
+    } catch (error) {
+      return {
+        ok: false, supported: true, enabled: false, platform: 'win32',
+        error: error?.message || 'Não foi possível consultar o plano de energia do Windows.'
+      };
+    }
+  }
   if (process.platform !== 'darwin') {
     return {
       ok: true, supported: false, enabled: false, platform: process.platform,
@@ -1840,6 +1882,44 @@ async function getMacShowModeState() {
 }
 
 async function setMacShowMode(enabled) {
+  if (process.platform === 'win32') {
+    const current = await getMacShowModeState();
+    if (!current.ok) throw new Error(current.error || 'Não foi possível consultar o plano de energia do Windows.');
+    const saved = store.get('showModeWindows') || {};
+    if (enabled) {
+      if (!Number.isInteger(saved.originalLidActionAc) || !Number.isInteger(saved.originalLidActionDc)) {
+        store.set('showModeWindows', {
+          originalLidActionAc: Number.isInteger(current.lidActionAc) ? current.lidActionAc : 1,
+          originalLidActionDc: Number.isInteger(current.lidActionDc) ? current.lidActionDc : 1
+        });
+      }
+      await runWindowsElevatedPowerShell([
+        "$ErrorActionPreference='Stop'",
+        'powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0',
+        'powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0',
+        'powercfg.exe /setactive SCHEME_CURRENT'
+      ].join('; '));
+    } else {
+      const ac = Number.isInteger(saved.originalLidActionAc) ? saved.originalLidActionAc : 1;
+      const dc = Number.isInteger(saved.originalLidActionDc) ? saved.originalLidActionDc : 1;
+      await runWindowsElevatedPowerShell([
+        "$ErrorActionPreference='Stop'",
+        `powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION ${ac}`,
+        `powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION ${dc}`,
+        'powercfg.exe /setactive SCHEME_CURRENT'
+      ].join('; '));
+      store.set('showModeWindows', { originalLidActionAc: null, originalLidActionDc: null });
+    }
+    const active = Number.isInteger(showModePowerSaveBlockerId) &&
+      powerSaveBlocker.isStarted(showModePowerSaveBlockerId);
+    if (enabled && !active) {
+      showModePowerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    } else if (!enabled && active) {
+      powerSaveBlocker.stop(showModePowerSaveBlockerId);
+      showModePowerSaveBlockerId = null;
+    }
+    return getMacShowModeState();
+  }
   if (process.platform !== 'darwin') {
     throw new Error('O Modo Show de tampa fechada está disponível somente no macOS.');
   }
@@ -7392,5 +7472,10 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  if (Number.isInteger(showModePowerSaveBlockerId) &&
+      powerSaveBlocker.isStarted(showModePowerSaveBlockerId)) {
+    powerSaveBlocker.stop(showModePowerSaveBlockerId);
+  }
+  showModePowerSaveBlockerId = null;
   prepareForAppQuit();
 });
