@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   configureDirectCable: (payload) => ipcRenderer.invoke('direct-cable-configure', payload),
   disconnectDirectCable: (payload) => ipcRenderer.invoke('direct-cable-disconnect', payload),
   restartDirectCable: (payload) => ipcRenderer.invoke('direct-cable-restart', payload),
+  getMacShowModeState: () => ipcRenderer.invoke('mac-show-mode-get-state'),
+  setMacShowMode: (payload) => ipcRenderer.invoke('mac-show-mode-set', payload),
   getHookMidiState: () => ipcRenderer.invoke('hook-midi-get-state'),
   createHookMidiPort: (payload) => ipcRenderer.invoke('hook-midi-create', payload),
   removeHookMidiPort: (payload) => ipcRenderer.invoke('hook-midi-remove', payload),

@@ -320,9 +320,72 @@ async function collectTransferSource(sourcePath, update, isActive) {
   }
 }
 
+function normalizeTransferSourcePaths(value) {
+  const values = Array.isArray(value) ? value : [value]
+  const result = []
+  const seen = new Set()
+  for (const candidate of values) {
+    const text = String(candidate || '').trim()
+    if (!text) continue
+    const resolved = path.resolve(text)
+    const identity = pathIdentity(resolved)
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    result.push(resolved)
+  }
+  return result
+}
+
+async function collectTransferSources(sourcePathValue, update, isActive) {
+  const sourcePaths = normalizeTransferSourcePaths(sourcePathValue)
+  if (!sourcePaths.length) {
+    throw new Error('Escolha pelo menos um arquivo ou uma pasta para transferir.')
+  }
+  if (sourcePaths.length === 1) {
+    return collectTransferSource(sourcePaths[0], update, isActive)
+  }
+
+  const files = []
+  const names = new Set()
+  let totalBytes = 0
+  for (const sourcePath of sourcePaths) {
+    isActive()
+    const sourceStat = await fs.promises.lstat(sourcePath)
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+      throw new Error('A seleção múltipla aceita somente arquivos. Para enviar uma pasta, escolha-a separadamente.')
+    }
+    const stat = await regularFileStat(sourcePath)
+    const relativePath = safeRelativePath(path.basename(sourcePath))
+    if (!relativePath) throw new Error('Um dos arquivos possui nome incompatível com a transferência.')
+    // O destino pode usar outro sistema operacional. Trate maiúsculas e
+    // minúsculas como iguais para não sobrescrever silenciosamente no Windows.
+    const nameIdentity = relativePath.toLocaleLowerCase('pt-BR')
+    if (names.has(nameIdentity)) {
+      throw new Error(`Existem dois arquivos chamados “${relativePath}”. Escolha apenas um deles por transferência.`)
+    }
+    names.add(nameIdentity)
+    totalBytes += stat.size
+    if (files.length >= COPY_PROJECT_MAX_FILES || totalBytes > COPY_PROJECT_MAX_TOTAL_BYTES) {
+      throw new Error('A seleção excede o limite da transferência.')
+    }
+    files.push({
+      id: `file-${files.length + 1}`,
+      relativePath,
+      absolutePath: sourcePath,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
+    })
+    update({ phase: 'preparing', fileIndex: files.length,
+      fileCount: sourcePaths.length, currentFile: relativePath,
+      totalBytes, bytesDone: 0 })
+  }
+  return { sourceKind: 'files', files, directories: [], totalBytes }
+}
+
 function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, onState } = {}) {
   let state = {
-    mode: '', phase: 'idle', code: '', sourcePath: '', destinationPath: '',
+    mode: '', phase: 'idle', code: '', sourcePath: '', sourcePaths: [], destinationPath: '',
     rootName: '', peerName: '', bytesDone: 0, totalBytes: 0,
     fileIndex: 0, fileCount: 0, currentFile: '', error: '', result: '',
     receivedPath: '', targetDeviceId: '',
@@ -337,7 +400,13 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
   let receiverToken = ''
   let inbound = null
   let sharedFolder = null
-  let shareCode = ''
+  // O código continua protegendo celular -> PC. Para PC -> celular, o
+  // aplicativo encontra a Hook Center pela rede e recebe um acesso efêmero.
+  // Assim não há código visível para digitar no celular.
+  let shareAccessToken = ''
+  // Compatibilidade temporária com versões antigas do aplicativo que ainda
+  // informam o código ao baixar. A interface nova nunca o exibe.
+  let shareLegacyCode = ''
   let operationGeneration = 0
   const fixedCode = (() => {
     try { return safeCode(getFixedCode?.()) || randomCode() } catch (_) { return randomCode() }
@@ -363,8 +432,8 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
   }
 
   function publicState() {
-    return { ...state, receiving: !!receiverCode, sharing: !!shareCode,
-      shareCode, fixedCode, localDeviceId, devices: availableDevices(),
+    return { ...state, receiving: !!receiverCode, sharing: !!shareAccessToken,
+      fixedCode, localDeviceId, devices: availableDevices(),
       protocolVersion: COPY_PROJECT_VERSION }
   }
 
@@ -655,17 +724,22 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
         return
       }
       if (req.method === 'GET' && url.pathname === '/transfer-hook/share/status') {
-        const code = safeCode(url.searchParams.get('code'))
+        const legacyCode = safeCode(url.searchParams.get('code'))
+        const legacyCompatible = !!shareLegacyCode && legacyCode === shareLegacyCode
         jsonResponse(res, 200, { ok: true, version: COPY_PROJECT_VERSION,
-          available: !!sharedFolder && code === shareCode,
-          preparing: !!shareCode && !sharedFolder && code === shareCode,
-          name: String(getDeviceName?.() || os.hostname()) })
+          available: !!sharedFolder && (!!shareAccessToken || legacyCompatible),
+          preparing: (!!shareAccessToken || legacyCompatible) && !sharedFolder,
+          name: String(getDeviceName?.() || os.hostname()),
+          access: sharedFolder && shareAccessToken ? shareAccessToken : '' })
         return
       }
       if (req.method === 'GET' && url.pathname === '/transfer-hook/share/manifest') {
-        const code = safeCode(url.searchParams.get('code'))
-        if (!sharedFolder || code !== shareCode) {
-          jsonResponse(res, 403, { ok: false, error: 'Código do Drop Hook inválido.' })
+        const access = safeToken(url.searchParams.get('access'))
+        const legacyCode = safeCode(url.searchParams.get('code'))
+        const authorized = access === shareAccessToken ||
+          (!!shareLegacyCode && legacyCode === shareLegacyCode)
+        if (!sharedFolder || !authorized) {
+          jsonResponse(res, 403, { ok: false, error: 'Acesso do Drop Hook inválido.' })
           return
         }
         jsonResponse(res, 200, { ok: true, schemaVersion: 1,
@@ -677,11 +751,14 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
         return
       }
       if (req.method === 'GET' && url.pathname === '/transfer-hook/share/file') {
-        const code = safeCode(url.searchParams.get('code'))
+        const access = safeToken(url.searchParams.get('access'))
+        const legacyCode = safeCode(url.searchParams.get('code'))
         const id = String(url.searchParams.get('id') || '')
         const file = sharedFolder?.files.find((entry) => entry.id === id)
-        if (!sharedFolder || code !== shareCode || !file) {
-          jsonResponse(res, 403, { ok: false, error: 'Arquivo ou código inválido.' })
+        const authorized = access === shareAccessToken ||
+          (!!shareLegacyCode && legacyCode === shareLegacyCode)
+        if (!sharedFolder || !authorized || !file) {
+          jsonResponse(res, 403, { ok: false, error: 'Arquivo ou acesso inválido.' })
           return
         }
         const stat = await regularFileStat(file.absolutePath, file.size)
@@ -848,42 +925,47 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
       currentFile: '', error: '', result: '', receivedPath: '' })
   }
 
-  async function startShare(sourcePath) {
-    const sourceRoot = path.resolve(String(sourcePath || ''))
-    const sourceStat = await fs.promises.lstat(sourceRoot)
-    if ((!sourceStat.isDirectory() && !sourceStat.isFile()) ||
-        sourceStat.isSymbolicLink()) {
-      throw new Error('Escolha um arquivo ou uma pasta válida para disponibilizar.')
-    }
+  async function startShare(sourcePathValue) {
+    const sourcePaths = normalizeTransferSourcePaths(sourcePathValue)
+    if (!sourcePaths.length) throw new Error('Escolha um arquivo ou uma pasta válida para disponibilizar.')
+    const sourceLabel = sourcePaths.length > 1
+      ? `${sourcePaths.length} arquivos`
+      : path.basename(sourcePaths[0])
     const generation = ++operationGeneration
     await cleanupInboundPartials()
-    shareCode = fixedCode
+    shareAccessToken = crypto.randomBytes(32).toString('hex')
+    shareLegacyCode = fixedCode
     sharedFolder = null
-    update({ mode: 'share', phase: 'preparing', code: shareCode, sourcePath: sourceRoot,
-      destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
+    update({ mode: 'share', phase: 'preparing', code: '',
+      sourcePath: sourcePaths[0], sourcePaths,
+      destinationPath: '', rootName: sourceLabel, peerName: '',
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
       currentFile: 'Preparando os arquivos...', error: '', result: '', receivedPath: '' })
     try {
       await ensureHttpServer()
-      const collected = await collectTransferSource(sourceRoot,
-        (patch) => update({ ...patch, code: shareCode }),
+      const collected = await collectTransferSources(sourcePaths,
+        (patch) => update({ ...patch, code: '' }),
         () => activeGeneration(generation))
       activeGeneration(generation)
       sharedFolder = {
-        rootName: safeRootName(path.basename(sourceRoot)),
+        rootName: safeRootName(sourceLabel),
         sourceKind: collected.sourceKind,
         files: collected.files,
         directories: collected.directories,
         totalBytes: collected.totalBytes,
       }
-      return update({ mode: 'share', phase: 'sharing', code: shareCode,
-        sourcePath: sourceRoot, totalBytes: collected.totalBytes,
+      return update({ mode: 'share', phase: 'sharing', code: '',
+        sourcePath: sourcePaths[0], sourcePaths, totalBytes: collected.totalBytes,
         bytesDone: 0, fileIndex: 0, fileCount: collected.files.length,
         currentFile: '', error: '',
-        result: `${collected.sourceKind === 'file' ? 'Arquivo' : 'Pasta'} disponível para o celular nesta rede local.` })
+        result: collected.sourceKind === 'folder'
+          ? 'Pasta disponível para o celular nesta rede local.'
+          : `${collected.files.length === 1 ? 'Arquivo disponível' :
+            'Arquivos disponíveis'} para o celular nesta rede local.` })
     } catch (error) {
       if (generation === operationGeneration) {
-        shareCode = ''
+        shareAccessToken = ''
+        shareLegacyCode = ''
         sharedFolder = null
         update({ mode: 'share', phase: 'error', code: '',
           currentFile: '', error: error?.message ||
@@ -895,7 +977,8 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
 
   async function stopShare() {
     ++operationGeneration
-    shareCode = ''
+    shareAccessToken = ''
+    shareLegacyCode = ''
     sharedFolder = null
     return update({ mode: receiverCode ? 'receive' : '',
       phase: receiverCode ? 'waiting' : 'idle', code: receiverCode,
@@ -904,33 +987,32 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
       currentFile: '', error: '', result: '' })
   }
 
-  async function sendFolder(sourcePath, deviceIdValue) {
+  async function sendFolder(sourcePathValue, deviceIdValue) {
     const targetDeviceId = safeToken(deviceIdValue)
     if (!targetDeviceId) throw new Error('Escolha o computador que receberá os arquivos.')
-    const sourceRoot = path.resolve(String(sourcePath || ''))
-    const sourceStat = await fs.promises.lstat(sourceRoot)
-    if ((!sourceStat.isDirectory() && !sourceStat.isFile()) ||
-        sourceStat.isSymbolicLink()) {
-      throw new Error('Escolha um arquivo ou uma pasta válida para enviar.')
-    }
+    const sourcePaths = normalizeTransferSourcePaths(sourcePathValue)
+    if (!sourcePaths.length) throw new Error('Escolha um arquivo ou uma pasta válida para enviar.')
+    const sourceLabel = sourcePaths.length > 1
+      ? `${sourcePaths.length} arquivos`
+      : path.basename(sourcePaths[0])
     const generation = ++operationGeneration
     update({ mode: 'send', phase: 'discovering', code: '',
-      targetDeviceId, sourcePath: sourceRoot,
-      destinationPath: '', rootName: path.basename(sourceRoot), peerName: '',
+      targetDeviceId, sourcePath: sourcePaths[0], sourcePaths,
+      destinationPath: '', rootName: sourceLabel, peerName: '',
       bytesDone: 0, totalBytes: 0, fileIndex: 0, fileCount: 0,
       currentFile: '', error: '', result: '', receivedPath: '' })
     try {
       let peer = await findReceiver(targetDeviceId, generation)
       activeGeneration(generation)
       update({ phase: 'preparing', peerName: peer.name || peer.address })
-      const collected = await collectTransferSource(sourceRoot,
+      const collected = await collectTransferSources(sourcePaths,
         (patch) => update(patch), () => activeGeneration(generation))
       const transferId = crypto.randomBytes(32).toString('hex')
       const manifest = {
         schemaVersion: 1,
         transferId,
         receiverToken: peer.receiverToken,
-        rootName: safeRootName(path.basename(sourceRoot)),
+        rootName: safeRootName(sourceLabel),
         senderName: String(getDeviceName?.() || os.hostname()).slice(0, 120),
         directories: collected.directories,
         files: collected.files.map(({ absolutePath, mtimeMs, ctimeMs, ...file }) => file),
@@ -1051,7 +1133,8 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
     receiverCode = ''
     receiverToken = ''
     receiverRoot = ''
-    shareCode = ''
+    shareAccessToken = ''
+    shareLegacyCode = ''
     sharedFolder = null
     await cleanupInboundPartials()
     if (beaconTimer) clearInterval(beaconTimer)

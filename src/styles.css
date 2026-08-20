@@ -5762,7 +5762,7 @@ body.previous-mode .content > .view.active {
 /* Menu interno da aba Ferramentas. */
 .tools-submenu {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   align-items: stretch;
   gap: 8px;
   width: 100%;
@@ -5847,6 +5847,12 @@ body.previous-mode .content > .view.active {
 }
 
 .tools-midi-panel.active {
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 9px;
+  overflow: auto;
+}
+
+.tools-mac-show-mode-panel.active {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 9px;
   overflow: auto;

@@ -881,6 +881,7 @@
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="show-mode">Modo Show</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">Hook Marker</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
@@ -1146,6 +1147,37 @@
             </div>
           </div>
         </div>
+        <div id="toolsMacShowModePanel" class="tools-panel tools-mac-show-mode-panel" data-tools-panel-content="show-mode" role="tabpanel">
+          <div class="hero-card tools-hero tools-midi-hero">
+            <div>
+              <p class="eyebrow">macOS</p>
+              <h1>Modo Show</h1>
+              <p class="muted">Mantenha o áudio e o REAPER ativos mesmo ao fechar a tampa do MacBook, sem precisar de monitor externo.</p>
+            </div>
+            <span id="macShowModeBadge" class="badge">Verificando</span>
+          </div>
+          <div class="tools-grid tools-midi-grid">
+            <section class="card tools-midi-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Tampa fechada</p><h2 id="macShowModeTitle">Verificando Modo Show</h2></div>
+              </div>
+              <p id="macShowModeDescription" class="muted">Consultando a configuração de energia do macOS.</p>
+              <div class="actions hook-midi-actions">
+                <button id="macShowModeToggleButton" class="primary-button" type="button" disabled>Ativar Modo Show</button>
+                <button id="macShowModeRefreshButton" class="secondary-button" type="button">Atualizar</button>
+              </div>
+            </section>
+            <section class="card tools-midi-card">
+              <div class="tool-card-header"><div><p class="eyebrow">Uso seguro</p><h2>Antes e depois do show</h2></div></div>
+              <ol class="tools-instructions-list">
+                <li>Clique em <strong>Ativar Modo Show</strong> e confirme a senha do administrador do Mac.</li>
+                <li>Feche a tampa: o áudio, REAPER e VS Hook continuam funcionando.</li>
+                <li>Ao finalizar, volte aqui e clique em <strong>Desativar Modo Show</strong>.</li>
+                <li>Nunca coloque o Mac fechado em mochila, case ou local sem ventilação enquanto o modo estiver ativo.</li>
+              </ol>
+            </section>
+          </div>
+        </div>
         <div id="toolsCopyProjectPanel" class="tools-panel tools-copy-project-panel" data-tools-panel-content="copy-project" role="tabpanel">
           <div class="hero-card tools-hero copy-project-hero">
             <div>
@@ -1180,14 +1212,14 @@
                 <div><p class="eyebrow">PC emissor</p><h2>Enviar arquivo ou pasta</h2></div>
                 <span class="badge">Enviar</span>
               </div>
-              <p class="muted">Escolha um arquivo ou pasta e selecione automaticamente o computador que receberá pela rede local.</p>
+              <p class="muted">Escolha um ou vários arquivos, ou uma pasta, e selecione automaticamente o computador que receberá pela rede local.</p>
               <div class="selected-folder-box">
                 <span>Arquivo ou pasta que será enviado</span>
                 <strong id="copyProjectSourceName">Nenhum arquivo ou pasta selecionado</strong>
-                <small id="copyProjectSourcePath" class="muted">Escolha um arquivo avulso ou uma pasta completa.</small>
+                <small id="copyProjectSourcePath" class="muted">Escolha um ou vários arquivos, ou uma pasta completa.</small>
               </div>
               <div class="copy-project-source-actions">
-                <button id="copyProjectSelectFileButton" class="secondary-button" type="button">Escolher arquivo</button>
+                <button id="copyProjectSelectFileButton" class="secondary-button" type="button">Escolher arquivos</button>
                 <button id="copyProjectSelectSourceButton" class="secondary-button" type="button">Escolher pasta</button>
               </div>
               <div class="copy-project-device-picker">
@@ -1200,12 +1232,8 @@
                 </div>
               </div>
               <button id="copyProjectSendButton" class="primary-button" type="button" disabled>Enviar agora</button>
-              <div class="copy-project-code-display">
-                <span>Código fixo para o celular receber</span>
-                <strong id="copyProjectShareCode">------</strong>
-                <small>Este código não muda. Primeiro disponibilize o arquivo ou a pasta e depois informe o código no Drop Hook do celular.</small>
-              </div>
               <button id="copyProjectShareButton" class="secondary-button" type="button" disabled>Disponibilizar para celular</button>
+              <small class="muted">O celular encontra esta Hook Center pelo nome na rede local. Não é necessário digitar código para receber.</small>
             </section>
 
             <section class="card copy-project-card">
@@ -1221,9 +1249,9 @@
               </div>
               <button id="copyProjectSelectDestinationButton" class="secondary-button" type="button">Escolher pasta de destino</button>
               <div class="copy-project-code-display">
-                <span>Código fixo para o celular enviar</span>
+                <span>Código para receber do celular</span>
                 <strong id="copyProjectReceiveCode">------</strong>
-                <small>Use este código somente no Drop Hook do aplicativo no celular.</small>
+                <small>Use este código apenas quando o celular for enviar arquivos para este computador.</small>
               </div>
             </section>
 

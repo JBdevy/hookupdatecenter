@@ -23,12 +23,27 @@
   const CHUNK_BYTES = 256 * 1024
   let selectedFiles = []
   let busy = false
+  const animalNames = ['Onça', 'Tigre', 'Raposa', 'Lobo', 'Leão', 'Coruja', 'Panda', 'Arara', 'Golfinho', 'Coala']
+  const fruitNames = ['Maçã', 'Pera', 'Abacate', 'Manga', 'Caju', 'Uva', 'Melão', 'Acerola', 'Pitanga', 'Coco']
+  const mobileDeviceName = (() => {
+    try {
+      const saved = String(localStorage.getItem('vshook_transfer_device_name') || '').trim()
+      if (saved) return saved
+      const bytes = new Uint32Array(2)
+      crypto.getRandomValues(bytes)
+      const created = `${animalNames[bytes[0] % animalNames.length]} ${fruitNames[bytes[1] % fruitNames.length]}`
+      localStorage.setItem('vshook_transfer_device_name', created)
+      return created
+    } catch (_) {
+      return 'Celular VS Hook'
+    }
+  })()
 
   root.innerHTML = `
     <main class="transferHookApp">
       <header class="transferHookHeader">
         <button id="transferHookBack" class="transferHookBack" type="button" aria-label="Voltar">‹</button>
-        <div><h1>Drop Hook</h1><p>Transferência direta pela rede local. Não usa internet.</p></div>
+        <div><h1>Drop Hook</h1><p>${mobileDeviceName} · Transferência direta pela rede local. Não usa internet.</p></div>
       </header>
       <div class="transferHookGrid">
         <section class="transferHookCard">
@@ -46,8 +61,7 @@
         </section>
         <section class="transferHookCard">
           <h2>Receber do computador</h2>
-          <p>No computador, clique em “Disponibilizar para celular” e digite aqui o código mostrado.</p>
-          <input id="transferReceiveCode" class="transferHookCode" inputmode="numeric" maxlength="6" placeholder="000000" />
+          <p>No computador, clique em “Disponibilizar para celular”. Este aparelho encontra a Hook Center pela rede local, sem código.</p>
           <button id="transferReceiveButton" class="transferHookButton" type="button">Receber arquivos</button>
         </section>
         <section class="transferHookCard">
@@ -117,7 +131,7 @@
       setProgress(0, total)
       const manifest = {
         schemaVersion: 1, transferId: randomTransferId(), code,
-        rootName: 'Drop Hook', senderName: 'Celular', directories: [],
+        rootName: 'Drop Hook', senderName: mobileDeviceName, directories: [],
         files: selectedFiles.map((entry, index) => ({ id: `file-${index + 1}`, relativePath: entry.name, size: entry.file.size })),
         totalBytes: total,
       }
@@ -173,18 +187,17 @@
   }
 
   async function receiveFiles() {
-    const code = normalizeCode($('transferReceiveCode').value)
-    if (busy || code.length !== 6) { setStatus('Digite o código de 6 dígitos.', 'error'); return }
+    if (busy) return
     setBusy(true)
     try {
       setStatus('Consultando o computador na rede local...')
       while (true) {
         try {
           const availability = await readJson(await fetch(
-            `${transferBase}/transfer-hook/share/status?code=${encodeURIComponent(code)}`,
+            `${transferBase}/transfer-hook/share/status`,
             { cache: 'no-store' }))
           if (availability.available) break
-          if (!availability.preparing) throw new Error('Código do Drop Hook inválido.')
+          if (!availability.preparing) throw new Error('Nenhum arquivo está disponibilizado nesta Hook Center.')
           setStatus('O computador está preparando os arquivos. Aguarde...')
           await new Promise((resolve) => setTimeout(resolve, 500))
         } catch (error) {
@@ -192,7 +205,10 @@
           await pauseForReconnect()
         }
       }
-      const manifest = await readJson(await fetch(`${transferBase}/transfer-hook/share/manifest?code=${encodeURIComponent(code)}`, { cache: 'no-store' }))
+      const availability = await readJson(await fetch(`${transferBase}/transfer-hook/share/status`, { cache: 'no-store' }))
+      const access = String(availability.access || '').trim()
+      if (!/^[a-f0-9]{64}$/i.test(access)) throw new Error('Acesso temporário do Drop Hook não foi recebido.')
+      const manifest = await readJson(await fetch(`${transferBase}/transfer-hook/share/manifest?access=${encodeURIComponent(access)}`, { cache: 'no-store' }))
       const total = Number(manifest.totalBytes) || 0
       let done = 0
       let directoryHandle = null
@@ -206,7 +222,7 @@
         while (received < Number(file.size) || Number(file.size) === 0 && !chunks.length) {
           try {
             setStatus(`Recebendo ${file.relativePath} • ${index + 1} de ${manifest.files.length}`)
-            const response = await fetch(`${transferBase}/transfer-hook/share/file?code=${encodeURIComponent(code)}&id=${encodeURIComponent(file.id)}`, {
+            const response = await fetch(`${transferBase}/transfer-hook/share/file?access=${encodeURIComponent(access)}&id=${encodeURIComponent(file.id)}`, {
               headers: received > 0 ? { Range: `bytes=${received}-` } : {}, cache: 'no-store'
             })
             if (!response.ok) {
@@ -270,7 +286,7 @@
   for (const id of ['transferGalleryInput','transferFilesInput','transferPhotoInput','transferVideoInput']) {
     $(id).addEventListener('change', (event) => setSelected(event.target.files))
   }
-  for (const id of ['transferSendCode','transferReceiveCode']) {
+  for (const id of ['transferSendCode']) {
     $(id).addEventListener('input', (event) => { event.target.value = normalizeCode(event.target.value); refreshSendButton() })
   }
   $('transferSendButton').addEventListener('click', sendFiles)

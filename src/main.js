@@ -1820,6 +1820,42 @@ function runProcess(command, args = [], options = {}) {
   });
 }
 
+async function getMacShowModeState() {
+  if (process.platform !== 'darwin') {
+    return {
+      ok: true, supported: false, enabled: false, platform: process.platform,
+      message: 'O Modo Show de tampa fechada está disponível somente no macOS.'
+    };
+  }
+  try {
+    const output = await runProcess('/usr/bin/pmset', ['-g'], { timeout: 10000 });
+    const enabled = /\bSleepDisabled\s+1\b/i.test(output) || /\bdisablesleep\s+1\b/i.test(output);
+    return { ok: true, supported: true, enabled, platform: 'darwin', raw: output };
+  } catch (error) {
+    return {
+      ok: false, supported: true, enabled: false, platform: 'darwin',
+      error: error?.message || 'Não foi possível consultar o estado de repouso do macOS.'
+    };
+  }
+}
+
+async function setMacShowMode(enabled) {
+  if (process.platform !== 'darwin') {
+    throw new Error('O Modo Show de tampa fechada está disponível somente no macOS.');
+  }
+  const value = enabled ? '1' : '0';
+  await runProcess('/usr/bin/osascript', [
+    '-e', `do shell script "/usr/bin/pmset -a disablesleep ${value}" with administrator privileges`
+  ], { timeout: 120000 });
+  const state = await getMacShowModeState();
+  if (!state.ok || state.enabled !== !!enabled) {
+    throw new Error(enabled
+      ? 'O macOS não confirmou a ativação do Modo Show.'
+      : 'O macOS não confirmou a desativação do Modo Show.');
+  }
+  return state;
+}
+
 function psSingleQuoted(value) {
   return `'${String(value || '').replace(/'/g, "''")}'`;
 }
@@ -6859,6 +6895,9 @@ ipcMain.handle('direct-cable-get-state', () => getDirectCableState());
 ipcMain.handle('direct-cable-configure', (_event, payload) => configureDirectCable(payload || {}));
 ipcMain.handle('direct-cable-disconnect', (_event, payload) => disconnectDirectCable(payload || {}));
 ipcMain.handle('direct-cable-restart', (_event, payload) => restartDirectCableConnection(payload || {}));
+ipcMain.handle('mac-show-mode-get-state', () => getMacShowModeState());
+ipcMain.handle('mac-show-mode-set', (_event, payload = {}) =>
+  setMacShowMode(payload.enabled === true));
 ipcMain.handle('hook-midi-get-state', () => getHookMidiState());
 ipcMain.handle('hook-midi-create', (_event, payload) => createHookMidiPort(payload || {}));
 ipcMain.handle('hook-midi-remove', (_event, payload) => removeHookMidiPort(payload || {}));
@@ -6894,14 +6933,20 @@ ipcMain.handle('copy-project-select-folder', async (_event, payload = {}) => {
   const result = await dialog.showOpenDialog(mainWindow || undefined, {
     title: receiving
       ? 'Escolher pasta onde os arquivos serão recebidos'
-      : (selectingFile ? 'Escolher arquivo para enviar' : 'Escolher pasta para enviar'),
-    properties: selectingFile ? ['openFile'] : ['openDirectory', 'createDirectory']
+      : (selectingFile ? 'Escolher arquivos para enviar' : 'Escolher pasta para enviar'),
+    properties: selectingFile
+      ? ['openFile', 'multiSelections']
+      : ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
-  const selectedPath = path.resolve(result.filePaths[0]);
+  const selectedPaths = result.filePaths.map((selected) => path.resolve(selected));
+  const selectedPath = selectedPaths[0];
   if (receiving) store.set('dropHookDestinationPath', selectedPath);
-  return { canceled: false, path: selectedPath, name: path.basename(selectedPath),
-    kind: selectingFile ? 'file' : 'folder' };
+  return { canceled: false, path: selectedPath, paths: selectedPaths,
+    name: selectingFile && selectedPaths.length > 1
+      ? `${selectedPaths.length} arquivos selecionados`
+      : path.basename(selectedPath),
+    kind: selectingFile ? (selectedPaths.length > 1 ? 'files' : 'file') : 'folder' };
 });
 ipcMain.handle('copy-project-get-state', () =>
   getCopyProjectService().getState());
@@ -6912,9 +6957,9 @@ ipcMain.handle('copy-project-start-receive', (_event, payload = {}) =>
 ipcMain.handle('copy-project-stop-receive', () =>
   getCopyProjectService().stopReceiver());
 ipcMain.handle('copy-project-send', (_event, payload = {}) =>
-  getCopyProjectService().sendFolder(payload.sourcePath, payload.deviceId));
+  getCopyProjectService().sendFolder(payload.sourcePaths || payload.sourcePath, payload.deviceId));
 ipcMain.handle('copy-project-start-share', (_event, payload = {}) =>
-  getCopyProjectService().startShare(payload.sourcePath));
+  getCopyProjectService().startShare(payload.sourcePaths || payload.sourcePath));
 ipcMain.handle('copy-project-stop-share', () =>
   getCopyProjectService().stopShare());
 ipcMain.handle('copy-project-cancel', () =>

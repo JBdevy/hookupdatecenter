@@ -9,6 +9,8 @@ let hookRenameLastPreview = null;
 let selectedToolsPanel = 'rename';
 let hookMidiState = null;
 let hookMidiBusy = false;
+let macShowModeState = null;
+let macShowModeBusy = false;
 let hookMarkerState = null;
 let hookMarkerBusy = false;
 let hookMarkerRuntimeState = { active: false };
@@ -1754,6 +1756,89 @@ function hookMidiErrorMessage(error, fallback) {
   return raw || fallback;
 }
 
+function renderMacShowMode(nextState = macShowModeState) {
+  const data = nextState || {};
+  macShowModeState = data;
+  const badge = $('#macShowModeBadge');
+  const title = $('#macShowModeTitle');
+  const description = $('#macShowModeDescription');
+  const toggle = $('#macShowModeToggleButton');
+  const refresh = $('#macShowModeRefreshButton');
+  const macos = data.platform === 'darwin' || window.hookUpdateCenter?.platform === 'darwin';
+  const supported = macos && data.supported !== false;
+  const enabled = data.enabled === true;
+
+  if (!macos) {
+    if (badge) badge.textContent = 'Somente macOS';
+    if (title) title.textContent = 'Indisponível neste sistema';
+    if (description) description.textContent = 'O Modo Show de tampa fechada é exclusivo para MacBook com macOS.';
+  } else if (data.ok === false) {
+    if (badge) badge.textContent = 'Não foi possível consultar';
+    if (title) title.textContent = 'Estado não confirmado';
+    if (description) description.textContent = data.error || 'Não foi possível consultar a configuração de energia do macOS.';
+  } else if (enabled) {
+    if (badge) badge.textContent = 'Modo Show ativo';
+    if (title) title.textContent = 'Tampa fechada liberada';
+    if (description) description.textContent = 'O Mac continuará ativo ao fechar a tampa, mesmo sem monitor externo. Desative ao terminar o show.';
+  } else {
+    if (badge) badge.textContent = 'Modo Show desligado';
+    if (title) title.textContent = 'Tampa fechada suspende o Mac';
+    if (description) description.textContent = 'Ative antes do show para manter o REAPER e o áudio funcionando com a tampa fechada.';
+  }
+  if (toggle) {
+    toggle.textContent = enabled ? 'Desativar Modo Show' : 'Ativar Modo Show';
+    toggle.disabled = macShowModeBusy || !supported;
+  }
+  if (refresh) refresh.disabled = macShowModeBusy;
+}
+
+async function refreshMacShowMode() {
+  if (macShowModeBusy) return;
+  try {
+    renderMacShowMode(await window.hookUpdateCenter.getMacShowModeState());
+  } catch (error) {
+    renderMacShowMode({
+      ok: false,
+      supported: window.hookUpdateCenter?.platform === 'darwin',
+      platform: window.hookUpdateCenter?.platform,
+      error: friendlyError(error, 'Não foi possível consultar o Modo Show.')
+    });
+  }
+}
+
+async function toggleMacShowMode() {
+  if (macShowModeBusy || window.hookUpdateCenter?.platform !== 'darwin') return;
+  const enabling = macShowModeState?.enabled !== true;
+  if (enabling) {
+    const confirmed = await confirmModal({
+      title: 'Ativar Modo Show?',
+      message: 'O Mac continuará ligado e reproduzindo áudio mesmo com a tampa fechada, sem monitor externo. Não o coloque em mochila, case ou local sem ventilação enquanto este modo estiver ativo.',
+      type: 'info',
+      okText: 'Ativar',
+      cancelText: 'Cancelar'
+    });
+    if (!confirmed) return;
+  }
+  macShowModeBusy = true;
+  renderMacShowMode();
+  try {
+    const next = await window.hookUpdateCenter.setMacShowMode({ enabled: enabling });
+    renderMacShowMode(next);
+  } catch (error) {
+    showModal({
+      title: 'Modo Show',
+      message: friendlyError(error, enabling
+        ? 'Não foi possível ativar o Modo Show.'
+        : 'Não foi possível desativar o Modo Show.'),
+      type: 'error'
+    });
+    await refreshMacShowMode();
+  } finally {
+    macShowModeBusy = false;
+    renderMacShowMode();
+  }
+}
+
 async function refreshHookMidiState() {
   if (hookMidiBusy) return;
   if (!hookMidiState) renderHookMidiAvailability({
@@ -1895,7 +1980,8 @@ function renderCopyProjectState(nextState = copyProjectState) {
 
   if ($('#copyProjectSourceName')) {
     $('#copyProjectSourceName').textContent = copyProjectSourceFolder?.name || 'Nenhum arquivo ou pasta selecionado';
-    $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.path || 'Escolha um arquivo avulso ou uma pasta completa.';
+    $('#copyProjectSourcePath').textContent = copyProjectSourceFolder?.displayPath ||
+      copyProjectSourceFolder?.path || 'Escolha um ou vários arquivos, ou uma pasta completa.';
   }
   if ($('#copyProjectDestinationName')) {
     if (data.destinationPath && copyProjectDestinationFolder?.path !== data.destinationPath) {
@@ -1911,7 +1997,6 @@ function renderCopyProjectState(nextState = copyProjectState) {
   }
   const fixedCode = String(data.fixedCode || '');
   if ($('#copyProjectReceiveCode')) $('#copyProjectReceiveCode').textContent = fixedCode || (receiverActive ? (data.code || '------') : '------');
-  if ($('#copyProjectShareCode')) $('#copyProjectShareCode').textContent = fixedCode || (data.sharing ? (data.shareCode || data.code || '------') : '------');
   if (statusBadge) statusBadge.textContent = phaseLabels[data.phase] || 'Parado';
   if ($('#copyProjectProgressTitle')) $('#copyProjectProgressTitle').textContent = titleLabels[data.phase] || 'Aguardando';
   if ($('#copyProjectProgressPercent')) $('#copyProjectProgressPercent').textContent = `${percent}%`;
@@ -1922,7 +2007,7 @@ function renderCopyProjectState(nextState = copyProjectState) {
   }
   let detail = 'Escolha se este computador vai enviar ou receber.';
   if (waiting) detail = 'Este computador está visível e pronto para receber pela rede local.';
-  else if (data.phase === 'sharing') detail = 'A pasta está disponível somente nesta rede local. Digite o código no celular.';
+  else if (data.phase === 'sharing') detail = 'Arquivos disponíveis somente nesta rede local. Escolha esta Hook Center no celular.';
   else if (data.phase === 'paused') detail = 'Rede desconectada. A transferência continua automaticamente quando a conexão voltar.';
   else if (data.phase === 'discovering') detail = 'Conectando ao computador escolhido...';
   else if (data.phase === 'preparing') detail = 'Preparando a lista de arquivos para envio.';
@@ -1972,7 +2057,14 @@ async function selectCopyProjectFolder(mode) {
   try {
     const result = await window.hookUpdateCenter.selectCopyProjectFolder(mode);
     if (result?.canceled) return;
+    const selectedPaths = Array.isArray(result.paths) && result.paths.length
+      ? result.paths
+      : [result.path].filter(Boolean);
     const folder = { path: result.path, name: result.name || result.path,
+      paths: selectedPaths,
+      displayPath: selectedPaths.length > 1
+        ? selectedPaths.map((selected) => selected.split(/[\\/]/).filter(Boolean).at(-1)).join(' • ')
+        : result.path,
       kind: result.kind || (mode === 'send-file' ? 'file' : 'folder') };
     if (mode === 'receive') {
       copyProjectDestinationFolder = folder;
@@ -1994,6 +2086,7 @@ async function sendCopyProjectFolder() {
   try {
     await window.hookUpdateCenter.sendCopyProject({
       sourcePath: copyProjectSourceFolder.path,
+      sourcePaths: copyProjectSourceFolder.paths,
       deviceId: copyProjectSelectedDeviceId
     });
   } catch (error) {
@@ -2011,7 +2104,8 @@ async function toggleCopyProjectShare() {
     }
     if (!copyProjectSourceFolder) return;
     renderCopyProjectState(await window.hookUpdateCenter.startCopyProjectShare({
-      sourcePath: copyProjectSourceFolder.path
+      sourcePath: copyProjectSourceFolder.path,
+      sourcePaths: copyProjectSourceFolder.paths
     }));
   } catch (error) {
     showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível disponibilizar os arquivos.'), type: 'error' });
@@ -2277,7 +2371,7 @@ async function testHookMarkerResolume() {
 }
 
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'hook-marker', 'pingpong'];
+  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'show-mode', 'hook-marker', 'pingpong'];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -2292,6 +2386,7 @@ function setToolsPanel(panelName = 'rename') {
   if (selectedToolsPanel === 'cable') refreshDirectCableState();
   if (selectedToolsPanel === 'midi') refreshHookMidiState();
   if (selectedToolsPanel === 'copy-project') refreshCopyProjectState();
+  if (selectedToolsPanel === 'show-mode') refreshMacShowMode();
   if (selectedToolsPanel === 'hook-marker') refreshHookMarkerState();
   if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
@@ -2338,6 +2433,8 @@ function setupToolsSubmenu() {
     window.hookUpdateCenter.openExternal(
       'https://www.tobias-erichsen.de/software/loopmidi.html');
   });
+  $('#macShowModeToggleButton')?.addEventListener('click', toggleMacShowMode);
+  $('#macShowModeRefreshButton')?.addEventListener('click', refreshMacShowMode);
   $('#copyProjectSelectSourceButton')?.addEventListener('click', () => selectCopyProjectFolder('send'));
   $('#copyProjectSelectFileButton')?.addEventListener('click', () => selectCopyProjectFolder('send-file'));
   $('#copyProjectSelectDestinationButton')?.addEventListener('click', () => selectCopyProjectFolder('receive'));
