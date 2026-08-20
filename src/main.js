@@ -5930,9 +5930,18 @@ function installWindowsVshookCompanion() {
       force: true
     });
   } catch (error) {
-    if (['EBUSY', 'EPERM', 'EACCES'].includes(String(error?.code || ''))) {
+    const code = String(error?.code || '');
+    if (code === 'EBUSY' || isWindowsVshookTelepromptSettingsRunning()) {
       throw new Error(
         'Feche as Configurações do TP e tente instalar novamente.'
+      );
+    }
+    if (['EPERM', 'EACCES'].includes(code)) {
+      const failedPath = String(error?.path || error?.dest || destination);
+      throw new Error(
+        'Não foi possível copiar as Configurações do TP por falta de permissão. ' +
+        'Feche o REAPER e verifique se o antivírus não bloqueou a pasta de plugins. ' +
+        `Arquivo ou pasta bloqueado(a): ${failedPath}`
       );
     }
     throw error;
@@ -6068,6 +6077,25 @@ function isWindowsReaperRunning() {
     return true;
   } catch (_) {}
   return false;
+}
+
+function isWindowsProcessRunning(imageName) {
+  if (process.platform !== 'win32' || !imageName) return false;
+  try {
+    const output = execFileSync(
+      'tasklist.exe',
+      ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', windowsHide: true, timeout: 3000 }
+    );
+    const escapedName = String(imageName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[\",\\s])${escapedName}([\",\\s]|$)`, 'i').test(output);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isWindowsVshookTelepromptSettingsRunning() {
+  return isWindowsProcessRunning('VS Hook Teleprompt Settings.exe');
 }
 
 function installWindowsPayload(files) {
