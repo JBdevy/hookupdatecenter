@@ -2904,29 +2904,46 @@ function createTimecodeLanRelay(options = {}) {
 
   async function maybeHandoverProjectSyncRole(status) {
     const request = projectSyncRoleHandoverRequest(status)
+    const connectedPeer = transmitterPeer?.connected &&
+      transmitterPeer?.token && transmitterPeer?.remoteSessionId &&
+      transmitterPeer?.localSessionId
+      ? transmitterPeer
+      : null
+    // Durante a conferencia bloqueada ainda nao existe um peer de eventos,
+    // mas o preflight ja criou um canal A/B autenticado para aplicar as
+    // diferencas. Esse mesmo canal pode coordenar a troca de mestre.
+    const conferenceRequestId = statusPreflightRequestId(status)
+    const conferencePeer = !connectedPeer &&
+      applyPeerIsCurrent(projectSyncApplyPeer) &&
+      projectSyncApplyPeer?.token &&
+      projectSyncApplyPeer?.remoteSessionId &&
+      projectSyncApplyPeer?.localSessionId &&
+      projectSyncApplyPeer.requestId === conferenceRequestId
+      ? projectSyncApplyPeer
+      : null
+    const handoverPeer = connectedPeer || conferencePeer
     if (!request || status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'primary' ||
-        !transmitterPeer?.connected || !transmitterPeer?.token ||
-        !transmitterPeer?.remoteSessionId || !transmitterPeer?.localSessionId) {
+        !handoverPeer) {
       return false
     }
-    const key = `${request.requestId}|${transmitterPeer.receiverId}|${transmitterPeer.remoteSessionId}`
+    const key = `${request.requestId}|${handoverPeer.receiverId}|${handoverPeer.remoteSessionId}`
     if (key === lastProjectSyncRoleHandoverKey || projectSyncRoleHandoverPromise) return true
     lastProjectSyncRoleHandoverKey = key
     projectSyncRoleHandoverPromise = (async () => {
       try {
         const result = await requestJson({
-          hostname: transmitterPeer.address,
-          port: transmitterPeer.port,
+          hostname: handoverPeer.address,
+          port: handoverPeer.port,
           path: `${outboundLinkPrefix}/project-sync/handover`,
           method: 'POST',
           payload: {
             code: String(status.code || ''),
             requestId: request.requestId,
             transmitterId: instanceId,
-            sourceSessionId: transmitterPeer.localSessionId,
-            receiverSessionId: transmitterPeer.remoteSessionId,
-            token: transmitterPeer.token,
+            sourceSessionId: handoverPeer.localSessionId,
+            receiverSessionId: handoverPeer.remoteSessionId,
+            token: handoverPeer.token,
             projectSyncRole: 'primary',
           },
           timeoutMs: 1400,
@@ -2944,7 +2961,10 @@ function createTimecodeLanRelay(options = {}) {
         }
         // A extensão consome o comando no próximo ciclo principal. Encerrar o
         // peer antigo evita que um último pacote A -> B atravesse a troca.
-        resetTransmitterPeer(true)
+        if (connectedPeer) resetTransmitterPeer(true)
+        projectSyncApplyPeer = null
+        projectSyncExportBundle = null
+        projectSyncPairAttempt = null
         await publishProjectSyncRoleHandoverState(request.requestId, 'completed')
       } catch (error) {
         lastProjectSyncRoleHandoverKey = ''
@@ -3626,6 +3646,16 @@ function createTimecodeLanRelay(options = {}) {
       return
     }
 
+    // Se a sessao nasceu pelo Wi-Fi enquanto o cabo estava fora e o cabo
+    // preferencial voltou, refaz somente o enlace LAN. O codigo/seleção do
+    // dispositivo permanecem e o pareamento e reencontrado automaticamente.
+    const liveCablePrefix = preferredCablePrefix()
+    if (liveCablePrefix && !normalizePeerAddress(
+      transmitterPeer.address).startsWith(liveCablePrefix)) {
+      resetTransmitterPeer(true)
+      return
+    }
+
     const currentLocalSessionId = String(status.sessionId || '').trim()
     const currentLocalManifestRevision = projectSyncManifestRevision(status)
     const currentLocalStructuralRevision =
@@ -4185,7 +4215,7 @@ function createTimecodeLanRelay(options = {}) {
       sendJson(res, 409, { ok: false, error: 'Somente o PC A pode iniciar o Project Sync.' })
       return
     }
-    const remoteSessionId = String(payload.sessionId || '').trim()
+      const remoteSessionId = String(payload.sessionId || '').trim()
     if (status.mode === 'project_sync' && !remoteSessionId) {
       sendJson(res, 409, {
         ok: false,
@@ -4208,8 +4238,6 @@ function createTimecodeLanRelay(options = {}) {
       if (activeApplyRequestId &&
           activeApplyRequestId !== proposedRequestId &&
           projectSyncApplySession.transmitterId === transmitterId &&
-          normalizePeerAddress(projectSyncApplySession.address) ===
-            incomingPeerAddress &&
           projectSyncApplyIsActive(status, activeApplyRequestId)) {
         // Nunca substitui token/requestId enquanto o usuario ja confirmou e o
         // PC B esta verificando, baixando ou aplicando o snapshot anterior.
@@ -4231,6 +4259,9 @@ function createTimecodeLanRelay(options = {}) {
       const localStructuralRevision =
         projectSyncStructuralRevision(status)
       const incomingAddress = normalizePeerAddress(req.socket?.remoteAddress)
+      const sameLogicalApplySender = !!projectSyncApplySession &&
+        projectSyncApplySession.transmitterId === transmitterId &&
+        projectSyncApplySession.remoteSessionId === remoteSessionId
       if (projectSyncApplySession &&
           projectSyncApplySession.requestId === proposedRequestId &&
           projectSyncApplySession.transmitterId === transmitterId &&
@@ -4260,9 +4291,7 @@ function createTimecodeLanRelay(options = {}) {
       if (projectSyncApplySession &&
           Date.now() - projectSyncApplySession.createdAt <
             PROJECT_SYNC_APPLY_TTL_MS &&
-          (projectSyncApplySession.transmitterId !== transmitterId ||
-           normalizePeerAddress(projectSyncApplySession.address) !==
-             incomingAddress)) {
+          !sameLogicalApplySender) {
         sendJson(res, 409, {
           ok: false,
           ready: false,
@@ -4274,8 +4303,7 @@ function createTimecodeLanRelay(options = {}) {
           Date.now() - pendingProjectSyncPreflight.createdAt <
             PROJECT_SYNC_PREFLIGHT_TTL_MS &&
           (pendingProjectSyncPreflight.transmitterId !== transmitterId ||
-           normalizePeerAddress(pendingProjectSyncPreflight.address) !==
-             incomingAddress)) {
+           pendingProjectSyncPreflight.remoteSessionId !== remoteSessionId)) {
         sendJson(res, 409, {
           ok: false,
           ready: false,
@@ -4496,16 +4524,27 @@ function tokenMatches(left, right) {
     const payload = await readJsonBody(req)
     const status = await readLocalStatus(false)
     const requestId = safePreflightRequestId(payload.requestId)
+    const connectedHandoverSession = receiverSession || null
+    const conferenceHandoverSession = !connectedHandoverSession &&
+      applyPeerIsCurrent(projectSyncApplySession) &&
+      projectSyncApplySession?.token &&
+      projectSyncApplySession?.remoteSessionId &&
+      projectSyncApplySession?.localSessionId &&
+      projectSyncApplySession.requestId === statusPreflightRequestId(status)
+      ? projectSyncApplySession
+      : null
+    const handoverSession = connectedHandoverSession ||
+      conferenceHandoverSession
     if (!licenseIsActive() || !requestId ||
         status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'secondary' ||
-        !receiverSession ||
+        !handoverSession ||
         String(payload.code || '') !== String(status.code || '') ||
-        String(payload.transmitterId || '') !== receiverSession.transmitterId ||
-        String(payload.sourceSessionId || '') !== receiverSession.remoteSessionId ||
-        String(payload.receiverSessionId || '') !== receiverSession.localSessionId ||
+        String(payload.transmitterId || '') !== handoverSession.transmitterId ||
+        String(payload.sourceSessionId || '') !== handoverSession.remoteSessionId ||
+        String(payload.receiverSessionId || '') !== handoverSession.localSessionId ||
         String(payload.projectSyncRole || '') !== 'primary' ||
-        !tokenMatches(payload.token, receiverSession.token)) {
+        !tokenMatches(payload.token, handoverSession.token)) {
       sendJson(res, 403, { ok: false, error: 'Troca de mestre não autorizada.' })
       return
     }
@@ -4530,7 +4569,9 @@ function tokenMatches(left, right) {
     }
     // Impede que o relay B aceite mais um pacote A -> B enquanto a extensão
     // troca o papel. A próxima descoberta nasce automaticamente como novo A.
-    resetReceiverSession(true)
+    if (connectedHandoverSession) resetReceiverSession(true)
+    projectSyncApplySession = null
+    pendingProjectSyncPreflight = null
     sendJson(res, 200, { ok: true, requestId })
   }
 

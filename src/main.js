@@ -133,6 +133,7 @@ let bridgeWatchTimer = null;
 let directCableWatchTimer = null;
 let directCableWatchRunning = false;
 let directCableWatchSnapshot = null;
+let directCableWatchState = null;
 let bridgeRestartPromise = null;
 let timecodeLanRelay = null;
 let parallelTimecodeLanRelay = null;
@@ -2170,7 +2171,18 @@ function directCableChannelState(configuration, adapters = []) {
 }
 
 function getDirectCableChannelIp(channel) {
-  return getStoredDirectCableChannel(channel).ip;
+  const normalizedChannel = normalizeDirectCableChannel(channel);
+  const configured = getStoredDirectCableChannel(normalizedChannel);
+  if (!configured.ip) return '';
+  // Uma placa cadastrada nao significa que o cabo esta utilizavel. Quando o
+  // link cai, liberar temporariamente o prefixo permite que o relay encontre o
+  // mesmo computador pelo Wi-Fi. Ao retornar, o watcher volta a publicar o IP
+  // do cabo e o relay migra novamente para a rota preferencial.
+  const liveChannel = directCableWatchState?.channels?.[normalizedChannel];
+  if (liveChannel && liveChannel.ip === configured.ip) {
+    return liveChannel.connectionStatus === 'connected' ? configured.ip : '';
+  }
+  return configured.ip;
 }
 
 async function getDirectCableState() {
@@ -2418,6 +2430,7 @@ async function pollDirectCableConnections() {
   directCableWatchRunning = true;
   try {
     const state = await getDirectCableState();
+    directCableWatchState = state;
     const markers = directCableWatchMarkers(state);
     if (directCableWatchSnapshot) {
       for (const channel of Object.keys(DIRECT_CABLE_CHANNELS)) {
