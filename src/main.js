@@ -1554,6 +1554,7 @@ async function downloadHookCenterUpdateInstaller() {
 
   const ext = process.platform === 'darwin' ? '.dmg' : '.exe';
   const artifactIdentity = getHookCenterArtifactIdentity(update);
+  const remoteValidator = await fetchRemoteArtifactValidator(update.downloadUrl);
   const artifactSuffix = artifactIdentity.slice(0, 12);
   const baseName = process.platform === 'darwin'
     ? (getHookCenterPlatformKey() === 'macos-legacy' ? `Hook-Center-Legacy-${update.version}-${artifactSuffix}-macOS10${ext}` : `Hook-Center-${update.version}-${artifactSuffix}-macOS${ext}`)
@@ -1564,7 +1565,10 @@ async function downloadHookCenterUpdateInstaller() {
   try {
     await downloadFile(update.downloadUrl, partial, (progress) => {
       if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', progress);
-    }, { cacheBust: true, timeoutMs: 120000 });
+    }, {
+      cacheVersion: remoteValidator?.token || artifactIdentity,
+      timeoutMs: 120000
+    });
     validateUpdateInstallerFile(partial);
     const integrity = getFileIntegrity(partial);
     const expectedHash = String(update.installerSha256 || '').trim().toLowerCase();
@@ -4520,16 +4524,53 @@ function buildPayloadEntries(files) {
   return [];
 }
 
-function appendDownloadCacheBust(url) {
+function appendDownloadCacheBust(url, versionToken = '') {
   try {
     const parsed = new URL(url);
+    const stableVersion = String(versionToken || '').trim();
     parsed.searchParams.set(
       'vshook_download',
-      `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+      stableVersion || `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
     );
     return parsed.href;
   } catch (_) {
     return url;
+  }
+}
+
+async function fetchRemoteArtifactValidator(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    // A consulta aleatória não baixa o instalador. Ela evita que um HEAD antigo
+    // da CDN esconda um objeto que foi substituído no mesmo endereço do R2.
+    const response = await fetch(appendDownloadCacheBust(url), {
+      method: 'HEAD',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, max-age=0',
+        Pragma: 'no-cache'
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    const descriptor = {
+      etag: String(response.headers.get('etag') || '').trim(),
+      lastModified: String(response.headers.get('last-modified') || '').trim(),
+      size: Math.max(0, Number(response.headers.get('content-length')) || 0)
+    };
+    if (!descriptor.etag && !descriptor.lastModified && !descriptor.size) return null;
+    return {
+      ...descriptor,
+      token: crypto.createHash('sha256')
+        .update(JSON.stringify(descriptor), 'utf8')
+        .digest('hex')
+    };
+  } catch (_) {
+    // Sem HEAD ainda podemos usar o manifesto/hash local e tentar o GET. Uma
+    // falha temporária da consulta não deve impedir uma atualização disponível.
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -4555,6 +4596,26 @@ function getFileIntegrity(filePath) {
     ...integrity,
     mtimeMs: stat.mtimeMs
   });
+  return integrity;
+}
+
+async function getFileIntegrityAsync(filePath) {
+  const stat = await fs.promises.stat(filePath);
+  const cacheKey = path.resolve(filePath);
+  const cached = fileIntegrityCache.get(cacheKey);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return { size: cached.size, sha256: cached.sha256 };
+  }
+  const hash = crypto.createHash('sha256');
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', resolve);
+    stream.once('error', reject);
+  });
+  const integrity = { size: stat.size, sha256: hash.digest('hex') };
+  if (fileIntegrityCache.size >= 128) fileIntegrityCache.clear();
+  fileIntegrityCache.set(cacheKey, { ...integrity, mtimeMs: stat.mtimeMs });
   return integrity;
 }
 
@@ -4637,9 +4698,21 @@ function validateUpdateInstallerFile(filePath) {
 }
 
 async function downloadFile(url, destPath, onProgress, options = {}) {
-  const requestUrl = options.cacheBust === true
-    ? appendDownloadCacheBust(url)
-    : url;
+  // Uma identidade estável cria uma URL diferente para cada publicação, mas
+  // permite que R2/CDN reutilizem o mesmo objeto nas novas tentativas. O modo
+  // aleatório/no-cache fica reservado a uma renovação realmente forçada.
+  const cacheVersion = String(options.cacheVersion || '').trim();
+  const forceNoCache = options.cacheBust === true && !cacheVersion;
+  const requestUrl = cacheVersion
+    ? appendDownloadCacheBust(url, cacheVersion)
+    : (forceNoCache ? appendDownloadCacheBust(url) : url);
+  let resumeOffset = 0;
+  if (options.resume === true) {
+    try {
+      const partialStat = fs.statSync(destPath);
+      if (partialStat.isFile() && partialStat.size > 0) resumeOffset = partialStat.size;
+    } catch (_) {}
+  }
   const controller = new AbortController();
   const inactivityTimeoutMs = Math.max(
     5000,
@@ -4652,26 +4725,51 @@ async function downloadFile(url, destPath, onProgress, options = {}) {
   };
   armTimeout();
   try {
+    const requestHeaders = {};
+    if (forceNoCache) {
+      requestHeaders['Cache-Control'] = 'no-cache, no-store, max-age=0';
+      requestHeaders.Pragma = 'no-cache';
+    }
+    if (resumeOffset > 0) requestHeaders.Range = `bytes=${resumeOffset}-`;
     const response = await fetch(requestUrl, {
-      headers: {
-        'Cache-Control': 'no-cache, no-store, max-age=0',
-        Pragma: 'no-cache'
-      },
+      headers: requestHeaders,
       signal: controller.signal
     });
+    if (response.status === 416 && resumeOffset > 0) {
+      await fs.promises.rm(destPath, { force: true }).catch(() => {});
+      return downloadFile(url, destPath, onProgress, { ...options, resume: false });
+    }
     if (!response.ok) {
       throw new Error(`Falha ao baixar ${url}: HTTP ${response.status}`);
     }
 
-    const total = Number(response.headers.get('content-length')) || 0;
+    const responseLength = Number(response.headers.get('content-length')) || 0;
+    const contentRange = String(response.headers.get('content-range') || '');
+    const rangeMatch = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+    const acceptedResume = resumeOffset > 0 && response.status === 206 &&
+      rangeMatch && Number(rangeMatch[1]) === resumeOffset;
+    if (resumeOffset > 0 && response.status === 206 && !acceptedResume) {
+      await fs.promises.rm(destPath, { force: true }).catch(() => {});
+      throw new Error('O servidor devolveu uma faixa inválida ao continuar o download. Tente novamente.');
+    }
+    if (!acceptedResume) resumeOffset = 0;
+    const rangeTotal = acceptedResume && rangeMatch?.[3] !== '*'
+      ? Number(rangeMatch[3])
+      : 0;
+    const total = rangeTotal || (responseLength > 0 ? resumeOffset + responseLength : 0);
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
-    const file = fs.createWriteStream(destPath);
-    let downloaded = 0;
+    const file = fs.createWriteStream(destPath, { flags: acceptedResume ? 'a' : 'w' });
+    let downloaded = resumeOffset;
+    onProgress(total > 0 ? Math.round((downloaded / total) * 100) : 0, {
+      downloaded,
+      total,
+      resumed: acceptedResume
+    });
 
     if (!response.body || typeof response.body.getReader !== 'function') {
       const buffer = Buffer.from(await response.arrayBuffer());
-      downloaded = buffer.length;
+      downloaded += buffer.length;
       file.write(buffer);
       file.end();
       await new Promise((resolve, reject) => {
@@ -4691,7 +4789,11 @@ async function downloadFile(url, destPath, onProgress, options = {}) {
             await new Promise((resolve) => file.once('drain', resolve));
           }
           if (total > 0) {
-            onProgress(Math.round((downloaded / total) * 100));
+            onProgress(Math.round((downloaded / total) * 100), {
+              downloaded,
+              total,
+              resumed: acceptedResume
+            });
           }
         }
       } finally {
@@ -4710,7 +4812,11 @@ async function downloadFile(url, destPath, onProgress, options = {}) {
       throw new Error('O download terminou incompleto.');
     }
 
-    onProgress(100);
+    onProgress(100, {
+      downloaded,
+      total: total || downloaded,
+      resumed: acceptedResume
+    });
     return { downloaded, total };
   } catch (error) {
     if (error?.name === 'AbortError') {
@@ -4986,6 +5092,45 @@ function buildUpdatePackageEntries(update) {
   return entries;
 }
 
+function estimateUpdatePackageEntryBytes(entry, previousEntry = null) {
+  const previousSize = Number(previousEntry?.size) || 0;
+  if (previousSize > 0) return previousSize;
+  if (entry?.key === 'installer') {
+    return process.platform === 'darwin' ? 512 * 1024 * 1024 : 384 * 1024 * 1024;
+  }
+  if (entry?.key === 'vshookDll' || entry?.key === 'vshookDylib') {
+    return 8 * 1024 * 1024;
+  }
+  return 16 * 1024 * 1024;
+}
+
+async function cachedUpdateEntryIsReusable({
+  cacheDir,
+  entry,
+  previousEntry,
+  previousManifest,
+  artifactIdentity,
+  remoteValidator
+}) {
+  if (!previousEntry || !previousManifest) return false;
+  if (String(previousManifest.artifactIdentity || '') !== String(artifactIdentity || '')) return false;
+  if (String(previousEntry.url || '') !== String(entry.url || '')) return false;
+  if (remoteValidator &&
+      String(previousEntry.remoteValidatorToken || '') !== String(remoteValidator.token || '')) {
+    return false;
+  }
+  if (!/^[a-f0-9]{64}$/i.test(String(previousEntry.sha256 || ''))) return false;
+  const target = path.join(cacheDir, entry.filename);
+  try {
+    if (!fs.statSync(target).isFile()) return false;
+    const integrity = await getFileIntegrityAsync(target);
+    return integrity.size === Number(previousEntry.size) &&
+      integrity.sha256 === String(previousEntry.sha256).toLowerCase();
+  } catch (_) {
+    return false;
+  }
+}
+
 function getCurrentUpdatePackage() {
   const update = normalizeUpdate(store.get('latestUpdate'));
   const hookCenter = normalizeHookCenterUpdate(store.get('hookCenterLatest'));
@@ -5050,6 +5195,42 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
     : '';
   fs.mkdirSync(stagingDir, { recursive: true });
   const previousManifest = readCachedManifestFile(path.join(cacheDir, 'manifest.json'));
+  const artifactIdentity = getUpdateArtifactIdentity(normalized);
+  // Consulta todos os objetos em paralelo. Assim uma substituição no mesmo
+  // link do R2 é percebida pelo ETag sem baixar o instalador para descobrir.
+  const remoteValidators = await Promise.all(
+    entries.map((entry) => fetchRemoteArtifactValidator(entry.url))
+  );
+  const plannedEntryBytes = entries.map((entry) => estimateUpdatePackageEntryBytes(
+    entry,
+    previousManifest?.files?.[entry.key]
+  ));
+  let lastReportedProgress = 0;
+  const reportPackageProgress = (entryIndex, fileProgress = 0, transfer = null, completed = false) => {
+    const actualTotal = Number(transfer?.total) || 0;
+    if (actualTotal > 0) plannedEntryBytes[entryIndex] = actualTotal;
+    const totalBytes = plannedEntryBytes.reduce((sum, value) => sum + Math.max(1, Number(value) || 0), 0);
+    const completedBytes = plannedEntryBytes
+      .slice(0, entryIndex)
+      .reduce((sum, value) => sum + Math.max(1, Number(value) || 0), 0);
+    const currentPlanned = Math.max(1, Number(plannedEntryBytes[entryIndex]) || 0);
+    const currentBytes = completed
+      ? currentPlanned
+      : Math.min(
+          currentPlanned,
+          Number(transfer?.downloaded) >= 0 && actualTotal > 0
+            ? Number(transfer.downloaded)
+            : currentPlanned * Math.max(0, Math.min(100, Number(fileProgress) || 0)) / 100
+        );
+    const calculated = totalBytes > 0
+      ? Math.floor(((completedBytes + currentBytes) * 100) / totalBytes)
+      : 0;
+    // 100% só é publicado depois de hashes e manifesto estarem concluídos.
+    lastReportedProgress = Math.max(lastReportedProgress, Math.min(99, calculated));
+    if (isValidWindow(mainWindow)) {
+      mainWindow.webContents.send('download-progress', lastReportedProgress);
+    }
+  };
   const output = {};
   const manifestFiles = {};
   let manifest;
@@ -5057,34 +5238,35 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
   try {
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
+      const remoteValidator = remoteValidators[index];
+      if (remoteValidator?.size > 0) plannedEntryBytes[index] = remoteValidator.size;
       const finalDest = path.join(cacheDir, entry.filename);
       const dest = path.join(stagingDir, entry.filename);
       const previousEntry = previousManifest?.files?.[entry.key];
       const isExtensionEntry =
         entry.key === 'vshookDll' || entry.key === 'vshookDylib';
-      const isCenterInstallerEntry = entry.key === 'installer';
-      const mustRefreshBinaryEntry =
-        isExtensionEntry || isCenterInstallerEntry;
-      // A DLL/dylib e o instalador da Central podem ser substituidos no
-      // servidor mantendo versao, nome e URL (principalmente nas builds de
-      // teste 1.0.1). Reaproveitar por URL instalava indefinidamente o binario
-      // ou o DMG anterior e mantinha o protocolo antigo do Project Sync.
+      const partial = `${dest}.part`;
       const canReuse =
         !forceRedownload &&
-        !mustRefreshBinaryEntry &&
-        previousEntry?.url === entry.url &&
-        fs.existsSync(dest);
+        await cachedUpdateEntryIsReusable({
+          cacheDir,
+          entry,
+          previousEntry,
+          previousManifest,
+          artifactIdentity,
+          remoteValidator
+        });
       if (!canReuse) {
-        const partial = `${dest}.part`;
-        await fs.promises.rm(partial, { force: true }).catch(() => {});
+        let downloadCompleted = false;
         try {
-          await downloadFile(entry.url, partial, (fileProgress) => {
-            const totalProgress = Math.round(((index * 100) + fileProgress) / entries.length);
-            if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+          await downloadFile(entry.url, partial, (fileProgress, transfer) => {
+            reportPackageProgress(index, fileProgress, transfer, false);
           }, {
-            cacheBust: forceRedownload || mustRefreshBinaryEntry,
-            timeoutMs: isExtensionEntry ? 30000 : 120000
+            cacheVersion: remoteValidator?.token || artifactIdentity,
+            timeoutMs: isExtensionEntry ? 30000 : 120000,
+            resume: true
           });
+          downloadCompleted = true;
           if (isExtensionEntry) {
             validateExtensionBinaryFile(partial, entry.key);
           } else if (entry.key === 'installer') {
@@ -5094,21 +5276,40 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
           await fs.promises.rename(partial, dest);
           fileIntegrityCache.delete(path.resolve(dest));
         } catch (error) {
-          await fs.promises.rm(partial, { force: true }).catch(() => {});
+          // Falha de rede preserva o parcial para continuar na próxima
+          // tentativa. Arquivo integral que falhou na validação é descartado.
+          if (downloadCompleted) {
+            await fs.promises.rm(partial, { force: true }).catch(() => {});
+          }
           throw error;
         }
-      } else if (isValidWindow(mainWindow)) {
-        mainWindow.webContents.send('download-progress', Math.round(((index + 1) * 100) / entries.length));
+      } else {
+        await fs.promises.rm(partial, { force: true }).catch(() => {});
       }
       output[entry.key] = finalDest;
       // O instalador tambem recebe hash. Validar somente extensao deixava um
       // DMG/EXE antigo passar quando a versao e a URL eram reutilizadas.
-      const integrity = getFileIntegrity(dest);
+      const integrity = await getFileIntegrityAsync(dest);
+      plannedEntryBytes[index] = integrity.size;
+      reportPackageProgress(index, 100, {
+        downloaded: integrity.size,
+        total: integrity.size,
+        resumed: false
+      }, true);
       manifestFiles[entry.key] = {
         url: entry.url,
         filename: entry.filename,
         size: integrity.size,
-        sha256: integrity.sha256
+        sha256: integrity.sha256,
+        remoteValidatorToken: remoteValidator?.token ||
+          (canReuse ? String(previousEntry?.remoteValidatorToken || '') : ''),
+        remoteValidator: remoteValidator
+          ? {
+              etag: remoteValidator.etag,
+              lastModified: remoteValidator.lastModified,
+              size: remoteValidator.size
+            }
+          : (canReuse ? previousEntry?.remoteValidator || null : null)
       };
     }
 
@@ -5116,7 +5317,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
       schemaVersion: 2,
       cacheKey,
       identity: getUpdatePackageIdentity(normalized),
-      artifactIdentity: getUpdateArtifactIdentity(normalized),
+      artifactIdentity,
       platform: getPlatformKey(),
       version: normalized.version || '',
       updateId: normalized.updateId || '',
@@ -5378,6 +5579,7 @@ async function downloadLatestUpdate(updateOverride = null) {
   }
 
   const downloadDir = path.join(app.getPath('userData'), 'downloads', update.updateId || update.version || 'latest');
+  const artifactIdentity = getUpdateArtifactIdentity(update);
   const output = {};
 
   for (let i = 0; i < entries.length; i += 1) {
@@ -5389,7 +5591,8 @@ async function downloadLatestUpdate(updateOverride = null) {
       const totalProgress = Math.round(((i * 100) + fileProgress) / entries.length);
       if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
     }, {
-      cacheBust: isExtensionEntry,
+      cacheVersion: artifactIdentity,
+      resume: true,
       timeoutMs: isExtensionEntry ? 30000 : 120000
     });
     if (isExtensionEntry) {
