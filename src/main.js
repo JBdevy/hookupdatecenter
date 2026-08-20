@@ -6754,12 +6754,19 @@ async function exportHookMarkerGrandMa2(input = {}) {
   if (!targetFolder) return { ok: false, cancelled: true };
   const files = [];
   for (const songExport of songExports) {
-    const macroPath = path.join(targetFolder, songExport.macroFileName);
-    const timecodePath = path.join(targetFolder, songExport.timecodeFileName);
+    // Cada musica forma um pacote independente. Deixar todos os XMLs soltos
+    // na raiz dificulta identificar qual macro acompanha qual Timecode no
+    // importexport do grandMA2, principalmente em repertorios grandes.
+    const songFolderPath = path.join(targetFolder, songExport.stem);
+    await fs.promises.mkdir(songFolderPath, { recursive: true });
+    const macroPath = path.join(songFolderPath, songExport.macroFileName);
+    const timecodePath = path.join(
+      songFolderPath, songExport.timecodeFileName);
     await fs.promises.writeFile(macroPath, songExport.macroXml, 'utf8');
     await fs.promises.writeFile(timecodePath, songExport.timecodeXml, 'utf8');
     files.push({
       songName: songExport.song.name,
+      folderPath: songFolderPath,
       macroPath,
       timecodePath,
       cueCount: songExport.markerCount,
@@ -6780,10 +6787,11 @@ async function exportHookMarkerGrandMa2(input = {}) {
 
 async function exportHookMarkerResolume(input = {}) {
   const project = await requireHookMarkerProject();
-  if (!project.markers.length) {
-    throw new Error('O projeto aberto no REAPER não possui marcadores para exportar ao Resolume.');
-  }
   const settings = saveHookMarkerSettings(input);
+  const map = buildResolumeMap(project, settings);
+  if (!map.cues.length) {
+    throw new Error('O projeto aberto no REAPER não possui regiões ou marcadores para exportar ao Resolume.');
+  }
   const stem = safeFileStem(project.projectName);
   const options = {
     title: 'Exportar mapa de cues do Resolume',
@@ -6797,7 +6805,6 @@ async function exportHookMarkerResolume(input = {}) {
     ? await dialog.showSaveDialog(mainWindow, options)
     : await dialog.showSaveDialog(options);
   if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
-  const map = buildResolumeMap(project, settings);
   await fs.promises.writeFile(result.filePath,
     `${JSON.stringify(map, null, 2)}\n`, 'utf8');
   return {
@@ -6902,12 +6909,11 @@ async function hookMarkerResolumeTick() {
 
 async function startHookMarkerResolumeRuntime(input = {}) {
   const project = await requireHookMarkerProject();
-  if (!project.markers.length) {
-    throw new Error('O projeto aberto no REAPER não possui marcadores para enviar ao Resolume.');
-  }
   const settings = saveHookMarkerSettings(input);
   const cueMap = buildResolumeMap(project, settings);
-  if (!cueMap.cues.length) throw new Error('Nenhum marcador disponível para o Resolume.');
+  if (!cueMap.cues.length) {
+    throw new Error('O projeto aberto no REAPER não possui regiões ou marcadores para enviar ao Resolume.');
+  }
   if (hookMarkerResolumeTimer) clearInterval(hookMarkerResolumeTimer);
   const status = await getNativeTimecodeStatusSnapshot();
   hookMarkerResolumeRuntime = {

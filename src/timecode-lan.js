@@ -15,6 +15,10 @@ const PROJECT_SYNC_PROTOCOL_VERSION = 2
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 const LOCAL_STATUS_INTERVAL_MS = 18
 const TRANSMIT_INTERVAL_MS = 20
+const CONNECTED_IDLE_INTERVAL_MS = 40
+const RECEIVER_IDLE_INTERVAL_MS = 80
+const PAIRING_IDLE_INTERVAL_MS = 100
+const DISABLED_IDLE_INTERVAL_MS = 500
 const DISCOVERY_INTERVAL_MS = 650
 const DIRECT_DISCOVERY_INTERVAL_MS = 3000
 const DIRECT_DISCOVERY_TIMEOUT_MS = 260
@@ -917,17 +921,36 @@ function createTimecodeLanRelay(options = {}) {
     // as sondagens UDP/TCP automaticas precisam reutilizar o mesmo requestId.
     // Gerar outro ID durante a verificacao local do PC B substitui o token no
     // PC A e faz o primeiro arquivo realmente ausente falhar com HTTP 403.
-    if (applyPeerIsCurrent(projectSyncApplyPeer) &&
-        projectSyncApplyPeer.localSessionId === sessionId &&
-        String(projectSyncApplyPeer.code || '') === String(status?.code || '')) {
+    const applyPeerMatchesCurrentProject =
+      applyPeerIsCurrent(projectSyncApplyPeer) &&
+      projectSyncApplyPeer.localSessionId === sessionId &&
+      String(projectSyncApplyPeer.code || '') === String(status?.code || '') &&
+      String(projectSyncApplyPeer.localStructuralRevision || '') ===
+        structuralRevision
+    if (applyPeerMatchesCurrentProject) {
       projectSyncPairAttempt = {
         requestId: projectSyncApplyPeer.requestId,
         sessionId,
-        structuralRevision: projectSyncApplyPeer.localStructuralRevision ||
-          structuralRevision,
+        structuralRevision,
         createdAt: Date.now(),
       }
       return projectSyncApplyPeer.requestId
+    }
+    if (projectSyncApplyPeer &&
+        projectSyncApplyPeer.localSessionId === sessionId &&
+        String(projectSyncApplyPeer.code || '') === String(status?.code || '') &&
+        String(projectSyncApplyPeer.localStructuralRevision || '') !==
+          structuralRevision) {
+      // O REAPER continua na mesma sessao quando o usuario troca de aba ou
+      // abre outro projeto. A autorizacao abaixo, porem, pertence ao manifesto
+      // antigo. Reutiliza-la prende a Conferencia ao projeto vazio/anterior e
+      // ainda permitiria aplicar o snapshot errado. Invalida apenas o preflight
+      // bloqueado; o novo projeto recebe requestId/token proprios no proximo
+      // pedido automatico, sem desligar e ligar o Project Sync.
+      projectSyncApplyPeer = null
+      projectSyncExportBundle = null
+      lastProjectSyncApplyKey = ''
+      projectSyncPairAttempt = null
     }
     if (!projectSyncPairAttempt ||
         projectSyncPairAttempt.sessionId !== sessionId ||
@@ -3981,6 +4004,38 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
+  function nextTickIntervalMs() {
+    const status = localStatus
+    const playState = Math.max(0,
+      Math.trunc(Number(status?.transport?.playState) || 0))
+    const transportActive = playState !== 0 && (playState & 2) !== 2
+    const transferActive = !!projectSyncBundlePullPromise ||
+      !!projectSyncRoleHandoverPromise ||
+      projectSyncApplyIsActive(status,
+        safePreflightRequestId(status?.projectSyncApply?.requestId))
+    if (transportActive || transferActive) return TRANSMIT_INTERVAL_MS
+    if (transmitterPeer?.connected) return CONNECTED_IDLE_INTERVAL_MS
+    // O receptor recebe pacotes pelo servidor HTTP, sem depender deste tick.
+    // Aqui basta manter timeout/estado com uma cadencia leve quando parado.
+    if (receiverSession) return RECEIVER_IDLE_INTERVAL_MS
+    if (status && isPairCode(status.code) &&
+        (statusCanTransmit(status) || statusCanReceive(status))) {
+      return PAIRING_IDLE_INTERVAL_MS
+    }
+    return DISABLED_IDLE_INTERVAL_MS
+  }
+
+  function scheduleNextTick(delayMs = nextTickIntervalMs()) {
+    if (stopped) return
+    if (tickTimer) clearTimeout(tickTimer)
+    tickTimer = setTimeout(async () => {
+      tickTimer = null
+      try { await tick() } catch (_) {}
+      scheduleNextTick()
+    }, Math.max(1, Number(delayMs) || TRANSMIT_INTERVAL_MS))
+    tickTimer.unref?.()
+  }
+
   function pendingPreflightMatches(pending, payload, transmitterId,
     remoteSessionId, manifestRevision, localSessionId,
     remoteStructuralRevision,
@@ -4839,14 +4894,13 @@ function tokenMatches(left, right) {
     // estado anterior era realmente conectado, portanto o primeiro start não
     // cria um falso alerta.
     await notifyLocalPeer(false).catch(() => {})
-    tickTimer = setInterval(() => tick().catch(() => {}), TRANSMIT_INTERVAL_MS)
-    tick().catch(() => {})
+    scheduleNextTick(1)
   }
 
   async function stop() {
     stopped = true
     relayLifecycleSequence += 1
-    if (tickTimer) clearInterval(tickTimer)
+    if (tickTimer) clearTimeout(tickTimer)
     tickTimer = null
     const hadConnectedPeer = !!transmitterPeer?.connected || !!receiverSession
     // Reiniciar/fechar a Hook Center também precisa limpar o indicador da

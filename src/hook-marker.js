@@ -266,8 +266,32 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
 function buildResolumeMap(project = {}, inputSettings = {}) {
   const settings = normalizeSettings(inputSettings);
   const markers = normalizeMarkers(project.markers);
+  const songs = normalizeSongs(project.songs || project.regions);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
+  const regionStarts = songs.map((song) => ({
+    id: `region-${song.id}`,
+    number: 0,
+    name: song.name,
+    position: song.start,
+    color: '',
+    regionStart: true,
+    songId: song.id
+  }));
+  // Um marcador exatamente no inicio da regiao nao pode disparar duas colunas
+  // no mesmo frame. Nesse caso o inicio da regiao e a cue autoritativa.
+  const markersOutsideRegionStarts = markers.filter((marker) =>
+    !regionStarts.some((regionStart) =>
+      Math.abs(regionStart.position - marker.position) <= 0.0005));
+  const timelineCues = [...regionStarts, ...markersOutsideRegionStarts]
+    .sort((left, right) => {
+      const positionDelta = left.position - right.position;
+      if (positionDelta !== 0) return positionDelta;
+      if (left.regionStart !== right.regionStart) {
+        return left.regionStart === true ? -1 : 1;
+      }
+      return left.number - right.number;
+    });
   return {
     format: 'vshook-resolume-cues',
     version: 1,
@@ -281,12 +305,15 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
       port: settings.resolumePort,
       mapping: 'columns'
     },
-    cues: markers.map((marker, index) => {
+    cues: timelineCues.map((marker, index) => {
       const position = marker.position + offsetSeconds;
       const column = settings.resolumeFirstColumn + index;
       return {
-        cue: marker.cue,
-        markerNumber: marker.number,
+        cue: index + 1,
+        sourceType: marker.regionStart === true ? 'region_start' : 'marker',
+        regionStart: marker.regionStart === true,
+        songId: marker.songId || null,
+        markerNumber: marker.regionStart === true ? null : marker.number,
         markerName: marker.name,
         markerColor: marker.color || null,
         positionSeconds: Number(position.toFixed(6)),

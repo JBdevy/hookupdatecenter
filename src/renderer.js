@@ -2199,7 +2199,28 @@ function renderHookMarkerPreview() {
   const fps = Math.max(1, Math.round(settings.fps || 30));
   const offset = parseHookMarkerOffset(settings.offset, fps);
   const firstColumn = Math.max(1, Math.round(settings.resolumeFirstColumn || 1));
-  const markerGlobalIndex = new Map(markers.map((marker, index) => [String(marker.id), index]));
+  const regionStarts = songs.map((song, index) => ({
+    id: `region-${song.id}`,
+    position: Number(song.start) || 0,
+    regionStart: true,
+    order: index
+  }));
+  const resolumeMarkers = markers.filter((marker) =>
+    !regionStarts.some((regionStart) =>
+      Math.abs(regionStart.position - (Number(marker.position) || 0)) <= 0.0005));
+  const resolumeTimeline = [...regionStarts, ...resolumeMarkers]
+    .sort((left, right) => {
+      const positionDelta = (Number(left.position) || 0) -
+        (Number(right.position) || 0);
+      if (positionDelta !== 0) return positionDelta;
+      if (left.regionStart !== right.regionStart) {
+        return left.regionStart === true ? -1 : 1;
+      }
+      return (Number(left.number ?? left.order) || 0) -
+        (Number(right.number ?? right.order) || 0);
+    });
+  const resolumeGlobalIndex = new Map(resolumeTimeline.map(
+    (cue, index) => [String(cue.id), index]));
   const songHtml = songs.map((song, songIndex) => {
     const start = Number(song.start) || 0;
     const end = Math.max(start, Number(song.end) || start);
@@ -2217,13 +2238,13 @@ function renderHookMarkerPreview() {
         <span>Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}</span>
       </div>
       ${cues.map((cue, cueIndex) => {
-        const resolumeIndex = markerGlobalIndex.get(String(cue.id));
+        const resolumeIndex = resolumeGlobalIndex.get(String(cue.id));
         return `
           <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}">
             <strong>${cueIndex + 1}</strong>
             <span title="${escapeHtml(cue.name || '')}">${escapeHtml(cue.name || `Cue ${cueIndex + 1}`)}${cue.regionStart ? ' — início da região' : ''}</span>
             <code>${hookMarkerTimecode((Number(cue.position) || 0) + offset, fps)}</code>
-            <span>${cue.regionStart || resolumeIndex === undefined ? 'Início' : `Coluna ${firstColumn + resolumeIndex}`}</span>
+            <span>${resolumeIndex === undefined ? '—' : `Coluna ${firstColumn + resolumeIndex}`}</span>
           </div>`;
       }).join('')}`;
   }).join('');
@@ -2279,7 +2300,8 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
     : 'Abra o REAPER e carregue um projeto com marcadores.';
   $('#hookMarkerCountBadge').textContent = `${songs.length} música${songs.length === 1 ? '' : 's'} · ${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
   const canExportGrandMa2 = connected && songs.length > 0 && !hookMarkerBusy;
-  const canUseResolume = connected && markers.length > 0 && !hookMarkerBusy;
+  const canUseResolume = connected &&
+    (markers.length > 0 || songs.length > 0) && !hookMarkerBusy;
   $('#hookMarkerExportGrandMa2Button').disabled = !canExportGrandMa2;
   $('#hookMarkerExportResolumeButton').disabled = !canUseResolume;
   $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
@@ -2334,7 +2356,7 @@ async function exportHookMarkerGrandMa2() {
     const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2(readHookMarkerSettings());
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Para cada música, copie o timecode para importexport e o macro para macros no grandMA2.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Cada música foi organizada em sua própria pasta. Dentro dela, copie o timecode para importexport e o macro para macros no grandMA2.`,
       type: 'success'
     });
   } catch (error) {
