@@ -168,6 +168,7 @@
     showMixerVolume: false,
     mixerVolumeTarget: null,
     mixerRouteTarget: '',
+    mixerRouteOptimisticValues: {},
     showPremixVolume: false,
     premixVolumeTarget: null,
     showConfirmLiveOff: false,
@@ -2687,6 +2688,48 @@
       .map((value) => String(value || '')).filter(Boolean))
   }
 
+  function getMixerRouteOptimisticKey(id, routeKind, channel = 0) {
+    return `${String(id || '')}|${String(routeKind || '')}|${Number(channel) || 0}`
+  }
+
+  function applyMixerRouteValue(track, pending) {
+    if (!track || !pending) return
+    if (pending.routeKind === 'parent') {
+      track.parentSend = pending.enabled === true
+      return
+    }
+    const routes = getMixerHardwareRouteIds(track)
+    if (pending.enabled === true) routes.add(pending.routeId)
+    else routes.delete(pending.routeId)
+    track.hardwareRoutes = [...routes]
+  }
+
+  function syncOptimisticMixerRoutesFromBridge(bridgeData, displayData = state.snapshot) {
+    const pendingValues = state.mixerRouteOptimisticValues || {}
+    const sampledAt = now()
+    for (const [key, pending] of Object.entries(pendingValues)) {
+      if (!pending || sampledAt >= Number(pending.expiresAt || 0)) {
+        delete pendingValues[key]
+        continue
+      }
+      const bridgeTrack = findMixerTrackById(pending.id, bridgeData)
+      const displayTrack = findMixerTrackById(pending.id, displayData)
+      let bridgeEnabled = null
+      if (bridgeTrack) {
+        bridgeEnabled = pending.routeKind === 'parent'
+          ? bridgeTrack.parentSend === true
+          : getMixerHardwareRouteIds(bridgeTrack).has(pending.routeId)
+      }
+      if (bridgeEnabled === pending.enabled &&
+          Number(pending.acceptedAt || 0) > 0 &&
+          sampledAt >= Number(pending.confirmAfter || 0)) {
+        delete pendingValues[key]
+        continue
+      }
+      applyMixerRouteValue(displayTrack, pending)
+    }
+  }
+
   function getMixerPrimaryId(item, fallback = '') {
     return getMixerItemIds(item, fallback)[0] || String(fallback || '')
   }
@@ -4780,6 +4823,7 @@
       if (!response.ok) throw new Error(`state ${response.status}`)
       const data = await response.json()
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
+      syncOptimisticMixerRoutesFromBridge(data, state.snapshot)
       syncBlockHeightModeDom(state.snapshot)
       syncPendingProjectSelection(state.snapshot)
       syncOptimisticProjectSaved(state.snapshot)
@@ -11873,16 +11917,30 @@
         const enabled = el.getAttribute('aria-pressed') !== 'true'
         const track = findMixerTrackById(id)
         if (!id || !track || !routeKind) break
-        if (routeKind === 'parent') {
-          track.parentSend = enabled
-        } else {
-          const routeId = String(el.getAttribute('data-route-id') || `${routeKind}:${channel}`)
-          const routes = getMixerHardwareRouteIds(track)
-          if (enabled) routes.add(routeId)
-          else routes.delete(routeId)
-          track.hardwareRoutes = [...routes]
+        const routeId = routeKind === 'parent'
+          ? 'parent'
+          : String(el.getAttribute('data-route-id') || `${routeKind}:${channel}`)
+        const pendingKey = getMixerRouteOptimisticKey(id, routeKind, channel)
+        const pending = {
+          id, routeKind, channel, routeId, enabled,
+          acceptedAt: 0,
+          confirmAfter: 0,
+          expiresAt: now() + 6000,
         }
-        postCommand('mixer_set_route', { id, targetId: id, trackId: id, routeKind, channel, enabled })
+        state.mixerRouteOptimisticValues[pendingKey] = pending
+        applyMixerRouteValue(track, pending)
+        postCommand('mixer_set_route', { id, targetId: id, trackId: id, routeKind, channel, enabled }).then((response) => {
+          if (state.mixerRouteOptimisticValues[pendingKey] !== pending) return
+          if (!response?.ok) {
+            delete state.mixerRouteOptimisticValues[pendingKey]
+            window.setTimeout(pollBridge, 0)
+            scheduleRender(true)
+            return
+          }
+          pending.acceptedAt = now()
+          pending.confirmAfter = pending.acceptedAt + 350
+          pending.expiresAt = pending.acceptedAt + 6000
+        })
         scheduleRender(true)
         break
       }

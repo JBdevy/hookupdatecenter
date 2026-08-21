@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-redesign-premix-v11';
+const CACHE_NAME = 'vshook-mobile-1.0.1-redesign-premix-v12';
 const APP_ASSETS = [
   './',
   './index.html',
