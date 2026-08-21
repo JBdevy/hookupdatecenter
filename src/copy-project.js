@@ -241,7 +241,15 @@ async function postChunk(options, buffer, timeoutMs = 30000) {
 
 async function collectFolder(sourceRoot, update, isActive) {
   const files = []
-  const directories = []
+  // A pasta escolhida faz parte do pacote. Antes, o walk começava em "" e o
+  // receptor despejava apenas o conteúdo dela na pasta de destino. Preservar o
+  // basename aqui faz PC, Mac e o seletor de diretório do celular reconstruírem
+  // literalmente "Pasta escolhida/...".
+  const rootRelativePath = safeRelativePath(path.basename(sourceRoot))
+  if (!rootRelativePath) {
+    throw new Error('O nome da pasta não é compatível com a transferência.')
+  }
+  const directories = [rootRelativePath]
   let totalBytes = 0
   async function walk(directory, relativeBase) {
     isActive()
@@ -284,7 +292,7 @@ async function collectFolder(sourceRoot, update, isActive) {
       }
     }
   }
-  await walk(sourceRoot, '')
+  await walk(sourceRoot, rootRelativePath)
   return { files, directories, totalBytes }
 }
 
