@@ -114,6 +114,7 @@
     interfaceAccessAllowed: readLocal('vshook_local_interface_access_allowed', '0') === '1',
     hideInterfaceAccessNotification: readLocal('vshook_hide_interface_access_notification', '0') === '1',
     lastBlockedInterfaceAttemptRevision: null,
+    lastPcBatteryWarningBucket: -1,
     lastProjectPlaylistSwitchBlockedRevision: null,
     showTelepromptColorPalette: false,
     numberOrderConfirmKind: '',
@@ -4531,9 +4532,15 @@
     }
     button.classList.remove('directorInterfaceAccessButtonVisible')
     void button.offsetWidth
-    button.classList.add('directorInterfaceAccessButtonVisible')
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (button.isConnected) {
+          button.classList.add('directorInterfaceAccessButtonVisible')
+        }
+      })
+    })
     interfaceAccessButtonTimer = window.setTimeout(
-      dismissInterfaceAccessButton, 5000)
+      dismissInterfaceAccessButton, 8000)
   }
 
   function syncBlockedInterfaceAttempt(data = state.snapshot) {
@@ -4541,6 +4548,21 @@
       data?.blockedInterfaceAttemptRevision ?? '0')
     if (state.lastBlockedInterfaceAttemptRevision === null) {
       state.lastBlockedInterfaceAttemptRevision = revision
+      // No celular o primeiro snapshot pode chegar depois que o clique no PC
+      // ja aconteceu. Nao descarte uma solicitacao recente so por ser a
+      // primeira revisao observada por este aparelho.
+      const attemptedAtMs = Number(
+        data?.blockedInterfaceAttemptAtMs ?? 0)
+      const recentAttempt = revision !== '0' &&
+        Number.isFinite(attemptedAtMs) && attemptedAtMs > 0 &&
+        Math.abs(Date.now() - attemptedAtMs) <= 12000
+      if (recentAttempt &&
+          !state.hideInterfaceAccessNotification &&
+          !state.interfaceAccessAllowed &&
+          readLocal('vshook_local_interface_access_allowed', '0') !== '1' &&
+          getInterfaceBlockingEnabled(data)) {
+        showInterfaceAccessButton(data)
+      }
       return
     }
     if (revision === state.lastBlockedInterfaceAttemptRevision) return
@@ -4551,6 +4573,30 @@
         getInterfaceBlockingEnabled(data)) {
       showInterfaceAccessButton(data)
     }
+  }
+
+  function syncPcBatteryWarning(data = state.snapshot) {
+    if (IS_MUSICIAN_MONITOR) return
+    const percent = Number(data?.batteryPercent)
+    const threshold = Math.max(10, Math.min(45,
+      Number(data?.batteryWarningThreshold) || 20))
+    const warningEnabled = data?.batteryWarningEnabled !== false
+    const batteryPresent = data?.batteryPresent === true
+    const batteryCharging = data?.batteryCharging === true
+    if (!warningEnabled || !batteryPresent || batteryCharging ||
+        !Number.isFinite(percent) || percent < 0 || percent > threshold) {
+      state.lastPcBatteryWarningBucket = -1
+      return
+    }
+    const bucket = Math.max(0, Math.min(100, Math.floor(percent)))
+    if (state.lastPcBatteryWarningBucket >= 0 &&
+        bucket >= state.lastPcBatteryWarningBucket) return
+    state.lastPcBatteryWarningBucket = bucket
+    const colorMode = String(
+      data?.batteryWarningColorMode || 'red').toLowerCase()
+    const kind = colorMode === 'red' ? 'error'
+      : (colorMode === 'green' ? 'success' : 'warning')
+    showPopup(`BATERIA DO COMPUTADOR EM ${bucket}%`, kind, 4000)
   }
 
   function syncProjectPlaylistSwitchBlocked(data = state.snapshot) {
@@ -4835,6 +4881,7 @@
       syncPendingAutoplayFromBridge(state.snapshot)
       syncInterfaceBlockingPreference(state.snapshot)
       syncBlockedInterfaceAttempt(state.snapshot)
+      syncPcBatteryWarning(state.snapshot)
       syncProjectPlaylistSwitchBlocked(state.snapshot)
       syncMultiProjectPlaylistsPreference(state.snapshot)
       syncVisualTransportState(state.snapshot)
