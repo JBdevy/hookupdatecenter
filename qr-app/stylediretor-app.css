@@ -9512,6 +9512,36 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   box-sizing: border-box !important;
 }
 
+/* MultiLoops tablet: sobe o nome da musica e preserva as partes baixas das letras. */
+html[data-director-device="tablet"] .tabletMultiLoopsModal > .tabletMultiLoopsSong {
+  position: relative !important;
+  top: -4px !important;
+  min-height: 20px !important;
+  line-height: 18px !important;
+  padding-bottom: 2px !important;
+  margin-bottom: 8px !important;
+  box-sizing: border-box !important;
+}
+
+/* PreMix no celular: a linha selecionada permanece identificada em verde. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) .premixMixerRowSelected,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .premixFullRowSelected {
+  border-color: #22c55e !important;
+  background: linear-gradient(100deg, rgba(21, 128, 61, .42), rgba(5, 46, 22, .72)) !important;
+  box-shadow: inset 0 0 0 2px #22c55e, 0 0 16px rgba(34, 197, 94, .3) !important;
+}
+
+/* Route do Mixer aberto por toque longo. */
+.mixerRouteOverlay { align-items:center!important;justify-content:center!important;padding:8px!important }
+.mixerRouteModalBox { display:flex!important;flex-direction:column!important;width:min(96vw,680px)!important;max-width:680px!important;max-height:min(86vh,680px)!important;padding:16px!important;overflow:hidden!important;box-sizing:border-box!important }
+.mixerRouteTrackName { max-width:440px;margin-top:3px;color:#facc15;font-size:12px;font-weight:1000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
+.mixerRouteList { display:flex;flex:1 1 auto;min-height:0;flex-direction:column;gap:8px;overflow-y:auto;overscroll-behavior:contain }
+.mixerRouteOption { display:grid;flex:0 0 auto;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;min-height:48px;padding:8px 12px;border:1px solid #ef4444;border-radius:10px;background:#3f1d1d;color:#fff;text-align:left }
+.mixerRouteOption>span { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:900 }
+.mixerRouteOption>strong { color:#fecaca;font-size:10px }
+.mixerRouteOptionActive { border-color:#4ade80!important;background:#14532d!important }
+.mixerRouteOptionActive>strong { color:#bbf7d0!important }
+
 /* BPM do Diretor: valor somente leitura no app; ajuste apenas pelos botões. */
 .bpmFullRowPlaying .bpmStepBtn { opacity:.32; }
 html[data-director-device="tablet"] .tabletBpmInlineControls .bpmStepBtn {
@@ -9667,4 +9697,214 @@ html[data-director-device="tablet"] .tabletBpmCurrentValue.bpmGenericValue {
 
 .app .bpmFullRow .bpmFullCurrent.bpmGenericValue small {
   color: #fecaca;
+}
+
+/* Tablet: PreMix e MultiLoops ocupam somente a mesma área útil do painel. */
+html[data-director-device="tablet"] .premixFullScreen {
+  inset: auto !important;
+  left: calc(76px + var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
+  right: calc(76px + var(--tablet-safe-right, env(safe-area-inset-right, 0px))) !important;
+  top: max(8px, var(--tablet-safe-top, env(safe-area-inset-top, 0px))) !important;
+  bottom: max(8px, var(--tablet-safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+  width: auto !important;
+  height: auto !important;
+  padding: 0 !important;
+}
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay .tabletMultiLoopsModal,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay .tabletMultiLoopTracksModal,
+html[data-director-device="tablet"] .tabletCenteredModalOverlay .tabletMultiLoopAutoLimitModal {
+  width: min(100%, 700px) !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Visual móvel 2026: novo acabamento sem alterar a posição dos controles. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) {
+  --mobile-accent: #22d3ee;
+  --mobile-accent-2: #8b5cf6;
+  --mobile-surface: rgba(13, 20, 35, .92);
+  --mobile-surface-2: rgba(19, 29, 49, .94);
+  background:
+    radial-gradient(circle at 12% -8%, rgba(34, 211, 238, .22), transparent 34%),
+    radial-gradient(circle at 102% 18%, rgba(139, 92, 246, .22), transparent 35%),
+    linear-gradient(160deg, #020617 0%, #07111f 52%, #0d0a1d 100%) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
+  border-radius: 24px !important;
+  background: linear-gradient(165deg, rgba(15, 23, 42, .94), rgba(5, 10, 22, .96)) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .topPlaylistButton,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .topTimerBtn,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .topMiniBtn {
+  border-color: rgba(103, 232, 249, .38) !important;
+  border-radius: 14px !important;
+  background: linear-gradient(145deg, rgba(24, 38, 61, .96), rgba(11, 18, 33, .96)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 6px 14px rgba(0, 0, 0, .24) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .headerRow,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsStickyPanel {
+  border-color: rgba(139, 92, 246, .28) !important;
+  border-radius: 16px !important;
+  background: linear-gradient(145deg, rgba(18, 27, 46, .96), rgba(9, 14, 27, .98)) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .tab,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .activeTab,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .btn {
+  border-radius: 12px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045), 0 4px 10px rgba(0, 0, 0, .2) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .activeTab {
+  border-color: #67e8f9 !important;
+  background: linear-gradient(135deg, #0891b2, #6d28d9) !important;
+  color: #fff !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .contentPanel,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .listBox {
+  border-color: rgba(100, 116, 139, .38) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(180deg, rgba(7, 14, 27, .96), rgba(3, 8, 18, .98)) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .mixerRow {
+  border-color: rgba(71, 85, 105, .5) !important;
+  background: linear-gradient(100deg, rgba(20, 30, 49, .94), rgba(10, 17, 31, .96)) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .premixMixerRowSelected {
+  border-color: #22d3ee !important;
+  background: linear-gradient(100deg, rgba(8, 145, 178, .88), rgba(67, 56, 202, .82)) !important;
+  box-shadow: inset 3px 0 0 #67e8f9, 0 0 16px rgba(34, 211, 238, .24) !important;
+}
+.app.musicianMonitor {
+  --musician-accent: #f59e0b;
+  background:
+    radial-gradient(circle at 50% -12%, rgba(245, 158, 11, .2), transparent 38%),
+    linear-gradient(160deg, #130c06 0%, #07130f 48%, #041015 100%) !important;
+}
+.app.musicianMonitor > .container {
+  border-radius: 22px !important;
+  background: linear-gradient(165deg, rgba(30, 23, 14, .94), rgba(5, 19, 19, .97)) !important;
+}
+.app.musicianMonitor .topPlaylistButton,
+.app.musicianMonitor .topTimerBtn,
+.app.musicianMonitor .topMiniBtn {
+  border-color: rgba(245, 158, 11, .42) !important;
+  border-radius: 13px !important;
+  background: linear-gradient(145deg, rgba(52, 38, 17, .94), rgba(17, 29, 27, .96)) !important;
+}
+.app.musicianMonitor .contentPanel,
+.app.musicianMonitor .listBox {
+  border-color: rgba(45, 212, 191, .28) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(180deg, rgba(8, 25, 25, .95), rgba(4, 13, 16, .98)) !important;
+}
+.app.musicianMonitor .item {
+  border-color: rgba(71, 109, 101, .5) !important;
+  background: linear-gradient(100deg, rgba(22, 40, 36, .95), rgba(11, 23, 25, .97)) !important;
+}
+.app.musicianMonitor .item.playing {
+  border-color: #fbbf24 !important;
+  background: linear-gradient(100deg, #d97706, #0f766e) !important;
+  box-shadow: inset 3px 0 0 #fde68a, 0 0 18px rgba(245, 158, 11, .24) !important;
+}
+
+/* Letreiro geral do Diretor e cabeçalho do modal de repertórios. */
+.playlistModalHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.playlistMarqueeButton {
+  flex: 0 0 auto;
+  min-width: 104px;
+  min-height: 38px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+.app.marqueeDisabled .marqueeViewport.is-marquee .marqueeTrack,
+.app.marqueeDisabled .topPlaylistTickerTrack,
+.app.marqueeDisabled .playlistOptionTickerTrack {
+  animation: none !important;
+  -webkit-animation: none !important;
+  transform: none !important;
+}
+.app.marqueeDisabled .marqueeTrack > .marqueeSegment:nth-child(n+2),
+.app.marqueeDisabled .topPlaylistTickerTrack > span:nth-child(n+2),
+.app.marqueeDisabled .playlistOptionTickerTrack > span:nth-child(n+2) {
+  display: none !important;
+}
+@media (max-width: 430px) {
+  .playlistModalHeader { gap: 7px; }
+  .playlistModalHeaderActions { gap: 5px; }
+  .playlistMarqueeButton,
+  .playlistMultiButton { min-width: 86px; padding-left: 7px; padding-right: 7px; font-size: 11px; }
+}
+
+/* Todo modal do tablet respeita a área principal entre as barras laterais. */
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay {
+  inset: auto !important;
+  left: calc(76px + var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
+  right: calc(76px + var(--tablet-safe-right, env(safe-area-inset-right, 0px))) !important;
+  top: calc(max(8px, var(--tablet-safe-top, env(safe-area-inset-top, 0px))) + 54px) !important;
+  bottom: max(8px, var(--tablet-safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+}
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .tabletMultiLoopModalOverlay {
+  justify-content: center !important;
+  padding: 8px !important;
+}
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay > .modalBottomSpace {
+  display: none !important;
+  flex: 0 0 0 !important;
+}
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay .tabletMultiLoopsModal,
+html[data-director-device="tablet"] .tabletMultiLoopModalOverlay .tabletMultiLoopTracksModal {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 auto !important;
+}
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .tabletSettingsModalOverlay {
+  justify-content: center !important;
+}
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .modalBottomSpace {
+  display: none !important;
+  flex: 0 0 0 !important;
+}
+
+/* Tablet: centralização única para Configurações, Sessão, Repertórios e demais modais. */
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay {
+  justify-content: center !important;
+}
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay > .modalSpacer,
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay > .modalBottomSpace {
+  display: none !important;
+  flex: 0 0 0 !important;
+}
+
+/* Tablet: Configuracoes, Sessao e Repertorios usam o mesmo quadro do MultiLoops. */
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .tabletPlaylistModalOverlay,
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .tabletSettingsModalOverlay,
+html[data-director-device="tablet"] .app:not(.musicianMonitor) > .projectModalOverlay {
+  padding: 8px !important;
+  align-items: stretch !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+}
+html[data-director-device="tablet"] .tabletPlaylistModalOverlay > .playlistModalBox,
+html[data-director-device="tablet"] .tabletSettingsModalOverlay > .settingsModalBox,
+html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
 }

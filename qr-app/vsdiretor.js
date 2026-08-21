@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-director-bpm-input-generic-v15'
+  const VERSION = '1.0.1-mobile-redesign-premix-select-v23'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -52,6 +52,8 @@
     selectedMarkerId: '',
     markerSelectionClearedUntil: 0,
     selectedPremixSongId: '',
+    selectedPremixItemId: '',
+    selectedPremixTrackId: '',
     queuedSongId: '',
     queuedManualVisualId: '',
     queuedSongLocalUntil: 0,
@@ -104,6 +106,7 @@
     optimisticActivePlaylistName: '',
     optimisticActivePlaylistUntil: 0,
     pendingMultiProjectPlaylists: null,
+    marqueeEnabled: readLocal('vshook_director_marquee_enabled', '0') === '1',
     showMenu: false,
     showTimerModal: false,
     showSettingsModal: false,
@@ -164,6 +167,7 @@
     hashRegionDrawerPendingId: '',
     showMixerVolume: false,
     mixerVolumeTarget: null,
+    mixerRouteTarget: '',
     showPremixVolume: false,
     premixVolumeTarget: null,
     showConfirmLiveOff: false,
@@ -287,6 +291,7 @@
   const latestVolumeCommands = new Map()
   const MIXER_MIN_DB = -90
   const MIXER_MAX_DB = 12
+  const PREMIX_ITEM_MAX_DB = 24
   const MIXER_ZERO_DB_RATIO = 0.76
   const MIXER_NEGATIVE_CURVE = 1.35
   const VOLUME_RATIO_CONFIRM_EPSILON = 0.0015
@@ -304,7 +309,33 @@
       .replace(/'/g, '&#39;')
   }
 
-  function upperText(value) { return String(value ?? '').trim().toUpperCase() }
+  function upperText(value) {
+    const input = String(value ?? '').trim()
+    let output = ''
+    let outside = ''
+    let depth = 0
+    const flushOutside = () => {
+      if (!outside) return
+      output += outside.toLocaleUpperCase('pt-BR')
+      outside = ''
+    }
+    for (const char of input) {
+      if (char === '(') {
+        if (depth === 0) flushOutside()
+        depth += 1
+        output += char
+      } else if (char === ')' && depth > 0) {
+        output += char
+        depth -= 1
+      } else if (depth > 0) {
+        output += char
+      } else {
+        outside += char
+      }
+    }
+    flushOutside()
+    return output
+  }
 
   function simpleHash(str) {
     const input = String(str ?? '')
@@ -1292,7 +1323,7 @@
       state.topPlaylistTickerTitle = title
       state.topPlaylistTickerStartedAt = now()
     }
-    if (title.length <= 18) return `<span class="topPlaylistTicker topPlaylistTickerStatic">${safe}</span>`
+    if ((!IS_MUSICIAN_MONITOR && !state.marqueeEnabled) || title.length <= 18) return `<span class="topPlaylistTicker topPlaylistTickerStatic">${safe}</span>`
     // O root do app e redesenhado em varias acoes. Atraso negativo preserva a fase
     // do letreiro para ele nao reiniciar a cada clique ou selecao.
     const phaseSec = ((Math.max(0, now() - state.topPlaylistTickerStartedAt) % 9000) / 1000).toFixed(3)
@@ -1302,7 +1333,7 @@
   function renderPlaylistOptionTitle(text) {
     const title = upperText(text || 'REPERTÓRIO')
     const safe = escapeHtml(title)
-    if (title.length <= 18) return `<span class="playlistOptionTicker playlistOptionTickerStatic">${safe}</span>`
+    if ((!IS_MUSICIAN_MONITOR && !state.marqueeEnabled) || title.length <= 18) return `<span class="playlistOptionTicker playlistOptionTickerStatic">${safe}</span>`
     return `<span class="playlistOptionTicker playlistOptionTickerAnimated"><span class="playlistOptionTickerTrack"><span>${safe}</span><span aria-hidden="true">${safe}</span></span></span>`
   }
 
@@ -2643,6 +2674,19 @@
     return getMixerTracks(data).find((item) => getMixerItemIds(item).includes(wanted)) || null
   }
 
+  function getMixerHardwareOutputs(data = state.snapshot) {
+    const mixer = data?.mixer && typeof data.mixer === 'object' ? data.mixer : null
+    const outputs = Array.isArray(data?.mixerHardwareOutputs)
+      ? data.mixerHardwareOutputs
+      : (Array.isArray(mixer?.hardwareOutputs) ? mixer.hardwareOutputs : [])
+    return outputs.filter((item) => item && typeof item === 'object' && String(item.id || ''))
+  }
+
+  function getMixerHardwareRouteIds(track) {
+    return new Set((Array.isArray(track?.hardwareRoutes) ? track.hardwareRoutes : [])
+      .map((value) => String(value || '')).filter(Boolean))
+  }
+
   function getMixerPrimaryId(item, fallback = '') {
     return getMixerItemIds(item, fallback)[0] || String(fallback || '')
   }
@@ -2652,7 +2696,7 @@
     return Math.max(0, Math.min(1, Number.isFinite(num) ? num : fallback))
   }
 
-  function mixerRatioToDb(ratio) {
+  function mixerRatioToDb(ratio, maxDb = MIXER_MAX_DB) {
     const safe = clampRatio(ratio, 0.75)
     if (safe <= 0) return Number.NEGATIVE_INFINITY
     if (safe <= MIXER_ZERO_DB_RATIO) {
@@ -2665,10 +2709,10 @@
     return (
       (safe - MIXER_ZERO_DB_RATIO) /
       (1 - MIXER_ZERO_DB_RATIO)
-    ) * MIXER_MAX_DB
+    ) * maxDb
   }
 
-  function mixerDbToRatio(valueDb) {
+  function mixerDbToRatio(valueDb, maxDb = MIXER_MAX_DB) {
     const db = Number(valueDb)
     if (db === Number.NEGATIVE_INFINITY || db <= MIXER_MIN_DB) return 0
     if (!Number.isFinite(db)) return MIXER_ZERO_DB_RATIO
@@ -2685,7 +2729,7 @@
       Math.min(
         1,
         MIXER_ZERO_DB_RATIO +
-          ((db / MIXER_MAX_DB) * (1 - MIXER_ZERO_DB_RATIO)),
+          ((db / maxDb) * (1 - MIXER_ZERO_DB_RATIO)),
       ),
     )
   }
@@ -2717,7 +2761,11 @@
     return 20 * Math.log10(amplitude)
   }
 
-  function getRemoteVolumeState(item, fallback = MIXER_ZERO_DB_RATIO) {
+  function getRemoteVolumeState(
+    item,
+    fallback = MIXER_ZERO_DB_RATIO,
+    maxDb = MIXER_MAX_DB,
+  ) {
     const explicitRatio = firstFiniteVolumeValue([
       item?.volumeRatio,
       item?.volume_ratio,
@@ -2728,7 +2776,7 @@
     }
     const db = getDirectVolumeDb(item)
     if (db !== null) {
-      return { known: true, ratio: mixerDbToRatio(db) }
+      return { known: true, ratio: mixerDbToRatio(db, maxDb) }
     }
     return { known: false, ratio: clampRatio(fallback, MIXER_ZERO_DB_RATIO) }
   }
@@ -2759,8 +2807,9 @@
     holdMap,
     holdKeys,
     fallback = MIXER_ZERO_DB_RATIO,
+    maxDb = MIXER_MAX_DB,
   ) {
-    const remote = getRemoteVolumeState(item, fallback)
+    const remote = getRemoteVolumeState(item, fallback, maxDb)
     const hold = getActiveVolumeHold(holdMap, holdKeys, remote)
     const ratio = hold
       ? clampRatio(hold.ratio, fallback)
@@ -2768,7 +2817,7 @@
     const directDb = hold ? null : getDirectVolumeDb(item)
     const db = ratio <= 0
       ? Number.NEGATIVE_INFINITY
-      : (directDb !== null ? directDb : mixerRatioToDb(ratio))
+      : (directDb !== null ? directDb : mixerRatioToDb(ratio, maxDb))
     return { db, hold, ratio, remote }
   }
 
@@ -3092,6 +3141,7 @@
       premixItemVolumeHold,
       id ? [id] : [],
       MIXER_ZERO_DB_RATIO,
+      PREMIX_ITEM_MAX_DB,
     )
   }
 
@@ -4620,7 +4670,7 @@
       }
     }
     root.querySelectorAll(
-      '.premixInlineSlider[data-action="premix-volume"]',
+      '.premixInlineSlider[data-premix-track-id]',
     ).forEach((input) => {
       const id = String(input.getAttribute('data-premix-track-id') || '')
       const item = getLiveTrackItem(premixTracks.get(id))
@@ -4641,7 +4691,7 @@
       getPremixAllItemRows().map((item) => [getPremixItemId(item), item]),
     )
     root.querySelectorAll(
-      '.premixFullSlider[data-action="premix-item-volume"]',
+      '.premixFullSlider[data-premix-item-id]',
     ).forEach((input) => {
       const id = String(input.getAttribute('data-premix-item-id') || '')
       const item = premixItems.get(id)
@@ -5958,7 +6008,8 @@
   function renderPremixPage() {
     if (state.premixView === 'tracks') {
       const rows = getPremixTracks().map((item) => {
-        const id = escapeHtml(getId(item))
+        const rawId = getId(item)
+        const id = escapeHtml(rawId)
         const name = escapeHtml(upperText(getName(item) || 'PREMIX'))
         const muted = item.mute === true || item.muted === true
         const volumeState = getPremixTrackVolumeState(item)
@@ -5977,13 +6028,14 @@
   }
 
   function renderPremixItemRow(item, index) {
-    const id = escapeHtml(getPremixItemId(item))
+    const rawId = getPremixItemId(item)
+    const id = escapeHtml(rawId)
     const itemName = escapeHtml(upperText(getName(item) || `ITEM ${index + 1}`))
     const trackName = escapeHtml(upperText(item?.trackName || item?.track || `PISTA ${item?.trackIndex || index + 1}`))
     const volumeState = getPremixItemVolumeState(item)
     const muted = getPremixItemMute(item)
     const dbText = formatVolumeDb(volumeState.db)
-    return `<div class="premixFullRow" data-premix-item-row="${id}">
+    return `<div class="premixFullRow" data-premix-item-row="${id}" data-premix-item-id="${id}">
       <div class="premixFullItemMain"><div class="premixFullTrackName">${trackName}</div><div class="premixFullItemName">${itemName}</div>${renderTrackMeter(item)}</div>
       <div class="premixFullSliderWrap"><input class="premixFullSlider" data-action="premix-item-volume" data-premix-item-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixFullDb">${escapeHtml(dbText)}</span></div>
       <button class="premixFullMute ${muted ? 'premixFullMuteActive' : ''}" data-action="premix-item-mute" data-premix-item-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button>
@@ -6246,7 +6298,7 @@
     const multiTitle = multiProjectPlaylistsAvailable
       ? 'Mostrar repertórios das outras sessões abertas'
       : 'Abra outra sessão que tenha pelo menos um repertório'
-    const header = `<div class="playlistModalHeader"><div class="modalTitle">REPERTÓRIOS</div><button class="${multiProjectPlaylists ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMultiButton" data-action="playlist-multi-toggle" aria-pressed="${multiProjectPlaylists ? 'true' : 'false'}" aria-disabled="${multiProjectPlaylistsAvailable ? 'false' : 'true'}" title="${escapeHtml(multiTitle)}"${multiProjectPlaylistsAvailable ? '' : ' disabled'}>${multiProjectPlaylists ? '[x]' : '[ ]'} MULTI</button></div>`
+    const header = `<div class="playlistModalHeader"><div class="modalTitle">REPERTÓRIOS</div><div class="playlistModalHeaderActions"><button class="${state.marqueeEnabled ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMarqueeButton" data-action="playlist-marquee-toggle" aria-pressed="${state.marqueeEnabled ? 'true' : 'false'}">LETREIRO</button><button class="${multiProjectPlaylists ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMultiButton" data-action="playlist-multi-toggle" aria-pressed="${multiProjectPlaylists ? 'true' : 'false'}" aria-disabled="${multiProjectPlaylistsAvailable ? 'false' : 'true'}" title="${escapeHtml(multiTitle)}"${multiProjectPlaylistsAvailable ? '' : ' disabled'}>${multiProjectPlaylists ? '[x]' : '[ ]'} MULTI</button></div></div>`
     return `<div class="modalOverlay tabletCenteredModalOverlay tabletPlaylistModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox playlistModalBox" data-stop-modal>${header}<div class="playlistSelectList">${rows}</div>${buttons}</div><div class="modalBottomSpace"></div></div>`
   }
 
@@ -6294,6 +6346,24 @@
     const ratio = getMixerRatio(track)
     const name = escapeHtml(upperText(getName(track) || 'TRACK'))
     return `<div class="modalOverlay mixerVolumeOverlay"><div class="modalSpacer"></div><div class="modalBox mixerVolumeModalBox mixerVolumeModalBoxWide" data-stop-modal><div class="mixerModalHeader"><div class="modalTitle mixerVolumeTitle">${name}</div><button class="modalCancelBtn" data-action="modal-close">FECHAR</button></div><div class="mixerVolumeDbDisplay">${escapeHtml(formatMixerDb(track))}</div><input class="mixerVolumeSlider mixerVolumeSliderWide" data-action="mixer-volume" data-mixer-id="${escapeHtml(id)}" type="range" min="0" max="1" step="0.001" value="${ratio}"><button class="modalOkBtnWide mixerZeroDbBtn" data-action="mixer-volume-zero" data-mixer-id="${escapeHtml(id)}">0 dB</button></div></div>`
+  }
+
+  function renderMixerRouteModal() {
+    const id = String(state.mixerRouteTarget || '')
+    if (!id) return ''
+    const track = findMixerTrackById(id)
+    if (!track) return ''
+    const name = escapeHtml(upperText(getName(track) || 'TRACK'))
+    const activeRoutes = getMixerHardwareRouteIds(track)
+    const master = id === 'MASTER_TRACK'
+    const parentButton = master ? '' : `<button class="mixerRouteOption ${track.parentSend === true ? 'mixerRouteOptionActive' : ''}" data-action="mixer-route-toggle" data-mixer-id="${escapeHtml(id)}" data-route-kind="parent" data-route-channel="-1" aria-pressed="${track.parentSend === true ? 'true' : 'false'}"><span>MASTER / PARENT</span><strong>${track.parentSend === true ? 'ATIVO' : 'DESATIVADO'}</strong></button>`
+    const hardwareButtons = getMixerHardwareOutputs().map((output) => {
+      const routeId = String(output.id || '')
+      const active = activeRoutes.has(routeId)
+      return `<button class="mixerRouteOption ${active ? 'mixerRouteOptionActive' : ''}" data-action="mixer-route-toggle" data-mixer-id="${escapeHtml(id)}" data-route-kind="${escapeHtml(String(output.kind || 'stereo'))}" data-route-channel="${Number(output.channel) || 0}" data-route-id="${escapeHtml(routeId)}" aria-pressed="${active ? 'true' : 'false'}"><span>${escapeHtml(String(output.label || routeId))}</span><strong>${active ? 'ATIVO' : 'DESATIVADO'}</strong></button>`
+    }).join('')
+    const rows = `${parentButton}${hardwareButtons}` || '<div class="emptyBox">NENHUMA SAÍDA DE ÁUDIO DISPONÍVEL</div>'
+    return `<div class="modalOverlay mixerRouteOverlay" data-action="mixer-route-close"><div class="modalBox mixerRouteModalBox" data-stop-modal><div class="mixerModalHeader"><div><div class="modalTitle">ROUTE</div><div class="mixerRouteTrackName">${name}</div></div><button class="modalCancelBtn" data-action="mixer-route-close">FECHAR</button></div><div class="mixerRouteList">${rows}</div></div></div>`
   }
 
   function renderTimerModal() {
@@ -8896,7 +8966,7 @@
     const telepromptColor = getTelepromptColor()
     const telepromptColorValue = getTelepromptColorValue(telepromptColor)
     return `
-      <div class="app vshookNoTextSelect${IS_MUSICIAN_MONITOR ? ' musicianMonitor' : ''}" data-theme="${theme}" data-active-tab="${state.activeTab}" data-border-mode="${borderMode}" data-block-height-mode="${blockHeightMode}" data-live-mark-mode="${liveMarkVisual.mode}" data-visual-playing-id="${escapeHtml(getVisualPlayingId(data))}" data-teleprompt-font="${telepromptFont}" data-teleprompt-color="${telepromptColor}" style="--app-border-color:${borderColor};--app-border-glow:${borderGlow};--teleprompt-text-color:${telepromptColorValue};--live-mark-background:${liveMarkVisual.background};--live-mark-border:${liveMarkVisual.border};--live-mark-shadow:${liveMarkVisual.shadow};">
+      <div class="app vshookNoTextSelect${IS_MUSICIAN_MONITOR ? ' musicianMonitor marqueeEnabled' : (state.marqueeEnabled ? ' marqueeEnabled' : ' marqueeDisabled')}" data-theme="${theme}" data-active-tab="${state.activeTab}" data-border-mode="${borderMode}" data-block-height-mode="${blockHeightMode}" data-live-mark-mode="${liveMarkVisual.mode}" data-visual-playing-id="${escapeHtml(getVisualPlayingId(data))}" data-teleprompt-font="${telepromptFont}" data-teleprompt-color="${telepromptColor}" style="--app-border-color:${borderColor};--app-border-glow:${borderGlow};--teleprompt-text-color:${telepromptColorValue};--live-mark-background:${liveMarkVisual.background};--live-mark-border:${liveMarkVisual.border};--live-mark-shadow:${liveMarkVisual.shadow};">
         <style>
           .contentPanel{display:flex;flex-direction:column;flex:1;min-height:0}.controlsRowEqual{grid-template-columns:repeat(3,1fr)!important}.controlsRowTwo{grid-template-columns:repeat(2,1fr)!important}.controlsRowDirectorMain{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important}.controlsRowDirectorMain>button{height:42px!important;min-height:42px!important}.container{padding-top:9px!important}.app:not([data-border-mode^="rgb-"]) .container{border-color:var(--app-border-color)!important;box-shadow:0 0 0 1px var(--app-border-glow),0 0 18px var(--app-border-glow)!important;animation:none!important}.app[data-border-mode^="rgb-"] .container{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45);animation:directorBorderRgb 6s linear infinite!important}.app[data-border-mode="rgb-mid"] .container{animation-duration:3s!important}.app[data-border-mode="rgb-super"] .container{animation-duration:.85s!important}@keyframes directorBorderRgb{0%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}20%{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 0 18px rgba(250,204,21,.45)}40%{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.45)}60%{border-color:#06b6d4;box-shadow:0 0 0 1px rgba(6,182,212,.28),0 0 18px rgba(6,182,212,.45)}80%{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.28),0 0 18px rgba(139,92,246,.45)}100%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}}.app[data-border-mode="off"] .container{border-color:#111827!important;box-shadow:none!important}.topStatusRow{display:grid!important;grid-template-columns:minmax(58px,1fr) 104px 34px 34px!important;align-items:center!important;gap:6px!important;margin-bottom:10px!important}.topPlaylistButton{height:30px;width:100%;max-width:100%;min-width:0;border:1px solid #374151;border-radius:8px;background:#111827;color:#f8fafc!important;font-weight:900;font-size:10.5px;text-align:left;padding:0 8px;white-space:nowrap;overflow:hidden;box-shadow:none;display:flex!important;align-items:center!important}.topPlaylistTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.topPlaylistTickerStatic{text-overflow:ellipsis}.topPlaylistTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.topPlaylistTickerTrack>span{flex:0 0 auto}.topPlaylistTickerAnimated .topPlaylistTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}@keyframes topPlaylistTickerScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-50% - 15px))}}.playlistOption[data-action="playlist-select"]{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:10px!important}.playlistOption[data-action="playlist-select"] .playlistOptionText{min-width:0;overflow:hidden;white-space:nowrap;text-align:left}.playlistOptionTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.playlistOptionTickerStatic{text-overflow:ellipsis}.playlistOptionTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.playlistOptionTickerTrack>span{flex:0 0 auto}.playlistOptionTickerAnimated .playlistOptionTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}.playlistOptionTime{justify-self:end;color:#facc15;font-weight:1000;font-size:12px;white-space:nowrap}.topTimerBtn{height:30px;width:104px;min-width:104px;border:1px solid #facc15;border-radius:8px;background:#16120a;color:#facc15!important;font-weight:900;font-size:12px;text-align:center;padding:0 4px;white-space:nowrap;box-shadow:0 0 0 1px rgba(250,204,21,.14)}.topHeaderTools{display:contents!important}.topMiniBtn{width:34px;height:30px;border:1px solid #475569;border-radius:8px;color:#f8fafc!important;font-weight:900;font-size:21px;line-height:1;display:flex!important;align-items:center!important;justify-content:center!important;padding:0!important;text-align:center!important}.topMenuIcon{display:block;line-height:1;transform:translateY(-2px)}.topMenuBtn{background:#6d28d9!important;border-color:#a78bfa!important}.topSettingsBtn{background:#1f2937!important;border-color:#4b5563!important;color:#f8fafc!important}.topMiniBtn:active,.topPlaylistButton:active,.topTimerBtn:active{transform:translateY(1px);filter:brightness(1.12)}.playingText,.playingTimeText{color:#f8fafc!important}.topRightTools{display:none!important}.bridgeOnline,.bridgeOffline{display:none!important}.headerRow{margin-top:1px!important;margin-bottom:7px!important}.middleInfo{display:flex!important;align-items:center!important;justify-content:center!important;min-height:22px!important;margin-top:4px!important}.middleInfoText{display:block!important;color:#facc15!important;font-size:13px!important;font-weight:1000!important;letter-spacing:.035em!important;text-align:center!important}.tabRow{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important;width:100%!important;padding-right:0!important}.tabRow>.tab,.tabRow>.activeTab{min-width:0!important;width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;padding-left:5px!important;padding-right:5px!important;font-size:11.5px!important}.btnPlayActive{border-color:#22c55e!important;background:#14532d!important}.btnStopActive{border-color:#ef4444!important;background:#991b1b!important}.authGateError{color:#fecaca;font-weight:900;text-align:center}.rowLabelText{font-weight:900}.app .item .text,.app .item .timeText,.app .item .rowLabelText,.app .item .marqueeStatic,.app .item .marqueeTrack,.app .item .marqueeSegment,.app .item.blockItem .text,.app .item.blockItem .timeText,.app .item.blockItem .rowLabelText,.app .item.blockItem .blockText,.app .item.blockItem .blockTimeText{color:#f8fafc!important;text-shadow:none!important}.app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#ffffff!important}.directorPopup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10050;pointer-events:none;min-width:150px;max-width:82vw;padding:14px 20px;border-radius:14px;border:1px solid #facc15;background:rgba(2,6,23,.96);color:#facc15;text-align:center;font-weight:900;font-size:18px;letter-spacing:.04em;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(250,204,21,.18)}.settingsNumberGrid{margin-top:8px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalBox{max-width:430px!important;padding:20px!important}.timerModalPreview{height:74px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:12px;background:#05070a;color:#facc15;font-size:30px;font-weight:900;margin-bottom:16px;letter-spacing:.04em}.timerModeGrid,.settingsThemeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGridThree{grid-template-columns:1fr 1fr 1fr!important}.timerModeGridThree>button{height:44px!important;min-height:44px!important;font-size:11px!important;padding-left:4px!important;padding-right:4px!important}.timerActionButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:14px!important}.timerActionButtons>button{width:100%!important;min-width:0!important;height:44px!important;min-height:44px!important}.settingsWideGrid{display:grid;grid-template-columns:1fr;gap:10px;margin:0 0 12px}.settingsModalBox{max-width:330px}.settingsThemeGrid>button,.settingsWideGrid>button{height:42px!important;min-height:42px!important}.settingsBorderModeButton{background:#111827!important;border-color:#475569!important;color:#f8fafc!important;box-shadow:none!important}.settingsBorderModeButton:active{filter:brightness(1.12);transform:translateY(1px)}.mixerContentPanel{flex:1 1 auto!important;min-height:0!important}.mixerListBox{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;scroll-padding-bottom:8px!important}.mixerRowsBox{display:contents!important;border:0!important;background:transparent!important}.mixerRow{display:grid;grid-template-columns:10px 28px minmax(0,1fr) 72px 38px 38px;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #18212c;min-height:56px}.mixerRow:last-child{border-bottom:0}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:#334155}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:1000;color:#facc15;text-align:right;white-space:nowrap;font-size:11px}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniMute.mixerMiniBtnActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important}.mixerMiniSolo.mixerMiniBtnActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important}.mixerVolumeOverlay{align-items:center!important;justify-content:center!important;padding:0 8px!important}.mixerVolumeModalBoxWide{width:min(96vw,620px)!important;max-width:620px!important;padding:16px!important;box-sizing:border-box!important}.mixerModalHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.mixerVolumeDbDisplay{text-align:center;color:#facc15;font-weight:1000;font-size:30px;margin:12px 0}.mixerVolumeSliderWide{width:100%!important;max-width:none!important;height:78px!important;min-height:78px!important;accent-color:#facc15!important;touch-action:pan-x!important;-webkit-appearance:none;appearance:none;background:transparent!important}.mixerVolumeSliderWide::-webkit-slider-runnable-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important;box-shadow:inset 0 0 0 2px rgba(250,204,21,.12)!important}.mixerVolumeSliderWide::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important;margin-top:-8px!important}.mixerVolumeSliderWide::-moz-range-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important}.mixerVolumeSliderWide::-moz-range-thumb{width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important}.mixerZeroDbBtn{height:46px!important;margin-top:8px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important}.premixInlineSlider{width:108px;min-width:80px;accent-color:#facc15}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}
         </style>
@@ -8935,7 +9005,7 @@
         ${renderTabletSearchScreen(data)}
         ${IS_MUSICIAN_MONITOR
           ? `${renderDirectorTelepromptScreen(data)}${renderSettingsModal()}`
-          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderProjectSaveConfirm()}${renderMixerVolumeModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderPremixFullScreen(data)}`}
+          : `${renderMarkersOverlay(data)}${renderDirectorTelepromptScreen(data)}${renderPlaylistModal()}${renderPlaylistCopyChildrenConfirm()}${renderProjectModal()}${renderProjectSaveConfirm()}${renderMixerVolumeModal()}${renderMixerRouteModal()}${renderTimerModal()}${renderSettingsModal()}${renderNumberOrderConfirm()}${renderTabletPlayHoldModal()}${renderTabletSongToolsModal()}${renderTabletMultiLoopsModal()}${renderTabletLiveResetConfirm()}${renderLiveConfirm()}${renderTimerStopConfirm()}${renderTunerScreen()}${renderPremixFullScreen(data)}`}
       </div>
     `
   }
@@ -9631,6 +9701,11 @@
         return `${active.id}:${active.index}`
       })(),
       mixerView: state.mixerView,
+      mixerRouteTarget: state.mixerRouteTarget,
+      mixerRouteState: state.mixerRouteTarget ? (() => {
+        const track = findMixerTrackById(state.mixerRouteTarget, d)
+        return track ? `${track.parentSend === true ? 1 : 0}:${[...getMixerHardwareRouteIds(track)].sort().join(',')}:${getMixerHardwareOutputs(d).map((item) => item.id).join(',')}` : ''
+      })() : '',
       premixView: state.premixView,
       premixTrackView: state.premixTrackView,
       numberMode: getNumberColumnMode(),
@@ -9895,6 +9970,7 @@
     state.showBpmScreen = false
     state.showTelepromptScreen = false
     state.showPremixScreen = true
+    state.selectedPremixItemId = ''
     state.premixSourceTab = type === 'region' ? 'regions' : 'playlist'
     state.premixSongId = id
     state.selectedPremixSongId = id
@@ -9919,6 +9995,7 @@
   function closePremixFullScreen() {
     if (!state.showPremixScreen) return
     state.showPremixScreen = false
+    state.selectedPremixItemId = ''
     postCommand('premix_close', getPremixScopePayload())
     scheduleRender(true)
   }
@@ -9926,6 +10003,7 @@
   function leavePremixForTabletNavigation() {
     if (document.documentElement.dataset.directorDevice !== 'tablet' || !state.showPremixScreen) return false
     state.showPremixScreen = false
+    state.selectedPremixItemId = ''
     postCommand('premix_close', getPremixScopePayload())
     return true
   }
@@ -9997,6 +10075,10 @@
     state.partsArmedMarkerUntil = 0
     clearPartsArmedOwner()
     postCommand('set_page', { page: 'markers', activeTab: 'markers' })
+    if (document.documentElement.dataset.directorDevice === 'tablet') {
+      postCommand('parts_visibility_set', { partsColumn: 1, visible: true })
+      postCommand('parts_visibility_set', { partsColumn: 2, visible: true })
+    }
     scheduleRender()
   }
 
@@ -10010,6 +10092,10 @@
     clearPartsArmedOwner()
     const page = state.activeTab === 'playlist' ? 'playlist' : 'regions'
     postCommand('set_page', { page, activeTab: page })
+    if (document.documentElement.dataset.directorDevice === 'tablet') {
+      postCommand('parts_visibility_set', { partsColumn: 1, visible: false })
+      postCommand('parts_visibility_set', { partsColumn: 2, visible: false })
+    }
     scheduleRender()
   }
 
@@ -11527,6 +11613,7 @@
         state.showConfirmLiveOff = false
         state.showConfirmTimerStop = false
         state.mixerVolumeTarget = null
+        state.mixerRouteTarget = ''
         persistDirectorPanelState()
         if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
@@ -11613,6 +11700,12 @@
         state.pendingStopPauseModeUntil = now() + 8000
         state.pendingStopPauseModeRequestToken += 1
         commitStopPauseModeToBridge(next, state.pendingStopPauseModeRequestToken, 0)
+        scheduleRender(true)
+        break
+      }
+      case 'playlist-marquee-toggle': {
+        state.marqueeEnabled = !state.marqueeEnabled
+        writeLocal('vshook_director_marquee_enabled', state.marqueeEnabled ? '1' : '0')
         scheduleRender(true)
         break
       }
@@ -11772,6 +11865,27 @@
         scheduleRender(true)
         break
       }
+      case 'mixer-route-close': state.mixerRouteTarget = ''; scheduleRender(true); break
+      case 'mixer-route-toggle': {
+        const id = String(el.getAttribute('data-mixer-id') || state.mixerRouteTarget || '')
+        const routeKind = String(el.getAttribute('data-route-kind') || '')
+        const channel = Number(el.getAttribute('data-route-channel')) || 0
+        const enabled = el.getAttribute('aria-pressed') !== 'true'
+        const track = findMixerTrackById(id)
+        if (!id || !track || !routeKind) break
+        if (routeKind === 'parent') {
+          track.parentSend = enabled
+        } else {
+          const routeId = String(el.getAttribute('data-route-id') || `${routeKind}:${channel}`)
+          const routes = getMixerHardwareRouteIds(track)
+          if (enabled) routes.add(routeId)
+          else routes.delete(routeId)
+          track.hardwareRoutes = [...routes]
+        }
+        postCommand('mixer_set_route', { id, targetId: id, trackId: id, routeKind, channel, enabled })
+        scheduleRender(true)
+        break
+      }
       case 'mixer-volume-open': state.mixerVolumeTarget = el.getAttribute('data-mixer-id') || ''; state.showMixerVolume = !!state.mixerVolumeTarget; scheduleRender(true); break
       case 'mixer-volume-zero': {
         const id = el.getAttribute('data-mixer-id') || state.mixerVolumeTarget || ''
@@ -11789,9 +11903,9 @@
         scheduleRender(true)
         break
       }
-      case 'premix-song': state.selectedPremixSongId = el.getAttribute('data-premix-song-id') || ''; postCommand('premix_focus_song', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); state.premixView = 'tracks'; scheduleRender(true); break
-      case 'premix-open': postCommand('premix_item_open', { requestFull: '1', page: state.activeTab }); state.premixView = 'tracks'; scheduleRender(true); break
-      case 'premix-global': state.selectedPremixSongId = '__GLOBAL__'; postCommand('premix_global_focus', { id: '__GLOBAL__', songId: '__GLOBAL__', global: true, isGlobal: true }); state.premixView = 'tracks'; scheduleRender(true); break
+      case 'premix-song': state.selectedPremixSongId = el.getAttribute('data-premix-song-id') || ''; state.selectedPremixTrackId = ''; postCommand('premix_focus_song', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); state.premixView = 'tracks'; scheduleRender(true); break
+      case 'premix-open': state.selectedPremixTrackId = ''; postCommand('premix_item_open', { requestFull: '1', page: state.activeTab }); state.premixView = 'tracks'; scheduleRender(true); break
+      case 'premix-global': state.selectedPremixSongId = '__GLOBAL__'; state.selectedPremixTrackId = ''; postCommand('premix_global_focus', { id: '__GLOBAL__', songId: '__GLOBAL__', global: true, isGlobal: true }); state.premixView = 'tracks'; scheduleRender(true); break
       case 'premix-toggle': postCommand('premix_toggle_enabled', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); break
       case 'premix-back-songs': state.premixView = 'songs'; scheduleRender(true); break
       case 'premix-tracks': state.premixTrackView = 'tracks'; scheduleRender(true); break
@@ -11813,6 +11927,7 @@
         const markerEnumIndexRaw = Number(el.getAttribute('data-premix-family-marker-enum-index'))
         const markerEnumIndex = Number.isFinite(markerEnumIndexRaw) ? markerEnumIndexRaw : -1
         if (!id) break
+        state.selectedPremixItemId = ''
         state.premixPlaySongId = id
         state.premixPlaySongName = name
         state.premixPlaySongStart = start
@@ -11882,12 +11997,14 @@
       return
     }
     if (el.getAttribute('data-action') === 'premix-item-volume') {
-      const ratio = clampRatio(el.value, MIXER_ZERO_DB_RATIO)
       const id = String(el.getAttribute('data-premix-item-id') || '')
       if (!id) return
+      const ratio = clampRatio(el.value, MIXER_ZERO_DB_RATIO)
       setPremixItemRatio(id, ratio)
       const label = el.closest('.premixFullSliderWrap')?.querySelector('.premixFullDb')
-      if (label) label.textContent = formatVolumeDb(mixerRatioToDb(ratio))
+      if (label) label.textContent = formatVolumeDb(
+        mixerRatioToDb(ratio, PREMIX_ITEM_MAX_DB),
+      )
       queueLatestVolumeCommand(`item:${id}`, 'premix_item_set_volume', {
         ...getPremixTargetPayload(),
         itemId: id,
@@ -11899,9 +12016,9 @@
       return
     }
     if (el.getAttribute('data-action') === 'premix-volume') {
-      const ratio = clampRatio(el.value, MIXER_ZERO_DB_RATIO)
       const id = el.getAttribute('data-premix-track-id') || ''
       if (!id) return
+      const ratio = clampRatio(el.value, MIXER_ZERO_DB_RATIO)
       setPremixTrackRatio(id, ratio)
       const dbText = formatVolumeDb(mixerRatioToDb(ratio))
       const row = el.closest('.premixMixerRow')
@@ -12470,7 +12587,7 @@
 
   function handlePlaylistScrollGesture(event) {
     if (event.type === 'pointerdown') {
-      if (!event.target?.closest?.('.playlistModalBox .playlistSelectList, .settingsModalBox')) return
+      if (!event.target?.closest?.('.playlistModalBox .playlistSelectList, .settingsModalBox, .premixFullList, .premixMixerRow')) return
       playlistScrollPointerId = event.pointerId
       playlistScrollStartX = Number(event.clientX) || 0
       playlistScrollStartY = Number(event.clientY) || 0
@@ -12490,6 +12607,49 @@
     if (playlistScrollMoved) state.ignoreTapUntil = now() + 500
     playlistScrollPointerId = null
     playlistScrollMoved = false
+  }
+
+  let mixerRouteHoldTimer = 0
+  let mixerRouteHoldPointerId = null
+  let mixerRouteHoldStartX = 0
+  let mixerRouteHoldStartY = 0
+
+  function cancelMixerRouteHold() {
+    if (mixerRouteHoldTimer) window.clearTimeout(mixerRouteHoldTimer)
+    mixerRouteHoldTimer = 0
+    mixerRouteHoldPointerId = null
+  }
+
+  function handleMixerRouteHold(event) {
+    if (IS_MUSICIAN_MONITOR || state.activeTab !== 'mixer') return
+    if (event.type === 'pointerdown') {
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (event.target?.closest?.('button,input')) return
+      const row = event.target?.closest?.('.mixerRow[data-mixer-id]')
+      const id = String(row?.getAttribute('data-mixer-id') || '')
+      if (!row || !id) return
+      cancelMixerRouteHold()
+      mixerRouteHoldPointerId = event.pointerId
+      mixerRouteHoldStartX = Number(event.clientX) || 0
+      mixerRouteHoldStartY = Number(event.clientY) || 0
+      mixerRouteHoldTimer = window.setTimeout(() => {
+        mixerRouteHoldTimer = 0
+        state.mixerRouteTarget = id
+        state.showMixerVolume = false
+        state.ignoreTapUntil = now() + 700
+        try { navigator.vibrate?.(25) } catch (_) {}
+        scheduleRender(true)
+      }, 650)
+      return
+    }
+    if (mixerRouteHoldPointerId === null || event.pointerId !== mixerRouteHoldPointerId) return
+    if (event.type === 'pointermove') {
+      const dx = (Number(event.clientX) || 0) - mixerRouteHoldStartX
+      const dy = (Number(event.clientY) || 0) - mixerRouteHoldStartY
+      if (Math.hypot(dx, dy) > 10) cancelMixerRouteHold()
+      return
+    }
+    cancelMixerRouteHold()
   }
 
   let tabletPlayHoldTimer = 0
@@ -12708,6 +12868,10 @@
       document.addEventListener('pointermove', handlePlaylistScrollGesture, { passive: true })
       document.addEventListener('pointerup', handlePlaylistScrollGesture, { passive: true })
       document.addEventListener('pointercancel', handlePlaylistScrollGesture, { passive: true })
+      document.addEventListener('pointerdown', handleMixerRouteHold, { passive: true })
+      document.addEventListener('pointermove', handleMixerRouteHold, { passive: true })
+      document.addEventListener('pointerup', handleMixerRouteHold, { passive: true })
+      document.addEventListener('pointercancel', handleMixerRouteHold, { passive: true })
       document.addEventListener('pointerdown', handleDirectorRecadosHoldStart, { passive: true })
       document.addEventListener('pointerup', handleDirectorRecadosHoldEnd, { passive: true })
       document.addEventListener('pointercancel', handleDirectorRecadosHoldEnd, { passive: true })
@@ -12737,7 +12901,7 @@
     document.addEventListener('touchend', handleTransportTouchEnd, { passive: false, capture: true })
     document.addEventListener('touchcancel', handleTransportTouchCancel, { passive: false, capture: true })
     document.addEventListener('contextmenu', (event) => {
-      if (event.target?.closest?.('.transportSeekHoldTarget,.transportSeekPremixChildTarget,[data-action="tablet-multiloop-track"][data-mode="auto"]')) event.preventDefault()
+      if (event.target?.closest?.('.transportSeekHoldTarget,.transportSeekPremixChildTarget,.mixerRow[data-mixer-id],[data-action="tablet-multiloop-track"][data-mode="auto"]')) event.preventDefault()
     }, { passive: false })
     document.addEventListener('focusin', (event) => {
       if (event.target?.id === 'directorRecadosTextInput') {
