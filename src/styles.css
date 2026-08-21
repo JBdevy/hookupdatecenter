@@ -8672,6 +8672,17 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 #licenseView .license-plan-card.plan-mixed strong { color: #ffd5a8; }
 
+#licenseView .license-plan-card.plan-overdue {
+  border-color: #ff5c5c;
+  background: linear-gradient(135deg, rgba(239, 68, 68, .22), rgba(90, 42, 10, .18) 48%, rgba(13, 17, 27, .88));
+  box-shadow: inset 0 0 0 1px rgba(255, 112, 67, .18), 0 0 22px rgba(239, 68, 68, .2);
+}
+
+#licenseView .license-plan-card.plan-overdue .license-plan-caption,
+#licenseView .license-plan-card.plan-overdue small { color: #ffd0c7; }
+
+#licenseView .license-plan-card.plan-overdue strong { color: #ff8a80; }
+
 /* O card da conexão ocupa toda a coluna disponível. */
 #bridgeView .compact-connection-card.bridge-card-inline {
   width: 100% !important;

@@ -4229,6 +4229,9 @@ function renderState(nextState) {
   const planType = supportedPlanTypes.has(String(license.planType || '').toLowerCase())
     ? String(license.planType).toLowerCase()
     : 'none';
+  const subscriptionOverdue = license.subscriptionOverdue === true ||
+    /^(overdue|past_due|late|delinquent|unpaid)$/i.test(String(license.subscriptionStatus || '')) ||
+    /assinatura[^.]*atras|pagamento[^.]*atras|inadimpl|past[_ -]?due/i.test(String(license.warning || license.message || ''));
   const planDefaults = {
     lifetime: { label: 'Vitalício', description: 'Compra única, sem renovação.' },
     monthly: { label: 'Mensal', description: 'Assinatura com renovação mensal.' },
@@ -4237,11 +4240,21 @@ function renderState(nextState) {
     none: { label: 'Não identificado', description: 'Ative ou verifique a licença para consultar seu plano.' }
   };
   if (planCard) {
-    planCard.classList.remove('plan-none', 'plan-lifetime', 'plan-monthly', 'plan-annual', 'plan-mixed');
+    planCard.classList.remove('plan-none', 'plan-lifetime', 'plan-monthly', 'plan-annual', 'plan-mixed', 'plan-overdue');
     planCard.classList.add(`plan-${planType}`);
+    if (subscriptionOverdue) planCard.classList.add('plan-overdue');
   }
-  if ($('#licensePlanLabel')) $('#licensePlanLabel').textContent = license.planLabel || planDefaults[planType].label;
-  if ($('#licensePlanDescription')) $('#licensePlanDescription').textContent = planDefaults[planType].description;
+  const regularPlanLabel = license.planLabel || planDefaults[planType].label;
+  if ($('#licensePlanLabel')) $('#licensePlanLabel').textContent = subscriptionOverdue
+    ? `${regularPlanLabel} — ASSINATURA ATRASADA`
+    : regularPlanLabel;
+  if ($('#licensePlanDescription')) $('#licensePlanDescription').textContent = subscriptionOverdue
+    ? (license.warning || license.message || 'Regularize o pagamento para evitar o bloqueio da licença.')
+    : planDefaults[planType].description;
+  if (subscriptionOverdue) {
+    $('#licenseActive').textContent = license.active ? 'Ativa com atraso' : 'Assinatura atrasada';
+    $('#licenseActive').classList.remove('ok-text');
+  }
   
   const licenseMessage = license.message || license.warning || '';
   if (licenseMessage) {
