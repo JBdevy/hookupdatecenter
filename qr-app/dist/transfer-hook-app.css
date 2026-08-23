@@ -1,3 +1,5 @@
+@import url("./button-gradients.css");
+
 :root { color-scheme: dark; }
 body { margin:0; background:#071019; color:#f8fafc; font-family:"Segoe UI",system-ui,sans-serif; }
 .transferHookApp { min-height:100vh; padding:max(16px,env(safe-area-inset-top)) 14px max(24px,env(safe-area-inset-bottom)); background:radial-gradient(circle at top,#17334b 0,transparent 35%),#071019; }

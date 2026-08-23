@@ -1,3 +1,5 @@
+@import url("./button-gradients.css");
+
 * { box-sizing: border-box; }
 #app {
   height: var(--app-vh, 100dvh);
@@ -9533,6 +9535,209 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   margin-left: 20% !important;
   margin-right: 20% !important;
   box-sizing: border-box !important;
+}
+
+/* Tema claro completo: remove superfícies escuras residuais do Diretor e Músicos. */
+.app[data-theme="light"],
+.app[data-theme="light"].musicianMonitor,
+.app[data-theme="light"] > .container,
+.app[data-theme="light"].musicianMonitor > .container {
+  background: linear-gradient(160deg, #eef2f6 0%, #dce2e8 52%, #cbd3dc 100%) !important;
+  color: #101820 !important;
+}
+
+.app[data-theme="light"] .contentPanel,
+.app[data-theme="light"] .markerContentPanel,
+.app[data-theme="light"] .mixerContentPanel,
+.app[data-theme="light"] .partsPanel,
+.app[data-theme="light"] .controlsStickyPanel,
+.app[data-theme="light"] .tabletTransportPanel,
+.app[data-theme="light"] .tabletPartsListFrame,
+.app[data-theme="light"] .tabletPartsOwner,
+.app[data-theme="light"] .tunerFullScreen,
+.app[data-theme="light"] .bpmFullScreen,
+.app[data-theme="light"] .premixFullScreen,
+.app[data-theme="light"] .premixFullPanel,
+.app[data-theme="light"] .lyricsScreen,
+.app[data-theme="light"] .directorRecadosRoot {
+  background: linear-gradient(180deg, #e8edf2 0%, #d5dce3 100%) !important;
+  border-color: #98a3ae !important;
+  color: #101820 !important;
+}
+
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .settingsModalBox,
+.app[data-theme="light"] .playlistModalBox,
+.app[data-theme="light"] .projectModalBox,
+.app[data-theme="light"] .projectTabsModalBox,
+.app[data-theme="light"] .timerModalBox,
+.app[data-theme="light"] .bpmModalBox,
+.app[data-theme="light"] .mixerModalBox,
+.app[data-theme="light"] .mixerRouteModalBox,
+.app[data-theme="light"] .mixerVolumeModalBox,
+.app[data-theme="light"] .premixModalBox,
+.app[data-theme="light"] .premixVolumeModalBox,
+.app[data-theme="light"] .recadosModalBox,
+.app[data-theme="light"] .authGateCard,
+.app[data-theme="light"] .tabletSearchPanel {
+  background: linear-gradient(180deg, #f1f4f7 0%, #dce2e8 100%) !important;
+  border-color: #8f9aa6 !important;
+  color: #101820 !important;
+  box-shadow: 0 14px 34px rgba(51, 65, 85, .18) !important;
+}
+
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .markerListBox,
+.app[data-theme="light"] .mixerListBox,
+.app[data-theme="light"] .mixerRowsBox,
+.app[data-theme="light"] .tunerRowsBox,
+.app[data-theme="light"] .tunerFullList,
+.app[data-theme="light"] .musicosListBox,
+.app[data-theme="light"] .playlistSelectList,
+.app[data-theme="light"] .projectTabsList,
+.app[data-theme="light"] .premixSongList,
+.app[data-theme="light"] .premixSongListBox,
+.app[data-theme="light"] .premixFullList,
+.app[data-theme="light"] .premixFamilyItems,
+.app[data-theme="light"] .tabletMultiLoopTracksList,
+.app[data-theme="light"] .tabletFadeoutTracksList,
+.app[data-theme="light"] .tabletSearchResults,
+.app[data-theme="light"] .tabletPartsList,
+.app[data-theme="light"] .tabletTunerList,
+.app[data-theme="light"] .tabletTunerUnifiedList,
+.app[data-theme="light"] .mixerRouteList {
+  background: #e3e8ed !important;
+  border-color: #9ba6b1 !important;
+  color: #101820 !important;
+}
+
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink),
+.app[data-theme="light"] .mixerRow,
+.app[data-theme="light"] .mixerInlineRow,
+.app[data-theme="light"] .premixMixerRow,
+.app[data-theme="light"] .premixSongCard,
+.app[data-theme="light"] .premixFullRow,
+.app[data-theme="light"] .tabletMultiLoopTrackRow,
+.app[data-theme="light"] .tabletFadeoutTrackRow:not(.tabletFadeoutTrackSelected),
+.app[data-theme="light"] .tabletSearchResult,
+.app[data-theme="light"] .tabletTunerRow,
+.app[data-theme="light"] .tunerFullRow,
+.app[data-theme="light"] .tunerSongRow,
+.app[data-theme="light"] .tunerRow,
+.app[data-theme="light"] .playlistOption:not(.playlistOptionActive) {
+  background: linear-gradient(180deg, #f7f9fb 0%, #e1e6eb 100%) !important;
+  border-color: #a7b1bb !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+.app[data-theme="light"] textarea,
+.app[data-theme="light"] select,
+.app[data-theme="light"] .modalInput,
+.app[data-theme="light"] .lyricsEditorInput,
+.app[data-theme="light"] .directorRecadosRoot .recadosTextInput,
+.app[data-theme="light"] .directorRecadosRoot .recadosTextInput[readonly],
+.app[data-theme="light"] .tabletSearchInput,
+.app[data-theme="light"] .tunerValueBox {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+  -webkit-text-fill-color: #0f172a !important;
+}
+
+.app[data-theme="light"] input::placeholder,
+.app[data-theme="light"] textarea::placeholder {
+  color: #64748b !important;
+  opacity: 1 !important;
+}
+
+.app[data-theme="light"] .tabletSearchScreen {
+  background: rgba(219, 226, 233, .98) !important;
+}
+
+.app[data-theme="light"] .tabletDirectorSidebar,
+.app[data-theme="light"] .tabletDirectorTopBar {
+  background: linear-gradient(180deg, #eef2f6 0%, #cfd7df 100%) !important;
+  border-color: #8f9aa6 !important;
+}
+
+.app[data-theme="light"] .tabletPreviewButton,
+.app[data-theme="light"] .tabletSongToolOption:not(.tabletSongToolOptionActive):not(.tabletSongToolResetOption),
+.app[data-theme="light"] .tabletMultiLoopTrackToggle:not(.active),
+.app[data-theme="light"] .tabletTunerControls .tunerStepBtn,
+.app[data-theme="light"] .tabletTunerZero,
+.app[data-theme="light"] .tabletTunerInlineControls .tunerStepBtn,
+.app[data-theme="light"] .tabletTunerInlineControls .tabletTunerZero,
+.app[data-theme="light"] .tabletFadeoutTimeControl > strong,
+.app[data-theme="light"] .tabletFadeoutTrackCheck,
+.app[data-theme="light"] .premixFullMute:not(.premixFullMuteActive):not(.premixFullSoloActive):not(.premixFullUniqueActive),
+.app[data-theme="light"] .directorRecadosRoot .recadosPinButton:not(.recadosPinButtonActive),
+.app[data-theme="light"] .directorRecadosRoot .recadosSlotButton:not(.recadosSlotButtonActive) {
+  background: linear-gradient(180deg, #eef2f6 0%, #cbd3dc 100%) !important;
+  border-color: #87939f !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] .premixFamilySection {
+  background: #f8fafc !important;
+}
+
+.app[data-theme="light"] .premixFamilySongButton:not(.premixFamilySongButtonSelected) {
+  background: linear-gradient(180deg, #edf1f5 0%, #d9e0e7 100%) !important;
+  color: #111827 !important;
+}
+
+.app[data-theme="light"] .rowLabelText,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .premixFullTrackName,
+.app[data-theme="light"] .premixFullItemName,
+.app[data-theme="light"] .tabletSearchResult,
+.app[data-theme="light"] .tabletFadeoutTrackName,
+.app[data-theme="light"] .tabletFadeoutTrackNumber,
+.app[data-theme="light"] .tabletMultiLoopsHint,
+.app[data-theme="light"] .tabletMultiLoopAutoLimitInfo,
+.app[data-theme="light"] .tabletMultiLoopAutoLimitScale {
+  color: #1f2937 !important;
+  text-shadow: none !important;
+}
+
+/* Tablet: estados operacionais em gradiente, sem alterar as barras de progresso. */
+html[data-director-device="tablet"] .app .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow) {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(100deg, #0284c7 0%, #2563eb 52%, #4338ca 100%) !important;
+  box-shadow: inset 3px 0 0 #7dd3fc, inset 0 0 0 1px rgba(147, 197, 253, .34) !important;
+}
+
+html[data-director-device="tablet"] .app .item.queuedYellow:not(.blockItem):not(.playing) {
+  border-color: #facc15 !important;
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+
+html[data-director-device="tablet"] .app .item.playing:not(.blockItem),
+html[data-director-device="tablet"] .app .item.playing.selectedBlue:not(.blockItem),
+html[data-director-device="tablet"] .app .item.playing.selectedPink:not(.blockItem),
+html[data-director-device="tablet"] .app .item.playing.queuedYellow:not(.blockItem) {
+  border-color: #ef4444 !important;
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+
+/* Nas listas numeradas, a cor começa depois da coluna de números. */
+html[data-director-device="tablet"] .app .item.numberedItem.queuedYellow:not(.blockItem):not(.playing),
+html[data-director-device="tablet"] .app .item.numberedItem.playing:not(.blockItem) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-director-device="tablet"] .app .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+
+html[data-director-device="tablet"] .app .item.numberedItem.playing:not(.blockItem)::before {
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
 }
 
 /* MultiLoops tablet: sobe o nome da musica e preserva as partes baixas das letras. */

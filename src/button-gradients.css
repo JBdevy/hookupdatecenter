@@ -1,0 +1,21 @@
+/* Acabamento global dos controles clicaveis da Hook Center. Mantem a cor e
+   o estado definidos por cada tela e acrescenta apenas profundidade. */
+:where(button, .button, .slot-button, [role="button"]) {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+:where(button, .button, .slot-button, [role="button"])::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, .24) 0%,
+    rgba(255, 255, 255, .08) 38%,
+    rgba(255, 255, 255, 0) 54%,
+    rgba(0, 0, 0, .24) 100%);
+  opacity: .78;
+}
