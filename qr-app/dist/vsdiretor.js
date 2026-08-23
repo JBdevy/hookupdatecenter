@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-mobile-redesign-premix-select-v23'
+  const VERSION = '1.0.1-musician-scroll-tp-preview-v28'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -289,6 +289,9 @@
   const mixerVolumeHold = new Map()
   const premixTrackVolumeHold = new Map()
   const premixItemMuteHold = new Map()
+  const premixTrackSoloHold = new Map()
+  const premixUniqueSoloHold = new Map()
+  const premixUniqueSoloVisualRestore = new Map()
   const premixItemVolumeHold = new Map()
   const latestVolumeCommands = new Map()
   const MIXER_MIN_DB = -90
@@ -3198,7 +3201,29 @@
     const hold = id ? premixItemMuteHold.get(id) : null
     if (hold && now() <= Number(hold.until || 0)) return !!hold.value
     if (hold) premixItemMuteHold.delete(id)
+    const visualRestore = id ? premixUniqueSoloVisualRestore.get(id) : null
+    if (visualRestore) return !!visualRestore.muted
     return item?.mute === true || item?.muted === true
+  }
+
+  function getPremixItemTrackId(item) {
+    return String(item?.trackId ?? item?.trackGuid ?? item?.track_id ?? '')
+  }
+
+  function getPremixItemTrackSolo(item) {
+    const trackId = getPremixItemTrackId(item)
+    const hold = trackId ? premixTrackSoloHold.get(trackId) : null
+    if (hold && now() <= Number(hold.until || 0)) return !!hold.value
+    if (hold) premixTrackSoloHold.delete(trackId)
+    return item?.trackSolo === true || item?.track_solo === true || item?.solo === true
+  }
+
+  function getPremixItemUniqueSolo(item) {
+    const id = getPremixItemId(item)
+    const hold = id ? premixUniqueSoloHold.get(id) : null
+    if (hold && now() <= Number(hold.until || 0)) return !!hold.value
+    if (hold) premixUniqueSoloHold.delete(id)
+    return item?.uniqueSolo === true || item?.unique_solo === true
   }
 
   function setPremixItemRatio(id, ratio) {
@@ -3220,9 +3245,154 @@
     }
   }
 
+  let premixFaderPointer = null
+  let premixFaderLastTap = null
+
+  function getPremixFaderInfo(target) {
+    const slider = target?.closest?.(
+      'input[data-action="premix-item-volume"],input[data-action="premix-volume"]',
+    )
+    if (!slider) return null
+    const action = String(slider.getAttribute('data-action') || '')
+    const item = action === 'premix-item-volume'
+    const id = String(slider.getAttribute(
+      item ? 'data-premix-item-id' : 'data-premix-track-id',
+    ) || '')
+    return id ? { slider, action, item, id, key: `${action}:${id}` } : null
+  }
+
+  function resetPremixFaderToZero(info) {
+    if (!info?.slider || !info.id) return false
+    const ratio = MIXER_ZERO_DB_RATIO
+    info.slider.value = String(ratio)
+    if (info.item) {
+      setPremixItemRatio(info.id, ratio)
+      const label = info.slider.closest(
+        '.premixFullSliderWrap',
+      )?.querySelector('.premixFullDb')
+      if (label) label.textContent = formatVolumeDb(0)
+      queueLatestVolumeCommand(`item:${info.id}`, 'premix_item_set_volume', {
+        ...getPremixTargetPayload(),
+        itemId: info.id,
+        mediaItemId: info.id,
+        targetId: info.id,
+        ratio,
+        volumeRatio: ratio,
+      })
+    } else {
+      setPremixTrackRatio(info.id, ratio)
+      const row = info.slider.closest('.premixMixerRow')
+      const groupDisplay = row?.querySelector('.mixerRowGroupName')
+      const dbDisplay = row?.querySelector('.mixerRowDb')
+      const dbText = formatVolumeDb(0)
+      if (groupDisplay) groupDisplay.textContent = dbText
+      if (dbDisplay) dbDisplay.textContent = dbText
+      queueLatestVolumeCommand(`track:${info.id}`, 'premix_set_volume', {
+        id: state.selectedPremixSongId,
+        songId: state.selectedPremixSongId,
+        selectedRegionId: state.selectedPremixSongId,
+        targetId: info.id,
+        trackId: info.id,
+        ratio,
+        volumeRatio: ratio,
+        view: state.premixTrackView,
+      })
+    }
+    return true
+  }
+
+  function handlePremixFaderPointerDown(event) {
+    const info = getPremixFaderInfo(event.target)
+    if (!info || (Number.isFinite(event.button) && event.button !== 0)) return
+    premixFaderPointer = {
+      pointerId: event.pointerId,
+      key: info.key,
+      x: Number(event.clientX) || 0,
+      y: Number(event.clientY) || 0,
+    }
+  }
+
+  function handlePremixFaderPointerUp(event) {
+    const info = getPremixFaderInfo(event.target)
+    const pointer = premixFaderPointer
+    premixFaderPointer = null
+    if (!info || !pointer || pointer.pointerId !== event.pointerId ||
+        pointer.key !== info.key) return
+    const x = Number(event.clientX) || 0
+    const y = Number(event.clientY) || 0
+    if (Math.hypot(x - pointer.x, y - pointer.y) > 18) {
+      premixFaderLastTap = null
+      return
+    }
+    const tappedAt = now()
+    const doubleTap = premixFaderLastTap?.key === info.key &&
+      tappedAt - premixFaderLastTap.at <= 420 &&
+      Math.hypot(x - premixFaderLastTap.x, y - premixFaderLastTap.y) <= 28
+    premixFaderLastTap = doubleTap ? null : { key: info.key, at: tappedAt, x, y }
+    if (!doubleTap || !resetPremixFaderToZero(info)) return
+    state.ignoreTapUntil = tappedAt + 300
+    event.preventDefault?.()
+  }
+
   function setPremixItemMute(id, value) {
     if (!id) return
     premixItemMuteHold.set(String(id), { value: !!value, until: now() + 5000 })
+  }
+
+  function setPremixTrackSolo(trackId, value) {
+    if (!trackId) return
+    premixTrackSoloHold.set(String(trackId), {
+      value: !!value,
+      until: now() + 5000,
+    })
+  }
+
+  function setPremixUniqueSolo(itemId, trackId, value) {
+    if (!itemId) return
+    if (value) {
+      for (const item of getPremixAllItemRows()) {
+        const otherId = getPremixItemId(item)
+        if (otherId && otherId !== itemId) {
+          premixUniqueSoloHold.set(otherId, {
+            value: false,
+            until: now() + 5000,
+          })
+        }
+      }
+    }
+    premixUniqueSoloHold.set(String(itemId), {
+      value: !!value,
+      until: now() + 5000,
+    })
+    if (trackId && value) setPremixTrackSolo(trackId, true)
+  }
+
+  function beginPremixUniqueSoloVisual(itemId, trackId, item) {
+    for (const [otherId, restore] of premixUniqueSoloVisualRestore.entries()) {
+      if (otherId === itemId) continue
+      if (restore?.trackId) setPremixTrackSolo(restore.trackId, restore.trackSolo)
+      setPremixItemMute(otherId, restore?.muted === true)
+      premixUniqueSoloVisualRestore.delete(otherId)
+    }
+    if (!premixUniqueSoloVisualRestore.has(itemId)) {
+      premixUniqueSoloVisualRestore.set(itemId, {
+        trackId,
+        trackSolo: getPremixItemTrackSolo(item),
+        muted: getPremixItemMute(item),
+      })
+    }
+    const restore = premixUniqueSoloVisualRestore.get(itemId)
+    setPremixItemMute(itemId, restore?.muted === true)
+    return restore
+  }
+
+  function endPremixUniqueSoloVisual(itemId) {
+    const restore = premixUniqueSoloVisualRestore.get(itemId) || null
+    if (restore) {
+      setPremixItemMute(itemId, restore.muted === true)
+      premixUniqueSoloVisualRestore.delete(itemId)
+    }
+    return restore
   }
 
   function getSelectedPlaylistId(data = state.snapshot) {
@@ -3309,7 +3479,8 @@
   }
 
   function queueDirectorSelectionScroll(target) {
-    if (IS_MUSICIAN_MONITOR || !target?.id) return
+    if (!target?.id ||
+        (IS_MUSICIAN_MONITOR && isPlaying(state.snapshot))) return
     state.directorSelectionScrollPending = {
       tab: target.tab,
       id: String(target.id),
@@ -5665,8 +5836,8 @@
     }
     const phoneMode =
       document.documentElement.dataset.directorDevice === 'phone'
-    const auto1Label = phoneMode ? 'AU1' : 'AUTO 1'
-    const auto2Label = phoneMode ? 'AU2' : 'AUTO 2'
+    const auto1Label = 'AUTO 1'
+    const auto2Label = 'AUTO 2'
     return `<div class="controlsRowPlaylist controlsRowDirectorMain${phoneMode ? ' controlsRowDirectorMainPhone' : ''}"><button class="${playClass}" data-action="play"${fadeoutStyle}>${playLabel}</button><button class="${auto1Class}" data-action="autoplay">${auto1Label}</button><button class="${auto2Class}" data-action="autoplay2">${auto2Label}</button><button class="${stopBreakClass}" data-action="stop-break"${fadeoutStyle}>STOP BREAK</button></div>`
   }
 
@@ -6125,11 +6296,18 @@
     const trackName = escapeHtml(upperText(item?.trackName || item?.track || `PISTA ${item?.trackIndex || index + 1}`))
     const volumeState = getPremixItemVolumeState(item)
     const muted = getPremixItemMute(item)
+    const trackId = escapeHtml(getPremixItemTrackId(item))
+    const trackSolo = getPremixItemTrackSolo(item)
+    const uniqueSolo = getPremixItemUniqueSolo(item)
     const dbText = formatVolumeDb(volumeState.db)
-    return `<div class="premixFullRow" data-premix-item-row="${id}" data-premix-item-id="${id}">
+    return `<div class="premixFullRow" data-premix-item-row="${id}" data-premix-item-id="${id}" data-premix-track-id="${trackId}">
       <div class="premixFullItemMain"><div class="premixFullTrackName">${trackName}</div><div class="premixFullItemName">${itemName}</div>${renderTrackMeter(item)}</div>
       <div class="premixFullSliderWrap"><input class="premixFullSlider" data-action="premix-item-volume" data-premix-item-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixFullDb">${escapeHtml(dbText)}</span></div>
-      <button class="premixFullMute ${muted ? 'premixFullMuteActive' : ''}" data-action="premix-item-mute" data-premix-item-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button>
+      <div class="premixFullSoloButtons">
+        <button class="premixFullMute premixFullUnique ${uniqueSolo ? 'premixFullUniqueActive' : ''}" data-action="premix-item-unique" data-premix-item-id="${id}" data-premix-track-id="${trackId}" aria-pressed="${uniqueSolo ? 'true' : 'false'}" title="Solar somente este item">U</button>
+        <button class="premixFullMute premixFullSolo ${trackSolo ? 'premixFullSoloActive' : ''}" data-action="premix-item-solo" data-premix-item-id="${id}" data-premix-track-id="${trackId}" aria-pressed="${trackSolo ? 'true' : 'false'}" title="Solar a pista deste item">S</button>
+        <button class="premixFullMute ${muted ? 'premixFullMuteActive' : ''}" data-action="premix-item-mute" data-premix-item-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button>
+      </div>
     </div>`
   }
 
@@ -7884,6 +8062,14 @@
         previewHost.innerHTML = renderDirectorTelepromptPreviewHtml(tp.preview)
         previewHost.dataset.previewSignature = tp.preview.signature
       }
+      const progress = tp.playing
+        ? getVisualPlaybackProgressPercent(state.snapshot) : 0
+      previewHost.querySelectorAll('.directorTpPreviewSongPlaying').forEach((row) => {
+        row.style.setProperty('--tp-preview-row-progress', `${progress}%`)
+      })
+      previewHost.querySelectorAll('.directorTpPreviewSongQueued').forEach((row) => {
+        row.style.setProperty('--tp-preview-row-progress', `${Math.max(0, 100 - progress)}%`)
+      })
       previewHost.classList.toggle('directorTpHidden', !showPreview)
       previewHost.setAttribute('aria-hidden', showPreview ? 'false' : 'true')
     }
@@ -9389,7 +9575,11 @@
 
   function focusPendingDirectorSelectionDom() {
     const pending = state.directorSelectionScrollPending
-    if (!pending || IS_MUSICIAN_MONITOR) return
+    if (!pending) return
+    if (IS_MUSICIAN_MONITOR && isPlaying(state.snapshot)) {
+      state.directorSelectionScrollPending = null
+      return
+    }
     if (now() >= Number(pending.expiresAt || 0)) {
       state.directorSelectionScrollPending = null
       return
@@ -12071,9 +12261,49 @@
         const item = getPremixAllItemRows().find((candidate) => getPremixItemId(candidate) === id) || { id }
         const next = !getPremixItemMute(item)
         setPremixItemMute(id, next)
+        const uniqueRestore = premixUniqueSoloVisualRestore.get(id)
+        if (uniqueRestore) uniqueRestore.muted = next
         el.classList.toggle('premixFullMuteActive', next)
         el.setAttribute('aria-pressed', next ? 'true' : 'false')
         postCommand('premix_item_toggle_mute', { ...getPremixTargetPayload(), itemId: id, mediaItemId: id, targetId: id, desiredMute: next, muted: next })
+        break
+      }
+      case 'premix-item-solo': {
+        const id = String(el.getAttribute('data-premix-item-id') || '')
+        const trackId = String(el.getAttribute('data-premix-track-id') || '')
+        if (!id || !trackId) break
+        const item = getPremixAllItemRows().find((candidate) => getPremixItemId(candidate) === id) || { id, trackId }
+        const next = !getPremixItemTrackSolo(item)
+        setPremixItemMute(id, getPremixItemMute(item))
+        setPremixTrackSolo(trackId, next)
+        if (!next) {
+          setPremixUniqueSolo(id, trackId, false)
+          endPremixUniqueSoloVisual(id)
+        }
+        postCommand('premix_item_set_track_solo', {
+          ...getPremixTargetPayload(), itemId: id, mediaItemId: id,
+          targetId: id, trackId, desiredSolo: next, solo: next,
+        })
+        scheduleRender(true)
+        break
+      }
+      case 'premix-item-unique': {
+        const id = String(el.getAttribute('data-premix-item-id') || '')
+        const trackId = String(el.getAttribute('data-premix-track-id') || '')
+        if (!id || !trackId) break
+        const item = getPremixAllItemRows().find((candidate) => getPremixItemId(candidate) === id) || { id, trackId }
+        const next = !getPremixItemUniqueSolo(item)
+        const restore = next
+          ? beginPremixUniqueSoloVisual(id, trackId, item)
+          : endPremixUniqueSoloVisual(id)
+        setPremixUniqueSolo(id, trackId, next)
+        setPremixTrackSolo(trackId, next ? true : (restore?.trackSolo === true))
+        postCommand('premix_item_set_unique_solo', {
+          ...getPremixTargetPayload(), itemId: id, mediaItemId: id,
+          targetId: id, trackId, desiredUniqueSolo: next,
+          uniqueSolo: next,
+        })
+        scheduleRender(true)
         break
       }
       case 'exit-app': if (typeof window.vshookExitToProjectSelector === 'function') window.vshookExitToProjectSelector(); else window.location.reload(); break
@@ -12988,6 +13218,8 @@
       document.addEventListener('pointermove', handlePremixHoldMove, { passive: true })
       document.addEventListener('pointerup', handlePremixHoldEnd, { passive: true })
       document.addEventListener('pointercancel', handlePremixHoldEnd, { passive: true })
+      document.addEventListener('pointerdown', handlePremixFaderPointerDown, { passive: true })
+      document.addEventListener('pointerup', handlePremixFaderPointerUp, { passive: false })
       document.addEventListener('pointerdown', handleMultiLoopMsHold, { passive: true })
       document.addEventListener('pointerup', handleMultiLoopMsHold, { passive: true })
       document.addEventListener('pointercancel', handleMultiLoopMsHold, { passive: true })
