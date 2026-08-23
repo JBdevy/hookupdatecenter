@@ -8856,6 +8856,54 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   box-sizing: border-box !important;
 }
 
+/* Celular e Musicos: os estados usam os mesmos gradientes do Diretor tablet. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow),
+.app.musicianMonitor .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow) {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(100deg, #0284c7 0%, #2563eb 52%, #4338ca 100%) !important;
+  box-shadow: inset 3px 0 0 #7dd3fc, inset 0 0 0 1px rgba(147, 197, 253, .34) !important;
+}
+
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
+  border-color: #facc15 !important;
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.selectedBlue:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.selectedPink:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.queuedYellow:not(.blockItem),
+.app.musicianMonitor .item.playing:not(.blockItem),
+.app.musicianMonitor .item.playing.selectedBlue:not(.blockItem),
+.app.musicianMonitor .item.playing.selectedPink:not(.blockItem),
+.app.musicianMonitor .item.playing.queuedYellow:not(.blockItem) {
+  border-color: #ef4444 !important;
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.playing:not(.blockItem),
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.numberedItem.playing:not(.blockItem) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.playing:not(.blockItem)::before,
+.app.musicianMonitor .item.numberedItem.playing:not(.blockItem)::before {
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+
 /* MultiLoops tablet: sobe o nome da musica e preserva as partes baixas das letras. */
 html[data-director-device="tablet"] .tabletMultiLoopsModal > .tabletMultiLoopsSong {
   position: relative !important;
@@ -9277,4 +9325,48 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
   min-height: 0 !important;
   margin: 0 !important;
   box-sizing: border-box !important;
+}
+
+
+/* Prioridade final dos estados: replica no celular e nos Musicos o tablet. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow),
+.app.musicianMonitor .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow) {
+  border-color: #38bdf8 !important;
+  background: linear-gradient(100deg, #0284c7 0%, #2563eb 52%, #4338ca 100%) !important;
+  box-shadow: inset 3px 0 0 #7dd3fc, inset 0 0 0 1px rgba(147, 197, 253, .34) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
+  border-color: #facc15 !important;
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.selectedBlue:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.selectedPink:not(.blockItem),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing.queuedYellow:not(.blockItem),
+.app.musicianMonitor .item.playing:not(.blockItem),
+.app.musicianMonitor .item.playing.selectedBlue:not(.blockItem),
+.app.musicianMonitor .item.playing.selectedPink:not(.blockItem),
+.app.musicianMonitor .item.playing.queuedYellow:not(.blockItem) {
+  border-color: #ef4444 !important;
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.playing:not(.blockItem),
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.numberedItem.playing:not(.blockItem) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
+  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
+  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.playing:not(.blockItem)::before,
+.app.musicianMonitor .item.numberedItem.playing:not(.blockItem)::before {
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+  box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
 }

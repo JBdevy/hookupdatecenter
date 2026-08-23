@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-musician-scroll-tp-preview-v28'
+  const VERSION = '1.0.1-mobile-state-gradients-v29'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
