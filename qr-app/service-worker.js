@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-mobile-state-gradients-v29';
+const CACHE_NAME = 'vshook-mobile-1.0.1-mobile-state-gradients-v30';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -18,8 +18,6 @@ const APP_ASSETS = [
   './chat-app.css',
   './transfer-hook.js',
   './transfer-hook-app.css',
-  './vshook-2.0.67',
-  './vshook-2.0.67',
   './vsdiretor-icon-180.png',
   './vsdiretor-icon-192.png',
   './vsdiretor-icon-512.png',

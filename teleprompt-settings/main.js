@@ -242,9 +242,26 @@ function createRecadosWindow() {
 }
 
 function wantsRecados(argv = process.argv) {
-  return Array.isArray(argv) && argv.some(
-    (value) => String(value || '').toLowerCase() === '--recados'
-  );
+  const requestedByArgument = Array.isArray(argv) && argv.some((value) => {
+    const normalized = String(value || '').toLowerCase();
+    return normalized === '--recados' || normalized === '--mode=recados';
+  });
+  const executableDirectory = path.dirname(process.execPath);
+  const requestCandidates = process.platform === 'darwin'
+    ? [path.resolve(executableDirectory, '..', '..', '..', 'open-recados.request')]
+    : [path.join(executableDirectory, 'open-recados.request')];
+  let requestedByFile = false;
+  for (const requestPath of requestCandidates) {
+    if (!fs.existsSync(requestPath)) continue;
+    requestedByFile = true;
+    try {
+      fs.unlinkSync(requestPath);
+    } catch (_) {
+      // O argumento continua sendo a fonte principal. O arquivo e apenas uma
+      // garantia para launchers do sistema que descartam argumentos.
+    }
+  }
+  return requestedByArgument || requestedByFile;
 }
 
 function showRequestedWindow(argv = process.argv) {

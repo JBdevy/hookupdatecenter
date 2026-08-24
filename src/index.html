@@ -178,12 +178,18 @@
           <div class="form-grid">
             <label>
               CPF ou CNPJ usado na compra
-              <input id="cpfInput" type="text" placeholder="CPF ou CNPJ" autocomplete="off" />
+              <span class="purchase-field">
+                <input id="cpfInput" type="text" placeholder="CPF ou CNPJ" autocomplete="off" />
+                <span class="purchase-field-icon purchase-field-icon-document" aria-hidden="true">ID</span>
+              </span>
             </label>
 
             <label>
               E-mail usado na compra
-              <input id="emailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+              <span class="purchase-field">
+                <input id="emailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+                <span class="purchase-field-icon" aria-hidden="true">@</span>
+              </span>
             </label>
 
             <label>
@@ -237,7 +243,10 @@
             <h2>Login da compra</h2>
             <label>
               E-mail usado na compra
-              <input id="devicesEmailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+              <span class="purchase-field">
+                <input id="devicesEmailInput" type="email" placeholder="cliente@email.com" autocomplete="off" />
+                <span class="purchase-field-icon" aria-hidden="true">@</span>
+              </span>
             </label>
             <label>
               Nome deste dispositivo

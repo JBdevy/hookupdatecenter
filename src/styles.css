@@ -8607,6 +8607,43 @@ body.tools-mode .copy-project-card .selected-folder-box {
   box-sizing: border-box;
 }
 
+.purchase-field {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.purchase-field input {
+  width: 100%;
+  padding-right: 44px !important;
+  box-sizing: border-box;
+}
+
+.purchase-field-icon {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(163, 255, 18, .42);
+  border-radius: 7px;
+  background: rgba(163, 255, 18, .09);
+  color: #a3ff12;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.purchase-field-icon-document {
+  font-size: 9px;
+  letter-spacing: -.03em;
+}
+
 #licenseView .actions {
   justify-content: center;
 }
