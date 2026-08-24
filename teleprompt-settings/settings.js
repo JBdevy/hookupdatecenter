@@ -254,7 +254,7 @@ async function loadSettings() {
       state.values[slot].textScale = Math.min(
         1, Math.max(0.5, Number(state.values[slot].textScale) || 1));
       state.values[slot].clockScale = Math.min(
-        1, Math.max(0.5, Number(state.values[slot].clockScale) || 1));
+        1.5, Math.max(0.5, Number(state.values[slot].clockScale) || 1));
       state.values[slot].songNameScale = Math.min(
         2, Math.max(0.5, Number(state.values[slot].songNameScale) || 1));
       state.values[slot].queueNameScale = Math.min(
