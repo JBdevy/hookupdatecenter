@@ -255,12 +255,6 @@ button, input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.playbackQueueTitleBracketed::before,
-.playbackQueueTitleBracketed::after {
-  color: #ff3030 !important;
-}
-.playbackQueueTitleBracketed::before { content: "["; }
-.playbackQueueTitleBracketed::after { content: "]"; }
 .playbackQueueNext .playbackQueueTitle {
   color: #facc15;
 }

@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-mobile-state-gradients-v29'
+  const VERSION = '1.0.1-fadeout-local-v33'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -63,6 +63,8 @@
     optimisticQueueClearedUntil: 0,
     optimisticPlayingId: '',
     optimisticPlayingUntil: 0,
+    optimisticPlayingStartedAt: 0,
+    optimisticPlayingConfirmations: 0,
     optimisticStoppedId: '',
     optimisticStoppedTab: '',
     optimisticStoppedUntil: 0,
@@ -2490,8 +2492,7 @@
       state.playlistSelectionClearedUntil = 0
       state.regionSelectionClearedUntil = now() + 5000
     }
-    state.optimisticPlayingId = target.id
-    state.optimisticPlayingUntil = now() + 4000
+    setOptimisticPlayingTarget(target.id)
     const cursorPos = getTransportSeekCursorPos(target, data)
     state.transportSeekPlayVisualHoldPos = cursorPos
     state.transportSeekPlayVisualHoldAt = now()
@@ -3432,6 +3433,21 @@
     return data?.playingId != null ? String(data.playingId) : ''
   }
 
+  function setOptimisticPlayingTarget(id, holdMs = 4000) {
+    const targetId = String(id || '')
+    state.optimisticPlayingId = targetId
+    state.optimisticPlayingUntil = targetId ? now() + Math.max(1200, Number(holdMs) || 4000) : 0
+    state.optimisticPlayingStartedAt = targetId ? now() : 0
+    state.optimisticPlayingConfirmations = 0
+  }
+
+  function clearOptimisticPlayingTarget() {
+    state.optimisticPlayingId = ''
+    state.optimisticPlayingUntil = 0
+    state.optimisticPlayingStartedAt = 0
+    state.optimisticPlayingConfirmations = 0
+  }
+
   function isPlaying(data = state.snapshot) {
     if (state.tabletFadeoutRuntimeActive) return true
     if (state.pendingTransportPlaying !== null && now() < state.pendingTransportPlayingUntil) return !!state.pendingTransportPlaying
@@ -3455,17 +3471,23 @@
   function syncVisualTransportState(data = state.snapshot) {
     const bridgePlayingId = data?.playingId != null
       ? String(data.playingId) : ''
-    if (state.optimisticPlayingId &&
-        bridgePlayingId === String(state.optimisticPlayingId)) {
-      // O estado front-first termina assim que o mesmo alvo volta do REAPER.
-      // Sem isso, ele podia esconder por quatro segundos a troca para o irmão.
-      state.optimisticPlayingId = ''
-      state.optimisticPlayingUntil = 0
+    if (state.optimisticPlayingId) {
+      if (bridgePlayingId === String(state.optimisticPlayingId)) {
+        // Exige confirmações consecutivas. Um snapshot intermediário do Bridge
+        // não pode devolver a faixa vermelha para a música anterior e deixar
+        // duas linhas aparentando reprodução durante a troca.
+        state.optimisticPlayingConfirmations += 1
+        const heldFor = now() - Number(state.optimisticPlayingStartedAt || 0)
+        if (state.optimisticPlayingConfirmations >= 3 && heldFor >= 650) {
+          clearOptimisticPlayingTarget()
+        }
+      } else {
+        state.optimisticPlayingConfirmations = 0
+      }
     }
     if (!bridgeExplicitlyStopped(data) ||
         state.pendingTransportPlaying === true) return
-    state.optimisticPlayingId = ''
-    state.optimisticPlayingUntil = 0
+    clearOptimisticPlayingTarget()
   }
 
   function normalizeSharedPage(value) {
@@ -5302,7 +5324,12 @@
   }
 
   function popupHtml() {
-    if (state.tabletFadeoutRuntimeActive) return '<div class="directorPopup directorPopup-info tabletFadeoutPersistentPopup">FADEROUT...</div>'
+    if (state.tabletFadeoutRuntimeActive) {
+      const progress = getTabletFadeoutVisualProgress()
+      const remainingPercent = Math.max(0, Math.min(100, (1 - progress) * 100))
+      const remainingSeconds = Math.max(0, Number(state.tabletFadeoutSeconds || 1) * (1 - progress))
+      return `<div class="directorPopup directorPopup-info tabletFadeoutPersistentPopup"><div class="tabletFadeoutPopupLabel">FaderOut - <span class="tabletFadeoutPopupSeconds">${remainingSeconds.toFixed(1)}s</span></div><div class="tabletFadeoutPopupTrack"><span class="tabletFadeoutPopupFill" style="width:${remainingPercent}%"></span></div></div>`
+    }
     if (!state.popupText || now() >= state.popupUntil) return ''
     return `<div class="directorPopup directorPopup-${escapeHtml(state.popupKind || 'info')}">${escapeHtml(state.popupText)}</div>`
   }
@@ -5333,8 +5360,14 @@
     popup.className = fadeoutActive
       ? 'directorPopup directorPopup-info tabletFadeoutPersistentPopup'
       : `directorPopup directorPopup-${String(state.popupKind || 'info')}`
-    popup.textContent =
-      fadeoutActive ? 'FADEROUT...' : String(state.popupText || '')
+    if (fadeoutActive) {
+      if (!popup.querySelector('.tabletFadeoutPopupTrack')) {
+        popup.innerHTML = '<div class="tabletFadeoutPopupLabel">FaderOut - <span class="tabletFadeoutPopupSeconds">0.0s</span></div><div class="tabletFadeoutPopupTrack"><span class="tabletFadeoutPopupFill"></span></div>'
+      }
+      syncTabletFadeoutProgressDom()
+    } else {
+      popup.textContent = String(state.popupText || '')
+    }
   }
 
   function stopPauseModePopupHtml(data = state.snapshot) {
@@ -5391,7 +5424,7 @@
     return !!id && liveMarkIndex.markedIds.has(id)
   }
 
-  function rowClass(type, item) {
+  function rowClass(type, item, playingOverride = null) {
     const id = getId(item)
     const data = state.snapshot || {}
     const playingId = getPlayingId(data)
@@ -5404,7 +5437,9 @@
     if (itemHasLiveMark(item, data)) classes.push('liveExecutedItem')
     if (type === 'marker' && id && state.partsArmedMarkerId === id && now() < state.partsArmedMarkerUntil) classes.push('partsMarkerArmed')
     else if (type === 'marker' && id && state.partsLocalSelectedMarkerId === id) classes.push('partsMarkerLocalSelected')
-    if (rowRepresentsPlayingSong(item, data)) classes.push('playing')
+    const representsPlaying = typeof playingOverride === 'boolean'
+      ? playingOverride : rowRepresentsPlayingSong(item, data)
+    if (representsPlaying) classes.push('playing')
     else if (!isPlaying(data) && id && ((selectedId && id === selectedId) || (familySelectedId && id === familySelectedId))) classes.push(isBlock(item) ? 'selectedPink' : 'selectedBlue')
     else if (id && queuedId && id === queuedId) classes.push(getQueuedRowClass(data))
     return classes.join(' ')
@@ -5433,21 +5468,24 @@
     return 'text'
   }
 
-  function textClass(type, item) {
+  function textClass(type, item, playingOverride = null) {
     const id = getId(item)
     const data = state.snapshot || {}
     const playingId = getPlayingId(data)
     const queuedId = getQueuedId(data)
     const selectedId = type === 'playlist' ? getSelectedPlaylistId(data) : type === 'region' ? getSelectedRegionId(data) : getSelectedMarkerId(data)
     const familySelectedId = isHashChild(item) ? String(state.selectedRegionId || '') : ''
-    if (rowRepresentsPlayingSong(item, data)) return 'playingText'
+    const representsPlaying = typeof playingOverride === 'boolean'
+      ? playingOverride : rowRepresentsPlayingSong(item, data)
+    if (representsPlaying) return 'playingText'
     if (!isPlaying(data) && id && ((selectedId && id === selectedId) || (familySelectedId && id === familySelectedId))) return isBlock(item) ? 'selectedPinkText' : 'selectedBlueText'
     if (id && queuedId && id === queuedId) return getQueuedTextClass(data)
     return 'text'
   }
 
-  function timeClass(type, item) {
-    return textClass(type, item).replace('Text', 'TimeText') === textClass(type, item) ? 'timeText' : textClass(type, item).replace('Text', 'TimeText')
+  function timeClass(type, item, playingOverride = null) {
+    const cls = textClass(type, item, playingOverride)
+    return cls.replace('Text', 'TimeText') === cls ? 'timeText' : cls.replace('Text', 'TimeText')
   }
 
   function cleanBlockDisplayName(value, blockNumber) {
@@ -5513,6 +5551,7 @@
     const queueProgress = queuedId ? 100 - progress : 0
     const drawerVisual = getDrawerVisualStyle(state.snapshot)
     const blockSymbolVisual = getBlockSymbolVisualStyle(state.snapshot)
+    let playingRowAlreadyRendered = false
     return list.map((entry, visibleIndex) => {
       const item = entry.item
       const id = escapeHtml(getId(item))
@@ -5522,9 +5561,12 @@
       const name = escapeHtml(getRowDisplayName(item, entry.index, entry.blockNumber))
       const sec = getDurationSec(item)
       const time = sec ? formatTime(sec) : ''
-      const cls = rowClass(type, item)
-      const tcls = textClass(type, item)
-      const rcls = timeClass(type, item)
+      const rowIsPlaying = !playingRowAlreadyRendered &&
+        rowRepresentsPlayingSong(item, state.snapshot)
+      if (rowIsPlaying) playingRowAlreadyRendered = true
+      const cls = rowClass(type, item, rowIsPlaying)
+      const tcls = textClass(type, item, rowIsPlaying)
+      const rcls = timeClass(type, item, rowIsPlaying)
       const markedBlack = cls.split(/\s+/).some((name) => name === 'playing' || name === 'queuedYellow' || name === 'queuedGreen' || name === 'selectedBlue')
       const liveVisual = !markedBlack && cls.split(/\s+/).includes('liveExecutedItem')
       const playlistWithoutBlocks = type === 'playlist' && !playlistHasBlocks && !isBlockRow
@@ -5613,7 +5655,7 @@
       const armedRegress = markerArmed ? getPartsArmedRegressPercent(state.snapshot) : 0
       const rowProgress = markerArmed
         ? `<div class="partsArmedRegressTrack"><div class="partsArmedRegressBar" style="width:${armedRegress}%"></div></div>`
-        : rowRepresentsPlayingSong(item, state.snapshot)
+        : rowIsPlaying
           ? `<div class="rowProgressTrack"><div class="progressBar playingRowProgressBar" style="width:${progress}%"></div></div>`
           : rawId && queuedId && rawId === queuedId
             ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="width:${queueProgress}%"></div></div>`
@@ -6211,8 +6253,6 @@
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!(isPlaying(data) && nowRawName)
-    const hasQueuedSong = !!(hasQueue && queuedRawName)
     const showQueueBar = hasQueue
     const progress = isPlaying(data) ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
@@ -6228,12 +6268,12 @@
       <div class="playbackQueueHeader${holdable ? ' transportSeekHoldTarget' : ''}">
         <div class="playbackQueueLine playbackQueueNow">
           <span class="playbackQueueLabel">TOCANDO AGORA -</span>
-          <span class="playbackQueueTitle${hasNowPlaying ? ' playbackQueueTitleBracketed' : ''}">${escapeHtml(nowName)}</span>
+          <span class="playbackQueueTitle">${escapeHtml(nowName)}</span>
         </div>
         <div class="playbackQueueTrack playbackQueueTrackNow" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="width:${progress}%"></div></div>
         <div class="playbackQueueLine playbackQueueNext${auto2QueueClass}">
           <span class="playbackQueueLabel">FILA DE ESPERA -</span>
-          <span class="playbackQueueTitle${hasQueuedSong ? ' playbackQueueTitleBracketed' : ''}">${escapeHtml(queuedName)}</span>
+          <span class="playbackQueueTitle">${escapeHtml(queuedName)}</span>
         </div>
         <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="width:${queueProgress}%"></div></div>
         <div class="playbackQueueLine playbackQueueMultiLoop${multiLoopClass}">
@@ -6273,7 +6313,7 @@
       const solo = getHeldMixerToggle(item, 'solo')
       const db = formatMixerDb(item)
       const ratio = getMixerRatio(item)
-      return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
+      return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('') || `<div class="emptyBox">MIXER SEM DADOS</div>`
     return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox">${rows}</div></div>`
   }
@@ -6287,7 +6327,7 @@
         const muted = item.mute === true || item.muted === true
         const volumeState = getPremixTrackVolumeState(item)
         const dbText = formatVolumeDb(volumeState.db)
-        return `<div class="mixerRow premixMixerRow" data-premix-track-id="${id}"><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(dbText)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(dbText)}</div><input class="premixInlineSlider" data-action="premix-volume" data-premix-track-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><button class="mixerMiniBtn ${muted ? 'mixerMiniBtnActive' : ''}" data-action="premix-mute" data-premix-track-id="${id}">M</button><button class="mixerMiniBtn" data-action="premix-fx" data-premix-track-id="${id}">F</button></div>`
+        return `<div class="mixerRow premixMixerRow" data-premix-track-id="${id}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(dbText)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(dbText)}</div><input class="premixInlineSlider" data-action="premix-volume" data-premix-track-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><button class="mixerMiniBtn ${muted ? 'mixerMiniBtnActive' : ''}" data-action="premix-mute" data-premix-track-id="${id}">M</button><button class="mixerMiniBtn" data-action="premix-fx" data-premix-track-id="${id}">F</button></div>`
       }).join('') || `<div class="emptyBox">SELECIONE UMA MÚSICA NO PREMIX</div>`
       return `<div class="contentPanel"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-back-songs">MÚSICAS</button><button class="${state.premixTrackView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-tracks">TRACKS</button><button class="${state.premixTrackView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-groups">GRUPOS</button></div><div class="listBox"><div class="mixerRowsBox">${rows}</div></div></div>`
     }
@@ -6312,6 +6352,7 @@
     const uniqueSolo = getPremixItemUniqueSolo(item)
     const dbText = formatVolumeDb(volumeState.db)
     return `<div class="premixFullRow" data-premix-item-row="${id}" data-premix-item-id="${id}" data-premix-track-id="${trackId}">
+      <span class="appScrollLane" aria-hidden="true"></span>
       <div class="premixFullItemMain"><div class="premixFullTrackName">${trackName}</div><div class="premixFullItemName">${itemName}</div>${renderTrackMeter(item)}</div>
       <div class="premixFullSliderWrap"><input class="premixFullSlider" data-action="premix-item-volume" data-premix-item-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixFullDb">${escapeHtml(dbText)}</span></div>
       <div class="premixFullSoloButtons">
@@ -9073,17 +9114,13 @@
   }
 
   function getTabletFadeoutVisualProgress(sampledAt = now()) {
-    const bridgeProgress = clampTabletFadeoutProgress(state.tabletFadeoutProgress)
-    if (state.tabletFadeoutRuntimeActive !== true) return bridgeProgress
+    if (state.tabletFadeoutRuntimeActive !== true) return 0
     const anchorAt = Number(state.tabletFadeoutVisualAnchorAt || 0)
-    if (!(anchorAt > 0)) return bridgeProgress
+    if (!(anchorAt > 0)) return 0
     const durationMs = Math.max(100, Number(state.tabletFadeoutSeconds || 1) * 1000)
     const anchorProgress = clampTabletFadeoutProgress(state.tabletFadeoutVisualAnchorProgress)
     const elapsedRatio = Math.max(0, Number(sampledAt || 0) - anchorAt) / durationMs
-    return clampTabletFadeoutProgress(Math.max(
-      bridgeProgress,
-      anchorProgress + elapsedRatio,
-    ))
+    return clampTabletFadeoutProgress(anchorProgress + elapsedRatio)
   }
 
   function anchorTabletFadeoutVisual(progress, sampledAt = now()) {
@@ -9109,7 +9146,6 @@
       state.tabletFadeoutSelectedTrackIds = config.selectedTrackIds.map(String)
     }
     const wasActive = state.tabletFadeoutRuntimeActive === true
-    const visualBeforeSync = getTabletFadeoutVisualProgress(sampledAt)
     const bridgeFadeoutActive = config.active === true || config.fading === true
     const pendingRuntimeState = state.tabletFadeoutRuntimePendingState
     const pendingRuntimeConfirmed = pendingRuntimeState === true ? bridgeFadeoutActive : pendingRuntimeState === false ? !bridgeFadeoutActive : true
@@ -9121,8 +9157,7 @@
       if (wasActive && !active && data?.playing !== true && !data?.playingId) {
         state.queuedSongId = ''
         state.optimisticQueueClearedUntil = now() + 1800
-        state.optimisticPlayingId = ''
-        state.optimisticPlayingUntil = 0
+        clearOptimisticPlayingTarget()
         state.optimisticStoppedUntil = 0
         state.selectedMarkerId = ''
         state.partsLocalSelectedMarkerId = ''
@@ -9130,18 +9165,13 @@
         state.partsArmedMarkerUntil = 0
       }
     }
-    const progress = Number(config.progress)
-    state.tabletFadeoutProgress = Number.isFinite(progress)
-      ? clampTabletFadeoutProgress(progress)
-      : (state.tabletFadeoutRuntimeActive ? state.tabletFadeoutProgress : 0)
+    state.tabletFadeoutProgress = state.tabletFadeoutRuntimeActive
+      ? getTabletFadeoutVisualProgress(sampledAt)
+      : 0
     if (state.tabletFadeoutRuntimeActive) {
-      anchorTabletFadeoutVisual(
-        Math.max(
-          wasActive ? visualBeforeSync : 0,
-          state.tabletFadeoutProgress,
-        ),
-        sampledAt,
-      )
+      if (!(Number(state.tabletFadeoutVisualAnchorAt || 0) > 0)) {
+        anchorTabletFadeoutVisual(0, sampledAt)
+      }
     } else {
       resetTabletFadeoutVisual()
     }
@@ -9150,8 +9180,13 @@
   }
 
   function syncTabletFadeoutProgressDom(sampledAt = now()) {
-    const remaining = `${Math.max(0, Math.min(100, (1 - getTabletFadeoutVisualProgress(sampledAt)) * 100))}%`
+    const progress = getTabletFadeoutVisualProgress(sampledAt)
+    const remainingValue = Math.max(0, Math.min(100, (1 - progress) * 100))
+    const remaining = `${remainingValue}%`
     root.querySelectorAll('.tabletFadeoutRegress').forEach((button) => button.style.setProperty('--fadeout-remaining', remaining))
+    root.querySelectorAll('.tabletFadeoutPopupFill').forEach((fill) => { fill.style.width = remaining })
+    const remainingSeconds = Math.max(0, Number(state.tabletFadeoutSeconds || 1) * (1 - progress)).toFixed(1)
+    root.querySelectorAll('.tabletFadeoutPopupSeconds').forEach((label) => { label.textContent = `${remainingSeconds}s` })
   }
 
   function syncMainControlButtonsDom() {
@@ -9263,6 +9298,44 @@
           html[data-director-device="phone"] .app:not(.musicianMonitor) .tabRow{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important;width:100%!important;max-width:100%!important;padding-right:0!important}
           html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsRowDirectorMain>button,
           html[data-director-device="phone"] .app:not(.musicianMonitor) .tabRow>button{box-sizing:border-box!important;display:flex!important;align-items:center!important;justify-content:center!important;flex:none!important;width:100%!important;min-width:0!important;max-width:100%!important;height:42px!important;min-height:42px!important;max-height:42px!important;margin:0!important}
+        </style>
+        <style>
+          html[data-director-device="phone"] .appScrollLane,
+          html[data-director-device="tablet"] .appScrollLane{position:absolute;left:0!important;top:0;bottom:0;width:20%!important;min-width:20%!important;max-width:20%!important;display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:3px;z-index:4;touch-action:pan-y!important;overscroll-behavior-y:contain;border:0!important;background:linear-gradient(90deg,rgba(15,23,42,.12),rgba(15,23,42,.025));box-sizing:border-box;color:#94a3b8;font-size:18px;font-weight:1000;line-height:.8;text-shadow:0 0 8px rgba(148,163,184,.2)}
+          html[data-director-device="phone"] .appScrollLane::before,
+          html[data-director-device="tablet"] .appScrollLane::before{content:"↑"}
+          html[data-director-device="phone"] .appScrollLane::after,
+          html[data-director-device="tablet"] .appScrollLane::after{content:"↓"}
+          html[data-director-device="phone"] .app .mixerContentPanel .mixerRow.mixerInlineRow,
+          html[data-director-device="tablet"] .app .mixerContentPanel .mixerRow.mixerInlineRow,
+          html[data-director-device="phone"] .app .mixerRow.premixMixerRow,
+          html[data-director-device="tablet"] .app .mixerRow.premixMixerRow,
+          html[data-director-device="phone"] .app .premixFullRow,
+          html[data-director-device="tablet"] .app .premixFullRow{position:relative!important;width:100%!important;box-sizing:border-box!important;padding-left:calc(20% + 8px)!important;border-bottom:0!important}
+          html[data-director-device="phone"] .app .mixerContentPanel .mixerRow.mixerInlineRow{grid-template-columns:6px minmax(0,1fr) 38px 38px!important;grid-template-areas:"color main mute solo" "color slider slider slider"!important;padding-left:calc(20% + 8px)!important;padding-right:6px!important}
+          html[data-director-device="phone"] .app .mixerContentPanel .mixerRow.mixerInlineRow::after,
+          html[data-director-device="tablet"] .app .mixerContentPanel .mixerRow.mixerInlineRow::after,
+          html[data-director-device="phone"] .app .mixerRow.premixMixerRow::after,
+          html[data-director-device="tablet"] .app .mixerRow.premixMixerRow::after,
+          html[data-director-device="phone"] .app .premixFullRow::after,
+          html[data-director-device="tablet"] .app .premixFullRow::after{content:"";position:absolute;left:20%;right:0;bottom:0;height:1px;background:#1e293b;pointer-events:none}
+          html[data-director-device="phone"] .app .mixerRow:last-child::after,
+          html[data-director-device="tablet"] .app .mixerRow:last-child::after,
+          html[data-director-device="phone"] .app .premixFullRow:last-child::after,
+          html[data-director-device="tablet"] .app .premixFullRow:last-child::after{display:none}
+          .app[data-theme="light"] .appScrollLane{background:linear-gradient(90deg,rgba(203,213,225,.42),rgba(226,232,240,.08));color:#475569;text-shadow:none}
+          html[data-director-device="phone"] .app[data-theme="light"] .mixerRow::after,
+          html[data-director-device="tablet"] .app[data-theme="light"] .mixerRow::after,
+          html[data-director-device="phone"] .app[data-theme="light"] .premixFullRow::after,
+          html[data-director-device="tablet"] .app[data-theme="light"] .premixFullRow::after{background:#cbd5e1}
+          html[data-director-device="tablet"] .app .mixerContentPanel .mixerRow.mixerInlineRow{grid-template-columns:10px minmax(72px,1fr) 58px 48px 48px!important;grid-template-areas:"color main db mute solo" "color slider slider slider slider"!important}
+          html[data-director-device="tablet"] .app .mixerContentPanel .mixerRow.mixerInlineRow .mixerMiniBtn{width:44px!important;height:42px!important;font-size:17px!important}
+          html[data-director-device="tablet"] .app .premixFullRow .premixFullMute{width:48px!important;height:44px!important;font-size:18px!important}
+          html[data-director-device="phone"] .app .mixerContentPanel .mixerRow.mixerInlineRow .mixerMiniBtn{width:38px!important;height:36px!important;font-size:16px!important}
+          .tabletFadeoutPersistentPopup{min-width:210px!important;padding:11px 14px 12px!important;display:flex!important;flex-direction:column!important;gap:8px!important}
+          .tabletFadeoutPopupLabel{color:#fff;font-size:16px;font-weight:1000;text-align:center;line-height:1.1}
+          .tabletFadeoutPopupTrack{width:100%;height:8px;overflow:hidden;border:1px solid #4c555e;border-radius:999px;background:#14181d;box-sizing:border-box}
+          .tabletFadeoutPopupFill{display:block;height:100%;width:100%;border-radius:999px;background:linear-gradient(90deg,#f97316,#ef4444);transition:none!important;will-change:width}
         </style>
         <style>
           .app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.selectedPink .selectedPinkText,.app .item.selectedPink .selectedPinkTimeText,.app .item.queuedYellow .queuedYellowText,.app .item.queuedYellow .queuedYellowTimeText,.app .item.queuedGreen .queuedGreenText,.app .item.queuedGreen .queuedGreenTimeText,.app .item.queuedYellow .leftCol span,.app .item.queuedYellow .rightCol span,.app .item.queuedGreen .leftCol span,.app .item.queuedGreen .rightCol span,.app .item.queuedYellow .marqueeStatic,.app .item.queuedYellow .marqueeTrack,.app .item.queuedYellow .marqueeSegment,.app .item.queuedGreen .marqueeStatic,.app .item.queuedGreen .marqueeTrack,.app .item.queuedGreen .marqueeSegment,.app .item.playing .playingText,.app .item.playing .playingTimeText,.app .item.playing .leftCol span,.app .item.playing .rightCol span,.app .item.playing .marqueeStatic,.app .item.playing .marqueeTrack,.app .item.playing .marqueeSegment{color:#050505!important;text-shadow:none!important}
@@ -9453,6 +9526,7 @@
         restoreFocusedInput()
         restoreListScrollState(scrollState)
       }
+      enforceSingleVisualPlayingSongDom()
       syncPlaybackProgressDom()
       syncTimerDom()
       syncDirectorTelepromptDom()
@@ -9806,8 +9880,6 @@
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!(isPlaying(data) && nowRawName)
-    const hasQueuedSong = !!(hasQueue && queuedRawName)
     const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -9831,8 +9903,6 @@
       if (queuedTitle && queuedTitle.textContent !== queuedName) {
         queuedTitle.textContent = queuedName
       }
-      nowTitle?.classList.toggle('playbackQueueTitleBracketed', hasNowPlaying)
-      queuedTitle?.classList.toggle('playbackQueueTitleBracketed', hasQueuedSong)
       if (multiLoopTitle &&
           multiLoopTitle.textContent !== multiLoopStatus.text) {
         multiLoopTitle.textContent = multiLoopStatus.text
@@ -9891,6 +9961,29 @@
         String(app.getAttribute('data-visual-playing-id') || '') !==
           visualPlayingId) {
       scheduleRender()
+    }
+  }
+
+  function enforceSingleVisualPlayingSongDom() {
+    const rows = root.querySelectorAll(
+      '.item.playing[data-item-type="playlist"],.item.playing[data-item-type="region"]',
+    )
+    let kept = false
+    for (const row of rows) {
+      if (!kept) {
+        kept = true
+        continue
+      }
+      row.classList.remove('playing')
+      row.querySelector('.playingRowProgressBar')?.closest('.rowProgressTrack')?.remove()
+      for (const text of row.querySelectorAll('.playingText')) {
+        text.classList.remove('playingText')
+        text.classList.add('text')
+      }
+      for (const text of row.querySelectorAll('.playingTimeText')) {
+        text.classList.remove('playingTimeText')
+        text.classList.add('timeText')
+      }
     }
   }
 
@@ -10349,8 +10442,7 @@
     state.premixPlaySongEnd = Number(target.end) || 0
     state.premixPlayMarkerNumber = Number(target.markerNumber) || 0
     state.premixPlayMarkerEnumIndex = Number.isFinite(Number(target.markerEnumIndex)) ? Number(target.markerEnumIndex) : -1
-    state.optimisticPlayingId = String(target.id)
-    state.optimisticPlayingUntil = now() + 4000
+    setOptimisticPlayingTarget(target.id)
     state.optimisticStoppedUntil = 0
     postCommand('play_start', { ...getPremixTargetPayload(), noSeek: false, transportOnly: false })
     scheduleRender(true)
@@ -10826,7 +10918,10 @@
         resetTabletFadeoutVisual()
         state.tabletFadeoutRuntimePendingState = false
         state.tabletFadeoutRuntimePendingUntil = now() + 1800
-        setPendingTransportPlaying(false)
+        // Cancelar o Fadeout restaura o volume e mantém a música tocando.
+        // O estado visual precisa mudar localmente, sem aguardar o bridge.
+        state.optimisticStoppedUntil = 0
+        setPendingTransportPlaying(true, 2500)
         postCommand('director_stop_no_seek', stopPayload)
         showPopup('STOP CANCELADO', 'info', 800)
         scheduleRender(true)
@@ -10844,8 +10939,7 @@
         return
       }
 
-      state.optimisticPlayingId = ''
-      state.optimisticPlayingUntil = 0
+      clearOptimisticPlayingTarget()
       setPendingTransportPlaying(false)
       if (stoppedId) {
         state.optimisticStoppedId = stoppedId
@@ -10903,8 +10997,7 @@
       state.optimisticStoppedUntil = 0
       const id = state.activeTab === 'regions' ? (state.selectedRegionId || getSelectedRegionId()) : (state.selectedPlaylistSongId || getSelectedPlaylistId())
       if (id) {
-        state.optimisticPlayingId = getImmediateFamilyPlayingId(id)
-        state.optimisticPlayingUntil = now() + 4000
+        setOptimisticPlayingTarget(getImmediateFamilyPlayingId(id))
         state.partsLastPlayingId = state.optimisticPlayingId
       }
       state.partsMarkerSongSource = 'playing'
@@ -10945,8 +11038,7 @@
     state.tabletFadeoutProgress = 0
     state.tabletFadeoutRuntimePendingState = false
     state.tabletFadeoutRuntimePendingUntil = now() + 1800
-    state.optimisticPlayingId = ''
-    state.optimisticPlayingUntil = 0
+    clearOptimisticPlayingTarget()
     setPendingTransportPlaying(false, 2500)
     state.optimisticStoppedId = stoppedId
     state.optimisticStoppedTab = stoppedTab
@@ -13012,7 +13104,7 @@
     if (IS_MUSICIAN_MONITOR || state.activeTab !== 'mixer') return
     if (event.type === 'pointerdown') {
       if (event.pointerType === 'mouse' && event.button !== 0) return
-      if (event.target?.closest?.('button,input')) return
+      if (event.target?.closest?.('button,input,.appScrollLane')) return
       const row = event.target?.closest?.('.mixerRow[data-mixer-id]')
       const id = String(row?.getAttribute('data-mixer-id') || '')
       if (!row || !id) return

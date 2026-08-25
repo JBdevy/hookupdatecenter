@@ -274,12 +274,6 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.playbackQueueTitleBracketed::before,
-.playbackQueueTitleBracketed::after {
-  color: #ff3030 !important;
-}
-.playbackQueueTitleBracketed::before { content: "["; }
-.playbackQueueTitleBracketed::after { content: "]"; }
 .playbackQueueNext .playbackQueueTitle {
   color: #facc15;
 }

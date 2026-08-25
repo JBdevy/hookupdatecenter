@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-red-brackets-v37';
+const CACHE_NAME = 'vshook-mobile-1.0.1-fadeout-local-v40';
 const APP_ASSETS = [
   './',
   './index.html',
