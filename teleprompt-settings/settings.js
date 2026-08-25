@@ -30,6 +30,7 @@ const defaults = {
   localClockDepth: 1,
   windowBorderEnabled: true,
   clockBorderEnabled: true,
+  localClockBorderEnabled: true,
   textBoxEnabled: true,
   clockEnabled: true,
   localClockEnabled: true,
@@ -62,6 +63,7 @@ const state = {
     backgroundColor: '#000000',
     flashColor: '#ff0000',
     fontFamily: 'Arial',
+    textScale: 1,
     window1Enabled: true,
     window2Enabled: true,
     emojiEnabled: true,
@@ -102,6 +104,11 @@ function updateOutputs() {
   document.querySelectorAll('[data-output]').forEach((output) => {
     const key = output.dataset.output;
     const value = state.values[state.slot][key];
+    output.value = `${Math.round(Number(value) * 100)}%`;
+  });
+  document.querySelectorAll('[data-notice-output]').forEach((output) => {
+    const key = output.dataset.noticeOutput;
+    const value = state.notice[key];
     output.value = `${Math.round(Number(value) * 100)}%`;
   });
 }
@@ -293,7 +300,10 @@ noticeControls.forEach((control) => {
     state.notice[normalizedKey] =
       control.type === 'checkbox'
         ? control.checked
-        : control.value;
+        : (control.type === 'range'
+          ? Number(control.value)
+          : control.value);
+    updateOutputs();
     scheduleNoticeSave();
   });
 });

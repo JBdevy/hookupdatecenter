@@ -205,6 +205,8 @@
     partsLocalSelectedMarkerId: '',
     partsArmedMarkerId: '',
     partsArmedMarkerUntil: 0,
+    partsArmedBridgeHoldUntil: 0,
+    partsArmedMissingSince: 0,
     partsMarkerSongSource: 'playing',
     partsArmedOwnerSongId: '',
     partsArmedOwnerTab: '',
@@ -2658,6 +2660,11 @@
       return master && typeof master === 'object' ? [master] : []
     }
     if (state.mixerView === 'groups') return Array.isArray(data?.mixerGroups) ? data.mixerGroups : (Array.isArray(mixer?.groups) ? mixer.groups : [])
+    return Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : [])
+  }
+
+  function getFadeoutTracks(data = state.snapshot) {
+    const mixer = data?.mixer && typeof data.mixer === 'object' ? data.mixer : null
     return Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : [])
   }
 
@@ -6199,9 +6206,13 @@
   }
 
   function renderPlaybackQueueHeader(data = state.snapshot, holdable = false) {
-    const nowName = getNowPlayingName(data) || 'NENHUMA MÚSICA EM REPRODUÇÃO'
-    const queuedName = getQueuedSongName(data) || 'FILA DE ESPERA VAZIA'
-    const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
+    const nowRawName = getNowPlayingName(data)
+    const queuedRawName = getQueuedSongName(data)
+    const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
+    const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
+    const hasQueue = !!(getQueuedId(data) || queuedRawName)
+    const hasNowPlaying = !!(isPlaying(data) && nowRawName)
+    const hasQueuedSong = !!(hasQueue && queuedRawName)
     const showQueueBar = hasQueue
     const progress = isPlaying(data) ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
@@ -6216,13 +6227,13 @@
     return `
       <div class="playbackQueueHeader${holdable ? ' transportSeekHoldTarget' : ''}">
         <div class="playbackQueueLine playbackQueueNow">
-          <span class="playbackQueueLabel">TOCANDO AGORA</span>
-          <span class="playbackQueueTitle">${escapeHtml(nowName)}</span>
+          <span class="playbackQueueLabel">TOCANDO AGORA -</span>
+          <span class="playbackQueueTitle${hasNowPlaying ? ' playbackQueueTitleBracketed' : ''}">${escapeHtml(nowName)}</span>
         </div>
         <div class="playbackQueueTrack playbackQueueTrackNow" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="width:${progress}%"></div></div>
         <div class="playbackQueueLine playbackQueueNext${auto2QueueClass}">
-          <span class="playbackQueueLabel">FILA DE ESPERA</span>
-          <span class="playbackQueueTitle">${escapeHtml(queuedName)}</span>
+          <span class="playbackQueueLabel">FILA DE ESPERA -</span>
+          <span class="playbackQueueTitle${hasQueuedSong ? ' playbackQueueTitleBracketed' : ''}">${escapeHtml(queuedName)}</span>
         </div>
         <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="width:${queueProgress}%"></div></div>
         <div class="playbackQueueLine playbackQueueMultiLoop${multiLoopClass}">
@@ -8733,7 +8744,7 @@
     const autoStop = getAutoStopEnabled()
     if (state.tabletFadeoutTracksOpen) {
       const selected = new Set((state.tabletFadeoutSelectedTrackIds || []).map(String))
-      const tracks = getMixerTracks(state.snapshot || {})
+      const tracks = getFadeoutTracks(state.snapshot || {})
       const rows = tracks.map((track, index) => {
         const id = String(track?.guid ?? track?.id ?? '')
         const checked = selected.has(id)
@@ -9449,6 +9460,7 @@
       syncTransportSeekModalDom()
       syncTabletTunerRowsDom()
       syncMainControlButtonsDom()
+      if (isPartsInterfaceVisible()) syncMarkerSelectionDom()
       syncTrackMetersDom()
       syncMixerRowsDom()
       syncMixerVolumeModalDom()
@@ -9789,9 +9801,13 @@
   }
 
   function syncPlaybackQueueHeaderDom(data = state.snapshot || {}) {
-    const nowName = getNowPlayingName(data) || 'NENHUMA MÚSICA EM REPRODUÇÃO'
-    const queuedName = getQueuedSongName(data) || 'FILA DE ESPERA VAZIA'
-    const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
+    const nowRawName = getNowPlayingName(data)
+    const queuedRawName = getQueuedSongName(data)
+    const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
+    const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
+    const hasQueue = !!(getQueuedId(data) || queuedRawName)
+    const hasNowPlaying = !!(isPlaying(data) && nowRawName)
+    const hasQueuedSong = !!(hasQueue && queuedRawName)
     const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -9815,6 +9831,8 @@
       if (queuedTitle && queuedTitle.textContent !== queuedName) {
         queuedTitle.textContent = queuedName
       }
+      nowTitle?.classList.toggle('playbackQueueTitleBracketed', hasNowPlaying)
+      queuedTitle?.classList.toggle('playbackQueueTitleBracketed', hasQueuedSong)
       if (multiLoopTitle &&
           multiLoopTitle.textContent !== multiLoopStatus.text) {
         multiLoopTitle.textContent = multiLoopStatus.text
@@ -9888,8 +9906,6 @@
       source,
       target: [target?.id || '', target?.name || '', target?.start ?? '', target?.end ?? '', target?.available === true],
       parent: partsTargetIsParent(data),
-      selectedMarker: state.partsLocalSelectedMarkerId || '',
-      armedMarker: state.partsArmedMarkerId || '',
       takeover: state.partsTakeoverSongId || '',
       rows: rows.map((item) => [
         item?.id ?? item?.sourceNumber ?? item?.source_number ?? item?.number ?? '',
@@ -10037,13 +10053,26 @@
     const selected = String(state.partsLocalSelectedMarkerId || '')
     const armed = String(state.partsArmedMarkerId || '')
     const armedActive = !!armed
-    for (const row of root.querySelectorAll('.markerListBox [data-marker-id]')) {
+    for (const row of root.querySelectorAll('[data-item-type="marker"][data-marker-id]')) {
       const id = String(row.getAttribute('data-marker-id') || '')
       const isArmed = armedActive && id === armed
       const isSelected = !isArmed && selected && id === selected
       row.classList.toggle('partsMarkerArmed', isArmed)
       row.classList.toggle('markerBlink', false)
       row.classList.toggle('partsMarkerLocalSelected', !!isSelected)
+      if (isArmed) {
+        row.style.setProperty('background', 'linear-gradient(180deg, #22c55e 0%, #15803d 100%)', 'important')
+        row.style.setProperty('border-color', '#86efac', 'important')
+        row.style.setProperty('box-shadow', 'inset 0 0 0 1px rgba(134, 239, 172, .5), 0 0 18px rgba(34, 197, 94, .35)', 'important')
+      } else if (isSelected) {
+        row.style.setProperty('background', 'linear-gradient(180deg, #facc15 0%, #d97706 100%)', 'important')
+        row.style.setProperty('border-color', '#fde047', 'important')
+        row.style.setProperty('box-shadow', 'inset 0 0 0 1px rgba(253, 224, 71, .42), 0 0 14px rgba(250, 204, 21, .24)', 'important')
+      } else {
+        row.style.removeProperty('background')
+        row.style.removeProperty('border-color')
+        row.style.removeProperty('box-shadow')
+      }
       let regressTrack = row.querySelector('.partsArmedRegressTrack')
       if (isArmed) {
         if (!regressTrack) {
@@ -10064,14 +10093,18 @@
         text.classList.toggle('text', !isSelected && !isArmed)
         text.classList.toggle('selectedBlueText', isSelected || isArmed)
         text.classList.toggle('selectedPinkText', false)
-        text.style.setProperty('color', isArmed ? '#ffffff' : isSelected ? '#111827' : '#f8fafc', 'important')
+        if (isArmed) text.style.setProperty('color', '#ffffff', 'important')
+        else if (isSelected) text.style.setProperty('color', '#111827', 'important')
+        else text.style.removeProperty('color')
       }
       for (const text of row.querySelectorAll('.timeText, .selectedBlueTimeText, .selectedPinkTimeText, .playingTimeText, .queuedYellowTimeText, .queuedGreenTimeText')) {
         if (text.classList.contains('playingTimeText') || text.classList.contains('queuedYellowTimeText') || text.classList.contains('queuedGreenTimeText')) continue
         text.classList.toggle('timeText', !isSelected && !isArmed)
         text.classList.toggle('selectedBlueTimeText', isSelected || isArmed)
         text.classList.toggle('selectedPinkTimeText', false)
-        text.style.setProperty('color', isArmed ? '#ffffff' : isSelected ? '#111827' : '#f8fafc', 'important')
+        if (isArmed) text.style.setProperty('color', '#ffffff', 'important')
+        else if (isSelected) text.style.setProperty('color', '#111827', 'important')
+        else text.style.removeProperty('color')
       }
     }
     syncPartsCancelButtonDom()
@@ -10113,6 +10146,8 @@
       state.partsArmedMarkerId = nativeArmed
       state.partsLocalSelectedMarkerId = nativeArmed
       state.partsArmedMarkerUntil = Number.MAX_SAFE_INTEGER
+      state.partsArmedBridgeHoldUntil = now() + 1000
+      state.partsArmedMissingSince = 0
       syncMarkerSelectionDom()
       return
     }
@@ -10123,9 +10158,25 @@
     const armedPos = getMarkerPositionById(state.partsArmedMarkerId, data)
     const playPos = firstFiniteNumber([data?.playPosition, data?.currentPlayPosition, data?.position])
     const crossed = !state.partsArmedOwnerSongId && armedPos !== null && playPos !== null && playPos >= armedPos - 0.08
+    if (!crossed && !isPlaying(data)) {
+      const sampledAt = now()
+      if (sampledAt < Number(state.partsArmedBridgeHoldUntil || 0)) {
+        syncMarkerSelectionDom()
+        return
+      }
+      if (!state.partsArmedMissingSince) state.partsArmedMissingSince = sampledAt
+      if (sampledAt - state.partsArmedMissingSince < 800) {
+        syncMarkerSelectionDom()
+        return
+      }
+    } else {
+      state.partsArmedMissingSince = 0
+    }
     if (!isPlaying(data) || crossed) {
       state.partsArmedMarkerId = ''
       state.partsArmedMarkerUntil = 0
+      state.partsArmedBridgeHoldUntil = 0
+      state.partsArmedMissingSince = 0
       if (crossed) state.partsLocalSelectedMarkerId = ''
       clearPartsArmedOwner()
       syncMarkerSelectionDom()
@@ -10615,6 +10666,8 @@
       }
       state.partsArmedMarkerId = id
       state.partsArmedMarkerUntil = Number.MAX_SAFE_INTEGER
+      state.partsArmedBridgeHoldUntil = now() + 2500
+      state.partsArmedMissingSince = 0
       capturePartsArmedOwner(state.snapshot)
       syncMarkerSelectionDom()
       postCommand('marker_go', { ...markerCommandPayload, armed: true })
@@ -11769,7 +11822,7 @@
       case 'tablet-fadeout-tracks-all':
       case 'tablet-fadeout-tracks-clear': {
         const selectAll = action === 'tablet-fadeout-tracks-all'
-        state.tabletFadeoutSelectedTrackIds = selectAll ? getMixerTracks(state.snapshot || {}).map((track) => String(track?.guid ?? track?.id ?? '')).filter(Boolean) : []
+        state.tabletFadeoutSelectedTrackIds = selectAll ? getFadeoutTracks(state.snapshot || {}).map((track) => String(track?.guid ?? track?.id ?? '')).filter(Boolean) : []
         state.tabletFadeoutTrackPendingUntil = now() + 1800
         syncTabletPlayHoldModalDom()
         postCommand('manual_stop_fadeout_set_all_tracks', { selected: selectAll, enabled: selectAll })

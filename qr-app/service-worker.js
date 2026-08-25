@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-mobile-state-gradients-v30';
+const CACHE_NAME = 'vshook-mobile-1.0.1-red-brackets-v37';
 const APP_ASSETS = [
   './',
   './index.html',

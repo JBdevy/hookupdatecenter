@@ -138,6 +138,7 @@
             <label class="settings-check"><input name="rgbClockBorderEnabled" type="checkbox"> RGB borda do cronômetro</label>
             <label class="settings-check"><input name="rgbTextBoxBorderEnabled" type="checkbox"> RGB borda da letra</label>
             <label class="settings-check"><input name="clockBorderEnabled" type="checkbox"> Mostrar borda do cronômetro</label>
+            <label class="settings-check"><input name="localClockBorderEnabled" type="checkbox"> Mostrar borda do horário local</label>
             <label class="settings-check"><input name="textBoxEnabled" type="checkbox"> Mostrar borda da letra</label>
             <label class="settings-check"><input name="clockEnabled" type="checkbox"> Mostrar cronômetro</label>
             <label class="settings-check"><input name="localClockEnabled" type="checkbox"> Mostrar relógio local</label>
@@ -173,6 +174,9 @@
                 <option>Tahoma</option><option>Georgia</option>
                 <option>Trebuchet MS</option><option>Impact</option>
               </select>
+            </label>
+            <label>Escala da letra
+              <div class="range-field"><input name="noticeTextScale" type="range" min="0.50" max="1.00" step="0.05"><output data-notice-output="textScale"></output></div>
             </label>
           </div>
         </section>

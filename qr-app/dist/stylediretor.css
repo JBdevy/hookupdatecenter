@@ -255,6 +255,12 @@ button, input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.playbackQueueTitleBracketed::before,
+.playbackQueueTitleBracketed::after {
+  color: #ff3030 !important;
+}
+.playbackQueueTitleBracketed::before { content: "["; }
+.playbackQueueTitleBracketed::after { content: "]"; }
 .playbackQueueNext .playbackQueueTitle {
   color: #facc15;
 }
@@ -7942,6 +7948,13 @@ html[data-director-device="tablet"] .directorTpOverlay {
   opacity: 1 !important;
 }
 
+html[data-director-device="tablet"] .tabletPartsContent [data-item-type="marker"].partsMarkerLocalSelected,
+html[data-director-device="tablet"] .tabletPartsContent [data-item-type="marker"].partsMarkerArmed {
+  animation: none !important;
+  transition: none !important;
+  opacity: 1 !important;
+}
+
 .markerListBox [data-marker-id] .partsArmedRegressTrack {
   position: absolute;
   left: 0;
@@ -8904,6 +8917,156 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
   box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
 }
 
+/* Prioridade final do tema claro: nenhuma regra escura posterior pode vence-lo. */
+.app[data-theme="light"],
+.app[data-theme="light"] > .container {
+  background: linear-gradient(160deg, #f8fafc 0%, #e8edf2 55%, #d6dde5 100%) !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .headerRow,
+.app[data-theme="light"] .controlsStickyPanel,
+.app[data-theme="light"] .contentPanel,
+.app[data-theme="light"] .markerContentPanel,
+.app[data-theme="light"] .mixerContentPanel,
+.app[data-theme="light"] .partsPanel,
+.app[data-theme="light"] .tabletTransportPanel,
+.app[data-theme="light"] .tabletPartsListFrame,
+.app[data-theme="light"] .tabletPartsOwner,
+.app[data-theme="light"] .tabletDirectorSidebar,
+.app[data-theme="light"] .tabletDirectorTopBar,
+.app[data-theme="light"] .tunerFullScreen,
+.app[data-theme="light"] .bpmFullScreen,
+.app[data-theme="light"] .premixFullScreen,
+.app[data-theme="light"] .premixFullPanel,
+.app[data-theme="light"] .lyricsScreen,
+.app[data-theme="light"] .directorRecadosRoot {
+  background: linear-gradient(180deg, #eef3f7 0%, #d8e0e7 100%) !important;
+  border-color: #9aa6b2 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .markerListBox,
+.app[data-theme="light"] .mixerListBox,
+.app[data-theme="light"] .mixerRowsBox,
+.app[data-theme="light"] .tunerRowsBox,
+.app[data-theme="light"] .tunerFullList,
+.app[data-theme="light"] .musicosListBox,
+.app[data-theme="light"] .premixSongList,
+.app[data-theme="light"] .premixSongListBox,
+.app[data-theme="light"] .premixFullList,
+.app[data-theme="light"] .tabletPartsList,
+.app[data-theme="light"] .tabletTunerList,
+.app[data-theme="light"] .tabletTunerUnifiedList {
+  background: #e3e8ed !important;
+  border-color: #9ba6b1 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .modalBox,
+.app[data-theme="light"] .settingsModalBox,
+.app[data-theme="light"] .playlistModalBox,
+.app[data-theme="light"] .projectModalBox,
+.app[data-theme="light"] .projectTabsModalBox,
+.app[data-theme="light"] .timerModalBox,
+.app[data-theme="light"] .bpmModalBox,
+.app[data-theme="light"] .mixerModalBox,
+.app[data-theme="light"] .mixerRouteModalBox,
+.app[data-theme="light"] .mixerVolumeModalBox,
+.app[data-theme="light"] .premixModalBox,
+.app[data-theme="light"] .premixVolumeModalBox,
+.app[data-theme="light"] .recadosModalBox,
+.app[data-theme="light"] .authGateCard,
+.app[data-theme="light"] .tabletSearchPanel {
+  background: linear-gradient(180deg, #f8fafc 0%, #dfe5eb 100%) !important;
+  border-color: #8f9aa6 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink):not(.partsMarkerLocalSelected):not(.partsMarkerArmed),
+.app[data-theme="light"] .mixerRow,
+.app[data-theme="light"] .mixerInlineRow,
+.app[data-theme="light"] .premixMixerRow,
+.app[data-theme="light"] .premixSongCard,
+.app[data-theme="light"] .premixFullRow,
+.app[data-theme="light"] .tabletMultiLoopTrackRow,
+.app[data-theme="light"] .tabletFadeoutTrackRow:not(.tabletFadeoutTrackSelected),
+.app[data-theme="light"] .tabletSearchResult,
+.app[data-theme="light"] .tabletTunerRow,
+.app[data-theme="light"] .tunerFullRow,
+.app[data-theme="light"] .tunerSongRow,
+.app[data-theme="light"] .tunerRow {
+  background: linear-gradient(100deg, #ffffff 0%, #e5eaf0 100%) !important;
+  border-color: #a7b1bb !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+.app[data-theme="light"] textarea,
+.app[data-theme="light"] select {
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+  -webkit-text-fill-color: #0f172a !important;
+}
+.app[data-theme="light"] .text,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .rowLabelText,
+.app[data-theme="light"] .mixerRowName,
+.app[data-theme="light"] .mixerRowGroupName,
+.app[data-theme="light"] .mixerRowIndex,
+.app[data-theme="light"] .premixFullTrackName,
+.app[data-theme="light"] .premixFullItemName {
+  color: #1f2937 !important;
+  text-shadow: none !important;
+}
+
+
+/* Tema claro tem prioridade sobre os acabamentos escuros de telefone e Músicos. */
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor),
+.app[data-theme="light"].musicianMonitor,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) > .container,
+.app[data-theme="light"].musicianMonitor > .container {
+  background: linear-gradient(160deg, #f8fafc 0%, #e8edf2 55%, #d6dde5 100%) !important;
+  color: #111827 !important;
+}
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .topPlaylistButton,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .topTimerBtn,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .topMiniBtn,
+.app[data-theme="light"].musicianMonitor .topPlaylistButton,
+.app[data-theme="light"].musicianMonitor .topTimerBtn,
+.app[data-theme="light"].musicianMonitor .topMiniBtn {
+  background: linear-gradient(145deg, #f8fafc, #dbe3ea) !important;
+  border-color: #94a3b8 !important;
+  color: #111827 !important;
+  box-shadow: inset 0 1px 0 #fff, 0 5px 12px rgba(51, 65, 85, .14) !important;
+}
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .headerRow,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .controlsStickyPanel {
+  background: linear-gradient(145deg, #eef3f7, #dce3e9) !important;
+  border-color: #a3adb8 !important;
+}
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .contentPanel,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .listBox,
+.app[data-theme="light"].musicianMonitor .contentPanel,
+.app[data-theme="light"].musicianMonitor .listBox {
+  background: linear-gradient(180deg, #f4f7fa, #dfe5eb) !important;
+  border-color: #a5afb9 !important;
+}
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink):not(.partsMarkerLocalSelected):not(.partsMarkerArmed),
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .mixerRow,
+.app[data-theme="light"].musicianMonitor .item:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink):not(.partsMarkerLocalSelected):not(.partsMarkerArmed) {
+  background: linear-gradient(100deg, #ffffff, #e5eaf0) !important;
+  border-color: #b2bbc5 !important;
+  color: #111827 !important;
+}
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .mixerRowName,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .mixerRowGroupName,
+html[data-director-device="phone"] .app[data-theme="light"]:not(.musicianMonitor) .mixerRowIndex,
+.app[data-theme="light"].musicianMonitor .rowLabelText,
+.app[data-theme="light"].musicianMonitor .text,
+.app[data-theme="light"].musicianMonitor .timeText {
+  color: #1f2937 !important;
+  text-shadow: none !important;
+}
+
+
 /* MultiLoops tablet: sobe o nome da musica e preserva as partes baixas das letras. */
 html[data-director-device="tablet"] .tabletMultiLoopsModal > .tabletMultiLoopsSong {
   position: relative !important;
@@ -9018,12 +9181,25 @@ html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchPane
   overflow-x: hidden !important;
 }
 
-/* 1.0.1 - Mixer do Diretor com fader direto, igual ao Premix. */
+/* 1.0.1 - Mixer do Diretor: controles em cima e fader protegido embaixo. */
 .app .mixerContentPanel .mixerRow.mixerInlineRow {
-  grid-template-columns: 10px 28px minmax(72px, 1fr) 58px minmax(104px, 126px) 42px 42px !important;
+  grid-template-columns: 10px 28px minmax(72px, 1fr) 58px 42px 42px !important;
+  grid-template-rows: minmax(34px, auto) 38px !important;
+  grid-template-areas:
+    "color index main db mute solo"
+    "color index slider slider slider slider" !important;
+  row-gap: 4px !important;
+  min-height: 86px !important;
   cursor: default !important;
 }
+.mixerInlineRow > .mixerRowColor { grid-area: color; height: 64px; }
+.mixerInlineRow > .mixerRowIndex { grid-area: index; }
+.mixerInlineRow > .mixerRowMain { grid-area: main; }
+.mixerInlineRow > .mixerRowDb { grid-area: db; }
+.mixerInlineRow > .mixerMiniMute { grid-area: mute; }
+.mixerInlineRow > .mixerMiniSolo { grid-area: solo; }
 .mixerInlineSlider {
+  grid-area: slider;
   width: 100%;
   min-width: 0;
   height: 38px;
@@ -9034,7 +9210,10 @@ html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchPane
 }
 @media (max-width: 640px) {
   .app .mixerContentPanel .mixerRow.mixerInlineRow {
-    grid-template-columns: 6px 22px minmax(0, 1fr) minmax(88px, 108px) 30px 30px !important;
+    grid-template-columns: 6px 22px minmax(0, 1fr) 30px 30px !important;
+    grid-template-areas:
+      "color index main mute solo"
+      "color index slider slider slider" !important;
     gap: 4px !important;
     padding-left: 6px !important;
     padding-right: 6px !important;
@@ -9046,6 +9225,7 @@ html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchPane
     width: 30px !important;
     height: 30px !important;
   }
+
 }
 
 /* 1.0.1 - BPM: diferença nos controles e valor real separado à direita. */
@@ -9193,6 +9373,22 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .premixMixerRowSel
   background: linear-gradient(100deg, rgba(8, 145, 178, .88), rgba(67, 56, 202, .82)) !important;
   box-shadow: inset 3px 0 0 #67e8f9, 0 0 16px rgba(34, 211, 238, .24) !important;
 }
+
+/* Parts precisa prevalecer sobre o redesign do telefone e qualquer tema. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) .markerListBox [data-marker-id].partsMarkerLocalSelected,
+html[data-director-device="tablet"] .app:not(.musicianMonitor) .markerListBox [data-marker-id].partsMarkerLocalSelected {
+  background: linear-gradient(180deg, #facc15 0%, #d97706 100%) !important;
+  border-color: #fde047 !important;
+  color: #111827 !important;
+  box-shadow: inset 0 0 0 1px rgba(253, 224, 71, .42), 0 0 14px rgba(250, 204, 21, .24) !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .markerListBox [data-marker-id].partsMarkerArmed,
+html[data-director-device="tablet"] .app:not(.musicianMonitor) .markerListBox [data-marker-id].partsMarkerArmed {
+  background: linear-gradient(180deg, #22c55e 0%, #15803d 100%) !important;
+  border-color: #86efac !important;
+  color: #fff !important;
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, .5), 0 0 18px rgba(34, 197, 94, .35) !important;
+}
 .app.musicianMonitor {
   --musician-accent: #f59e0b;
   background:
@@ -9329,6 +9525,68 @@ html[data-director-device="tablet"] .projectModalOverlay > .projectModalBox {
 
 
 /* Prioridade final dos estados: replica no celular e nos Musicos o tablet. */
+.app[data-theme="light"],
+.app[data-theme="light"] > .container {
+  background: linear-gradient(160deg, #f8fafc 0%, #e8edf2 55%, #d6dde5 100%) !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .headerRow,
+.app[data-theme="light"] .controlsStickyPanel,
+.app[data-theme="light"] .contentPanel,
+.app[data-theme="light"] .markerContentPanel,
+.app[data-theme="light"] .mixerContentPanel,
+.app[data-theme="light"] .partsPanel,
+.app[data-theme="light"] .tabletTransportPanel,
+.app[data-theme="light"] .tabletPartsListFrame,
+.app[data-theme="light"] .tabletPartsOwner,
+.app[data-theme="light"] .tabletDirectorSidebar,
+.app[data-theme="light"] .tabletDirectorTopBar,
+.app[data-theme="light"] .tunerFullScreen,
+.app[data-theme="light"] .bpmFullScreen,
+.app[data-theme="light"] .premixFullScreen,
+.app[data-theme="light"] .premixFullPanel,
+.app[data-theme="light"] .lyricsScreen,
+.app[data-theme="light"] .directorRecadosRoot {
+  background: linear-gradient(180deg, #eef3f7 0%, #d8e0e7 100%) !important;
+  border-color: #9aa6b2 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .listBox,
+.app[data-theme="light"] .markerListBox,
+.app[data-theme="light"] .mixerListBox,
+.app[data-theme="light"] .mixerRowsBox,
+.app[data-theme="light"] .tunerRowsBox,
+.app[data-theme="light"] .tunerFullList,
+.app[data-theme="light"] .musicosListBox,
+.app[data-theme="light"] .premixSongList,
+.app[data-theme="light"] .premixSongListBox,
+.app[data-theme="light"] .premixFullList,
+.app[data-theme="light"] .tabletPartsList,
+.app[data-theme="light"] .tabletTunerList,
+.app[data-theme="light"] .tabletTunerUnifiedList {
+  background: #e3e8ed !important;
+  border-color: #9ba6b1 !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .item:not(.playing):not(.queuedYellow):not(.queuedGreen):not(.selectedBlue):not(.selectedPink):not(.partsMarkerLocalSelected):not(.partsMarkerArmed),
+.app[data-theme="light"] .mixerRow,
+.app[data-theme="light"] .mixerInlineRow,
+.app[data-theme="light"] .premixMixerRow,
+.app[data-theme="light"] .premixSongCard,
+.app[data-theme="light"] .premixFullRow {
+  background: linear-gradient(100deg, #ffffff 0%, #e5eaf0 100%) !important;
+  border-color: #a7b1bb !important;
+  color: #111827 !important;
+}
+.app[data-theme="light"] .text,
+.app[data-theme="light"] .timeText,
+.app[data-theme="light"] .rowLabelText,
+.app[data-theme="light"] .mixerRowName,
+.app[data-theme="light"] .mixerRowGroupName,
+.app[data-theme="light"] .mixerRowIndex {
+  color: #1f2937 !important;
+  text-shadow: none !important;
+}
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow),
 .app.musicianMonitor .item.selectedBlue:not(.blockItem):not(.playing):not(.queuedYellow) {
   border-color: #38bdf8 !important;

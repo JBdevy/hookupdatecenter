@@ -5046,10 +5046,6 @@ body.tools-mode .hook-rename-folder-items {
   border-radius: 9px !important;
 }
 
-#homeView #homeProgressArea {
-  display: none !important;
-}
-
 @media (max-width: 980px) {
   #homeView .home-update-split {
     grid-template-columns: 1fr !important;
@@ -5291,10 +5287,6 @@ body.tools-mode .hook-rename-folder-items {
   padding: 0 !important;
   background: transparent !important;
   border: 0 !important;
-}
-
-#homeView #homeProgressArea {
-  display: none !important;
 }
 
 @media (max-width: 980px) {
@@ -5550,10 +5542,6 @@ body.tools-mode .hook-rename-folder-items {
   padding: 6px 10px !important;
   font-size: 10px !important;
   border-radius: 9px !important;
-}
-
-#homeView #homeProgressArea {
-  display: none !important;
 }
 
 @media (max-height: 610px) {
@@ -8619,29 +8607,43 @@ body.tools-mode .copy-project-card .selected-folder-box {
   box-sizing: border-box;
 }
 
-.purchase-field-icon {
+.purchase-field-toggle {
   position: absolute;
   top: 50%;
-  right: 13px;
+  right: 9px;
   display: inline-flex;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 30px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(163, 255, 18, .42);
-  border-radius: 7px;
-  background: rgba(163, 255, 18, .09);
-  color: #a3ff12;
-  font-size: 13px;
-  font-weight: 900;
-  line-height: 1;
+  padding: 5px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #aab2c0;
   transform: translateY(-50%);
-  pointer-events: none;
+  cursor: pointer;
 }
 
-.purchase-field-icon-document {
-  font-size: 9px;
-  letter-spacing: -.03em;
+.purchase-field-toggle:hover,
+.purchase-field-toggle:focus-visible {
+  background: rgba(163, 255, 18, .10);
+  color: #a3ff12;
+  outline: none;
+}
+
+.purchase-field-toggle svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.purchase-field-toggle.is-visible .purchase-field-eye-slash {
+  display: none;
 }
 
 #licenseView .actions {

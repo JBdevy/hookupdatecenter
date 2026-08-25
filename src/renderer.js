@@ -4517,9 +4517,32 @@ function setupSidebarToggle() {
   if (sidebar) sidebar.removeAttribute('aria-hidden');
 }
 
+function setupPurchaseFieldVisibility() {
+  $$('[data-sensitive-input]').forEach((button) => {
+    const input = document.getElementById(button.dataset.sensitiveInput || '');
+    if (!input) return;
+    button.addEventListener('click', () => {
+      const visible = input.type !== 'password';
+      input.type = visible
+        ? 'password'
+        : (button.dataset.visibleType || 'text');
+      const nowVisible = !visible;
+      button.classList.toggle('is-visible', nowVisible);
+      button.setAttribute('aria-pressed', String(nowVisible));
+      const label = nowVisible
+        ? `Ocultar ${button.dataset.visibleType === 'email' ? 'e-mail' : 'CPF ou CNPJ'}`
+        : `Mostrar ${button.dataset.visibleType === 'email' ? 'e-mail' : 'CPF ou CNPJ'}`;
+      button.setAttribute('aria-label', label);
+      button.title = label;
+      input.focus();
+    });
+  });
+}
+
 
 async function init() {
   setupSidebarToggle();
+  setupPurchaseFieldVisibility();
   window.addEventListener('resize', fitUpdateDescriptionText);
   const updateDescriptionCard = $('#updateDescriptionCard');
   if (updateDescriptionCard && typeof ResizeObserver === 'function') {
