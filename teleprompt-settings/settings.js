@@ -53,12 +53,61 @@ const defaults = {
   rgbTextBoxBorderEnabled: false
 };
 
+const presetColors = {
+  night: {
+    textColor: '#ffea00',
+    textBoxColor: '#ffea00',
+    clockColor: '#00ff55',
+    clockExpiredColor: '#ff3131',
+    clockBorderColor: '#00ff55',
+    localClockColor: '#00ff55',
+    borderColor: '#00ff55',
+    songNameColor: '#00ff55',
+    queueNameColor: '#ffea00',
+    progressColor: '#ffea00',
+    chordColor: '#fb923c'
+  },
+  day: {
+    textColor: '#ffffff',
+    textBoxColor: '#ffffff',
+    clockColor: '#ffffff',
+    clockExpiredColor: '#d60000',
+    clockBorderColor: '#ffffff',
+    localClockColor: '#ffffff',
+    borderColor: '#ffffff',
+    songNameColor: '#ffffff',
+    queueNameColor: '#ffffff',
+    progressColor: '#ffffff',
+    chordColor: '#d97706'
+  }
+};
+
+function createPresetDefaults(preset, slot = 1) {
+  const selectedPreset = preset === 'day' ? 'day' : 'night';
+  return {
+    ...defaults,
+    ...presetColors[selectedPreset],
+    preset: selectedPreset,
+    previewEnabled: Number(slot) !== 2
+  };
+}
+
 const state = {
   view: 'teleprompt',
   slot: 1,
   values: {
-    1: { ...defaults },
-    2: { ...defaults, previewEnabled: false }
+    1: createPresetDefaults('night', 1),
+    2: createPresetDefaults('night', 2)
+  },
+  profiles: {
+    1: {
+      night: createPresetDefaults('night', 1),
+      day: createPresetDefaults('day', 1)
+    },
+    2: {
+      night: createPresetDefaults('night', 2),
+      day: createPresetDefaults('day', 2)
+    }
   },
   saveTimers: {
     1: null,
@@ -173,6 +222,12 @@ async function postCommand(payload) {
 
 async function saveSlot(slot) {
   const selectedSlot = Number(slot) === 2 ? 2 : 1;
+  const selectedPreset =
+    state.values[selectedSlot].preset === 'day' ? 'day' : 'night';
+  state.profiles[selectedSlot][selectedPreset] = {
+    ...state.values[selectedSlot],
+    preset: selectedPreset
+  };
   await postCommand({
     type: 'teleprompt_settings',
     slot: selectedSlot,
@@ -229,6 +284,67 @@ function scheduleSave() {
     setTimeout(() => saveNow(selectedSlot), 120);
 }
 
+function normalizeSlotSettings(value, slot) {
+  const selectedPreset = value?.preset === 'day' ? 'day' : 'night';
+  const next = {
+    ...createPresetDefaults(selectedPreset, slot),
+    ...(value || {}),
+    preset: selectedPreset
+  };
+  const oldTimerPosition =
+    String(next.clockPosition || '').toLowerCase();
+  if (oldTimerPosition === 'top') {
+    next.clockPosition = 'center-top';
+  } else if (oldTimerPosition === 'bottom') {
+    next.clockPosition = 'center-bottom';
+  }
+  if (Number(next.localClockDepth) > 3) {
+    next.localClockDepth = 1;
+  }
+  delete next.queueNameDepth;
+  delete next.alwaysOnTop;
+  const oldClockPosition =
+    String(next.localClockPosition || '').toLowerCase();
+  next.localClockPosition =
+    oldClockPosition.includes('left') ? 'left' : 'right';
+  next.textScale = Math.min(
+    1, Math.max(0.5, Number(next.textScale) || 1));
+  next.clockScale = Math.min(
+    1.5, Math.max(0.5, Number(next.clockScale) || 1));
+  next.songNameScale = Math.min(
+    2, Math.max(0.5, Number(next.songNameScale) || 1));
+  next.queueNameScale = Math.min(
+    2, Math.max(0.5, Number(next.queueNameScale) || 1));
+  next.mediaScale = Math.min(
+    1.5, Math.max(0.5, Number(next.mediaScale) || 1));
+  next.localClockDepth = Math.min(
+    2, Math.max(0.5, Number(next.localClockDepth) || 1));
+  next.chordScale = Math.min(
+    1, Math.max(0.1, Number(next.chordScale) || 1));
+  return next;
+}
+
+function loadSlotProfiles(slot, activeSettings, storedProfiles) {
+  const active = normalizeSlotSettings(activeSettings, slot);
+  const activePreset = active.preset === 'day' ? 'day' : 'night';
+  const source = storedProfiles && typeof storedProfiles === 'object'
+    ? storedProfiles
+    : {};
+  const profiles = {};
+  for (const preset of ['night', 'day']) {
+    const stored = source[preset] && typeof source[preset] === 'object'
+      ? source[preset]
+      : (preset === activePreset ? active : null);
+    profiles[preset] = normalizeSlotSettings({
+      ...createPresetDefaults(preset, slot),
+      ...(stored || {}),
+      preset
+    }, slot);
+  }
+  state.profiles[slot] = profiles;
+  state.values[slot] = { ...profiles[activePreset] };
+}
+
 async function loadSettings() {
   try {
     const response = await fetch(`${BRIDGE}/teleprompt-settings`, {
@@ -236,49 +352,12 @@ async function loadSettings() {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    state.values[1] = { ...defaults, ...(data.tp1 || {}) };
-    state.values[2] = {
-      ...defaults,
-      previewEnabled: false,
-      ...(data.tp2 || {})
-    };
+    loadSlotProfiles(1, data.tp1 || {}, data.tp1Presets);
+    loadSlotProfiles(2, data.tp2 || {}, data.tp2Presets);
     state.notice = {
       ...state.notice,
       ...(data.technicalNoticeSettings || {})
     };
-    // Migra o espaçamento alto usado pelo primeiro protótipo.
-    for (const slot of [1, 2]) {
-      const oldTimerPosition =
-        String(state.values[slot].clockPosition || '').toLowerCase();
-      if (oldTimerPosition === 'top') {
-        state.values[slot].clockPosition = 'center-top';
-      } else if (oldTimerPosition === 'bottom') {
-        state.values[slot].clockPosition = 'center-bottom';
-      }
-      if (Number(state.values[slot].localClockDepth) > 3) {
-        state.values[slot].localClockDepth = 1;
-      }
-      delete state.values[slot].queueNameDepth;
-      delete state.values[slot].alwaysOnTop;
-      const oldClockPosition =
-        String(state.values[slot].localClockPosition || '').toLowerCase();
-      state.values[slot].localClockPosition =
-        oldClockPosition.includes('left') ? 'left' : 'right';
-      state.values[slot].textScale = Math.min(
-        1, Math.max(0.5, Number(state.values[slot].textScale) || 1));
-      state.values[slot].clockScale = Math.min(
-        1.5, Math.max(0.5, Number(state.values[slot].clockScale) || 1));
-      state.values[slot].songNameScale = Math.min(
-        2, Math.max(0.5, Number(state.values[slot].songNameScale) || 1));
-      state.values[slot].queueNameScale = Math.min(
-        2, Math.max(0.5, Number(state.values[slot].queueNameScale) || 1));
-      state.values[slot].mediaScale = Math.min(
-        1.5, Math.max(0.5, Number(state.values[slot].mediaScale) || 1));
-      state.values[slot].localClockDepth = Math.min(
-        2, Math.max(0.5, Number(state.values[slot].localClockDepth) || 1));
-      state.values[slot].chordScale = Math.min(
-        1, Math.max(0.1, Number(state.values[slot].chordScale) || 1));
-    }
     setStatus('Configurações carregadas da extensão.', 'saved');
   } catch (error) {
     setStatus('Não foi possível carregar as configurações.', 'error');
@@ -293,6 +372,11 @@ controls.forEach((control) => {
       : 'change';
   control.addEventListener(eventName, () => {
     state.values[state.slot][control.name] = readControl(control);
+    const selectedPreset =
+      state.values[state.slot].preset === 'day' ? 'day' : 'night';
+    state.profiles[state.slot][selectedPreset] = {
+      ...state.values[state.slot]
+    };
     updateOutputs();
     scheduleSave();
   });
@@ -329,26 +413,27 @@ document.querySelectorAll('.lyrics-config-tab').forEach((tab) => {
   });
 });
 
-function applyPreset(preset) {
-  const day = preset === 'day';
-  state.values[state.slot] = {
-    ...state.values[state.slot],
-    preset: day ? 'day' : 'night',
-    textColor: day ? '#ffffff' : '#ffea00',
-    textBoxColor: day ? '#ffffff' : '#ffea00',
-    clockColor: day ? '#ffffff' : '#00ff55',
-    clockExpiredColor: day ? '#d60000' : '#ff3131',
-    clockBorderColor: day ? '#ffffff' : '#00ff55',
-    localClockColor: day ? '#ffffff' : '#00ff55',
-    borderColor: day ? '#ffffff' : '#00ff55',
-    songNameColor: day ? '#ffffff' : '#00ff55',
-    queueNameColor: day ? '#ffffff' : '#ffea00',
-    progressColor: day ? '#ffffff' : '#ffea00',
-    chordColor: day ? '#d97706' : '#fb923c',
-    chordsEnabled: true
+async function applyPreset(preset) {
+  const selectedSlot = state.slot;
+  const selectedPreset = preset === 'day' ? 'day' : 'night';
+  const currentPreset =
+    state.values[selectedSlot].preset === 'day' ? 'day' : 'night';
+  if (selectedPreset === currentPreset) return;
+
+  clearTimeout(state.saveTimers[selectedSlot]);
+  state.saveTimers[selectedSlot] = null;
+  state.profiles[selectedSlot][currentPreset] = {
+    ...state.values[selectedSlot],
+    preset: currentPreset
+  };
+  // Persiste o perfil que está saindo antes de ativar o outro.
+  await saveSlot(selectedSlot);
+  state.values[selectedSlot] = {
+    ...state.profiles[selectedSlot][selectedPreset],
+    preset: selectedPreset
   };
   render();
-  saveNow(state.slot);
+  await saveNow(selectedSlot);
 }
 
 document.getElementById('presetNight').addEventListener(
