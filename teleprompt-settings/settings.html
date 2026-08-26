@@ -41,6 +41,7 @@
             <label>Cor do nome da música <input name="songNameColor" type="color"></label>
             <label>Cor do nome da fila <input name="queueNameColor" type="color"></label>
             <label>Cor do progresso <input name="progressColor" type="color"></label>
+            <label>Cor da cifra <input name="chordColor" type="color"></label>
           </div>
         </section>
 
@@ -67,6 +68,9 @@
             </label>
             <label>Escala do relógio local
               <div class="range-field"><input name="localClockDepth" type="range" min="0.50" max="2.00" step="0.05"><output data-output="localClockDepth"></output></div>
+            </label>
+            <label>Escala da cifra
+              <div class="range-field"><input name="chordScale" type="range" min="0.10" max="1.00" step="0.05"><output data-output="chordScale"></output></div>
             </label>
           </div>
         </section>
@@ -102,6 +106,21 @@
                 <option>Trebuchet MS</option><option>Impact</option>
               </select>
             </label>
+            <label>Fonte da cifra
+              <select name="chordFontFamily">
+                <option>Arial</option><option>Segoe UI</option><option>Verdana</option>
+                <option>Tahoma</option><option>Georgia</option>
+                <option>Trebuchet MS</option><option>Impact</option>
+              </select>
+            </label>
+            <label>Alinhamento das letras
+              <select name="textAlignment">
+                <option value="left">À esquerda</option>
+                <option value="center">Centralizado</option>
+                <option value="right">À direita</option>
+                <option value="justify">Justificado</option>
+              </select>
+            </label>
             <label>Posição do cronômetro
               <select name="clockPosition">
                 <option value="left-top">Esquerda em cima</option>
@@ -127,6 +146,9 @@
             <label>Posição do progresso
               <select name="progressPosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
             </label>
+            <label>Posição da cifra
+              <select name="chordPosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
+            </label>
           </div>
         </section>
 
@@ -144,6 +166,7 @@
             <label class="settings-check"><input name="localClockEnabled" type="checkbox"> Mostrar relógio local</label>
             <label class="settings-check"><input name="songNameEnabled" type="checkbox"> Mostrar nome da música</label>
             <label class="settings-check"><input name="queueNameEnabled" type="checkbox"> Mostrar nome da fila</label>
+            <label class="settings-check"><input name="chordsEnabled" type="checkbox"> Exibir cifras</label>
             <label class="settings-check"><input name="previewEnabled" type="checkbox"> Mostrar Preview nesta janela</label>
             <label class="settings-check"><input name="previewSongDurationEnabled" type="checkbox"> Mostrar tempo das músicas no Preview</label>
             <label class="settings-check"><input name="previewBlockDurationEnabled" type="checkbox"> Mostrar tempo total dos blocos no Preview</label>

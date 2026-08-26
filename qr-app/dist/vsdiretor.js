@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-fadeout-local-v33'
+  const VERSION = '1.0.1-cifras-v34'
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -621,6 +621,76 @@
     return normalizeTelepromptColor(readLocal(getTelepromptPreferenceKey('text_color'), 'white'))
   }
 
+  const TELEPROMPT_TEXT_ALIGNMENT_OPTIONS = [
+    { id: 'left', label: 'ESQUERDA' },
+    { id: 'center', label: 'CENTRALIZAR' },
+    { id: 'right', label: 'DIREITA' },
+    { id: 'justify', label: 'JUSTIFICAR' },
+  ]
+
+  function normalizeTelepromptTextAlignment(value) {
+    const normalized = String(value || '').trim().toLowerCase()
+    return TELEPROMPT_TEXT_ALIGNMENT_OPTIONS.some((option) => option.id === normalized)
+      ? normalized : 'center'
+  }
+
+  function getTelepromptTextAlignment() {
+    return normalizeTelepromptTextAlignment(
+      readLocal(getTelepromptPreferenceKey('text_alignment'), 'center'))
+  }
+
+  function setTelepromptTextAlignment(value) {
+    writeLocal(getTelepromptPreferenceKey('text_alignment'),
+      normalizeTelepromptTextAlignment(value))
+    syncTelepromptAppearanceDom()
+  }
+
+  function getTelepromptChordPosition() {
+    return readLocal(getTelepromptPreferenceKey('chord_position'), 'top') === 'bottom'
+      ? 'bottom' : 'top'
+  }
+
+  function setTelepromptChordPosition(value) {
+    writeLocal(getTelepromptPreferenceKey('chord_position'),
+      value === 'bottom' ? 'bottom' : 'top')
+    syncTelepromptAppearanceDom()
+    syncDirectorTelepromptDom()
+  }
+
+  function getTelepromptChordScale() {
+    const value = Number(readLocal(getTelepromptPreferenceKey('chord_scale'), '70'))
+    return Math.max(10, Math.min(100, Number.isFinite(value) ? Math.round(value / 5) * 5 : 70))
+  }
+
+  function adjustTelepromptChordScale(delta) {
+    const next = Math.max(10, Math.min(100,
+      getTelepromptChordScale() + Number(delta || 0)))
+    writeLocal(getTelepromptPreferenceKey('chord_scale'), String(next))
+    scheduleRender(true)
+  }
+
+  function getTelepromptChordFont() {
+    return normalizeTelepromptFont(
+      readLocal(getTelepromptPreferenceKey('chord_font'), 'system'))
+  }
+
+  function setTelepromptChordFont(value) {
+    writeLocal(getTelepromptPreferenceKey('chord_font'),
+      normalizeTelepromptFont(value))
+    syncTelepromptAppearanceDom()
+  }
+
+  function getTelepromptChordColor() {
+    return normalizeTelepromptColor(
+      readLocal(getTelepromptPreferenceKey('chord_color'), 'orange'))
+  }
+
+  function setTelepromptChordColor(value) {
+    writeLocal(getTelepromptPreferenceKey('chord_color'),
+      normalizeTelepromptColor(value))
+    syncTelepromptAppearanceDom()
+  }
+
   function getHideTelepromptTransport() {
     return readLocal(getTelepromptPreferenceKey('hide_transport'), '0') === '1'
   }
@@ -638,17 +708,38 @@
   function syncTelepromptAppearanceDom() {
     const font = getTelepromptFont()
     const color = getTelepromptColor()
+    const alignment = getTelepromptTextAlignment()
+    const chordPosition = getTelepromptChordPosition()
+    const chordFont = getTelepromptChordFont()
+    const chordColor = getTelepromptChordColor()
     const app = root.querySelector('.app')
     if (app) {
       app.setAttribute('data-teleprompt-font', font)
       app.setAttribute('data-teleprompt-color', color)
+      app.setAttribute('data-teleprompt-text-alignment', alignment)
+      app.setAttribute('data-teleprompt-chord-position', chordPosition)
+      app.setAttribute('data-teleprompt-chord-font', chordFont)
+      app.setAttribute('data-teleprompt-chord-color', chordColor)
       app.style.setProperty('--teleprompt-text-color', getTelepromptColorValue(color))
+      app.style.setProperty('--teleprompt-chord-color', getTelepromptColorValue(chordColor))
     }
     root.querySelectorAll('[data-action="teleprompt-font-set"]').forEach((button) => {
       button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === font)
     })
     root.querySelectorAll('[data-action="teleprompt-color-set"]').forEach((button) => {
       button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === color)
+    })
+    root.querySelectorAll('[data-action="teleprompt-text-alignment-set"]').forEach((button) => {
+      button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === alignment)
+    })
+    root.querySelectorAll('[data-action="teleprompt-chord-position-set"]').forEach((button) => {
+      button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === chordPosition)
+    })
+    root.querySelectorAll('[data-action="teleprompt-chord-font-set"]').forEach((button) => {
+      button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === chordFont)
+    })
+    root.querySelectorAll('[data-action="teleprompt-chord-color-set"]').forEach((button) => {
+      button.classList.toggle('telepromptSettingsOptionActive', button.getAttribute('data-value') === chordColor)
     })
   }
 
@@ -6709,12 +6800,21 @@
   function renderTelepromptAppearanceSettings() {
     const selectedFont = getTelepromptFont()
     const selectedColor = getTelepromptColor()
+    const selectedAlignment = getTelepromptTextAlignment()
+    const chordPosition = getTelepromptChordPosition()
+    const chordScale = getTelepromptChordScale()
+    const chordFont = getTelepromptChordFont()
+    const chordColor = getTelepromptChordColor()
     const fontButtons = TELEPROMPT_FONT_OPTIONS.map((option) => `<button class="btn telepromptSettingsOption telepromptFontPreview telepromptFontPreview-${option.id}${selectedFont === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-font-set" data-value="${option.id}">${option.label}</button>`).join('')
+    const alignmentButtons = TELEPROMPT_TEXT_ALIGNMENT_OPTIONS.map((option) => `<button class="btn telepromptSettingsOption${selectedAlignment === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-text-alignment-set" data-value="${option.id}">${option.label}</button>`).join('')
     const renderColorButton = (option, extra = false) => `<button class="btn telepromptSettingsOption telepromptColorOption${extra ? ' telepromptExtraColorOption' : ''}${selectedColor === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-color-set" data-value="${option.id}" style="--teleprompt-option-color:${option.color}" aria-label="Cor ${option.label}"><span class="telepromptColorSwatch"></span><span>${option.label}</span></button>`
+    const renderChordColorButton = (option) => `<button class="btn telepromptSettingsOption telepromptColorOption telepromptExtraColorOption${chordColor === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-color-set" data-value="${option.id}" style="--teleprompt-option-color:${option.color}" aria-label="Cor da cifra ${option.label}"><span class="telepromptColorSwatch"></span><span>${option.label}</span></button>`
     const colorButtons = TELEPROMPT_COLOR_OPTIONS.slice(0, 4).map((option) => renderColorButton(option)).join('')
     const extraColors = `<div class="telepromptExtraColorsGrid${state.showTelepromptColorPalette ? '' : ' telepromptExtraColorsGridHidden'}" data-teleprompt-extra-colors>${TELEPROMPT_COLOR_OPTIONS.slice(4).map((option) => renderColorButton(option, true)).join('')}</div>`
+    const chordFontButtons = TELEPROMPT_FONT_OPTIONS.map((option) => `<button class="btn telepromptSettingsOption telepromptFontPreview telepromptFontPreview-${option.id}${chordFont === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-font-set" data-value="${option.id}">${option.label}</button>`).join('')
+    const chordColorButtons = TELEPROMPT_COLOR_OPTIONS.map((option) => renderChordColorButton(option)).join('')
     const hideTransport = getHideTelepromptTransport()
-    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — VISUALIZAÇÃO</div><div class="settingsWideGrid"><button class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? '[x]' : '[ ]'} Ocultar painel transporte da área do teleprompt</button></div></div>`
+    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">ALINHAMENTO DAS LETRAS</div><div class="telepromptSettingsGrid">${alignmentButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — POSIÇÃO</div><div class="telepromptSettingsGrid telepromptChordPositionGrid"><button class="btn telepromptSettingsOption${chordPosition === 'top' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="top">EM CIMA</button><button class="btn telepromptSettingsOption${chordPosition === 'bottom' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="bottom">EM BAIXO</button><button class="btn telepromptSettingsOption" data-action="teleprompt-chord-scale-minus" aria-label="Diminuir escala da cifra">−</button><button class="btn telepromptSettingsOption telepromptChordScaleValue" data-action="teleprompt-chord-scale-plus" aria-label="Aumentar escala da cifra">${chordScale}% +</button></div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${chordFontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — COR DA LETRA</div><div class="telepromptExtraColorsGrid telepromptChordColorsGrid">${chordColorButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — VISUALIZAÇÃO</div><div class="settingsWideGrid"><button class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? '[x]' : '[ ]'} Ocultar painel transporte da área do teleprompt</button></div></div>`
   }
 
   function renderSettingsModal() {
@@ -7755,6 +7855,37 @@
     }
   }
 
+  function getDirectorTelepromptChordState(data = state.snapshot) {
+    const nested = data?.cifras && typeof data.cifras === 'object'
+      ? data.cifras
+      : (data?.chords && typeof data.chords === 'object' ? data.chords : {})
+    const text = String(
+      nested.overlayText
+      ?? nested.lyricsText
+      ?? nested.lyrics
+      ?? nested.text
+      ?? data?.cifrasText
+      ?? data?.chordText
+      ?? ''
+    ).trim()
+    const clearMode = nested.clear === true ||
+      nested.mode === 'clear' ||
+      data?.telepromptClear === true ||
+      data?.telepromptMode === 'clear' ||
+      data?.[`tp${Number(state.telepromptSlot) === 2 ? 2 : 1}ClearMode`] === true ||
+      data?.telepromptPreviewSettings?.[`tp${Number(state.telepromptSlot) === 2 ? 2 : 1}ClearMode`] === true
+    const itemFound = nested.itemFound !== false &&
+      (nested.itemFound === true || !!text)
+    return {
+      text,
+      itemFound,
+      clearMode,
+      itemIndex: Number(nested.itemIndex ?? -1),
+      itemStart: Number(nested.itemStart ?? 0) || 0,
+      itemEnd: Number(nested.itemEnd ?? 0) || 0,
+    }
+  }
+
   function getDirectorTelepromptMediaUrl(tp) {
     const appendVideoStart = (url) => {
       if (tp?.type !== 'video') return url
@@ -7780,7 +7911,8 @@
 
   function getDirectorTelepromptContentKey(slot = state.telepromptSlot, data = state.snapshot) {
     const tp = getDirectorTelepromptState(slot, data)
-    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off'].join('|')
+    const chord = getDirectorTelepromptChordState(data)
+    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off', chord.text, chord.itemIndex, chord.itemStart, chord.itemEnd, chord.clearMode ? 'chord-clear' : 'chord-on'].join('|')
   }
 
   function renderDirectorTelepromptPreviewHtml(preview) {
@@ -8063,6 +8195,7 @@
               <video class="directorTpVideo directorTpHidden" muted playsinline preload="auto"></video>
               <div class="directorTpText directorTpHidden" aria-live="polite"></div>
               <div class="directorTpPreview directorTpHidden" data-director-tp-preview aria-live="polite" aria-hidden="true"></div>
+              <div class="directorTpChord directorTpHidden" data-director-tp-chord aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpEmpty">SEM CONTEÚDO NO TP/${slot}</div>
               ${renderDirectorTechnicalNotice(data)}
             </div>
@@ -8097,8 +8230,10 @@
     let video = viewport.querySelector('.directorTpVideo')
     const text = viewport.querySelector('.directorTpText')
     const previewHost = viewport.querySelector('[data-director-tp-preview]')
+    const chordHost = viewport.querySelector('[data-director-tp-chord]')
     const empty = viewport.querySelector('.directorTpEmpty')
     const tp = getDirectorTelepromptState(state.telepromptSlot, state.snapshot)
+    const chord = getDirectorTelepromptChordState(state.snapshot)
     const mediaUrl = getDirectorTelepromptMediaUrl(tp)
     const hasText = !!String(tp.text || '').trim()
     const hasMedia = (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
@@ -8108,6 +8243,34 @@
 
     viewport.setAttribute('data-content-type', showPreview ? 'preview' : (hasMedia ? tp.type : (hasText ? 'text' : 'empty')))
     viewport.setAttribute('data-playing', tp.playing ? '1' : '0')
+
+    if (chordHost) {
+      const showChord = chord.itemFound && !!chord.text && !chord.clearMode
+      const chordPosition = getTelepromptChordPosition()
+      if (chordHost.textContent !== chord.text) chordHost.textContent = chord.text
+      chordHost.classList.toggle('directorTpHidden', !showChord)
+      chordHost.classList.toggle('directorTpChordTop', chordPosition === 'top')
+      chordHost.classList.toggle('directorTpChordBottom', chordPosition === 'bottom')
+      chordHost.setAttribute('aria-hidden', showChord ? 'false' : 'true')
+      viewport.setAttribute('data-chord-visible', showChord ? '1' : '0')
+      viewport.setAttribute('data-chord-position', chordPosition)
+      if (showChord) {
+        const scale = getTelepromptChordScale()
+        const chordLines = chord.text.split(/\r?\n/)
+        const longestLine = chordLines.reduce((largest, line) => Math.max(largest, Array.from(line).length), 1)
+        const availableWidth = Math.max(220, (viewport.clientWidth || window.innerWidth || 360) - 32)
+        const baseSize = 12 + (scale * 0.36)
+        const estimatedWidth = Math.max(1, longestLine) * baseSize * 0.64 + 30
+        const fit = Math.min(1, availableWidth / estimatedWidth)
+        const fittedSize = Math.max(11, Math.round(baseSize * Math.max(0.42, fit)))
+        chordHost.style.fontSize = `${fittedSize}px`
+        chordHost.style.maxWidth = `${availableWidth}px`
+        viewport.style.setProperty('--director-tp-chord-reserve',
+          `${Math.ceil((Math.max(1, chordLines.length) * fittedSize * 1.18) + 34)}px`)
+      } else {
+        viewport.style.removeProperty('--director-tp-chord-reserve')
+      }
+    }
 
     if (previewHost) {
       if (showPreview && previewHost.dataset.previewSignature !== tp.preview.signature) {
@@ -9288,8 +9451,13 @@
     const telepromptFont = getTelepromptFont()
     const telepromptColor = getTelepromptColor()
     const telepromptColorValue = getTelepromptColorValue(telepromptColor)
+    const telepromptTextAlignment = getTelepromptTextAlignment()
+    const telepromptChordPosition = getTelepromptChordPosition()
+    const telepromptChordFont = getTelepromptChordFont()
+    const telepromptChordColor = getTelepromptChordColor()
+    const telepromptChordColorValue = getTelepromptColorValue(telepromptChordColor)
     return `
-      <div class="app vshookNoTextSelect${IS_MUSICIAN_MONITOR ? ' musicianMonitor marqueeEnabled' : (state.marqueeEnabled ? ' marqueeEnabled' : ' marqueeDisabled')}" data-theme="${theme}" data-active-tab="${state.activeTab}" data-border-mode="${borderMode}" data-block-height-mode="${blockHeightMode}" data-live-mark-mode="${liveMarkVisual.mode}" data-visual-playing-id="${escapeHtml(getVisualPlayingId(data))}" data-teleprompt-font="${telepromptFont}" data-teleprompt-color="${telepromptColor}" style="--app-border-color:${borderColor};--app-border-glow:${borderGlow};--teleprompt-text-color:${telepromptColorValue};--live-mark-background:${liveMarkVisual.background};--live-mark-border:${liveMarkVisual.border};--live-mark-shadow:${liveMarkVisual.shadow};">
+      <div class="app vshookNoTextSelect${IS_MUSICIAN_MONITOR ? ' musicianMonitor marqueeEnabled' : (state.marqueeEnabled ? ' marqueeEnabled' : ' marqueeDisabled')}" data-theme="${theme}" data-active-tab="${state.activeTab}" data-border-mode="${borderMode}" data-block-height-mode="${blockHeightMode}" data-live-mark-mode="${liveMarkVisual.mode}" data-visual-playing-id="${escapeHtml(getVisualPlayingId(data))}" data-teleprompt-font="${telepromptFont}" data-teleprompt-color="${telepromptColor}" data-teleprompt-text-alignment="${telepromptTextAlignment}" data-teleprompt-chord-position="${telepromptChordPosition}" data-teleprompt-chord-font="${telepromptChordFont}" data-teleprompt-chord-color="${telepromptChordColor}" style="--app-border-color:${borderColor};--app-border-glow:${borderGlow};--teleprompt-text-color:${telepromptColorValue};--teleprompt-chord-color:${telepromptChordColorValue};--live-mark-background:${liveMarkVisual.background};--live-mark-border:${liveMarkVisual.border};--live-mark-shadow:${liveMarkVisual.shadow};">
         <style>
           .contentPanel{display:flex;flex-direction:column;flex:1;min-height:0}.controlsRowEqual{grid-template-columns:repeat(3,1fr)!important}.controlsRowTwo{grid-template-columns:repeat(2,1fr)!important}.controlsRowDirectorMain{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important}.controlsRowDirectorMain>button{height:42px!important;min-height:42px!important}.container{padding-top:9px!important}.app:not([data-border-mode^="rgb-"]) .container{border-color:var(--app-border-color)!important;box-shadow:0 0 0 1px var(--app-border-glow),0 0 18px var(--app-border-glow)!important;animation:none!important}.app[data-border-mode^="rgb-"] .container{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45);animation:directorBorderRgb 6s linear infinite!important}.app[data-border-mode="rgb-mid"] .container{animation-duration:3s!important}.app[data-border-mode="rgb-super"] .container{animation-duration:.85s!important}@keyframes directorBorderRgb{0%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}20%{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 0 18px rgba(250,204,21,.45)}40%{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.45)}60%{border-color:#06b6d4;box-shadow:0 0 0 1px rgba(6,182,212,.28),0 0 18px rgba(6,182,212,.45)}80%{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.28),0 0 18px rgba(139,92,246,.45)}100%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}}.app[data-border-mode="off"] .container{border-color:#111827!important;box-shadow:none!important}.topStatusRow{display:grid!important;grid-template-columns:minmax(58px,1fr) 104px 34px 34px!important;align-items:center!important;gap:6px!important;margin-bottom:10px!important}.topPlaylistButton{height:30px;width:100%;max-width:100%;min-width:0;border:1px solid #374151;border-radius:8px;background:#111827;color:#f8fafc!important;font-weight:900;font-size:10.5px;text-align:left;padding:0 8px;white-space:nowrap;overflow:hidden;box-shadow:none;display:flex!important;align-items:center!important}.topPlaylistTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.topPlaylistTickerStatic{text-overflow:ellipsis}.topPlaylistTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.topPlaylistTickerTrack>span{flex:0 0 auto}.topPlaylistTickerAnimated .topPlaylistTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}@keyframes topPlaylistTickerScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-50% - 15px))}}.playlistOption[data-action="playlist-select"]{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:10px!important}.playlistOption[data-action="playlist-select"] .playlistOptionText{min-width:0;overflow:hidden;white-space:nowrap;text-align:left}.playlistOptionTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.playlistOptionTickerStatic{text-overflow:ellipsis}.playlistOptionTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.playlistOptionTickerTrack>span{flex:0 0 auto}.playlistOptionTickerAnimated .playlistOptionTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}.playlistOptionTime{justify-self:end;color:#facc15;font-weight:1000;font-size:12px;white-space:nowrap}.topTimerBtn{height:30px;width:104px;min-width:104px;border:1px solid #facc15;border-radius:8px;background:#16120a;color:#facc15!important;font-weight:900;font-size:12px;text-align:center;padding:0 4px;white-space:nowrap;box-shadow:0 0 0 1px rgba(250,204,21,.14)}.topHeaderTools{display:contents!important}.topMiniBtn{width:34px;height:30px;border:1px solid #475569;border-radius:8px;color:#f8fafc!important;font-weight:900;font-size:21px;line-height:1;display:flex!important;align-items:center!important;justify-content:center!important;padding:0!important;text-align:center!important}.topMenuIcon{display:block;line-height:1;transform:translateY(-2px)}.topMenuBtn{background:#6d28d9!important;border-color:#a78bfa!important}.topSettingsBtn{background:#1f2937!important;border-color:#4b5563!important;color:#f8fafc!important}.topMiniBtn:active,.topPlaylistButton:active,.topTimerBtn:active{transform:translateY(1px);filter:brightness(1.12)}.playingText,.playingTimeText{color:#f8fafc!important}.topRightTools{display:none!important}.bridgeOnline,.bridgeOffline{display:none!important}.headerRow{margin-top:1px!important;margin-bottom:7px!important}.middleInfo{display:flex!important;align-items:center!important;justify-content:center!important;min-height:22px!important;margin-top:4px!important}.middleInfoText{display:block!important;color:#facc15!important;font-size:13px!important;font-weight:1000!important;letter-spacing:.035em!important;text-align:center!important}.tabRow{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important;width:100%!important;padding-right:0!important}.tabRow>.tab,.tabRow>.activeTab{min-width:0!important;width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;padding-left:5px!important;padding-right:5px!important;font-size:11.5px!important}.btnPlayActive{border-color:#22c55e!important;background:#14532d!important}.btnStopActive{border-color:#ef4444!important;background:#991b1b!important}.authGateError{color:#fecaca;font-weight:900;text-align:center}.rowLabelText{font-weight:900}.app .item .text,.app .item .timeText,.app .item .rowLabelText,.app .item .marqueeStatic,.app .item .marqueeTrack,.app .item .marqueeSegment,.app .item.blockItem .text,.app .item.blockItem .timeText,.app .item.blockItem .rowLabelText,.app .item.blockItem .blockText,.app .item.blockItem .blockTimeText{color:#f8fafc!important;text-shadow:none!important}.app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#ffffff!important}.directorPopup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10050;pointer-events:none;min-width:150px;max-width:82vw;padding:14px 20px;border-radius:14px;border:1px solid #facc15;background:rgba(2,6,23,.96);color:#facc15;text-align:center;font-weight:900;font-size:18px;letter-spacing:.04em;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(250,204,21,.18)}.settingsNumberGrid{margin-top:8px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalBox{max-width:430px!important;padding:20px!important}.timerModalPreview{height:74px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:12px;background:#05070a;color:#facc15;font-size:30px;font-weight:900;margin-bottom:16px;letter-spacing:.04em}.timerModeGrid,.settingsThemeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGridThree{grid-template-columns:1fr 1fr 1fr!important}.timerModeGridThree>button{height:44px!important;min-height:44px!important;font-size:11px!important;padding-left:4px!important;padding-right:4px!important}.timerActionButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:14px!important}.timerActionButtons>button{width:100%!important;min-width:0!important;height:44px!important;min-height:44px!important}.settingsWideGrid{display:grid;grid-template-columns:1fr;gap:10px;margin:0 0 12px}.settingsModalBox{max-width:330px}.settingsThemeGrid>button,.settingsWideGrid>button{height:42px!important;min-height:42px!important}.settingsBorderModeButton{background:#111827!important;border-color:#475569!important;color:#f8fafc!important;box-shadow:none!important}.settingsBorderModeButton:active{filter:brightness(1.12);transform:translateY(1px)}.mixerContentPanel{flex:1 1 auto!important;min-height:0!important}.mixerListBox{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;scroll-padding-bottom:8px!important}.mixerRowsBox{display:contents!important;border:0!important;background:transparent!important}.mixerRow{display:grid;grid-template-columns:10px 28px minmax(0,1fr) 72px 38px 38px;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #18212c;min-height:56px}.mixerRow:last-child{border-bottom:0}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:#334155}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:1000;color:#facc15;text-align:right;white-space:nowrap;font-size:11px}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniMute.mixerMiniBtnActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important}.mixerMiniSolo.mixerMiniBtnActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important}.mixerVolumeOverlay{align-items:center!important;justify-content:center!important;padding:0 8px!important}.mixerVolumeModalBoxWide{width:min(96vw,620px)!important;max-width:620px!important;padding:16px!important;box-sizing:border-box!important}.mixerModalHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.mixerVolumeDbDisplay{text-align:center;color:#facc15;font-weight:1000;font-size:30px;margin:12px 0}.mixerVolumeSliderWide{width:100%!important;max-width:none!important;height:78px!important;min-height:78px!important;accent-color:#facc15!important;touch-action:pan-x!important;-webkit-appearance:none;appearance:none;background:transparent!important}.mixerVolumeSliderWide::-webkit-slider-runnable-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important;box-shadow:inset 0 0 0 2px rgba(250,204,21,.12)!important}.mixerVolumeSliderWide::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important;margin-top:-8px!important}.mixerVolumeSliderWide::-moz-range-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important}.mixerVolumeSliderWide::-moz-range-thumb{width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important}.mixerZeroDbBtn{height:46px!important;margin-top:8px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important}.premixInlineSlider{width:108px;min-width:80px;accent-color:#facc15}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}
         </style>
@@ -11532,7 +11700,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -12104,6 +12272,12 @@
       case 'teleprompt-font-set': setTelepromptFont(el.getAttribute('data-value')); break
       case 'teleprompt-color-set': setTelepromptColor(el.getAttribute('data-value')); break
       case 'teleprompt-colors-more': toggleTelepromptColorPalette(); break
+      case 'teleprompt-text-alignment-set': setTelepromptTextAlignment(el.getAttribute('data-value')); break
+      case 'teleprompt-chord-position-set': setTelepromptChordPosition(el.getAttribute('data-value')); break
+      case 'teleprompt-chord-scale-minus': adjustTelepromptChordScale(-5); break
+      case 'teleprompt-chord-scale-plus': adjustTelepromptChordScale(5); break
+      case 'teleprompt-chord-font-set': setTelepromptChordFont(el.getAttribute('data-value')); break
+      case 'teleprompt-chord-color-set': setTelepromptChordColor(el.getAttribute('data-value')); break
       case 'teleprompt-transport-visibility-toggle': toggleHideTelepromptTransport(); break
       case 'number-label': toggleNumberColumnMode(); break
       case 'number-sort': toggleNumberSortDirection(); break

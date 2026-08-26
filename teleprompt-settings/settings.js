@@ -12,15 +12,19 @@ const defaults = {
   songNameColor: '#00ff55',
   queueNameColor: '#ffea00',
   progressColor: '#ffea00',
+  chordColor: '#fb923c',
   fontFamily: 'Arial',
   songNameFontFamily: 'Arial',
   queueNameFontFamily: 'Arial',
+  chordFontFamily: 'Arial',
   textCase: 'uppercase',
+  textAlignment: 'center',
   clockPosition: 'center-top',
   localClockPosition: 'right',
   songNamePosition: 'top',
   queueNamePosition: 'top',
   progressPosition: 'bottom',
+  chordPosition: 'top',
   textScale: 1,
   clockScale: 1,
   songNameScale: 1,
@@ -28,6 +32,7 @@ const defaults = {
   mediaScale: 1,
   previewScale: 1,
   localClockDepth: 1,
+  chordScale: 1,
   windowBorderEnabled: true,
   clockBorderEnabled: true,
   localClockBorderEnabled: true,
@@ -41,6 +46,7 @@ const defaults = {
   previewSongDurationEnabled: true,
   previewBlockDurationEnabled: true,
   previewUnderlineEnabled: true,
+  chordsEnabled: true,
   clearMode: false,
   rgbWindowBorderEnabled: false,
   rgbClockBorderEnabled: false,
@@ -76,7 +82,7 @@ const state = {
 const numericKeys = new Set([
   'textScale', 'clockScale', 'songNameScale', 'queueNameScale',
   'mediaScale', 'previewScale',
-  'localClockDepth'
+  'localClockDepth', 'chordScale'
 ]);
 const controls = [
   ...document.querySelectorAll(
@@ -270,6 +276,8 @@ async function loadSettings() {
         1.5, Math.max(0.5, Number(state.values[slot].mediaScale) || 1));
       state.values[slot].localClockDepth = Math.min(
         2, Math.max(0.5, Number(state.values[slot].localClockDepth) || 1));
+      state.values[slot].chordScale = Math.min(
+        1, Math.max(0.1, Number(state.values[slot].chordScale) || 1));
     }
     setStatus('Configurações carregadas da extensão.', 'saved');
   } catch (error) {
@@ -335,7 +343,9 @@ function applyPreset(preset) {
     borderColor: day ? '#ffffff' : '#00ff55',
     songNameColor: day ? '#ffffff' : '#00ff55',
     queueNameColor: day ? '#ffffff' : '#ffea00',
-    progressColor: day ? '#ffffff' : '#ffea00'
+    progressColor: day ? '#ffffff' : '#ffea00',
+    chordColor: day ? '#d97706' : '#fb923c',
+    chordsEnabled: true
   };
   render();
   saveNow(state.slot);
