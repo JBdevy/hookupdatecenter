@@ -620,7 +620,7 @@
     textCase: 'uppercase', textAlignment: 'center',
     clockPosition: 'center-top', localClockPosition: 'right',
     songNamePosition: 'top', queueNamePosition: 'top',
-    progressPosition: 'bottom', chordPosition: 'top',
+    progressPosition: 'bottom', chordPosition: 'top', progressMode: 'lyrics',
     textScale: 100, clockScale: 100, songNameScale: 100,
     queueNameScale: 100, mediaScale: 100, previewScale: 100,
     chordScale: 70, localClockScale: 100,
@@ -706,9 +706,13 @@
     if (/Color$/.test(name)) return normalizeHexColor(value, defaults[name] || '#ffffff')
     if (/FontFamily$/.test(name) || name === 'fontFamily') return normalizeTelepromptFont(value)
     if (/Scale$/.test(name)) {
+      const tabletMode = document.documentElement.dataset.directorDevice === 'tablet'
       const ranges = {
-        clockScale: [50, 150], songNameScale: [50, 200], queueNameScale: [50, 200],
-        mediaScale: [50, 150], chordScale: [10, 100], localClockScale: [50, 200],
+        clockScale: [50, tabletMode ? 100 : 150],
+        songNameScale: [50, tabletMode ? 125 : 200],
+        queueNameScale: [50, tabletMode ? 125 : 200],
+        mediaScale: [50, 150], chordScale: [10, 50],
+        localClockScale: [50, 100],
       }
       const [minimum, maximum] = ranges[name] || [50, 100]
       const numeric = Number(value)
@@ -717,11 +721,12 @@
     }
     const allowed = {
       preset: ['night', 'day'], textCase: ['uppercase', 'original', 'lowercase'],
-      textAlignment: ['left', 'center', 'right', 'justify'],
+      textAlignment: ['left', 'center', 'right'],
       clockPosition: ['left-top', 'center-top', 'right-top', 'left-bottom', 'center-bottom', 'right-bottom'],
       localClockPosition: ['left', 'right'],
       songNamePosition: ['top', 'bottom'], queueNamePosition: ['top', 'bottom'],
       progressPosition: ['top', 'bottom'], chordPosition: ['top', 'bottom'],
+      progressMode: ['lyrics', 'chords'],
     }
     if (allowed[name]) {
       const normalized = String(value || '').trim().toLowerCase()
@@ -843,7 +848,6 @@
     { id: 'left', label: 'ESQUERDA' },
     { id: 'center', label: 'CENTRALIZAR' },
     { id: 'right', label: 'DIREITA' },
-    { id: 'justify', label: 'JUSTIFICAR' },
   ]
 
   function normalizeTelepromptTextAlignment(value) {
@@ -7045,72 +7049,70 @@
 
   function renderAppTelepromptConfig(slot) {
     const settings = getAppTelepromptSettings(slot)
+    const tabletMode = document.documentElement.dataset.directorDevice === 'tablet'
     const fontOptions = TELEPROMPT_FONT_OPTIONS.map((option) => ({ value: option.id, label: option.label }))
     const topBottom = [{ value: 'top', label: 'EM CIMA' }, { value: 'bottom', label: 'EM BAIXO' }]
     const title = `CONFIG TELEPROMPT ${slot}`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigModal" data-stop-modal><div class="modalTitle">${title}</div><div class="appTpConfigScroll">
-      <section class="appTpConfigGroup"><h3>LETRAS</h3><div class="appTpConfigGrid">
-        ${renderAppConfigSelect(slot, settings, 'preset', 'Preset', [{ value: 'night', label: 'NOITE' }, { value: 'day', label: 'DIA' }])}
-        ${renderAppConfigSelect(slot, settings, 'fontFamily', 'Fonte', fontOptions)}
-        ${renderAppConfigSelect(slot, settings, 'textCase', 'Texto', [{ value: 'original', label: 'COMO FOI ESCRITO' }, { value: 'uppercase', label: 'MAIÚSCULO' }, { value: 'lowercase', label: 'minúsculo' }])}
-        ${renderAppConfigSelect(slot, settings, 'textAlignment', 'Alinhamento', [{ value: 'left', label: 'ESQUERDA' }, { value: 'center', label: 'CENTRALIZAR' }, { value: 'right', label: 'DIREITA' }, { value: 'justify', label: 'JUSTIFICAR' }])}
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay telepromptSettingsOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigModal" data-stop-modal><div class="modalTitle">${title}</div><div class="appTpConfigScroll">
+      <section class="appTpConfigGroup"><h3>CORES</h3><div class="appTpConfigGrid">
         ${renderAppConfigColor(slot, settings, 'textColor', 'Cor da letra')}
         ${renderAppConfigColor(slot, settings, 'textBoxColor', 'Cor do contorno da letra')}
-        ${renderAppConfigRange(slot, settings, 'textScale', 'Escala da letra', 50, 100)}
-      </div></section>
-      <section class="appTpConfigGroup"><h3>CRONÔMETRO E HORÁRIO LOCAL</h3><div class="appTpConfigGrid">
-        ${renderAppConfigToggle(slot, settings, 'clockEnabled', 'Exibir cronômetro')}
-        ${renderAppConfigToggle(slot, settings, 'localClockEnabled', 'Exibir horário local')}
-        ${renderAppConfigToggle(slot, settings, 'clockBorderEnabled', 'Mostrar borda do cronômetro')}
-        ${renderAppConfigToggle(slot, settings, 'localClockBorderEnabled', 'Mostrar borda do horário local')}
-        ${renderAppConfigSelect(slot, settings, 'clockPosition', 'Posição do cronômetro', [{ value: 'left-top', label: 'ESQUERDA EM CIMA' }, { value: 'center-top', label: 'CENTRO EM CIMA' }, { value: 'right-top', label: 'DIREITA EM CIMA' }, { value: 'left-bottom', label: 'ESQUERDA EM BAIXO' }, { value: 'center-bottom', label: 'CENTRO EM BAIXO' }, { value: 'right-bottom', label: 'DIREITA EM BAIXO' }])}
-        ${renderAppConfigSelect(slot, settings, 'localClockPosition', 'Posição do horário local', [{ value: 'left', label: 'ESQUERDA' }, { value: 'right', label: 'DIREITA' }])}
         ${renderAppConfigColor(slot, settings, 'clockColor', 'Cor do cronômetro')}
-        ${renderAppConfigColor(slot, settings, 'clockExpiredColor', 'Cor ao exceder')}
-        ${renderAppConfigColor(slot, settings, 'clockBorderColor', 'Cor da borda')}
+        ${renderAppConfigColor(slot, settings, 'clockExpiredColor', 'Cor do fim regressivo')}
+        ${renderAppConfigColor(slot, settings, 'clockBorderColor', 'Cor da borda do cronômetro')}
         ${renderAppConfigColor(slot, settings, 'localClockColor', 'Cor do horário local')}
-        ${renderAppConfigRange(slot, settings, 'clockScale', 'Escala do cronômetro', 50, 150)}
-        ${renderAppConfigRange(slot, settings, 'localClockScale', 'Escala do horário local', 50, 200)}
-      </div></section>
-      <section class="appTpConfigGroup"><h3>NOMES, FILA E PROGRESSO</h3><div class="appTpConfigGrid">
-        ${renderAppConfigToggle(slot, settings, 'songNameEnabled', 'Exibir nome da música')}
-        ${renderAppConfigToggle(slot, settings, 'queueNameEnabled', 'Exibir música da fila')}
-        ${renderAppConfigToggle(slot, settings, 'progressEnabled', 'Exibir barra de progresso')}
-        ${renderAppConfigSelect(slot, settings, 'songNamePosition', 'Posição do nome', topBottom)}
-        ${renderAppConfigSelect(slot, settings, 'queueNamePosition', 'Posição da fila', topBottom)}
-        ${renderAppConfigSelect(slot, settings, 'progressPosition', 'Posição do progresso', topBottom)}
-        ${renderAppConfigSelect(slot, settings, 'songNameFontFamily', 'Fonte do nome', fontOptions)}
-        ${renderAppConfigSelect(slot, settings, 'queueNameFontFamily', 'Fonte da fila', fontOptions)}
-        ${renderAppConfigColor(slot, settings, 'songNameColor', 'Cor do nome')}
-        ${renderAppConfigColor(slot, settings, 'queueNameColor', 'Cor da fila')}
+        ${renderAppConfigColor(slot, settings, 'borderColor', 'Cor da borda da janela')}
+        ${renderAppConfigColor(slot, settings, 'songNameColor', 'Cor do nome da música')}
+        ${renderAppConfigColor(slot, settings, 'queueNameColor', 'Cor do nome da fila')}
         ${renderAppConfigColor(slot, settings, 'progressColor', 'Cor do progresso')}
-        ${renderAppConfigRange(slot, settings, 'songNameScale', 'Escala do nome', 50, 200)}
-        ${renderAppConfigRange(slot, settings, 'queueNameScale', 'Escala da fila', 50, 200)}
-      </div></section>
-      <section class="appTpConfigGroup"><h3>CIFRAS</h3><div class="appTpConfigGrid">
-        ${renderAppConfigToggle(slot, settings, 'chordsEnabled', 'Exibir cifras')}
-        ${renderAppConfigSelect(slot, settings, 'chordPosition', 'Posição da cifra', topBottom)}
-        ${renderAppConfigSelect(slot, settings, 'chordFontFamily', 'Fonte da cifra', fontOptions)}
         ${renderAppConfigColor(slot, settings, 'chordColor', 'Cor da cifra')}
-        ${renderAppConfigRange(slot, settings, 'chordScale', 'Escala da cifra', 10, 100)}
       </div></section>
-      <section class="appTpConfigGroup"><h3>PREVIEW E MÍDIA</h3><div class="appTpConfigGrid">
-        ${renderAppConfigToggle(slot, settings, 'previewEnabled', 'Exibir preview dos blocos')}
-        ${renderAppConfigToggle(slot, settings, 'previewSongDurationEnabled', 'Duração das músicas no preview')}
-        ${renderAppConfigToggle(slot, settings, 'previewBlockDurationEnabled', 'Duração dos blocos no preview')}
-        ${renderAppConfigToggle(slot, settings, 'previewUnderlineEnabled', 'Sublinhar músicas no preview')}
-        ${renderAppConfigRange(slot, settings, 'previewScale', 'Escala do preview', 50, 100)}
-        ${renderAppConfigRange(slot, settings, 'mediaScale', 'Escala de imagem e vídeo', 50, 150)}
+      <section class="appTpConfigGroup"><h3>ESCALAS</h3><div class="appTpConfigGrid">
+        ${renderAppConfigRange(slot, settings, 'textScale', 'Escala da letra', 50, 100)}
+        ${renderAppConfigRange(slot, settings, 'clockScale', 'Escala do cronômetro', 50, tabletMode ? 100 : 150)}
+        ${renderAppConfigRange(slot, settings, 'songNameScale', 'Escala do nome da música', 50, tabletMode ? 125 : 200)}
+        ${renderAppConfigRange(slot, settings, 'queueNameScale', 'Escala do nome da fila', 50, tabletMode ? 125 : 200)}
+        ${renderAppConfigRange(slot, settings, 'mediaScale', 'Escala da mídia', 50, 150)}
+        ${renderAppConfigRange(slot, settings, 'previewScale', 'Profundidade do preview', 50, 100)}
+        ${renderAppConfigRange(slot, settings, 'localClockScale', 'Escala do horário local', 50, 100)}
+        ${renderAppConfigRange(slot, settings, 'chordScale', 'Escala da cifra', 10, 50)}
       </div></section>
-      <section class="appTpConfigGroup"><h3>JANELA E VISUALIZAÇÃO</h3><div class="appTpConfigGrid">
+      <section class="appTpConfigGroup"><h3>FONTES E POSIÇÃO</h3><div class="appTpConfigGrid">
+        ${renderAppConfigSelect(slot, settings, 'textCase', 'Caixa da letra', [{ value: 'original', label: 'PADRÃO (COMO FOI ESCRITO)' }, { value: 'uppercase', label: 'CAIXA ALTA' }, { value: 'lowercase', label: 'caixa baixa' }])}
+        ${renderAppConfigSelect(slot, settings, 'fontFamily', 'Fonte da letra', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'songNameFontFamily', 'Fonte do nome da música', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'queueNameFontFamily', 'Fonte do nome da fila', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'chordFontFamily', 'Fonte da cifra', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'textAlignment', 'Alinhamento das letras', [{ value: 'left', label: 'À ESQUERDA' }, { value: 'center', label: 'CENTRALIZADO' }, { value: 'right', label: 'À DIREITA' }])}
+        ${renderAppConfigSelect(slot, settings, 'clockPosition', 'Posição do cronômetro', [{ value: 'left-top', label: 'ESQUERDA EM CIMA' }, { value: 'left-bottom', label: 'ESQUERDA EM BAIXO' }, { value: 'right-top', label: 'DIREITA EM CIMA' }, { value: 'right-bottom', label: 'DIREITA EM BAIXO' }, { value: 'center-top', label: 'CENTRO EM CIMA' }, { value: 'center-bottom', label: 'CENTRO EM BAIXO' }])}
+        ${renderAppConfigSelect(slot, settings, 'localClockPosition', 'Posição do horário local', [{ value: 'left', label: 'ESQUERDA' }, { value: 'right', label: 'DIREITA' }])}
+        ${renderAppConfigSelect(slot, settings, 'songNamePosition', 'Posição do nome da música', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'queueNamePosition', 'Posição do nome da fila', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'progressPosition', 'Posição do progresso', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'progressMode', 'Modo da barra de progresso', [{ value: 'lyrics', label: 'LETRAS' }, { value: 'chords', label: 'CIFRAS' }])}
+        ${renderAppConfigSelect(slot, settings, 'chordPosition', 'Posição da cifra', topBottom)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>MOSTRAR</h3><div class="appTpConfigGrid">
+        ${renderAppConfigSelect(slot, settings, 'preset', 'Preset', [{ value: 'night', label: 'NOITE' }, { value: 'day', label: 'DIA' }])}
         ${renderAppConfigToggle(slot, settings, 'windowBorderEnabled', 'Mostrar borda da janela')}
-        ${renderAppConfigToggle(slot, settings, 'textBoxEnabled', 'Mostrar contorno da letra')}
         ${renderAppConfigToggle(slot, settings, 'rgbWindowBorderEnabled', 'Borda da janela em RGB')}
         ${renderAppConfigToggle(slot, settings, 'rgbClockBorderEnabled', 'Borda do cronômetro em RGB')}
         ${renderAppConfigToggle(slot, settings, 'rgbTextBoxBorderEnabled', 'Contorno da letra em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'clockBorderEnabled', 'Mostrar borda do cronômetro')}
+        ${renderAppConfigToggle(slot, settings, 'localClockBorderEnabled', 'Mostrar borda do horário local')}
+        ${renderAppConfigToggle(slot, settings, 'textBoxEnabled', 'Mostrar borda da letra')}
+        ${renderAppConfigToggle(slot, settings, 'clockEnabled', 'Mostrar cronômetro')}
+        ${renderAppConfigToggle(slot, settings, 'localClockEnabled', 'Mostrar horário local')}
+        ${renderAppConfigToggle(slot, settings, 'songNameEnabled', 'Mostrar nome da música')}
+        ${renderAppConfigToggle(slot, settings, 'queueNameEnabled', 'Mostrar nome da fila')}
+        ${renderAppConfigToggle(slot, settings, 'chordsEnabled', 'Exibir cifras')}
+        ${renderAppConfigToggle(slot, settings, 'previewEnabled', 'Mostrar preview nesta janela')}
+        ${renderAppConfigToggle(slot, settings, 'previewSongDurationEnabled', 'Mostrar tempo das músicas no preview')}
+        ${renderAppConfigToggle(slot, settings, 'previewBlockDurationEnabled', 'Mostrar tempo total dos blocos no preview')}
+        ${renderAppConfigToggle(slot, settings, 'previewUnderlineEnabled', 'Sublinhar nomes do preview')}
+        ${renderAppConfigToggle(slot, settings, 'progressEnabled', 'Mostrar barra de progresso')}
         ${renderAppConfigToggle(slot, settings, 'clearMode', 'Modo Clear')}
         ${renderAppConfigToggle(slot, settings, 'hideTransport', 'Ocultar painel de transporte')}
-        ${renderAppConfigColor(slot, settings, 'borderColor', 'Cor da borda da janela')}
       </div></section>
     </div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-hub">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
@@ -7134,11 +7136,22 @@
   }
 
   function renderAppTelepromptConfigHub() {
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigHub" data-stop-modal><div class="modalTitle">CONFIG TELEPROMPT</div><div class="appTpConfigHubGrid"><button class="btn" data-action="teleprompt-config-tp1">CONFIG TELEPROMPT 1</button><button class="btn" data-action="teleprompt-config-tp2">CONFIG TELEPROMPT 2</button><button class="btn" data-action="teleprompt-config-recados">CONFIG RECADOS</button></div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-main">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigHub" data-stop-modal><div class="modalTitle">CONFIG TELEPROMPT</div><div class="appTpConfigHubGrid"><button class="btn" data-action="teleprompt-config-tp1">CONFIG TELEPROMPT 1</button><button class="btn" data-action="teleprompt-config-tp2">CONFIG TELEPROMPT 2</button><button class="btn" data-action="teleprompt-config-recados">CONFIG RECADOS</button></div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="modal-close">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderSettingsModal() {
     if (!state.showSettingsModal) return ''
+    const isTelepromptSettings = state.settingsSection === 'teleprompt-hub' ||
+      state.settingsSection === 'teleprompt-1' ||
+      state.settingsSection === 'teleprompt-2' ||
+      state.settingsSection === 'recados'
+    // CONFIG/TP pertence à tela do Teleprompt. Se qualquer navegação fechar o
+    // TP, a configuração não pode permanecer solta sobre a tela principal.
+    if (isTelepromptSettings && !state.showTelepromptScreen) {
+      state.showSettingsModal = false
+      state.settingsSection = 'main'
+      return ''
+    }
     if (state.settingsSection === 'teleprompt-hub') return renderAppTelepromptConfigHub()
     if (state.settingsSection === 'teleprompt-1') return renderAppTelepromptConfig(1)
     if (state.settingsSection === 'teleprompt-2') return renderAppTelepromptConfig(2)
@@ -7146,9 +7159,8 @@
     const theme = getAppTheme()
     const borderMode = getBorderColorMode()
     const borderModeLabel = getBorderColorModeLabel(borderMode)
-    const telepromptEntry = `<div class="settingsCategory settingsTelepromptEntry"><div class="settingsCategoryTitle">TELEPROMPT DO APP</div><div class="settingsWideGrid"><button class="btn appTpConfigOpenButton" data-action="teleprompt-config-hub">CONFIG TELEPROMPT</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
-      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${telepromptEntry}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
     const sortContext = state.showTunerScreen
       ? (state.tunerSourceTab === 'regions' ? 'regions' : 'playlist')
@@ -7160,7 +7172,7 @@
     const familyViewControls = getFamilyViewControlsEnabled()
     const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">${interfaceBlocking ? '[x]' : '[ ]'} Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">${hideAccessNotification ? '[x]' : '[ ]'} Bloquear notificação de acesso da interface</button></div></div>`
     const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">${familyViewControls ? '[x]' : '[ ]'} VIEW — Mostrar/Ocultar</button></div></div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}${telepromptEntry}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderNumberOrderConfirm() {
@@ -8120,6 +8132,9 @@
     const itemIndex = Number(nested.itemIndex ?? -1)
     const itemStart = Number(nested.itemStart ?? 0) || 0
     const itemEnd = Number(nested.itemEnd ?? 0) || 0
+    const progressStart = Number(nested.progressStart ?? itemStart) || 0
+    const progressEnd = Number(nested.progressEnd ?? itemEnd) || 0
+    const position = Number(nested.position ?? data?.playPosition ?? data?.currentPlayPosition ?? data?.position ?? 0) || 0
     const nextMediaPath = String(
       nested.nextMediaPath
       || data?.[`${prefix}NextMediaPath`]
@@ -8174,6 +8189,9 @@
       itemIndex,
       itemStart,
       itemEnd,
+      progressStart,
+      progressEnd,
+      position,
       itemFound: nested.itemFound !== false && (nested.itemFound === true || !!text.trim() || !!mediaPath || !!mediaUrl),
       preview,
       nextMedia: {
@@ -8219,7 +8237,30 @@
       itemIndex: Number(nested.itemIndex ?? -1),
       itemStart: Number(nested.itemStart ?? 0) || 0,
       itemEnd: Number(nested.itemEnd ?? 0) || 0,
+      progressStart: Number(nested.progressStart ?? nested.itemStart ?? 0) || 0,
+      progressEnd: Number(nested.progressEnd ?? nested.itemEnd ?? 0) || 0,
+      position: Number(nested.position ?? data?.playPosition ?? data?.currentPlayPosition ?? data?.position ?? 0) || 0,
     }
+  }
+
+  function getDirectorTelepromptItemProgressPercent(
+    tp,
+    chord,
+    settings,
+    data = state.snapshot,
+    sampledAt = now(),
+  ) {
+    if (!isPlaying(data)) return 0
+    const source = settings?.progressMode === 'chords' ? chord : tp
+    const hasSelectedItem = source?.itemFound === true && !!String(source?.text || '').trim()
+    if (!hasSelectedItem) return 0
+    const start = Number(source?.progressStart)
+    const end = Number(source?.progressEnd)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start + 0.0005) return 0
+    const smoothed = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    const position = Number.isFinite(smoothed) ? smoothed : Number(source?.position)
+    if (!Number.isFinite(position)) return 0
+    return clampPercent(((position - start) / (end - start)) * 100)
   }
 
   function getDirectorTelepromptMediaUrl(tp) {
@@ -8504,6 +8545,14 @@
   function closeDirectorTelepromptScreen() {
     if (!state.showTelepromptScreen) return
     state.showTelepromptScreen = false
+    if (state.settingsSection === 'teleprompt-hub' ||
+        state.settingsSection === 'teleprompt-1' ||
+        state.settingsSection === 'teleprompt-2' ||
+        state.settingsSection === 'recados') {
+      state.showSettingsModal = false
+      state.settingsSection = 'main'
+      state.showTelepromptColorPalette = false
+    }
     // TP volta para a pagina que estava por baixo dele. No celular, sair do TP
     // pela aba Musicas nao deve mais redirecionar para Repertorio.
     scheduleRender(true)
@@ -8546,6 +8595,7 @@
           <div class="directorTpContent">
             ${transportPanel}
             <div class="directorTpControls">
+              <button class="directorTpTab directorTpConfig" data-action="teleprompt-config-hub">CONFIG/TP</button>
               <button class="${tp1Class}" data-action="teleprompt-slot-1">TP/1</button>
               <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
               <button class="directorTpTab directorTpBack" data-action="teleprompt-back">VOLTAR</button>
@@ -8578,6 +8628,267 @@
     // Só mídias realmente próximas de 16:9 preenchem. Verticais e demais
     // proporções permanecem inteiras, com bordas quando necessário.
     element.classList.toggle('directorTpMediaWide169', ratio >= 1.72 && ratio <= 1.84)
+  }
+
+  function measureDirectorTpTextWidth(text, fontSize, fontFamily) {
+    if (!measureDirectorTpTextWidth.canvas) {
+      measureDirectorTpTextWidth.canvas = document.createElement('canvas')
+    }
+    const context = measureDirectorTpTextWidth.canvas.getContext('2d')
+    if (!context) return String(text || '').length * fontSize * 0.62
+    context.font = `900 ${Math.max(8, fontSize)}px ${fontFamily || 'sans-serif'}`
+    return context.measureText(String(text || '')).width
+  }
+
+  function fitDirectorTpSingleLine(text, desiredSize, availableWidth, fontFamily, minimum = 9) {
+    let size = Math.max(minimum, Math.round(desiredSize))
+    const safeWidth = Math.max(1, availableWidth - 18)
+    while (size > minimum &&
+      measureDirectorTpTextWidth(text, size, fontFamily) > safeWidth) {
+      size -= 1
+    }
+    return size
+  }
+
+  function placeDirectorTpElement(element, rect, fontSize = 0) {
+    if (!element || !rect) return
+    element.style.left = `${Math.round(rect.left)}px`
+    element.style.top = `${Math.round(rect.top)}px`
+    element.style.width = `${Math.max(1, Math.round(rect.right - rect.left))}px`
+    element.style.height = `${Math.max(1, Math.round(rect.bottom - rect.top))}px`
+    element.style.right = 'auto'
+    element.style.bottom = 'auto'
+    element.style.transform = 'none'
+    if (fontSize > 0) element.style.fontSize = `${Math.round(fontSize)}px`
+  }
+
+  // Replica o alocador de faixas da janela nativa: cada elemento consome uma
+  // area real e a letra recebe somente o retangulo que restou. Isso preserva o
+  // mesmo desenho em retrato (celular) e paisagem (tablet), apenas em escala.
+  function layoutDirectorTelepromptLikeNative(viewport, settings, elements = {}) {
+    if (!viewport) return
+    const width = Math.max(1, Number(viewport.clientWidth) || Number(window.innerWidth) || 360)
+    const height = Math.max(1, Number(viewport.clientHeight) || Number(window.innerHeight) || 640)
+    const portrait = height > width
+    const tabletVisualScale = document.documentElement.dataset.directorDevice === 'tablet' ? 0.78 : 1
+    const edge = Math.max(4, Math.round(height / 140))
+    const gap = Math.max(4, Math.round(height / 160))
+    let topCursor = edge
+    let bottomCursor = height - edge
+    const visible = (element) => !!element && !element.classList.contains('directorTpHidden')
+    const allocateBand = (atTop, bandHeight, left, right) => {
+      const safeHeight = Math.max(1, Math.round(bandHeight))
+      if (atTop) {
+        const top = Math.min(topCursor, bottomCursor)
+        const bottom = Math.min(bottomCursor, top + safeHeight)
+        topCursor = Math.min(bottomCursor, bottom + gap)
+        return { left, top, right, bottom }
+      }
+      const bottom = Math.max(topCursor, bottomCursor)
+      const top = Math.max(topCursor, bottom - safeHeight)
+      bottomCursor = Math.max(topCursor, top - gap)
+      return { left, top, right, bottom }
+    }
+
+    viewport.dataset.tpOrientation = portrait ? 'portrait' : 'landscape'
+    const clockHost = elements.clock
+    const localClockHost = elements.localClock
+    const showClock = visible(clockHost)
+    const showLocalClock = visible(localClockHost)
+    const clockPosition = String(settings.clockPosition || 'center-top')
+    const clockTop = !clockPosition.endsWith('bottom')
+    const clockAtLeft = clockPosition.startsWith('left')
+    const clockAtRight = clockPosition.startsWith('right')
+    const sideClockLayout = clockAtLeft || clockAtRight
+    const clockFamily = 'Bahnschrift, "Segoe UI", Arial, sans-serif'
+    const timerText = String(clockHost?.textContent || '-00 : 00 : 00')
+    const localText = String(localClockHost?.textContent || '00:00:00')
+    const requestedClockScale = (Number(settings.clockScale) || 100) / 100
+    // Em retrato, preservar integralmente o crescimento até 150% fazia o
+    // cronômetro central consumir quase toda a largura e expulsar o horário
+    // local. Acima de 100%, o celular cresce de forma mais gradual; tablet e
+    // paisagem continuam usando exatamente a escala escolhida.
+    const portraitClockScale = portrait && requestedClockScale > 1
+      ? 1 + ((requestedClockScale - 1) * 0.3)
+      : requestedClockScale
+    const effectiveClockScale = portraitClockScale * tabletVisualScale
+    let clockFontSize = Math.max(portrait ? 15 : 18,
+      Math.min(width / 11, height / 8) * effectiveClockScale)
+    const pairedSideClocks = sideClockLayout && showClock && showLocalClock
+    const clockHeight = Math.max(28, Math.round(clockFontSize + (pairedSideClocks ? 10 : 18)))
+    const naturalTimerWidth = Math.max(118,
+      Math.ceil(measureDirectorTpTextWidth('-00 : 00 : 00', clockFontSize, clockFamily) + 36))
+    const compactTimerWidth = Math.min(Math.max(1, width - edge * 2), naturalTimerWidth)
+    let timerRect = null
+    let localRect = null
+
+    if ((showClock || showLocalClock) && sideClockLayout) {
+      const count = (showClock ? 1 : 0) + (showLocalClock ? 1 : 0)
+      const availableWidth = Math.max(1, width - edge * 2 - (count > 1 ? gap : 0))
+      const boxWidth = count > 1
+        ? Math.max(1, Math.floor(availableWidth / count))
+        : Math.max(1, Math.min(compactTimerWidth, availableWidth))
+      const pairWidth = boxWidth * count + (count > 1 ? gap : 0)
+      const pairLeft = count > 1 ? edge : (clockAtRight ? width - edge - pairWidth : edge)
+      const band = allocateBand(clockTop, clockHeight, pairLeft, pairLeft + pairWidth)
+      let nextLeft = band.left
+      const takeBox = () => {
+        const rect = { left: nextLeft, top: band.top, right: nextLeft + boxWidth, bottom: band.bottom }
+        nextLeft = rect.right + gap
+        return rect
+      }
+      if (clockAtRight && showLocalClock) localRect = takeBox()
+      if (showClock) timerRect = takeBox()
+      if (clockAtLeft && showLocalClock) localRect = takeBox()
+    } else {
+      if (showClock) {
+        timerRect = allocateBand(clockTop, clockHeight,
+          (width - compactTimerWidth) / 2, (width + compactTimerWidth) / 2)
+      }
+      if (showLocalClock) {
+        const desiredLocalSize = Math.max(10,
+          Math.min(24, height / 28) * (Number(settings.localClockScale) || 100) / 100)
+        const naturalLocalWidth = Math.max(78,
+          Math.ceil(measureDirectorTpTextWidth(localText, desiredLocalSize, clockFamily) + 24))
+        const placeRight = String(settings.localClockPosition || 'right') === 'right'
+        if (timerRect) {
+          const sideLeft = placeRight ? timerRect.right + gap : edge
+          const sideRight = placeRight ? width - edge : timerRect.left - gap
+          const availableSideWidth = Math.max(0, sideRight - sideLeft)
+          const boxWidth = Math.min(naturalLocalWidth, availableSideWidth)
+          if (boxWidth > 8) {
+            const left = placeRight ? sideRight - boxWidth : sideLeft
+            // Com o cronometro central, o horario local continua com altura
+            // propria. Ele apenas compartilha a faixa vertical de referencia;
+            // aumentar o cronometro nao transforma a caixa local em quadrado.
+            const localBoxHeight = Math.min(
+              timerRect.bottom - timerRect.top,
+              Math.max(20, Math.round(desiredLocalSize + 10)))
+            const top = clockTop
+              ? timerRect.top
+              : timerRect.bottom - localBoxHeight
+            localRect = { left, top, right: left + boxWidth, bottom: top + localBoxHeight }
+          }
+        } else {
+          const boxWidth = Math.min(naturalLocalWidth, Math.max(1, width - edge * 2))
+          const left = placeRight ? width - edge - boxWidth : edge
+          localRect = allocateBand(clockTop, Math.max(28, desiredLocalSize + 10), left, left + boxWidth)
+        }
+      }
+    }
+
+    if (timerRect && clockHost) {
+      clockFontSize = fitDirectorTpSingleLine(timerText, clockFontSize,
+        timerRect.right - timerRect.left, clockFamily)
+      placeDirectorTpElement(clockHost, timerRect, clockFontSize)
+    }
+    if (localRect && localClockHost) {
+      const desiredLocalSize = pairedSideClocks
+        ? clockFontSize
+        : Math.max(10, Math.min(24, height / 28) * (Number(settings.localClockScale) || 100) / 100)
+      const localSize = fitDirectorTpSingleLine(localText, desiredLocalSize,
+        localRect.right - localRect.left, clockFamily)
+      placeDirectorTpElement(localClockHost, localRect, localSize)
+    }
+
+    const progressHost = elements.progress
+    if (visible(progressHost)) {
+      const progressHeight = Math.max(8, Math.round(height / 55))
+      const progressEdge = Math.max(8, Math.round(width / 32))
+      const rect = allocateBand(settings.progressPosition === 'top', progressHeight,
+        progressEdge, width - progressEdge)
+      placeDirectorTpElement(progressHost, rect)
+    }
+
+    const nameHorizontalEdge = Math.max(8, Math.round(width * 0.025))
+    const songHost = elements.song
+    if (visible(songHost)) {
+      const fontSize = Math.max(portrait ? 13 : 16,
+        Math.min(width / 34, height / 20) * (Number(settings.songNameScale) || 100) / 100 * tabletVisualScale)
+      const rect = allocateBand(settings.songNamePosition !== 'bottom', fontSize + 12,
+        nameHorizontalEdge, width - nameHorizontalEdge)
+      placeDirectorTpElement(songHost, rect, fontSize)
+    }
+    const queueHost = elements.queue
+    if (visible(queueHost)) {
+      const fontSize = Math.max(portrait ? 12 : 14,
+        Math.min(width / 34, height / 20) * (Number(settings.queueNameScale) || 100) / 100 * tabletVisualScale)
+      const rect = allocateBand(settings.queueNamePosition !== 'bottom', fontSize + 10,
+        nameHorizontalEdge, width - nameHorizontalEdge)
+      placeDirectorTpElement(queueHost, rect, fontSize)
+    }
+
+    const chordHost = elements.chord
+    if (visible(chordHost)) {
+      const chordTop = settings.chordPosition !== 'bottom'
+      const chordTextLines = String(chordHost.textContent || '').split(/\r?\n/)
+      const chordFont = Math.max(9, parseFloat(chordHost.style.fontSize) || 18)
+      const chordFamily = getTelepromptFontFamilyValue(settings.chordFontFamily)
+      const chordContentWidth = chordTextLines.reduce((largest, line) =>
+        Math.max(largest, measureDirectorTpTextWidth(line, chordFont, chordFamily)), 0)
+      const chordPaddingX = Math.max(7, width / 120)
+      const maximumChordWidth = Math.max(84, width * 0.82)
+      const naturalChordWidth = Math.ceil(chordContentWidth * 1.08) + chordPaddingX * 2
+      const chordWidth = Math.min(width - edge * 2, Math.max(84,
+        Math.min(maximumChordWidth, naturalChordWidth)))
+      const chordNeedsWrapping = naturalChordWidth > maximumChordWidth
+      chordHost.style.whiteSpace = chordNeedsWrapping ? 'pre-wrap' : 'pre'
+      chordHost.style.overflowWrap = chordNeedsWrapping ? 'anywhere' : 'normal'
+      chordHost.style.wordBreak = chordNeedsWrapping ? 'break-word' : 'normal'
+      const chordLines = Math.max(1, chordTextLines.length)
+      const chordHeight = Math.min(Math.max(34, height / 4),
+        Math.max(34, chordLines * chordFont * 1.18 + Math.max(12, height / 90)))
+      const left = (width - chordWidth) / 2
+      const rect = allocateBand(chordTop, chordHeight, left, left + chordWidth)
+      placeDirectorTpElement(chordHost, rect, chordFont)
+      chordHost.style.maxWidth = `${Math.round(chordWidth)}px`
+    }
+
+    const horizontalReserve = Math.max(6, Math.round(width / 100))
+    const contentTop = Math.max(topCursor, edge + horizontalReserve)
+    const contentBottom = Math.min(bottomCursor, height - edge - horizontalReserve)
+    viewport.style.setProperty('--app-tp-content-left', `${horizontalReserve}px`)
+    viewport.style.setProperty('--app-tp-content-right', `${horizontalReserve}px`)
+    viewport.style.setProperty('--app-tp-content-top', `${Math.max(0, Math.round(contentTop))}px`)
+    viewport.style.setProperty('--app-tp-content-bottom', `${Math.max(0, Math.round(height - contentBottom))}px`)
+  }
+
+  function fitDirectorTelepromptLyrics(viewport, text, settings) {
+    if (!viewport || !text || text.classList.contains('directorTpHidden')) return
+    const width = Math.max(1, text.clientWidth)
+    const height = Math.max(1, text.clientHeight)
+    const signature = [text.textContent, width, height, settings.fontFamily,
+      settings.textScale, settings.textAlignment,
+      viewport.style.getPropertyValue('--app-tp-content-top'),
+      viewport.style.getPropertyValue('--app-tp-content-bottom')].join('|')
+    if (text.dataset.fitSignature === signature) return
+    const viewportWidth = Math.max(1, viewport.clientWidth)
+    const viewportHeight = Math.max(1, viewport.clientHeight)
+    // A janela do app tem densidade e proporcao bem diferentes da janela
+    // nativa do REAPER. A antiga base fazia 50% no app equivaler visualmente
+    // a 100% no Teleprompt nativo. Mantemos toda a faixa configuravel, mas
+    // corrigimos a referencia: agora 100% representa aquele tamanho visual.
+    const appLyricsScaleFactor = 0.5
+    const maximum = Math.max(12, Math.round(
+      Math.min(viewportWidth / 10, viewportHeight / 5) *
+      (Number(settings.textScale) || 100) / 100 * appLyricsScaleFactor))
+    let low = 12
+    let high = Math.max(low, maximum)
+    let chosen = low
+    while (low <= high) {
+      const size = low + Math.floor((high - low) / 2)
+      text.style.setProperty('font-size', `${size}px`, 'important')
+      const fits = text.scrollHeight <= text.clientHeight + 1 &&
+        text.scrollWidth <= text.clientWidth + 1
+      if (fits) {
+        chosen = size
+        low = size + 1
+      } else {
+        high = size - 1
+      }
+    }
+    text.style.setProperty('font-size', `${chosen}px`, 'important')
+    text.dataset.fitSignature = signature
   }
 
   function syncDirectorTelepromptDom() {
@@ -8644,7 +8955,7 @@
       '--app-tp-preview-scale': String(settings.previewScale / 100),
     }
     const viewportWidth = Math.max(320, Number(viewport.clientWidth) || Number(window.innerWidth) || 360)
-    variables['--app-tp-text-size'] = `${Math.round(Math.max(18, Math.min(58, viewportWidth * 0.072)) * settings.textScale / 100)}px`
+    variables['--app-tp-text-size'] = `${Math.max(12, Math.round(Math.min(58, viewportWidth * 0.072) * 0.5 * settings.textScale / 100))}px`
     variables['--app-tp-clock-size'] = `${Math.round(Math.max(16, Math.min(48, viewportWidth * 0.042)) * settings.clockScale / 100)}px`
     variables['--app-tp-local-clock-size'] = `${Math.round(Math.max(15, Math.min(40, viewportWidth * 0.035)) * settings.localClockScale / 100)}px`
     variables['--app-tp-song-size'] = `${Math.round(Math.max(13, Math.min(31, viewportWidth * 0.026)) * settings.songNameScale / 100)}px`
@@ -8686,7 +8997,7 @@
     }
     const progressHost = viewport.querySelector('[data-director-tp-progress]')
     if (progressHost) {
-      const progress = isPlaying(state.snapshot) ? getVisualPlaybackProgressPercent(state.snapshot) : 0
+      const progress = getDirectorTelepromptItemProgressPercent(tp, chord, settings, state.snapshot)
       progressHost.dataset.position = settings.progressPosition
       const fill = progressHost.querySelector('span')
       if (fill) fill.style.width = `${progress}%`
@@ -8711,7 +9022,8 @@
         const chordLines = chord.text.split(/\r?\n/)
         const longestLine = chordLines.reduce((largest, line) => Math.max(largest, Array.from(line).length), 1)
         const availableWidth = Math.max(220, (viewport.clientWidth || window.innerWidth || 360) - 32)
-        const baseSize = 12 + (scale * 0.36)
+        const tabletChordScale = document.documentElement.dataset.directorDevice === 'tablet' ? 0.78 : 1
+        const baseSize = (12 + (scale * 0.36)) * tabletChordScale
         const estimatedWidth = Math.max(1, longestLine) * baseSize * 0.64 + 30
         const fit = Math.min(1, availableWidth / estimatedWidth)
         const fittedSize = Math.max(11, Math.round(baseSize * Math.max(0.42, fit)))
@@ -8723,6 +9035,15 @@
         viewport.style.removeProperty('--director-tp-chord-reserve')
       }
     }
+
+    layoutDirectorTelepromptLikeNative(viewport, settings, {
+      clock: clockHost,
+      localClock: localClockHost,
+      song: songHost,
+      queue: queueHost,
+      progress: progressHost,
+      chord: chordHost,
+    })
 
     if (previewHost) {
       const preview = {
@@ -8775,6 +9096,7 @@
       text.classList.toggle('directorTpHidden', !showText)
       text.classList.toggle('directorTpTextOverlay', hasMedia)
       text.classList.toggle('directorTpTextOnly', !hasMedia && showText)
+      fitDirectorTelepromptLyrics(viewport, text, settings)
     }
     if (empty) {
       empty.textContent = `SEM CONTEÚDO NO TP/${slot}`
@@ -8966,6 +9288,27 @@
       try { video.pause() } catch (_) {}
       applyVideoPosition(false)
     }
+  }
+
+  function syncDirectorTelepromptProgressDom(sampledAt = now()) {
+    if (!state.showTelepromptScreen || document.hidden) return
+    const viewport = root.querySelector('[data-director-tp-viewport]')
+    const progressHost = viewport?.querySelector('[data-director-tp-progress]')
+    const fill = progressHost?.querySelector('span')
+    if (!fill || progressHost.classList.contains('directorTpHidden')) return
+
+    const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
+    const settings = getAppTelepromptSettings(slot)
+    const tp = getDirectorTelepromptState(slot, state.snapshot)
+    const chord = getDirectorTelepromptChordState(state.snapshot)
+    const progress = getDirectorTelepromptItemProgressPercent(
+      tp,
+      chord,
+      settings,
+      state.snapshot,
+      sampledAt,
+    )
+    fill.style.width = `${progress}%`
   }
 
   function renderDirectorRecadosScreen(data = state.snapshot || {}) {
@@ -12731,6 +13074,7 @@
         break
       }
       case 'teleprompt-config-hub':
+        state.showSettingsModal = true
         state.settingsSection = 'teleprompt-hub'
         scheduleRender(true)
         break
@@ -14220,6 +14564,7 @@
       if (!document.hidden) {
         const sampledAt = now()
         syncPlaybackProgressDom(sampledAt)
+        syncDirectorTelepromptProgressDom(sampledAt)
         if (state.showTransportSeekModal) {
           syncTransportSeekModalDom(sampledAt)
         }

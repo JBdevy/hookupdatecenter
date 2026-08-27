@@ -24,6 +24,7 @@ const defaults = {
   songNamePosition: 'top',
   queueNamePosition: 'top',
   progressPosition: 'bottom',
+  progressMode: 'lyrics',
   chordPosition: 'top',
   textScale: 1,
   clockScale: 1,
@@ -293,6 +294,14 @@ function normalizeSlotSettings(value, slot) {
   };
   const oldTimerPosition =
     String(next.clockPosition || '').toLowerCase();
+  next.textAlignment = ['left', 'center', 'right'].includes(
+    String(next.textAlignment || '').toLowerCase())
+    ? String(next.textAlignment).toLowerCase()
+    : 'center';
+  next.progressMode =
+    String(next.progressMode || '').toLowerCase() === 'chords'
+      ? 'chords'
+      : 'lyrics';
   if (oldTimerPosition === 'top') {
     next.clockPosition = 'center-top';
   } else if (oldTimerPosition === 'bottom') {

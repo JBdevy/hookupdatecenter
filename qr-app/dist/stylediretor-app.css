@@ -7459,8 +7459,11 @@ button,
 .directorTpControls {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
+}
+.directorTpConfig {
+  font-size: 11px;
 }
 .directorTpTab {
   min-width: 0;
@@ -7563,7 +7566,7 @@ button,
   box-sizing: border-box;
   width: max-content;
   min-width: 76px;
-  padding: .34em .72em;
+  padding: .34em .36em;
   transform: translateX(-50%);
   border: 2px solid #fb923c;
   border-radius: 12px;
@@ -8621,12 +8624,6 @@ body.directorRecadosTouchMode #app {
   justify-content: flex-end;
   text-align: right;
 }
-.app[data-teleprompt-text-alignment="justify"] .directorTpText {
-  display: block;
-  align-content: center;
-  text-align: justify;
-  text-align-last: left;
-}
 .app[data-teleprompt-chord-font="system"] .directorTpChord {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -9664,6 +9661,78 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 }
 
 
+/* VS_HOOK_TELEPROMPT_NATIVE_LAYOUT_V2
+   O app usa as mesmas faixas reservadas pela janela nativa do Teleprompt. */
+.directorTpViewport {
+  --app-tp-content-left: 8px;
+  --app-tp-content-right: 8px;
+  --app-tp-content-top: 8px;
+  --app-tp-content-bottom: 8px;
+}
+.directorTpViewport .directorTpText,
+.directorTpViewport .directorTpPreview {
+  inset: auto !important;
+  left: var(--app-tp-content-left) !important;
+  right: var(--app-tp-content-right) !important;
+  top: var(--app-tp-content-top) !important;
+  bottom: var(--app-tp-content-bottom) !important;
+  width: auto !important;
+  height: auto !important;
+  box-sizing: border-box;
+}
+.directorTpViewport .directorTpText {
+  padding: clamp(8px, 1.25vmin, 18px) !important;
+  overflow: hidden !important;
+}
+.directorTpViewport.directorTpViewport[data-text-box="1"] .directorTpTextOnly {
+  inset: auto !important;
+  left: var(--app-tp-content-left) !important;
+  right: var(--app-tp-content-right) !important;
+  top: var(--app-tp-content-top) !important;
+  bottom: var(--app-tp-content-bottom) !important;
+  width: auto !important;
+  height: auto !important;
+  box-shadow: inset 0 0 0 2px var(--app-tp-text-box-color, #fde047);
+}
+.directorTpClock,
+.directorTpLocalClock {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0 !important;
+  padding: clamp(3px, .8vmin, 7px) clamp(6px, 1.2vmin, 12px) !important;
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: Bahnschrift, "Segoe UI", Arial, sans-serif;
+}
+.directorTpSongName,
+.directorTpQueueName {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: clamp(3px, .7vmin, 7px) clamp(6px, 1.1vmin, 12px);
+  overflow: hidden;
+}
+.directorTpProgress,
+.directorTpChord {
+  box-sizing: border-box;
+}
+.directorTpChord {
+  margin: 0;
+  transform: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center !important;
+}
+@media (orientation: portrait) {
+  .directorTpViewport .directorTpText { line-height: 1.1; }
+}
+
 /* Configuração local e completa do Teleprompt do app */
 .appTpConfigOpenButton,.appTpConfigHubGrid>button{min-height:52px;font-weight:1000}
 .appTpConfigHubGrid{display:grid;grid-template-columns:1fr;gap:10px;padding:8px 0 14px}
@@ -9686,6 +9755,35 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 .app[data-theme="light"] .appTpConfigField select,.app[data-theme="light"] .appTpConfigField input[type="text"]{background:#fff;color:#111827}
 @media(max-width:560px){.appTpConfigGrid{grid-template-columns:1fr}.appTpConfigModal{width:calc(100vw - 12px)!important}.appTpConfigGroup{padding:8px}}
 
+/* CONFIG/TP ocupa exatamente a mesma área da tela do Teleprompt. */
+.tabletSettingsModalOverlay:has(.appTpConfigModal),
+.tabletSettingsModalOverlay:has(.appTpConfigHub) {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 1760 !important;
+  padding: 8px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+  background: #0b1118 !important;
+}
+.tabletSettingsModalOverlay:has(.appTpConfigModal) > .modalSpacer,
+.tabletSettingsModalOverlay:has(.appTpConfigModal) > .modalBottomSpace,
+.tabletSettingsModalOverlay:has(.appTpConfigHub) > .modalSpacer,
+.tabletSettingsModalOverlay:has(.appTpConfigHub) > .modalBottomSpace {
+  display: none !important;
+}
+.tabletSettingsModalOverlay:has(.appTpConfigModal) > .appTpConfigModal,
+.tabletSettingsModalOverlay:has(.appTpConfigHub) > .appTpConfigHub {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+}
+
 /* O TP do app usa preferências locais por TP/1 e TP/2. */
 .directorTpViewport[data-window-border="0"]{border-color:transparent}
 .directorTpViewport[data-window-border="1"]{border-color:var(--app-tp-border-color,#fde047);box-shadow:inset 0 0 0 1px var(--app-tp-border-color,#fde047)}
@@ -9694,7 +9792,6 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 .directorTpText{color:var(--app-tp-text-color,#fff)!important;font-family:var(--app-tp-font,system-ui,sans-serif)!important;font-size:var(--app-tp-text-size,42px)!important;text-align:center}
 .directorTpViewport[data-text-alignment="left"] .directorTpText{text-align:left;justify-content:flex-start}
 .directorTpViewport[data-text-alignment="right"] .directorTpText{text-align:right;justify-content:flex-end}
-.directorTpViewport[data-text-alignment="justify"] .directorTpText{text-align:justify;text-align-last:left}
 .directorTpViewport[data-text-box="1"] .directorTpTextOnly{inset:10px;box-shadow:inset 0 0 0 2px var(--app-tp-text-box-color,#fde047)}
 .directorTpViewport[data-text-box-rgb="1"] .directorTpTextOnly{animation:appTelepromptRgbBorder 4.5s linear infinite}
 .directorTpImage,.directorTpVideo{transform:scale(var(--app-tp-media-scale,1));transform-origin:center}

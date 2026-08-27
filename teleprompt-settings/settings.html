@@ -118,7 +118,6 @@
                 <option value="left">À esquerda</option>
                 <option value="center">Centralizado</option>
                 <option value="right">À direita</option>
-                <option value="justify">Justificado</option>
               </select>
             </label>
             <label>Posição do cronômetro
@@ -146,6 +145,9 @@
             <label>Posição do progresso
               <select name="progressPosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
             </label>
+            <label>Modo da barra de progresso
+              <select name="progressMode"><option value="lyrics">Letras</option><option value="chords">Cifras</option></select>
+            </label>
             <label>Posição da cifra
               <select name="chordPosition"><option value="top">Em cima</option><option value="bottom">Em baixo</option></select>
             </label>
@@ -171,7 +173,7 @@
             <label class="settings-check"><input name="previewSongDurationEnabled" type="checkbox"> Mostrar tempo das músicas no Preview</label>
             <label class="settings-check"><input name="previewBlockDurationEnabled" type="checkbox"> Mostrar tempo total dos blocos no Preview</label>
             <label class="settings-check"><input name="previewUnderlineEnabled" type="checkbox"> Sublinhar nomes do Preview</label>
-            <label class="settings-check"><input name="progressEnabled" type="checkbox"> Mostrar progresso da letra</label>
+            <label class="settings-check"><input name="progressEnabled" type="checkbox"> Mostrar barra de progresso</label>
           </div>
         </section>
       </div>
