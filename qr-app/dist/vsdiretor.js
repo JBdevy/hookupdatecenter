@@ -112,6 +112,8 @@
     showMenu: false,
     showTimerModal: false,
     showSettingsModal: false,
+    settingsSection: 'main',
+    telepromptSettingsSlot: 1,
     pendingInterfaceBlocking: null,
     interfaceAccessAllowed: readLocal('vshook_local_interface_access_allowed', '0') === '1',
     hideInterfaceAccessNotification: readLocal('vshook_hide_interface_access_notification', '0') === '1',
@@ -576,7 +578,13 @@
   const TELEPROMPT_FONT_OPTIONS = [
     { id: 'system', label: 'PADRÃO' },
     { id: 'arial', label: 'ARIAL' },
-    { id: 'serif', label: 'SERIF' },
+    { id: 'segoe', label: 'SEGOE UI' },
+    { id: 'bahnschrift', label: 'BAHNSCHRIFT' },
+    { id: 'verdana', label: 'VERDANA' },
+    { id: 'tahoma', label: 'TAHOMA' },
+    { id: 'georgia', label: 'GEORGIA' },
+    { id: 'trebuchet', label: 'TREBUCHET' },
+    { id: 'impact', label: 'IMPACT' },
     { id: 'mono', label: 'MONO' },
   ]
 
@@ -599,8 +607,218 @@
     { id: 'black', label: 'PRETO', color: '#000000' },
   ]
 
-  function getTelepromptPreferenceKey(name) {
-    return `vshook_${IS_MUSICIAN_MONITOR ? 'musician' : 'director'}_teleprompt_${name}`
+  const APP_TELEPROMPT_DEFAULTS = Object.freeze({
+    preset: 'night',
+    textColor: '#ffea00', textBoxColor: '#ffea00',
+    clockColor: '#00ff55', clockExpiredColor: '#ff3131',
+    clockBorderColor: '#00ff55', localClockColor: '#00ff55',
+    borderColor: '#00ff55', songNameColor: '#00ff55',
+    queueNameColor: '#ffea00', progressColor: '#ffea00',
+    chordColor: '#fb923c',
+    fontFamily: 'system', songNameFontFamily: 'system',
+    queueNameFontFamily: 'system', chordFontFamily: 'system',
+    textCase: 'uppercase', textAlignment: 'center',
+    clockPosition: 'center-top', localClockPosition: 'right',
+    songNamePosition: 'top', queueNamePosition: 'top',
+    progressPosition: 'bottom', chordPosition: 'top',
+    textScale: 100, clockScale: 100, songNameScale: 100,
+    queueNameScale: 100, mediaScale: 100, previewScale: 100,
+    chordScale: 70, localClockScale: 100,
+    windowBorderEnabled: true, clockBorderEnabled: true,
+    localClockBorderEnabled: true, textBoxEnabled: true,
+    clockEnabled: true, localClockEnabled: true,
+    songNameEnabled: false, queueNameEnabled: true,
+    progressEnabled: false, previewEnabled: true,
+    previewSongDurationEnabled: true, previewBlockDurationEnabled: true,
+    previewUnderlineEnabled: true, chordsEnabled: true,
+    clearMode: false, hideTransport: false,
+    rgbWindowBorderEnabled: false, rgbClockBorderEnabled: false,
+    rgbTextBoxBorderEnabled: false,
+  })
+
+  const APP_RECADOS_DEFAULTS = Object.freeze({
+    textColor: '#ffea00', backgroundColor: '#000000',
+    flashColor: '#ff0000', fontFamily: 'arial', textScale: 100,
+    window1Enabled: true, window2Enabled: true,
+    emojiEnabled: true, cleanDisplay: false, emoji: '⚠️',
+  })
+
+  const APP_TELEPROMPT_DAY_COLORS = Object.freeze({
+    textColor: '#ffffff', textBoxColor: '#ffffff', clockColor: '#ffffff',
+    clockExpiredColor: '#d60000', clockBorderColor: '#ffffff',
+    localClockColor: '#ffffff', borderColor: '#ffffff',
+    songNameColor: '#ffffff', queueNameColor: '#ffffff',
+    progressColor: '#ffffff', chordColor: '#d97706',
+  })
+
+  const TELEPROMPT_FONT_FAMILIES = Object.freeze({
+    system: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+    arial: 'Arial, sans-serif', segoe: '"Segoe UI", sans-serif',
+    bahnschrift: 'Bahnschrift, "Arial Narrow", sans-serif',
+    verdana: 'Verdana, sans-serif', tahoma: 'Tahoma, sans-serif',
+    georgia: 'Georgia, serif', trebuchet: '"Trebuchet MS", sans-serif',
+    impact: 'Impact, Haettenschweiler, sans-serif',
+    mono: 'Consolas, "Courier New", monospace',
+  })
+
+  function getTelepromptRolePrefix() {
+    return IS_MUSICIAN_MONITOR ? 'musician' : 'director'
+  }
+
+  function getTelepromptPreferenceKey(name, slot = state.telepromptSlot) {
+    const normalizedSlot = Number(slot) === 2 ? 2 : 1
+    return `vshook_${getTelepromptRolePrefix()}_teleprompt_${normalizedSlot}_${name}`
+  }
+
+  function getAppTelepromptPresetKey(slot = state.telepromptSlot) {
+    const normalizedSlot = Number(slot) === 2 ? 2 : 1
+    return `vshook_${getTelepromptRolePrefix()}_teleprompt_${normalizedSlot}_active_preset_v2`
+  }
+
+  function getAppTelepromptSettingsKey(slot = state.telepromptSlot, preset = '') {
+    const normalizedSlot = Number(slot) === 2 ? 2 : 1
+    const activePreset = preset === 'day' || preset === 'night'
+      ? preset
+      : (readLocal(getAppTelepromptPresetKey(normalizedSlot), 'night') === 'day' ? 'day' : 'night')
+    return `vshook_${getTelepromptRolePrefix()}_teleprompt_${normalizedSlot}_settings_v2_${activePreset}`
+  }
+
+  function getAppRecadosSettingsKey() {
+    return `vshook_${getTelepromptRolePrefix()}_recados_settings_v1`
+  }
+
+  function normalizeHexColor(value, fallback = '#ffffff') {
+    const text = String(value || '').trim()
+    return /^#[0-9a-f]{6}$/i.test(text) ? text.toLowerCase() : fallback
+  }
+
+  function normalizeAppTelepromptSetting(name, value) {
+    const defaults = APP_TELEPROMPT_DEFAULTS
+    const booleanFields = new Set([
+      'windowBorderEnabled', 'clockBorderEnabled', 'localClockBorderEnabled',
+      'textBoxEnabled', 'clockEnabled', 'localClockEnabled', 'songNameEnabled',
+      'queueNameEnabled', 'progressEnabled', 'previewEnabled',
+      'previewSongDurationEnabled', 'previewBlockDurationEnabled',
+      'previewUnderlineEnabled', 'chordsEnabled', 'clearMode', 'hideTransport',
+      'rgbWindowBorderEnabled', 'rgbClockBorderEnabled', 'rgbTextBoxBorderEnabled',
+    ])
+    if (booleanFields.has(name)) return value === true || value === 'true' || value === '1'
+    if (/Color$/.test(name)) return normalizeHexColor(value, defaults[name] || '#ffffff')
+    if (/FontFamily$/.test(name) || name === 'fontFamily') return normalizeTelepromptFont(value)
+    if (/Scale$/.test(name)) {
+      const ranges = {
+        clockScale: [50, 150], songNameScale: [50, 200], queueNameScale: [50, 200],
+        mediaScale: [50, 150], chordScale: [10, 100], localClockScale: [50, 200],
+      }
+      const [minimum, maximum] = ranges[name] || [50, 100]
+      const numeric = Number(value)
+      return Math.max(minimum, Math.min(maximum,
+        Number.isFinite(numeric) ? Math.round(numeric / 5) * 5 : defaults[name]))
+    }
+    const allowed = {
+      preset: ['night', 'day'], textCase: ['uppercase', 'original', 'lowercase'],
+      textAlignment: ['left', 'center', 'right', 'justify'],
+      clockPosition: ['left-top', 'center-top', 'right-top', 'left-bottom', 'center-bottom', 'right-bottom'],
+      localClockPosition: ['left', 'right'],
+      songNamePosition: ['top', 'bottom'], queueNamePosition: ['top', 'bottom'],
+      progressPosition: ['top', 'bottom'], chordPosition: ['top', 'bottom'],
+    }
+    if (allowed[name]) {
+      const normalized = String(value || '').trim().toLowerCase()
+      return allowed[name].includes(normalized) ? normalized : defaults[name]
+    }
+    return value
+  }
+
+  function getAppTelepromptSettings(slot = state.telepromptSlot) {
+    const normalizedSlot = Number(slot) === 2 ? 2 : 1
+    const activePreset = readLocal(getAppTelepromptPresetKey(normalizedSlot), 'night') === 'day' ? 'day' : 'night'
+    let raw = readJsonLocal(getAppTelepromptSettingsKey(normalizedSlot, activePreset), {})
+    if (!Object.keys(raw).length) {
+      // Compatibilidade com a primeira gravação local, anterior aos presets.
+      raw = readJsonLocal(`vshook_${getTelepromptRolePrefix()}_teleprompt_${normalizedSlot}_settings_v2`, {})
+    }
+    const settings = {
+      ...APP_TELEPROMPT_DEFAULTS,
+      ...(activePreset === 'day' ? APP_TELEPROMPT_DAY_COLORS : {}),
+      preset: activePreset,
+      previewEnabled: normalizedSlot !== 2,
+    }
+    for (const name of Object.keys(settings)) {
+      if (Object.prototype.hasOwnProperty.call(raw, name)) {
+        settings[name] = normalizeAppTelepromptSetting(name, raw[name])
+      }
+    }
+    // Migra as preferências anteriores sem misturar Diretor e Músicos.
+    if (!Object.keys(raw).length && normalizedSlot === 1) {
+      const legacyPrefix = `vshook_${getTelepromptRolePrefix()}_teleprompt_`
+      settings.fontFamily = normalizeTelepromptFont(readLocal(`${legacyPrefix}font`, settings.fontFamily))
+      settings.textColor = getTelepromptColorValue(readLocal(`${legacyPrefix}text_color`, 'white'))
+      settings.textAlignment = normalizeTelepromptTextAlignment(readLocal(`${legacyPrefix}text_alignment`, settings.textAlignment))
+      settings.chordPosition = readLocal(`${legacyPrefix}chord_position`, settings.chordPosition) === 'bottom' ? 'bottom' : 'top'
+      settings.chordScale = normalizeAppTelepromptSetting('chordScale', readLocal(`${legacyPrefix}chord_scale`, settings.chordScale))
+      settings.chordFontFamily = normalizeTelepromptFont(readLocal(`${legacyPrefix}chord_font`, settings.chordFontFamily))
+      settings.chordColor = getTelepromptColorValue(readLocal(`${legacyPrefix}chord_color`, 'orange'))
+      settings.hideTransport = readLocal(`${legacyPrefix}hide_transport`, '0') === '1'
+    }
+    return settings
+  }
+
+  function saveAppTelepromptSetting(slot, name, value) {
+    if (!Object.prototype.hasOwnProperty.call(APP_TELEPROMPT_DEFAULTS, name)) return
+    if (name === 'preset') {
+      const preset = value === 'day' ? 'day' : 'night'
+      writeLocal(getAppTelepromptPresetKey(slot), preset)
+      syncTelepromptAppearanceDom()
+      syncDirectorTelepromptDom()
+      scheduleRender(true)
+      return
+    }
+    const settings = getAppTelepromptSettings(slot)
+    settings[name] = normalizeAppTelepromptSetting(name, value)
+    writeLocal(getAppTelepromptSettingsKey(slot, settings.preset), JSON.stringify(settings))
+    syncTelepromptAppearanceDom()
+    syncDirectorTelepromptDom()
+  }
+
+  function getAppRecadosSettings() {
+    const raw = readJsonLocal(getAppRecadosSettingsKey(), {})
+    return {
+      ...APP_RECADOS_DEFAULTS,
+      ...raw,
+      textColor: normalizeHexColor(raw.textColor, APP_RECADOS_DEFAULTS.textColor),
+      backgroundColor: normalizeHexColor(raw.backgroundColor, APP_RECADOS_DEFAULTS.backgroundColor),
+      flashColor: normalizeHexColor(raw.flashColor, APP_RECADOS_DEFAULTS.flashColor),
+      fontFamily: normalizeTelepromptFont(raw.fontFamily || APP_RECADOS_DEFAULTS.fontFamily),
+      textScale: Math.max(50, Math.min(100, Number(raw.textScale) || 100)),
+      window1Enabled: raw.window1Enabled !== false,
+      window2Enabled: raw.window2Enabled !== false,
+      emojiEnabled: raw.emojiEnabled !== false,
+      cleanDisplay: raw.cleanDisplay === true,
+      emoji: String(raw.emoji || APP_RECADOS_DEFAULTS.emoji).slice(0, 8),
+    }
+  }
+
+  function saveAppRecadosSetting(name, value) {
+    if (!Object.prototype.hasOwnProperty.call(APP_RECADOS_DEFAULTS, name)) return
+    const settings = getAppRecadosSettings()
+    if (['window1Enabled', 'window2Enabled', 'emojiEnabled', 'cleanDisplay'].includes(name)) {
+      settings[name] = value === true || value === 'true' || value === '1'
+    } else if (name.endsWith('Color')) {
+      settings[name] = normalizeHexColor(value, APP_RECADOS_DEFAULTS[name])
+    } else if (name === 'fontFamily') {
+      settings[name] = normalizeTelepromptFont(value)
+    } else if (name === 'textScale') {
+      settings[name] = Math.max(50, Math.min(100, Number(value) || 100))
+    } else if (name === 'emoji') {
+      settings[name] = String(value || '').slice(0, 8)
+    }
+    writeLocal(getAppRecadosSettingsKey(), JSON.stringify(settings))
+    syncDirectorTechnicalNoticeDom()
+  }
+
+  function getTelepromptFontFamilyValue(value) {
+    return TELEPROMPT_FONT_FAMILIES[normalizeTelepromptFont(value)] || TELEPROMPT_FONT_FAMILIES.system
   }
 
   function normalizeTelepromptFont(value) {
@@ -613,12 +831,12 @@
     return TELEPROMPT_COLOR_OPTIONS.some((option) => option.id === normalized) ? normalized : 'white'
   }
 
-  function getTelepromptFont() {
-    return normalizeTelepromptFont(readLocal(getTelepromptPreferenceKey('font'), 'system'))
+  function getTelepromptFont(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).fontFamily
   }
 
-  function getTelepromptColor() {
-    return normalizeTelepromptColor(readLocal(getTelepromptPreferenceKey('text_color'), 'white'))
+  function getTelepromptColor(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).textColor
   }
 
   const TELEPROMPT_TEXT_ALIGNMENT_OPTIONS = [
@@ -634,74 +852,61 @@
       ? normalized : 'center'
   }
 
-  function getTelepromptTextAlignment() {
-    return normalizeTelepromptTextAlignment(
-      readLocal(getTelepromptPreferenceKey('text_alignment'), 'center'))
+  function getTelepromptTextAlignment(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).textAlignment
   }
 
   function setTelepromptTextAlignment(value) {
-    writeLocal(getTelepromptPreferenceKey('text_alignment'),
-      normalizeTelepromptTextAlignment(value))
-    syncTelepromptAppearanceDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'textAlignment', value)
   }
 
-  function getTelepromptChordPosition() {
-    return readLocal(getTelepromptPreferenceKey('chord_position'), 'top') === 'bottom'
-      ? 'bottom' : 'top'
+  function getTelepromptChordPosition(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).chordPosition
   }
 
   function setTelepromptChordPosition(value) {
-    writeLocal(getTelepromptPreferenceKey('chord_position'),
-      value === 'bottom' ? 'bottom' : 'top')
-    syncTelepromptAppearanceDom()
-    syncDirectorTelepromptDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'chordPosition', value)
   }
 
-  function getTelepromptChordScale() {
-    const value = Number(readLocal(getTelepromptPreferenceKey('chord_scale'), '70'))
-    return Math.max(10, Math.min(100, Number.isFinite(value) ? Math.round(value / 5) * 5 : 70))
+  function getTelepromptChordScale(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).chordScale
   }
 
   function adjustTelepromptChordScale(delta) {
     const next = Math.max(10, Math.min(100,
-      getTelepromptChordScale() + Number(delta || 0)))
-    writeLocal(getTelepromptPreferenceKey('chord_scale'), String(next))
+      getTelepromptChordScale(state.telepromptSettingsSlot) + Number(delta || 0)))
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'chordScale', next)
     scheduleRender(true)
   }
 
-  function getTelepromptChordFont() {
-    return normalizeTelepromptFont(
-      readLocal(getTelepromptPreferenceKey('chord_font'), 'system'))
+  function getTelepromptChordFont(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).chordFontFamily
   }
 
   function setTelepromptChordFont(value) {
-    writeLocal(getTelepromptPreferenceKey('chord_font'),
-      normalizeTelepromptFont(value))
-    syncTelepromptAppearanceDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'chordFontFamily', value)
   }
 
-  function getTelepromptChordColor() {
-    return normalizeTelepromptColor(
-      readLocal(getTelepromptPreferenceKey('chord_color'), 'orange'))
+  function getTelepromptChordColor(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).chordColor
   }
 
   function setTelepromptChordColor(value) {
-    writeLocal(getTelepromptPreferenceKey('chord_color'),
-      normalizeTelepromptColor(value))
-    syncTelepromptAppearanceDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'chordColor', value)
   }
 
-  function getHideTelepromptTransport() {
-    return readLocal(getTelepromptPreferenceKey('hide_transport'), '0') === '1'
+  function getHideTelepromptTransport(slot = state.telepromptSlot) {
+    return getAppTelepromptSettings(slot).hideTransport
   }
 
   function toggleHideTelepromptTransport() {
-    const hidden = !getHideTelepromptTransport()
-    writeLocal(getTelepromptPreferenceKey('hide_transport'), hidden ? '1' : '0')
+    const hidden = !getHideTelepromptTransport(state.telepromptSettingsSlot)
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'hideTransport', hidden)
     scheduleRender(true)
   }
 
   function getTelepromptColorValue(value = getTelepromptColor()) {
+    if (/^#[0-9a-f]{6}$/i.test(String(value || '').trim())) return String(value).trim()
     return TELEPROMPT_COLOR_OPTIONS.find((option) => option.id === normalizeTelepromptColor(value))?.color || '#ffffff'
   }
 
@@ -744,13 +949,12 @@
   }
 
   function setTelepromptFont(value) {
-    writeLocal(getTelepromptPreferenceKey('font'), normalizeTelepromptFont(value))
-    syncTelepromptAppearanceDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'fontFamily', value)
   }
 
   function setTelepromptColor(value) {
-    writeLocal(getTelepromptPreferenceKey('text_color'), normalizeTelepromptColor(value))
-    syncTelepromptAppearanceDom()
+    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'textColor',
+      getTelepromptColorValue(value))
   }
 
   function toggleTelepromptColorPalette() {
@@ -6817,14 +7021,134 @@
     return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">ALINHAMENTO DAS LETRAS</div><div class="telepromptSettingsGrid">${alignmentButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — POSIÇÃO</div><div class="telepromptSettingsGrid telepromptChordPositionGrid"><button class="btn telepromptSettingsOption${chordPosition === 'top' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="top">EM CIMA</button><button class="btn telepromptSettingsOption${chordPosition === 'bottom' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="bottom">EM BAIXO</button><button class="btn telepromptSettingsOption" data-action="teleprompt-chord-scale-minus" aria-label="Diminuir escala da cifra">−</button><button class="btn telepromptSettingsOption telepromptChordScaleValue" data-action="teleprompt-chord-scale-plus" aria-label="Aumentar escala da cifra">${chordScale}% +</button></div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${chordFontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — COR DA LETRA</div><div class="telepromptExtraColorsGrid telepromptChordColorsGrid">${chordColorButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — VISUALIZAÇÃO</div><div class="settingsWideGrid"><button class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? '[x]' : '[ ]'} Ocultar painel transporte da área do teleprompt</button></div></div>`
   }
 
+  function renderAppConfigSelect(slot, settings, name, label, options) {
+    const values = options.map((option) => {
+      const value = typeof option === 'string' ? option : option.value
+      const text = typeof option === 'string' ? option : option.label
+      return `<option value="${escapeHtml(value)}"${settings[name] === value ? ' selected' : ''}>${escapeHtml(text)}</option>`
+    }).join('')
+    return `<label class="appTpConfigField"><span>${escapeHtml(label)}</span><select data-app-tp-field="${name}" data-tp-slot="${slot}">${values}</select></label>`
+  }
+
+  function renderAppConfigColor(slot, settings, name, label) {
+    return `<label class="appTpConfigField appTpConfigColor"><span>${escapeHtml(label)}</span><input type="color" value="${escapeHtml(settings[name])}" data-app-tp-field="${name}" data-tp-slot="${slot}"></label>`
+  }
+
+  function renderAppConfigRange(slot, settings, name, label, min, max) {
+    return `<label class="appTpConfigField appTpConfigRange"><span>${escapeHtml(label)} <b data-app-tp-value="${name}">${Number(settings[name])}%</b></span><input type="range" min="${min}" max="${max}" step="5" value="${Number(settings[name])}" data-app-tp-field="${name}" data-tp-slot="${slot}"></label>`
+  }
+
+  function renderAppConfigToggle(slot, settings, name, label) {
+    const enabled = settings[name] === true
+    return `<label class="appTpConfigToggle"><input type="checkbox"${enabled ? ' checked' : ''} data-app-tp-field="${name}" data-tp-slot="${slot}"><span>${escapeHtml(label)}</span></label>`
+  }
+
+  function renderAppTelepromptConfig(slot) {
+    const settings = getAppTelepromptSettings(slot)
+    const fontOptions = TELEPROMPT_FONT_OPTIONS.map((option) => ({ value: option.id, label: option.label }))
+    const topBottom = [{ value: 'top', label: 'EM CIMA' }, { value: 'bottom', label: 'EM BAIXO' }]
+    const title = `CONFIG TELEPROMPT ${slot}`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigModal" data-stop-modal><div class="modalTitle">${title}</div><div class="appTpConfigScroll">
+      <section class="appTpConfigGroup"><h3>LETRAS</h3><div class="appTpConfigGrid">
+        ${renderAppConfigSelect(slot, settings, 'preset', 'Preset', [{ value: 'night', label: 'NOITE' }, { value: 'day', label: 'DIA' }])}
+        ${renderAppConfigSelect(slot, settings, 'fontFamily', 'Fonte', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'textCase', 'Texto', [{ value: 'original', label: 'COMO FOI ESCRITO' }, { value: 'uppercase', label: 'MAIÚSCULO' }, { value: 'lowercase', label: 'minúsculo' }])}
+        ${renderAppConfigSelect(slot, settings, 'textAlignment', 'Alinhamento', [{ value: 'left', label: 'ESQUERDA' }, { value: 'center', label: 'CENTRALIZAR' }, { value: 'right', label: 'DIREITA' }, { value: 'justify', label: 'JUSTIFICAR' }])}
+        ${renderAppConfigColor(slot, settings, 'textColor', 'Cor da letra')}
+        ${renderAppConfigColor(slot, settings, 'textBoxColor', 'Cor do contorno da letra')}
+        ${renderAppConfigRange(slot, settings, 'textScale', 'Escala da letra', 50, 100)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>CRONÔMETRO E HORÁRIO LOCAL</h3><div class="appTpConfigGrid">
+        ${renderAppConfigToggle(slot, settings, 'clockEnabled', 'Exibir cronômetro')}
+        ${renderAppConfigToggle(slot, settings, 'localClockEnabled', 'Exibir horário local')}
+        ${renderAppConfigToggle(slot, settings, 'clockBorderEnabled', 'Mostrar borda do cronômetro')}
+        ${renderAppConfigToggle(slot, settings, 'localClockBorderEnabled', 'Mostrar borda do horário local')}
+        ${renderAppConfigSelect(slot, settings, 'clockPosition', 'Posição do cronômetro', [{ value: 'left-top', label: 'ESQUERDA EM CIMA' }, { value: 'center-top', label: 'CENTRO EM CIMA' }, { value: 'right-top', label: 'DIREITA EM CIMA' }, { value: 'left-bottom', label: 'ESQUERDA EM BAIXO' }, { value: 'center-bottom', label: 'CENTRO EM BAIXO' }, { value: 'right-bottom', label: 'DIREITA EM BAIXO' }])}
+        ${renderAppConfigSelect(slot, settings, 'localClockPosition', 'Posição do horário local', [{ value: 'left', label: 'ESQUERDA' }, { value: 'right', label: 'DIREITA' }])}
+        ${renderAppConfigColor(slot, settings, 'clockColor', 'Cor do cronômetro')}
+        ${renderAppConfigColor(slot, settings, 'clockExpiredColor', 'Cor ao exceder')}
+        ${renderAppConfigColor(slot, settings, 'clockBorderColor', 'Cor da borda')}
+        ${renderAppConfigColor(slot, settings, 'localClockColor', 'Cor do horário local')}
+        ${renderAppConfigRange(slot, settings, 'clockScale', 'Escala do cronômetro', 50, 150)}
+        ${renderAppConfigRange(slot, settings, 'localClockScale', 'Escala do horário local', 50, 200)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>NOMES, FILA E PROGRESSO</h3><div class="appTpConfigGrid">
+        ${renderAppConfigToggle(slot, settings, 'songNameEnabled', 'Exibir nome da música')}
+        ${renderAppConfigToggle(slot, settings, 'queueNameEnabled', 'Exibir música da fila')}
+        ${renderAppConfigToggle(slot, settings, 'progressEnabled', 'Exibir barra de progresso')}
+        ${renderAppConfigSelect(slot, settings, 'songNamePosition', 'Posição do nome', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'queueNamePosition', 'Posição da fila', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'progressPosition', 'Posição do progresso', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'songNameFontFamily', 'Fonte do nome', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'queueNameFontFamily', 'Fonte da fila', fontOptions)}
+        ${renderAppConfigColor(slot, settings, 'songNameColor', 'Cor do nome')}
+        ${renderAppConfigColor(slot, settings, 'queueNameColor', 'Cor da fila')}
+        ${renderAppConfigColor(slot, settings, 'progressColor', 'Cor do progresso')}
+        ${renderAppConfigRange(slot, settings, 'songNameScale', 'Escala do nome', 50, 200)}
+        ${renderAppConfigRange(slot, settings, 'queueNameScale', 'Escala da fila', 50, 200)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>CIFRAS</h3><div class="appTpConfigGrid">
+        ${renderAppConfigToggle(slot, settings, 'chordsEnabled', 'Exibir cifras')}
+        ${renderAppConfigSelect(slot, settings, 'chordPosition', 'Posição da cifra', topBottom)}
+        ${renderAppConfigSelect(slot, settings, 'chordFontFamily', 'Fonte da cifra', fontOptions)}
+        ${renderAppConfigColor(slot, settings, 'chordColor', 'Cor da cifra')}
+        ${renderAppConfigRange(slot, settings, 'chordScale', 'Escala da cifra', 10, 100)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>PREVIEW E MÍDIA</h3><div class="appTpConfigGrid">
+        ${renderAppConfigToggle(slot, settings, 'previewEnabled', 'Exibir preview dos blocos')}
+        ${renderAppConfigToggle(slot, settings, 'previewSongDurationEnabled', 'Duração das músicas no preview')}
+        ${renderAppConfigToggle(slot, settings, 'previewBlockDurationEnabled', 'Duração dos blocos no preview')}
+        ${renderAppConfigToggle(slot, settings, 'previewUnderlineEnabled', 'Sublinhar músicas no preview')}
+        ${renderAppConfigRange(slot, settings, 'previewScale', 'Escala do preview', 50, 100)}
+        ${renderAppConfigRange(slot, settings, 'mediaScale', 'Escala de imagem e vídeo', 50, 150)}
+      </div></section>
+      <section class="appTpConfigGroup"><h3>JANELA E VISUALIZAÇÃO</h3><div class="appTpConfigGrid">
+        ${renderAppConfigToggle(slot, settings, 'windowBorderEnabled', 'Mostrar borda da janela')}
+        ${renderAppConfigToggle(slot, settings, 'textBoxEnabled', 'Mostrar contorno da letra')}
+        ${renderAppConfigToggle(slot, settings, 'rgbWindowBorderEnabled', 'Borda da janela em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'rgbClockBorderEnabled', 'Borda do cronômetro em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'rgbTextBoxBorderEnabled', 'Contorno da letra em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'clearMode', 'Modo Clear')}
+        ${renderAppConfigToggle(slot, settings, 'hideTransport', 'Ocultar painel de transporte')}
+        ${renderAppConfigColor(slot, settings, 'borderColor', 'Cor da borda da janela')}
+      </div></section>
+    </div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-hub">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+  }
+
+  function renderAppRecadosConfig() {
+    const settings = getAppRecadosSettings()
+    const fontOptions = TELEPROMPT_FONT_OPTIONS.map((option) => ({ value: option.id, label: option.label }))
+    const select = renderAppConfigSelect('notice', settings, 'fontFamily', 'Fonte do recado', fontOptions)
+      .replace('data-app-tp-field=', 'data-app-recados-field=')
+      .replace('data-tp-slot="notice"', '')
+    const color = (name, label) => renderAppConfigColor('notice', settings, name, label)
+      .replace('data-app-tp-field=', 'data-app-recados-field=')
+      .replace('data-tp-slot="notice"', '')
+    const range = renderAppConfigRange('notice', settings, 'textScale', 'Escala da letra do recado', 50, 100)
+      .replace('data-app-tp-field=', 'data-app-recados-field=')
+      .replace('data-tp-slot="notice"', '')
+    const toggle = (name, label) => renderAppConfigToggle('notice', settings, name, label)
+      .replace('data-app-tp-field=', 'data-app-recados-field=')
+      .replace('data-tp-slot="notice"', '')
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigModal" data-stop-modal><div class="modalTitle">CONFIG RECADOS</div><div class="appTpConfigScroll"><section class="appTpConfigGroup"><h3>APARÊNCIA DOS RECADOS</h3><div class="appTpConfigGrid">${select}${color('textColor', 'Cor da letra')}${color('backgroundColor', 'Cor de fundo')}${color('flashColor', 'Cor do pisca')}${range}${toggle('window1Enabled', 'Exibir no Teleprompt 1')}${toggle('window2Enabled', 'Exibir no Teleprompt 2')}${toggle('emojiEnabled', 'Exibir emoji')}${toggle('cleanDisplay', 'Limpar conteúdo enquanto exibe o recado')}<label class="appTpConfigField"><span>Emoji</span><input type="text" maxlength="8" value="${escapeHtml(settings.emoji)}" data-app-recados-field="emoji"></label></div></section></div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-hub">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+  }
+
+  function renderAppTelepromptConfigHub() {
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigHub" data-stop-modal><div class="modalTitle">CONFIG TELEPROMPT</div><div class="appTpConfigHubGrid"><button class="btn" data-action="teleprompt-config-tp1">CONFIG TELEPROMPT 1</button><button class="btn" data-action="teleprompt-config-tp2">CONFIG TELEPROMPT 2</button><button class="btn" data-action="teleprompt-config-recados">CONFIG RECADOS</button></div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-main">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+  }
+
   function renderSettingsModal() {
     if (!state.showSettingsModal) return ''
+    if (state.settingsSection === 'teleprompt-hub') return renderAppTelepromptConfigHub()
+    if (state.settingsSection === 'teleprompt-1') return renderAppTelepromptConfig(1)
+    if (state.settingsSection === 'teleprompt-2') return renderAppTelepromptConfig(2)
+    if (state.settingsSection === 'recados') return renderAppRecadosConfig()
     const theme = getAppTheme()
     const borderMode = getBorderColorMode()
     const borderModeLabel = getBorderColorModeLabel(borderMode)
-    const telepromptAppearance = renderTelepromptAppearanceSettings()
+    const telepromptEntry = `<div class="settingsCategory settingsTelepromptEntry"><div class="settingsCategoryTitle">TELEPROMPT DO APP</div><div class="settingsWideGrid"><button class="btn appTpConfigOpenButton" data-action="teleprompt-config-hub">CONFIG TELEPROMPT</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
-      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${telepromptAppearance}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${telepromptEntry}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
     const sortContext = state.showTunerScreen
       ? (state.tunerSourceTab === 'regions' ? 'regions' : 'playlist')
@@ -6836,7 +7160,7 @@
     const familyViewControls = getFamilyViewControlsEnabled()
     const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">${interfaceBlocking ? '[x]' : '[ ]'} Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">${hideAccessNotification ? '[x]' : '[ ]'} Bloquear notificação de acesso da interface</button></div></div>`
     const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">${familyViewControls ? '[x]' : '[ ]'} VIEW — Mostrar/Ocultar</button></div></div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}${telepromptAppearance}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}${telepromptEntry}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderNumberOrderConfirm() {
@@ -6864,6 +7188,7 @@
 
   function closeSettingsModalInPlace() {
     state.showSettingsModal = false
+    state.settingsSection = 'main'
     state.showTelepromptColorPalette = false
     const box = root.querySelector('.settingsModalBox')
     const overlay = box?.closest?.('.modalOverlay')
@@ -6943,17 +7268,17 @@
   }
 
   function getDirectorTechnicalNoticeSettings(data = state.snapshot) {
-    const raw = data?.technicalNoticeSettings && typeof data.technicalNoticeSettings === 'object'
-      ? data.technicalNoticeSettings
-      : {}
-    const allowedFonts = ['Arial', 'Segoe UI', 'Verdana', 'Tahoma', 'Georgia', 'Trebuchet MS', 'Impact']
-    const fontFamily = allowedFonts.includes(String(raw.fontFamily || '')) ? String(raw.fontFamily) : 'Arial'
+    const raw = getAppRecadosSettings()
     const emoji = String(raw.emoji || '⚠️').trim().replace(/[\r\n\t]+/g, '').slice(0, 8) || '⚠️'
     return {
       textColor: normalizeDirectorNoticeColor(raw.textColor, '#ffea00'),
       backgroundColor: normalizeDirectorNoticeColor(raw.backgroundColor, '#000000'),
       flashColor: normalizeDirectorNoticeColor(raw.flashColor, '#ff0000'),
-      fontFamily,
+      fontFamily: getTelepromptFontFamilyValue(raw.fontFamily),
+      textScale: Math.max(50, Math.min(100, Number(raw.textScale) || 100)),
+      window1Enabled: raw.window1Enabled !== false,
+      window2Enabled: raw.window2Enabled !== false,
+      cleanDisplay: raw.cleanDisplay === true,
       emojiEnabled: raw.emojiEnabled !== false,
       emoji,
     }
@@ -6976,7 +7301,9 @@
     const notice = getDirectorTechnicalNotice(data)
     if (!notice) return ''
     const settings = getDirectorTechnicalNoticeSettings(data)
-    const style = `--director-notice-text:${settings.textColor};--director-notice-background:${settings.backgroundColor};--director-notice-flash:${settings.flashColor};--director-notice-font:${escapeHtml(settings.fontFamily)}, sans-serif;`
+    const slotEnabled = Number(state.telepromptSlot) === 2 ? settings.window2Enabled : settings.window1Enabled
+    if (!slotEnabled) return ''
+    const style = `--director-notice-text:${settings.textColor};--director-notice-background:${settings.backgroundColor};--director-notice-flash:${settings.flashColor};--director-notice-font:${escapeHtml(settings.fontFamily)};--director-notice-scale:${settings.textScale / 100};`
     return `<div class="directorTpTechnicalNotice directorTpTechnicalNoticeFlash" style="${style}" data-director-technical-notice data-notice-id="${escapeHtml(getDirectorTechnicalNoticeKey(data))}" aria-live="assertive">${escapeHtml(formatDirectorTechnicalNoticeText(notice, data))}</div>`
   }
 
@@ -6992,7 +7319,12 @@
     }
 
     const settings = getDirectorTechnicalNoticeSettings(state.snapshot)
+    const slotEnabled = Number(state.telepromptSlot) === 2 ? settings.window2Enabled : settings.window1Enabled
     const key = getDirectorTechnicalNoticeKey(state.snapshot)
+    if (!slotEnabled) {
+      if (element) element.remove()
+      return
+    }
     if (!element) {
       element = document.createElement('div')
       element.className = 'directorTpTechnicalNotice directorTpTechnicalNoticeFlash'
@@ -7006,7 +7338,11 @@
     element.style.setProperty('--director-notice-text', settings.textColor)
     element.style.setProperty('--director-notice-background', settings.backgroundColor)
     element.style.setProperty('--director-notice-flash', settings.flashColor)
-    element.style.setProperty('--director-notice-font', `${settings.fontFamily}, sans-serif`)
+    element.style.setProperty('--director-notice-font', settings.fontFamily)
+    element.style.setProperty('--director-notice-scale', String(settings.textScale / 100))
+    const noticeWidth = Math.max(320, Number(viewport.clientWidth) || Number(window.innerWidth) || 360)
+    element.style.setProperty('--director-notice-size', `${Math.round(Math.max(24, Math.min(72, noticeWidth * 0.078)) * settings.textScale / 100)}px`)
+    viewport.setAttribute('data-notice-clean', settings.cleanDisplay ? '1' : '0')
     const displayText = formatDirectorTechnicalNoticeText(notice, state.snapshot)
     if (element.textContent !== displayText) element.textContent = displayText
 
@@ -8176,10 +8512,34 @@
   function renderDirectorTelepromptScreen(data = state.snapshot || {}) {
     if (!state.showTelepromptScreen) return ''
     const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
+    const settings = getAppTelepromptSettings(slot)
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
-    const transportPanel = getHideTelepromptTransport()
+    const transportPanel = getHideTelepromptTransport(slot)
       ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
+    const cssVariables = [
+      `--app-tp-text-color:${settings.textColor}`,
+      `--app-tp-text-box-color:${settings.textBoxColor}`,
+      `--app-tp-clock-color:${isCountdownOverrun(data) ? settings.clockExpiredColor : settings.clockColor}`,
+      `--app-tp-clock-border:${settings.clockBorderColor}`,
+      `--app-tp-local-clock-color:${settings.localClockColor}`,
+      `--app-tp-border-color:${settings.borderColor}`,
+      `--app-tp-song-color:${settings.songNameColor}`,
+      `--app-tp-queue-color:${settings.queueNameColor}`,
+      `--app-tp-progress-color:${settings.progressColor}`,
+      `--app-tp-chord-color:${settings.chordColor}`,
+      `--app-tp-font:${getTelepromptFontFamilyValue(settings.fontFamily)}`,
+      `--app-tp-song-font:${getTelepromptFontFamilyValue(settings.songNameFontFamily)}`,
+      `--app-tp-queue-font:${getTelepromptFontFamilyValue(settings.queueNameFontFamily)}`,
+      `--app-tp-chord-font:${getTelepromptFontFamilyValue(settings.chordFontFamily)}`,
+      `--app-tp-text-scale:${settings.textScale / 100}`,
+      `--app-tp-clock-scale:${settings.clockScale / 100}`,
+      `--app-tp-local-clock-scale:${settings.localClockScale / 100}`,
+      `--app-tp-song-scale:${settings.songNameScale / 100}`,
+      `--app-tp-queue-scale:${settings.queueNameScale / 100}`,
+      `--app-tp-media-scale:${settings.mediaScale / 100}`,
+      `--app-tp-preview-scale:${settings.previewScale / 100}`,
+    ].join(';')
     return `
       <div class="directorTpOverlay" data-teleprompt-slot="${slot}">
         <div class="directorTpPanel">
@@ -8190,12 +8550,17 @@
               <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
               <button class="directorTpTab directorTpBack" data-action="teleprompt-back">VOLTAR</button>
             </div>
-            <div class="directorTpViewport" data-director-tp-viewport>
+            <div class="directorTpViewport" data-director-tp-viewport data-window-border="${settings.windowBorderEnabled ? '1' : '0'}" data-window-rgb="${settings.rgbWindowBorderEnabled ? '1' : '0'}" data-text-box="${settings.textBoxEnabled ? '1' : '0'}" data-text-box-rgb="${settings.rgbTextBoxBorderEnabled ? '1' : '0'}" data-text-case="${settings.textCase}" data-text-alignment="${settings.textAlignment}" data-clear-mode="${settings.clearMode ? '1' : '0'}" style="${escapeHtml(cssVariables)}">
               <img class="directorTpImage directorTpHidden" alt="Conteúdo do Teleprompt" />
               <video class="directorTpVideo directorTpHidden" muted playsinline preload="auto"></video>
               <div class="directorTpText directorTpHidden" aria-live="polite"></div>
               <div class="directorTpPreview directorTpHidden" data-director-tp-preview aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpChord directorTpHidden" data-director-tp-chord aria-live="polite" aria-hidden="true"></div>
+              <div class="directorTpClock${settings.clockEnabled ? '' : ' directorTpHidden'}" data-director-tp-clock data-position="${settings.clockPosition}" data-border="${settings.clockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}">${escapeHtml(getTimerDisplayText(data))}</div>
+              <div class="directorTpLocalClock${settings.localClockEnabled ? '' : ' directorTpHidden'}" data-director-tp-local-clock data-position="${settings.localClockPosition}" data-border="${settings.localClockBorderEnabled ? '1' : '0'}"></div>
+              <div class="directorTpSongName${settings.songNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-song data-position="${settings.songNamePosition}"></div>
+              <div class="directorTpQueueName${settings.queueNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-queue data-position="${settings.queueNamePosition}"></div>
+              <div class="directorTpProgress${settings.progressEnabled ? '' : ' directorTpHidden'}" data-director-tp-progress data-position="${settings.progressPosition}"><span></span></div>
               <div class="directorTpEmpty">SEM CONTEÚDO NO TP/${slot}</div>
               ${renderDirectorTechnicalNotice(data)}
             </div>
@@ -8233,20 +8598,107 @@
     const chordHost = viewport.querySelector('[data-director-tp-chord]')
     const empty = viewport.querySelector('.directorTpEmpty')
     const tp = getDirectorTelepromptState(state.telepromptSlot, state.snapshot)
+    const settings = getAppTelepromptSettings(slot)
     const chord = getDirectorTelepromptChordState(state.snapshot)
     const mediaUrl = getDirectorTelepromptMediaUrl(tp)
-    const hasText = !!String(tp.text || '').trim()
-    const hasMedia = (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
-    const showPreview = tp.preview?.active === true && tp.preview.mode >= 1 && tp.preview.mode <= 6
+    const clearMode = settings.clearMode === true
+    const displayText = settings.textCase === 'uppercase'
+      ? upperText(tp.text)
+      : (settings.textCase === 'lowercase'
+        ? String(tp.text || '').toLocaleLowerCase('pt-BR')
+        : String(tp.text || ''))
+    const hasText = !clearMode && !!String(displayText || '').trim()
+    const hasMedia = !clearMode && (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
+    const showPreview = !clearMode && settings.previewEnabled && tp.preview?.active === true && tp.preview.mode >= 1 && tp.preview.mode <= 6
     reconcileDirectorTelepromptMediaWarmups(
       state.snapshot)
+
+    viewport.setAttribute('data-window-border', settings.windowBorderEnabled ? '1' : '0')
+    viewport.setAttribute('data-window-rgb', settings.rgbWindowBorderEnabled ? '1' : '0')
+    viewport.setAttribute('data-text-box', settings.textBoxEnabled ? '1' : '0')
+    viewport.setAttribute('data-text-box-rgb', settings.rgbTextBoxBorderEnabled ? '1' : '0')
+    viewport.setAttribute('data-text-case', settings.textCase)
+    viewport.setAttribute('data-text-alignment', settings.textAlignment)
+    viewport.setAttribute('data-clear-mode', clearMode ? '1' : '0')
+    const variables = {
+      '--app-tp-text-color': settings.textColor,
+      '--app-tp-text-box-color': settings.textBoxColor,
+      '--app-tp-clock-color': isCountdownOverrun(state.snapshot) ? settings.clockExpiredColor : settings.clockColor,
+      '--app-tp-clock-border': settings.clockBorderColor,
+      '--app-tp-local-clock-color': settings.localClockColor,
+      '--app-tp-border-color': settings.borderColor,
+      '--app-tp-song-color': settings.songNameColor,
+      '--app-tp-queue-color': settings.queueNameColor,
+      '--app-tp-progress-color': settings.progressColor,
+      '--app-tp-chord-color': settings.chordColor,
+      '--app-tp-font': getTelepromptFontFamilyValue(settings.fontFamily),
+      '--app-tp-song-font': getTelepromptFontFamilyValue(settings.songNameFontFamily),
+      '--app-tp-queue-font': getTelepromptFontFamilyValue(settings.queueNameFontFamily),
+      '--app-tp-chord-font': getTelepromptFontFamilyValue(settings.chordFontFamily),
+      '--app-tp-text-scale': String(settings.textScale / 100),
+      '--app-tp-clock-scale': String(settings.clockScale / 100),
+      '--app-tp-local-clock-scale': String(settings.localClockScale / 100),
+      '--app-tp-song-scale': String(settings.songNameScale / 100),
+      '--app-tp-queue-scale': String(settings.queueNameScale / 100),
+      '--app-tp-media-scale': String(settings.mediaScale / 100),
+      '--app-tp-preview-scale': String(settings.previewScale / 100),
+    }
+    const viewportWidth = Math.max(320, Number(viewport.clientWidth) || Number(window.innerWidth) || 360)
+    variables['--app-tp-text-size'] = `${Math.round(Math.max(18, Math.min(58, viewportWidth * 0.072)) * settings.textScale / 100)}px`
+    variables['--app-tp-clock-size'] = `${Math.round(Math.max(16, Math.min(48, viewportWidth * 0.042)) * settings.clockScale / 100)}px`
+    variables['--app-tp-local-clock-size'] = `${Math.round(Math.max(15, Math.min(40, viewportWidth * 0.035)) * settings.localClockScale / 100)}px`
+    variables['--app-tp-song-size'] = `${Math.round(Math.max(13, Math.min(31, viewportWidth * 0.026)) * settings.songNameScale / 100)}px`
+    variables['--app-tp-queue-size'] = `${Math.round(Math.max(12, Math.min(27, viewportWidth * 0.022)) * settings.queueNameScale / 100)}px`
+    for (const [name, value] of Object.entries(variables)) viewport.style.setProperty(name, value)
+
+    const clockHost = viewport.querySelector('[data-director-tp-clock]')
+    if (clockHost) {
+      const show = settings.clockEnabled && !clearMode
+      const timerText = getTimerDisplayText(state.snapshot)
+      if (clockHost.textContent !== timerText) clockHost.textContent = timerText
+      clockHost.dataset.position = settings.clockPosition
+      clockHost.dataset.border = settings.clockBorderEnabled ? '1' : '0'
+      clockHost.dataset.rgb = settings.rgbClockBorderEnabled ? '1' : '0'
+      clockHost.classList.toggle('directorTpHidden', !show)
+    }
+    const localClockHost = viewport.querySelector('[data-director-tp-local-clock]')
+    if (localClockHost) {
+      const show = settings.localClockEnabled && !clearMode
+      const clockText = new Date().toLocaleTimeString('pt-BR', { hour12: false })
+      if (localClockHost.textContent !== clockText) localClockHost.textContent = clockText
+      localClockHost.dataset.position = settings.localClockPosition
+      localClockHost.dataset.border = settings.localClockBorderEnabled ? '1' : '0'
+      localClockHost.classList.toggle('directorTpHidden', !show)
+    }
+    const songHost = viewport.querySelector('[data-director-tp-song]')
+    if (songHost) {
+      const songName = tp.songName || getNowPlayingName(state.snapshot)
+      if (songHost.textContent !== songName) songHost.textContent = songName
+      songHost.dataset.position = settings.songNamePosition
+      songHost.classList.toggle('directorTpHidden', clearMode || !settings.songNameEnabled || !songName)
+    }
+    const queueHost = viewport.querySelector('[data-director-tp-queue]')
+    if (queueHost) {
+      const queueName = getQueuedSongName(state.snapshot)
+      if (queueHost.textContent !== queueName) queueHost.textContent = queueName
+      queueHost.dataset.position = settings.queueNamePosition
+      queueHost.classList.toggle('directorTpHidden', clearMode || !settings.queueNameEnabled || !queueName)
+    }
+    const progressHost = viewport.querySelector('[data-director-tp-progress]')
+    if (progressHost) {
+      const progress = isPlaying(state.snapshot) ? getVisualPlaybackProgressPercent(state.snapshot) : 0
+      progressHost.dataset.position = settings.progressPosition
+      const fill = progressHost.querySelector('span')
+      if (fill) fill.style.width = `${progress}%`
+      progressHost.classList.toggle('directorTpHidden', clearMode || !settings.progressEnabled)
+    }
 
     viewport.setAttribute('data-content-type', showPreview ? 'preview' : (hasMedia ? tp.type : (hasText ? 'text' : 'empty')))
     viewport.setAttribute('data-playing', tp.playing ? '1' : '0')
 
     if (chordHost) {
-      const showChord = chord.itemFound && !!chord.text && !chord.clearMode
-      const chordPosition = getTelepromptChordPosition()
+      const showChord = !clearMode && settings.chordsEnabled && chord.itemFound && !!chord.text && !chord.clearMode
+      const chordPosition = settings.chordPosition
       if (chordHost.textContent !== chord.text) chordHost.textContent = chord.text
       chordHost.classList.toggle('directorTpHidden', !showChord)
       chordHost.classList.toggle('directorTpChordTop', chordPosition === 'top')
@@ -8255,7 +8707,7 @@
       viewport.setAttribute('data-chord-visible', showChord ? '1' : '0')
       viewport.setAttribute('data-chord-position', chordPosition)
       if (showChord) {
-        const scale = getTelepromptChordScale()
+        const scale = settings.chordScale
         const chordLines = chord.text.split(/\r?\n/)
         const longestLine = chordLines.reduce((largest, line) => Math.max(largest, Array.from(line).length), 1)
         const availableWidth = Math.max(220, (viewport.clientWidth || window.innerWidth || 360) - 32)
@@ -8273,9 +8725,17 @@
     }
 
     if (previewHost) {
-      if (showPreview && previewHost.dataset.previewSignature !== tp.preview.signature) {
-        previewHost.innerHTML = renderDirectorTelepromptPreviewHtml(tp.preview)
-        previewHost.dataset.previewSignature = tp.preview.signature
+      const preview = {
+        ...tp.preview,
+        songDurationEnabled: settings.previewSongDurationEnabled,
+        blockDurationEnabled: settings.previewBlockDurationEnabled,
+        underlineEnabled: settings.previewUnderlineEnabled,
+        textCase: settings.textCase,
+      }
+      const previewSignature = `${tp.preview.signature}|${settings.previewSongDurationEnabled ? 1 : 0}|${settings.previewBlockDurationEnabled ? 1 : 0}|${settings.previewUnderlineEnabled ? 1 : 0}|${settings.textCase}|${settings.previewScale}`
+      if (showPreview && previewHost.dataset.previewSignature !== previewSignature) {
+        previewHost.innerHTML = renderDirectorTelepromptPreviewHtml(preview)
+        previewHost.dataset.previewSignature = previewSignature
       }
       const progress = tp.playing
         ? getVisualPlaybackProgressPercent(state.snapshot) : 0
@@ -8311,7 +8771,7 @@
 
     const showText = hasText
     if (text) {
-      if (text.textContent !== tp.text) text.textContent = tp.text
+      if (text.textContent !== displayText) text.textContent = displayText
       text.classList.toggle('directorTpHidden', !showText)
       text.classList.toggle('directorTpTextOverlay', hasMedia)
       text.classList.toggle('directorTpTextOnly', !hasMedia && showText)
@@ -11700,7 +12160,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -11715,6 +12175,7 @@
           break
         }
         state.showSettingsModal = true
+        state.settingsSection = 'main'
         if (opening) {
           state.showProjectModal = false
           state.showPlaylistModal = false
@@ -12269,6 +12730,28 @@
         toggleHashFamilyDrawer(parentId, itemType)
         break
       }
+      case 'teleprompt-config-hub':
+        state.settingsSection = 'teleprompt-hub'
+        scheduleRender(true)
+        break
+      case 'teleprompt-config-main':
+        state.settingsSection = 'main'
+        scheduleRender(true)
+        break
+      case 'teleprompt-config-tp1':
+        state.telepromptSettingsSlot = 1
+        state.settingsSection = 'teleprompt-1'
+        scheduleRender(true)
+        break
+      case 'teleprompt-config-tp2':
+        state.telepromptSettingsSlot = 2
+        state.settingsSection = 'teleprompt-2'
+        scheduleRender(true)
+        break
+      case 'teleprompt-config-recados':
+        state.settingsSection = 'recados'
+        scheduleRender(true)
+        break
       case 'teleprompt-font-set': setTelepromptFont(el.getAttribute('data-value')); break
       case 'teleprompt-color-set': setTelepromptColor(el.getAttribute('data-value')); break
       case 'teleprompt-colors-more': toggleTelepromptColorPalette(); break
@@ -13577,6 +14060,21 @@
       window.setTimeout(() => { pollBridge(); pollDirectorTechnicalNotice(); scheduleRender() }, 0)
     }, true)
     document.addEventListener('input', (event) => {
+      if (event.target?.matches?.('[data-app-tp-field]:not([type="checkbox"])')) {
+        const field = event.target.getAttribute('data-app-tp-field')
+        const slot = Number(event.target.getAttribute('data-tp-slot')) === 2 ? 2 : 1
+        saveAppTelepromptSetting(slot, field, event.target.value)
+        const valueLabel = event.target.closest('.appTpConfigGroup')?.querySelector(`[data-app-tp-value="${field}"]`)
+        if (valueLabel) valueLabel.textContent = `${event.target.value}%`
+        return
+      }
+      if (event.target?.matches?.('[data-app-recados-field]:not([type="checkbox"])')) {
+        const field = event.target.getAttribute('data-app-recados-field')
+        saveAppRecadosSetting(field, event.target.value)
+        const valueLabel = event.target.closest('.appTpConfigGroup')?.querySelector(`[data-app-tp-value="${field}"]`)
+        if (valueLabel) valueLabel.textContent = `${event.target.value}%`
+        return
+      }
       if (event.target?.id === 'directorPassInput') state.authPass = event.target.value
       if (event.target?.id === 'directorRecadosTextInput') return
       if (event.target?.id === 'tabletSearchInput') {
@@ -13592,6 +14090,16 @@
       handleRangeInput(event)
     }, true)
     document.addEventListener('change', (event) => {
+      if (event.target?.matches?.('[data-app-tp-field][type="checkbox"]')) {
+        const field = event.target.getAttribute('data-app-tp-field')
+        const slot = Number(event.target.getAttribute('data-tp-slot')) === 2 ? 2 : 1
+        saveAppTelepromptSetting(slot, field, event.target.checked)
+        return
+      }
+      if (event.target?.matches?.('[data-app-recados-field][type="checkbox"]')) {
+        saveAppRecadosSetting(event.target.getAttribute('data-app-recados-field'), event.target.checked)
+        return
+      }
       if (event.target?.id === 'directorRecadosImageInput') {
         chooseDirectorRecadoImage(event.target)
       }

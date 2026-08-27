@@ -220,6 +220,11 @@ function getCopyProjectService() {
 }
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
+const VSHOOK_VLC_VERSION = '3.0.23';
+const VSHOOK_VLC_WINDOWS_URL =
+  `https://mirror.turbozoneinternet.net.br/videolan/vlc/${VSHOOK_VLC_VERSION}/win64/vlc-${VSHOOK_VLC_VERSION}-win64.zip`;
+const VSHOOK_VLC_MACOS_URL =
+  `https://mirror.turbozoneinternet.net.br/videolan/vlc/${VSHOOK_VLC_VERSION}/macosx/vlc-${VSHOOK_VLC_VERSION}-universal.dmg`;
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
 const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
@@ -4651,6 +4656,9 @@ function entriesChangedSinceLastInstall(update, entries) {
   const installed = store.get('installedManifest') || {};
   const installedFiles = installed.platform === platformKey ? (installed.files || {}) : {};
   return entries.filter((entry) => {
+    if (entry.key === 'vlcRuntime' && !hasInstalledVlcRuntime()) {
+      return true;
+    }
     const previous = installedFiles[entry.key];
     return !previous || previous.url !== entry.url;
   });
@@ -4669,15 +4677,31 @@ function buildPayloadEntries(files) {
   };
 
   if (process.platform === 'win32') {
-    return [
+    const entries = [
       { key: 'vshookDll', url: isCurrentExtensionUrl(files.vshookDll || files.vshookExtDll, 'reaper_VSHookExt.dll'), filename: 'reaper_VSHookExt.dll' }
     ].filter((entry) => !!entry.url);
+    if (entries.length > 0 && !hasInstalledVlcRuntime()) {
+      entries.push({
+        key: 'vlcRuntime',
+        url: VSHOOK_VLC_WINDOWS_URL,
+        filename: `VSHook-VLC-${VSHOOK_VLC_VERSION}-Windows-x64.zip`
+      });
+    }
+    return entries;
   }
 
   if (process.platform === 'darwin') {
-    return [
+    const entries = [
       { key: 'vshookDylib', url: isCurrentExtensionUrl(files.vshookDylib || files.vshookExtDylib, 'reaper_VSHookExt.dylib'), filename: 'reaper_VSHookExt.dylib' }
     ].filter((entry) => !!entry.url);
+    if (entries.length > 0 && !hasInstalledVlcRuntime()) {
+      entries.push({
+        key: 'vlcRuntime',
+        url: VSHOOK_VLC_MACOS_URL,
+        filename: `VSHook-VLC-${VSHOOK_VLC_VERSION}-macOS-universal.dmg`
+      });
+    }
+    return entries;
   }
 
   return [];
@@ -5260,6 +5284,11 @@ function estimateUpdatePackageEntryBytes(entry, previousEntry = null) {
   if (entry?.key === 'vshookDll' || entry?.key === 'vshookDylib') {
     return 8 * 1024 * 1024;
   }
+  if (entry?.key === 'vlcRuntime') {
+    return process.platform === 'darwin'
+      ? 160 * 1024 * 1024
+      : 96 * 1024 * 1024;
+  }
   return 16 * 1024 * 1024;
 }
 
@@ -5422,7 +5451,9 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
             reportPackageProgress(index, fileProgress, transfer, false);
           }, {
             cacheVersion: remoteValidator?.token || artifactIdentity,
-            timeoutMs: isExtensionEntry ? 30000 : 120000,
+            timeoutMs: entry.key === 'vlcRuntime'
+              ? 600000
+              : (isExtensionEntry ? 30000 : 120000),
             resume: true
           });
           downloadCompleted = true;
@@ -5430,6 +5461,8 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
             validateExtensionBinaryFile(partial, entry.key);
           } else if (entry.key === 'installer') {
             validateUpdateInstallerFile(partial);
+          } else if (entry.key === 'vlcRuntime') {
+            validateVlcRuntimeArchive(partial);
           }
           await fs.promises.rm(dest, { force: true }).catch(() => {});
           await fs.promises.rename(partial, dest);
@@ -5740,22 +5773,51 @@ async function downloadLatestUpdate(updateOverride = null) {
   const downloadDir = path.join(app.getPath('userData'), 'downloads', update.updateId || update.version || 'latest');
   const artifactIdentity = getUpdateArtifactIdentity(update);
   const output = {};
+  const plannedEntryBytes = entries.map((entry) =>
+    estimateUpdatePackageEntryBytes(entry));
+  let lastReportedProgress = 0;
 
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     const dest = path.join(downloadDir, entry.filename);
     const isExtensionEntry =
       entry.key === 'vshookDll' || entry.key === 'vshookDylib';
-    await downloadFile(entry.url, dest, (fileProgress) => {
-      const totalProgress = Math.round(((i * 100) + fileProgress) / entries.length);
-      if (isValidWindow(mainWindow)) mainWindow.webContents.send('download-progress', totalProgress);
+    await downloadFile(entry.url, dest, (fileProgress, transfer = null) => {
+      const actualTotal = Number(transfer?.total) || 0;
+      if (actualTotal > 0) plannedEntryBytes[i] = actualTotal;
+      const totalBytes = plannedEntryBytes.reduce(
+        (sum, value) => sum + Math.max(1, Number(value) || 0), 0);
+      const completedBytes = plannedEntryBytes.slice(0, i).reduce(
+        (sum, value) => sum + Math.max(1, Number(value) || 0), 0);
+      const currentPlanned = Math.max(
+        1, Number(plannedEntryBytes[i]) || 0);
+      const currentBytes = actualTotal > 0 &&
+          Number(transfer?.downloaded) >= 0
+        ? Math.min(currentPlanned, Number(transfer.downloaded))
+        : currentPlanned * Math.max(
+            0, Math.min(100, Number(fileProgress) || 0)) / 100;
+      const totalProgress = Math.min(
+        99,
+        Math.floor(
+          ((completedBytes + currentBytes) * 100) / totalBytes)
+      );
+      lastReportedProgress = Math.max(
+        lastReportedProgress, totalProgress);
+      if (isValidWindow(mainWindow)) {
+        mainWindow.webContents.send(
+          'download-progress', lastReportedProgress);
+      }
     }, {
       cacheVersion: artifactIdentity,
       resume: true,
-      timeoutMs: isExtensionEntry ? 30000 : 120000
+      timeoutMs: entry.key === 'vlcRuntime'
+        ? 600000
+        : (isExtensionEntry ? 30000 : 120000)
     });
     if (isExtensionEntry) {
       validateExtensionBinaryFile(dest, entry.key);
+    } else if (entry.key === 'vlcRuntime') {
+      validateVlcRuntimeArchive(dest);
     }
     output[entry.key] = dest;
   }
@@ -6057,6 +6119,154 @@ function getWindowsReaperUserPluginsDirs() {
   });
 }
 
+function hasInstalledVlcRuntime() {
+  if (process.platform === 'win32') {
+    const candidates = [
+      path.join(
+        getWindowsReaperUserPluginsDir(),
+        'VSHookRuntime', 'VLC', 'libvlc.dll'
+      ),
+      path.join(
+        process.env.ProgramFiles || 'C:\\Program Files',
+        'VideoLAN', 'VLC', 'libvlc.dll'
+      )
+    ];
+    return candidates.some((filename) =>
+      physicalFs.existsSync(filename));
+  }
+  if (process.platform === 'darwin') {
+    const candidates = [
+      '/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib',
+      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC/lib/libvlc.dylib',
+      path.join(
+        os.homedir(), 'Library', 'Application Support', 'REAPER',
+        'UserPlugins', 'VSHookRuntime', 'VLC', 'lib',
+        'libvlc.dylib'
+      )
+    ];
+    return candidates.some((filename) =>
+      physicalFs.existsSync(filename));
+  }
+  return false;
+}
+
+function validateVlcRuntimeArchive(filename) {
+  if (!filename || !physicalFs.existsSync(filename)) {
+    throw new Error('O runtime de vídeo do VLC não foi encontrado.');
+  }
+  const stat = physicalFs.statSync(filename);
+  if (!stat.isFile() || stat.size < 1024 * 1024) {
+    throw new Error('O runtime de vídeo do VLC está vazio ou incompleto.');
+  }
+  if (process.platform === 'win32') {
+    const handle = physicalFs.openSync(filename, 'r');
+    const header = Buffer.alloc(4);
+    try {
+      physicalFs.readSync(handle, header, 0, header.length, 0);
+    } finally {
+      physicalFs.closeSync(handle);
+    }
+    if (header[0] !== 0x50 || header[1] !== 0x4b) {
+      throw new Error('O pacote do VLC não é um ZIP válido.');
+    }
+  }
+}
+
+function findFileBelow(root, expectedName, depth = 0) {
+  if (!root || depth > 8 || !physicalFs.existsSync(root)) return '';
+  let entries = [];
+  try {
+    entries = physicalFs.readdirSync(root, { withFileTypes: true });
+  } catch (_) {
+    return '';
+  }
+  const exact = entries.find((entry) =>
+    entry.isFile() && entry.name.toLowerCase() === expectedName.toLowerCase());
+  if (exact) return path.join(root, exact.name);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findFileBelow(
+      path.join(root, entry.name), expectedName, depth + 1);
+    if (found) return found;
+  }
+  return '';
+}
+
+function installWindowsVlcRuntime(archive) {
+  if (!archive) return;
+  validateVlcRuntimeArchive(archive);
+  const pluginsDirectory = path.resolve(
+    getWindowsReaperUserPluginsDir());
+  const runtimeParent = path.resolve(
+    pluginsDirectory, 'VSHookRuntime');
+  const target = path.resolve(runtimeParent, 'VLC');
+  const relativeTarget = path.relative(pluginsDirectory, target);
+  if (!relativeTarget || relativeTarget.startsWith('..') ||
+      path.isAbsolute(relativeTarget)) {
+    throw new Error('A pasta do runtime VLC não pôde ser validada.');
+  }
+  physicalFs.mkdirSync(runtimeParent, { recursive: true });
+  const transactionId = `${process.pid}-${Date.now()}`;
+  const stagingRoot = path.join(
+    runtimeParent, `.vlc-staging-${transactionId}`);
+  const extracted = path.join(stagingRoot, 'extracted');
+  const prepared = path.join(stagingRoot, 'prepared');
+  const backup = path.join(
+    runtimeParent, `.vlc-backup-${transactionId}`);
+  physicalFs.rmSync(stagingRoot, { recursive: true, force: true });
+  physicalFs.mkdirSync(extracted, { recursive: true });
+  try {
+    execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'Expand-Archive -LiteralPath $env:VSHOOK_VLC_ARCHIVE -DestinationPath $env:VSHOOK_VLC_EXTRACT -Force'
+      ],
+      {
+        stdio: 'ignore',
+        windowsHide: true,
+        timeout: 180000,
+        env: {
+          ...process.env,
+          VSHOOK_VLC_ARCHIVE: archive,
+          VSHOOK_VLC_EXTRACT: extracted
+        }
+      }
+    );
+    const library = findFileBelow(extracted, 'libvlc.dll');
+    const sourceRoot = library ? path.dirname(library) : '';
+    if (!sourceRoot ||
+        !physicalFs.existsSync(path.join(sourceRoot, 'libvlccore.dll')) ||
+        !physicalFs.existsSync(path.join(sourceRoot, 'plugins'))) {
+      throw new Error('O pacote oficial do VLC não trouxe todos os componentes necessários.');
+    }
+    physicalFs.cpSync(sourceRoot, prepared, {
+      recursive: true,
+      force: true,
+      errorOnExist: false
+    });
+    if (physicalFs.existsSync(target)) {
+      physicalFs.renameSync(target, backup);
+    }
+    try {
+      physicalFs.renameSync(prepared, target);
+    } catch (error) {
+      if (physicalFs.existsSync(backup) &&
+          !physicalFs.existsSync(target)) {
+        physicalFs.renameSync(backup, target);
+      }
+      throw error;
+    }
+    physicalFs.rmSync(backup, { recursive: true, force: true });
+  } finally {
+    physicalFs.rmSync(stagingRoot, { recursive: true, force: true });
+  }
+}
+
 function removeLegacyWindowsVshookExtensions() {
   const failures = [];
   for (const pluginsDir of getWindowsReaperUserPluginsDirs()) {
@@ -6149,6 +6359,9 @@ function installWindowsPayload(files) {
   }
   removeLegacyWindowsVshookExtensions();
   removeWindowsPublicVsHookDir();
+  if (files.vlcRuntime) {
+    installWindowsVlcRuntime(files.vlcRuntime);
+  }
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
   // Confere novamente o diretório antes de entregar o controle ao instalador.
   // O customInstall e a próxima inicialização repetem a mesma limpeza.
@@ -6202,6 +6415,10 @@ function installMacPayload(files, options = {}) {
   if (installExtension) {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   }
+  const vlcArchive = installExtension && files?.vlcRuntime
+    ? files.vlcRuntime
+    : '';
+  if (vlcArchive) validateVlcRuntimeArchive(vlcArchive);
   const commands = [];
   const vshookSource = installExtension ? files.vshookDylib : '';
   const companionSource = path.join(
@@ -6216,6 +6433,16 @@ function installMacPayload(files, options = {}) {
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
+  if (vlcArchive) {
+    commands.push(`VLC_DMG=${shellQuote(vlcArchive)}`);
+    commands.push('VLC_MOUNT=$(mktemp -d /tmp/vshook-vlc.XXXXXX)');
+    commands.push('cleanup_vshook_vlc() { hdiutil detach "$VLC_MOUNT" -quiet 2>/dev/null || true; rmdir "$VLC_MOUNT" 2>/dev/null || true; }');
+    commands.push('trap cleanup_vshook_vlc EXIT');
+    commands.push('hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet');
+    commands.push('VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"');
+    commands.push('test -f "$VLC_SOURCE/lib/libvlc.dylib"');
+    commands.push('test -d "$VLC_SOURCE/plugins"');
+  }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   }
@@ -6238,6 +6465,18 @@ function installMacPayload(files, options = {}) {
     commands.push('cp -f "$VSHOOK_SOURCE" "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('mv -f "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"');
+  }
+  if (vlcArchive) {
+    commands.push('GLOBAL_VLC_PARENT="$GLOBAL_PLUGIN_DIR/VSHookRuntime"');
+    commands.push('GLOBAL_VLC_DIR="$GLOBAL_VLC_PARENT/VLC"');
+    commands.push('GLOBAL_VLC_TMP="$GLOBAL_VLC_PARENT/.VLC.tmp"');
+    commands.push('GLOBAL_VLC_BACKUP="$GLOBAL_VLC_PARENT/.VLC.backup"');
+    commands.push('mkdir -p "$GLOBAL_VLC_PARENT"');
+    commands.push('rm -rf "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_BACKUP"');
+    commands.push('ditto "$VLC_SOURCE" "$GLOBAL_VLC_TMP"');
+    commands.push('[ ! -e "$GLOBAL_VLC_DIR" ] || mv "$GLOBAL_VLC_DIR" "$GLOBAL_VLC_BACKUP"');
+    commands.push('if mv "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_DIR"; then rm -rf "$GLOBAL_VLC_BACKUP"; else [ ! -e "$GLOBAL_VLC_BACKUP" ] || mv "$GLOBAL_VLC_BACKUP" "$GLOBAL_VLC_DIR"; exit 1; fi');
+    commands.push('chmod -R a+rX "$GLOBAL_VLC_DIR"');
   }
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
