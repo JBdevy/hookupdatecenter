@@ -615,7 +615,7 @@
     borderColor: '#00ff55', songNameColor: '#00ff55',
     queueNameColor: '#ffea00', progressColor: '#ffea00',
     chordColor: '#fb923c',
-    fontFamily: 'system', songNameFontFamily: 'system',
+    fontFamily: 'system', previewFontFamily: 'system', songNameFontFamily: 'system',
     queueNameFontFamily: 'system', chordFontFamily: 'system',
     textCase: 'uppercase', textAlignment: 'center',
     clockPosition: 'center-top', localClockPosition: 'right',
@@ -7080,6 +7080,7 @@
       <section class="appTpConfigGroup"><h3>FONTES E POSIÇÃO</h3><div class="appTpConfigGrid">
         ${renderAppConfigSelect(slot, settings, 'textCase', 'Caixa da letra', [{ value: 'original', label: 'PADRÃO (COMO FOI ESCRITO)' }, { value: 'uppercase', label: 'CAIXA ALTA' }, { value: 'lowercase', label: 'caixa baixa' }])}
         ${renderAppConfigSelect(slot, settings, 'fontFamily', 'Fonte da letra', fontOptions)}
+        ${renderAppConfigSelect(slot, settings, 'previewFontFamily', 'Fonte do preview', fontOptions)}
         ${renderAppConfigSelect(slot, settings, 'songNameFontFamily', 'Fonte do nome da música', fontOptions)}
         ${renderAppConfigSelect(slot, settings, 'queueNameFontFamily', 'Fonte do nome da fila', fontOptions)}
         ${renderAppConfigSelect(slot, settings, 'chordFontFamily', 'Fonte da cifra', fontOptions)}
@@ -8578,6 +8579,7 @@
       `--app-tp-progress-color:${settings.progressColor}`,
       `--app-tp-chord-color:${settings.chordColor}`,
       `--app-tp-font:${getTelepromptFontFamilyValue(settings.fontFamily)}`,
+      `--app-tp-preview-font:${getTelepromptFontFamilyValue(settings.previewFontFamily)}`,
       `--app-tp-song-font:${getTelepromptFontFamilyValue(settings.songNameFontFamily)}`,
       `--app-tp-queue-font:${getTelepromptFontFamilyValue(settings.queueNameFontFamily)}`,
       `--app-tp-chord-font:${getTelepromptFontFamilyValue(settings.chordFontFamily)}`,
@@ -8943,6 +8945,7 @@
       '--app-tp-progress-color': settings.progressColor,
       '--app-tp-chord-color': settings.chordColor,
       '--app-tp-font': getTelepromptFontFamilyValue(settings.fontFamily),
+      '--app-tp-preview-font': getTelepromptFontFamilyValue(settings.previewFontFamily),
       '--app-tp-song-font': getTelepromptFontFamilyValue(settings.songNameFontFamily),
       '--app-tp-queue-font': getTelepromptFontFamilyValue(settings.queueNameFontFamily),
       '--app-tp-chord-font': getTelepromptFontFamilyValue(settings.chordFontFamily),

@@ -14,6 +14,7 @@ const defaults = {
   progressColor: '#ffea00',
   chordColor: '#fb923c',
   fontFamily: 'Arial',
+  previewFontFamily: 'Arial',
   songNameFontFamily: 'Arial',
   queueNameFontFamily: 'Arial',
   chordFontFamily: 'Arial',
