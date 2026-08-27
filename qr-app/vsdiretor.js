@@ -8338,10 +8338,47 @@
       return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}" data-preview-block-color-key="${escapeHtml(colorKey)}" data-preview-whiten-others="${whitenOtherSongs ? '1' : '0'}"><div class="directorTpPreviewBlockName">${escapeHtml(`${applyPreviewTextCase(block?.name || 'SEM BLOCO')}${blockDuration}`)}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
     })
     const phone = document.documentElement.dataset.directorDevice === 'phone'
-    const columnCount = Math.max(1, Math.min(phone ? 2 : 4, blocks.length))
+    const viewport = root.querySelector('[data-director-tp-viewport]')
+    const viewportWidth = Math.max(320, Number(viewport?.clientWidth) || Number(window.innerWidth) || 360)
+    const viewportHeight = Math.max(240, Number(viewport?.clientHeight) || Number(window.innerHeight) || 640)
+    const maximumColumns = Math.max(1, Math.min(phone ? 2 : 4, blocks.length))
+    const gap = Math.max(7, Math.min(14, viewportWidth / 100))
+    let columnCount = 1
+    let bestFontSize = 0
+    let bestCardWidth = 0
+    let blockColumns = Array(blocks.length).fill(0)
+    for (let candidate = 1; candidate <= maximumColumns; candidate += 1) {
+      const cardWidth = Math.max(1, (viewportWidth - gap * (candidate - 1)) / candidate)
+      const columnUnits = Array(candidate).fill(0)
+      const columnBlocks = Array(candidate).fill(0)
+      const candidateColumns = Array(blocks.length).fill(0)
+      blocks.forEach((block, index) => {
+        let target = 0
+        for (let column = 1; column < candidate; column += 1) {
+          if (columnUnits[column] < columnUnits[target]) target = column
+        }
+        candidateColumns[index] = target
+        columnUnits[target] += Math.max(1, Array.isArray(block?.songs) ? block.songs.length : 0) + 1.35
+        columnBlocks[target] += 1
+      })
+      const busiestUnits = Math.max(1, ...columnUnits)
+      const busiestBlocks = Math.max(1, ...columnBlocks)
+      const verticalLimit = Math.max(10, Math.floor(
+        Math.max(1, viewportHeight - gap * (busiestBlocks - 1) - busiestBlocks * 12) /
+          (busiestUnits * 1.07)))
+      const horizontalLimit = Math.max(10, Math.floor(cardWidth / 13))
+      const fontSize = Math.max(10, Math.min(phone ? 22 : 30, horizontalLimit, verticalLimit))
+      if (fontSize > bestFontSize || (fontSize === bestFontSize && cardWidth > bestCardWidth)) {
+        columnCount = candidate
+        bestFontSize = fontSize
+        bestCardWidth = cardWidth
+        blockColumns = candidateColumns
+      }
+    }
     const columns = Array.from({ length: columnCount }, () => [])
-    cardHtml.forEach((card, index) => columns[index % columnCount].push(card))
-    return `<div class="directorTpPreviewGrid" data-preview-count="${blocks.length}" data-preview-underline="${underlineEnabled ? '1' : '0'}">${columns.map((cards) => `<div class="directorTpPreviewColumn">${cards.join('')}</div>`).join('')}</div>`
+    cardHtml.forEach((card, index) => columns[blockColumns[index]].push(card))
+    const previewStyle = `--tp-preview-song-size:${bestFontSize}px;--tp-preview-title-size:${Math.max(13, Math.round(bestFontSize * 1.08))}px`
+    return `<div class="directorTpPreviewGrid" style="${previewStyle}" data-preview-columns="${columnCount}" data-preview-count="${blocks.length}" data-preview-underline="${underlineEnabled ? '1' : '0'}">${columns.map((cards) => `<div class="directorTpPreviewColumn">${cards.join('')}</div>`).join('')}</div>`
   }
 
   function discardDirectorTelepromptWarmup(media) {
