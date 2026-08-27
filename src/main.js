@@ -221,10 +221,8 @@ function getCopyProjectService() {
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const VSHOOK_VLC_VERSION = '3.0.23';
-const VSHOOK_VLC_WINDOWS_URL =
-  `https://mirror.turbozoneinternet.net.br/videolan/vlc/${VSHOOK_VLC_VERSION}/win64/vlc-${VSHOOK_VLC_VERSION}-win64.zip`;
-const VSHOOK_VLC_MACOS_URL =
-  `https://mirror.turbozoneinternet.net.br/videolan/vlc/${VSHOOK_VLC_VERSION}/macosx/vlc-${VSHOOK_VLC_VERSION}-universal.dmg`;
+const VSHOOK_VLC_WINDOWS_ARCHIVE = `vlc-${VSHOOK_VLC_VERSION}-win64.zip`;
+const VSHOOK_VLC_MACOS_ARCHIVE = `vlc-${VSHOOK_VLC_VERSION}-universal.dmg`;
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
 const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
@@ -4655,8 +4653,12 @@ function entriesChangedSinceLastInstall(update, entries) {
   const platformKey = getPlatformKey();
   const installed = store.get('installedManifest') || {};
   const installedFiles = installed.platform === platformKey ? (installed.files || {}) : {};
+  const mustInstallBundledVlc = !hasInstalledVlcRuntime() && entries.some(
+    (entry) => entry.key === 'vshookDll' || entry.key === 'vshookDylib'
+  );
   return entries.filter((entry) => {
-    if (entry.key === 'vlcRuntime' && !hasInstalledVlcRuntime()) {
+    if (mustInstallBundledVlc &&
+        (entry.key === 'vshookDll' || entry.key === 'vshookDylib')) {
       return true;
     }
     const previous = installedFiles[entry.key];
@@ -4677,31 +4679,15 @@ function buildPayloadEntries(files) {
   };
 
   if (process.platform === 'win32') {
-    const entries = [
+    return [
       { key: 'vshookDll', url: isCurrentExtensionUrl(files.vshookDll || files.vshookExtDll, 'reaper_VSHookExt.dll'), filename: 'reaper_VSHookExt.dll' }
     ].filter((entry) => !!entry.url);
-    if (entries.length > 0 && !hasInstalledVlcRuntime()) {
-      entries.push({
-        key: 'vlcRuntime',
-        url: VSHOOK_VLC_WINDOWS_URL,
-        filename: `VSHook-VLC-${VSHOOK_VLC_VERSION}-Windows-x64.zip`
-      });
-    }
-    return entries;
   }
 
   if (process.platform === 'darwin') {
-    const entries = [
+    return [
       { key: 'vshookDylib', url: isCurrentExtensionUrl(files.vshookDylib || files.vshookExtDylib, 'reaper_VSHookExt.dylib'), filename: 'reaper_VSHookExt.dylib' }
     ].filter((entry) => !!entry.url);
-    if (entries.length > 0 && !hasInstalledVlcRuntime()) {
-      entries.push({
-        key: 'vlcRuntime',
-        url: VSHOOK_VLC_MACOS_URL,
-        filename: `VSHook-VLC-${VSHOOK_VLC_VERSION}-macOS-universal.dmg`
-      });
-    }
-    return entries;
   }
 
   return [];
@@ -5284,11 +5270,6 @@ function estimateUpdatePackageEntryBytes(entry, previousEntry = null) {
   if (entry?.key === 'vshookDll' || entry?.key === 'vshookDylib') {
     return 8 * 1024 * 1024;
   }
-  if (entry?.key === 'vlcRuntime') {
-    return process.platform === 'darwin'
-      ? 160 * 1024 * 1024
-      : 96 * 1024 * 1024;
-  }
   return 16 * 1024 * 1024;
 }
 
@@ -5451,9 +5432,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
             reportPackageProgress(index, fileProgress, transfer, false);
           }, {
             cacheVersion: remoteValidator?.token || artifactIdentity,
-            timeoutMs: entry.key === 'vlcRuntime'
-              ? 600000
-              : (isExtensionEntry ? 30000 : 120000),
+            timeoutMs: isExtensionEntry ? 30000 : 120000,
             resume: true
           });
           downloadCompleted = true;
@@ -5461,8 +5440,6 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
             validateExtensionBinaryFile(partial, entry.key);
           } else if (entry.key === 'installer') {
             validateUpdateInstallerFile(partial);
-          } else if (entry.key === 'vlcRuntime') {
-            validateVlcRuntimeArchive(partial);
           }
           await fs.promises.rm(dest, { force: true }).catch(() => {});
           await fs.promises.rename(partial, dest);
@@ -5810,14 +5787,10 @@ async function downloadLatestUpdate(updateOverride = null) {
     }, {
       cacheVersion: artifactIdentity,
       resume: true,
-      timeoutMs: entry.key === 'vlcRuntime'
-        ? 600000
-        : (isExtensionEntry ? 30000 : 120000)
+      timeoutMs: isExtensionEntry ? 30000 : 120000
     });
     if (isExtensionEntry) {
       validateExtensionBinaryFile(dest, entry.key);
-    } else if (entry.key === 'vlcRuntime') {
-      validateVlcRuntimeArchive(dest);
     }
     output[entry.key] = dest;
   }
@@ -6150,6 +6123,32 @@ function hasInstalledVlcRuntime() {
   return false;
 }
 
+function getBundledVlcRuntimeArchive(required = false) {
+  const filename = process.platform === 'win32'
+    ? VSHOOK_VLC_WINDOWS_ARCHIVE
+    : process.platform === 'darwin'
+      ? VSHOOK_VLC_MACOS_ARCHIVE
+      : '';
+  if (!filename) return '';
+  const candidates = [
+    path.join(process.resourcesPath, 'vlc-runtime', filename),
+    path.join(__dirname, '..', 'vendor', 'vlc', filename)
+  ];
+  const archive = candidates.find((candidate) =>
+    physicalFs.existsSync(candidate)) || '';
+  if (archive) {
+    validateVlcRuntimeArchive(archive);
+    return archive;
+  }
+  if (required) {
+    throw new Error(
+      'A Hook Center foi instalada sem o runtime de vídeo VLC. ' +
+      'Instale a versão completa da Hook Center e tente novamente.'
+    );
+  }
+  return '';
+}
+
 function validateVlcRuntimeArchive(filename) {
   if (!filename || !physicalFs.existsSync(filename)) {
     throw new Error('O runtime de vídeo do VLC não foi encontrado.');
@@ -6168,6 +6167,18 @@ function validateVlcRuntimeArchive(filename) {
     }
     if (header[0] !== 0x50 || header[1] !== 0x4b) {
       throw new Error('O pacote do VLC não é um ZIP válido.');
+    }
+  } else if (process.platform === 'darwin') {
+    const handle = physicalFs.openSync(filename, 'r');
+    const trailer = Buffer.alloc(512);
+    try {
+      physicalFs.readSync(
+        handle, trailer, 0, trailer.length, stat.size - trailer.length);
+    } finally {
+      physicalFs.closeSync(handle);
+    }
+    if (trailer.subarray(0, 4).toString('ascii') !== 'koly') {
+      throw new Error('O pacote do VLC não é um DMG válido.');
     }
   }
 }
@@ -6359,8 +6370,8 @@ function installWindowsPayload(files) {
   }
   removeLegacyWindowsVshookExtensions();
   removeWindowsPublicVsHookDir();
-  if (files.vlcRuntime) {
-    installWindowsVlcRuntime(files.vlcRuntime);
+  if (!hasInstalledVlcRuntime()) {
+    installWindowsVlcRuntime(getBundledVlcRuntimeArchive(true));
   }
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
   // Confere novamente o diretório antes de entregar o controle ao instalador.
@@ -6415,8 +6426,8 @@ function installMacPayload(files, options = {}) {
   if (installExtension) {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   }
-  const vlcArchive = installExtension && files?.vlcRuntime
-    ? files.vlcRuntime
+  const vlcArchive = installExtension && !hasInstalledVlcRuntime()
+    ? getBundledVlcRuntimeArchive(true)
     : '';
   if (vlcArchive) validateVlcRuntimeArchive(vlcArchive);
   const commands = [];

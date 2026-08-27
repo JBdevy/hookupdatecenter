@@ -9,10 +9,10 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "build": "node scripts/prepare-windows-midi.js --if-windows && electron-builder --publish never",
-    "build:win": "node scripts/prepare-windows-midi.js && electron-builder --win nsis --publish never",
-    "build:mac": "electron-builder --mac dmg zip --universal --publish never",
-    "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --universal --publish never"
+    "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-vlc-runtime.js --current && electron-builder --publish never",
+    "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-vlc-runtime.js --windows && electron-builder --win nsis --publish never",
+    "build:mac": "node scripts/prepare-vlc-runtime.js --macos && electron-builder --mac dmg zip --universal --publish never",
+    "build:mac:unsigned": "node scripts/prepare-vlc-runtime.js --macos && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --universal --publish never"
   },
   "dependencies": {
     "electron-store": "8.2.0",
@@ -63,6 +63,10 @@
         {
           "from": "vendor/windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe",
           "to": "windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe"
+        },
+        {
+          "from": "vendor/vlc/vlc-3.0.23-win64.zip",
+          "to": "vlc-runtime/vlc-3.0.23-win64.zip"
         }
       ]
     },
@@ -87,6 +91,12 @@
       "gatekeeperAssess": false,
       "forceCodeSigning": true,
       "x64ArchFiles": "Contents/Resources/vshook-companion/**",
+      "extraResources": [
+        {
+          "from": "vendor/vlc/vlc-3.0.23-universal.dmg",
+          "to": "vlc-runtime/vlc-3.0.23-universal.dmg"
+        }
+      ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": false
