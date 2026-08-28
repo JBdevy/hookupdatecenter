@@ -53,7 +53,8 @@ const defaults = {
   clearMode: false,
   rgbWindowBorderEnabled: false,
   rgbClockBorderEnabled: false,
-  rgbTextBoxBorderEnabled: false
+  rgbTextBoxBorderEnabled: false,
+  rgbChordBorderEnabled: false
 };
 
 const presetColors = {

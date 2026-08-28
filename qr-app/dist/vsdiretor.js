@@ -96,6 +96,7 @@
     lastDirectorLogoutSignature: '',
     showPassword: false,
     showPlaylistModal: false,
+    showPlaylistPreviewModal: false,
     showProjectModal: false,
     showProjectSaveConfirm: false,
     pendingProjectId: '',
@@ -634,7 +635,7 @@
     previewUnderlineEnabled: true, chordsEnabled: true,
     clearMode: false, hideTransport: false,
     rgbWindowBorderEnabled: false, rgbClockBorderEnabled: false,
-    rgbTextBoxBorderEnabled: false,
+    rgbTextBoxBorderEnabled: false, rgbChordBorderEnabled: false,
   })
 
   const APP_RECADOS_DEFAULTS = Object.freeze({
@@ -703,6 +704,7 @@
       'previewSongDurationEnabled', 'previewBlockDurationEnabled',
       'previewUnderlineEnabled', 'chordsEnabled', 'clearMode', 'hideTransport',
       'rgbWindowBorderEnabled', 'rgbClockBorderEnabled', 'rgbTextBoxBorderEnabled',
+      'rgbChordBorderEnabled',
     ])
     if (booleanFields.has(name)) return value === true || value === 'true' || value === '1'
     if (/Color$/.test(name)) return normalizeHexColor(value, defaults[name] || '#ffffff')
@@ -6920,8 +6922,12 @@
     const multiTitle = multiProjectPlaylistsAvailable
       ? 'Mostrar repertórios das outras sessões abertas'
       : 'Abra outra sessão que tenha pelo menos um repertório'
-    const header = `<div class="playlistModalHeader"><div class="modalTitle">REPERTÓRIOS</div><div class="playlistModalHeaderActions"><button class="${state.marqueeEnabled ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMarqueeButton" data-action="playlist-marquee-toggle" aria-pressed="${state.marqueeEnabled ? 'true' : 'false'}">LETREIRO</button><button class="${multiProjectPlaylists ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMultiButton" data-action="playlist-multi-toggle" aria-pressed="${multiProjectPlaylists ? 'true' : 'false'}" aria-disabled="${multiProjectPlaylistsAvailable ? 'false' : 'true'}" title="${escapeHtml(multiTitle)}"${multiProjectPlaylistsAvailable ? '' : ' disabled'}>${multiProjectPlaylists ? '[x]' : '[ ]'} MULTI</button></div></div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletPlaylistModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox playlistModalBox" data-stop-modal>${header}<div class="playlistSelectList">${rows}</div>${buttons}</div><div class="modalBottomSpace"></div></div>`
+    const previewMode = getPreviewMode()
+    const header = `<div class="playlistModalHeader"><div class="modalTitle">REPERTÓRIOS</div><div class="playlistModalHeaderActions"><button class="${previewMode > 0 ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistPreviewButton" data-action="playlist-preview-open" aria-pressed="${previewMode > 0 ? 'true' : 'false'}">PREVIEW</button><button class="${state.marqueeEnabled ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMarqueeButton" data-action="playlist-marquee-toggle" aria-pressed="${state.marqueeEnabled ? 'true' : 'false'}">LETREIRO</button><button class="${multiProjectPlaylists ? 'btnConfigOnGreen' : 'btnConfigOffRed'} playlistMultiButton" data-action="playlist-multi-toggle" aria-pressed="${multiProjectPlaylists ? 'true' : 'false'}" aria-disabled="${multiProjectPlaylistsAvailable ? 'false' : 'true'}" title="${escapeHtml(multiTitle)}"${multiProjectPlaylistsAvailable ? '' : ' disabled'}>${multiProjectPlaylists ? '[x]' : '[ ]'} MULTI</button></div></div>`
+    const previewModal = state.showPlaylistPreviewModal
+      ? `<div class="modalOverlay playlistPreviewModalOverlay" data-action="playlist-preview-close"><div class="modalBox playlistPreviewModalBox" data-stop-modal><div class="modalTitle">PREVIEW</div><div class="playlistPreviewGrid">${[1, 2, 3, 4, 5, 6].map((slot) => `<button class="playlistPreviewSlot ${previewMode === slot ? 'playlistPreviewSlotActive' : ''}" data-action="playlist-preview-select" data-preview-slot="${slot}" aria-pressed="${previewMode === slot ? 'true' : 'false'}">PREVIEW ${slot}</button>`).join('')}</div><button class="modalCancelBtn playlistPreviewClose" data-action="playlist-preview-close">FECHAR</button></div></div>`
+      : ''
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletPlaylistModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox playlistModalBox" data-stop-modal>${header}<div class="playlistSelectList">${rows}</div>${buttons}</div><div class="modalBottomSpace"></div></div>${previewModal}`
   }
 
   function renderProjectModal() {
@@ -7100,8 +7106,9 @@
         ${renderAppConfigSelect(slot, settings, 'preset', 'Preset', [{ value: 'night', label: 'NOITE' }, { value: 'day', label: 'DIA' }])}
         ${renderAppConfigToggle(slot, settings, 'windowBorderEnabled', 'Mostrar borda da janela')}
         ${renderAppConfigToggle(slot, settings, 'rgbWindowBorderEnabled', 'Borda da janela em RGB')}
-        ${renderAppConfigToggle(slot, settings, 'rgbClockBorderEnabled', 'Borda do cronômetro em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'rgbClockBorderEnabled', 'RGB borda do cronômetro/local')}
         ${renderAppConfigToggle(slot, settings, 'rgbTextBoxBorderEnabled', 'Contorno da letra em RGB')}
+        ${renderAppConfigToggle(slot, settings, 'rgbChordBorderEnabled', 'RGB borda da cifra')}
         ${renderAppConfigToggle(slot, settings, 'clockBorderEnabled', 'Mostrar borda do cronômetro')}
         ${renderAppConfigToggle(slot, settings, 'localClockBorderEnabled', 'Mostrar borda do horário local')}
         ${renderAppConfigToggle(slot, settings, 'textBoxEnabled', 'Mostrar borda da letra')}
@@ -8652,9 +8659,9 @@
               <video class="directorTpVideo directorTpHidden" muted playsinline preload="auto"></video>
               <div class="directorTpText directorTpHidden" aria-live="polite"></div>
               <div class="directorTpPreview directorTpHidden" data-director-tp-preview aria-live="polite" aria-hidden="true"></div>
-              <div class="directorTpChord directorTpHidden" data-director-tp-chord aria-live="polite" aria-hidden="true"></div>
+              <div class="directorTpChord directorTpHidden" data-director-tp-chord data-rgb="${settings.rgbChordBorderEnabled ? '1' : '0'}" aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpClock${settings.clockEnabled ? '' : ' directorTpHidden'}" data-director-tp-clock data-position="${settings.clockPosition}" data-border="${settings.clockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}">${escapeHtml(getTimerDisplayText(data))}</div>
-              <div class="directorTpLocalClock${settings.localClockEnabled ? '' : ' directorTpHidden'}" data-director-tp-local-clock data-position="${settings.localClockPosition}" data-border="${settings.localClockBorderEnabled ? '1' : '0'}"></div>
+              <div class="directorTpLocalClock${settings.localClockEnabled ? '' : ' directorTpHidden'}" data-director-tp-local-clock data-position="${settings.localClockPosition}" data-border="${settings.localClockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}"></div>
               <div class="directorTpSongName${settings.songNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-song data-position="${settings.songNamePosition}"></div>
               <div class="directorTpQueueName${settings.queueNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-queue data-position="${settings.queueNamePosition}"></div>
               <div class="directorTpProgress${settings.progressEnabled ? '' : ' directorTpHidden'}" data-director-tp-progress data-position="${settings.progressPosition}"><span></span></div>
@@ -8776,7 +8783,7 @@
         ? Math.max(1, Math.floor(availableWidth / count))
         : Math.max(1, Math.min(compactTimerWidth, availableWidth))
       const pairWidth = boxWidth * count + (count > 1 ? gap : 0)
-      const pairLeft = count > 1 ? edge : (clockAtRight ? width - edge - pairWidth : edge)
+      const pairLeft = count > 1 ? edge : Math.round((width - pairWidth) / 2)
       const band = allocateBand(clockTop, clockHeight, pairLeft, pairLeft + pairWidth)
       let nextLeft = band.left
       const takeBox = () => {
@@ -8966,8 +8973,10 @@
         ? String(tp.text || '').toLocaleLowerCase('pt-BR')
         : String(tp.text || ''))
     const hasText = !clearMode && !!String(displayText || '').trim()
-    const hasMedia = !clearMode && (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
+    const hasMedia = (tp.type === 'image' || tp.type === 'video') && !!mediaUrl
     const showPreview = !clearMode && settings.previewEnabled && tp.preview?.active === true && tp.preview.mode >= 1 && tp.preview.mode <= 6
+    const sideClockPosition = /^(left|right)-(top|bottom)$/.test(settings.clockPosition)
+    const singleSideClock = sideClockPosition && (settings.clockEnabled !== settings.localClockEnabled)
     reconcileDirectorTelepromptMediaWarmups(
       state.snapshot)
 
@@ -8978,6 +8987,7 @@
     viewport.setAttribute('data-text-case', settings.textCase)
     viewport.setAttribute('data-text-alignment', settings.textAlignment)
     viewport.setAttribute('data-clear-mode', clearMode ? '1' : '0')
+    viewport.setAttribute('data-single-side-clock', singleSideClock ? '1' : '0')
     const variables = {
       '--app-tp-text-color': settings.textColor,
       '--app-tp-text-box-color': settings.textBoxColor,
@@ -9016,7 +9026,9 @@
       const show = settings.clockEnabled && !clearMode
       const timerText = getTimerDisplayText(state.snapshot)
       if (clockHost.textContent !== timerText) clockHost.textContent = timerText
-      clockHost.dataset.position = settings.clockPosition
+      clockHost.dataset.position = singleSideClock && settings.clockEnabled
+        ? (settings.clockPosition.endsWith('bottom') ? 'center-bottom' : 'center-top')
+        : settings.clockPosition
       clockHost.dataset.border = settings.clockBorderEnabled ? '1' : '0'
       clockHost.dataset.rgb = settings.rgbClockBorderEnabled ? '1' : '0'
       clockHost.classList.toggle('directorTpHidden', !show)
@@ -9026,8 +9038,11 @@
       const show = settings.localClockEnabled && !clearMode
       const clockText = new Date().toLocaleTimeString('pt-BR', { hour12: false })
       if (localClockHost.textContent !== clockText) localClockHost.textContent = clockText
-      localClockHost.dataset.position = settings.localClockPosition
+      localClockHost.dataset.position = singleSideClock && settings.localClockEnabled
+        ? (settings.clockPosition.endsWith('bottom') ? 'center-bottom' : 'center-top')
+        : settings.localClockPosition
       localClockHost.dataset.border = settings.localClockBorderEnabled ? '1' : '0'
+      localClockHost.dataset.rgb = settings.rgbClockBorderEnabled ? '1' : '0'
       localClockHost.classList.toggle('directorTpHidden', !show)
     }
     const songHost = viewport.querySelector('[data-director-tp-song]')
@@ -9063,6 +9078,7 @@
       chordHost.classList.toggle('directorTpHidden', !showChord)
       chordHost.classList.toggle('directorTpChordTop', chordPosition === 'top')
       chordHost.classList.toggle('directorTpChordBottom', chordPosition === 'bottom')
+      chordHost.dataset.rgb = settings.rgbChordBorderEnabled ? '1' : '0'
       chordHost.setAttribute('aria-hidden', showChord ? 'false' : 'true')
       viewport.setAttribute('data-chord-visible', showChord ? '1' : '0')
       viewport.setAttribute('data-chord-position', chordPosition)
@@ -12618,6 +12634,7 @@
         state.showSettingsModal = false
         state.showProjectModal = false
         state.showPlaylistModal = false
+        state.showPlaylistPreviewModal = false
         state.tabletPlaylistPendingId = ''
         state.showTelepromptScreen = false
         if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'playlist'
@@ -12945,7 +12962,10 @@
       case 'tablet-playlists':
         closeTabletSearchState()
         state.showMenu = false
-        if (state.showPlaylistModal) state.tabletPlaylistPendingId = ''
+        if (state.showPlaylistModal) {
+          state.tabletPlaylistPendingId = ''
+          state.showPlaylistPreviewModal = false
+        }
         state.showPlaylistModal = !state.showPlaylistModal
         if (state.showPlaylistModal) {
           state.showProjectModal = false
@@ -13186,6 +13206,21 @@
         scheduleRender(true)
         break
       }
+      case 'playlist-preview-open':
+        state.showPlaylistPreviewModal = true
+        scheduleRender(true)
+        break
+      case 'playlist-preview-close': {
+        const insidePreviewModal = !!event.target?.closest?.('.playlistPreviewModalBox')
+        const previewOverlayAction = !!el.classList?.contains('playlistPreviewModalOverlay')
+        if (insidePreviewModal && previewOverlayAction) break
+        state.showPlaylistPreviewModal = false
+        scheduleRender(true)
+        break
+      }
+      case 'playlist-preview-select':
+        togglePreview(el.getAttribute('data-preview-slot'))
+        break
       case 'playlist-multi-toggle': {
         if (!getMultiProjectPlaylistsAvailable()) {
           state.pendingMultiProjectPlaylists = null
