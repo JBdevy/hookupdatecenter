@@ -294,6 +294,8 @@
 
   const mixerToggleHold = new Map()
   const mixerVolumeHold = new Map()
+  let mixerInlineSliderTap = null
+  let mixerInlineSliderLastZeroAt = 0
   const premixTrackVolumeHold = new Map()
   const premixItemMuteHold = new Map()
   const premixTrackSoloHold = new Map()
@@ -482,7 +484,7 @@
     const rawMode = String(
       data?.blockHeightMode ?? data?.block_height_mode ?? 'normal'
     ).trim().toLowerCase()
-    return rawMode === 'compact' ? 'compact' : 'normal'
+    return rawMode === 'compact' || rawMode === 'large' ? rawMode : 'normal'
   }
 
   function syncBlockHeightModeDom(data = state.snapshot) {
@@ -492,6 +494,38 @@
     if (app.getAttribute('data-block-height-mode') !== mode) {
       app.setAttribute('data-block-height-mode', mode)
     }
+  }
+
+  function getTransportPlaybackColorMode(data = state.snapshot) {
+    const mode = String(data?.transportPlaybackColorMode ??
+      data?.transport_playback_color_mode ?? 'none').trim().toLowerCase()
+    return mode === 'none' ? 'none' : 'colors'
+  }
+
+  function syncTransportPlaybackColorModeDom(data = state.snapshot) {
+    const app = root.querySelector('.app')
+    const mode = getTransportPlaybackColorMode(data)
+    app?.setAttribute('data-transport-playback-color-mode', mode)
+    for (const header of root.querySelectorAll('.playbackQueueHeader')) {
+      header.setAttribute('data-transport-playback-color-mode', mode)
+    }
+  }
+
+  function transportPanelFieldVisible(data, field) {
+    if (IS_MUSICIAN_MONITOR) return true
+    const camelKeys = {
+      current: 'statusCurrentPosition',
+      queue: 'statusQueuePosition',
+      multiloop: 'statusMultiLoopPosition'
+    }
+    const snakeKeys = {
+      current: 'status_current_position',
+      queue: 'status_queue_position',
+      multiloop: 'status_multiloop_position'
+    }
+    const position = String(data?.[camelKeys[field]] ??
+      data?.[snakeKeys[field]] ?? 'top').trim().toLowerCase()
+    return position !== 'off'
   }
 
   function getNoBlockTextColor(data = state.snapshot) {
@@ -1185,7 +1219,7 @@
     const t = now()
     const currentMode = String(mode || '')
     const elapsed = t - Number(state.lastProtectedPlayTapAt || 0)
-    const isSecondTap = state.lastProtectedPlayMode === currentMode && elapsed >= 0 && elapsed <= 520
+    const isSecondTap = state.lastProtectedPlayMode === currentMode && elapsed >= 0 && elapsed <= 200
     state.lastProtectedPlayTapAt = t
     state.lastProtectedPlayMode = currentMode
     if (isSecondTap) {
@@ -1248,6 +1282,33 @@
   function getName(item) {
     if (!item || typeof item !== 'object') return ''
     return String(item.name || item.label || item.title || item.songName || item.regionName || item.markerName || '').trim()
+  }
+
+  // Faixas de serviço do Teleprompt não são controles de mixagem para o
+  // Diretor. O nome é normalizado para também cobrir "TELEPROMPT 1",
+  // "TELEPROMPT-1" e outras variações de espaço/pontuação.
+  function isAppHiddenMixerTrack(item) {
+    const names = [
+      item?.trackName,
+      item?.track_name,
+      item?.trackLabel,
+      item?.track,
+      getName(item),
+    ]
+    return names.some((rawName) => {
+      const normalizedName = String(rawName || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '')
+      return normalizedName === 'TELEPROMPT1'
+        || normalizedName === 'TELEPROMPT2'
+        || normalizedName === 'CIFRAS'
+    })
+  }
+
+  function getAppVisibleMixerTracks(items) {
+    return (Array.isArray(items) ? items : []).filter((item) => !isAppHiddenMixerTrack(item))
   }
 
   function isBlock(item) {
@@ -1379,7 +1440,46 @@
       || normalizeColor(item.inheritedBlockColorHex)
   }
 
-  function getLuaItemTextColor(item) {
+  function getBlockColorMode(data = state.snapshot) {
+    return String(
+      data?.blockColorMode || data?.block_color_mode || 'auto'
+    ).trim().toLowerCase() === 'none' ? 'none' : 'auto'
+  }
+
+  function colorWithAlpha(value, alpha) {
+    const color = normalizeColor(value)
+    if (!color) return ''
+    const hex = color.slice(1)
+    const expanded = hex.length === 3
+      ? hex.split('').map((part) => `${part}${part}`).join('')
+      : hex.slice(0, 6)
+    if (!/^[0-9a-f]{6}$/i.test(expanded)) return ''
+    return `rgba(${parseInt(expanded.slice(0, 2), 16)},${parseInt(expanded.slice(2, 4), 16)},${parseInt(expanded.slice(4, 6), 16)},${alpha})`
+  }
+
+  function getBlockRowVisual(item, data = state.snapshot) {
+    const mode = getBlockColorMode(data)
+    const color = getLuaBlockColor(item) || '#ffe02e'
+    return {
+      mode,
+      color: mode === 'auto' ? color : '#ffffff',
+      background: mode === 'auto' ? colorWithAlpha(color, 0.34) : '',
+      backgroundStrong: mode === 'auto' ? colorWithAlpha(color, 0.22) : '',
+      glow: mode === 'auto' ? colorWithAlpha(color, 0.48) : '',
+    }
+  }
+
+  function getMixerTrackColor(item) {
+    return normalizeColor(item?.displayColor)
+      || normalizeColor(item?.display_color)
+      || normalizeColor(item?.trackColor)
+      || normalizeColor(item?.track_color)
+      || normalizeColor(item?.color)
+      || normalizeColor(item?.colorHex)
+      || '#334155'
+  }
+
+  function getLuaItemTextColor(item, type = '') {
     if (!item) return ''
     if (isBlock(item)) return getLuaBlockColor(item)
     const inherited = normalizeColor(item.textColorHex)
@@ -1388,11 +1488,20 @@
       || normalizeColor(item.blockColorHex)
       || normalizeColor(item.colorHex)
       || normalizeColor(item.color_hex)
+    const blockSongColorMode = String(
+      state.snapshot?.blockSongColorMode ||
+      state.snapshot?.block_song_color_mode || 'block'
+    ).trim().toLowerCase()
+    if (inherited && type === 'playlist' && blockSongColorMode === 'white') return '#ffffff'
     return inherited && inherited.toLowerCase() !== '#334155' ? inherited : ''
   }
 
   function itemColorStyle(item, type) {
-    const color = type === 'marker' ? '' : getLuaItemTextColor(item)
+    const blockColorMode = getBlockColorMode()
+    if (type !== 'marker' && isBlock(item) && blockColorMode === 'none') {
+      return ' style="color:#ffffff!important"'
+    }
+    const color = type === 'marker' ? '' : getLuaItemTextColor(item, type)
     return color ? ` style="color:${escapeHtml(color)}!important"` : ''
   }
 
@@ -2963,8 +3072,10 @@
       const master = data?.mixerMaster || mixer?.master || data?.masterTrack || null
       return master && typeof master === 'object' ? [master] : []
     }
-    if (state.mixerView === 'groups') return Array.isArray(data?.mixerGroups) ? data.mixerGroups : (Array.isArray(mixer?.groups) ? mixer.groups : [])
-    return Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : [])
+    if (state.mixerView === 'groups') {
+      return getAppVisibleMixerTracks(Array.isArray(data?.mixerGroups) ? data.mixerGroups : (Array.isArray(mixer?.groups) ? mixer.groups : []))
+    }
+    return getAppVisibleMixerTracks(Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : []))
   }
 
   function getFadeoutTracks(data = state.snapshot) {
@@ -3258,9 +3369,9 @@
   function getPremixTracks(data = state.snapshot) {
     const premix = data?.premix && typeof data.premix === 'object' ? data.premix : null
     if (state.premixTrackView === 'groups') {
-      return Array.isArray(data?.premixGroups) ? data.premixGroups : (Array.isArray(premix?.groups) ? premix.groups : [])
+      return getAppVisibleMixerTracks(Array.isArray(data?.premixGroups) ? data.premixGroups : (Array.isArray(premix?.groups) ? premix.groups : []))
     }
-    return Array.isArray(data?.premixTracks) ? data.premixTracks : (Array.isArray(premix?.tracks) ? premix.tracks : getMixerTracks(data))
+    return getAppVisibleMixerTracks(Array.isArray(data?.premixTracks) ? data.premixTracks : (Array.isArray(premix?.tracks) ? premix.tracks : getMixerTracks(data)))
   }
 
   function findPremixTrackById(id, data = state.snapshot) {
@@ -3272,9 +3383,9 @@
 
   function getPremixItemRows(data = state.snapshot) {
     const premix = data?.premix && typeof data.premix === 'object' ? data.premix : null
-    if (Array.isArray(data?.premixItems)) return data.premixItems
-    if (Array.isArray(premix?.items)) return premix.items
-    if (Array.isArray(premix?.itemRows)) return premix.itemRows
+    if (Array.isArray(data?.premixItems)) return getAppVisibleMixerTracks(data.premixItems)
+    if (Array.isArray(premix?.items)) return getAppVisibleMixerTracks(premix.items)
+    if (Array.isArray(premix?.itemRows)) return getAppVisibleMixerTracks(premix.itemRows)
     return []
   }
 
@@ -3288,8 +3399,8 @@
 
   function getPremixSectionItems(section) {
     if (!section || typeof section !== 'object') return []
-    if (Array.isArray(section.items)) return section.items
-    if (Array.isArray(section.itemRows)) return section.itemRows
+    if (Array.isArray(section.items)) return getAppVisibleMixerTracks(section.items)
+    if (Array.isArray(section.itemRows)) return getAppVisibleMixerTracks(section.itemRows)
     return []
   }
 
@@ -5374,6 +5485,7 @@
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
       syncOptimisticMixerRoutesFromBridge(data, state.snapshot)
       syncBlockHeightModeDom(state.snapshot)
+      syncTransportPlaybackColorModeDom(state.snapshot)
       syncPendingProjectSelection(state.snapshot)
       syncOptimisticProjectSaved(state.snapshot)
       syncProjectSaveButtonDom()
@@ -5879,6 +5991,9 @@
       const itemBaseColorStyle = noBlockTextColor
         ? ` style="color:${noBlockTextColor}!important"`
         : itemColorStyle(item, type)
+      const blockRowVisual = isBlockRow
+        ? getBlockRowVisual(item, state.snapshot)
+        : null
       // Sem nenhum bloco, Diretor e Músicos usam a cor configurada na extensão.
       // "Sem cor" preserva a cor própria da música; no tema claro, as demais
       // listas sem uma cor própria usam preto.
@@ -5952,8 +6067,19 @@
         drawerVisual.outlineEnabled ? 'drawerOutlineEnabled' : '',
         drawerFamilyChild && drawerVisual.symbolEnabled ? 'drawerSymbolEnabled' : ''
       ].filter(Boolean).join(' ')
-      const drawerStyleAttr = (drawerFamilyTop || drawerFamilyChild)
-        ? ` style="--drawer-outline-color:${drawerVisual.outlineColor};--drawer-symbol-color:${drawerVisual.symbolColor}"`
+      const rowStyleParts = []
+      if (drawerFamilyTop || drawerFamilyChild) {
+        rowStyleParts.push(`--drawer-outline-color:${drawerVisual.outlineColor}`)
+        rowStyleParts.push(`--drawer-symbol-color:${drawerVisual.symbolColor}`)
+      }
+      if (blockRowVisual) {
+        rowStyleParts.push(`--app-block-color:${blockRowVisual.color}`)
+        rowStyleParts.push(`--app-block-background:${blockRowVisual.background || 'transparent'}`)
+        rowStyleParts.push(`--app-block-background-strong:${blockRowVisual.backgroundStrong || 'transparent'}`)
+        rowStyleParts.push(`--app-block-glow:${blockRowVisual.glow || 'transparent'}`)
+      }
+      const rowStyleAttr = rowStyleParts.length
+        ? ` style="${rowStyleParts.join(';')}"`
         : ''
       const armedRegress = markerArmed ? getPartsArmedRegressPercent(state.snapshot) : 0
       const rowProgress = markerArmed
@@ -5964,7 +6090,7 @@
             ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="width:${queueProgress}%"></div></div>`
             : ''
       return `
-        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner || options.tabletBpm ? ' tabletTunerUnifiedItem' : ''}${options.tabletBpm ? ' tabletBpmUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}"${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${drawerStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
+        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner || options.tabletBpm ? ' tabletTunerUnifiedItem' : ''}${options.tabletBpm ? ' tabletBpmUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}"${isBlockRow ? ` data-block-color-mode="${blockRowVisual.mode}"` : ''}${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${rowStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
           ${drawerFamilyTop || drawerFamilyChild ? '<span class="drawerOutlineSides" aria-hidden="true"></span>' : ''}
           ${drawerFamilyTop ? '<span class="drawerOutlineTop" aria-hidden="true"></span>' : ''}
           ${drawerFamilyBottom ? '<span class="drawerOutlineBottom" aria-hidden="true"></span>' : ''}
@@ -6556,6 +6682,7 @@
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
+    const hasNowPlaying = !!nowRawName && isPlaying(data)
     const showQueueBar = hasQueue
     const progress = isPlaying(data) ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
@@ -6567,19 +6694,26 @@
         : ''
     const auto2QueueClass = hasQueue && getAutoplay2Enabled(data)
       ? ' playbackQueuePrepareOnly' : ''
+    const currentHidden = transportPanelFieldVisible(data, 'current')
+      ? '' : ' playbackQueueFieldHidden'
+    const queueHidden = transportPanelFieldVisible(data, 'queue')
+      ? '' : ' playbackQueueFieldHidden'
+    const multiLoopHidden = transportPanelFieldVisible(data, 'multiloop')
+      ? '' : ' playbackQueueFieldHidden'
+    const playbackColorMode = getTransportPlaybackColorMode(data)
     return `
-      <div class="playbackQueueHeader${holdable ? ' transportSeekHoldTarget' : ''}">
-        <div class="playbackQueueLine playbackQueueNow">
-          <span class="playbackQueueLabel">TOCANDO AGORA -</span>
+      <div class="playbackQueueHeader${holdable ? ' transportSeekHoldTarget' : ''}" data-transport-playback-color-mode="${playbackColorMode}">
+        <div class="playbackQueueLine playbackQueueNow${hasNowPlaying ? ' playbackQueueNowActive' : ''}${currentHidden}">
+          <span class="playbackQueueLabel">REPRODUZINDO <span class="playbackQueueStateArrow playbackQueueStateArrowNow">→</span></span>
           <span class="playbackQueueTitle">${escapeHtml(nowName)}</span>
         </div>
-        <div class="playbackQueueTrack playbackQueueTrackNow" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="width:${progress}%"></div></div>
-        <div class="playbackQueueLine playbackQueueNext${auto2QueueClass}">
-          <span class="playbackQueueLabel">FILA DE ESPERA -</span>
+        <div class="playbackQueueTrack playbackQueueTrackNow${currentHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="width:${progress}%"></div></div>
+        <div class="playbackQueueLine playbackQueueNext${hasQueue ? ' playbackQueueNextActive' : ''}${auto2QueueClass}${queueHidden}">
+          <span class="playbackQueueLabel">PRÓXIMA <span class="playbackQueueStateArrow playbackQueueStateArrowNext">→</span></span>
           <span class="playbackQueueTitle">${escapeHtml(queuedName)}</span>
         </div>
-        <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="width:${queueProgress}%"></div></div>
-        <div class="playbackQueueLine playbackQueueMultiLoop${multiLoopClass}">
+        <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}${queueHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="width:${queueProgress}%"></div></div>
+        <div class="playbackQueueLine playbackQueueMultiLoop${multiLoopClass}${multiLoopHidden}">
           <span class="playbackQueueLabel">MULTILOOPS</span>
           <span class="playbackQueueTitle">${escapeHtml(multiLoopStatus.text)}</span>
         </div>
@@ -6616,7 +6750,12 @@
       const solo = getHeldMixerToggle(item, 'solo')
       const db = formatMixerDb(item)
       const ratio = getMixerRatio(item)
-      return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
+      const trackColor = escapeHtml(getMixerTrackColor(item))
+      const zeroPosition = `${Math.max(0, Math.min(100, getMixerZeroDbRatio() * 100)).toFixed(2)}%`
+      // O fader nativo mantém o thumb original de 16 px. Compensa a área
+      // útil do range sem alterar a aparência original da bolinha/barra.
+      const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
+      return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><div class="mixerInlineSliderWrap" style="--mixer-zero-position:${zeroPosition};--mixer-zero-offset:${zeroOffset}px"><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><span class="mixerInlineZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('') || `<div class="emptyBox">MIXER SEM DADOS</div>`
     return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox">${rows}</div></div>`
   }
@@ -6630,7 +6769,10 @@
         const muted = item.mute === true || item.muted === true
         const volumeState = getPremixTrackVolumeState(item)
         const dbText = formatVolumeDb(volumeState.db)
-        return `<div class="mixerRow premixMixerRow" data-premix-track-id="${id}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(dbText)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(dbText)}</div><input class="premixInlineSlider" data-action="premix-volume" data-premix-track-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><button class="mixerMiniBtn ${muted ? 'mixerMiniBtnActive' : ''}" data-action="premix-mute" data-premix-track-id="${id}">M</button><button class="mixerMiniBtn" data-action="premix-fx" data-premix-track-id="${id}">F</button></div>`
+        const trackColor = escapeHtml(getMixerTrackColor(item))
+        const zeroPosition = `${Math.max(0, Math.min(100, getMixerZeroDbRatio() * 100)).toFixed(2)}%`
+        const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
+        return `<div class="mixerRow premixMixerRow" data-premix-track-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(dbText)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(dbText)}</div><div class="premixInlineSliderWrap" style="--premix-zero-position:${zeroPosition};--premix-zero-offset:${zeroOffset}px"><input class="premixInlineSlider" data-action="premix-volume" data-premix-track-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn ${muted ? 'mixerMiniBtnActive' : ''}" data-action="premix-mute" data-premix-track-id="${id}">M</button><button class="mixerMiniBtn" data-action="premix-fx" data-premix-track-id="${id}">F</button></div>`
       }).join('') || `<div class="emptyBox">SELECIONE UMA MÚSICA NO PREMIX</div>`
       return `<div class="contentPanel"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-back-songs">MÚSICAS</button><button class="${state.premixTrackView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-tracks">TRACKS</button><button class="${state.premixTrackView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-groups">GRUPOS</button></div><div class="listBox"><div class="mixerRowsBox">${rows}</div></div></div>`
     }
@@ -6654,10 +6796,12 @@
     const trackSolo = getPremixItemTrackSolo(item)
     const uniqueSolo = getPremixItemUniqueSolo(item)
     const dbText = formatVolumeDb(volumeState.db)
+    const zeroPosition = `${Math.max(0, Math.min(100, getMixerZeroDbRatio() * 100)).toFixed(2)}%`
+    const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
     return `<div class="premixFullRow" data-premix-item-row="${id}" data-premix-item-id="${id}" data-premix-track-id="${trackId}">
       <span class="appScrollLane" aria-hidden="true"></span>
       <div class="premixFullItemMain"><div class="premixFullTrackName">${trackName}</div><div class="premixFullItemName">${itemName}</div>${renderTrackMeter(item)}</div>
-      <div class="premixFullSliderWrap"><input class="premixFullSlider" data-action="premix-item-volume" data-premix-item-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixFullDb">${escapeHtml(dbText)}</span></div>
+      <div class="premixFullSliderWrap"><div class="premixFullSliderTrack" style="--premix-zero-position:${zeroPosition};--premix-zero-offset:${zeroOffset}px"><input class="premixFullSlider" data-action="premix-item-volume" data-premix-item-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixZeroDbMark" aria-hidden="true"></span></div><span class="premixFullDb">${escapeHtml(dbText)}</span></div>
       <div class="premixFullSoloButtons">
         <button class="premixFullMute premixFullUnique ${uniqueSolo ? 'premixFullUniqueActive' : ''}" data-action="premix-item-unique" data-premix-item-id="${id}" data-premix-track-id="${trackId}" aria-pressed="${uniqueSolo ? 'true' : 'false'}" title="Solar somente este item">U</button>
         <button class="premixFullMute premixFullSolo ${trackSolo ? 'premixFullSoloActive' : ''}" data-action="premix-item-solo" data-premix-item-id="${id}" data-premix-track-id="${trackId}" aria-pressed="${trackSolo ? 'true' : 'false'}" title="Solar a pista deste item">S</button>
@@ -6747,6 +6891,10 @@
       const id = escapeHtml(rawId)
       const name = escapeHtml(getRowDisplayName(item, index, blockNumber))
       const itemBaseColorStyle = itemColorStyle(item, sourceType)
+      const blockRowVisual = block ? getBlockRowVisual(item, data) : null
+      const blockRowStyle = blockRowVisual
+        ? ` style="--app-block-color:${blockRowVisual.color};--app-block-background:${blockRowVisual.background || 'transparent'};--app-block-background-strong:${blockRowVisual.backgroundStrong || 'transparent'};--app-block-glow:${blockRowVisual.glow || 'transparent'}"`
+        : ''
       const rowNumber = block ? '' : getRowNumberText(item, songNumber)
       const rowCls = tunerRowClass(sourceType, item, data)
       const rowTextCls = tunerTextClass(sourceType, item, data)
@@ -6766,7 +6914,7 @@
 
       if (block) {
         return `
-          <div class="${rowCls} numberedItem tunerFullRow tunerFullBlockRow" ${selectAttrs}>
+          <div class="${rowCls} numberedItem tunerFullRow tunerFullBlockRow" data-block-color-mode="${blockRowVisual.mode}" ${selectAttrs}${blockRowStyle}>
             ${rowProgress}
             <div class="rowNumberCol"><span class="rowNumberText"${numberColorStyle}></span></div>
             <div class="leftCol tunerFullBlockName"><span class="text"${colorStyle}>${name}</span></div>
@@ -10917,6 +11065,7 @@
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
+    const hasNowPlaying = !!nowRawName && isPlaying(data)
     const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -10933,6 +11082,17 @@
         '.playbackQueueTitle')
       const queueLine = header.querySelector('.playbackQueueNext')
       const queueTrack = header.querySelector('.playbackQueueTrackNext')
+      const nowLine = header.querySelector('.playbackQueueNow')
+      const nowTrack = header.querySelector('.playbackQueueTrackNow')
+      const currentHidden = !transportPanelFieldVisible(data, 'current')
+      const queueHidden = !transportPanelFieldVisible(data, 'queue')
+      const multiLoopHidden = !transportPanelFieldVisible(data, 'multiloop')
+
+      nowLine?.classList.toggle('playbackQueueFieldHidden', currentHidden)
+      nowTrack?.classList.toggle('playbackQueueFieldHidden', currentHidden)
+      queueLine?.classList.toggle('playbackQueueFieldHidden', queueHidden)
+      queueTrack?.classList.toggle('playbackQueueFieldHidden', queueHidden)
+      multiLoopLine?.classList.toggle('playbackQueueFieldHidden', multiLoopHidden)
 
       if (nowTitle && nowTitle.textContent !== nowName) {
         nowTitle.textContent = nowName
@@ -10945,6 +11105,8 @@
         multiLoopTitle.textContent = multiLoopStatus.text
       }
 
+      nowLine?.classList.toggle('playbackQueueNowActive', hasNowPlaying)
+      queueLine?.classList.toggle('playbackQueueNextActive', hasQueue)
       queueLine?.classList.toggle('playbackQueuePrepareOnly', prepareOnly)
       queueTrack?.classList.toggle('playbackQueuePrepareOnly', prepareOnly)
       queueTrack?.classList.toggle('playbackQueueTrackEmpty', !showQueueBar)
@@ -13415,17 +13577,7 @@
       case 'mixer-volume-open': state.mixerVolumeTarget = el.getAttribute('data-mixer-id') || ''; state.showMixerVolume = !!state.mixerVolumeTarget; scheduleRender(true); break
       case 'mixer-volume-zero': {
         const id = el.getAttribute('data-mixer-id') || state.mixerVolumeTarget || ''
-        const ratio = getMixerZeroDbRatio()
-        setHeldMixerVolume(id, ratio)
-        queueLatestVolumeCommand(`track:${id}`, 'mixer_set_volume', {
-          id,
-          targetId: id,
-          trackId: id,
-          ratio,
-          volumeRatio: ratio,
-          view: state.mixerView,
-          page: state.activeTab,
-        })
+        applyMixerVolumeRatio(id, getMixerZeroDbRatio())
         scheduleRender(true)
         break
       }
@@ -13543,6 +13695,111 @@
     }
   }
 
+  function applyMixerVolumeRatio(id, value, sourceInput = null) {
+    const targetId = String(id || '')
+    if (!targetId) return false
+    const ratio = clampRatio(value, 0.75)
+    setHeldMixerVolume(targetId, ratio)
+    if (sourceInput && Math.abs(Number(sourceInput.value) - ratio) > 0.0005) {
+      sourceInput.value = String(ratio)
+    }
+    const dbText = formatVolumeDb(mixerRatioToDb(ratio))
+    const dbDisplay = root.querySelector('.mixerVolumeDbDisplay')
+    if (dbDisplay) dbDisplay.textContent = dbText
+    const rowGroup = root.querySelector(`[data-mixer-id="${CSS.escape(targetId)}"] .mixerRowGroupName`)
+    if (rowGroup) rowGroup.textContent = dbText
+    const rowDb = root.querySelector(`[data-mixer-id="${CSS.escape(targetId)}"] .mixerRowDb`)
+    if (rowDb) rowDb.textContent = dbText
+    queueLatestVolumeCommand(`track:${targetId}`, 'mixer_set_volume', {
+      id: targetId,
+      targetId,
+      trackId: targetId,
+      ratio,
+      volumeRatio: ratio,
+      view: state.mixerView,
+      page: state.activeTab,
+    })
+    return true
+  }
+
+  function resetMixerInlineSliderToZero(input) {
+    if (!input || IS_MUSICIAN_MONITOR) return
+    const id = input.getAttribute('data-mixer-id') || ''
+    const timestamp = now()
+    if (!id || timestamp - mixerInlineSliderLastZeroAt < 320) return
+    mixerInlineSliderLastZeroAt = timestamp
+    const ratio = getMixerZeroDbRatio()
+    setHeldMixerVolume(id, ratio)
+    input.value = String(ratio)
+    const dbText = formatVolumeDb(0)
+    const rowGroup = root.querySelector(`[data-mixer-id="${CSS.escape(id)}"] .mixerRowGroupName`)
+    const rowDb = root.querySelector(`[data-mixer-id="${CSS.escape(id)}"] .mixerRowDb`)
+    if (rowGroup) rowGroup.textContent = dbText
+    if (rowDb) rowDb.textContent = dbText
+    // Usa o comando próprio de reset do REAPER. Assim o 0 dB não depende de
+    // um valor transitório que o range nativo possa emitir no segundo toque.
+    queueLatestVolumeCommand(`track:${id}`, 'mixer_reset_volume', {
+      id,
+      targetId: id,
+      trackId: id,
+      view: state.mixerView,
+      page: state.activeTab,
+    })
+  }
+
+  function handleMixerInlineSliderPointer(event) {
+    if (IS_MUSICIAN_MONITOR) return
+    const input = event.target?.closest?.('input.mixerInlineSlider[data-action="mixer-volume"]')
+    if (event.type === 'pointerdown') {
+      if (!input) return
+      const timestamp = now()
+      const previous = input.__vshookPreviousMixerTap || null
+      // No segundo toque não deixa o controle nativo reposicionar o fader
+      // antes de receber o reset. Isso elimina o comando acidental de
+      // volume mínimo que podia chegar após o 0 dB.
+      if (previous && timestamp - previous.at <= 420) {
+        input.__vshookPreviousMixerTap = null
+        mixerInlineSliderTap = null
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        resetMixerInlineSliderToZero(input)
+        return
+      }
+      mixerInlineSliderTap = {
+        input,
+        pointerId: event.pointerId,
+        x: Number(event.clientX) || 0,
+        y: Number(event.clientY) || 0,
+        at: timestamp,
+      }
+      return
+    }
+    if (event.type === 'pointercancel') {
+      if (mixerInlineSliderTap?.pointerId === event.pointerId) mixerInlineSliderTap = null
+      return
+    }
+    if (event.type !== 'pointerup' || !mixerInlineSliderTap ||
+        mixerInlineSliderTap.pointerId !== event.pointerId) return
+    const tap = mixerInlineSliderTap
+    mixerInlineSliderTap = null
+    const dx = (Number(event.clientX) || 0) - tap.x
+    const dy = (Number(event.clientY) || 0) - tap.y
+    if (Math.hypot(dx, dy) > 12) return
+    const previous = tap.input.__vshookPreviousMixerTap || null
+    const timestamp = now()
+    const isDoubleTap = previous && timestamp - previous.at <= 420
+    tap.input.__vshookPreviousMixerTap = { at: timestamp }
+    if (isDoubleTap) resetMixerInlineSliderToZero(tap.input)
+  }
+
+  function handleMixerInlineSliderDoubleClick(event) {
+    if (IS_MUSICIAN_MONITOR) return
+    const input = event.target?.closest?.('input.mixerInlineSlider[data-action="mixer-volume"]')
+    if (!input) return
+    event.preventDefault()
+    resetMixerInlineSliderToZero(input)
+  }
+
   function handleRangeInput(event) {
     const el = event.target
     if (!el) return
@@ -13605,26 +13862,9 @@
       return
     }
     if (el.getAttribute('data-action') === 'mixer-volume') {
-      const ratio = clampRatio(el.value, 0.75)
       const id = el.getAttribute('data-mixer-id') || state.mixerVolumeTarget || ''
       if (!id) return
-      setHeldMixerVolume(id, ratio)
-      const dbText = formatVolumeDb(mixerRatioToDb(ratio))
-      const dbDisplay = root.querySelector('.mixerVolumeDbDisplay')
-      if (dbDisplay) dbDisplay.textContent = dbText
-      const rowGroup = root.querySelector(`[data-mixer-id="${CSS.escape(String(id))}"] .mixerRowGroupName`)
-      if (rowGroup) rowGroup.textContent = dbText
-      const rowDb = root.querySelector(`[data-mixer-id="${CSS.escape(String(id))}"] .mixerRowDb`)
-      if (rowDb) rowDb.textContent = dbText
-      queueLatestVolumeCommand(`track:${id}`, 'mixer_set_volume', {
-        id,
-        targetId: id,
-        trackId: id,
-        ratio,
-        volumeRatio: ratio,
-        view: state.mixerView,
-        page: state.activeTab,
-      })
+      applyMixerVolumeRatio(id, el.value, el)
     }
   }
 
@@ -14179,6 +14419,7 @@
   let mixerRouteHoldPointerId = null
   let mixerRouteHoldStartX = 0
   let mixerRouteHoldStartY = 0
+  let mixerRouteHoldTriggered = false
 
   function cancelMixerRouteHold() {
     if (mixerRouteHoldTimer) window.clearTimeout(mixerRouteHoldTimer)
@@ -14198,11 +14439,16 @@
       mixerRouteHoldPointerId = event.pointerId
       mixerRouteHoldStartX = Number(event.clientX) || 0
       mixerRouteHoldStartY = Number(event.clientY) || 0
+      mixerRouteHoldTriggered = false
       mixerRouteHoldTimer = window.setTimeout(() => {
         mixerRouteHoldTimer = 0
+        mixerRouteHoldTriggered = true
         state.mixerRouteTarget = id
         state.showMixerVolume = false
-        state.ignoreTapUntil = now() + 700
+        // O modal e aberto enquanto o dedo ainda esta pressionado. Mantem o
+        // toque consumido ate o pointerup para ele nao acionar um controle que
+        // acabou de aparecer exatamente sob o dedo.
+        state.ignoreTapUntil = now() + 60000
         try { navigator.vibrate?.(25) } catch (_) {}
         scheduleRender(true)
       }, 650)
@@ -14212,10 +14458,19 @@
     if (event.type === 'pointermove') {
       const dx = (Number(event.clientX) || 0) - mixerRouteHoldStartX
       const dy = (Number(event.clientY) || 0) - mixerRouteHoldStartY
-      if (Math.hypot(dx, dy) > 10) cancelMixerRouteHold()
+      if (!mixerRouteHoldTriggered && Math.hypot(dx, dy) > 10) cancelMixerRouteHold()
       return
     }
+    const holdTriggered = mixerRouteHoldTriggered
     cancelMixerRouteHold()
+    mixerRouteHoldTriggered = false
+    if (holdTriggered) {
+      state.ignoreTapUntil = now() + 800
+      if (event.type === 'pointerup') {
+        event.preventDefault?.()
+        event.stopImmediatePropagation?.()
+      }
+    }
   }
 
   let tabletPlayHoldTimer = 0
@@ -14421,6 +14676,7 @@
     document.addEventListener('keydown', handleTimerCountdownKeyDown, true)
     document.addEventListener('focusin', handleTimerCountdownFocus, true)
     document.addEventListener('focusout', handleTimerCountdownBlur, true)
+    document.addEventListener('dblclick', handleMixerInlineSliderDoubleClick, true)
     if (window.PointerEvent) {
       document.addEventListener('pointerdown', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointermove', handleTabletPlayHold, { passive: true })
@@ -14436,8 +14692,11 @@
       document.addEventListener('pointercancel', handlePlaylistScrollGesture, { passive: true })
       document.addEventListener('pointerdown', handleMixerRouteHold, { passive: true })
       document.addEventListener('pointermove', handleMixerRouteHold, { passive: true })
-      document.addEventListener('pointerup', handleMixerRouteHold, { passive: true })
-      document.addEventListener('pointercancel', handleMixerRouteHold, { passive: true })
+      document.addEventListener('pointerup', handleMixerRouteHold, { passive: false })
+      document.addEventListener('pointercancel', handleMixerRouteHold, { passive: false })
+      document.addEventListener('pointerdown', handleMixerInlineSliderPointer, { passive: false })
+      document.addEventListener('pointerup', handleMixerInlineSliderPointer, { passive: true })
+      document.addEventListener('pointercancel', handleMixerInlineSliderPointer, { passive: true })
       document.addEventListener('pointerdown', handleDirectorRecadosHoldStart, { passive: true })
       document.addEventListener('pointerup', handleDirectorRecadosHoldEnd, { passive: true })
       document.addEventListener('pointercancel', handleDirectorRecadosHoldEnd, { passive: true })

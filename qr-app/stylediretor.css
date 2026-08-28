@@ -6625,8 +6625,8 @@ button,
 
 /* v2.9 - Diretor: AT/BL independente + cores originais + progresso inferior */
 .app .item.queuedYellow:not(.blockItem) {
-  background: #e9c74a !important;
-  border-color: #18212c !important;
+  background: #fb923c !important;
+  border-color: #c2410c !important;
   box-shadow: none !important;
 }
 
@@ -6772,11 +6772,11 @@ button,
 }
 
 
-/* Regresso da fila em laranja, tanto na lista quanto no painel de transporte. */
+/* Regresso da fila amarelo, tanto na lista quanto no painel de transporte. */
 .app .item.numberedItem .queuedRowRegressBar,
 .app .playbackQueueFillNext {
-  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
-  box-shadow: 0 0 7px rgba(249,115,22,.52) !important;
+  background: linear-gradient(90deg, #fde047 0%, #facc15 54%, #ca8a04 100%) !important;
+  box-shadow: 0 0 7px rgba(250,204,21,.52) !important;
 }
 
 
@@ -7051,12 +7051,12 @@ button,
   border-radius: 7px !important;
   overflow: hidden !important;
 }
-.playbackQueueLoopRegion {
-  animation: directorLoopPanelBlink .72s steps(2,end) infinite !important;
+.playbackQueueMultiLoop.playbackQueueLoop:not(.playbackQueueMultiLoopBypass) {
+  animation: directorLoopPanelBlink .72s steps(1,end) infinite !important;
 }
 @keyframes directorLoopPanelBlink {
-  0%,100% { opacity: 1; filter: brightness(1); }
-  50% { opacity: .58; filter: brightness(.72); }
+  0%,49.99% { opacity: 1; visibility: visible; }
+  50%,100% { opacity: 0; visibility: hidden; }
 }
 
 /* VS_HOOK_DIRECTOR_CONFIG_LIGHT_TIMER_OVERRUN_20260711 */
@@ -8249,8 +8249,8 @@ body.directorRecadosTouchMode #app {
 }
 
 .musicianMonitor .item:not(.numberedItem) > .queuedRowRegressTrack > .queuedRowRegressBar {
-  background: linear-gradient(90deg, #fb923c 0%, #f97316 100%) !important;
-  box-shadow: 0 0 7px rgba(249, 115, 22, .52) !important;
+  background: linear-gradient(90deg, #fde047 0%, #facc15 54%, #ca8a04 100%) !important;
+  box-shadow: 0 0 7px rgba(250, 204, 21, .52) !important;
 }
 
 /* Live confirmado pela extensão: mesmo contraste para Diretor e Músicos,
@@ -8777,12 +8777,12 @@ html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
 }
 .app .item.queuedGreen .queuedRowRegressBar,
 .app .playbackQueueTrackNext.playbackQueuePrepareOnly .playbackQueueFillNext {
-  background: linear-gradient(90deg,#4ade80 0%,#16a34a 100%) !important;
-  box-shadow: 0 0 7px rgba(34,197,94,.52) !important;
+  background: linear-gradient(90deg,#fde047 0%,#facc15 54%,#ca8a04 100%) !important;
+  box-shadow: 0 0 7px rgba(250,204,21,.52) !important;
 }
 .app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueLabel,
 .app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle {
-  color: #4ade80 !important;
+  color: #050505 !important;
 }
 /* Altura dos blocos sincronizada exclusivamente pela extensão. */
 .app[data-block-height-mode="compact"] .item.blockItem {
@@ -8840,6 +8840,21 @@ html[data-director-device="phone"] .projectModalOverlay .playlistOptionActive {
   text-overflow: ellipsis !important;
 }
 
+.app[data-block-height-mode="large"] .item.blockItem,
+.app[data-block-height-mode="large"] .tunerFullBlockRow.item.numberedItem {
+  min-height: 52px !important;
+  height: auto !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+.app[data-block-height-mode="large"] .item.blockItem .blockDesignerText,
+.app[data-block-height-mode="large"] .item.blockItem > .leftCol > span,
+.app[data-block-height-mode="large"] .item.blockItem > .rightCol > span,
+.app[data-block-height-mode="large"] .tunerFullBlockRow .leftCol.tunerFullBlockName > span {
+  font-size: 16px !important;
+  line-height: 1.2 !important;
+}
+
 /* Modo Live: risque somente o nome das músicas já marcadas. */
 #app .app .item.liveExecutedItem:not(.blockItem)[data-item-type="playlist"] > .leftCol > span,
 #app .app .item.liveExecutedItem:not(.blockItem)[data-item-type="region"] > .leftCol > span {
@@ -8874,9 +8889,9 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue
 
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
 .app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
-  border-color: #facc15 !important;
-  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
-  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+  border-color: #fb923c !important;
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251, 146, 60, .34) !important;
 }
 
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.playing:not(.blockItem),
@@ -8902,14 +8917,58 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
 .app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
-  background: linear-gradient(100deg, #fde047 0%, #eab308 54%, #ca8a04 100%) !important;
-  box-shadow: inset 3px 0 0 #fef08a, inset 0 0 0 1px rgba(250, 204, 21, .34) !important;
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251, 146, 60, .34) !important;
 }
 
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.playing:not(.blockItem)::before,
 .app.musicianMonitor .item.numberedItem.playing:not(.blockItem)::before {
   background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
   box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+
+/* Estado de fila: laranja na lista e regressão sempre amarela. */
+html[data-director-device="tablet"] .app .item.queuedYellow:not(.blockItem):not(.playing),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
+  border-color: #c2410c !important;
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251, 146, 60, .34) !important;
+}
+html[data-director-device="tablet"] .app .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251, 146, 60, .34) !important;
+}
+.app .queuedRowRegressBar,
+.app .playbackQueueFillNext {
+  background: linear-gradient(90deg, #fde047 0%, #facc15 54%, #ca8a04 100%) !important;
+  box-shadow: 0 0 7px rgba(250, 204, 21, .52) !important;
+}
+
+/* O painel de transporte repete os mesmos estados visuais da lista. */
+.app .playbackQueueNow.playbackQueueNowActive {
+  background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
+}
+.app .playbackQueueNext.playbackQueueNextActive {
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+}
+.app .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly {
+  background: linear-gradient(100deg, #4ade80 0%, #22c55e 54%, #15803d 100%) !important;
+}
+.app .playbackQueueNow.playbackQueueNowActive .playbackQueueLabel,
+.app .playbackQueueNext.playbackQueueNextActive .playbackQueueLabel {
+  color: #050505 !important;
+  text-shadow: none !important;
+}
+.app .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle,
+.app .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle {
+  color: #ffffff !important;
+  text-shadow: none !important;
+}
+.app .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+  color: #050505 !important;
 }
 
 
@@ -9785,4 +9844,324 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 .app.musicianMonitor .item.numberedItem.playing:not(.blockItem)::before {
   background: linear-gradient(100deg, #ef4444 0%, #b91c1c 54%, #7f1d1d 100%) !important;
   box-shadow: inset 3px 0 0 #fca5a5, inset 0 0 0 1px rgba(248, 113, 113, .36) !important;
+}
+
+/* Personalizar > Painel Transporte > Cor reprodução painel.
+   "Sem cores" preserva o painel neutro como no comportamento anterior. */
+.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly {
+  background: #0b0f16 !important;
+  border-color: #263141 !important;
+  box-shadow: none !important;
+}
+.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueLabel,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueLabel {
+  color: #94a3b8 !important;
+  text-shadow: none !important;
+}
+.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle {
+  color: #22c55e !important;
+}
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+  color: #facc15 !important;
+}
+
+.playbackQueueStateArrow {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 1.15em;
+  line-height: 1;
+  font-weight: 1000;
+  text-shadow: none !important;
+}
+.playbackQueueStateArrowNow {
+  color: #22c55e !important;
+}
+.playbackQueueStateArrowNext {
+  color: #facc15 !important;
+}
+
+/* Fila na lista: mesmo laranja do painel de transporte.
+   Amarelo permanece exclusivo da barra de regresso e da seta. */
+html[data-director-device="tablet"] .app .item.queuedYellow:not(.blockItem):not(.playing),
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
+.app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
+  border-color: #c2410c !important;
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251,146,60,.34) !important;
+}
+html[data-director-device="tablet"] .app .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before,
+.app.musicianMonitor .item.numberedItem.queuedYellow:not(.blockItem):not(.playing)::before {
+  background: linear-gradient(100deg, #fb923c 0%, #e67a29 54%, #c2410c 100%) !important;
+  box-shadow: inset 3px 0 0 #fdba74, inset 0 0 0 1px rgba(251,146,60,.34) !important;
+}
+
+/* Tablet: seta curta com cauda duas vezes maior, mantendo o nome alinhado à esquerda. */
+html[data-director-device="tablet"] .app .playbackQueueNow,
+html[data-director-device="tablet"] .app .playbackQueueNext {
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  gap: 13px !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueNow .playbackQueueLabel,
+html[data-director-device="tablet"] .app .playbackQueueNext .playbackQueueLabel {
+  display: flex !important;
+  align-items: center !important;
+  min-width: 0 !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueNow .playbackQueueTitle,
+html[data-director-device="tablet"] .app .playbackQueueNext .playbackQueueTitle {
+  justify-self: stretch !important;
+  max-width: none !important;
+  text-align: left !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueStateArrow {
+  position: relative !important;
+  display: inline-block !important;
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  height: 8px !important;
+  margin: 0 0 0 5px !important;
+  color: transparent !important;
+  font-size: 0 !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueStateArrow::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  right: 6px !important;
+  top: 3px !important;
+  height: 2px !important;
+  border-radius: 2px !important;
+  background: currentColor !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueStateArrow::after {
+  content: "" !important;
+  position: absolute !important;
+  right: 0 !important;
+  top: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  border-top: 4px solid transparent !important;
+  border-bottom: 4px solid transparent !important;
+  border-left: 7px solid currentColor !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueStateArrowNow {
+  color: #22c55e !important;
+}
+html[data-director-device="tablet"] .app .playbackQueueStateArrowNext {
+  color: #facc15 !important;
+}
+
+.playbackQueueFieldHidden {
+  display: none !important;
+}
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly {
+  background: #0b0f16 !important;
+  border-color: #263141 !important;
+  box-shadow: none !important;
+}
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueLabel,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueLabel {
+  color: #94a3b8 !important;
+  text-shadow: none !important;
+}
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle {
+  color: #22c55e !important;
+}
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+  color: #facc15 !important;
+}
+
+/* Celular e app dos Músicos: cada nome começa depois da própria seta.
+   Não força alinhamento entre REPRODUZINDO e PRÓXIMA. */
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNow,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNext,
+.app.musicianMonitor .playbackQueueNow,
+.app.musicianMonitor .playbackQueueNext {
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  gap: 13px !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNow .playbackQueueLabel,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNext .playbackQueueLabel,
+.app.musicianMonitor .playbackQueueNow .playbackQueueLabel,
+.app.musicianMonitor .playbackQueueNext .playbackQueueLabel {
+  display: flex !important;
+  align-items: center !important;
+  min-width: 0 !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNow .playbackQueueTitle,
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNext .playbackQueueTitle,
+.app.musicianMonitor .playbackQueueNow .playbackQueueTitle,
+.app.musicianMonitor .playbackQueueNext .playbackQueueTitle {
+  justify-self: stretch !important;
+  max-width: none !important;
+  text-align: left !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueStateArrow,
+.app.musicianMonitor .playbackQueueStateArrow {
+  position: relative !important;
+  display: inline-block !important;
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  height: 8px !important;
+  margin: 0 0 0 5px !important;
+  color: transparent !important;
+  font-size: 0 !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueStateArrow::before,
+.app.musicianMonitor .playbackQueueStateArrow::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  right: 6px !important;
+  top: 3px !important;
+  height: 2px !important;
+  border-radius: 2px !important;
+  background: currentColor !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueStateArrow::after,
+.app.musicianMonitor .playbackQueueStateArrow::after {
+  content: "" !important;
+  position: absolute !important;
+  right: 0 !important;
+  top: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  border-top: 4px solid transparent !important;
+  border-bottom: 4px solid transparent !important;
+  border-left: 7px solid currentColor !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueStateArrowNow,
+.app.musicianMonitor .playbackQueueStateArrowNow {
+  color: #22c55e !important;
+}
+html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueStateArrowNext,
+.app.musicianMonitor .playbackQueueStateArrowNext {
+  color: #facc15 !important;
+}
+
+/* Blocos das listas usam contorno reto em todos os modos do app. */
+html[data-director-device="phone"] .app .item.blockItem,
+html[data-director-device="tablet"] .app .item.blockItem,
+.app.musicianMonitor .item.blockItem,
+html[data-director-device="phone"] .app .tunerFullBlockRow,
+html[data-director-device="tablet"] .app .tunerFullBlockRow,
+.app.musicianMonitor .tunerFullBlockRow {
+  border-radius: 0 !important;
+}
+
+/* A paleta dos blocos vem do projeto: nome, fundo e palito acompanham a
+   mesma cor. Em "Sem cores", o nome volta ao branco, sem fundo colorido. */
+.app .item.blockItem[data-block-color-mode="auto"]:not(.selectedPink):not(.selectedBlue):not(.playing):not(.queuedYellow):not(.queuedGreen) {
+  background: linear-gradient(135deg, var(--app-block-background), var(--app-block-background-strong)) !important;
+  border-color: var(--app-block-color) !important;
+  box-shadow: inset 0 0 0 1px var(--app-block-color), 0 0 13px var(--app-block-glow) !important;
+}
+.app .item.blockItem[data-block-color-mode="auto"]::before {
+  background: var(--app-block-color) !important;
+  box-shadow: 0 0 12px var(--app-block-glow) !important;
+}
+.app .item.blockItem[data-block-color-mode="none"]:not(.selectedPink):not(.selectedBlue):not(.playing):not(.queuedYellow):not(.queuedGreen) {
+  background: transparent !important;
+  border-color: rgba(148, 163, 184, .34) !important;
+  box-shadow: none !important;
+}
+.app .item.blockItem[data-block-color-mode="none"]::before {
+  background: #64748b !important;
+  box-shadow: none !important;
+}
+.app .mixerRowColor {
+  background: var(--mixer-color, #334155) !important;
+}
+
+/* Mixer do Diretor: a marca vertical indica 0 dB dentro do fader. */
+.app:not(.musicianMonitor) .mixerInlineSliderWrap {
+  grid-area: slider;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 38px;
+}
+.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+}
+.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-runnable-track,
+.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-runnable-track,
+.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-runnable-track {
+  height: 9px;
+}
+.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-thumb,
+.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-thumb,
+.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-thumb {
+  /* A trilha maior desloca o thumb nativo no Chromium; sobe apenas o thumb,
+     mantendo seu desenho original e a barra branca do próprio controle. */
+  transform: translateY(-3px);
+}
+.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-moz-range-track,
+.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-moz-range-track,
+.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-moz-range-track {
+  height: 9px;
+}
+.app:not(.musicianMonitor) .premixInlineSliderWrap {
+  grid-area: slider;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 38px;
+}
+.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider {
+  position: relative;
+  z-index: 1;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.app:not(.musicianMonitor) .premixFullSliderTrack {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 36px;
+}
+.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider {
+  position: relative;
+  z-index: 1;
+}
+.app:not(.musicianMonitor) .premixZeroDbMark {
+  position: absolute;
+  z-index: 2;
+  left: calc(var(--premix-zero-position, 76%) + var(--premix-zero-offset, -4.16px));
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  transform: translateX(-1px);
+  border-radius: 2px;
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px rgba(2, 6, 23, .95), 0 0 5px rgba(255,255,255,.6);
+  pointer-events: none;
+}
+.app:not(.musicianMonitor) .mixerInlineZeroDbMark {
+  position: absolute;
+  z-index: 2;
+  /* O range posiciona o centro do thumb dentro da área útil, não no
+     percentual cru da largura. O deslocamento mantém o | no centro do
+     botão exatamente quando o duplo toque retorna a 0 dB. */
+  left: calc(var(--mixer-zero-position, 76%) + var(--mixer-zero-offset, -4.16px));
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  transform: translateX(-1px);
+  border-radius: 2px;
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px rgba(2, 6, 23, .95), 0 0 5px rgba(255,255,255,.6);
+  pointer-events: none;
 }
