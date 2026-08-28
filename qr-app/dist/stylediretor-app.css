@@ -7602,7 +7602,7 @@ button,
   display: flex;
   font-family: var(--app-tp-preview-font, system-ui, sans-serif);
   align-content: start;
-  gap: clamp(7px, 1vw, 14px);
+  gap: clamp(4px, 0.625vh, 7px);
   width: 100%;
   min-width: 0;
   min-height: 0;
@@ -9793,13 +9793,12 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 .directorTpViewport[data-text-box="1"] .directorTpTextOnly{inset:10px;box-shadow:inset 0 0 0 2px var(--app-tp-text-box-color,#fde047)}
 .directorTpViewport[data-text-box-rgb="1"] .directorTpTextOnly{animation:appTelepromptRgbBorder 4.5s linear infinite}
 .directorTpImage,.directorTpVideo{transform:scale(var(--app-tp-media-scale,1));transform-origin:center}
-.directorTpPreviewGrid{zoom:var(--app-tp-preview-scale,1)}
 .directorTpChord{color:var(--app-tp-chord-color,#fb923c)!important;border-color:var(--app-tp-chord-color,#fb923c)!important;font-family:var(--app-tp-chord-font,system-ui,sans-serif)!important}
 .directorTpClock,.directorTpLocalClock,.directorTpSongName,.directorTpQueueName,.directorTpProgress{position:absolute;z-index:70;pointer-events:none}
 .directorTpClock,.directorTpLocalClock{top:8px;min-width:118px;padding:5px 10px;border:2px solid transparent;border-radius:7px;background:rgba(0,0,0,.78);font-weight:1000;line-height:1;text-align:center;text-shadow:0 2px 4px #000}
 .directorTpClock{color:var(--app-tp-clock-color,#00ff55);font-size:var(--app-tp-clock-size,32px)}
 .directorTpLocalClock{color:var(--app-tp-local-clock-color,#fde047);font-size:var(--app-tp-local-clock-size,28px)}
-.directorTpClock[data-border="1"]{border-color:var(--app-tp-clock-border,#fde047)}.directorTpLocalClock[data-border="1"]{border-color:var(--app-tp-local-clock-color,#fde047)}
+.directorTpClock[data-border="1"]{border-color:var(--app-tp-clock-border,#fde047)}.directorTpLocalClock[data-border="1"]{border-color:var(--app-tp-local-clock-border,#fde047)}
 .directorTpClock[data-rgb="1"]{animation:appTelepromptRgbBorder 4.5s linear infinite}
 .directorTpClock[data-position^="left"],.directorTpLocalClock[data-position^="left"]{left:8px}.directorTpClock[data-position^="center"]{left:50%;transform:translateX(-50%)}.directorTpClock[data-position^="right"],.directorTpLocalClock[data-position^="right"]{right:8px}
 .directorTpClock[data-position$="bottom"],.directorTpLocalClock[data-position$="bottom"]{top:auto;bottom:8px}

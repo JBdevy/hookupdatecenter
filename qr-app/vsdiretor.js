@@ -612,6 +612,7 @@
     textColor: '#ffea00', textBoxColor: '#ffea00',
     clockColor: '#00ff55', clockExpiredColor: '#ff3131',
     clockBorderColor: '#00ff55', localClockColor: '#00ff55',
+    localClockBorderColor: '#00ff55',
     borderColor: '#00ff55', songNameColor: '#00ff55',
     queueNameColor: '#ffea00', progressColor: '#ffea00',
     chordColor: '#fb923c',
@@ -646,7 +647,8 @@
   const APP_TELEPROMPT_DAY_COLORS = Object.freeze({
     textColor: '#ffffff', textBoxColor: '#ffffff', clockColor: '#ffffff',
     clockExpiredColor: '#d60000', clockBorderColor: '#ffffff',
-    localClockColor: '#ffffff', borderColor: '#ffffff',
+    localClockColor: '#ffffff', localClockBorderColor: '#ffffff',
+    borderColor: '#ffffff',
     songNameColor: '#ffffff', queueNameColor: '#ffffff',
     progressColor: '#ffffff', chordColor: '#d97706',
   })
@@ -7061,6 +7063,7 @@
         ${renderAppConfigColor(slot, settings, 'clockExpiredColor', 'Cor do fim regressivo')}
         ${renderAppConfigColor(slot, settings, 'clockBorderColor', 'Cor da borda do cronômetro')}
         ${renderAppConfigColor(slot, settings, 'localClockColor', 'Cor do horário local')}
+        ${renderAppConfigColor(slot, settings, 'localClockBorderColor', 'Cor da borda do horário local')}
         ${renderAppConfigColor(slot, settings, 'borderColor', 'Cor da borda da janela')}
         ${renderAppConfigColor(slot, settings, 'songNameColor', 'Cor do nome da música')}
         ${renderAppConfigColor(slot, settings, 'queueNameColor', 'Cor do nome da fila')}
@@ -8338,6 +8341,8 @@
       return `<section class="directorTpPreviewCard" style="--tp-preview-block-color:${escapeHtml(colorHex)}" data-preview-block-id="${escapeHtml(block?.id || '')}" data-preview-block-color-key="${escapeHtml(colorKey)}" data-preview-whiten-others="${whitenOtherSongs ? '1' : '0'}"><div class="directorTpPreviewBlockName">${escapeHtml(`${applyPreviewTextCase(block?.name || 'SEM BLOCO')}${blockDuration}`)}</div><div class="directorTpPreviewSongs">${songHtml}</div></section>`
     })
     const phone = document.documentElement.dataset.directorDevice === 'phone'
+    const previewFontScale = Math.max(0.5, Math.min(1,
+      (Number(preview?.previewScale) || 100) / 100))
     const viewport = root.querySelector('[data-director-tp-viewport]')
     const viewportWidth = Math.max(320, Number(viewport?.clientWidth) || Number(window.innerWidth) || 360)
     const viewportHeight = Math.max(240, Number(viewport?.clientHeight) || Number(window.innerHeight) || 640)
@@ -8377,7 +8382,9 @@
     }
     const columns = Array.from({ length: columnCount }, () => [])
     cardHtml.forEach((card, index) => columns[blockColumns[index]].push(card))
-    const previewStyle = `--tp-preview-song-size:${bestFontSize}px;--tp-preview-title-size:${Math.max(13, Math.round(bestFontSize * 1.08))}px`
+    const scaledSongFontSize = Math.max(5, Math.round(bestFontSize * previewFontScale))
+    const scaledTitleFontSize = Math.max(7, Math.round(bestFontSize * 1.08 * previewFontScale))
+    const previewStyle = `--tp-preview-song-size:${scaledSongFontSize}px;--tp-preview-title-size:${scaledTitleFontSize}px`
     return `<div class="directorTpPreviewGrid" style="${previewStyle}" data-preview-columns="${columnCount}" data-preview-count="${blocks.length}" data-preview-underline="${underlineEnabled ? '1' : '0'}">${columns.map((cards) => `<div class="directorTpPreviewColumn">${cards.join('')}</div>`).join('')}</div>`
   }
 
@@ -8610,6 +8617,7 @@
       `--app-tp-clock-color:${isCountdownOverrun(data) ? settings.clockExpiredColor : settings.clockColor}`,
       `--app-tp-clock-border:${settings.clockBorderColor}`,
       `--app-tp-local-clock-color:${settings.localClockColor}`,
+      `--app-tp-local-clock-border:${settings.localClockBorderColor}`,
       `--app-tp-border-color:${settings.borderColor}`,
       `--app-tp-song-color:${settings.songNameColor}`,
       `--app-tp-queue-color:${settings.queueNameColor}`,
@@ -8976,6 +8984,7 @@
       '--app-tp-clock-color': isCountdownOverrun(state.snapshot) ? settings.clockExpiredColor : settings.clockColor,
       '--app-tp-clock-border': settings.clockBorderColor,
       '--app-tp-local-clock-color': settings.localClockColor,
+      '--app-tp-local-clock-border': settings.localClockBorderColor,
       '--app-tp-border-color': settings.borderColor,
       '--app-tp-song-color': settings.songNameColor,
       '--app-tp-queue-color': settings.queueNameColor,
@@ -9092,6 +9101,7 @@
         blockDurationEnabled: settings.previewBlockDurationEnabled,
         underlineEnabled: settings.previewUnderlineEnabled,
         textCase: settings.textCase,
+        previewScale: settings.previewScale,
       }
       const previewSignature = `${tp.preview.signature}|${settings.previewSongDurationEnabled ? 1 : 0}|${settings.previewBlockDurationEnabled ? 1 : 0}|${settings.previewUnderlineEnabled ? 1 : 0}|${settings.textCase}|${settings.previewScale}`
       if (showPreview && previewHost.dataset.previewSignature !== previewSignature) {
