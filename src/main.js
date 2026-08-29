@@ -6362,7 +6362,8 @@ function isWindowsVshookTelepromptSettingsRunning() {
   return isWindowsProcessRunning('VS Hook Teleprompt Settings.exe');
 }
 
-function installWindowsPayload(files) {
+function installWindowsPayload(files, options = {}) {
+  const installBundledAssets = options.installBundledAssets !== false;
   if (isWindowsReaperRunning()) {
     throw new Error(
       'Feche completamente o REAPER antes de instalar a extensão.'
@@ -6377,8 +6378,14 @@ function installWindowsPayload(files) {
   // Confere novamente o diretório antes de entregar o controle ao instalador.
   // O customInstall e a próxima inicialização repetem a mesma limpeza.
   removeLegacyWindowsVshookExtensions();
-  installWindowsVshookCompanion();
-  installWindowsVshookTheme();
+  // Teleprompt Settings e temas pertencem ao instalador normal da Hook
+  // Center. Em uma atualizacao da propria Central, a nova Central ja os
+  // recebeu pelo instalador; nesta abertura restam somente os binarios da
+  // extensao.
+  if (installBundledAssets) {
+    installWindowsVshookCompanion();
+    installWindowsVshookTheme();
+  }
 }
 
 function cleanupLegacyWindowsVshookOnStartup() {
@@ -6413,6 +6420,7 @@ function isMacReaperRunning() {
 
 function installMacPayload(files, options = {}) {
   const installExtension = options.installExtension !== false;
+  const installBundledAssets = options.installBundledAssets !== false;
   if (installExtension && isMacReaperRunning()) {
     throw new Error(
       'Encerre completamente o REAPER com Cmd+Q antes de instalar. ' +
@@ -6432,12 +6440,14 @@ function installMacPayload(files, options = {}) {
   if (vlcArchive) validateVlcRuntimeArchive(vlcArchive);
   const commands = [];
   const vshookSource = installExtension ? files.vshookDylib : '';
-  const companionSource = path.join(
+  const companionSource = installBundledAssets ? path.join(
     getBundledVshookCompanionDir(),
     'VS Hook Teleprompt Settings.app'
-  );
-  const hasCompanion = fs.existsSync(companionSource);
-  const themeSources = getBundledVshookThemePaths();
+  ) : '';
+  const hasCompanion = installBundledAssets && fs.existsSync(companionSource);
+  const themeSources = installBundledAssets
+    ? getBundledVshookThemePaths()
+    : [];
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
@@ -6606,7 +6616,21 @@ function markBundledReaperAssetsInstalled() {
 async function syncBundledReaperAssetsOnStartup() {
   if (!hasInstalledVshookExtension()) return { ok: true, skipped: 'extension-not-installed' };
   const identity = getBundledReaperAssetsIdentity();
-  if (store.get('bundledReaperAssetsIdentity') === identity) {
+  const windowsCompanionCurrent = process.platform === 'win32' &&
+    (() => {
+      try {
+        const source = getBundledVshookCompanionDir();
+        const destination = path.join(
+          getWindowsReaperUserPluginsDir(),
+          'VSHookTelepromptSettings'
+        );
+        return windowsVshookCompanionCopyIsComplete(source, destination);
+      } catch (_) {
+        return false;
+      }
+    })();
+  if (store.get('bundledReaperAssetsIdentity') === identity &&
+      (process.platform !== 'win32' || windowsCompanionCurrent)) {
     return { ok: true, skipped: 'already-current' };
   }
   if ((process.platform === 'win32' && isWindowsReaperRunning()) ||
@@ -6614,7 +6638,9 @@ async function syncBundledReaperAssetsOnStartup() {
     return { ok: true, skipped: 'reaper-running' };
   }
   if (process.platform === 'win32') {
-    installWindowsVshookCompanion();
+    // O instalador NSIS ja colocou esta pasta no primeiro uso. Mantemos a
+    // copia aqui somente como recuperacao de uma instalacao antiga/incompleta.
+    if (!windowsCompanionCurrent) installWindowsVshookCompanion();
     installWindowsVshookTheme();
   } else if (process.platform === 'darwin') {
     installMacPayload(null, { installExtension: false });
@@ -6635,13 +6661,13 @@ async function completePendingPostCenterUpdateInstall() {
       throw new Error('A DLL guardada para concluir a atualização não foi encontrada.');
     }
     validateExtensionBinaryFile(files.vshookDll, 'vshookDll');
-    installWindowsPayload(files);
+    installWindowsPayload(files, { installBundledAssets: false });
   } else if (process.platform === 'darwin') {
     if (!files.vshookDylib || !fs.existsSync(files.vshookDylib)) {
       throw new Error('A dylib guardada para concluir a atualização não foi encontrada.');
     }
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
-    installMacPayload(files);
+    installMacPayload(files, { installBundledAssets: false });
   } else {
     return { ok: true, skipped: 'unsupported-platform' };
   }
@@ -6667,7 +6693,14 @@ async function completePendingPostCenterUpdateInstall() {
   });
   store.set('updateAvailable', false);
   store.set('pendingPostCenterUpdateInstall', null);
-  markBundledReaperAssetsInstalled();
+  // No Windows o NSIS da Central ja instalou o companion antes de ela abrir.
+  // Um DMG nao possui postinstall; no Mac o fallback assincrono abaixo ainda
+  // precisa conferir/copiar os assets uma unica vez, sem bloquear a janela.
+  if (process.platform === 'win32') {
+    markBundledReaperAssetsInstalled();
+  } else {
+    store.set('bundledReaperAssetsIdentity', '');
+  }
   return { ok: true, installed: true };
 }
 
@@ -7753,13 +7786,20 @@ app.whenReady().then(async () => {
     console.error('[Hook Center] Não concluiu a instalação após atualizar a central:',
       error?.message || error);
   });
-  await syncBundledReaperAssetsOnStartup().catch((error) => {
-    console.error('[Hook Center] Não sincronizou Teleprompt Settings e temas:',
-      error?.message || error);
-  });
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
+
+  // Nunca segura a primeira tela da Hook Center para copiar o companion do
+  // Teleprompt. No Windows o instalador ja fez isso; no macOS (DMG) isto e o
+  // unico fallback possivel sem trocar o formato para PKG.
+  setTimeout(() => {
+    if (appIsQuitting) return;
+    syncBundledReaperAssetsOnStartup().catch((error) => {
+      console.error('[Hook Center] Não sincronizou Teleprompt Settings e temas:',
+        error?.message || error);
+    });
+  }, 1200);
 
   const license = store.get('license') || {};
   if (!license.machineId) {

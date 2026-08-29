@@ -64,6 +64,22 @@
   nsExec::ExecToLog 'icacls "$R9\HookDeveloper\HookCenter" /grant *S-1-5-32-545:(OI)(CI)M /T /C'
   Pop $R7
 
+  ; O companion do Teleprompt e os temas ja fazem parte desta instalacao da
+  ; Hook Center. Assim a primeira abertura nao precisa copiar uma pasta grande
+  ; enquanto a janela ainda esta iniciando. O main.js mantem um fallback apenas
+  ; para instalacoes antigas ou que tenham ficado incompletas.
+  IfFileExists "$INSTDIR\resources\vshook-companion\VS Hook Teleprompt Settings.exe" 0 vshook_tp_settings_done
+    CreateDirectory "$APPDATA\REAPER\UserPlugins\VSHookTelepromptSettings"
+    nsExec::ExecToLog 'robocopy "$INSTDIR\resources\vshook-companion" "$APPDATA\REAPER\UserPlugins\VSHookTelepromptSettings" /E /NFL /NDL /NJH /NJS /NC /NS'
+    Pop $R7
+  vshook_tp_settings_done:
+
+  IfFileExists "$INSTDIR\resources\vshook-themes\*.*" 0 vshook_themes_done
+    CreateDirectory "$APPDATA\REAPER\ColorThemes"
+    nsExec::ExecToLog 'robocopy "$INSTDIR\resources\vshook-themes" "$APPDATA\REAPER\ColorThemes" /E /NFL /NDL /NJH /NJS /NC /NS'
+    Pop $R7
+  vshook_themes_done:
+
   ; Limpa nomes antigos para não deixar lixo da nomes antigos.
   Delete "$R8\VS Hook APP\VS Hook Pro.lua"
   Delete "$R8\VS Hook APP\VS Hook Basic.lua"
