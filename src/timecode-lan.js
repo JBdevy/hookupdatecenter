@@ -23,11 +23,11 @@ const DISCOVERY_INTERVAL_MS = 650
 const DIRECT_DISCOVERY_INTERVAL_MS = 3000
 const DIRECT_DISCOVERY_TIMEOUT_MS = 260
 const DIRECT_DISCOVERY_BATCH_SIZE = 24
-const RECEIVER_TIMEOUT_MS = 3000
+const RECEIVER_TIMEOUT_MS = 8000
 const IDLE_LINK_HEARTBEAT_MS = 400
-const PROJECT_SYNC_PREFLIGHT_TIMEOUT_MS = 6500
+const PROJECT_SYNC_PREFLIGHT_TIMEOUT_MS = 30000
 const PROJECT_SYNC_PREFLIGHT_POLL_MS = 80
-const PROJECT_SYNC_PREFLIGHT_TTL_MS = 15000
+const PROJECT_SYNC_PREFLIGHT_TTL_MS = 90000
 const PROJECT_SYNC_APPLY_TTL_MS = 30 * 60 * 1000
 const PROJECT_SYNC_BUNDLE_CHUNK_BYTES = 1024 * 1024
 const PROJECT_SYNC_BUNDLE_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -879,21 +879,29 @@ function createTimecodeLanRelay(options = {}) {
   async function projectSyncCapabilities(
     status, address, port, reportMismatch = false) {
     let result = null
-    try {
-      result = await requestJson({
-        hostname: address,
-        port,
-        path: `${outboundLinkPrefix}/capabilities`,
-        method: 'POST',
-        payload: {
-          mode: 'project_sync',
-          protocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-        },
-        timeoutMs: 500,
-      })
-    } catch (_) {
-      return false
+    // A primeira conexao TCP pode coincidir com a abertura do REAPER, troca
+    // de placa ou retorno do Wi-Fi. Uma unica janela de 500 ms criava falso
+    // "nao compativel" e obrigava o usuario a tentar parear novamente.
+    for (let attempt = 0; attempt < 3 && !stopped; attempt += 1) {
+      try {
+        result = await requestJson({
+          hostname: address,
+          port,
+          path: `${outboundLinkPrefix}/capabilities`,
+          method: 'POST',
+          payload: {
+            mode: 'project_sync',
+            protocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+          },
+          timeoutMs: 1200,
+        })
+        if (result.ok) break
+      } catch (_) {
+        result = null
+      }
+      if (attempt < 2) await wait(120 * (attempt + 1))
     }
+    if (!result) return false
     const compatible = result.ok && result.data?.ok === true &&
       Number(result.data.projectSyncProtocolVersion) ===
         PROJECT_SYNC_PROTOCOL_VERSION &&
@@ -3275,7 +3283,7 @@ function createTimecodeLanRelay(options = {}) {
             : undefined,
         },
         timeoutMs: Math.max(
-          status.mode === 'project_sync' ? 900 : 0,
+          status.mode === 'project_sync' ? 1800 : 0,
           Number(receiver.timeoutMs) || 1000),
       })
       if (!result.ok || !result.data?.ok || transmitterPeer?.connected || stopped) {
@@ -3806,7 +3814,7 @@ function createTimecodeLanRelay(options = {}) {
           transport,
           audioHealthy,
         },
-        timeoutMs: 800,
+        timeoutMs: 1800,
       })
       if (!remoteResult.ok || !remoteResult.data?.ok) throw new Error('Receiver indisponível.')
       if (status.mode === 'project_sync') {
@@ -3898,7 +3906,10 @@ function createTimecodeLanRelay(options = {}) {
     } catch (_) {
       if (!transmitterPeer) return
       transmitterPeer.failures += 1
-      if (transmitterPeer.failures >= 3) resetTransmitterPeer(true)
+      // Picos curtos durante hash/aplicacao de projeto nao significam que o
+      // cabo caiu. Mantem o peer por alguns pulsos e reencontra a rota sem
+      // abrir outra conferencia se a rede realmente tiver mudado.
+      if (transmitterPeer.failures >= 5) resetTransmitterPeer(true)
     }
   }
 
