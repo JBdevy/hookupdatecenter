@@ -1134,10 +1134,15 @@ window.vshookExitToProjectSelector = function () {
   window.location.reload()
 }
 
-window.addEventListener('load', async () => {
+window.addEventListener('load', () => {
   keepScreenAwake()
   consumeVSHookForcedModeSelection()
-  await bootstrapChatMobileSessionFromQr()
+
+  // O QR principal também carrega a chave do Chat Hook. O pareamento com o
+  // backend pode depender da internet, mas Diretor e Músico são locais e não
+  // podem ficar esperando essa chamada para mostrar a sessão do Hook Center.
+  // Primeiro renderizamos o fluxo local; o Chat conclui o pareamento em
+  // segundo plano e mantém a chave para uma nova tentativa se falhar.
   try {
     if (localStorage.getItem('vshook_selected_mode') === 'chat' && getStoredChatMobileSession()) {
       enterStoredChat()
@@ -1146,4 +1151,6 @@ window.addEventListener('load', async () => {
   } catch (error) {}
   if (isBridgeBrowserMode()) startBridgeBrowserMode()
   else startDiscovery()
+
+  void bootstrapChatMobileSessionFromQr()
 })
