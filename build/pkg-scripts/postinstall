@@ -134,8 +134,24 @@ is_complete_companion "$COMPANION_SOURCE" || fail "Teleprompt Settings empacotad
 
 GLOBAL_REAPER="${TARGET_VOLUME}/Library/Application Support/REAPER"
 GLOBAL_VLC_ROOT="$GLOBAL_REAPER/UserPlugins/VSHookRuntime/VLC"
+INSTALL_VLC_RUNTIME=0
 
 if ! is_complete_vlc "$GLOBAL_VLC_ROOT"; then
+  INSTALL_VLC_RUNTIME=1
+fi
+
+for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
+  [ -d "$USER_HOME" ] || continue
+  USER_NAME="$(basename "$USER_HOME")"
+  [ "$USER_NAME" = "Shared" ] && continue
+  USER_VLC_ROOT="$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC"
+  if ! is_complete_vlc "$USER_VLC_ROOT"; then
+    INSTALL_VLC_RUNTIME=1
+    break
+  fi
+done
+
+if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
   VLC_DMG="$(find "$RESOURCES/vlc-runtime" -maxdepth 1 -type f -name 'vlc-*-universal.dmg' -print -quit)"
   [ -n "$VLC_DMG" ] || fail "Runtime VLC nao veio dentro da Hook Center."
   VLC_MOUNT="$(mktemp -d /tmp/vshook-vlc.XXXXXX)"
@@ -147,11 +163,11 @@ if ! is_complete_vlc "$GLOBAL_VLC_ROOT"; then
   hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet
   VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"
   is_complete_vlc "$VLC_SOURCE" || fail "O DMG do VLC empacotado esta incompleto."
-  install_vlc_runtime "$GLOBAL_REAPER"
-  cleanup_vlc
-  trap - EXIT
 fi
 
+if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
+  install_vlc_runtime "$GLOBAL_REAPER"
+fi
 install_companion "$GLOBAL_REAPER"
 install_themes "$GLOBAL_REAPER/ColorThemes"
 
@@ -160,11 +176,20 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   USER_NAME="$(basename "$USER_HOME")"
   [ "$USER_NAME" = "Shared" ] && continue
   USER_REAPER="$USER_HOME/Library/Application Support/REAPER"
+  if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
+    install_vlc_runtime "$USER_REAPER"
+  fi
   install_companion "$USER_REAPER"
   install_themes "$USER_REAPER/ColorThemes" "$USER_NAME"
   if id -u "$USER_NAME" >/dev/null 2>&1; then
+    chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookRuntime" 2>/dev/null || true
     chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookTelepromptSettings" 2>/dev/null || true
   fi
 done
+
+if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
+  cleanup_vlc
+  trap - EXIT
+fi
 
 log "Componentes do REAPER instalados antes da primeira abertura da Hook Center."
