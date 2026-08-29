@@ -87,10 +87,10 @@ notary_submit_and_wait() {
 }
 
 shopt -s nullglob
-artifacts=(dist/*.dmg)
+artifacts=(dist/*.pkg)
 
 if [[ ${#artifacts[@]} -eq 0 ]]; then
-  echo "Nenhum DMG encontrado em dist/ para notarizar." >&2
+  echo "Nenhum PKG encontrado em dist/ para notarizar." >&2
   exit 1
 fi
 
@@ -98,6 +98,6 @@ for file in "${artifacts[@]}"; do
   notary_submit_and_wait "$file"
 
   echo "[macOS] Conferindo Gatekeeper do artefato: $file"
-  spctl -a -vvv -t open --context context:primary-signature "$file" || true
+  spctl -a -vvv -t install "$file"
   echo "[macOS] Artefato pronto para cliente: $file"
 done

@@ -1,0 +1,170 @@
+#!/bin/bash
+# Instala os componentes do REAPER antes da primeira abertura da Hook Center.
+# O PKG executa este script como root; nao abre a Hook Center e nao altera a
+# extensao reaper_VSHookExt.dylib, que continua sendo instalada pelo fluxo de
+# atualizacao com o REAPER fechado.
+set -euo pipefail
+
+log() {
+  echo "[Hook Center postinstall] $*"
+}
+
+fail() {
+  echo "[Hook Center postinstall] ERRO: $*" >&2
+  exit 1
+}
+
+is_complete_vlc() {
+  local root="$1"
+  [ -f "$root/lib/libvlc.dylib" ] &&
+    [ -f "$root/lib/libvlccore.dylib" ] &&
+    [ -d "$root/plugins" ] &&
+    [ -n "$(find "$root/plugins" -mindepth 1 -maxdepth 1 -print -quit)" ]
+}
+
+is_complete_companion() {
+  local app_bundle="$1"
+  [ -d "$app_bundle" ] &&
+    [ -f "$app_bundle/Contents/MacOS/VS Hook Teleprompt Settings" ] &&
+    [ -f "$app_bundle/Contents/Resources/app.asar" ]
+}
+
+install_vlc_runtime() {
+  local reaper_root="$1"
+  local parent="$reaper_root/UserPlugins/VSHookRuntime"
+  local target="$parent/VLC"
+  local temporary="$parent/.VLC.install.$$"
+  local backup="$parent/.VLC.backup.$$"
+
+  if is_complete_vlc "$target"; then
+    log "Runtime VLC ja esta completo em $target"
+    return
+  fi
+
+  mkdir -p "$parent"
+  rm -rf "$temporary" "$backup"
+  ditto "$VLC_SOURCE" "$temporary"
+  is_complete_vlc "$temporary" || fail "A copia temporaria do VLC esta incompleta."
+
+  if [ -e "$target" ]; then
+    mv "$target" "$backup"
+  fi
+  if mv "$temporary" "$target" && chmod -R a+rX "$target" && is_complete_vlc "$target"; then
+    rm -rf "$backup"
+    log "Runtime VLC instalado em $target"
+    return
+  fi
+
+  rm -rf "$target"
+  if [ -e "$backup" ]; then
+    mv "$backup" "$target" || true
+  fi
+  fail "Nao foi possivel instalar o runtime VLC."
+}
+
+install_companion() {
+  local reaper_root="$1"
+  local parent="$reaper_root/UserPlugins/VSHookTelepromptSettings"
+  local target="$parent/VS Hook Teleprompt Settings.app"
+  local temporary="$parent/.VS Hook Teleprompt Settings.install.$$"
+  local backup="$parent/.VS Hook Teleprompt Settings.backup.$$"
+
+  mkdir -p "$parent"
+  rm -rf "$temporary" "$backup"
+  ditto "$COMPANION_SOURCE" "$temporary"
+  is_complete_companion "$temporary" || fail "A copia temporaria do Teleprompt Settings esta incompleta."
+
+  if [ -e "$target" ]; then
+    mv "$target" "$backup"
+  fi
+  if mv "$temporary" "$target" && is_complete_companion "$target"; then
+    rm -rf "$backup"
+    log "Teleprompt Settings instalado em $target"
+    return
+  fi
+
+  rm -rf "$target"
+  if [ -e "$backup" ]; then
+    mv "$backup" "$target" || true
+  fi
+  fail "Nao foi possivel instalar o Teleprompt Settings."
+}
+
+install_themes() {
+  local theme_directory="$1"
+  local owner="${2:-}"
+  local source filename temporary installed=0
+
+  mkdir -p "$theme_directory"
+  for source in "$THEMES_SOURCE"/*.ReaperTheme "$THEMES_SOURCE"/*.ReaperThemeZip; do
+    [ -f "$source" ] || continue
+    filename="$(basename "$source")"
+    temporary="$theme_directory/.${filename}.install.$$"
+    cp -f "$source" "$temporary"
+    chmod 644 "$temporary"
+    mv -f "$temporary" "$theme_directory/$filename"
+    if [ -n "$owner" ]; then
+      chown "$owner":staff "$theme_directory/$filename" 2>/dev/null || true
+    fi
+    installed=$((installed + 1))
+  done
+  [ "$installed" -gt 0 ] || fail "Nenhum tema REAPER foi encontrado no pacote."
+}
+
+TARGET_VOLUME="${3:-/}"
+TARGET_VOLUME="${TARGET_VOLUME%/}"
+INSTALL_LOCATION="${2:-/Applications}"
+case "$INSTALL_LOCATION" in
+  /*) ;;
+  *) INSTALL_LOCATION="/$INSTALL_LOCATION" ;;
+esac
+
+APP_BUNDLE="${TARGET_VOLUME}${INSTALL_LOCATION%/}/Hook Center.app"
+if [ ! -d "$APP_BUNDLE" ]; then
+  APP_BUNDLE="${TARGET_VOLUME}/Applications/Hook Center.app"
+fi
+[ -d "$APP_BUNDLE" ] || fail "Hook Center.app nao foi encontrada depois da instalacao."
+
+RESOURCES="$APP_BUNDLE/Contents/Resources"
+COMPANION_SOURCE="$RESOURCES/vshook-companion/VS Hook Teleprompt Settings.app"
+THEMES_SOURCE="$RESOURCES/vshook-themes"
+[ -d "$COMPANION_SOURCE" ] || fail "Teleprompt Settings nao veio dentro da Hook Center."
+[ -d "$THEMES_SOURCE" ] || fail "Temas do REAPER nao vieram dentro da Hook Center."
+is_complete_companion "$COMPANION_SOURCE" || fail "Teleprompt Settings empacotado esta incompleto."
+
+GLOBAL_REAPER="${TARGET_VOLUME}/Library/Application Support/REAPER"
+GLOBAL_VLC_ROOT="$GLOBAL_REAPER/UserPlugins/VSHookRuntime/VLC"
+
+if ! is_complete_vlc "$GLOBAL_VLC_ROOT"; then
+  VLC_DMG="$(find "$RESOURCES/vlc-runtime" -maxdepth 1 -type f -name 'vlc-*-universal.dmg' -print -quit)"
+  [ -n "$VLC_DMG" ] || fail "Runtime VLC nao veio dentro da Hook Center."
+  VLC_MOUNT="$(mktemp -d /tmp/vshook-vlc.XXXXXX)"
+  cleanup_vlc() {
+    hdiutil detach "$VLC_MOUNT" -quiet 2>/dev/null || true
+    rmdir "$VLC_MOUNT" 2>/dev/null || true
+  }
+  trap cleanup_vlc EXIT
+  hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet
+  VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"
+  is_complete_vlc "$VLC_SOURCE" || fail "O DMG do VLC empacotado esta incompleto."
+  install_vlc_runtime "$GLOBAL_REAPER"
+  cleanup_vlc
+  trap - EXIT
+fi
+
+install_companion "$GLOBAL_REAPER"
+install_themes "$GLOBAL_REAPER/ColorThemes"
+
+for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
+  [ -d "$USER_HOME" ] || continue
+  USER_NAME="$(basename "$USER_HOME")"
+  [ "$USER_NAME" = "Shared" ] && continue
+  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"
+  install_companion "$USER_REAPER"
+  install_themes "$USER_REAPER/ColorThemes" "$USER_NAME"
+  if id -u "$USER_NAME" >/dev/null 2>&1; then
+    chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookTelepromptSettings" 2>/dev/null || true
+  fi
+done
+
+log "Componentes do REAPER instalados antes da primeira abertura da Hook Center."

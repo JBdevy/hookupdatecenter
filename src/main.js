@@ -1292,8 +1292,11 @@ function normalizeUpdate(raw) {
         vshookDylib: pickFirst(macos.vshookDylib, macos.vshookExtDylib, macos.vshookDylibUrl, macos.reaperVshookDylib, macos.reaperVshookDylibUrl, macos.vshook, macos.vshookUrl, macos.reaper_vshook, macos.reaper_vshook_url),
         installer: pickFirst(
           macos.installer,
+          macos.pkg,
           macos.dmg,
           macos.url,
+          source.macosPkgUrl,
+          source.pkgUrl,
           source.macosHookCenterUrl,
           source.macosInstallerUrl,
           source.macosUrl,
@@ -1490,6 +1493,18 @@ async function checkForUpdates(manual = false) {
 }
 
 
+function getMacInstallerExtension(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '.pkg';
+  try {
+    const pathname = new URL(raw, 'https://local.invalid').pathname || '';
+    const match = pathname.match(/\.(pkg|dmg)$/i);
+    return match ? `.${match[1].toLowerCase()}` : '.pkg';
+  } catch (_) {
+    return /\.dmg(?:$|[?#])/i.test(raw) ? '.dmg' : '.pkg';
+  }
+}
+
 function normalizeHookCenterUpdate(raw) {
   if (!raw) return null;
   const hasTutorialOnly = !!(raw.tutorialUrl || raw.learnUrl || raw.videoUrl);
@@ -1497,7 +1512,7 @@ function normalizeHookCenterUpdate(raw) {
   const platformKey = getHookCenterPlatformKey();
   const platformUrls = {
     windows: raw.windowsUrl || raw.windowsInstallerUrl || raw.exeUrl,
-    macos: raw.macosUrl || raw.macosInstallerUrl || raw.macUrl || raw.dmgUrl,
+    macos: raw.macosPkgUrl || raw.pkgUrl || raw.macosInstallerUrl || raw.macosUrl || raw.macUrl || raw.dmgUrl,
     'macos-legacy': raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url || raw.macosLegacyInstallerUrl
   };
   // O link específico da variante tem prioridade sobre o campo genérico.
@@ -1521,6 +1536,7 @@ function normalizeHookCenterUpdate(raw) {
       (platformKey === 'windows' ? raw.windowsSha256 : raw.macosSha256) || ''
     ).trim().toLowerCase(),
     windowsUrl: ensureAbsoluteUrl(raw.windowsUrl),
+    macosPkgUrl: ensureAbsoluteUrl(raw.macosPkgUrl || raw.pkgUrl),
     macosUrl: ensureAbsoluteUrl(raw.macosUrl),
     macosLegacyUrl: ensureAbsoluteUrl(raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url),
     publishedAt: raw.publishedAt || null
@@ -1571,10 +1587,12 @@ async function downloadHookCenterUpdateInstaller() {
     throw new Error('A atualização da Hook Center não informou uma versão válida.');
   }
   // Um download novo invalida imediatamente o ponteiro anterior. Se a rede
-  // falhar, o botão Instalar não pode cair silenciosamente no DMG/EXE velho.
+  // falhar, o botão Instalar não pode cair silenciosamente no pacote antigo.
   store.set('downloadedHookCenterUpdate', null);
 
-  const ext = process.platform === 'darwin' ? '.dmg' : '.exe';
+  const ext = process.platform === 'darwin'
+    ? getMacInstallerExtension(update.downloadUrl)
+    : '.exe';
   const artifactIdentity = getHookCenterArtifactIdentity(update);
   const remoteValidator = await fetchRemoteArtifactValidator(update.downloadUrl);
   const artifactSuffix = artifactIdentity.slice(0, 12);
@@ -1703,18 +1721,18 @@ function quitAfterWindowsInstallerIsQueued() {
   setTimeout(() => app.quit(), 80);
 }
 
-function quitAfterMacDmgIsOpened() {
+function quitAfterMacInstallerIsOpened() {
   // O Electron usa instância única. Se a central antiga continuar aberta,
   // clicar na nova cópia instalada apenas reativa o processo antigo e dá a
-  // impressão de que o DMG não trouxe as mudanças. shell.openPath() só retorna
-  // depois que o LaunchServices aceitou abrir o DMG, portanto não precisamos
-  // manter o processo antigo vivo depois desse ponto.
+  // impressão de que o instalador não trouxe as mudanças. shell.openPath() só
+  // retorna depois que o LaunchServices aceitou abrir o PKG/DMG, portanto não
+  // precisamos manter o processo antigo vivo depois desse ponto.
   appIsQuitting = true;
   if (isValidWindow(mainWindow)) mainWindow.hide();
   prepareForAppQuit();
   // Fecha também o ícone da barra e todas as janelas auxiliares já no próximo
   // ciclo. A resposta do IPC atual ainda consegue ser concluída, mas não fica
-  // nenhuma janela antiga visível enquanto o usuário instala o DMG novo.
+  // nenhuma janela antiga visível enquanto o usuário instala o pacote novo.
   setImmediate(() => {
     try {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -1730,8 +1748,8 @@ function quitAfterMacDmgIsOpened() {
 
   // Em algumas versões antigas do macOS/Electron, app.quit() pode ficar
   // aguardando o loop nativo mesmo depois de todas as janelas terem fechado.
-  // O watchdog encerra somente essa instância antiga; o DMG já foi entregue ao
-  // LaunchServices e o estado pendente da instalação já foi salvo no Store.
+  // O watchdog encerra somente essa instância antiga; o instalador já foi
+  // entregue ao LaunchServices e o estado pendente já foi salvo no Store.
   if (updateInstallerQuitWatchdog) {
     clearTimeout(updateInstallerQuitWatchdog);
   }
@@ -1768,10 +1786,10 @@ async function installDownloadedHookCenterUpdate() {
 
   const openError = await shell.openPath(dest);
   if (openError) throw new Error(openError);
-  // O DMG já foi entregue ao LaunchServices. Esconda/encerre a instância
+  // O instalador já foi entregue ao LaunchServices. Esconda/encerre a instância
   // antiga imediatamente; não abra Finder nem aguarde outra interação.
-  quitAfterMacDmgIsOpened();
-  return { ok: true, action: 'dmg-opened' };
+  quitAfterMacInstallerIsOpened();
+  return { ok: true, action: 'installer-opened' };
 }
 
 async function downloadAndInstallHookCenterUpdate() {
@@ -4852,13 +4870,18 @@ function validateUpdateInstallerFile(filePath) {
         throw new Error('O instalador baixado não é um executável válido do Windows.');
       }
     } else if (process.platform === 'darwin') {
-      // Imagens UDIF/DMG terminam com um trailer de 512 bytes iniciado por
-      // "koly". Isso impede que uma página HTML HTTP 200 substitua o cache.
+      // Pacotes planos do macOS são arquivos XAR ("xar!"). Mantemos o teste
+      // UDIF/DMG abaixo para atualizações antigas ainda publicadas.
       const signature = Buffer.alloc(4);
-      const trailerOffset = stat.size - 512;
-      if (fs.readSync(handle, signature, 0, signature.length, trailerOffset) !== signature.length ||
-          signature.toString('ascii') !== 'koly') {
-        throw new Error('O instalador baixado não é uma imagem DMG válida do macOS.');
+      const hasPkgHeader = fs.readSync(handle, signature, 0, signature.length, 0) === signature.length &&
+        signature.toString('ascii') === 'xar!';
+      if (!hasPkgHeader) {
+        const trailerOffset = stat.size - 512;
+        const hasDmgTrailer = fs.readSync(handle, signature, 0, signature.length, trailerOffset) === signature.length &&
+          signature.toString('ascii') === 'koly';
+        if (!hasDmgTrailer) {
+          throw new Error('O instalador baixado não é um pacote PKG nem uma imagem DMG válida do macOS.');
+        }
       }
     }
   } finally {
@@ -5140,7 +5163,7 @@ function readCachedManifestFile(manifestPath) {
         return false;
       }
       const expectedHash = String(entry?.sha256 || '').trim().toLowerCase();
-      // Manifests antigos nao registravam o hash do DMG/EXE. Eles nao podem
+      // Manifests antigos nao registravam o hash do instalador. Eles nao podem
       // ser usados para instalar a Central, pois um arquivo diferente podia
       // conservar versao, nome e URL.
       if (key === 'installer' && !/^[a-f0-9]{64}$/.test(expectedHash)) {
@@ -5225,8 +5248,9 @@ function decorateUpdatesWithCache(updates) {
 
 function getInstallerFilename(update) {
   const version = safeUpdateCacheSegment(update?.version || 'versao');
+  const installerUrl = update?.installerUrl || update?.downloadUrl || '';
   return process.platform === 'darwin'
-    ? `Hook-Center-${version}-macOS.dmg`
+    ? `Hook-Center-${version}-macOS${getMacInstallerExtension(installerUrl)}`
     : `Hook-Center-${version}-Windows.exe`;
 }
 
@@ -5251,13 +5275,18 @@ function buildUpdatePackageEntries(update) {
   const installerUrl = ensureAbsoluteUrl(
     files.installer ||
     files.exe ||
+    files.pkg ||
     files.dmg ||
     normalized.installerUrl ||
     normalized.downloadUrl ||
     matchingCurrentInstaller
   );
   if (installerUrl) {
-    entries.push({ key: 'installer', url: installerUrl, filename: getInstallerFilename(normalized) });
+    entries.push({
+      key: 'installer',
+      url: installerUrl,
+      filename: getInstallerFilename({ ...normalized, installerUrl })
+    });
   }
   return entries;
 }
@@ -5458,7 +5487,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
       }
       output[entry.key] = finalDest;
       // O instalador tambem recebe hash. Validar somente extensao deixava um
-      // DMG/EXE antigo passar quando a versao e a URL eram reutilizadas.
+      // instalador antigo passar quando a versao e a URL eram reutilizadas.
       const integrity = await getFileIntegrityAsync(dest);
       plannedEntryBytes[index] = integrity.size;
       reportPackageProgress(index, 100, {
@@ -5722,10 +5751,10 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
   }
   const openError = await shell.openPath(cachedFiles.installer);
   if (openError) throw new Error(openError);
-  quitAfterMacDmgIsOpened();
+  quitAfterMacInstallerIsOpened();
   return {
     ok: true,
-    action: 'center-first-dmg-opened',
+    action: 'center-first-installer-opened',
     version: update.version
   };
 }
@@ -6670,6 +6699,55 @@ function hasInstalledVshookExtension() {
   return false;
 }
 
+function macFilesHaveSameIntegrity(source, destination) {
+  try {
+    if (!physicalFs.existsSync(source) || !physicalFs.existsSync(destination)) {
+      return false;
+    }
+    const sourceStat = physicalFs.statSync(source);
+    const destinationStat = physicalFs.statSync(destination);
+    if (!sourceStat.isFile() || !destinationStat.isFile() ||
+        sourceStat.size !== destinationStat.size) {
+      return false;
+    }
+    return getFileIntegrity(source).sha256 === getFileIntegrity(destination).sha256;
+  } catch (_) {
+    return false;
+  }
+}
+
+function macBundledReaperAssetsAreCurrent() {
+  if (process.platform !== 'darwin') return false;
+  try {
+    const companionSource = path.join(
+      getBundledVshookCompanionDir(),
+      'VS Hook Teleprompt Settings.app'
+    );
+    const companionDestination = path.join(
+      '/Library/Application Support/REAPER/UserPlugins',
+      'VSHookTelepromptSettings',
+      'VS Hook Teleprompt Settings.app'
+    );
+    const companionFiles = [
+      path.join('Contents', 'MacOS', 'VS Hook Teleprompt Settings'),
+      path.join('Contents', 'Resources', 'app.asar')
+    ];
+    if (!companionFiles.every((relativePath) => macFilesHaveSameIntegrity(
+      path.join(companionSource, relativePath),
+      path.join(companionDestination, relativePath)
+    ))) {
+      return false;
+    }
+    const themeDirectory = '/Library/Application Support/REAPER/ColorThemes';
+    const themeSources = getBundledVshookThemePaths();
+    return themeSources.length > 0 && themeSources.every((source) =>
+      macFilesHaveSameIntegrity(source, path.join(themeDirectory, path.basename(source)))
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 function markBundledReaperAssetsInstalled() {
   store.set('bundledReaperAssetsIdentity', getBundledReaperAssetsIdentity());
 }
@@ -6716,31 +6794,34 @@ async function syncBundledReaperAssetsOnStartup() {
   }
 
   if (process.platform === 'darwin') {
-    const vlcRuntimeCurrent = hasInstalledBundledMacVlcRuntime();
-    if (!extensionInstalled && vlcRuntimeCurrent) {
+    // Sem a extensão não há motivo para a primeira abertura montar o VLC nem
+    // pedir senha administrativa. O PKG já entrega os componentes; qualquer
+    // reparo restante acontece junto da instalação da extensão.
+    if (!extensionInstalled) {
       return { ok: true, skipped: 'extension-not-installed' };
     }
-    const identity = extensionInstalled
-      ? getBundledReaperAssetsIdentity()
-      : '';
-    const assetsCurrent = extensionInstalled &&
-      store.get('bundledReaperAssetsIdentity') === identity;
-    if (vlcRuntimeCurrent && (!extensionInstalled || assetsCurrent)) {
+    const vlcRuntimeCurrent = hasInstalledBundledMacVlcRuntime();
+    const identity = getBundledReaperAssetsIdentity();
+    // O PKG instala companion e temas antes da primeira abertura. Não dependa
+    // do Store aqui: na primeira execução ele ainda não possui a identidade.
+    const assetsCurrent = macBundledReaperAssetsAreCurrent();
+    if (vlcRuntimeCurrent && assetsCurrent) {
+      if (store.get('bundledReaperAssetsIdentity') !== identity) {
+        store.set('bundledReaperAssetsIdentity', identity);
+      }
       return { ok: true, skipped: 'already-current' };
     }
-    if (extensionInstalled && isMacReaperRunning()) {
+    if (isMacReaperRunning()) {
       return { ok: true, skipped: 'reaper-running' };
     }
-    // O DMG nao possui postinstall. Na primeira abertura, a Hook Center monta
-    // o DMG do VLC que ja veio dentro do app e instala o runtime em UserPlugins.
+    // Instalações PKG já chegam completas. Este é somente o reparo para uma
+    // instalação legada/incompleta, sem criar outro caminho de UserPlugins.
     installMacPayload(null, {
       installExtension: false,
-      installBundledAssets: extensionInstalled && !assetsCurrent,
+      installBundledAssets: !assetsCurrent,
       installVlcRuntime: !vlcRuntimeCurrent
     });
-    if (extensionInstalled) {
-      store.set('bundledReaperAssetsIdentity', identity);
-    }
+    store.set('bundledReaperAssetsIdentity', identity);
     return { ok: true, installed: true };
   }
 
@@ -6810,10 +6891,12 @@ async function completePendingPostCenterUpdateInstall() {
   });
   store.set('updateAvailable', false);
   store.set('pendingPostCenterUpdateInstall', null);
-  // No Windows o NSIS da Central ja instalou o companion antes de ela abrir.
-  // Um DMG nao possui postinstall; no Mac o fallback assincrono abaixo ainda
-  // precisa conferir/copiar os assets uma unica vez, sem bloquear a janela.
+  // No Windows o NSIS da Central já instalou o companion antes de ela abrir.
+  // No macOS o PKG faz o mesmo; o Store só é limpo se for necessária uma
+  // recuperação por uma instalação antiga/incompleta.
   if (process.platform === 'win32') {
+    markBundledReaperAssetsInstalled();
+  } else if (macBundledReaperAssetsAreCurrent()) {
     markBundledReaperAssetsInstalled();
   } else {
     store.set('bundledReaperAssetsIdentity', '');
@@ -6845,7 +6928,10 @@ async function installDownloadedUpdate() {
       throw new Error('A dylib do VS Hook não foi encontrada no pacote.');
     }
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
-    installMacPayload(files);
+    installMacPayload(files, {
+      installBundledAssets: !macBundledReaperAssetsAreCurrent(),
+      installVlcRuntime: !hasInstalledBundledMacVlcRuntime()
+    });
   } else {
     throw new Error('Sistema operacional não suportado.');
   }
@@ -7911,9 +7997,9 @@ app.whenReady().then(async () => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
 
-  // Nunca segura a primeira tela da Hook Center para copiar o companion do
-  // Teleprompt. No Windows o instalador ja fez isso; no macOS (DMG) isto e o
-  // unico fallback possivel sem trocar o formato para PKG.
+  // O NSIS/PKG já instala runtime, Teleprompt e temas antes da primeira
+  // abertura. A rotina abaixo é apenas uma recuperação assíncrona para uma
+  // instalação antiga ou incompleta.
   scheduleBundledReaperAssetsSync();
 
   const license = store.get('license') || {};

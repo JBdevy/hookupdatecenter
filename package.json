@@ -11,8 +11,8 @@
     "start": "electron .",
     "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-vlc-runtime.js --current && electron-builder --publish never",
     "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-vlc-runtime.js --windows && electron-builder --win nsis --publish never",
-    "build:mac": "node scripts/prepare-vlc-runtime.js --macos && electron-builder --mac dmg zip --universal --publish never",
-    "build:mac:unsigned": "node scripts/prepare-vlc-runtime.js --macos && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --universal --publish never"
+    "build:mac": "node scripts/prepare-vlc-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && electron-builder --mac pkg --universal --publish never",
+    "build:mac:unsigned": "node scripts/prepare-vlc-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac pkg --universal --publish never --config.mac.forceCodeSigning=false"
   },
   "dependencies": {
     "electron-store": "8.2.0",
@@ -80,8 +80,7 @@
     },
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        "pkg"
       ],
       "minimumSystemVersion": "10.13.0",
       "category": "public.app-category.utilities",
@@ -100,6 +99,17 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": false
+    },
+    "pkg": {
+      "scripts": "pkg-scripts",
+      "installLocation": "/Applications",
+      "allowAnywhere": false,
+      "allowCurrentUserHome": false,
+      "allowRootDirectory": true,
+      "isRelocatable": false,
+      "mustClose": [
+        "com.hookdeveloper.hookcenter"
+      ]
     },
     "icon": "assets/icon.png",
     "afterSign": "build/notarize.js"

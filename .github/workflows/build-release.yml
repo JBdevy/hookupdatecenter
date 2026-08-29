@@ -152,12 +152,16 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_INSTALLER_CERT_P12_BASE64: ${{ secrets.MACOS_INSTALLER_CERT_P12_BASE64 }}
+          MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           test -n "$CSC_LINK" || (echo "Secret MACOS_CERT_P12_BASE64 não configurado" && exit 1)
           test -n "$CSC_KEY_PASSWORD" || (echo "Secret MACOS_CERT_PASSWORD não configurado" && exit 1)
+          test -n "$MACOS_INSTALLER_CERT_P12_BASE64" || (echo "Secret MACOS_INSTALLER_CERT_P12_BASE64 não configurado" && exit 1)
+          test -n "$MACOS_INSTALLER_CERT_PASSWORD" || (echo "Secret MACOS_INSTALLER_CERT_PASSWORD não configurado" && exit 1)
           test -n "$APPLE_ID" || (echo "Secret APPLE_ID não configurado" && exit 1)
           test -n "$APPLE_APP_SPECIFIC_PASSWORD" || (echo "Secret APPLE_APP_SPECIFIC_PASSWORD não configurado" && exit 1)
           test -n "$APPLE_TEAM_ID" || (echo "Secret APPLE_TEAM_ID não configurado" && exit 1)
@@ -183,6 +187,8 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          CSC_INSTALLER_LINK: ${{ secrets.MACOS_INSTALLER_CERT_P12_BASE64 }}
+          CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: true
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -215,16 +221,35 @@ jobs:
           done
           test "$THEME_COUNT" -gt 0 || (echo "Nenhum tema foi encontrado na pasta themes." && exit 1)
 
+      - name: Validate macOS PKG installer
+        run: |
+          PKG="$(find dist -maxdepth 1 -type f -name 'Hook-Center-*-macOS.pkg' -print -quit)"
+          test -n "$PKG" || (echo "PKG final da Hook Center não encontrado." && exit 1)
+          pkgutil --check-signature "$PKG" | grep -q 'Developer ID Installer' || \
+            (echo "PKG sem assinatura Developer ID Installer." && exit 1)
+          EXPANDED="$RUNNER_TEMP/hook-center-pkg-expanded"
+          rm -rf "$EXPANDED"
+          pkgutil --expand-full "$PKG" "$EXPANDED"
+          POSTINSTALL="$(find "$EXPANDED" -type f -name postinstall -print -quit)"
+          test -n "$POSTINSTALL" || (echo "PKG sem script postinstall." && exit 1)
+          grep -q 'VSHookRuntime' "$POSTINSTALL" || (echo "postinstall sem runtime VLC." && exit 1)
+          grep -q 'VSHookTelepromptSettings' "$POSTINSTALL" || (echo "postinstall sem Teleprompt Settings." && exit 1)
+
+      - name: Notarize macOS PKG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          chmod +x build/notarize-artifacts.sh
+          build/notarize-artifacts.sh
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hook-update-center-macos-dmg
+          name: hook-update-center-macos-pkg
           path: |
-            dist/*.dmg
-            dist/*.dmg.blockmap
-            dist/*.zip
-            dist/*.zip.blockmap
-            dist/latest-mac.yml
+            dist/*.pkg
           if-no-files-found: error
 
   release:
@@ -246,11 +271,11 @@ jobs:
 
           mapfile -t KEEP_ASSETS < <(
             find artifacts -type f \
-              \( -name 'Hook-Center-*-Windows.exe' -o -name 'Hook-Center-*-macOS.dmg' \) \
+              \( -name 'Hook-Center-*-Windows.exe' -o -name 'Hook-Center-*-macOS.pkg' \) \
               -printf '%f\n' | sort -u
           )
           if [ "${#KEEP_ASSETS[@]}" -ne 2 ]; then
-            echo "Esperava exatamente um instalador Windows e um DMG macOS."
+            echo "Esperava exatamente um instalador Windows e um PKG macOS."
             printf 'Encontrado: %s\n' "${KEEP_ASSETS[@]}"
             exit 1
           fi
@@ -292,7 +317,7 @@ jobs:
         with:
           files: |
             artifacts/**/Hook-Center-*-Windows.exe
-            artifacts/**/Hook-Center-*-macOS.dmg
+            artifacts/**/Hook-Center-*-macOS.pkg
           overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -307,11 +332,11 @@ jobs:
 
           mapfile -t EXPECTED_ASSETS < <(
             find artifacts -type f \
-              \( -name 'Hook-Center-*-Windows.exe' -o -name 'Hook-Center-*-macOS.dmg' \) \
+              \( -name 'Hook-Center-*-Windows.exe' -o -name 'Hook-Center-*-macOS.pkg' \) \
               -printf '%f\n' | sort -u
           )
           if [ "${#EXPECTED_ASSETS[@]}" -ne 2 ]; then
-            echo "Esperava exatamente um instalador Windows e um DMG macOS."
+            echo "Esperava exatamente um instalador Windows e um PKG macOS."
             printf 'Encontrado: %s\n' "${EXPECTED_ASSETS[@]}"
             exit 1
           fi

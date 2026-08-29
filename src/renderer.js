@@ -684,11 +684,11 @@ async function startCombinedUpdateDownload() {
       const result = await window.hookUpdateCenter.installCachedUpdatePackage({ source });
       if (state?.platform === 'darwin') {
         renderState(await window.hookUpdateCenter.getState());
-        const centerFirst = result?.action === 'center-first-dmg-opened';
+        const centerFirst = result?.action === 'center-first-installer-opened';
         showModal({
           title: centerFirst ? 'Instale a nova Hook Center' : 'Reinstalação pronta',
           message: centerFirst
-            ? 'A nova Hook Center foi aberta primeiro. Depois de instalá-la, abra a central nova para ela concluir automaticamente a extensão, o Teleprompt Settings e os temas.'
+            ? 'O instalador da nova Hook Center prepara o runtime, o Teleprompt Settings e os temas. Depois de concluí-lo, abra a central nova para ela finalizar a extensão.'
             : 'A extensão foi reinstalada e o instalador da Hook Center foi aberto.',
           type: 'success'
         });
@@ -765,11 +765,11 @@ async function installCombinedDownloadedUpdates() {
       renderState(await window.hookUpdateCenter.getState());
       setProgressVisible(false);
       resetVsHookProgress();
-      const centerFirst = result?.action === 'center-first-dmg-opened';
+      const centerFirst = result?.action === 'center-first-installer-opened';
       showModal({
         title: centerFirst ? 'Instale a nova Hook Center' : 'Atualizações prontas',
         message: centerFirst
-          ? 'Instale a central nova e abra-a. Ela concluirá automaticamente a extensão, o Teleprompt Settings e os temas.'
+          ? 'Conclua o instalador da nova Hook Center: ele prepara o runtime, o Teleprompt Settings e os temas antes de abrir o app. Depois, abra a central nova para finalizar a extensão.'
           : 'A extensão foi instalada e o instalador da Hook Center foi aberto.',
         type: 'success'
       });
@@ -4314,7 +4314,7 @@ function hasInstallableFiles(update) {
 
 function getInstallerUrlForUpdate(update) {
   const files = getPlatformFilesForUpdate(update);
-  const direct = files?.installer || files?.exe || files?.dmg || update?.installerUrl || update?.downloadUrl || '';
+  const direct = files?.installer || files?.exe || files?.pkg || files?.dmg || update?.installerUrl || update?.downloadUrl || '';
   if (String(direct || '').trim()) return String(direct).trim();
 
   // Atualização direcionada nunca pode herdar o instalador da publicação
