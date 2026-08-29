@@ -80,6 +80,24 @@
     Pop $R7
   vshook_themes_done:
 
+  ; O VLC também vem dentro do instalador da Hook Center. Extraímos o runtime
+  ; antes da primeira abertura, sem baixar nada na máquina do cliente. A troca
+  ; é transacional para não substituir um runtime válido por uma extração falha.
+  SetShellVarContext current
+  IfFileExists "$INSTDIR\resources\vlc-runtime\vlc-3.0.23-win64.zip" 0 vshook_vlc_done
+  IfFileExists "$APPDATA\REAPER\UserPlugins\VSHookRuntime\VLC\libvlc.dll" 0 vshook_vlc_install
+  IfFileExists "$APPDATA\REAPER\UserPlugins\VSHookRuntime\VLC\libvlccore.dll" 0 vshook_vlc_install
+  IfFileExists "$APPDATA\REAPER\UserPlugins\VSHookRuntime\VLC\plugins\*.*" vshook_vlc_done vshook_vlc_install
+  vshook_vlc_install:
+    InitPluginsDir
+    File /oname=$PLUGINSDIR\install-vlc-runtime.ps1 "${PROJECT_DIR}\installer\install-vlc-runtime.ps1"
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install-vlc-runtime.ps1" -Archive "$INSTDIR\resources\vlc-runtime\vlc-3.0.23-win64.zip" -RuntimeRoot "$APPDATA\REAPER\UserPlugins\VSHookRuntime"'
+    Pop $R7
+    StrCmp $R7 "0" vshook_vlc_done
+      DetailPrint "O runtime VLC será concluído na próxima abertura da Hook Center com o REAPER fechado."
+  vshook_vlc_done:
+  SetShellVarContext all
+
   ; Limpa nomes antigos para não deixar lixo da nomes antigos.
   Delete "$R8\VS Hook APP\VS Hook Pro.lua"
   Delete "$R8\VS Hook APP\VS Hook Basic.lua"

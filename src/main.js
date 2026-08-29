@@ -128,6 +128,7 @@ let quitCleanupStarted = false;
 let updateInstallerQuitWatchdog = null;
 let checkTimer = null;
 let updateReminderTimer = null;
+let bundledReaperAssetsSyncTimer = null;
 let bridgeServers = [];
 let bridgeInfos = [];
 let bridgeConfig = null;
@@ -6092,33 +6093,73 @@ function getWindowsReaperUserPluginsDirs() {
   });
 }
 
+function hasNonEmptyVlcPlugins(root) {
+  const plugins = path.join(root, 'plugins');
+  try {
+    return physicalFs.statSync(plugins).isDirectory() &&
+      physicalFs.readdirSync(plugins).length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasCompleteWindowsVlcRoot(root) {
+  return physicalFs.existsSync(path.join(root, 'libvlc.dll')) &&
+    physicalFs.existsSync(path.join(root, 'libvlccore.dll')) &&
+    hasNonEmptyVlcPlugins(root);
+}
+
+function hasCompleteMacVlcRoot(root) {
+  return physicalFs.existsSync(path.join(root, 'lib', 'libvlc.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libvlccore.dylib')) &&
+    hasNonEmptyVlcPlugins(root);
+}
+
+function getBundledMacVlcRuntimeDir() {
+  return '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC';
+}
+
+function hasInstalledBundledMacVlcRuntime() {
+  return process.platform === 'darwin' &&
+    hasCompleteMacVlcRoot(getBundledMacVlcRuntimeDir());
+}
+
 function hasInstalledVlcRuntime() {
   if (process.platform === 'win32') {
-    const candidates = [
-      path.join(
-        getWindowsReaperUserPluginsDir(),
-        'VSHookRuntime', 'VLC', 'libvlc.dll'
-      ),
+    const bundledRoot = path.join(
+      getWindowsReaperUserPluginsDir(),
+      'VSHookRuntime', 'VLC'
+    );
+    // A extensão procura primeiro ao lado da DLL, dentro de UserPlugins. Se
+    // essa cópia existir mas estiver incompleta, ela precisa ser reparada em
+    // vez de ser mascarada por uma instalação global do VLC.
+    if (physicalFs.existsSync(bundledRoot)) {
+      return hasCompleteWindowsVlcRoot(bundledRoot);
+    }
+    const systemRoots = [
       path.join(
         process.env.ProgramFiles || 'C:\\Program Files',
-        'VideoLAN', 'VLC', 'libvlc.dll'
+        'VideoLAN', 'VLC'
       )
     ];
-    return candidates.some((filename) =>
-      physicalFs.existsSync(filename));
+    if (process.env.LOCALAPPDATA) {
+      systemRoots.push(path.join(
+        process.env.LOCALAPPDATA,
+        'Programs', 'VideoLAN', 'VLC'
+      ));
+    }
+    return systemRoots.some(hasCompleteWindowsVlcRoot);
   }
   if (process.platform === 'darwin') {
-    const candidates = [
-      '/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib',
-      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC/lib/libvlc.dylib',
+    const roots = [
+      '/Applications/VLC.app/Contents/MacOS',
+      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC',
       path.join(
         os.homedir(), 'Library', 'Application Support', 'REAPER',
-        'UserPlugins', 'VSHookRuntime', 'VLC', 'lib',
-        'libvlc.dylib'
+        'UserPlugins', 'VSHookRuntime', 'VLC'
       )
     ];
-    return candidates.some((filename) =>
-      physicalFs.existsSync(filename));
+    return roots.some(hasCompleteMacVlcRoot);
   }
   return false;
 }
@@ -6421,9 +6462,11 @@ function isMacReaperRunning() {
 function installMacPayload(files, options = {}) {
   const installExtension = options.installExtension !== false;
   const installBundledAssets = options.installBundledAssets !== false;
+  const installVlcRuntime = options.installVlcRuntime === true ||
+    (installExtension && options.installVlcRuntime !== false);
   if (installExtension && isMacReaperRunning()) {
     throw new Error(
-      'Encerre completamente o REAPER com Cmd+Q antes de instalar. ' +
+      'Encerre completamente o REAPER com Cmd+Q antes de instalar os componentes. ' +
       'Fechar somente a janela não descarrega a extensão antiga.'
     );
   }
@@ -6434,7 +6477,7 @@ function installMacPayload(files, options = {}) {
   if (installExtension) {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   }
-  const vlcArchive = installExtension && !hasInstalledVlcRuntime()
+  const vlcArchive = installVlcRuntime && !hasInstalledBundledMacVlcRuntime()
     ? getBundledVlcRuntimeArchive(true)
     : '';
   if (vlcArchive) validateVlcRuntimeArchive(vlcArchive);
@@ -6448,6 +6491,8 @@ function installMacPayload(files, options = {}) {
   const themeSources = installBundledAssets
     ? getBundledVshookThemePaths()
     : [];
+  const installsReaperAssets = installExtension || hasCompanion ||
+    themeSources.length > 0;
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
@@ -6462,13 +6507,17 @@ function installMacPayload(files, options = {}) {
     commands.push('hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet');
     commands.push('VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"');
     commands.push('test -f "$VLC_SOURCE/lib/libvlc.dylib"');
+    commands.push('test -f "$VLC_SOURCE/lib/libvlccore.dylib"');
     commands.push('test -d "$VLC_SOURCE/plugins"');
+    commands.push('test -n "$(find "$VLC_SOURCE/plugins" -mindepth 1 -maxdepth 1 -print -quit)"');
   }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   }
-  commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
-  commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
+  if (installsReaperAssets) {
+    commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
+    commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
+  }
   // No macOS vale a mesma regra do Windows: somente copiar/substituir o nome
   // empacotado, sem limpar qualquer tema anterior nas pastas do REAPER.
   for (const themeSource of themeSources) {
@@ -6496,8 +6545,13 @@ function installMacPayload(files, options = {}) {
     commands.push('rm -rf "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_BACKUP"');
     commands.push('ditto "$VLC_SOURCE" "$GLOBAL_VLC_TMP"');
     commands.push('[ ! -e "$GLOBAL_VLC_DIR" ] || mv "$GLOBAL_VLC_DIR" "$GLOBAL_VLC_BACKUP"');
-    commands.push('if mv "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_DIR"; then rm -rf "$GLOBAL_VLC_BACKUP"; else [ ! -e "$GLOBAL_VLC_BACKUP" ] || mv "$GLOBAL_VLC_BACKUP" "$GLOBAL_VLC_DIR"; exit 1; fi');
-    commands.push('chmod -R a+rX "$GLOBAL_VLC_DIR"');
+    commands.push('if mv "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_DIR" && chmod -R a+rX "$GLOBAL_VLC_DIR" && test -f "$GLOBAL_VLC_DIR/lib/libvlc.dylib" && test -f "$GLOBAL_VLC_DIR/lib/libvlccore.dylib" && test -d "$GLOBAL_VLC_DIR/plugins" && test -n "$(find "$GLOBAL_VLC_DIR/plugins" -mindepth 1 -maxdepth 1 -print -quit)"; then');
+    commands.push('  rm -rf "$GLOBAL_VLC_BACKUP"');
+    commands.push('else');
+    commands.push('  rm -rf "$GLOBAL_VLC_DIR"');
+    commands.push('  [ ! -e "$GLOBAL_VLC_BACKUP" ] || mv "$GLOBAL_VLC_BACKUP" "$GLOBAL_VLC_DIR"');
+    commands.push('  exit 1');
+    commands.push('fi');
   }
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
@@ -6510,53 +6564,60 @@ function installMacPayload(files, options = {}) {
     commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
   }
 
-  commands.push('for USER_HOME in /Users/*; do');
-  commands.push('  [ -d "$USER_HOME" ] || continue');
-  commands.push('  USER_NAME=$(basename "$USER_HOME")');
-  commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
-  commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
-  commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
-  commands.push('  USER_THEME_DIR="$USER_REAPER/ColorThemes"');
-  commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
-  if (installExtension) {
-    commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
+  if (installsReaperAssets) {
+    commands.push('for USER_HOME in /Users/*; do');
+    commands.push('  [ -d "$USER_HOME" ] || continue');
+    commands.push('  USER_NAME=$(basename "$USER_HOME")');
+    commands.push('  [ "$USER_NAME" = "Shared" ] && continue');
+    commands.push('  USER_REAPER="$USER_HOME/Library/Application Support/REAPER"');
+    commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
+    commands.push('  USER_THEME_DIR="$USER_REAPER/ColorThemes"');
+    commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
+    if (installExtension) {
+      commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
+    }
+    commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
+    commands.push('  mkdir -p "$USER_THEME_DIR"');
+    for (const themeSource of themeSources) {
+      const filename = path.basename(themeSource);
+      const temporaryName = `.${filename}.tmp`;
+      commands.push(`  cp -f ${shellQuote(themeSource)} "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
+      commands.push(`  chmod 644 "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
+      commands.push(`  mv -f "$USER_THEME_DIR"/${shellQuote(temporaryName)} "$USER_THEME_DIR"/${shellQuote(filename)}`);
+      commands.push(`  chown "$USER_NAME":staff "$USER_THEME_DIR"/${shellQuote(filename)} 2>/dev/null || true`);
+    }
+    if (installExtension) {
+      commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
+    }
+    if (vshookSource) {
+      commands.push('  cp -f "$VSHOOK_SOURCE" "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+      commands.push('  chmod 755 "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
+      commands.push('  mv -f "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"');
+      commands.push('  chown "$USER_NAME":staff "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+    }
+    if (hasCompanion) {
+      commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
+      commands.push('  mkdir -p "$USER_COMPANION_DIR"');
+      commands.push('  rm -rf "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+      commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
+      commands.push('  chown -R "$USER_NAME":staff "$USER_COMPANION_DIR" 2>/dev/null || true');
+    }
+    if (installExtension) {
+      commands.push('  chmod 755 "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
+    }
+    commands.push('done');
   }
-  commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
-  commands.push('  mkdir -p "$USER_THEME_DIR"');
-  for (const themeSource of themeSources) {
-    const filename = path.basename(themeSource);
-    const temporaryName = `.${filename}.tmp`;
-    commands.push(`  cp -f ${shellQuote(themeSource)} "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
-    commands.push(`  chmod 644 "$USER_THEME_DIR"/${shellQuote(temporaryName)}`);
-    commands.push(`  mv -f "$USER_THEME_DIR"/${shellQuote(temporaryName)} "$USER_THEME_DIR"/${shellQuote(filename)}`);
-    commands.push(`  chown "$USER_NAME":staff "$USER_THEME_DIR"/${shellQuote(filename)} 2>/dev/null || true`);
-  }
-  if (installExtension) {
-    commands.push('  rm -f "$USER_PLUGIN_DIR/reaper_vshook.dylib"');
-  }
-  if (vshookSource) {
-    commands.push('  cp -f "$VSHOOK_SOURCE" "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
-    commands.push('  chmod 755 "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
-    commands.push('  mv -f "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"');
-    commands.push('  chown "$USER_NAME":staff "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
-  }
-  if (hasCompanion) {
-    commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
-    commands.push('  mkdir -p "$USER_COMPANION_DIR"');
-    commands.push('  rm -rf "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
-    commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
-    commands.push('  chown -R "$USER_NAME":staff "$USER_COMPANION_DIR" 2>/dev/null || true');
-  }
-  if (installExtension) {
-    commands.push('  chmod 755 "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
-  }
-  commands.push('done');
 
   const script = commands.join('\n');
   execFileSync('osascript', [
     '-e',
     `do shell script ${JSON.stringify(script)} with administrator privileges`
   ], { stdio: 'ignore' });
+  if (vlcArchive && !hasInstalledBundledMacVlcRuntime()) {
+    throw new Error(
+      'O runtime VLC do pacote não ficou completo em REAPER/UserPlugins.'
+    );
+  }
 }
 
 function getBundledReaperAssetsIdentity() {
@@ -6614,10 +6675,15 @@ function markBundledReaperAssetsInstalled() {
 }
 
 async function syncBundledReaperAssetsOnStartup() {
-  if (!hasInstalledVshookExtension()) return { ok: true, skipped: 'extension-not-installed' };
-  const identity = getBundledReaperAssetsIdentity();
-  const windowsCompanionCurrent = process.platform === 'win32' &&
-    (() => {
+  const extensionInstalled = hasInstalledVshookExtension();
+
+  if (process.platform === 'win32') {
+    if (!extensionInstalled) {
+      return { ok: true, skipped: 'extension-not-installed' };
+    }
+    const identity = getBundledReaperAssetsIdentity();
+    const vlcRuntimeCurrent = hasInstalledVlcRuntime();
+    const companionCurrent = (() => {
       try {
         const source = getBundledVshookCompanionDir();
         const destination = path.join(
@@ -6629,26 +6695,77 @@ async function syncBundledReaperAssetsOnStartup() {
         return false;
       }
     })();
-  if (store.get('bundledReaperAssetsIdentity') === identity &&
-      (process.platform !== 'win32' || windowsCompanionCurrent)) {
-    return { ok: true, skipped: 'already-current' };
-  }
-  if ((process.platform === 'win32' && isWindowsReaperRunning()) ||
-      (process.platform === 'darwin' && isMacReaperRunning())) {
-    return { ok: true, skipped: 'reaper-running' };
-  }
-  if (process.platform === 'win32') {
+    if (store.get('bundledReaperAssetsIdentity') === identity &&
+        vlcRuntimeCurrent && companionCurrent) {
+      return { ok: true, skipped: 'already-current' };
+    }
+    if (isWindowsReaperRunning()) {
+      return { ok: true, skipped: 'reaper-running' };
+    }
     // O instalador NSIS ja colocou esta pasta no primeiro uso. Mantemos a
     // copia aqui somente como recuperacao de uma instalacao antiga/incompleta.
-    if (!windowsCompanionCurrent) installWindowsVshookCompanion();
+    // O mesmo vale para o VLC: ele vem dentro da Hook Center e so e extraido
+    // aqui se uma instalacao anterior nao o concluiu.
+    if (!vlcRuntimeCurrent) {
+      installWindowsVlcRuntime(getBundledVlcRuntimeArchive(true));
+    }
+    if (!companionCurrent) installWindowsVshookCompanion();
     installWindowsVshookTheme();
-  } else if (process.platform === 'darwin') {
-    installMacPayload(null, { installExtension: false });
-  } else {
-    return { ok: true, skipped: 'unsupported-platform' };
+    store.set('bundledReaperAssetsIdentity', identity);
+    return { ok: true, installed: true };
   }
-  store.set('bundledReaperAssetsIdentity', identity);
-  return { ok: true, installed: true };
+
+  if (process.platform === 'darwin') {
+    const vlcRuntimeCurrent = hasInstalledBundledMacVlcRuntime();
+    if (!extensionInstalled && vlcRuntimeCurrent) {
+      return { ok: true, skipped: 'extension-not-installed' };
+    }
+    const identity = extensionInstalled
+      ? getBundledReaperAssetsIdentity()
+      : '';
+    const assetsCurrent = extensionInstalled &&
+      store.get('bundledReaperAssetsIdentity') === identity;
+    if (vlcRuntimeCurrent && (!extensionInstalled || assetsCurrent)) {
+      return { ok: true, skipped: 'already-current' };
+    }
+    if (extensionInstalled && isMacReaperRunning()) {
+      return { ok: true, skipped: 'reaper-running' };
+    }
+    // O DMG nao possui postinstall. Na primeira abertura, a Hook Center monta
+    // o DMG do VLC que ja veio dentro do app e instala o runtime em UserPlugins.
+    installMacPayload(null, {
+      installExtension: false,
+      installBundledAssets: extensionInstalled && !assetsCurrent,
+      installVlcRuntime: !vlcRuntimeCurrent
+    });
+    if (extensionInstalled) {
+      store.set('bundledReaperAssetsIdentity', identity);
+    }
+    return { ok: true, installed: true };
+  }
+
+  return { ok: true, skipped: 'unsupported-platform' };
+}
+
+function scheduleBundledReaperAssetsSync(delayMs = 1200) {
+  if (appIsQuitting || bundledReaperAssetsSyncTimer) return;
+  bundledReaperAssetsSyncTimer = setTimeout(async () => {
+    bundledReaperAssetsSyncTimer = null;
+    if (appIsQuitting) return;
+    try {
+      const result = await syncBundledReaperAssetsOnStartup();
+      if (process.platform === 'darwin' &&
+          result?.skipped === 'reaper-running') {
+        scheduleBundledReaperAssetsSync(15000);
+      }
+    } catch (error) {
+      // Não repete falha/cancelamento de senha para evitar um ciclo de prompts.
+      console.error(
+        '[Hook Center] Não sincronizou runtime VLC, Teleprompt Settings e temas:',
+        error?.message || error
+      );
+    }
+  }, delayMs);
 }
 
 async function completePendingPostCenterUpdateInstall() {
@@ -7754,10 +7871,14 @@ function prepareForAppQuit() {
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
   if (directCableWatchTimer) clearInterval(directCableWatchTimer);
   if (updateReminderTimer) clearInterval(updateReminderTimer);
+  if (bundledReaperAssetsSyncTimer) {
+    clearTimeout(bundledReaperAssetsSyncTimer);
+  }
   checkTimer = null;
   bridgeWatchTimer = null;
   directCableWatchTimer = null;
   updateReminderTimer = null;
+  bundledReaperAssetsSyncTimer = null;
 }
 
 app.whenReady().then(async () => {
@@ -7793,13 +7914,7 @@ app.whenReady().then(async () => {
   // Nunca segura a primeira tela da Hook Center para copiar o companion do
   // Teleprompt. No Windows o instalador ja fez isso; no macOS (DMG) isto e o
   // unico fallback possivel sem trocar o formato para PKG.
-  setTimeout(() => {
-    if (appIsQuitting) return;
-    syncBundledReaperAssetsOnStartup().catch((error) => {
-      console.error('[Hook Center] Não sincronizou Teleprompt Settings e temas:',
-        error?.message || error);
-    });
-  }, 1200);
+  scheduleBundledReaperAssetsSync();
 
   const license = store.get('license') || {};
   if (!license.machineId) {
