@@ -1304,6 +1304,7 @@
       return normalizedName === 'TELEPROMPT1'
         || normalizedName === 'TELEPROMPT2'
         || normalizedName === 'CIFRAS'
+        || normalizedName === 'TIMECODE'
     })
   }
 
