@@ -180,6 +180,92 @@ function stripProjectPathsForPublicApp(value) {
   return out
 }
 
+function isTelepromptVideoMedia(mediaType, mediaPath = '') {
+  const type = String(mediaType || '').trim().toLowerCase()
+  if (type === 'video' || type.startsWith('video/')) return true
+  let candidate = String(mediaPath || '').trim()
+  try { candidate = decodeURIComponent(candidate) } catch (_) {}
+  try {
+    const parsed = new URL(candidate, 'http://127.0.0.1')
+    candidate = parsed.searchParams.get('path') ||
+      parsed.searchParams.get('file') || parsed.pathname || candidate
+  } catch (_) {}
+  return ['.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi']
+    .includes(path.extname(String(candidate).split(/[?#]/, 1)[0]).toLowerCase())
+}
+
+function stripTelepromptVideoFromPublicState(state) {
+  const out = { ...(state || {}) }
+  for (const slot of [1, 2]) {
+    const prefix = `tp${slot}`
+    const nativePrefix = `telepromptTp${slot}`
+    const nested = out[prefix] && typeof out[prefix] === 'object'
+      ? { ...out[prefix] }
+      : null
+    if (nested) {
+      const nestedVideo = isTelepromptVideoMedia(
+        nested.mediaType || nested.telepromptType || nested.type,
+        nested.mediaPath || nested.mediaUrl || nested.mediaSourcePath)
+      if (nestedVideo) {
+        nested.mediaType = 'text'
+        if (Object.prototype.hasOwnProperty.call(nested, 'telepromptType')) {
+          nested.telepromptType = 'text'
+        }
+        if (Object.prototype.hasOwnProperty.call(nested, 'type')) {
+          nested.type = 'text'
+        }
+        for (const key of [
+          'mediaPath', 'mediaSourcePath', 'mediaUrl', 'mediaExt',
+        ]) nested[key] = ''
+      }
+      const nestedNextVideo = isTelepromptVideoMedia(
+        nested.nextMediaType,
+        nested.nextMediaPath || nested.nextMediaUrl)
+      if (nestedNextVideo) {
+        nested.nextMediaType = 'text'
+        for (const key of [
+          'nextMediaPath', 'nextMediaSourcePath', 'nextMediaUrl',
+          'nextMediaExt',
+        ]) nested[key] = ''
+        nested.nextMediaFound = false
+      }
+      out[prefix] = nested
+    }
+
+    const topVideo = isTelepromptVideoMedia(
+      out[`${prefix}MediaType`] || out[`${nativePrefix}MediaType`],
+      out[`${prefix}MediaPath`] || out[`${nativePrefix}MediaPath`] ||
+        out[`${prefix}MediaUrl`] || out[`${nativePrefix}MediaUrl`])
+    if (topVideo) {
+      out[`${prefix}MediaType`] = 'text'
+      out[`${nativePrefix}MediaType`] = 'text'
+      for (const suffix of [
+        'MediaPath', 'MediaSourcePath', 'MediaUrl', 'MediaExt',
+      ]) {
+        out[`${prefix}${suffix}`] = ''
+        out[`${nativePrefix}${suffix}`] = ''
+      }
+    }
+
+    const topNextVideo = isTelepromptVideoMedia(
+      out[`${prefix}NextMediaType`] || out[`${nativePrefix}NextMediaType`],
+      out[`${prefix}NextMediaPath`] || out[`${nativePrefix}NextMediaPath`] ||
+        out[`${prefix}NextMediaUrl`] || out[`${nativePrefix}NextMediaUrl`])
+    if (topNextVideo) {
+      out[`${prefix}NextMediaType`] = 'text'
+      out[`${nativePrefix}NextMediaType`] = 'text'
+      for (const suffix of [
+        'NextMediaPath', 'NextMediaSourcePath', 'NextMediaUrl',
+        'NextMediaExt',
+      ]) {
+        out[`${prefix}${suffix}`] = ''
+        out[`${nativePrefix}${suffix}`] = ''
+      }
+    }
+  }
+  return out
+}
+
 function buildPublicProjectPayload(state) {
   const payload = buildProjectPayload(state)
   const projects = Array.isArray(payload.projects)
@@ -195,7 +281,8 @@ function buildPublicProjectPayload(state) {
 }
 
 function buildPublicStatePayload(state) {
-  const publicState = stripProjectPathsForPublicApp(state || {}) || {}
+  const publicState = stripTelepromptVideoFromPublicState(
+    stripProjectPathsForPublicApp(state || {}) || {})
   delete publicState.projectPath
   delete publicState.path
   const projectPayload = buildPublicProjectPayload(state || {})
@@ -449,10 +536,23 @@ function tryStreamLocalTelepromptMedia(req, res, targetPath) {
 
 
 function proxyNativeBridgeMedia(req, res, targetPath) {
+  let requestedMediaPath = ''
+  try {
+    const parsed = new URL(targetPath, 'http://127.0.0.1')
+    requestedMediaPath = String(
+      parsed.searchParams.get('path') ||
+      parsed.searchParams.get('file') || '').trim()
+  } catch (_) {}
+  if (isTelepromptVideoMedia('', requestedMediaPath)) {
+    sendJson(res, 404, {
+      ok: false,
+      error: 'network_video_disabled',
+    })
+    return
+  }
   if (trySendOptimizedTelepromptImage(req, res, targetPath)) return
-  // A Hook Center está na mesma máquina dos arquivos do REAPER. Servir o
-  // vídeo diretamente permite que cada app mantenha um stream contínuo e
-  // impede que os pedaços do vídeo disputem a fila de estado da extensão.
+  // A rede transporta somente imagens do Teleprompt; vídeo permanece local
+  // nas janelas nativas da extensão.
   if (tryStreamLocalTelepromptMedia(req, res, targetPath)) return
   const headers = {}
   if (req.headers.range) headers.Range = req.headers.range

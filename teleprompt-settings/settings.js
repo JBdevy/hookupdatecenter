@@ -205,10 +205,6 @@ function render() {
     }
   });
   document.getElementById('windowTitle').textContent = `Janela ${state.slot}`;
-  const clearButton = document.getElementById('clearMode');
-  clearButton.classList.toggle('active', Boolean(value.clearMode));
-  clearButton.setAttribute('aria-pressed', value.clearMode ? 'true' : 'false');
-  clearButton.textContent = value.clearMode ? 'Modo Clear ON' : 'Modo Clear';
   document.getElementById('presetNight').classList.toggle(
     'preset-selected', value.preset !== 'day');
   document.getElementById('presetDay').classList.toggle(
@@ -454,11 +450,4 @@ document.getElementById('presetNight').addEventListener(
   'click', () => applyPreset('night'));
 document.getElementById('presetDay').addEventListener(
   'click', () => applyPreset('day'));
-document.getElementById('clearMode').addEventListener('click', () => {
-  state.values[state.slot].clearMode =
-    !state.values[state.slot].clearMode;
-  render();
-  saveNow(state.slot);
-});
-
 loadSettings();
