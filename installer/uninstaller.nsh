@@ -68,6 +68,10 @@
   ; Hook Center. Assim a primeira abertura nao precisa copiar uma pasta grande
   ; enquanto a janela ainda esta iniciando. O main.js mantem um fallback apenas
   ; para instalacoes antigas ou que tenham ficado incompletas.
+  ; O instalador e por maquina, mas estes arquivos pertencem ao perfil do
+  ; usuario que executa o REAPER. Sem este contexto, $APPDATA aponta para
+  ; C:\ProgramData e cria uma pasta UserPlugins que o REAPER nao utiliza.
+  SetShellVarContext current
   IfFileExists "$INSTDIR\resources\vshook-companion\VS Hook Teleprompt Settings.exe" 0 vshook_tp_settings_done
     CreateDirectory "$APPDATA\REAPER\UserPlugins\VSHookTelepromptSettings"
     nsExec::ExecToLog 'robocopy "$INSTDIR\resources\vshook-companion" "$APPDATA\REAPER\UserPlugins\VSHookTelepromptSettings" /E /NFL /NDL /NJH /NJS /NC /NS'
@@ -83,7 +87,6 @@
   ; O VLC também vem dentro do instalador da Hook Center. Extraímos o runtime
   ; antes da primeira abertura, sem baixar nada na máquina do cliente. A troca
   ; é transacional para não substituir um runtime válido por uma extração falha.
-  SetShellVarContext current
   IfFileExists "$INSTDIR\resources\vlc-runtime\vlc-3.0.23-win64.zip" 0 vshook_vlc_done
   IfFileExists "$APPDATA\REAPER\UserPlugins\VSHookRuntime\VLC\libvlc.dll" 0 vshook_vlc_install
   IfFileExists "$APPDATA\REAPER\UserPlugins\VSHookRuntime\VLC\libvlccore.dll" 0 vshook_vlc_install
