@@ -55,7 +55,6 @@ build_arch() {
       --disable-debug \
       --disable-avdevice \
       --disable-avfilter \
-      --disable-postproc \
       --disable-gpl \
       --disable-nonfree \
       --enable-videotoolbox \
@@ -102,6 +101,7 @@ done
 
 for required in \
   libavutil.60.dylib \
+  libswresample.6.dylib \
   libavcodec.62.dylib \
   libavformat.62.dylib \
   libswscale.9.dylib; do
