@@ -5080,7 +5080,7 @@
     if (typeof state.pendingInterfaceBlocking === 'boolean') {
       return state.pendingInterfaceBlocking
     }
-    return data?.blockInterfaceWhenDirectorConnected !== false
+    return data?.blockInterfaceWhenDirectorConnected === true
   }
 
   function dismissInterfaceAccessButton() {
@@ -5246,7 +5246,7 @@
 
   function syncInterfaceBlockingPreference(data = state.snapshot) {
     if (typeof state.pendingInterfaceBlocking !== 'boolean') return
-    const remote = data?.blockInterfaceWhenDirectorConnected !== false
+    const remote = data?.blockInterfaceWhenDirectorConnected === true
     if (remote === state.pendingInterfaceBlocking) {
       state.pendingInterfaceBlocking = null
     }
