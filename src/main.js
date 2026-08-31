@@ -185,17 +185,20 @@ function getTimecodeLanDeviceId() {
 
 function getDropHookDestinationPath() {
   const saved = String(store.get('dropHookDestinationPath') || '').trim();
+  const defaultPath = path.join(app.getPath('downloads'), 'Drop Hook');
   if (saved) {
     try {
       const resolved = path.resolve(saved);
+      // Migração: a pasta padrão antiga não deve mais ser usada nem recriada.
+      if (path.resolve(defaultPath) === resolved) {
+        store.set('dropHookDestinationPath', '');
+        return '';
+      }
       const stat = fs.lstatSync(resolved);
       if (stat.isDirectory() && !stat.isSymbolicLink()) return resolved;
     } catch (_) {}
   }
-  const fallback = path.join(app.getPath('downloads'), 'Drop Hook');
-  fs.mkdirSync(fallback, { recursive: true });
-  store.set('dropHookDestinationPath', fallback);
-  return fallback;
+  return '';
 }
 
 function getCopyProjectService() {
@@ -210,14 +213,17 @@ function getCopyProjectService() {
         }
       }
     });
-    copyProjectService.startReceiver(getDropHookDestinationPath()).catch((error) => {
-      if (isValidWindow(mainWindow)) {
-        mainWindow.webContents.send('copy-project-state', {
-          ...copyProjectService.getState(), phase: 'error',
-          error: error?.message || 'Não foi possível ativar o recebimento do Drop Hook.'
-        });
-      }
-    });
+    const destinationPath = getDropHookDestinationPath();
+    if (destinationPath) {
+      copyProjectService.startReceiver(destinationPath).catch((error) => {
+        if (isValidWindow(mainWindow)) {
+          mainWindow.webContents.send('copy-project-state', {
+            ...copyProjectService.getState(), phase: 'error',
+            error: error?.message || 'Não foi possível ativar o recebimento do Drop Hook.'
+          });
+        }
+      });
+    }
   }
   return copyProjectService;
 }
