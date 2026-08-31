@@ -36,7 +36,6 @@
           <div class="home-main-column">
         <div class="hero-card home-compact-header">
           <h1>Hook Center</h1>
-          <p class="home-header-installed-version">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
           <button id="checkButton" class="primary-button">Verificar atualização</button>
         </div>
         <div id="homeProgressArea" class="inline-progress-area update-top-progress hidden" aria-live="polite">
@@ -80,6 +79,8 @@
               </div>
 
               <ul id="changelogList" class="changelog hidden" aria-hidden="true"></ul>
+
+              <p class="home-installed-version-field">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
 
               <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar</button>
@@ -1502,6 +1503,18 @@
         <button id="chatHookAdminClearButton" class="secondary-button" type="button">Limpar chat</button>
         <button id="chatHookAdminCancelButton" class="secondary-button" type="button">Cancelar</button>
         <button id="chatHookAdminSaveButton" class="primary-button" type="button">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatHookEditModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="chatHookEditModalTitle">
+    <div class="hook-modal chat-hook-edit-modal">
+      <h2 id="chatHookEditModalTitle">Editar mensagem</h2>
+      <textarea id="chatHookEditInput" rows="6" maxlength="1000" placeholder="Digite o novo texto da mensagem..."></textarea>
+      <p id="chatHookEditStatus" class="muted"></p>
+      <div class="modal-actions">
+        <button id="chatHookEditCancel" class="secondary-button" type="button">Cancelar</button>
+        <button id="chatHookEditSave" class="primary-button" type="button">Salvar edição</button>
       </div>
     </div>
   </div>

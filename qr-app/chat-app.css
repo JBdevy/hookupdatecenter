@@ -153,7 +153,20 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileMessageHead strong { overflow: hidden; color: #fff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chatMobileMessageHead > span { padding: 2px 4px; border-radius: 999px; background: rgba(158, 255, 0, .13); color: #9eff00; font-size: 7px; font-weight: 900; }
 .chatMobileMessageHead time { margin-left: auto; color: #828291; font-size: 8px; white-space: nowrap; }
+.chatMobileEdited { color: #828291; font-size: 8px; font-style: italic; white-space: nowrap; }
 .chatMobilePin { flex: 0 0 auto; padding: 2px 5px; font-size: 8px; }
+.chatMobileEdit {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 23px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .07);
+  color: #dedee7;
+  font-size: 13px;
+}
+.chatMobileEdit:disabled { opacity: .5; }
 .chatMobileDelete {
   flex: 0 0 auto;
   width: 24px;

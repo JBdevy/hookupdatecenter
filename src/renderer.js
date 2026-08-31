@@ -48,6 +48,7 @@ let chatHookClearedAt = '';
 let chatHookLastPollAt = 0;
 let chatAdminPassword = '';
 let chatAdminPasswordResolver = null;
+let chatHookEditingMessageId = 0;
 let releaseNotesReadResolver = null;
 let releaseNotesReadScrollFrame = 0;
 let hookTutorialGroups = { tutorials: [], questions: [] };
@@ -2634,6 +2635,9 @@ function renderChatHookMessages(forceBottom = false) {
     const pinAction = canPin
       ? `<button class="chat-hook-pin-message" type="button" data-chat-pin-message-id="${Number(message.id || 0)}" title="${isPinned ? 'Desafixar mensagem' : 'Fixar mensagem no topo'}">${isPinned ? 'Desafixar' : '📌 Fixar'}</button>`
       : '';
+    const editAction = !message.pending && !message.failed && currentUserIsAdmin
+      ? `<button class="chat-hook-edit-message" type="button" data-chat-edit-message-id="${Number(message.id || 0)}" title="Editar mensagem" aria-label="Editar mensagem">✎</button>`
+      : '';
     const canDelete = !message.pending && !message.failed && (currentUserIsAdmin || Number(message.customerId || 0) === currentUserId);
     const deleteAction = canDelete
       ? `<button class="chat-hook-delete-message" type="button" data-chat-delete-message-id="${Number(message.id || 0)}" title="Apagar mensagem" aria-label="Apagar mensagem">🗑</button>`
@@ -2646,7 +2650,9 @@ function renderChatHookMessages(forceBottom = false) {
             <strong>${safeName}</strong>
             ${message.isAdmin ? '<span>ADMIN</span>' : ''}
             <time>${escapeHtml(formatChatHookTime(message.createdAt))}</time>
+            ${message.editedAt ? '<small class="chat-hook-edited-label">editada</small>' : ''}
             ${pinAction}
+            ${editAction}
             ${deleteAction}
           </div>
           ${safeText ? `<p>${safeText}</p>` : ''}
@@ -2959,7 +2965,8 @@ function applyChatHookState(next, { full = false } = {}) {
   const unpinButton = $('#chatHookUnpinButton');
   if (unpinButton) unpinButton.classList.toggle('hidden', !pinnedText || next.user?.isAdmin !== true);
   if ($('#chatHookConnectionStatus')) {
-    $('#chatHookConnectionStatus').textContent = next.chat?.open === false ? 'Somente administradores' : 'Ao vivo';
+    const onlineCount = Math.max(0, Number(next.presence?.onlineCount || 0));
+    $('#chatHookConnectionStatus').textContent = `${next.chat?.open === false ? 'Somente administradores' : 'Ao vivo'} · ${onlineCount} online`;
   }
   renderChatHookCurrentUser();
   const customerNameInput = $('#chatCustomerNameInput');
@@ -3184,6 +3191,47 @@ async function deleteChatHookMessage(messageId, button = null) {
   }
 }
 
+function closeChatHookEditModal() {
+  chatHookEditingMessageId = 0;
+  $('#chatHookEditModal')?.classList.add('hidden');
+  if ($('#chatHookEditStatus')) $('#chatHookEditStatus').textContent = '';
+}
+
+function editChatHookMessage(messageId) {
+  if (chatHookState?.user?.isAdmin !== true) return;
+  const normalizedId = Math.floor(Number(messageId));
+  if (!Number.isInteger(normalizedId) || normalizedId < 1) return;
+  const message = chatHookMessagesById.get(normalizedId);
+  if (!message) return;
+  chatHookEditingMessageId = normalizedId;
+  if ($('#chatHookEditInput')) $('#chatHookEditInput').value = String(message.text || '');
+  if ($('#chatHookEditStatus')) $('#chatHookEditStatus').textContent = '';
+  $('#chatHookEditModal')?.classList.remove('hidden');
+  setTimeout(() => $('#chatHookEditInput')?.focus(), 0);
+}
+
+async function saveChatHookEditedMessage() {
+  if (chatHookState?.user?.isAdmin !== true || chatHookEditingMessageId < 1) return;
+  const editedText = String($('#chatHookEditInput')?.value || '');
+  const status = $('#chatHookEditStatus');
+  const button = $('#chatHookEditSave');
+  if (editedText.length > 1000) {
+    if (status) status.textContent = 'A mensagem pode ter no máximo 1000 caracteres.';
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const result = await window.hookUpdateCenter.editChatMessage({ messageId: chatHookEditingMessageId, text: editedText });
+    applyChatHookState(result, { full: true });
+    closeChatHookEditModal();
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = 'Mensagem editada.';
+  } catch (error) {
+    if (status) status.textContent = friendlyError(error, 'Não foi possível editar a mensagem.');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function setupChatHook() {
   $('#chatHookAdminMenuButton')?.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -3205,6 +3253,8 @@ function setupChatHook() {
   $('#chatHookAdminCancelButton')?.addEventListener('click', closeChatHookAdminModal);
   $('#chatHookAdminSaveButton')?.addEventListener('click', saveChatHookAdminSettings);
   $('#chatHookAdminClearButton')?.addEventListener('click', clearChatHookFromAdminModal);
+  $('#chatHookEditCancel')?.addEventListener('click', closeChatHookEditModal);
+  $('#chatHookEditSave')?.addEventListener('click', saveChatHookEditedMessage);
   $('#chatHookAdminUnlimited')?.addEventListener('change', (event) => {
     $('#chatHookAdminDailyLimit').disabled = event.target.checked;
   });
@@ -3308,6 +3358,11 @@ function setupChatHook() {
     }
   });
   $('#chatHookMessages')?.addEventListener('click', (event) => {
+    const editButton = event.target.closest('[data-chat-edit-message-id]');
+    if (editButton) {
+      editChatHookMessage(Number(editButton.dataset.chatEditMessageId || 0), editButton);
+      return;
+    }
     const deleteButton = event.target.closest('[data-chat-delete-message-id]');
     if (deleteButton) {
       deleteChatHookMessage(Number(deleteButton.dataset.chatDeleteMessageId || 0), deleteButton);
@@ -4184,6 +4239,7 @@ function renderState(nextState) {
   if (homeDownloadButton && !combinedDownloadInProgress) {
     homeDownloadButton.disabled = !hasHomeUpdate;
     homeDownloadButton.textContent = state.currentPackageInstalled ? 'Reinstalar' : 'Baixar';
+    homeDownloadButton.classList.toggle('reinstall-button', state.currentPackageInstalled === true);
   }
 
   if (hasStatusTestUpdate) {
@@ -4369,7 +4425,7 @@ function renderPreviousUpdates(updates) {
           ${cached ? 'Salva neste computador' : 'Disponível somente online'}${installed ? ' · instalada' : ''}
         </p>
         <div class="actions">
-          <button class="primary-button previous-install-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? (installed ? 'Reinstalar' : 'Instalar') : 'Indisponível'}</button>
+          <button class="primary-button previous-install-button${installed ? ' reinstall-button' : ''}" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? (installed ? 'Reinstalar' : 'Instalar') : 'Indisponível'}</button>
           <button class="${cached ? 'danger-button' : 'secondary-button'} previous-cache-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>
             ${cached ? 'Remover do meu PC' : packageAvailable ? 'Manter no meu PC' : 'Indisponível'}
           </button>

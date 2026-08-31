@@ -1665,6 +1665,7 @@ function createBridgeServer(options) {
         '/chat/state': chatApi.getState,
         '/chat/messages': chatApi.sendMessage,
         '/chat/pin': chatApi.setPinnedMessage,
+        '/chat/edit': chatApi.editMessage,
         '/chat/delete': chatApi.deleteMessage,
         '/chat/bootstrap': chatApi.createMobileSession,
       }

@@ -129,6 +129,8 @@ let updateInstallerQuitWatchdog = null;
 let checkTimer = null;
 let updateReminderTimer = null;
 let bundledReaperAssetsSyncTimer = null;
+let chatPresenceTimer = null;
+let chatPresenceHeartbeatInFlight = false;
 let bridgeServers = [];
 let bridgeInfos = [];
 let bridgeConfig = null;
@@ -232,6 +234,7 @@ const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getP
 const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${getPlatformKey()}`;
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CHAT_PRESENCE_HEARTBEAT_MS = 20 * 1000;
 const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
 const LICENSE_OFFLINE_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
 const LICENSE_OFFLINE_WARNING_MS = 3 * 24 * 60 * 60 * 1000;
@@ -1062,6 +1065,21 @@ async function getChatState(afterId = 0) {
   });
 }
 
+async function sendChatPresenceHeartbeat() {
+  if (chatPresenceHeartbeatInFlight) return null;
+  chatPresenceHeartbeatInFlight = true;
+  try {
+    const auth = await getChatAuthPayload();
+    return await fetchJson(`${BACKEND_URL}/api/chat/presence`, {
+      method: 'POST',
+      cache: 'no-store',
+      body: JSON.stringify({ ...auth, source: 'hook-center' })
+    });
+  } finally {
+    chatPresenceHeartbeatInFlight = false;
+  }
+}
+
 async function sendChatMessage(payload = {}) {
   const auth = await getChatAuthPayload();
   return fetchJson(`${BACKEND_URL}/api/chat/messages`, {
@@ -1095,6 +1113,22 @@ async function deleteChatMessage(payload = {}) {
   return fetchJson(`${BACKEND_URL}/api/chat/delete`, {
     method: 'POST',
     body: JSON.stringify({ ...auth, messageId })
+  });
+}
+
+async function editChatMessage(payload = {}) {
+  const auth = await getChatAuthPayload();
+  const messageId = Math.floor(Number(payload.messageId));
+  if (!Number.isInteger(messageId) || messageId < 1) {
+    throw new Error('Mensagem inválida.');
+  }
+  return fetchJson(`${BACKEND_URL}/api/chat/edit`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...auth,
+      messageId,
+      text: String(payload.text || '').slice(0, 1000)
+    })
   });
 }
 
@@ -3205,6 +3239,7 @@ function buildBridgeServers(config) {
         getState: ({ afterId } = {}) => getChatState(afterId),
         sendMessage: (payload = {}) => sendChatMessage(payload),
         setPinnedMessage: (payload = {}) => setChatPinnedMessage(payload),
+        editMessage: (payload = {}) => editChatMessage(payload),
         deleteMessage: (payload = {}) => deleteChatMessage(payload),
         createMobileSession: () => createChatMobileSession()
       },
@@ -3243,6 +3278,7 @@ function buildBridgeServers(config) {
         getState: ({ afterId } = {}) => getChatState(afterId),
         sendMessage: (payload = {}) => sendChatMessage(payload),
         setPinnedMessage: (payload = {}) => setChatPinnedMessage(payload),
+        editMessage: (payload = {}) => editChatMessage(payload),
         deleteMessage: (payload = {}) => deleteChatMessage(payload),
         createMobileSession: () => createChatMobileSession()
       },
@@ -7660,6 +7696,7 @@ ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
 ipcMain.handle('chat-get-state', (_event, payload) => getChatState(payload?.afterId));
 ipcMain.handle('chat-send-message', (_event, payload) => sendChatMessage(payload || {}));
 ipcMain.handle('chat-set-pinned-message', (_event, payload) => setChatPinnedMessage(payload || {}));
+ipcMain.handle('chat-edit-message', (_event, payload) => editChatMessage(payload || {}));
 ipcMain.handle('chat-delete-message', (_event, payload) => deleteChatMessage(payload || {}));
 ipcMain.handle('chat-update-profile', (_event, payload) => updateChatProfile(payload || {}));
 ipcMain.handle('chat-upload-avatar', (_event, payload) => uploadChatAvatar(payload || {}));
@@ -7964,6 +8001,7 @@ function prepareForAppQuit() {
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
   if (directCableWatchTimer) clearInterval(directCableWatchTimer);
   if (updateReminderTimer) clearInterval(updateReminderTimer);
+  if (chatPresenceTimer) clearInterval(chatPresenceTimer);
   if (bundledReaperAssetsSyncTimer) {
     clearTimeout(bundledReaperAssetsSyncTimer);
   }
@@ -7971,6 +8009,8 @@ function prepareForAppQuit() {
   bridgeWatchTimer = null;
   directCableWatchTimer = null;
   updateReminderTimer = null;
+  chatPresenceTimer = null;
+  chatPresenceHeartbeatInFlight = false;
   bundledReaperAssetsSyncTimer = null;
 }
 
@@ -8018,6 +8058,11 @@ app.whenReady().then(async () => {
   await checkForUpdates(false);
   await checkHookCenterUpdates(false);
   await checkLicenseStatus(false);
+  await sendChatPresenceHeartbeat().catch(() => null);
+
+  chatPresenceTimer = setInterval(() => {
+    sendChatPresenceHeartbeat().catch(() => null);
+  }, CHAT_PRESENCE_HEARTBEAT_MS);
 
   bridgeWatchTimer = setInterval(() => {
     ensureBridgeServersRunning().catch((error) => {

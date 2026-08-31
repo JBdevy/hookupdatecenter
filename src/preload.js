@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getChatState: (afterId = 0) => ipcRenderer.invoke('chat-get-state', { afterId }),
   sendChatMessage: (payload) => ipcRenderer.invoke('chat-send-message', payload),
   setChatPinnedMessage: (payload) => ipcRenderer.invoke('chat-set-pinned-message', payload),
+  editChatMessage: (payload) => ipcRenderer.invoke('chat-edit-message', payload),
   deleteChatMessage: (payload) => ipcRenderer.invoke('chat-delete-message', payload),
   updateChatProfile: (payload) => ipcRenderer.invoke('chat-update-profile', payload),
   uploadChatAvatar: (payload) => ipcRenderer.invoke('chat-upload-avatar', payload),

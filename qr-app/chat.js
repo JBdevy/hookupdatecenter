@@ -234,6 +234,9 @@
       const pin = canPin
         ? `<button class="chatMobilePin" type="button" data-pin-message="${Number(message.id || 0)}">${Number(message.id || 0) === pinnedId ? 'Desafixar' : '📌 Fixar'}</button>`
         : ''
+      const editAction = !message.pending && !message.failed && isCurrentAdmin
+        ? `<button class="chatMobileEdit" type="button" data-edit-message="${Number(message.id || 0)}" aria-label="Editar mensagem" title="Editar mensagem">✎</button>`
+        : ''
       const canDelete = !message.pending && !message.failed && (isCurrentAdmin || Number(message.customerId || 0) === userId)
       const deleteAction = canDelete
         ? `<button class="chatMobileDelete" type="button" data-delete-message="${Number(message.id || 0)}" aria-label="Apagar mensagem" title="Apagar mensagem">🗑</button>`
@@ -257,7 +260,9 @@
               <strong>${name}</strong>
               ${message.isAdmin ? '<span>ADMIN</span>' : ''}
               <time>${escapeHtml(formatTime(message.createdAt))}</time>
+              ${message.editedAt ? '<small class="chatMobileEdited">editada</small>' : ''}
               ${pin}
+              ${editAction}
               ${deleteAction}
             </div>
             ${text ? `<p>${text}</p>` : ''}
@@ -276,7 +281,8 @@
     const avatar = document.getElementById('chatMobileCurrentAvatar')
     if (avatar) avatar.innerHTML = avatarHtml(user.name || 'Hook', user.avatarUrl || '')
     const connection = document.getElementById('chatMobileConnection')
-    if (connection) connection.textContent = settings.open === false ? 'Somente administradores' : 'Ao vivo'
+    const onlineCount = Math.max(0, Number(chatState?.presence?.onlineCount || 0))
+    if (connection) connection.textContent = `${settings.open === false ? 'Somente administradores' : 'Ao vivo'} · ${onlineCount} online`
 
     const pinnedText = String(settings.pinnedMessage || '').trim()
     const pinned = document.getElementById('chatMobilePinned')
@@ -581,6 +587,30 @@
     }
   }
 
+  async function editMessage(messageId, button) {
+    if (chatState?.user?.isAdmin !== true) return
+    const normalizedId = Math.floor(Number(messageId))
+    if (!Number.isInteger(normalizedId) || normalizedId < 1) return
+    const message = messages.get(normalizedId)
+    if (!message) return
+    const editedText = window.prompt('Editar mensagem:', String(message.text || ''))
+    if (editedText === null) return
+    if (editedText.length > 1000) {
+      document.getElementById('chatMobileStatus').textContent = 'A mensagem pode ter no máximo 1000 caracteres.'
+      return
+    }
+    if (button) button.disabled = true
+    try {
+      const result = await post('/chat/edit', { messageId: normalizedId, text: editedText })
+      applyState(result, true)
+      document.getElementById('chatMobileStatus').textContent = 'Mensagem editada.'
+    } catch (error) {
+      document.getElementById('chatMobileStatus').textContent = error.message
+    } finally {
+      if (button?.isConnected) button.disabled = false
+    }
+  }
+
   async function ensureAdminUnlocked() {
     if (adminPassword) return true
     const password = window.prompt('Digite a mesma senha usada para entrar no painel:')
@@ -712,6 +742,11 @@
     document.getElementById('chatMobileRemoveImage')?.addEventListener('click', clearSelectedMedia)
     document.getElementById('chatMobileSend')?.addEventListener('click', sendMessage)
     document.getElementById('chatMobileMessages')?.addEventListener('click', (event) => {
+      const editButton = event.target.closest('[data-edit-message]')
+      if (editButton) {
+        editMessage(Number(editButton.dataset.editMessage || 0), editButton)
+        return
+      }
       const deleteButton = event.target.closest('[data-delete-message]')
       if (deleteButton) {
         deleteMessage(Number(deleteButton.dataset.deleteMessage || 0), deleteButton)

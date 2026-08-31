@@ -7096,24 +7096,25 @@ body.tools-mode .copy-project-card .selected-folder-box {
   gap: 14px !important;
 }
 
-#homeView .home-header-installed-version {
-  flex: 1 1 auto !important;
+#homeView .home-installed-version-field {
+  flex: 1 1 100% !important;
+  width: 100% !important;
   min-width: 0 !important;
-  margin: 0 auto 0 0 !important;
-  padding: 9px 14px !important;
-  border: 1px solid rgba(141, 255, 31, .58) !important;
-  border-radius: 12px !important;
-  background: rgba(141, 255, 31, .08) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .035), 0 0 14px rgba(141, 255, 31, .12) !important;
+  margin: 0 auto !important;
+  padding: 7px 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
   color: #d9ffad !important;
   font-size: 17px !important;
   font-weight: 800 !important;
   line-height: 1.1 !important;
-  text-align: left !important;
+  text-align: center !important;
   white-space: nowrap !important;
 }
 
-#homeView .home-header-installed-version strong {
+#homeView .home-installed-version-field strong {
   margin-left: 5px;
   color: #ffffff !important;
   font-size: 19px;
@@ -7336,6 +7337,17 @@ body.tools-mode .copy-project-card .selected-folder-box {
     homeAttentionJump 3.6s ease-in-out 2.4s infinite,
     homeRgbButtonBorder 2.4s linear 0s infinite !important;
   transform-origin: center bottom;
+}
+
+#homeView #updateCard .update-actions-inline #downloadButton.reinstall-button,
+#previousView .previous-install-button.reinstall-button {
+  border: 1px solid rgba(255, 255, 255, .16) !important;
+  background: linear-gradient(135deg, #666b74, #3e424a) !important;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .22) !important;
+  color: #f2f3f5 !important;
+  animation: none !important;
+  transform: none !important;
+  filter: none !important;
 }
 
 @keyframes homeAttentionJump {
@@ -7798,8 +7810,23 @@ body.tools-mode .copy-project-card .selected-folder-box {
 #homeView .chat-hook-admin-menu button { min-height: 36px; padding: 0 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.055); color: var(--text); text-align: left; cursor: pointer; }
 
 .chat-admin-password-modal,
-.chat-release-notes-modal { width: min(560px, calc(100vw - 36px)); max-width: 560px; display: grid; gap: 12px; }
+.chat-release-notes-modal,
+.chat-hook-edit-modal { width: min(560px, calc(100vw - 36px)); max-width: 560px; display: grid; gap: 12px; }
 .chat-release-notes-modal textarea { width: 100%; resize: vertical; }
+.chat-hook-edit-modal textarea {
+  width: 100%;
+  min-height: 130px;
+  resize: vertical;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 12px;
+  outline: none;
+  background: rgba(255, 255, 255, .055);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+}
+.chat-hook-edit-modal textarea:focus { border-color: rgba(207, 55, 255, .58); box-shadow: 0 0 0 2px rgba(207, 55, 255, .1); }
 .chat-publish-update-modal { width: min(920px, calc(100vw - 30px)); max-width: 920px; max-height: calc(100vh - 30px); overflow: auto; }
 .chat-publish-update-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
 .chat-publish-update-grid label { display: grid; gap: 5px; }
@@ -8146,6 +8173,36 @@ body.tools-mode .copy-project-card .selected-folder-box {
   opacity: .5;
 }
 
+#homeView .chat-hook-edit-message {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .07);
+  color: #d9d9e2;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+#homeView .chat-hook-edit-message:hover {
+  border-color: rgba(207, 55, 255, .55);
+  background: rgba(207, 55, 255, .16);
+}
+
+#homeView .chat-hook-edit-message:disabled {
+  cursor: wait;
+  opacity: .5;
+}
+
+#homeView .chat-hook-edited-label {
+  color: #737483;
+  font-size: 8px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
 #homeView .chat-hook-message-body p {
   margin: 0;
   color: #e7e7ec;
@@ -8487,12 +8544,8 @@ body.tools-mode .copy-project-card .selected-folder-box {
   #homeView .video-click-indicator { animation: none; }
 }
 
-#homeView .home-header-installed-version {
-  flex: 0 1 auto !important;
-  width: auto !important;
-  max-width: 275px !important;
-  padding-right: 10px !important;
-  padding-left: 10px !important;
+#homeView .home-installed-version-field {
+  max-width: none !important;
 }
 
 #homeView .hero-card.home-compact-header #checkButton {
