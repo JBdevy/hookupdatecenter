@@ -81,6 +81,15 @@ Source: https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz
 Configuration: LGPL shared libraries, no --enable-gpl and no --enable-nonfree.
 EOF
 
+SIGN_IDENTITY="${VSHOOK_MACOS_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Developer ID Application:/ { print $2; exit }')"
+fi
+if [ -z "$SIGN_IDENTITY" ]; then
+  echo "Certificado Developer ID Application não encontrado para assinar o runtime FFmpeg." >&2
+  exit 1
+fi
+
 for x86_library in "$WORK/prefix-x86_64/lib/"*.dylib; do
   [ -L "$x86_library" ] && continue
   name="$(basename "$x86_library")"
@@ -88,7 +97,9 @@ for x86_library in "$WORK/prefix-x86_64/lib/"*.dylib; do
   [ -f "$arm_library" ] || continue
   lipo -create "$x86_library" "$arm_library" -output "$STAGE/lib/$name"
   install_name_tool -add_rpath @loader_path "$STAGE/lib/$name" 2>/dev/null || true
-  codesign --force --sign - "$STAGE/lib/$name"
+  codesign --force --timestamp --options runtime \
+    --sign "$SIGN_IDENTITY" "$STAGE/lib/$name"
+  codesign --verify --strict "$STAGE/lib/$name"
 done
 
 for link in "$WORK/prefix-arm64/lib/"*.dylib; do

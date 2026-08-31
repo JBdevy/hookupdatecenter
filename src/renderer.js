@@ -4314,7 +4314,7 @@ function hasInstallableFiles(update) {
 
 function getInstallerUrlForUpdate(update) {
   const files = getPlatformFilesForUpdate(update);
-  const direct = files?.installer || files?.exe || files?.pkg || files?.dmg || update?.installerUrl || update?.downloadUrl || '';
+  const direct = files?.installer || files?.exe || files?.pkg || update?.installerUrl || update?.downloadUrl || '';
   if (String(direct || '').trim()) return String(direct).trim();
 
   // Atualização direcionada nunca pode herdar o instalador da publicação

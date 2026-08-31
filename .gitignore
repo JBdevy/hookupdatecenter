@@ -7,7 +7,6 @@ dist-restart-fix/
 vendor/windows-midi-services/*.exe
 vendor/windows-midi-services/*.partial
 vendor/vlc/*.zip
-vendor/vlc/*.dmg
 vendor/vlc/*.partial
 vendor/ffmpeg/*.zip
 vendor/ffmpeg/*.partial

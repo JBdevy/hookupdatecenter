@@ -111,7 +111,6 @@
         "com.hookdeveloper.hookcenter"
       ]
     },
-    "icon": "assets/icon.png",
-    "afterSign": "build/notarize.js"
+    "icon": "assets/icon.png"
   }
 }

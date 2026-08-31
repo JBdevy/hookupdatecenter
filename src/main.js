@@ -1295,7 +1295,6 @@ function normalizeUpdate(raw) {
         installer: pickFirst(
           macos.installer,
           macos.pkg,
-          macos.dmg,
           macos.url,
           source.macosPkgUrl,
           source.pkgUrl,
@@ -1495,18 +1494,6 @@ async function checkForUpdates(manual = false) {
 }
 
 
-function getMacInstallerExtension(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) return '.pkg';
-  try {
-    const pathname = new URL(raw, 'https://local.invalid').pathname || '';
-    const match = pathname.match(/\.(pkg|dmg)$/i);
-    return match ? `.${match[1].toLowerCase()}` : '.pkg';
-  } catch (_) {
-    return /\.dmg(?:$|[?#])/i.test(raw) ? '.dmg' : '.pkg';
-  }
-}
-
 function normalizeHookCenterUpdate(raw) {
   if (!raw) return null;
   const hasTutorialOnly = !!(raw.tutorialUrl || raw.learnUrl || raw.videoUrl);
@@ -1514,7 +1501,7 @@ function normalizeHookCenterUpdate(raw) {
   const platformKey = getHookCenterPlatformKey();
   const platformUrls = {
     windows: raw.windowsUrl || raw.windowsInstallerUrl || raw.exeUrl,
-    macos: raw.macosPkgUrl || raw.pkgUrl || raw.macosInstallerUrl || raw.macosUrl || raw.macUrl || raw.dmgUrl,
+    macos: raw.macosPkgUrl || raw.pkgUrl || raw.macosInstallerUrl || raw.macosUrl || raw.macUrl,
     'macos-legacy': raw.macosLegacyUrl || raw.legacyMacosUrl || raw.macos10Url || raw.macosLegacyInstallerUrl
   };
   // O link específico da variante tem prioridade sobre o campo genérico.
@@ -1593,7 +1580,7 @@ async function downloadHookCenterUpdateInstaller() {
   store.set('downloadedHookCenterUpdate', null);
 
   const ext = process.platform === 'darwin'
-    ? getMacInstallerExtension(update.downloadUrl)
+    ? '.pkg'
     : '.exe';
   const artifactIdentity = getHookCenterArtifactIdentity(update);
   const remoteValidator = await fetchRemoteArtifactValidator(update.downloadUrl);
@@ -1727,7 +1714,7 @@ function quitAfterMacInstallerIsOpened() {
   // O Electron usa instância única. Se a central antiga continuar aberta,
   // clicar na nova cópia instalada apenas reativa o processo antigo e dá a
   // impressão de que o instalador não trouxe as mudanças. shell.openPath() só
-  // retorna depois que o LaunchServices aceitou abrir o PKG/DMG, portanto não
+  // retorna depois que o LaunchServices aceitou abrir o PKG, portanto não
   // precisamos manter o processo antigo vivo depois desse ponto.
   appIsQuitting = true;
   if (isValidWindow(mainWindow)) mainWindow.hide();
@@ -4872,18 +4859,12 @@ function validateUpdateInstallerFile(filePath) {
         throw new Error('O instalador baixado não é um executável válido do Windows.');
       }
     } else if (process.platform === 'darwin') {
-      // Pacotes planos do macOS são arquivos XAR ("xar!"). Mantemos o teste
-      // UDIF/DMG abaixo para atualizações antigas ainda publicadas.
+      // Pacotes planos do macOS são arquivos XAR ("xar!").
       const signature = Buffer.alloc(4);
       const hasPkgHeader = fs.readSync(handle, signature, 0, signature.length, 0) === signature.length &&
         signature.toString('ascii') === 'xar!';
       if (!hasPkgHeader) {
-        const trailerOffset = stat.size - 512;
-        const hasDmgTrailer = fs.readSync(handle, signature, 0, signature.length, trailerOffset) === signature.length &&
-          signature.toString('ascii') === 'koly';
-        if (!hasDmgTrailer) {
-          throw new Error('O instalador baixado não é um pacote PKG nem uma imagem DMG válida do macOS.');
-        }
+        throw new Error('O instalador baixado não é um pacote PKG válido do macOS.');
       }
     }
   } finally {
@@ -5252,7 +5233,7 @@ function getInstallerFilename(update) {
   const version = safeUpdateCacheSegment(update?.version || 'versao');
   const installerUrl = update?.installerUrl || update?.downloadUrl || '';
   return process.platform === 'darwin'
-    ? `Hook-Center-${version}-macOS${getMacInstallerExtension(installerUrl)}`
+    ? `Hook-Center-${version}-macOS.pkg`
     : `Hook-Center-${version}-Windows.exe`;
 }
 
@@ -5278,7 +5259,6 @@ function buildUpdatePackageEntries(update) {
     files.installer ||
     files.exe ||
     files.pkg ||
-    files.dmg ||
     normalized.installerUrl ||
     normalized.downloadUrl ||
     matchingCurrentInstaller
