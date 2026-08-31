@@ -14,12 +14,12 @@ fail() {
   exit 1
 }
 
-is_complete_vlc() {
+is_complete_ffmpeg() {
   local root="$1"
-  [ -f "$root/lib/libvlc.dylib" ] &&
-    [ -f "$root/lib/libvlccore.dylib" ] &&
-    [ -d "$root/plugins" ] &&
-    [ -n "$(find "$root/plugins" -mindepth 1 -maxdepth 1 -print -quit)" ]
+  [ -f "$root/lib/libavutil.60.dylib" ] &&
+    [ -f "$root/lib/libavcodec.62.dylib" ] &&
+    [ -f "$root/lib/libavformat.62.dylib" ] &&
+    [ -f "$root/lib/libswscale.9.dylib" ]
 }
 
 is_complete_companion() {
@@ -29,29 +29,32 @@ is_complete_companion() {
     [ -f "$app_bundle/Contents/Resources/app.asar" ]
 }
 
-install_vlc_runtime() {
+install_ffmpeg_runtime() {
   local reaper_root="$1"
   local parent="$reaper_root/UserPlugins/VSHookRuntime"
-  local target="$parent/VLC"
-  local temporary="$parent/.VLC.install.$$"
-  local backup="$parent/.VLC.backup.$$"
+  local target="$parent/FFmpeg"
+  local temporary="$parent/.FFmpeg.install.$$"
+  local backup="$parent/.FFmpeg.backup.$$"
+  local legacy_vlc="$parent/VLC"
 
-  if is_complete_vlc "$target"; then
-    log "Runtime VLC ja esta completo em $target"
+  if is_complete_ffmpeg "$target"; then
+    rm -rf "$legacy_vlc"
+    log "Runtime FFmpeg ja esta completo em $target"
     return
   fi
 
   mkdir -p "$parent"
   rm -rf "$temporary" "$backup"
-  ditto "$VLC_SOURCE" "$temporary"
-  is_complete_vlc "$temporary" || fail "A copia temporaria do VLC esta incompleta."
+  ditto "$FFMPEG_SOURCE" "$temporary"
+  is_complete_ffmpeg "$temporary" || fail "A copia temporaria do FFmpeg esta incompleta."
 
   if [ -e "$target" ]; then
     mv "$target" "$backup"
   fi
-  if mv "$temporary" "$target" && chmod -R a+rX "$target" && is_complete_vlc "$target"; then
+  if mv "$temporary" "$target" && chmod -R a+rX "$target" && is_complete_ffmpeg "$target"; then
     rm -rf "$backup"
-    log "Runtime VLC instalado em $target"
+    rm -rf "$legacy_vlc"
+    log "Runtime FFmpeg instalado em $target"
     return
   fi
 
@@ -59,7 +62,7 @@ install_vlc_runtime() {
   if [ -e "$backup" ]; then
     mv "$backup" "$target" || true
   fi
-  fail "Nao foi possivel instalar o runtime VLC."
+  fail "Nao foi possivel instalar o runtime FFmpeg."
 }
 
 install_companion() {
@@ -133,40 +136,42 @@ THEMES_SOURCE="$RESOURCES/vshook-themes"
 is_complete_companion "$COMPANION_SOURCE" || fail "Teleprompt Settings empacotado esta incompleto."
 
 GLOBAL_REAPER="${TARGET_VOLUME}/Library/Application Support/REAPER"
-GLOBAL_VLC_ROOT="$GLOBAL_REAPER/UserPlugins/VSHookRuntime/VLC"
-INSTALL_VLC_RUNTIME=0
+GLOBAL_FFMPEG_ROOT="$GLOBAL_REAPER/UserPlugins/VSHookRuntime/FFmpeg"
+INSTALL_FFMPEG_RUNTIME=0
 
-if ! is_complete_vlc "$GLOBAL_VLC_ROOT"; then
-  INSTALL_VLC_RUNTIME=1
+if ! is_complete_ffmpeg "$GLOBAL_FFMPEG_ROOT"; then
+  INSTALL_FFMPEG_RUNTIME=1
+else
+  rm -rf "$GLOBAL_REAPER/UserPlugins/VSHookRuntime/VLC"
 fi
 
 for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   [ -d "$USER_HOME" ] || continue
   USER_NAME="$(basename "$USER_HOME")"
   [ "$USER_NAME" = "Shared" ] && continue
-  USER_VLC_ROOT="$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC"
-  if ! is_complete_vlc "$USER_VLC_ROOT"; then
-    INSTALL_VLC_RUNTIME=1
-    break
+  USER_FFMPEG_ROOT="$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg"
+  if ! is_complete_ffmpeg "$USER_FFMPEG_ROOT"; then
+    INSTALL_FFMPEG_RUNTIME=1
+  else
+    rm -rf "$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC"
   fi
 done
 
-if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
-  VLC_DMG="$(find "$RESOURCES/vlc-runtime" -maxdepth 1 -type f -name 'vlc-*-universal.dmg' -print -quit)"
-  [ -n "$VLC_DMG" ] || fail "Runtime VLC nao veio dentro da Hook Center."
-  VLC_MOUNT="$(mktemp -d /tmp/vshook-vlc.XXXXXX)"
-  cleanup_vlc() {
-    hdiutil detach "$VLC_MOUNT" -quiet 2>/dev/null || true
-    rmdir "$VLC_MOUNT" 2>/dev/null || true
+if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
+  FFMPEG_ZIP="$(find "$RESOURCES/ffmpeg-runtime" -maxdepth 1 -type f -name 'ffmpeg-*-macos-universal-lgpl-shared.zip' -print -quit)"
+  [ -n "$FFMPEG_ZIP" ] || fail "Runtime FFmpeg nao veio dentro da Hook Center."
+  FFMPEG_EXTRACT="$(mktemp -d /tmp/vshook-ffmpeg.XXXXXX)"
+  cleanup_ffmpeg() {
+    rm -rf "$FFMPEG_EXTRACT"
   }
-  trap cleanup_vlc EXIT
-  hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet
-  VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"
-  is_complete_vlc "$VLC_SOURCE" || fail "O DMG do VLC empacotado esta incompleto."
+  trap cleanup_ffmpeg EXIT
+  ditto -x -k "$FFMPEG_ZIP" "$FFMPEG_EXTRACT"
+  FFMPEG_SOURCE="$FFMPEG_EXTRACT/FFmpeg"
+  is_complete_ffmpeg "$FFMPEG_SOURCE" || fail "O ZIP do FFmpeg empacotado esta incompleto."
 fi
 
-if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
-  install_vlc_runtime "$GLOBAL_REAPER"
+if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
+  install_ffmpeg_runtime "$GLOBAL_REAPER"
 fi
 install_companion "$GLOBAL_REAPER"
 install_themes "$GLOBAL_REAPER/ColorThemes"
@@ -176,8 +181,8 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   USER_NAME="$(basename "$USER_HOME")"
   [ "$USER_NAME" = "Shared" ] && continue
   USER_REAPER="$USER_HOME/Library/Application Support/REAPER"
-  if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
-    install_vlc_runtime "$USER_REAPER"
+  if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
+    install_ffmpeg_runtime "$USER_REAPER"
   fi
   install_companion "$USER_REAPER"
   install_themes "$USER_REAPER/ColorThemes" "$USER_NAME"
@@ -187,8 +192,8 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   fi
 done
 
-if [ "$INSTALL_VLC_RUNTIME" -eq 1 ]; then
-  cleanup_vlc
+if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
+  cleanup_ffmpeg
   trap - EXIT
 fi
 

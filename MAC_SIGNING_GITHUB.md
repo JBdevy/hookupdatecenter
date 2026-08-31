@@ -1,7 +1,7 @@
 # macOS signing / notarization
 
 Os builds macOS geram um instalador `.pkg` assinado e notarizado. O PKG instala
-o runtime VLC, o Teleprompt Settings e os temas do REAPER antes da primeira
+o runtime FFmpeg, o Teleprompt Settings e os temas do REAPER antes da primeira
 abertura da Hook Center.
 
 ## Certificados

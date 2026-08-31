@@ -221,9 +221,11 @@ function getCopyProjectService() {
 }
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
-const VSHOOK_VLC_VERSION = '3.0.23';
-const VSHOOK_VLC_WINDOWS_ARCHIVE = `vlc-${VSHOOK_VLC_VERSION}-win64.zip`;
-const VSHOOK_VLC_MACOS_ARCHIVE = `vlc-${VSHOOK_VLC_VERSION}-universal.dmg`;
+const VSHOOK_FFMPEG_VERSION = '8.1.2';
+const VSHOOK_FFMPEG_WINDOWS_ARCHIVE =
+  `ffmpeg-${VSHOOK_FFMPEG_VERSION}-win64-lgpl-shared.zip`;
+const VSHOOK_FFMPEG_MACOS_ARCHIVE =
+  `ffmpeg-${VSHOOK_FFMPEG_VERSION}-macos-universal-lgpl-shared.zip`;
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
 const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
@@ -4672,11 +4674,11 @@ function entriesChangedSinceLastInstall(update, entries) {
   const platformKey = getPlatformKey();
   const installed = store.get('installedManifest') || {};
   const installedFiles = installed.platform === platformKey ? (installed.files || {}) : {};
-  const mustInstallBundledVlc = !hasInstalledVlcRuntime() && entries.some(
+  const mustInstallBundledFfmpeg = !hasInstalledFfmpegRuntime() && entries.some(
     (entry) => entry.key === 'vshookDll' || entry.key === 'vshookDylib'
   );
   return entries.filter((entry) => {
-    if (mustInstallBundledVlc &&
+    if (mustInstallBundledFfmpeg &&
         (entry.key === 'vshookDll' || entry.key === 'vshookDylib')) {
       return true;
     }
@@ -6122,110 +6124,83 @@ function getWindowsReaperUserPluginsDirs() {
   });
 }
 
-function hasNonEmptyVlcPlugins(root) {
-  const plugins = path.join(root, 'plugins');
-  try {
-    return physicalFs.statSync(plugins).isDirectory() &&
-      physicalFs.readdirSync(plugins).length > 0;
-  } catch (_) {
-    return false;
-  }
+function hasCompleteWindowsFfmpegRoot(root) {
+  return physicalFs.existsSync(path.join(root, 'avutil-60.dll')) &&
+    physicalFs.existsSync(path.join(root, 'avcodec-62.dll')) &&
+    physicalFs.existsSync(path.join(root, 'avformat-62.dll')) &&
+    physicalFs.existsSync(path.join(root, 'swscale-9.dll'));
 }
 
-function hasCompleteWindowsVlcRoot(root) {
-  return physicalFs.existsSync(path.join(root, 'libvlc.dll')) &&
-    physicalFs.existsSync(path.join(root, 'libvlccore.dll')) &&
-    hasNonEmptyVlcPlugins(root);
+function hasCompleteMacFfmpegRoot(root) {
+  return physicalFs.existsSync(path.join(root, 'lib', 'libavutil.60.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libavcodec.62.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libavformat.62.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libswscale.9.dylib'));
 }
 
-function hasCompleteMacVlcRoot(root) {
-  return physicalFs.existsSync(path.join(root, 'lib', 'libvlc.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libvlccore.dylib')) &&
-    hasNonEmptyVlcPlugins(root);
+function getBundledMacFfmpegRuntimeDir() {
+  return '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg';
 }
 
-function getBundledMacVlcRuntimeDir() {
-  return '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC';
-}
-
-function hasInstalledBundledMacVlcRuntime() {
+function hasInstalledBundledMacFfmpegRuntime() {
   return process.platform === 'darwin' &&
-    hasCompleteMacVlcRoot(getBundledMacVlcRuntimeDir());
+    hasCompleteMacFfmpegRoot(getBundledMacFfmpegRuntimeDir());
 }
 
-function hasInstalledVlcRuntime() {
+function hasInstalledFfmpegRuntime() {
   if (process.platform === 'win32') {
     const bundledRoot = path.join(
       getWindowsReaperUserPluginsDir(),
-      'VSHookRuntime', 'VLC'
+      'VSHookRuntime', 'FFmpeg'
     );
-    // A extensão procura primeiro ao lado da DLL, dentro de UserPlugins. Se
-    // essa cópia existir mas estiver incompleta, ela precisa ser reparada em
-    // vez de ser mascarada por uma instalação global do VLC.
-    if (physicalFs.existsSync(bundledRoot)) {
-      return hasCompleteWindowsVlcRoot(bundledRoot);
-    }
-    const systemRoots = [
-      path.join(
-        process.env.ProgramFiles || 'C:\\Program Files',
-        'VideoLAN', 'VLC'
-      )
-    ];
-    if (process.env.LOCALAPPDATA) {
-      systemRoots.push(path.join(
-        process.env.LOCALAPPDATA,
-        'Programs', 'VideoLAN', 'VLC'
-      ));
-    }
-    return systemRoots.some(hasCompleteWindowsVlcRoot);
+    return hasCompleteWindowsFfmpegRoot(bundledRoot);
   }
   if (process.platform === 'darwin') {
     const roots = [
-      '/Applications/VLC.app/Contents/MacOS',
-      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC',
+      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg',
       path.join(
         os.homedir(), 'Library', 'Application Support', 'REAPER',
-        'UserPlugins', 'VSHookRuntime', 'VLC'
+        'UserPlugins', 'VSHookRuntime', 'FFmpeg'
       )
     ];
-    return roots.some(hasCompleteMacVlcRoot);
+    return roots.some(hasCompleteMacFfmpegRoot);
   }
   return false;
 }
 
-function getBundledVlcRuntimeArchive(required = false) {
+function getBundledFfmpegRuntimeArchive(required = false) {
   const filename = process.platform === 'win32'
-    ? VSHOOK_VLC_WINDOWS_ARCHIVE
+    ? VSHOOK_FFMPEG_WINDOWS_ARCHIVE
     : process.platform === 'darwin'
-      ? VSHOOK_VLC_MACOS_ARCHIVE
+      ? VSHOOK_FFMPEG_MACOS_ARCHIVE
       : '';
   if (!filename) return '';
   const candidates = [
-    path.join(process.resourcesPath, 'vlc-runtime', filename),
-    path.join(__dirname, '..', 'vendor', 'vlc', filename)
+    path.join(process.resourcesPath, 'ffmpeg-runtime', filename),
+    path.join(__dirname, '..', 'vendor', 'ffmpeg', filename)
   ];
   const archive = candidates.find((candidate) =>
     physicalFs.existsSync(candidate)) || '';
   if (archive) {
-    validateVlcRuntimeArchive(archive);
+    validateFfmpegRuntimeArchive(archive);
     return archive;
   }
   if (required) {
     throw new Error(
-      'A Hook Center foi instalada sem o runtime de vídeo VLC. ' +
+      'A Hook Center foi instalada sem o runtime de vídeo FFmpeg. ' +
       'Instale a versão completa da Hook Center e tente novamente.'
     );
   }
   return '';
 }
 
-function validateVlcRuntimeArchive(filename) {
+function validateFfmpegRuntimeArchive(filename) {
   if (!filename || !physicalFs.existsSync(filename)) {
-    throw new Error('O runtime de vídeo do VLC não foi encontrado.');
+    throw new Error('O runtime de vídeo do FFmpeg não foi encontrado.');
   }
   const stat = physicalFs.statSync(filename);
   if (!stat.isFile() || stat.size < 1024 * 1024) {
-    throw new Error('O runtime de vídeo do VLC está vazio ou incompleto.');
+    throw new Error('O runtime de vídeo do FFmpeg está vazio ou incompleto.');
   }
   if (process.platform === 'win32') {
     const handle = physicalFs.openSync(filename, 'r');
@@ -6236,19 +6211,18 @@ function validateVlcRuntimeArchive(filename) {
       physicalFs.closeSync(handle);
     }
     if (header[0] !== 0x50 || header[1] !== 0x4b) {
-      throw new Error('O pacote do VLC não é um ZIP válido.');
+      throw new Error('O pacote do FFmpeg não é um ZIP válido.');
     }
   } else if (process.platform === 'darwin') {
     const handle = physicalFs.openSync(filename, 'r');
-    const trailer = Buffer.alloc(512);
+    const header = Buffer.alloc(4);
     try {
-      physicalFs.readSync(
-        handle, trailer, 0, trailer.length, stat.size - trailer.length);
+      physicalFs.readSync(handle, header, 0, header.length, 0);
     } finally {
       physicalFs.closeSync(handle);
     }
-    if (trailer.subarray(0, 4).toString('ascii') !== 'koly') {
-      throw new Error('O pacote do VLC não é um DMG válido.');
+    if (header[0] !== 0x50 || header[1] !== 0x4b) {
+      throw new Error('O pacote do FFmpeg não é um ZIP válido.');
     }
   }
 }
@@ -6273,27 +6247,34 @@ function findFileBelow(root, expectedName, depth = 0) {
   return '';
 }
 
-function installWindowsVlcRuntime(archive) {
+function installWindowsFfmpegRuntime(archive) {
   if (!archive) return;
-  validateVlcRuntimeArchive(archive);
+  validateFfmpegRuntimeArchive(archive);
   const pluginsDirectory = path.resolve(
     getWindowsReaperUserPluginsDir());
   const runtimeParent = path.resolve(
     pluginsDirectory, 'VSHookRuntime');
-  const target = path.resolve(runtimeParent, 'VLC');
+  const target = path.resolve(runtimeParent, 'FFmpeg');
+  const legacyVlc = path.resolve(runtimeParent, 'VLC');
   const relativeTarget = path.relative(pluginsDirectory, target);
   if (!relativeTarget || relativeTarget.startsWith('..') ||
-      path.isAbsolute(relativeTarget)) {
-    throw new Error('A pasta do runtime VLC não pôde ser validada.');
+      path.isAbsolute(relativeTarget) ||
+      path.dirname(legacyVlc).toLowerCase() !== runtimeParent.toLowerCase() ||
+      path.basename(legacyVlc).toLowerCase() !== 'vlc') {
+    throw new Error('A pasta do runtime FFmpeg não pôde ser validada.');
+  }
+  if (hasCompleteWindowsFfmpegRoot(target)) {
+    physicalFs.rmSync(legacyVlc, { recursive: true, force: true });
+    return;
   }
   physicalFs.mkdirSync(runtimeParent, { recursive: true });
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingRoot = path.join(
-    runtimeParent, `.vlc-staging-${transactionId}`);
+    runtimeParent, `.ffmpeg-staging-${transactionId}`);
   const extracted = path.join(stagingRoot, 'extracted');
   const prepared = path.join(stagingRoot, 'prepared');
   const backup = path.join(
-    runtimeParent, `.vlc-backup-${transactionId}`);
+    runtimeParent, `.ffmpeg-backup-${transactionId}`);
   physicalFs.rmSync(stagingRoot, { recursive: true, force: true });
   physicalFs.mkdirSync(extracted, { recursive: true });
   try {
@@ -6305,7 +6286,7 @@ function installWindowsVlcRuntime(archive) {
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        'Expand-Archive -LiteralPath $env:VSHOOK_VLC_ARCHIVE -DestinationPath $env:VSHOOK_VLC_EXTRACT -Force'
+        'Expand-Archive -LiteralPath $env:VSHOOK_FFMPEG_ARCHIVE -DestinationPath $env:VSHOOK_FFMPEG_EXTRACT -Force'
       ],
       {
         stdio: 'ignore',
@@ -6313,23 +6294,47 @@ function installWindowsVlcRuntime(archive) {
         timeout: 180000,
         env: {
           ...process.env,
-          VSHOOK_VLC_ARCHIVE: archive,
-          VSHOOK_VLC_EXTRACT: extracted
+          VSHOOK_FFMPEG_ARCHIVE: archive,
+          VSHOOK_FFMPEG_EXTRACT: extracted
         }
       }
     );
-    const library = findFileBelow(extracted, 'libvlc.dll');
+    const library = findFileBelow(extracted, 'avcodec-62.dll');
     const sourceRoot = library ? path.dirname(library) : '';
     if (!sourceRoot ||
-        !physicalFs.existsSync(path.join(sourceRoot, 'libvlccore.dll')) ||
-        !physicalFs.existsSync(path.join(sourceRoot, 'plugins'))) {
-      throw new Error('O pacote oficial do VLC não trouxe todos os componentes necessários.');
+        !hasCompleteWindowsFfmpegRoot(sourceRoot)) {
+      throw new Error('O pacote FFmpeg não trouxe todas as bibliotecas necessárias.');
     }
-    physicalFs.cpSync(sourceRoot, prepared, {
-      recursive: true,
-      force: true,
-      errorOnExist: false
-    });
+    physicalFs.mkdirSync(prepared, { recursive: true });
+    for (const libraryName of [
+      'avutil-60.dll',
+      'swresample-6.dll',
+      'avcodec-62.dll',
+      'avformat-62.dll',
+      'swscale-9.dll'
+    ]) {
+      const source = path.join(sourceRoot, libraryName);
+      if (physicalFs.existsSync(source)) {
+        physicalFs.copyFileSync(source, path.join(prepared, libraryName));
+      }
+    }
+    const licenses = path.join(prepared, 'licenses');
+    physicalFs.mkdirSync(licenses, { recursive: true });
+    const bundledLicense = findFileBelow(extracted, 'LICENSE.txt');
+    if (bundledLicense) {
+      physicalFs.copyFileSync(
+        bundledLicense, path.join(licenses, 'LICENSE.txt'));
+    }
+    physicalFs.writeFileSync(
+      path.join(licenses, 'SOURCE.txt'),
+      'FFmpeg 8.1.2 - bibliotecas compartilhadas LGPL\n' +
+      'Código-fonte: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz\n' +
+      'Build Windows: https://github.com/BtbN/FFmpeg-Builds\n',
+      'utf8'
+    );
+    if (!hasCompleteWindowsFfmpegRoot(prepared)) {
+      throw new Error('A preparação temporária do FFmpeg ficou incompleta.');
+    }
     if (physicalFs.existsSync(target)) {
       physicalFs.renameSync(target, backup);
     }
@@ -6343,6 +6348,8 @@ function installWindowsVlcRuntime(archive) {
       throw error;
     }
     physicalFs.rmSync(backup, { recursive: true, force: true });
+    // O runtime antigo so e removido depois de o FFmpeg passar na verificacao.
+    physicalFs.rmSync(legacyVlc, { recursive: true, force: true });
   } finally {
     physicalFs.rmSync(stagingRoot, { recursive: true, force: true });
   }
@@ -6441,9 +6448,7 @@ function installWindowsPayload(files, options = {}) {
   }
   removeLegacyWindowsVshookExtensions();
   removeWindowsPublicVsHookDir();
-  if (!hasInstalledVlcRuntime()) {
-    installWindowsVlcRuntime(getBundledVlcRuntimeArchive(true));
-  }
+  installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
   copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
   // Confere novamente o diretório antes de entregar o controle ao instalador.
   // O customInstall e a próxima inicialização repetem a mesma limpeza.
@@ -6491,8 +6496,8 @@ function isMacReaperRunning() {
 function installMacPayload(files, options = {}) {
   const installExtension = options.installExtension !== false;
   const installBundledAssets = options.installBundledAssets !== false;
-  const installVlcRuntime = options.installVlcRuntime === true ||
-    (installExtension && options.installVlcRuntime !== false);
+  const installFfmpegRuntime = options.installFfmpegRuntime === true ||
+    (installExtension && options.installFfmpegRuntime !== false);
   if (installExtension && isMacReaperRunning()) {
     throw new Error(
       'Encerre completamente o REAPER com Cmd+Q antes de instalar os componentes. ' +
@@ -6506,10 +6511,10 @@ function installMacPayload(files, options = {}) {
   if (installExtension) {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   }
-  const vlcArchive = installVlcRuntime && !hasInstalledBundledMacVlcRuntime()
-    ? getBundledVlcRuntimeArchive(true)
+  const ffmpegArchive = installFfmpegRuntime && !hasInstalledBundledMacFfmpegRuntime()
+    ? getBundledFfmpegRuntimeArchive(true)
     : '';
-  if (vlcArchive) validateVlcRuntimeArchive(vlcArchive);
+  if (ffmpegArchive) validateFfmpegRuntimeArchive(ffmpegArchive);
   const commands = [];
   const vshookSource = installExtension ? files.vshookDylib : '';
   const companionSource = installBundledAssets ? path.join(
@@ -6521,24 +6526,24 @@ function installMacPayload(files, options = {}) {
     ? getBundledVshookThemePaths()
     : [];
   const installsReaperAssets = installExtension || hasCompanion ||
-    themeSources.length > 0;
+    themeSources.length > 0 || !!ffmpegArchive;
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
-  if (vlcArchive) {
-    commands.push(`VLC_DMG=${shellQuote(vlcArchive)}`);
-    commands.push('VLC_MOUNT=$(mktemp -d /tmp/vshook-vlc.XXXXXX)');
-    commands.push('cleanup_vshook_vlc() { hdiutil detach "$VLC_MOUNT" -quiet 2>/dev/null || true; rmdir "$VLC_MOUNT" 2>/dev/null || true; }');
-    commands.push('trap cleanup_vshook_vlc EXIT');
-    commands.push('hdiutil attach "$VLC_DMG" -nobrowse -readonly -mountpoint "$VLC_MOUNT" -quiet');
-    commands.push('VLC_SOURCE="$VLC_MOUNT/VLC.app/Contents/MacOS"');
-    commands.push('test -f "$VLC_SOURCE/lib/libvlc.dylib"');
-    commands.push('test -f "$VLC_SOURCE/lib/libvlccore.dylib"');
-    commands.push('test -d "$VLC_SOURCE/plugins"');
-    commands.push('test -n "$(find "$VLC_SOURCE/plugins" -mindepth 1 -maxdepth 1 -print -quit)"');
+  if (ffmpegArchive) {
+    commands.push(`FFMPEG_ZIP=${shellQuote(ffmpegArchive)}`);
+    commands.push('FFMPEG_EXTRACT=$(mktemp -d /tmp/vshook-ffmpeg.XXXXXX)');
+    commands.push('cleanup_vshook_ffmpeg() { rm -rf "$FFMPEG_EXTRACT"; }');
+    commands.push('trap cleanup_vshook_ffmpeg EXIT');
+    commands.push('ditto -x -k "$FFMPEG_ZIP" "$FFMPEG_EXTRACT"');
+    commands.push('FFMPEG_SOURCE="$FFMPEG_EXTRACT/FFmpeg"');
+    commands.push('test -f "$FFMPEG_SOURCE/lib/libavutil.60.dylib"');
+    commands.push('test -f "$FFMPEG_SOURCE/lib/libavcodec.62.dylib"');
+    commands.push('test -f "$FFMPEG_SOURCE/lib/libavformat.62.dylib"');
+    commands.push('test -f "$FFMPEG_SOURCE/lib/libswscale.9.dylib"');
   }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
@@ -6565,20 +6570,21 @@ function installMacPayload(files, options = {}) {
     commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('mv -f "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"');
   }
-  if (vlcArchive) {
-    commands.push('GLOBAL_VLC_PARENT="$GLOBAL_PLUGIN_DIR/VSHookRuntime"');
-    commands.push('GLOBAL_VLC_DIR="$GLOBAL_VLC_PARENT/VLC"');
-    commands.push('GLOBAL_VLC_TMP="$GLOBAL_VLC_PARENT/.VLC.tmp"');
-    commands.push('GLOBAL_VLC_BACKUP="$GLOBAL_VLC_PARENT/.VLC.backup"');
-    commands.push('mkdir -p "$GLOBAL_VLC_PARENT"');
-    commands.push('rm -rf "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_BACKUP"');
-    commands.push('ditto "$VLC_SOURCE" "$GLOBAL_VLC_TMP"');
-    commands.push('[ ! -e "$GLOBAL_VLC_DIR" ] || mv "$GLOBAL_VLC_DIR" "$GLOBAL_VLC_BACKUP"');
-    commands.push('if mv "$GLOBAL_VLC_TMP" "$GLOBAL_VLC_DIR" && chmod -R a+rX "$GLOBAL_VLC_DIR" && test -f "$GLOBAL_VLC_DIR/lib/libvlc.dylib" && test -f "$GLOBAL_VLC_DIR/lib/libvlccore.dylib" && test -d "$GLOBAL_VLC_DIR/plugins" && test -n "$(find "$GLOBAL_VLC_DIR/plugins" -mindepth 1 -maxdepth 1 -print -quit)"; then');
-    commands.push('  rm -rf "$GLOBAL_VLC_BACKUP"');
+  if (ffmpegArchive) {
+    commands.push('GLOBAL_FFMPEG_PARENT="$GLOBAL_PLUGIN_DIR/VSHookRuntime"');
+    commands.push('GLOBAL_FFMPEG_DIR="$GLOBAL_FFMPEG_PARENT/FFmpeg"');
+    commands.push('GLOBAL_FFMPEG_TMP="$GLOBAL_FFMPEG_PARENT/.FFmpeg.tmp"');
+    commands.push('GLOBAL_FFMPEG_BACKUP="$GLOBAL_FFMPEG_PARENT/.FFmpeg.backup"');
+    commands.push('mkdir -p "$GLOBAL_FFMPEG_PARENT"');
+    commands.push('rm -rf "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_BACKUP"');
+    commands.push('ditto "$FFMPEG_SOURCE" "$GLOBAL_FFMPEG_TMP"');
+    commands.push('[ ! -e "$GLOBAL_FFMPEG_DIR" ] || mv "$GLOBAL_FFMPEG_DIR" "$GLOBAL_FFMPEG_BACKUP"');
+    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib"; then');
+    commands.push('  rm -rf "$GLOBAL_FFMPEG_BACKUP"');
+    commands.push('  rm -rf "$GLOBAL_FFMPEG_PARENT/VLC"');
     commands.push('else');
-    commands.push('  rm -rf "$GLOBAL_VLC_DIR"');
-    commands.push('  [ ! -e "$GLOBAL_VLC_BACKUP" ] || mv "$GLOBAL_VLC_BACKUP" "$GLOBAL_VLC_DIR"');
+    commands.push('  rm -rf "$GLOBAL_FFMPEG_DIR"');
+    commands.push('  [ ! -e "$GLOBAL_FFMPEG_BACKUP" ] || mv "$GLOBAL_FFMPEG_BACKUP" "$GLOBAL_FFMPEG_DIR"');
     commands.push('  exit 1');
     commands.push('fi');
   }
@@ -6624,6 +6630,24 @@ function installMacPayload(files, options = {}) {
       commands.push('  mv -f "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"');
       commands.push('  chown "$USER_NAME":staff "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
     }
+    if (ffmpegArchive) {
+      commands.push('  USER_FFMPEG_PARENT="$USER_PLUGIN_DIR/VSHookRuntime"');
+      commands.push('  USER_FFMPEG_DIR="$USER_FFMPEG_PARENT/FFmpeg"');
+      commands.push('  USER_FFMPEG_TMP="$USER_FFMPEG_PARENT/.FFmpeg.tmp"');
+      commands.push('  USER_FFMPEG_BACKUP="$USER_FFMPEG_PARENT/.FFmpeg.backup"');
+      commands.push('  mkdir -p "$USER_FFMPEG_PARENT"');
+      commands.push('  rm -rf "$USER_FFMPEG_TMP" "$USER_FFMPEG_BACKUP"');
+      commands.push('  ditto "$FFMPEG_SOURCE" "$USER_FFMPEG_TMP"');
+      commands.push('  [ ! -e "$USER_FFMPEG_DIR" ] || mv "$USER_FFMPEG_DIR" "$USER_FFMPEG_BACKUP"');
+      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib"; then');
+      commands.push('    rm -rf "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_PARENT/VLC"');
+      commands.push('    chown -R "$USER_NAME":staff "$USER_FFMPEG_DIR" 2>/dev/null || true');
+      commands.push('  else');
+      commands.push('    rm -rf "$USER_FFMPEG_DIR"');
+      commands.push('    [ ! -e "$USER_FFMPEG_BACKUP" ] || mv "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_DIR"');
+      commands.push('    exit 1');
+      commands.push('  fi');
+    }
     if (hasCompanion) {
       commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
       commands.push('  mkdir -p "$USER_COMPANION_DIR"');
@@ -6642,9 +6666,9 @@ function installMacPayload(files, options = {}) {
     '-e',
     `do shell script ${JSON.stringify(script)} with administrator privileges`
   ], { stdio: 'ignore' });
-  if (vlcArchive && !hasInstalledBundledMacVlcRuntime()) {
+  if (ffmpegArchive && !hasInstalledBundledMacFfmpegRuntime()) {
     throw new Error(
-      'O runtime VLC do pacote não ficou completo em REAPER/UserPlugins.'
+      'O runtime FFmpeg do pacote não ficou completo em REAPER/UserPlugins.'
     );
   }
 }
@@ -6760,7 +6784,10 @@ async function syncBundledReaperAssetsOnStartup() {
       return { ok: true, skipped: 'extension-not-installed' };
     }
     const identity = getBundledReaperAssetsIdentity();
-    const vlcRuntimeCurrent = hasInstalledVlcRuntime();
+    const ffmpegRuntimeCurrent = hasInstalledFfmpegRuntime();
+    if (ffmpegRuntimeCurrent) {
+      installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
+    }
     const companionCurrent = (() => {
       try {
         const source = getBundledVshookCompanionDir();
@@ -6774,7 +6801,7 @@ async function syncBundledReaperAssetsOnStartup() {
       }
     })();
     if (store.get('bundledReaperAssetsIdentity') === identity &&
-        vlcRuntimeCurrent && companionCurrent) {
+        ffmpegRuntimeCurrent && companionCurrent) {
       return { ok: true, skipped: 'already-current' };
     }
     if (isWindowsReaperRunning()) {
@@ -6782,10 +6809,10 @@ async function syncBundledReaperAssetsOnStartup() {
     }
     // O instalador NSIS ja colocou esta pasta no primeiro uso. Mantemos a
     // copia aqui somente como recuperacao de uma instalacao antiga/incompleta.
-    // O mesmo vale para o VLC: ele vem dentro da Hook Center e so e extraido
+    // O mesmo vale para o FFmpeg: ele vem dentro da Hook Center e so e extraido
     // aqui se uma instalacao anterior nao o concluiu.
-    if (!vlcRuntimeCurrent) {
-      installWindowsVlcRuntime(getBundledVlcRuntimeArchive(true));
+    if (!ffmpegRuntimeCurrent) {
+      installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
     }
     if (!companionCurrent) installWindowsVshookCompanion();
     installWindowsVshookTheme();
@@ -6794,18 +6821,18 @@ async function syncBundledReaperAssetsOnStartup() {
   }
 
   if (process.platform === 'darwin') {
-    // Sem a extensão não há motivo para a primeira abertura montar o VLC nem
+    // Sem a extensão não há motivo para a primeira abertura copiar o FFmpeg nem
     // pedir senha administrativa. O PKG já entrega os componentes; qualquer
     // reparo restante acontece junto da instalação da extensão.
     if (!extensionInstalled) {
       return { ok: true, skipped: 'extension-not-installed' };
     }
-    const vlcRuntimeCurrent = hasInstalledBundledMacVlcRuntime();
+    const ffmpegRuntimeCurrent = hasInstalledBundledMacFfmpegRuntime();
     const identity = getBundledReaperAssetsIdentity();
     // O PKG instala companion e temas antes da primeira abertura. Não dependa
     // do Store aqui: na primeira execução ele ainda não possui a identidade.
     const assetsCurrent = macBundledReaperAssetsAreCurrent();
-    if (vlcRuntimeCurrent && assetsCurrent) {
+    if (ffmpegRuntimeCurrent && assetsCurrent) {
       if (store.get('bundledReaperAssetsIdentity') !== identity) {
         store.set('bundledReaperAssetsIdentity', identity);
       }
@@ -6819,7 +6846,7 @@ async function syncBundledReaperAssetsOnStartup() {
     installMacPayload(null, {
       installExtension: false,
       installBundledAssets: !assetsCurrent,
-      installVlcRuntime: !vlcRuntimeCurrent
+      installFfmpegRuntime: !ffmpegRuntimeCurrent
     });
     store.set('bundledReaperAssetsIdentity', identity);
     return { ok: true, installed: true };
@@ -6842,7 +6869,7 @@ function scheduleBundledReaperAssetsSync(delayMs = 1200) {
     } catch (error) {
       // Não repete falha/cancelamento de senha para evitar um ciclo de prompts.
       console.error(
-        '[Hook Center] Não sincronizou runtime VLC, Teleprompt Settings e temas:',
+        '[Hook Center] Não sincronizou runtime FFmpeg, Teleprompt Settings e temas:',
         error?.message || error
       );
     }
@@ -6930,7 +6957,7 @@ async function installDownloadedUpdate() {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
     installMacPayload(files, {
       installBundledAssets: !macBundledReaperAssetsAreCurrent(),
-      installVlcRuntime: !hasInstalledBundledMacVlcRuntime()
+      installFfmpegRuntime: !hasInstalledBundledMacFfmpegRuntime()
     });
   } else {
     throw new Error('Sistema operacional não suportado.');

@@ -9,10 +9,10 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-vlc-runtime.js --current && electron-builder --publish never",
-    "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-vlc-runtime.js --windows && electron-builder --win nsis --publish never",
-    "build:mac": "node scripts/prepare-vlc-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && electron-builder --mac pkg --universal --publish never",
-    "build:mac:unsigned": "node scripts/prepare-vlc-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac pkg --universal --publish never --config.mac.forceCodeSigning=false"
+    "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-ffmpeg-runtime.js --current && electron-builder --publish never",
+    "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-ffmpeg-runtime.js --windows && electron-builder --win nsis --publish never",
+    "build:mac": "node scripts/prepare-ffmpeg-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && electron-builder --mac pkg --universal --publish never",
+    "build:mac:unsigned": "node scripts/prepare-ffmpeg-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac pkg --universal --publish never --config.mac.forceCodeSigning=false"
   },
   "dependencies": {
     "electron-store": "8.2.0",
@@ -65,8 +65,8 @@
           "to": "windows-midi-services/Windows-MIDI-Services-Runtime-and-Tools-x64.exe"
         },
         {
-          "from": "vendor/vlc/vlc-3.0.23-win64.zip",
-          "to": "vlc-runtime/vlc-3.0.23-win64.zip"
+          "from": "vendor/ffmpeg/ffmpeg-8.1.2-win64-lgpl-shared.zip",
+          "to": "ffmpeg-runtime/ffmpeg-8.1.2-win64-lgpl-shared.zip"
         }
       ]
     },
@@ -92,8 +92,8 @@
       "x64ArchFiles": "Contents/Resources/vshook-companion/**",
       "extraResources": [
         {
-          "from": "vendor/vlc/vlc-3.0.23-universal.dmg",
-          "to": "vlc-runtime/vlc-3.0.23-universal.dmg"
+          "from": "vendor/ffmpeg/ffmpeg-8.1.2-macos-universal-lgpl-shared.zip",
+          "to": "ffmpeg-runtime/ffmpeg-8.1.2-macos-universal-lgpl-shared.zip"
         }
       ],
       "entitlements": "build/entitlements.mac.plist",

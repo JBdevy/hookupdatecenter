@@ -112,16 +112,16 @@ jobs:
           if ((Get-FileHash -LiteralPath $midiInstaller -Algorithm SHA256).Hash -ne $midiExpectedHash) {
             throw 'Instalador do Windows MIDI Services com SHA-256 incorreto.'
           }
-          $vlcRuntime = 'dist/win-unpacked/resources/vlc-runtime/vlc-3.0.23-win64.zip'
-          if (-not (Test-Path -LiteralPath $vlcRuntime -PathType Leaf)) {
-            throw 'Pacote final da Hook Center sem o runtime VLC do Windows.'
+          $ffmpegRuntime = 'dist/win-unpacked/resources/ffmpeg-runtime/ffmpeg-8.1.2-win64-lgpl-shared.zip'
+          if (-not (Test-Path -LiteralPath $ffmpegRuntime -PathType Leaf)) {
+            throw 'Pacote final da Hook Center sem o runtime FFmpeg do Windows.'
           }
-          if ((Get-Item -LiteralPath $vlcRuntime).Length -lt 50MB) {
-            throw 'Runtime VLC do Windows está incompleto.'
+          if ((Get-Item -LiteralPath $ffmpegRuntime).Length -lt 50MB) {
+            throw 'Runtime FFmpeg do Windows está incompleto.'
           }
-          $vlcHeader = [System.IO.File]::ReadAllBytes($vlcRuntime)[0..1]
-          if ($vlcHeader[0] -ne 0x50 -or $vlcHeader[1] -ne 0x4b) {
-            throw 'Runtime VLC do Windows não é um ZIP válido.'
+          $ffmpegHeader = [System.IO.File]::ReadAllBytes($ffmpegRuntime)[0..1]
+          if ($ffmpegHeader[0] -ne 0x50 -or $ffmpegHeader[1] -ne 0x4b) {
+            throw 'Runtime FFmpeg do Windows não é um ZIP válido.'
           }
 
       - name: Upload Windows artifacts
@@ -203,10 +203,10 @@ jobs:
           test -f "$ASAR" || (echo "Pacote final da Hook Center sem resources/app.asar." && exit 1)
           node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
           test ! -e "$APP/Contents/Resources/windows-midi-services" || (echo "Pacote macOS inclui indevidamente o instalador Windows MIDI Services." && exit 1)
-          VLC_RUNTIME="$APP/Contents/Resources/vlc-runtime/vlc-3.0.23-universal.dmg"
-          test -f "$VLC_RUNTIME" || (echo "Pacote final da Hook Center sem o runtime VLC universal." && exit 1)
-          test "$(stat -f%z "$VLC_RUNTIME")" -ge 52428800 || (echo "Runtime VLC universal incompleto." && exit 1)
-          test "$(tail -c 512 "$VLC_RUNTIME" | head -c 4)" = "koly" || (echo "Runtime VLC universal não é um DMG válido." && exit 1)
+          FFMPEG_RUNTIME="$APP/Contents/Resources/ffmpeg-runtime/ffmpeg-8.1.2-macos-universal-lgpl-shared.zip"
+          test -f "$FFMPEG_RUNTIME" || (echo "Pacote final da Hook Center sem o runtime FFmpeg universal." && exit 1)
+          test "$(stat -f%z "$FFMPEG_RUNTIME")" -ge 8388608 || (echo "Runtime FFmpeg universal incompleto." && exit 1)
+          test "$(head -c 2 "$FFMPEG_RUNTIME")" = "PK" || (echo "Runtime FFmpeg universal não é um ZIP válido." && exit 1)
 
       - name: Validate macOS theme payload
         run: |
@@ -232,7 +232,7 @@ jobs:
           pkgutil --expand-full "$PKG" "$EXPANDED"
           POSTINSTALL="$(find "$EXPANDED" -type f -name postinstall -print -quit)"
           test -n "$POSTINSTALL" || (echo "PKG sem script postinstall." && exit 1)
-          grep -q 'VSHookRuntime' "$POSTINSTALL" || (echo "postinstall sem runtime VLC." && exit 1)
+          grep -q 'VSHookRuntime' "$POSTINSTALL" || (echo "postinstall sem runtime FFmpeg." && exit 1)
           grep -q 'VSHookTelepromptSettings' "$POSTINSTALL" || (echo "postinstall sem Teleprompt Settings." && exit 1)
 
       - name: Notarize macOS PKG
