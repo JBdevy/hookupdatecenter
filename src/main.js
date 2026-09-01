@@ -37,6 +37,19 @@ const {
   safeFileStem,
   testResolumeColumn
 } = require('./hook-marker');
+const {
+  CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE,
+  auditCreateProjectFolders,
+  buildCreateProjectRpp,
+  prepareCreateProjectMedia,
+  readMp3AudioDuration,
+  readPcmAudioDuration,
+  writeCreateProjectFileExclusive
+} = require('./create-project');
+const {
+  auditAddProjectRpp,
+  buildAddProjectRpp
+} = require('./add-project');
 const appPackage = require('../package.json');
 
 // No Windows o Modo Show é uma asserção válida somente enquanto a Central
@@ -1878,16 +1891,139 @@ function sha256File(filePath) {
 }
 
 function runProcess(command, args = [], options = {}) {
+  const { includeStderr = false, ...execOptions } = options;
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, ...execOptions }, (error, stdout, stderr) => {
       if (error) {
         const message = String(stderr || stdout || error.message || 'Erro ao executar processo').trim();
         reject(new Error(message));
         return;
       }
-      resolve(String(stdout || '').trim());
+      resolve(String(includeStderr ? `${stdout || ''}\n${stderr || ''}` : (stdout || '')).trim());
     });
   });
+}
+
+function getCreateProjectFfmpegToolCandidates(toolName) {
+  const executable = process.platform === 'win32' ? `${toolName}.exe` : toolName;
+  const candidates = [];
+  if (process.platform === 'win32') {
+    candidates.push(path.join(
+      getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', 'bin', executable
+    ));
+    candidates.push(path.join(
+      getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', executable
+    ));
+  } else if (process.platform === 'darwin') {
+    candidates.push(path.join(
+      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg',
+      'bin', executable
+    ));
+    candidates.push(path.join(
+      os.homedir(), 'Library', 'Application Support', 'REAPER', 'UserPlugins',
+      'VSHookRuntime', 'FFmpeg', 'bin', executable
+    ));
+  }
+  candidates.push(executable);
+  return [...new Set(candidates)];
+}
+
+let createProjectFfmpegInstallAttempted = false;
+
+function findCreateProjectFfmpegTool(toolName) {
+  for (const candidate of getCreateProjectFfmpegToolCandidates(toolName)) {
+    if (path.isAbsolute(candidate)) {
+      if (physicalFs.existsSync(candidate)) return candidate;
+      continue;
+    }
+    for (const directory of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+      const resolved = path.join(directory.replace(/^"|"$/g, ''), candidate);
+      if (physicalFs.existsSync(resolved)) return resolved;
+    }
+  }
+  return '';
+}
+
+function ensureCreateProjectFfmpegTool(toolName) {
+  let candidate = findCreateProjectFfmpegTool(toolName);
+  if (candidate) return candidate;
+  if (process.platform === 'win32' && !createProjectFfmpegInstallAttempted) {
+    createProjectFfmpegInstallAttempted = true;
+    installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
+    candidate = findCreateProjectFfmpegTool(toolName);
+  } else {
+    candidate = '';
+  }
+  if (!candidate) throw new Error(`O executável ${toolName} do FFmpeg não está instalado.`);
+  return candidate;
+}
+
+async function getCreateProjectAudioDuration(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.mp3') {
+    const mp3Duration = await readMp3AudioDuration(filePath).catch(() => 0);
+    if (mp3Duration > 0) return mp3Duration;
+  } else {
+    const pcmDuration = await readPcmAudioDuration(filePath).catch(() => 0);
+    if (pcmDuration > 0) return pcmDuration;
+  }
+
+  if (process.platform === 'darwin') {
+    try {
+      const output = await runProcess('/usr/bin/afinfo', ['-r', filePath], { timeout: 15000 });
+      const match = output.match(/estimated duration:\s*([0-9.]+)\s*sec/i) ||
+        output.match(/duration:\s*([0-9.]+)/i);
+      const duration = Number(match?.[1]);
+      if (Number.isFinite(duration) && duration > 0) return duration;
+    } catch (_) {}
+  }
+
+  throw new Error('não foi possível descobrir a duração');
+}
+
+async function getCreateProjectAudioPeakDb(filePath) {
+  const ffmpeg = ensureCreateProjectFfmpegTool('ffmpeg');
+  const output = await runProcess(ffmpeg, [
+    '-hide_banner',
+    '-nostats',
+    '-i', filePath,
+    '-map', '0:a:0',
+    '-vn', '-sn', '-dn',
+    '-af', 'astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Peak_level',
+    '-f', 'null', '-'
+  ], { timeout: 120000, includeStderr: true, maxBuffer: 4 * 1024 * 1024 });
+  const matches = [...String(output).matchAll(/Peak level dB:\s*(-?(?:\d+(?:\.\d+)?|inf))/gi)];
+  const rawPeak = matches.at(-1)?.[1];
+  if (!rawPeak) throw new Error(`Não foi possível medir o pico de ${path.basename(filePath)}.`);
+  if (rawPeak.toLowerCase() === '-inf') return -Infinity;
+  const peakDb = Number(rawPeak);
+  if (!Number.isFinite(peakDb)) throw new Error(`Pico inválido em ${path.basename(filePath)}.`);
+  return peakDb;
+}
+
+async function buildCreateProjectAudit(folderPaths, sender = null, progressChannel = 'create-project-progress') {
+  return auditCreateProjectFolders({
+    folderPaths,
+    durationResolver: getCreateProjectAudioDuration,
+    peakResolver: getCreateProjectAudioPeakDb,
+    onProgress: sender
+      ? (progress) => sender.send(progressChannel, progress)
+      : null
+  });
+}
+
+async function buildAddProjectAudit(projectPath, folderPaths, sender = null) {
+  const resolvedProjectPath = path.resolve(String(projectPath || ''));
+  if (path.extname(resolvedProjectPath).toLowerCase() !== '.rpp') {
+    throw new Error('Escolha um projeto do REAPER com a extensão .rpp.');
+  }
+  const projectStat = await fs.promises.stat(resolvedProjectPath).catch(() => null);
+  if (!projectStat?.isFile()) throw new Error('O projeto do REAPER selecionado não foi encontrado.');
+  const [rppText, incomingAudit] = await Promise.all([
+    fs.promises.readFile(resolvedProjectPath, 'utf8'),
+    buildCreateProjectAudit(folderPaths, sender, 'add-project-progress')
+  ]);
+  return auditAddProjectRpp(rppText, incomingAudit, { projectPath: resolvedProjectPath });
 }
 
 async function getMacShowModeState() {
@@ -2343,7 +2479,7 @@ async function configureDirectCable(payload = {}) {
       '-e', `do shell script ${JSON.stringify(script)} with administrator privileges`
     ], { timeout: 120000 });
   } else {
-    throw new Error('Conexão redundante disponível apenas no Windows e macOS.');
+    throw new Error('CNX Redundante disponível apenas no Windows e macOS.');
   }
   store.set(`directCable.${channel}`, {
     adapterId,
@@ -2472,16 +2608,16 @@ function notifyDirectCableTransition(channel, previousMarker, current) {
   if (currentStatus === 'adapter-disconnected') {
     body = `O adaptador do ${label} foi desconectado. Aguardando ele ser reconectado.`;
   } else if (currentStatus === 'adapter-ambiguous') {
-    body = `Foram encontrados adaptadores iguais no ${label}. Abra Conexão redundante e escolha a placa correta.`;
+    body = `Foram encontrados adaptadores iguais no ${label}. Abra CNX Redundante e escolha a placa correta.`;
   } else if (currentStatus === 'cable-disconnected') {
     body = `O cabo do ${label} foi desconectado. A conexão voltará automaticamente quando o cabo retornar.`;
   } else if (currentStatus === 'restart-required') {
-    body = `A placa do ${label} voltou sem a configuração necessária. Abra Conexão redundante e clique em Reiniciar conexão.`;
+    body = `A placa do ${label} voltou sem a configuração necessária. Abra CNX Redundante e clique em Reiniciar conexão.`;
   } else if (currentStatus === 'connected' && previousStatus !== 'disconnected') {
     body = `A placa do ${label} foi reconectada.`;
   }
   if (!body) return;
-  const notice = new Notification({ title: 'Hook Center — Conexão redundante', body, silent: false });
+  const notice = new Notification({ title: 'Hook Center — CNX Redundante', body, silent: false });
   notice.on('click', showMainWindow);
   notice.show();
 }
@@ -6151,14 +6287,18 @@ function hasCompleteWindowsFfmpegRoot(root) {
   return physicalFs.existsSync(path.join(root, 'avutil-60.dll')) &&
     physicalFs.existsSync(path.join(root, 'avcodec-62.dll')) &&
     physicalFs.existsSync(path.join(root, 'avformat-62.dll')) &&
-    physicalFs.existsSync(path.join(root, 'swscale-9.dll'));
+    physicalFs.existsSync(path.join(root, 'swscale-9.dll')) &&
+    physicalFs.existsSync(path.join(root, 'avfilter-11.dll')) &&
+    physicalFs.existsSync(path.join(root, 'ffmpeg.exe'));
 }
 
 function hasCompleteMacFfmpegRoot(root) {
   return physicalFs.existsSync(path.join(root, 'lib', 'libavutil.60.dylib')) &&
     physicalFs.existsSync(path.join(root, 'lib', 'libavcodec.62.dylib')) &&
     physicalFs.existsSync(path.join(root, 'lib', 'libavformat.62.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libswscale.9.dylib'));
+    physicalFs.existsSync(path.join(root, 'lib', 'libswscale.9.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libavfilter.11.dylib')) &&
+    physicalFs.existsSync(path.join(root, 'bin', 'ffmpeg'));
 }
 
 function getBundledMacFfmpegRuntimeDir() {
@@ -6329,17 +6469,11 @@ function installWindowsFfmpegRuntime(archive) {
       throw new Error('O pacote FFmpeg não trouxe todas as bibliotecas necessárias.');
     }
     physicalFs.mkdirSync(prepared, { recursive: true });
-    for (const libraryName of [
-      'avutil-60.dll',
-      'swresample-6.dll',
-      'avcodec-62.dll',
-      'avformat-62.dll',
-      'swscale-9.dll'
-    ]) {
-      const source = path.join(sourceRoot, libraryName);
-      if (physicalFs.existsSync(source)) {
-        physicalFs.copyFileSync(source, path.join(prepared, libraryName));
-      }
+    for (const entry of physicalFs.readdirSync(sourceRoot, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const lowerName = entry.name.toLowerCase();
+      if (!lowerName.endsWith('.dll') && lowerName !== 'ffmpeg.exe') continue;
+      physicalFs.copyFileSync(path.join(sourceRoot, entry.name), path.join(prepared, entry.name));
     }
     const licenses = path.join(prepared, 'licenses');
     physicalFs.mkdirSync(licenses, { recursive: true });
@@ -6567,6 +6701,8 @@ function installMacPayload(files, options = {}) {
     commands.push('test -f "$FFMPEG_SOURCE/lib/libavcodec.62.dylib"');
     commands.push('test -f "$FFMPEG_SOURCE/lib/libavformat.62.dylib"');
     commands.push('test -f "$FFMPEG_SOURCE/lib/libswscale.9.dylib"');
+    commands.push('test -f "$FFMPEG_SOURCE/lib/libavfilter.11.dylib"');
+    commands.push('test -x "$FFMPEG_SOURCE/bin/ffmpeg"');
   }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
@@ -6602,7 +6738,7 @@ function installMacPayload(files, options = {}) {
     commands.push('rm -rf "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_BACKUP"');
     commands.push('ditto "$FFMPEG_SOURCE" "$GLOBAL_FFMPEG_TMP"');
     commands.push('[ ! -e "$GLOBAL_FFMPEG_DIR" ] || mv "$GLOBAL_FFMPEG_DIR" "$GLOBAL_FFMPEG_BACKUP"');
-    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib"; then');
+    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$GLOBAL_FFMPEG_DIR/bin/ffmpeg"; then');
     commands.push('  rm -rf "$GLOBAL_FFMPEG_BACKUP"');
     commands.push('  rm -rf "$GLOBAL_FFMPEG_PARENT/VLC"');
     commands.push('else');
@@ -6662,7 +6798,7 @@ function installMacPayload(files, options = {}) {
       commands.push('  rm -rf "$USER_FFMPEG_TMP" "$USER_FFMPEG_BACKUP"');
       commands.push('  ditto "$FFMPEG_SOURCE" "$USER_FFMPEG_TMP"');
       commands.push('  [ ! -e "$USER_FFMPEG_DIR" ] || mv "$USER_FFMPEG_DIR" "$USER_FFMPEG_BACKUP"');
-      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib"; then');
+      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$USER_FFMPEG_DIR/bin/ffmpeg"; then');
       commands.push('    rm -rf "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_PARENT/VLC"');
       commands.push('    chown -R "$USER_NAME":staff "$USER_FFMPEG_DIR" 2>/dev/null || true');
       commands.push('  else');
@@ -7583,6 +7719,230 @@ ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
     skippedSummary: summarizeHookRenameSkipped(result.skipped),
     errors: errors.slice(0, 20)
   };
+});
+
+ipcMain.handle('create-project-select-destination', async () => {
+  const options = {
+    title: 'Escolher onde salvar o projeto do REAPER',
+    defaultPath: path.join(app.getPath('documents'), 'Novo projeto VS Hook.rpp'),
+    filters: [
+      { name: 'Projeto do REAPER', extensions: ['rpp'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ]
+  };
+  const result = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, options)
+    : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  const filePath = path.extname(result.filePath).toLowerCase() === '.rpp'
+    ? result.filePath
+    : `${result.filePath}.rpp`;
+  const existingDestination = await fs.promises.stat(filePath).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (existingDestination) {
+    return {
+      ok: false,
+      exists: true,
+      filePath,
+      fileName: path.basename(filePath)
+    };
+  }
+  return { ok: true, filePath, fileName: path.basename(filePath) };
+});
+
+ipcMain.handle('create-project-select-folders', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: 'Escolher as pastas das músicas',
+    properties: ['openDirectory', 'multiSelections']
+  });
+  if (result.canceled || !result.filePaths?.length) return { ok: false, cancelled: true };
+  const folderPaths = [...new Set(result.filePaths.map((item) => path.resolve(item)))];
+  return {
+    ok: true,
+    folderPaths,
+    folderNames: folderPaths.map((folderPath) => path.basename(folderPath))
+  };
+});
+
+ipcMain.handle('create-project-audit', async (event, payload = {}) => {
+  event.sender.send('create-project-progress', { phase: 'start', current: 0, total: 0, percent: 0 });
+  const audit = await buildCreateProjectAudit(payload.folderPaths, event.sender);
+  event.sender.send('create-project-progress', {
+    phase: 'audit-done',
+    current: audit.totalIncludedFiles,
+    total: audit.totalAudioFiles,
+    percent: 100
+  });
+  return audit;
+});
+
+ipcMain.handle('create-project-run', async (event, payload = {}) => {
+  const requestedDestination = String(payload.destinationPath || '').trim();
+  if (!requestedDestination || path.extname(requestedDestination).toLowerCase() !== '.rpp') {
+    throw new Error('Escolha um arquivo de destino com a extensão .rpp.');
+  }
+  const destinationPath = path.resolve(requestedDestination);
+  const parentDirectory = path.dirname(destinationPath);
+  const parentStat = await fs.promises.stat(parentDirectory).catch(() => null);
+  if (!parentStat?.isDirectory()) throw new Error('A pasta escolhida para salvar o projeto não existe.');
+  const existingDestination = await fs.promises.stat(destinationPath).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (existingDestination) {
+    throw new Error(CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE);
+  }
+
+  event.sender.send('create-project-progress', { phase: 'start', current: 0, total: 0, percent: 0 });
+  const audit = await buildCreateProjectAudit(payload.folderPaths, event.sender);
+  if (!audit.validSongCount) throw new Error('Nenhuma pasta possui áudio válido para criar o projeto.');
+  let preparedMedia = null;
+  try {
+    preparedMedia = await prepareCreateProjectMedia(audit, destinationPath, {
+      onProgress: (progress) => event.sender.send('create-project-progress', progress)
+    });
+    event.sender.send('create-project-progress', {
+      phase: 'writing', current: audit.totalIncludedFiles, total: audit.totalIncludedFiles, percent: 98
+    });
+    const projectText = buildCreateProjectRpp(preparedMedia.audit, { platform: process.platform });
+    // Reserva um arquivo novo e nunca sobrescreve um projeto existente,
+    // inclusive se outro processo criar o mesmo nome durante a auditoria.
+    await writeCreateProjectFileExclusive(destinationPath, projectText);
+  } catch (error) {
+    if (preparedMedia?.createdFilePaths?.length) {
+      await Promise.allSettled(preparedMedia.createdFilePaths.map((filePath) => fs.promises.unlink(filePath)));
+    }
+    throw error;
+  }
+  event.sender.send('create-project-progress', {
+    phase: 'done', current: audit.totalIncludedFiles, total: audit.totalIncludedFiles, percent: 100
+  });
+  return {
+    ok: true,
+    destinationPath,
+    fileName: path.basename(destinationPath),
+    validSongCount: audit.validSongCount,
+    trackCount: audit.tracks.length + (audit.groups?.length || 0),
+    itemCount: audit.totalIncludedFiles,
+    regionCount: audit.songs.length,
+    mediaDirectory: preparedMedia.mediaDirectory,
+    copiedMediaCount: preparedMedia.copiedCount,
+    reusedMediaCount: preparedMedia.reusedCount,
+    skippedCount: audit.skippedFiles.length,
+    emptyFolderCount: audit.emptyFolders.length
+  };
+});
+
+ipcMain.handle('create-project-open', async (_event, payload = {}) => {
+  const filePath = path.resolve(String(payload.filePath || ''));
+  if (path.extname(filePath).toLowerCase() !== '.rpp' || !physicalFs.existsSync(filePath)) {
+    throw new Error('O projeto criado não foi encontrado.');
+  }
+  const error = await shell.openPath(filePath);
+  if (error) throw new Error(error);
+  return { ok: true };
+});
+
+ipcMain.handle('add-project-select-project', async () => {
+  const options = {
+    title: 'Escolher o projeto do REAPER',
+    defaultPath: app.getPath('documents'),
+    properties: ['openFile'],
+    filters: [
+      { name: 'Projeto do REAPER', extensions: ['rpp'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ]
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths?.[0]) return { ok: false, cancelled: true };
+  const filePath = path.resolve(result.filePaths[0]);
+  if (path.extname(filePath).toLowerCase() !== '.rpp') throw new Error('Escolha um arquivo .rpp.');
+  return { ok: true, filePath, fileName: path.basename(filePath) };
+});
+
+ipcMain.handle('add-project-select-folders', async () => {
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: 'Escolher as pastas das músicas que serão adicionadas',
+    properties: ['openDirectory', 'multiSelections']
+  });
+  if (result.canceled || !result.filePaths?.length) return { ok: false, cancelled: true };
+  const folderPaths = [...new Set(result.filePaths.map((item) => path.resolve(item)))];
+  return {
+    ok: true,
+    folderPaths,
+    folderNames: folderPaths.map((folderPath) => path.basename(folderPath))
+  };
+});
+
+ipcMain.handle('add-project-audit', async (event, payload = {}) => {
+  event.sender.send('add-project-progress', { phase: 'start', current: 0, total: 0, percent: 0 });
+  const audit = await buildAddProjectAudit(payload.projectPath, payload.folderPaths, event.sender);
+  event.sender.send('add-project-progress', {
+    phase: 'audit-done', current: audit.totalIncludedFiles, total: audit.totalAudioFiles, percent: 100
+  });
+  return audit;
+});
+
+ipcMain.handle('add-project-run', async (event, payload = {}) => {
+  const projectPath = path.resolve(String(payload.projectPath || ''));
+  if (path.extname(projectPath).toLowerCase() !== '.rpp') throw new Error('Escolha um arquivo .rpp válido.');
+  const initialStat = await fs.promises.stat(projectPath).catch(() => null);
+  if (!initialStat?.isFile()) throw new Error('O projeto do REAPER selecionado não foi encontrado.');
+
+  event.sender.send('add-project-progress', { phase: 'start', current: 0, total: 0, percent: 0 });
+  const originalText = await fs.promises.readFile(projectPath, 'utf8');
+  const incomingAudit = await buildCreateProjectAudit(payload.folderPaths, event.sender, 'add-project-progress');
+  if (!incomingAudit.validSongCount) throw new Error('Nenhuma pasta possui áudio válido para adicionar ao projeto.');
+  const addAudit = auditAddProjectRpp(originalText, incomingAudit, { projectPath });
+  let preparedMedia = null;
+  try {
+    preparedMedia = await prepareCreateProjectMedia(addAudit, projectPath, {
+      onProgress: (progress) => event.sender.send('add-project-progress', progress)
+    });
+    const currentStat = await fs.promises.stat(projectPath);
+    if (currentStat.size !== initialStat.size || Math.abs(currentStat.mtimeMs - initialStat.mtimeMs) > 1) {
+      throw new Error('O projeto foi alterado enquanto o Add Project trabalhava. Feche o projeto no REAPER e tente novamente para não perder mudanças.');
+    }
+    const updatedText = buildAddProjectRpp(originalText, preparedMedia.audit);
+    event.sender.send('add-project-progress', {
+      phase: 'writing', current: addAudit.totalIncludedFiles, total: addAudit.totalIncludedFiles, percent: 98
+    });
+    await fs.promises.writeFile(projectPath, updatedText, 'utf8');
+  } catch (error) {
+    if (preparedMedia?.createdFilePaths?.length) {
+      await Promise.allSettled(preparedMedia.createdFilePaths.map((filePath) => fs.promises.unlink(filePath)));
+    }
+    throw error;
+  }
+
+  event.sender.send('add-project-progress', {
+    phase: 'done', current: addAudit.totalIncludedFiles, total: addAudit.totalIncludedFiles, percent: 100
+  });
+  return {
+    ok: true,
+    projectPath,
+    fileName: path.basename(projectPath),
+    reusedTrackCount: addAudit.reusedTrackCount,
+    newTrackCount: addAudit.newTrackCount,
+    itemCount: addAudit.totalIncludedFiles,
+    regionCount: addAudit.songs.length,
+    copiedMediaCount: preparedMedia.copiedCount,
+    reusedMediaCount: preparedMedia.reusedCount
+  };
+});
+
+ipcMain.handle('add-project-open', async (_event, payload = {}) => {
+  const filePath = path.resolve(String(payload.filePath || ''));
+  if (path.extname(filePath).toLowerCase() !== '.rpp' || !physicalFs.existsSync(filePath)) {
+    throw new Error('O projeto atualizado não foi encontrado.');
+  }
+  const error = await shell.openPath(filePath);
+  if (error) throw new Error(error);
+  return { ok: true };
 });
 ipcMain.handle('direct-cable-get-state', () => getDirectCableState());
 ipcMain.handle('direct-cable-configure', (_event, payload) => configureDirectCable(payload || {}));

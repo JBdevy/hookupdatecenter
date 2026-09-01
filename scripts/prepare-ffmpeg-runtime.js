@@ -40,6 +40,15 @@ function validZip(filename, minimumBytes) {
   }
 }
 
+function validMacRuntimeZip(filename) {
+  if (!validZip(filename, 8 * 1024 * 1024) || process.platform !== 'darwin') return false;
+  const listing = spawnSync('/usr/bin/unzip', ['-Z1', filename], { encoding: 'utf8' });
+  if (listing.status !== 0) return false;
+  const entries = new Set(String(listing.stdout || '').split(/\r?\n/).filter(Boolean));
+  return entries.has('FFmpeg/bin/ffmpeg') &&
+    [...entries].some((entry) => /FFmpeg\/lib\/libavfilter\.11(?:\.\d+)*\.dylib$/.test(entry));
+}
+
 function download(url, destination, redirects = 0) {
   if (redirects > 8) {
     return Promise.reject(new Error('Redirecionamentos demais ao baixar o FFmpeg.'));
@@ -110,7 +119,7 @@ async function prepareWindows() {
 
 function prepareMacos() {
   const destination = path.join(OUTPUT_DIR, MACOS_FILE);
-  if (validZip(destination, 8 * 1024 * 1024)) {
+  if (validMacRuntimeZip(destination)) {
     console.log(`Runtime FFmpeg já preparado: ${destination}`);
     return;
   }
@@ -123,7 +132,7 @@ function prepareMacos() {
     stdio: 'inherit',
     env: process.env
   });
-  if (result.status !== 0 || !validZip(destination, 8 * 1024 * 1024)) {
+  if (result.status !== 0 || !validMacRuntimeZip(destination)) {
     throw new Error('Não foi possível gerar o runtime FFmpeg universal do macOS.');
   }
 }

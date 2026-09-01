@@ -9,6 +9,8 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "test:create-project": "node tests/create-project.test.js",
+    "test:add-project": "node tests/add-project.test.js",
     "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-ffmpeg-runtime.js --current && electron-builder --publish never",
     "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-ffmpeg-runtime.js --windows && electron-builder --win nsis --publish never",
     "build:mac": "node scripts/prepare-ffmpeg-runtime.js --macos && chmod +x build/pkg-scripts/postinstall && electron-builder --mac pkg --universal --publish never",

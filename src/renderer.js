@@ -6,6 +6,14 @@ let currentYoutubeWatchUrl = "";
 let pendingModalRequest = null;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
+let createProjectDestination = null;
+let createProjectFolders = null;
+let createProjectAudit = null;
+let createProjectBusy = false;
+let addProjectFile = null;
+let addProjectFolders = null;
+let addProjectAudit = null;
+let addProjectBusy = false;
 let selectedToolsPanel = 'rename';
 let hookMidiState = null;
 let hookMidiBusy = false;
@@ -1113,6 +1121,538 @@ function setupHookRename() {
   });
 
   updateHookRenameControls();
+}
+
+function formatCreateProjectDuration(value) {
+  const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function setCreateProjectProgress({ percent = 0, current = 0, total = 0, phase = '', currentFile = '' } = {}) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  const bar = $('#createProjectProgressBar');
+  const text = $('#createProjectProgressText');
+  const count = $('#createProjectProgressCount');
+  if (bar) bar.style.width = `${safePercent}%`;
+  if (text) text.textContent = `${safePercent}%`;
+  if (!count) return;
+  if (phase === 'copying') count.textContent = `Copiando para Media: ${current}/${total}${currentFile ? ` · ${currentFile}` : ''}`;
+  else if (phase === 'writing') count.textContent = 'Escrevendo o projeto do REAPER...';
+  else if (phase === 'done') count.textContent = 'Projeto concluído';
+  else if (phase === 'audit-done') count.textContent = `${current || total} arquivo(s) analisado(s)`;
+  else if (total) count.textContent = `${current}/${total}${currentFile ? ` · ${currentFile}` : ''}`;
+  else count.textContent = 'Preparando auditoria...';
+}
+
+function getCreateProjectFolderPaths() {
+  return Array.isArray(createProjectFolders?.folderPaths) ? createProjectFolders.folderPaths : [];
+}
+
+function invalidateCreateProjectAudit() {
+  createProjectAudit = null;
+  renderCreateProjectAudit(null);
+}
+
+function updateCreateProjectControls() {
+  const hasFolders = getCreateProjectFolderPaths().length > 0;
+  const hasDestination = Boolean(createProjectDestination?.filePath);
+  const auditButton = $('#createProjectAuditButton');
+  const runButton = $('#createProjectRunButton');
+  const folderButton = $('#createProjectSelectFoldersButton');
+  const destinationButton = $('#createProjectSelectDestinationButton');
+  const clearDestinationButton = $('#createProjectClearDestinationButton');
+  const clearFoldersButton = $('#createProjectClearButton');
+  if (auditButton) auditButton.disabled = createProjectBusy || !hasFolders;
+  if (runButton) runButton.disabled = createProjectBusy || !hasDestination || !createProjectAudit?.validSongCount;
+  if (folderButton) folderButton.disabled = createProjectBusy;
+  if (destinationButton) destinationButton.disabled = createProjectBusy;
+  if (clearDestinationButton) clearDestinationButton.disabled = createProjectBusy || !hasDestination;
+  if (clearFoldersButton) clearFoldersButton.disabled = createProjectBusy || !hasFolders;
+}
+
+function renderCreateProjectSelection() {
+  const folderPaths = getCreateProjectFolderPaths();
+  const folderNames = Array.isArray(createProjectFolders?.folderNames) ? createProjectFolders.folderNames : [];
+  const visibleNames = folderNames.slice(0, 6).join(', ');
+  const hiddenNames = Math.max(0, folderNames.length - 6);
+  const heroName = $('#createProjectHeroName');
+  const projectName = String(createProjectDestination?.fileName || '').replace(/\.rpp$/i, '');
+  if (heroName) {
+    heroName.textContent = projectName || 'Escolha um projeto';
+    heroName.title = createProjectDestination?.filePath || 'Escolha o nome e o local do arquivo .RPP';
+    heroName.classList.toggle('is-empty', !projectName);
+  }
+  $('#createProjectDestinationLabel').textContent = createProjectDestination?.fileName || 'Nenhum arquivo escolhido';
+  $('#createProjectDestinationPath').textContent = createProjectDestination?.filePath || 'Escolha o nome e o local do arquivo .rpp.';
+  $('#createProjectFoldersLabel').textContent = folderPaths.length
+    ? `${folderPaths.length} pasta(s) selecionada(s)`
+    : 'Nenhuma pasta selecionada';
+  $('#createProjectFoldersPath').textContent = folderPaths.length
+    ? `${visibleNames}${hiddenNames ? ` + ${hiddenNames} pasta(s)` : ''}`
+    : 'Cada pasta selecionada representa uma música.';
+  updateCreateProjectControls();
+}
+
+function renderCreateProjectAudit(audit) {
+  const badge = $('#createProjectAuditBadge');
+  const summary = $('#createProjectAuditSummary');
+  const list = $('#createProjectAuditList');
+  if (!badge || !summary || !list) return;
+  badge.textContent = `${Number(audit?.validSongCount || 0)} música(s)`;
+  if (!audit) {
+    summary.textContent = 'Selecione as pastas e clique em auditar arquivos.';
+    list.innerHTML = '<p class="muted">As pistas, os arquivos e a duração de cada região aparecerão aqui antes da criação.</p>';
+    updateCreateProjectControls();
+    return;
+  }
+
+  const warningCount = Number(audit.emptyFolders?.length || 0) + Number(audit.skippedFiles?.length || 0);
+  const auditGroups = Array.isArray(audit.groups) ? audit.groups : [];
+  summary.textContent = `${audit.validSongCount} música(s), ${audit.tracks.length} pista(s) em ${auditGroups.length} grupo(s) e ${audit.totalIncludedFiles} item(ns). Duração total aproximada: ${formatCreateProjectDuration(audit.totalDuration)}.${warningCount ? ` ${warningCount} aviso(s) para revisar.` : ''}`;
+  const trackHtml = auditGroups.map((group) => `
+    <section class="create-project-track-group" style="--create-project-group-color: ${escapeHtml(group.colorHex || '#7d8cff')}">
+      <header>
+        <span class="create-project-group-color" aria-hidden="true"></span>
+        <strong>${escapeHtml(group.name)}</strong>
+        <small>${group.tracks.length} pista(s)</small>
+      </header>
+      <div class="create-project-track-cloud">
+        ${group.tracks.map((track) => `
+          <span class="create-project-track-chip${track.unknownFileCount > 0 ? ' unknown' : ''}" title="${track.fileCount} arquivo(s) em ${track.songCount} música(s)">
+            ${escapeHtml(track.name)} · ${track.fileCount}
+          </span>
+        `).join('')}
+      </div>
+    </section>
+  `).join('');
+  const songsHtml = audit.songs.map((song, index) => {
+    const adjustment = song.nameWasAdjusted
+      ? `<small class="create-project-name-adjustment">Pasta “${escapeHtml(song.sourceFolderName)}” → região “${escapeHtml(song.name)}”</small>`
+      : `<small>Região: ${escapeHtml(song.name)}</small>`;
+    return `
+      <article class="create-project-song">
+        <header><strong>${index + 1}. ${escapeHtml(song.name)}</strong><span>${formatCreateProjectDuration(song.duration)}</span></header>
+        ${adjustment}
+        <small>${song.files.length} arquivo(s)</small>
+      </article>
+    `;
+  }).join('');
+  const unknownFiles = audit.songs.flatMap((song) => song.files.filter((file) => !file.recognized).map((file) => ({ ...file, songName: song.name })));
+  const unknownHtml = unknownFiles.length ? `
+    <div class="create-project-warning">
+      <strong>${unknownFiles.length} arquivo(s) serão colocados na pista Out</strong>
+      <small>${unknownFiles.slice(0, 8).map((file) => `${escapeHtml(file.fileName)} (${escapeHtml(file.songName)})`).join(' · ')}${unknownFiles.length > 8 ? ` · +${unknownFiles.length - 8}` : ''}</small>
+    </div>
+  ` : '';
+  const emptyHtml = (audit.emptyFolders || []).map((item) => `
+    <div class="create-project-warning"><strong>${escapeHtml(item.folderName)}</strong><small>${escapeHtml(item.reason)}</small></div>
+  `).join('');
+  const skippedHtml = audit.skippedFiles?.length ? `
+    <div class="create-project-warning"><strong>${audit.skippedFiles.length} arquivo(s) ignorado(s)</strong><small>Arquivos fora de WAV, AIFF e MP3 ou que não puderam ter a duração lida não entram no projeto.</small></div>
+  ` : '';
+
+  list.innerHTML = `
+    <div class="create-project-stats">
+      <div class="create-project-stat"><strong>${audit.validSongCount}</strong><span>Músicas</span></div>
+      <div class="create-project-stat"><strong>${audit.tracks.length}</strong><span>Pistas</span></div>
+      <div class="create-project-stat"><strong>${audit.totalIncludedFiles}</strong><span>Itens</span></div>
+    </div>
+    <div class="create-project-track-groups">${trackHtml}</div>
+    ${songsHtml}
+    ${unknownHtml}${emptyHtml}${skippedHtml}
+  `;
+  updateCreateProjectControls();
+}
+
+async function selectCreateProjectDestination() {
+  const result = await window.hookUpdateCenter.selectCreateProjectDestination();
+  if (result?.exists) {
+    showModal({
+      title: 'Create Project',
+      message: 'Não é possível criar este projeto. Já existe outro projeto com esse nome nessa pasta.',
+      type: 'error'
+    });
+    return;
+  }
+  if (!result?.ok) return;
+  createProjectDestination = result;
+  renderCreateProjectSelection();
+}
+
+async function selectCreateProjectFolders() {
+  const result = await window.hookUpdateCenter.selectCreateProjectFolders();
+  if (!result?.ok) return;
+  createProjectFolders = result;
+  invalidateCreateProjectAudit();
+  $('#createProjectProgressArea')?.classList.add('hidden');
+  setCreateProjectProgress();
+  renderCreateProjectSelection();
+}
+
+async function auditCreateProject() {
+  const folderPaths = getCreateProjectFolderPaths();
+  if (!folderPaths.length || createProjectBusy) return;
+  const button = $('#createProjectAuditButton');
+  createProjectBusy = true;
+  createProjectAudit = null;
+  renderCreateProjectAudit(null);
+  $('#createProjectProgressArea')?.classList.remove('hidden');
+  setCreateProjectProgress();
+  updateCreateProjectControls();
+  try {
+    if (button) button.textContent = 'Auditando...';
+    const audit = await window.hookUpdateCenter.auditCreateProject({ folderPaths });
+    createProjectAudit = audit;
+    renderCreateProjectAudit(audit);
+    if (!audit.validSongCount) {
+      const firstReason = audit.skippedFiles?.[0]?.reason || audit.emptyFolders?.[0]?.reason || 'Nenhum áudio compatível foi encontrado.';
+      const message = audit.totalAudioFiles
+        ? `${audit.totalAudioFiles} arquivo(s) de áudio foram encontrados, mas nenhum pôde entrar no projeto. ${firstReason}`
+        : firstReason;
+      showModal({ title: 'Create Project', message, type: 'error' });
+    }
+  } catch (error) {
+    showModal({ title: 'Erro na auditoria', message: friendlyError(error, 'Não foi possível analisar as pastas.'), type: 'error' });
+  } finally {
+    createProjectBusy = false;
+    if (button) button.textContent = 'Auditar arquivos';
+    updateCreateProjectControls();
+  }
+}
+
+async function runCreateProject() {
+  if (createProjectBusy) return;
+  if (!createProjectAudit?.validSongCount) await auditCreateProject();
+  if (!createProjectAudit?.validSongCount || !createProjectDestination?.filePath) return;
+  const confirmed = await confirmModal({
+    title: 'Criar projeto do REAPER',
+    message: `Serão criadas ${createProjectAudit.tracks.length + (createProjectAudit.groups?.length || 0)} pista(s), ${createProjectAudit.validSongCount} região(ões) e ${createProjectAudit.totalIncludedFiles} item(ns). Os áudios serão copiados para a pasta Media ao lado de “${createProjectDestination.fileName}”.`,
+    type: 'info',
+    okText: 'Criar projeto',
+    cancelText: 'Voltar'
+  });
+  if (!confirmed) return;
+
+  const button = $('#createProjectRunButton');
+  createProjectBusy = true;
+  $('#createProjectProgressArea')?.classList.remove('hidden');
+  setCreateProjectProgress();
+  updateCreateProjectControls();
+  try {
+    if (button) button.textContent = 'Criando...';
+    const result = await window.hookUpdateCenter.runCreateProject({
+      destinationPath: createProjectDestination.filePath,
+      folderPaths: getCreateProjectFolderPaths()
+    });
+    createProjectDestination = null;
+    createProjectFolders = null;
+    createProjectAudit = null;
+    $('#createProjectProgressArea')?.classList.add('hidden');
+    setCreateProjectProgress();
+    renderCreateProjectSelection();
+    renderCreateProjectAudit(null);
+    const shouldOpen = await confirmModal({
+      title: 'Projeto criado com sucesso',
+      message: `${result.fileName} foi criado com ${result.trackCount} pista(s), ${result.regionCount} região(ões) e ${result.itemCount} item(ns). ${result.copiedMediaCount} áudio(s) foram copiados para a pasta Media${result.reusedMediaCount ? ` e ${result.reusedMediaCount} cópia(s) existente(s) foram reutilizadas` : ''}.`,
+      type: 'success',
+      okText: 'Abrir no REAPER',
+      cancelText: 'Agora não'
+    });
+    if (shouldOpen) await window.hookUpdateCenter.openCreateProject({ filePath: result.destinationPath });
+  } catch (error) {
+    showModal({ title: 'Erro ao criar projeto', message: friendlyError(error, 'Não foi possível criar o projeto do REAPER.'), type: 'error' });
+  } finally {
+    createProjectBusy = false;
+    if (button) button.textContent = 'Criar projeto';
+    updateCreateProjectControls();
+  }
+}
+
+function clearCreateProjectDestination() {
+  if (createProjectBusy) return;
+  createProjectDestination = null;
+  renderCreateProjectSelection();
+}
+
+function clearCreateProjectFolders() {
+  if (createProjectBusy) return;
+  createProjectFolders = null;
+  createProjectAudit = null;
+  $('#createProjectProgressArea')?.classList.add('hidden');
+  setCreateProjectProgress();
+  renderCreateProjectSelection();
+  renderCreateProjectAudit(null);
+}
+
+function setupCreateProject() {
+  $('#createProjectSelectDestinationButton')?.addEventListener('click', async () => {
+    try { await selectCreateProjectDestination(); } catch (error) { showModal({ title: 'Create Project', message: friendlyError(error, 'Não foi possível escolher o destino.'), type: 'error' }); }
+  });
+  $('#createProjectSelectFoldersButton')?.addEventListener('click', async () => {
+    try { await selectCreateProjectFolders(); } catch (error) { showModal({ title: 'Create Project', message: friendlyError(error, 'Não foi possível escolher as pastas.'), type: 'error' }); }
+  });
+  $('#createProjectClearDestinationButton')?.addEventListener('click', clearCreateProjectDestination);
+  $('#createProjectAuditButton')?.addEventListener('click', auditCreateProject);
+  $('#createProjectRunButton')?.addEventListener('click', runCreateProject);
+  $('#createProjectClearButton')?.addEventListener('click', clearCreateProjectFolders);
+  window.hookUpdateCenter.onCreateProjectProgress?.((progress) => {
+    $('#createProjectProgressArea')?.classList.remove('hidden');
+    setCreateProjectProgress(progress || {});
+  });
+  renderCreateProjectSelection();
+  renderCreateProjectAudit(null);
+}
+
+function getAddProjectFolderPaths() {
+  return Array.isArray(addProjectFolders?.folderPaths) ? addProjectFolders.folderPaths : [];
+}
+
+function setAddProjectProgress({ percent = 0, current = 0, total = 0, phase = '', currentFile = '' } = {}) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  const bar = $('#addProjectProgressBar');
+  const text = $('#addProjectProgressText');
+  const count = $('#addProjectProgressCount');
+  if (bar) bar.style.width = `${safePercent}%`;
+  if (text) text.textContent = `${safePercent}%`;
+  if (!count) return;
+  if (phase === 'copying') count.textContent = `Copiando para Media: ${current}/${total}${currentFile ? ` · ${currentFile}` : ''}`;
+  else if (phase === 'writing') count.textContent = 'Atualizando o arquivo .RPP...';
+  else if (phase === 'done') count.textContent = 'Músicas adicionadas';
+  else if (phase === 'audit-done') count.textContent = `${current || total} arquivo(s) analisado(s)`;
+  else if (total) count.textContent = `${current}/${total}${currentFile ? ` · ${currentFile}` : ''}`;
+  else count.textContent = 'Preparando auditoria...';
+}
+
+function invalidateAddProjectAudit() {
+  addProjectAudit = null;
+  renderAddProjectAudit(null);
+}
+
+function updateAddProjectControls() {
+  const hasProject = Boolean(addProjectFile?.filePath);
+  const hasFolders = getAddProjectFolderPaths().length > 0;
+  const readyToAudit = hasProject && hasFolders;
+  const auditButton = $('#addProjectAuditButton');
+  const runButton = $('#addProjectRunButton');
+  const projectButton = $('#addProjectSelectProjectButton');
+  const foldersButton = $('#addProjectSelectFoldersButton');
+  const clearProjectButton = $('#addProjectClearProjectButton');
+  const clearFoldersButton = $('#addProjectClearButton');
+  if (auditButton) auditButton.disabled = addProjectBusy || !readyToAudit;
+  if (runButton) runButton.disabled = addProjectBusy || !addProjectAudit?.validSongCount;
+  if (projectButton) projectButton.disabled = addProjectBusy;
+  if (foldersButton) foldersButton.disabled = addProjectBusy;
+  if (clearProjectButton) clearProjectButton.disabled = addProjectBusy || (!hasProject && !hasFolders && !addProjectAudit);
+  if (clearFoldersButton) clearFoldersButton.disabled = addProjectBusy || !hasFolders;
+}
+
+function renderAddProjectSelection() {
+  const folderPaths = getAddProjectFolderPaths();
+  const folderNames = Array.isArray(addProjectFolders?.folderNames) ? addProjectFolders.folderNames : [];
+  const visibleNames = folderNames.slice(0, 6).join(', ');
+  const hiddenNames = Math.max(0, folderNames.length - 6);
+  const heroName = $('#addProjectHeroName');
+  const projectName = String(addProjectFile?.fileName || '').replace(/\.rpp$/i, '');
+  if (heroName) {
+    heroName.textContent = projectName || 'Escolha um projeto';
+    heroName.title = addProjectFile?.filePath || 'Escolha o projeto .RPP que receberá as músicas';
+    heroName.classList.toggle('is-empty', !projectName);
+  }
+  $('#addProjectFileLabel').textContent = addProjectFile?.fileName || 'Nenhum projeto escolhido';
+  $('#addProjectFilePath').textContent = addProjectFile?.filePath || 'Escolha o arquivo .rpp que receberá as músicas.';
+  $('#addProjectFoldersLabel').textContent = folderPaths.length
+    ? `${folderPaths.length} pasta(s) selecionada(s)`
+    : 'Nenhuma pasta selecionada';
+  $('#addProjectFoldersPath').textContent = folderPaths.length
+    ? `${visibleNames}${hiddenNames ? ` + ${hiddenNames} pasta(s)` : ''}`
+    : 'Cada pasta selecionada representa uma música nova.';
+  updateAddProjectControls();
+}
+
+function renderAddProjectAudit(audit) {
+  const badge = $('#addProjectAuditBadge');
+  const summary = $('#addProjectAuditSummary');
+  const list = $('#addProjectAuditList');
+  if (!badge || !summary || !list) return;
+  badge.textContent = `${Number(audit?.validSongCount || 0)} música(s)`;
+  if (!audit) {
+    summary.textContent = 'Escolha o projeto e as pastas para iniciar a auditoria.';
+    list.innerHTML = '<p class="muted">Aqui aparecerão as pistas reutilizadas, as novas pistas e o ponto de inclusão.</p>';
+    updateAddProjectControls();
+    return;
+  }
+
+  summary.textContent = `${audit.validSongCount} música(s) entrarão em ${formatCreateProjectDuration(audit.appendStart)}. ${audit.reusedTrackCount} pista(s) reutilizada(s) e ${audit.newTrackCount} pista(s) nova(s).`;
+  const groupHtml = (audit.groups || []).map((group) => `
+    <section class="create-project-track-group" style="--create-project-group-color: ${escapeHtml(group.colorHex || '#7d8cff')}">
+      <header>
+        <span class="create-project-group-color" aria-hidden="true"></span>
+        <strong>${escapeHtml(group.name)}</strong>
+        <small>${group.tracks.length} pista(s)</small>
+      </header>
+      <div class="create-project-track-cloud">
+        ${group.tracks.map((track) => `
+          <span class="create-project-track-chip add-project-track-${track.action}" title="${track.action === 'reuse' ? `Usará a pista existente ${escapeHtml(track.existingTrackName || track.name)}` : `Criará a pista no grupo ${escapeHtml(track.groupName)}`}">
+            ${track.action === 'reuse' ? 'Reutilizar' : 'Criar'} · ${escapeHtml(track.name)}
+          </span>
+        `).join('')}
+      </div>
+    </section>
+  `).join('');
+  const songsHtml = (audit.songs || []).map((song, index) => `
+    <article class="create-project-song">
+      <header><strong>${index + 1}. ${escapeHtml(song.name)}</strong><span>${formatCreateProjectDuration(song.duration)}</span></header>
+      <small>Região em ${formatCreateProjectDuration(song.start)} · ${song.files.length} arquivo(s)</small>
+    </article>
+  `).join('');
+  const warnings = [
+    ...(audit.emptyFolders || []).map((item) => `${item.folderName}: ${item.reason}`),
+    ...(audit.skippedFiles || []).map((item) => `${item.fileName}: ${item.reason}`)
+  ];
+  const warningsHtml = warnings.length ? `
+    <div class="create-project-warning"><strong>${warnings.length} aviso(s)</strong><small>${warnings.slice(0, 6).map(escapeHtml).join(' · ')}${warnings.length > 6 ? ` · +${warnings.length - 6}` : ''}</small></div>
+  ` : '';
+  list.innerHTML = `
+    <div class="create-project-stats add-project-stats">
+      <div class="create-project-stat"><strong>${audit.reusedTrackCount}</strong><span>Reutilizadas</span></div>
+      <div class="create-project-stat"><strong>${audit.newTrackCount}</strong><span>Novas pistas</span></div>
+      <div class="create-project-stat"><strong>${audit.totalIncludedFiles}</strong><span>Novos itens</span></div>
+    </div>
+    <div class="create-project-track-groups">${groupHtml}</div>
+    ${songsHtml}${warningsHtml}
+  `;
+  updateAddProjectControls();
+}
+
+async function selectAddProjectFile() {
+  const result = await window.hookUpdateCenter.selectAddProjectFile();
+  if (!result?.ok) return;
+  addProjectFile = result;
+  invalidateAddProjectAudit();
+  $('#addProjectProgressArea')?.classList.add('hidden');
+  renderAddProjectSelection();
+}
+
+async function selectAddProjectFolders() {
+  const result = await window.hookUpdateCenter.selectAddProjectFolders();
+  if (!result?.ok) return;
+  addProjectFolders = result;
+  invalidateAddProjectAudit();
+  $('#addProjectProgressArea')?.classList.add('hidden');
+  renderAddProjectSelection();
+}
+
+async function auditAddProject() {
+  if (addProjectBusy || !addProjectFile?.filePath || !getAddProjectFolderPaths().length) return;
+  const button = $('#addProjectAuditButton');
+  addProjectBusy = true;
+  addProjectAudit = null;
+  renderAddProjectAudit(null);
+  $('#addProjectProgressArea')?.classList.remove('hidden');
+  setAddProjectProgress();
+  updateAddProjectControls();
+  try {
+    if (button) button.textContent = 'Auditando...';
+    addProjectAudit = await window.hookUpdateCenter.auditAddProject({
+      projectPath: addProjectFile.filePath,
+      folderPaths: getAddProjectFolderPaths()
+    });
+    renderAddProjectAudit(addProjectAudit);
+  } catch (error) {
+    showModal({ title: 'Erro na auditoria', message: friendlyError(error, 'Não foi possível analisar o projeto e as pastas.'), type: 'error' });
+  } finally {
+    addProjectBusy = false;
+    if (button) button.textContent = 'Auditar inclusão';
+    updateAddProjectControls();
+  }
+}
+
+async function runAddProject() {
+  if (addProjectBusy) return;
+  if (!addProjectAudit?.validSongCount) await auditAddProject();
+  if (!addProjectAudit?.validSongCount || !addProjectFile?.filePath) return;
+  const confirmed = await confirmModal({
+    title: 'Adicionar músicas ao projeto',
+    message: `${addProjectAudit.validSongCount} música(s) e ${addProjectAudit.totalIncludedFiles} item(ns) serão adicionados. ${addProjectAudit.reusedTrackCount} pista(s) serão reutilizadas e ${addProjectAudit.newTrackCount} serão criadas. Feche este projeto no REAPER antes de continuar.`,
+    type: 'info',
+    okText: 'Adicionar músicas',
+    cancelText: 'Voltar'
+  });
+  if (!confirmed) return;
+
+  const button = $('#addProjectRunButton');
+  addProjectBusy = true;
+  $('#addProjectProgressArea')?.classList.remove('hidden');
+  setAddProjectProgress();
+  updateAddProjectControls();
+  try {
+    if (button) button.textContent = 'Adicionando...';
+    const result = await window.hookUpdateCenter.runAddProject({
+      projectPath: addProjectFile.filePath,
+      folderPaths: getAddProjectFolderPaths()
+    });
+    resetAddProjectState({ clearProject: true });
+    const shouldOpen = await confirmModal({
+      title: 'Projeto atualizado com sucesso',
+      message: `${result.regionCount} música(s) foram adicionadas com ${result.itemCount} item(ns). ${result.reusedTrackCount} pista(s) foram reutilizadas e ${result.newTrackCount} criadas.`,
+      type: 'success',
+      okText: 'Abrir no REAPER',
+      cancelText: 'Agora não'
+    });
+    addProjectAudit = null;
+    renderAddProjectAudit(null);
+    if (shouldOpen) await window.hookUpdateCenter.openAddProject({ filePath: result.projectPath });
+  } catch (error) {
+    showModal({ title: 'Erro no Add Project', message: friendlyError(error, 'Não foi possível adicionar as músicas ao projeto.'), type: 'error' });
+  } finally {
+    addProjectBusy = false;
+    if (button) button.textContent = 'Adicionar ao projeto';
+    updateAddProjectControls();
+  }
+}
+
+function resetAddProjectState({ clearProject = false } = {}) {
+  if (clearProject) addProjectFile = null;
+  addProjectFolders = null;
+  addProjectAudit = null;
+  $('#addProjectProgressArea')?.classList.add('hidden');
+  setAddProjectProgress();
+  renderAddProjectSelection();
+  renderAddProjectAudit(null);
+}
+
+function clearAddProjectAll() {
+  if (addProjectBusy) return;
+  resetAddProjectState({ clearProject: true });
+}
+
+function clearAddProjectFolders() {
+  if (addProjectBusy) return;
+  resetAddProjectState();
+}
+
+function setupAddProject() {
+  $('#addProjectSelectProjectButton')?.addEventListener('click', async () => {
+    try { await selectAddProjectFile(); } catch (error) { showModal({ title: 'Add Project', message: friendlyError(error, 'Não foi possível escolher o projeto.'), type: 'error' }); }
+  });
+  $('#addProjectSelectFoldersButton')?.addEventListener('click', async () => {
+    try { await selectAddProjectFolders(); } catch (error) { showModal({ title: 'Add Project', message: friendlyError(error, 'Não foi possível escolher as pastas.'), type: 'error' }); }
+  });
+  $('#addProjectClearProjectButton')?.addEventListener('click', clearAddProjectAll);
+  $('#addProjectAuditButton')?.addEventListener('click', auditAddProject);
+  $('#addProjectRunButton')?.addEventListener('click', runAddProject);
+  $('#addProjectClearButton')?.addEventListener('click', clearAddProjectFolders);
+  window.hookUpdateCenter.onAddProjectProgress?.((progress) => {
+    $('#addProjectProgressArea')?.classList.remove('hidden');
+    setAddProjectProgress(progress || {});
+  });
+  renderAddProjectSelection();
+  renderAddProjectAudit(null);
 }
 
 let directCableState = null;
@@ -2412,7 +2952,7 @@ async function testHookMarkerResolume() {
 }
 
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'cable', 'midi', 'copy-project', 'show-mode', 'hook-marker', 'pingpong'];
+  const allowed = ['rename', 'create-project', 'add-project', 'cable', 'midi', 'copy-project', 'show-mode', 'hook-marker', 'pingpong'];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -2424,6 +2964,8 @@ function setToolsPanel(panelName = 'rename') {
     panel.classList.toggle('active', panel.dataset.toolsPanelContent === selectedToolsPanel);
   });
   if (selectedToolsPanel === 'rename') updateHookRenameControls();
+  if (selectedToolsPanel === 'create-project') updateCreateProjectControls();
+  if (selectedToolsPanel === 'add-project') updateAddProjectControls();
   if (selectedToolsPanel === 'cable') refreshDirectCableState();
   if (selectedToolsPanel === 'midi') refreshHookMidiState();
   if (selectedToolsPanel === 'copy-project') refreshCopyProjectState();
@@ -4887,7 +5429,10 @@ async function init() {
         if (button.dataset.view === 'previous') loadPreviousUpdates();
         if (button.dataset.view === 'bridge') refreshBridgeState();
         if (button.dataset.view === 'lyrics') refreshLyricsSettings();
-        if (button.dataset.view === 'tools') updateHookRenameControls();
+        if (button.dataset.view === 'tools') {
+          updateHookRenameControls();
+          updateCreateProjectControls();
+        }
       });
     }
   });
@@ -4907,6 +5452,8 @@ async function init() {
 
   setupToolsSubmenu();
   setupHookRename();
+  setupCreateProject();
+  setupAddProject();
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
   $('#restartBridgeButton')?.addEventListener('click', async () => {

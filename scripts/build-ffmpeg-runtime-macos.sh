@@ -50,11 +50,10 @@ build_arch() {
       --install-name-dir=@rpath \
       --disable-static \
       --enable-shared \
-      --disable-programs \
+      --disable-ffplay \
       --disable-doc \
       --disable-debug \
       --disable-avdevice \
-      --disable-avfilter \
       --disable-gpl \
       --disable-nonfree \
       --enable-videotoolbox \
@@ -72,7 +71,7 @@ build_arch x86_64 10.13
 build_arch arm64 11.0
 
 STAGE="$WORK/stage/FFmpeg"
-mkdir -p "$STAGE/lib" "$STAGE/licenses"
+mkdir -p "$STAGE/bin" "$STAGE/lib" "$STAGE/licenses"
 cp "$SOURCE/COPYING.LGPLv2.1" "$STAGE/licenses/"
 cp "$SOURCE/COPYING.LGPLv3" "$STAGE/licenses/"
 cat > "$STAGE/licenses/SOURCE.txt" <<EOF
@@ -102,6 +101,20 @@ for x86_library in "$WORK/prefix-x86_64/lib/"*.dylib; do
   codesign --verify --strict "$STAGE/lib/$name"
 done
 
+for program in ffmpeg; do
+  x86_program="$WORK/prefix-x86_64/bin/$program"
+  arm_program="$WORK/prefix-arm64/bin/$program"
+  [ -x "$x86_program" ] && [ -x "$arm_program" ] || {
+    echo "Executável ausente no runtime universal: $program" >&2
+    exit 1
+  }
+  lipo -create "$x86_program" "$arm_program" -output "$STAGE/bin/$program"
+  install_name_tool -add_rpath @executable_path/../lib "$STAGE/bin/$program" 2>/dev/null || true
+  codesign --force --timestamp --options runtime \
+    --sign "$SIGN_IDENTITY" "$STAGE/bin/$program"
+  codesign --verify --strict "$STAGE/bin/$program"
+done
+
 for link in "$WORK/prefix-arm64/lib/"*.dylib; do
   [ -L "$link" ] || continue
   name="$(basename "$link")"
@@ -115,9 +128,17 @@ for required in \
   libswresample.6.dylib \
   libavcodec.62.dylib \
   libavformat.62.dylib \
+  libavfilter.11.dylib \
   libswscale.9.dylib; do
   [ -f "$STAGE/lib/$required" ] || {
     echo "Biblioteca ausente no runtime universal: $required" >&2
+    exit 1
+  }
+done
+
+for program in ffmpeg; do
+  [ -x "$STAGE/bin/$program" ] || {
+    echo "Executável ausente no pacote universal: $program" >&2
     exit 1
   }
 done

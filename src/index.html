@@ -899,7 +899,9 @@
       <section id="toolsView" class="view">
         <nav class="tools-submenu" aria-label="Menu de ferramentas" role="tablist">
           <button class="tools-submenu-button active" type="button" role="tab" aria-selected="true" data-tools-panel="rename">Hook Rename</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">Conexão redundante</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="create-project">Create Project</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="add-project">Add Project</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">CNX Redundante</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="show-mode">Modo Show</button>
@@ -995,11 +997,161 @@
           </div>
         </div>
 
+        <div id="toolsCreateProjectPanel" class="tools-panel tools-create-project-panel" data-tools-panel-content="create-project" role="tabpanel">
+          <div class="hero-card tools-hero create-project-hero">
+            <div class="create-project-hero-copy">
+              <p class="eyebrow">Ferramentas</p>
+              <h1>Create Project</h1>
+              <p class="muted">Transforme pastas de músicas em um projeto do REAPER organizado por pistas, regiões e uma pasta Media própria.</p>
+            </div>
+            <div id="createProjectHeroName" class="create-project-hero-name" title="Escolha o nome e o local do arquivo .RPP">
+              Escolha um projeto
+            </div>
+            <div class="tools-hero-actions">
+              <button id="createProjectClearDestinationButton" class="secondary-button" type="button" disabled>Limpar</button>
+              <button id="createProjectSelectDestinationButton" class="secondary-button" type="button">Escolher local do .RPP</button>
+              <button id="createProjectSelectFoldersButton" class="primary-button" type="button">Escolher pastas</button>
+            </div>
+          </div>
+
+          <div class="tools-grid create-project-grid">
+            <div class="card create-project-setup-card">
+              <div class="tool-card-header">
+                <div>
+                  <p class="eyebrow">Montagem inteligente</p>
+                  <h2>Preparar projeto</h2>
+                </div>
+                <span class="badge">Novo</span>
+              </div>
+
+              <div class="create-project-selection-list">
+                <div class="selected-folder-box">
+                  <span>Projeto de destino</span>
+                  <strong id="createProjectDestinationLabel">Nenhum arquivo escolhido</strong>
+                  <small id="createProjectDestinationPath" class="muted">Escolha o nome e o local do arquivo .rpp.</small>
+                </div>
+                <div class="selected-folder-box">
+                  <span>Pastas das músicas</span>
+                  <strong id="createProjectFoldersLabel">Nenhuma pasta selecionada</strong>
+                  <small id="createProjectFoldersPath" class="muted">Cada pasta selecionada representa uma música.</small>
+                </div>
+              </div>
+
+              <div class="create-project-rules">
+                <div><strong>1</strong><span>Audita primeiro todas as pastas e descobre as pistas necessárias.</span></div>
+                <div><strong>2</strong><span>Cria as pistas em pastas coloridas por família e coloca as músicas em sequência.</span></div>
+                <div><strong>3</strong><span>Interpreta o título correto e cria as regiões com 1 minuto de espaço, sem alterar os itens.</span></div>
+              </div>
+
+              <p class="muted create-project-help">Somente WAV, AIFF e MP3. Todos os áudios são copiados para a pasta Media ao lado do .RPP. Regência, Maestro e GPS usam a mesma pista. Instrumentos, timbres e nomes repetidos recebem pistas próprias; somente casos isolados não reconhecidos entram em Out.</p>
+
+              <div class="actions create-project-actions">
+                <button id="createProjectAuditButton" class="secondary-button" type="button" disabled>Auditar arquivos</button>
+                <button id="createProjectRunButton" class="primary-button" type="button" disabled>Criar projeto</button>
+                <button id="createProjectClearButton" class="secondary-button" type="button">Limpar</button>
+              </div>
+
+              <div id="createProjectProgressArea" class="inline-progress-area hidden">
+                <div class="progress-shell"><div id="createProjectProgressBar" class="progress-bar"></div></div>
+                <div class="progress-row create-project-progress-row">
+                  <span id="createProjectProgressText">0%</span>
+                  <strong id="createProjectProgressCount">Aguardando...</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="card create-project-audit-card">
+              <div class="tool-card-header">
+                <div>
+                  <p class="eyebrow">Auditoria</p>
+                  <h2>Prévia do projeto</h2>
+                </div>
+                <span id="createProjectAuditBadge" class="badge">0 músicas</span>
+              </div>
+              <div id="createProjectAuditSummary" class="hook-rename-summary muted">Selecione as pastas e clique em auditar arquivos.</div>
+              <div id="createProjectAuditList" class="create-project-audit-list">
+                <p class="muted">As pistas, os arquivos e a duração de cada região aparecerão aqui antes da criação.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="toolsAddProjectPanel" class="tools-panel tools-add-project-panel" data-tools-panel-content="add-project" role="tabpanel">
+          <div class="hero-card tools-hero add-project-hero">
+            <div class="create-project-hero-copy">
+              <p class="eyebrow">Ferramentas</p>
+              <h1>Add Project</h1>
+              <p class="muted">Adicione novas músicas a um .RPP existente, reutilizando as pistas e os grupos que já estão no projeto.</p>
+            </div>
+            <div id="addProjectHeroName" class="create-project-hero-name add-project-hero-name is-empty" title="Escolha o projeto .RPP que receberá as músicas">
+              Escolha um projeto
+            </div>
+            <div class="tools-hero-actions">
+              <button id="addProjectClearProjectButton" class="secondary-button" type="button" disabled>Limpar</button>
+              <button id="addProjectSelectProjectButton" class="secondary-button" type="button">Escolher projeto</button>
+              <button id="addProjectSelectFoldersButton" class="primary-button" type="button">Escolher pastas</button>
+            </div>
+          </div>
+
+          <div class="tools-grid add-project-grid">
+            <div class="card create-project-setup-card add-project-setup-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Inclusão inteligente</p><h2>Preparar inclusão</h2></div>
+                <span class="badge">Novo</span>
+              </div>
+
+              <div class="create-project-selection-list">
+                <div class="selected-folder-box">
+                  <span>Projeto existente</span>
+                  <strong id="addProjectFileLabel">Nenhum projeto escolhido</strong>
+                  <small id="addProjectFilePath" class="muted">Escolha o arquivo .rpp que receberá as músicas.</small>
+                </div>
+                <div class="selected-folder-box">
+                  <span>Pastas das novas músicas</span>
+                  <strong id="addProjectFoldersLabel">Nenhuma pasta selecionada</strong>
+                  <small id="addProjectFoldersPath" class="muted">Cada pasta selecionada representa uma música nova.</small>
+                </div>
+              </div>
+
+              <div class="create-project-rules add-project-rules">
+                <div><strong>1</strong><span>Audita o projeto e os novos arquivos antes de alterar qualquer coisa.</span></div>
+                <div><strong>2</strong><span>Reutiliza pistas existentes e cria somente as que estiverem faltando.</span></div>
+                <div><strong>3</strong><span>Copia os áudios para Media, cria as regiões e atualiza o .RPP escolhido.</span></div>
+              </div>
+
+              <div class="actions create-project-actions">
+                <button id="addProjectAuditButton" class="secondary-button" type="button" disabled>Auditar inclusão</button>
+                <button id="addProjectRunButton" class="primary-button" type="button" disabled>Adicionar ao projeto</button>
+                <button id="addProjectClearButton" class="secondary-button" type="button">Limpar</button>
+              </div>
+
+              <div id="addProjectProgressArea" class="inline-progress-area hidden">
+                <div class="progress-shell"><div id="addProjectProgressBar" class="progress-bar"></div></div>
+                <div class="progress-row create-project-progress-row">
+                  <span id="addProjectProgressText">0%</span>
+                  <strong id="addProjectProgressCount">Aguardando...</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="card create-project-audit-card add-project-audit-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Auditoria</p><h2>Prévia da inclusão</h2></div>
+                <span id="addProjectAuditBadge" class="badge">0 músicas</span>
+              </div>
+              <div id="addProjectAuditSummary" class="hook-rename-summary muted">Escolha o projeto e as pastas para iniciar a auditoria.</div>
+              <div id="addProjectAuditList" class="create-project-audit-list add-project-audit-list">
+                <p class="muted">Aqui aparecerão as pistas reutilizadas, as novas pistas e o ponto de inclusão.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div id="toolsDirectCablePanel" class="tools-panel tools-direct-cable-panel" data-tools-panel-content="cable" role="tabpanel">
           <div class="hero-card tools-hero direct-cable-hero">
             <div>
               <p class="eyebrow">Receive / Transmitter / Project Sync</p>
-              <h1>Conexão redundante</h1>
+              <h1>CNX Redundante</h1>
               <p class="muted">Use três redes separadas: Project Sync entre A e B, Time Code principal entre A e C e Time Code reserva entre B e C. Se A cair, B mantém o MTC do PC C.</p>
             </div>
             <button id="directCableRefreshButton" class="secondary-button" type="button">Detectar novamente</button>
