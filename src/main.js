@@ -1093,6 +1093,7 @@ async function sendChatMessage(payload = {}) {
     body: JSON.stringify({
       ...auth,
       text: String(payload.text || '').slice(0, 1000),
+      replyToMessageId: Math.max(0, Math.floor(Number(payload.replyToMessageId) || 0)),
       image: payload.image && typeof payload.image === 'object' ? payload.image : null,
       video: payload.video && typeof payload.video === 'object' ? payload.video : null
     })

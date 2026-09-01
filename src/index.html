@@ -128,6 +128,10 @@
 
             <div id="chatHookClosedNotice" class="chat-hook-closed hidden">Chat fechado pelo administrador</div>
             <div id="chatHookComposer" class="chat-hook-composer">
+              <div id="chatHookReplyPreview" class="chat-hook-reply-preview hidden">
+                <div><strong>Respondendo a <span id="chatHookReplyName"></span></strong><p id="chatHookReplyText"></p></div>
+                <button id="chatHookCancelReply" type="button" aria-label="Cancelar resposta">×</button>
+              </div>
               <div id="chatHookImagePreview" class="chat-hook-image-preview hidden">
                 <img id="chatHookImagePreviewImage" alt="Imagem escolhida" />
                 <video id="chatHookVideoPreview" class="hidden" muted playsinline preload="metadata"></video>
@@ -1504,6 +1508,24 @@
         <button id="chatHookAdminCancelButton" class="secondary-button" type="button">Cancelar</button>
         <button id="chatHookAdminSaveButton" class="primary-button" type="button">Salvar</button>
       </div>
+    </div>
+  </div>
+
+  <div id="chatHookMessageActionsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="chatHookMessageActionsTitle">
+    <div class="hook-modal chat-hook-message-actions-modal">
+      <h2 id="chatHookMessageActionsTitle">Opções da mensagem</h2>
+      <div class="chat-hook-action-preview"><strong id="chatHookActionMessageName"></strong><p id="chatHookActionMessageText"></p></div>
+      <div id="chatHookMessageActionButtons" class="chat-hook-message-action-buttons">
+        <button class="secondary-button" type="button" data-chat-message-action="reply">Responder</button>
+        <button class="secondary-button" type="button" data-chat-message-action="edit">Editar mensagem</button>
+        <button class="secondary-button" type="button" data-chat-message-action="pin">Fixar mensagem</button>
+        <button class="secondary-button danger" type="button" data-chat-message-action="delete">Apagar mensagem</button>
+      </div>
+      <div id="chatHookDeleteConfirmButtons" class="chat-hook-message-action-buttons hidden">
+        <button class="secondary-button" type="button" data-chat-message-action="cancel-delete">Voltar</button>
+        <button class="secondary-button danger" type="button" data-chat-message-action="confirm-delete">Apagar para todos</button>
+      </div>
+      <button id="chatHookMessageActionsCancel" class="secondary-button" type="button">Cancelar</button>
     </div>
   </div>
 

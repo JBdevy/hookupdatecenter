@@ -49,6 +49,11 @@ let chatHookLastPollAt = 0;
 let chatAdminPassword = '';
 let chatAdminPasswordResolver = null;
 let chatHookEditingMessageId = 0;
+let chatHookReplyingMessageId = 0;
+let chatHookActionMessageId = 0;
+let chatHookMessageHoldTimer = 0;
+let chatHookMessageHoldStart = null;
+let chatHookSuppressClickUntil = 0;
 let releaseNotesReadResolver = null;
 let releaseNotesReadScrollFrame = 0;
 let hookTutorialGroups = { tutorials: [], questions: [] };
@@ -2595,6 +2600,27 @@ function chatHookAvatarHtml(name, avatarUrl = '') {
   return `<span>${escapeHtml(chatHookInitials(name))}</span>`;
 }
 
+function chatHookMessagePreview(message) {
+  const text = String(message?.text || '').replace(/\s+/g, ' ').trim();
+  if (text) return text.slice(0, 120);
+  if (message?.hasImage || message?.imageUrl) return '📷 Imagem';
+  if (message?.hasVideo || message?.videoUrl) return '🎬 Vídeo';
+  return 'Mensagem';
+}
+
+function chatHookMessagePermissions(message) {
+  const ready = Boolean(message) && !message.pending && !message.failed && Number(message.id || 0) > 0;
+  const currentUserId = Number(chatHookState?.user?.id || 0);
+  const isAdmin = chatHookState?.user?.isAdmin === true;
+  const own = ready && currentUserId > 0 && Number(message?.customerId || 0) === currentUserId;
+  return {
+    reply: ready,
+    edit: ready && (isAdmin || own),
+    delete: ready && (isAdmin || own),
+    pin: ready && isAdmin && own && Boolean(String(message?.text || '').trim())
+  };
+}
+
 function renderChatHookMessages(forceBottom = false) {
   const container = $('#chatHookMessages');
   if (!container) return;
@@ -2607,10 +2633,6 @@ function renderChatHookMessages(forceBottom = false) {
       return !Number.isFinite(createdAt) || createdAt >= cutoff;
     })
     .sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
-  const currentUserId = Number(chatHookState?.user?.id || 0);
-  const currentUserIsAdmin = chatHookState?.user?.isAdmin === true;
-  const pinnedMessageId = Number(chatHookState?.chat?.pinnedMessageId || 0);
-
   if (!messages.length) {
     container.innerHTML = '<div class="chat-hook-empty">Nenhuma mensagem ainda. Comece a conversa.</div>';
     return;
@@ -2630,20 +2652,12 @@ function renderChatHookMessages(forceBottom = false) {
     const video = message.videoUrl
       ? `<div class="chat-hook-message-video${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadState}</div>`
       : '';
-    const canPin = !message.pending && !message.failed && currentUserIsAdmin && Number(message.customerId || 0) === currentUserId && Boolean(String(message.text || '').trim());
-    const isPinned = canPin && Number(message.id || 0) === pinnedMessageId;
-    const pinAction = canPin
-      ? `<button class="chat-hook-pin-message" type="button" data-chat-pin-message-id="${Number(message.id || 0)}" title="${isPinned ? 'Desafixar mensagem' : 'Fixar mensagem no topo'}">${isPinned ? 'Desafixar' : '📌 Fixar'}</button>`
-      : '';
-    const editAction = !message.pending && !message.failed && currentUserIsAdmin
-      ? `<button class="chat-hook-edit-message" type="button" data-chat-edit-message-id="${Number(message.id || 0)}" title="Editar mensagem" aria-label="Editar mensagem">✎</button>`
-      : '';
-    const canDelete = !message.pending && !message.failed && (currentUserIsAdmin || Number(message.customerId || 0) === currentUserId);
-    const deleteAction = canDelete
-      ? `<button class="chat-hook-delete-message" type="button" data-chat-delete-message-id="${Number(message.id || 0)}" title="Apagar mensagem" aria-label="Apagar mensagem">🗑</button>`
+    const permissions = chatHookMessagePermissions(message);
+    const reply = message.replyTo
+      ? `<button class="chat-hook-reply-quote" type="button" data-chat-jump-message-id="${Number(message.replyTo.id || 0)}"><strong>${escapeHtml(message.replyTo.name || 'Usuário')}</strong><span>${escapeHtml(chatHookMessagePreview(message.replyTo))}</span></button>`
       : '';
     return `
-      <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}">
+      <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}" data-chat-message-id="${Number(message.id || 0)}">
         <div class="chat-hook-avatar">${chatHookAvatarHtml(message.name, message.avatarUrl)}</div>
         <div class="chat-hook-message-body">
           <div class="chat-hook-message-head">
@@ -2651,10 +2665,8 @@ function renderChatHookMessages(forceBottom = false) {
             ${message.isAdmin ? '<span>ADMIN</span>' : ''}
             <time>${escapeHtml(formatChatHookTime(message.createdAt))}</time>
             ${message.editedAt ? '<small class="chat-hook-edited-label">editada</small>' : ''}
-            ${pinAction}
-            ${editAction}
-            ${deleteAction}
           </div>
+          ${reply}
           ${safeText ? `<p>${safeText}</p>` : ''}
           ${image}
           ${video}
@@ -2974,6 +2986,7 @@ function applyChatHookState(next, { full = false } = {}) {
     customerNameInput.value = String(next.user?.name || '');
   }
   if (messagesChanged) renderChatHookMessages(full);
+  if (chatHookReplyingMessageId && !chatHookMessagesById.has(chatHookReplyingMessageId)) clearChatHookReply();
   renderChatHookControls();
   if ($('#chatHookStatus')?.dataset.kind === 'connection') $('#chatHookStatus').textContent = '';
 }
@@ -3101,6 +3114,8 @@ async function sendChatHookMessage() {
     return;
   }
   const selectedMedia = chatHookSelectedMedia ? { ...chatHookSelectedMedia } : null;
+  const replyToMessageId = chatHookMessagesById.has(chatHookReplyingMessageId) ? chatHookReplyingMessageId : 0;
+  const replyTo = replyToMessageId ? chatHookMessagesById.get(replyToMessageId) : null;
   const optimisticId = selectedMedia ? Date.now() * 1000 + Math.floor(Math.random() * 1000) : 0;
   if (optimisticId) {
     const user = chatHookState?.user || {};
@@ -3113,6 +3128,10 @@ async function sendChatHookMessage() {
       imageUrl: selectedMedia.kind === 'image' ? selectedMedia.dataUrl : '',
       videoUrl: selectedMedia.kind === 'video' ? selectedMedia.dataUrl : '',
       videoDurationSeconds: selectedMedia.durationSeconds || 0,
+      replyTo: replyTo ? {
+        id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
+        text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasVideo: Boolean(replyTo.videoUrl)
+      } : null,
       avatarUrl: user.avatarUrl || '',
       createdAt: new Date().toISOString(),
       pending: true
@@ -3126,12 +3145,14 @@ async function sendChatHookMessage() {
   try {
     const result = await window.hookUpdateCenter.sendChatMessage({
       text,
+      replyToMessageId,
       image: selectedMedia?.kind === 'image' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
       video: selectedMedia?.kind === 'video' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64, durationSeconds: selectedMedia.durationSeconds } : null
     });
     if (optimisticId) chatHookMessagesById.delete(optimisticId);
     if (input) input.value = '';
     clearChatHookSelectedMedia();
+    clearChatHookReply();
     if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
     applyChatHookState(result, { full: false });
     renderChatHookMessages(true);
@@ -3168,20 +3189,87 @@ async function setChatHookPinnedMessage(messageId, button = null) {
   }
 }
 
+function clearChatHookReply() {
+  chatHookReplyingMessageId = 0;
+  $('#chatHookReplyPreview')?.classList.add('hidden');
+}
+
+function replyToChatHookMessage(messageId) {
+  const message = chatHookMessagesById.get(Math.floor(Number(messageId)));
+  if (!chatHookMessagePermissions(message).reply) return;
+  chatHookReplyingMessageId = Number(message.id);
+  if ($('#chatHookReplyName')) $('#chatHookReplyName').textContent = String(message.name || 'Usuário');
+  if ($('#chatHookReplyText')) $('#chatHookReplyText').textContent = chatHookMessagePreview(message);
+  $('#chatHookReplyPreview')?.classList.remove('hidden');
+  closeChatHookMessageActions();
+  $('#chatHookMessageInput')?.focus();
+}
+
+function closeChatHookMessageActions() {
+  chatHookActionMessageId = 0;
+  $('#chatHookMessageActionsModal')?.classList.add('hidden');
+}
+
+function openChatHookMessageActions(messageId) {
+  const message = chatHookMessagesById.get(Math.floor(Number(messageId)));
+  const permissions = chatHookMessagePermissions(message);
+  if (!permissions.reply) return;
+  chatHookActionMessageId = Number(message.id);
+  if ($('#chatHookMessageActionsTitle')) $('#chatHookMessageActionsTitle').textContent = 'Opções da mensagem';
+  if ($('#chatHookActionMessageName')) $('#chatHookActionMessageName').textContent = String(message.name || 'Usuário');
+  if ($('#chatHookActionMessageText')) $('#chatHookActionMessageText').textContent = chatHookMessagePreview(message);
+  const buttons = $('#chatHookMessageActionButtons');
+  buttons?.classList.remove('hidden');
+  const setActionVisible = (action, visible) => buttons?.querySelector(`[data-chat-message-action="${action}"]`)?.classList.toggle('hidden', !visible);
+  setActionVisible('reply', permissions.reply);
+  setActionVisible('edit', permissions.edit);
+  setActionVisible('delete', permissions.delete);
+  setActionVisible('pin', permissions.pin);
+  const pinButton = buttons?.querySelector('[data-chat-message-action="pin"]');
+  if (pinButton) pinButton.textContent = Number(chatHookState?.chat?.pinnedMessageId || 0) === Number(message.id)
+    ? 'Desafixar mensagem'
+    : 'Fixar mensagem';
+  $('#chatHookDeleteConfirmButtons')?.classList.add('hidden');
+  $('#chatHookMessageActionsModal')?.classList.remove('hidden');
+}
+
+function openPinnedChatHookActions() {
+  const messageId = Number(chatHookState?.chat?.pinnedMessageId || 0);
+  if (chatHookState?.user?.isAdmin !== true || messageId < 1) return;
+  if (chatHookMessagesById.has(messageId)) {
+    openChatHookMessageActions(messageId);
+    return;
+  }
+  chatHookActionMessageId = messageId;
+  if ($('#chatHookMessageActionsTitle')) $('#chatHookMessageActionsTitle').textContent = 'Mensagem fixada';
+  if ($('#chatHookActionMessageName')) $('#chatHookActionMessageName').textContent = String(chatHookState?.user?.name || 'VS Hook');
+  if ($('#chatHookActionMessageText')) $('#chatHookActionMessageText').textContent = String(chatHookState?.chat?.pinnedMessage || '');
+  const buttons = $('#chatHookMessageActionButtons');
+  buttons?.classList.remove('hidden');
+  buttons?.querySelectorAll('[data-chat-message-action]').forEach((button) => {
+    button.classList.toggle('hidden', button.dataset.chatMessageAction !== 'pin');
+  });
+  const pinButton = buttons?.querySelector('[data-chat-message-action="pin"]');
+  if (pinButton) pinButton.textContent = 'Desafixar mensagem';
+  $('#chatHookDeleteConfirmButtons')?.classList.add('hidden');
+  $('#chatHookMessageActionsModal')?.classList.remove('hidden');
+}
+
+function requestChatHookMessageDelete() {
+  if (!chatHookMessagePermissions(chatHookMessagesById.get(chatHookActionMessageId)).delete) return;
+  if ($('#chatHookMessageActionsTitle')) $('#chatHookMessageActionsTitle').textContent = 'Apagar mensagem?';
+  $('#chatHookMessageActionButtons')?.classList.add('hidden');
+  $('#chatHookDeleteConfirmButtons')?.classList.remove('hidden');
+}
+
 async function deleteChatHookMessage(messageId, button = null) {
   const normalizedId = Math.floor(Number(messageId));
   if (!Number.isInteger(normalizedId) || normalizedId < 1) return;
-  const confirmed = await confirmModal({
-    title: 'Apagar mensagem?',
-    message: 'Essa mensagem será apagada do Chat Hook para todos. Essa ação não pode ser desfeita.',
-    type: 'warning',
-    okText: 'Apagar',
-    cancelText: 'Cancelar'
-  });
-  if (!confirmed) return;
+  if (!chatHookMessagePermissions(chatHookMessagesById.get(normalizedId)).delete) return;
   if (button) button.disabled = true;
   try {
     const result = await window.hookUpdateCenter.deleteChatMessage({ messageId: normalizedId });
+    closeChatHookMessageActions();
     applyChatHookState(result, { full: true });
     if ($('#chatHookStatus')) $('#chatHookStatus').textContent = 'Mensagem apagada.';
   } catch (error) {
@@ -3198,20 +3286,20 @@ function closeChatHookEditModal() {
 }
 
 function editChatHookMessage(messageId) {
-  if (chatHookState?.user?.isAdmin !== true) return;
   const normalizedId = Math.floor(Number(messageId));
   if (!Number.isInteger(normalizedId) || normalizedId < 1) return;
   const message = chatHookMessagesById.get(normalizedId);
-  if (!message) return;
+  if (!chatHookMessagePermissions(message).edit) return;
   chatHookEditingMessageId = normalizedId;
   if ($('#chatHookEditInput')) $('#chatHookEditInput').value = String(message.text || '');
   if ($('#chatHookEditStatus')) $('#chatHookEditStatus').textContent = '';
+  closeChatHookMessageActions();
   $('#chatHookEditModal')?.classList.remove('hidden');
   setTimeout(() => $('#chatHookEditInput')?.focus(), 0);
 }
 
 async function saveChatHookEditedMessage() {
-  if (chatHookState?.user?.isAdmin !== true || chatHookEditingMessageId < 1) return;
+  if (chatHookEditingMessageId < 1 || !chatHookMessagePermissions(chatHookMessagesById.get(chatHookEditingMessageId)).edit) return;
   const editedText = String($('#chatHookEditInput')?.value || '');
   const status = $('#chatHookEditStatus');
   const button = $('#chatHookEditSave');
@@ -3255,6 +3343,25 @@ function setupChatHook() {
   $('#chatHookAdminClearButton')?.addEventListener('click', clearChatHookFromAdminModal);
   $('#chatHookEditCancel')?.addEventListener('click', closeChatHookEditModal);
   $('#chatHookEditSave')?.addEventListener('click', saveChatHookEditedMessage);
+  $('#chatHookCancelReply')?.addEventListener('click', clearChatHookReply);
+  $('#chatHookMessageActionsCancel')?.addEventListener('click', closeChatHookMessageActions);
+  const messageActionsModal = $('#chatHookMessageActionsModal');
+  messageActionsModal?.addEventListener('click', (event) => {
+    if (event.target === messageActionsModal) return closeChatHookMessageActions();
+    const action = event.target.closest('[data-chat-message-action]')?.dataset.chatMessageAction;
+    const messageId = chatHookActionMessageId;
+    if (!action || !messageId) return;
+    if (action === 'reply') replyToChatHookMessage(messageId);
+    else if (action === 'edit') editChatHookMessage(messageId);
+    else if (action === 'pin') {
+      closeChatHookMessageActions();
+      setChatHookPinnedMessage(messageId);
+    } else if (action === 'delete') requestChatHookMessageDelete();
+    else if (action === 'cancel-delete') openChatHookMessageActions(messageId);
+    else if (action === 'confirm-delete') deleteChatHookMessage(messageId, event.target.closest('button'));
+  });
+  const editModal = $('#chatHookEditModal');
+  editModal?.addEventListener('click', (event) => { if (event.target === editModal) closeChatHookEditModal(); });
   $('#chatHookAdminUnlimited')?.addEventListener('change', (event) => {
     $('#chatHookAdminDailyLimit').disabled = event.target.checked;
   });
@@ -3357,25 +3464,69 @@ function setupChatHook() {
       sendChatHookMessage();
     }
   });
-  $('#chatHookMessages')?.addEventListener('click', (event) => {
-    const editButton = event.target.closest('[data-chat-edit-message-id]');
-    if (editButton) {
-      editChatHookMessage(Number(editButton.dataset.chatEditMessageId || 0), editButton);
+  const chatMessages = $('#chatHookMessages');
+  const cancelChatMessageHold = () => {
+    if (chatHookMessageHoldTimer) clearTimeout(chatHookMessageHoldTimer);
+    chatHookMessageHoldTimer = 0;
+    chatHookMessageHoldStart = null;
+  };
+  chatMessages?.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const article = event.target.closest('[data-chat-message-id]');
+    const messageId = Number(article?.dataset.chatMessageId || 0);
+    if (!chatHookMessagePermissions(chatHookMessagesById.get(messageId)).reply) return;
+    cancelChatMessageHold();
+    chatHookMessageHoldStart = { x: event.clientX, y: event.clientY, messageId };
+    chatHookMessageHoldTimer = window.setTimeout(() => {
+      const heldMessageId = chatHookMessageHoldStart?.messageId || 0;
+      chatHookMessageHoldTimer = 0;
+      chatHookMessageHoldStart = null;
+      if (!heldMessageId) return;
+      chatHookSuppressClickUntil = Date.now() + 700;
+      openChatHookMessageActions(heldMessageId);
+    }, 520);
+  });
+  chatMessages?.addEventListener('pointermove', (event) => {
+    if (!chatHookMessageHoldStart) return;
+    if (Math.hypot(event.clientX - chatHookMessageHoldStart.x, event.clientY - chatHookMessageHoldStart.y) > 12) cancelChatMessageHold();
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => chatMessages?.addEventListener(type, cancelChatMessageHold));
+  chatMessages?.addEventListener('contextmenu', (event) => {
+    if (event.target.closest('[data-chat-message-id]')) event.preventDefault();
+  });
+  chatMessages?.addEventListener('click', (event) => {
+    if (Date.now() < chatHookSuppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
-    const deleteButton = event.target.closest('[data-chat-delete-message-id]');
-    if (deleteButton) {
-      deleteChatHookMessage(Number(deleteButton.dataset.chatDeleteMessageId || 0), deleteButton);
-      return;
-    }
-    const pinButton = event.target.closest('[data-chat-pin-message-id]');
-    if (pinButton) {
-      setChatHookPinnedMessage(Number(pinButton.dataset.chatPinMessageId || 0), pinButton);
+    const replyQuote = event.target.closest('[data-chat-jump-message-id]');
+    if (replyQuote) {
+      const target = chatMessages.querySelector(`[data-chat-message-id="${Number(replyQuote.dataset.chatJumpMessageId || 0)}"]`);
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target?.classList.add('highlighted');
+      if (target) setTimeout(() => target.classList.remove('highlighted'), 900);
       return;
     }
     const button = event.target.closest('[data-chat-image-url]');
     if (button?.dataset.chatImageUrl) window.hookUpdateCenter.openExternal(button.dataset.chatImageUrl).catch(() => {});
   });
+  const pinnedMessage = $('#chatHookPinned');
+  let pinnedHoldTimer = 0;
+  let pinnedHoldStart = null;
+  const cancelPinnedHold = () => { if (pinnedHoldTimer) clearTimeout(pinnedHoldTimer); pinnedHoldTimer = 0; pinnedHoldStart = null; };
+  pinnedMessage?.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.target.closest('button') || chatHookState?.user?.isAdmin !== true || !Number(chatHookState?.chat?.pinnedMessageId || 0)) return;
+    cancelPinnedHold();
+    pinnedHoldStart = { x: event.clientX, y: event.clientY };
+    pinnedHoldTimer = window.setTimeout(() => { pinnedHoldTimer = 0; pinnedHoldStart = null; openPinnedChatHookActions(); }, 520);
+  });
+  pinnedMessage?.addEventListener('pointermove', (event) => {
+    if (pinnedHoldStart && Math.hypot(event.clientX - pinnedHoldStart.x, event.clientY - pinnedHoldStart.y) > 12) cancelPinnedHold();
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => pinnedMessage?.addEventListener(type, cancelPinnedHold));
+  pinnedMessage?.addEventListener('contextmenu', (event) => { if (!event.target.closest('button')) event.preventDefault(); });
   $('#chatHookUnpinButton')?.addEventListener('click', (event) => setChatHookPinnedMessage(0, event.currentTarget));
   $('#chatHookAvatarButton')?.addEventListener('click', () => $('#chatHookAvatarInput')?.click());
   $('#chatHookAvatarInput')?.addEventListener('change', async (event) => {

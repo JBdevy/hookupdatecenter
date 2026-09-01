@@ -99,6 +99,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileClosedNotice[hidden],.chatMobileComposer[hidden]{display:none!important}
 
 .chatMobilePinned > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chatMobilePinned { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
 .chatMobilePinned strong { color: #9eff00; font-size: 11px; }
 .chatMobilePinned p { margin: 5px 0 0; color: #ededf3; font-size: 12px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chatMobilePinned button, .chatMobilePin {
@@ -148,6 +149,9 @@ button { -webkit-tap-highlight-color: transparent; }
   border-radius: 5px 13px 13px 13px;
   background: rgba(255, 255, 255, .065);
 }
+.chatMobileMessage.actionable .chatMobileBubble { touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.chatMobileMessage.highlighted .chatMobileBubble { animation: chatMobileMessageHighlight .9s ease; }
+@keyframes chatMobileMessageHighlight { 50% { border-color: rgba(207,55,255,.9); box-shadow: 0 0 0 3px rgba(207,55,255,.16); } }
 
 .chatMobileMessageHead { display: flex; align-items: center; gap: 5px; min-width: 0; margin-bottom: 4px; }
 .chatMobileMessageHead strong { overflow: hidden; color: #fff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -180,6 +184,13 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .chatMobileDelete:disabled { opacity: .5; }
 .chatMobileBubble p { margin: 0; color: #f0f0f4; font-size: 13px; line-height: 1.38; overflow-wrap: anywhere; }
+.chatMobileReplyQuote {
+  display: grid; width: 100%; gap: 2px; margin: 1px 0 7px; padding: 7px 9px;
+  border: 0; border-left: 3px solid #cf37ff; border-radius: 7px;
+  background: rgba(0,0,0,.25); color: #e9e9ef; text-align: left;
+}
+.chatMobileReplyQuote strong { color: #dc71ff; font-size: 10px; }
+.chatMobileReplyQuote span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 .chatMobileMessageImage {
   position: relative;
@@ -226,6 +237,16 @@ button { -webkit-tap-highlight-color: transparent; }
   border-top: 1px solid rgba(255, 255, 255, .1);
   background: rgba(10, 10, 17, .96);
 }
+.chatMobileReplyPreview {
+  display: flex; align-items: center; justify-content: space-between; gap: 9px;
+  margin-bottom: 7px; padding: 8px 9px; border-left: 3px solid #cf37ff;
+  border-radius: 8px; background: rgba(207,55,255,.1);
+}
+.chatMobileReplyPreview[hidden] { display: none!important; }
+.chatMobileReplyPreview div { min-width: 0; }
+.chatMobileReplyPreview strong { display: block; color: #dc71ff; font-size: 10px; }
+.chatMobileReplyPreview p { overflow: hidden; margin: 2px 0 0; color: #cfcfd8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.chatMobileReplyPreview > button { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(255,255,255,.08); color: #fff; font-size: 20px; }
 
 .chatMobileComposer textarea {
   display: block;
@@ -322,6 +343,21 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileAdminActions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
 .chatMobileAdminActions button{min-height:40px;border:1px solid rgba(255,255,255,.13);border-radius:10px;background:rgba(255,255,255,.08);color:#fff;font-weight:800}
 .chatMobileAdminActions button:last-child{background:linear-gradient(135deg,#cf37ff,#8425df)}
+.chatMobileMessageActionModal,.chatMobileEditModal{display:grid;gap:13px;width:min(100%,410px);padding:18px;border:1px solid rgba(207,55,255,.35);border-radius:18px;background:#151521;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.chatMobileMessageActionModal h2,.chatMobileEditModal h2{margin:0;font-size:19px;text-align:center}
+.chatMobileMessageActionPreview{min-width:0;padding:10px;border-left:3px solid #cf37ff;border-radius:9px;background:rgba(207,55,255,.09)}
+.chatMobileMessageActionPreview strong{display:block;color:#dc71ff;font-size:11px}
+.chatMobileMessageActionPreview p{overflow:hidden;margin:3px 0 0;color:#d7d7df;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.chatMobileMessageActionButtons{display:grid;gap:7px}
+.chatMobileMessageActionButtons[hidden]{display:none!important}
+.chatMobileMessageActionButtons button,.chatMobileMessageActionCancel,.chatMobileEditActions button{min-height:43px;border:1px solid rgba(255,255,255,.13);border-radius:11px;background:rgba(255,255,255,.075);color:#fff;font-size:13px;font-weight:800}
+.chatMobileMessageActionButtons button[hidden]{display:none!important}
+.chatMobileMessageActionButtons button.danger{border-color:rgba(255,92,92,.3);background:rgba(255,64,64,.12);color:#ff9b9b}
+.chatMobileMessageActionCancel{background:transparent;color:#aaaab7}
+.chatMobileEditModal textarea{width:100%;min-height:130px;resize:vertical;padding:12px;border:1px solid rgba(255,255,255,.13);border-radius:11px;outline:none;background:#090910;color:#fff;font:inherit;line-height:1.4}
+.chatMobileEditModal textarea:focus{border-color:rgba(207,55,255,.72);box-shadow:0 0 0 2px rgba(207,55,255,.1)}
+.chatMobileEditActions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chatMobileEditActions button:last-child{background:linear-gradient(135deg,#cf37ff,#8425df)}
 
 @media (max-height: 620px) {
   .chatMobileHeader { min-height: 58px; padding-top: calc(5px + env(safe-area-inset-top)); padding-bottom: 5px; }

@@ -7811,7 +7811,8 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 .chat-admin-password-modal,
 .chat-release-notes-modal,
-.chat-hook-edit-modal { width: min(560px, calc(100vw - 36px)); max-width: 560px; display: grid; gap: 12px; }
+.chat-hook-edit-modal,
+.chat-hook-message-actions-modal { width: min(560px, calc(100vw - 36px)); max-width: 560px; display: grid; gap: 12px; }
 .chat-release-notes-modal textarea { width: 100%; resize: vertical; }
 .chat-hook-edit-modal textarea {
   width: 100%;
@@ -8008,6 +8009,9 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 #homeView .chat-hook-pinned {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
   flex: 0 0 auto;
   margin: 8px 8px 0;
   padding: 8px 9px;
@@ -8097,6 +8101,20 @@ body.tools-mode .copy-project-card .selected-folder-box {
   border-color: rgba(158, 255, 0, .22);
   border-radius: 4px 11px 11px 11px;
   background: rgba(255, 255, 255, .055);
+}
+
+#homeView .chat-hook-message.actionable .chat-hook-message-body {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#homeView .chat-hook-message.highlighted .chat-hook-message-body {
+  animation: chat-hook-message-highlight .9s ease;
+}
+
+@keyframes chat-hook-message-highlight {
+  50% { border-color: rgba(207,55,255,.9); box-shadow: 0 0 0 3px rgba(207,55,255,.16); }
 }
 
 #homeView .chat-hook-message-head {
@@ -8211,6 +8229,24 @@ body.tools-mode .copy-project-card .selected-folder-box {
   overflow-wrap: anywhere;
 }
 
+#homeView .chat-hook-reply-quote {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  margin: 1px 0 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  background: rgba(0,0,0,.24);
+  color: #dfdfe7;
+  text-align: left;
+  cursor: pointer;
+}
+
+#homeView .chat-hook-reply-quote strong { color: #dc71ff; font-size: 9px; }
+#homeView .chat-hook-reply-quote span { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+
 #homeView .chat-hook-message-image {
   position: relative;
   display: block;
@@ -8303,6 +8339,41 @@ body.tools-mode .copy-project-card .selected-folder-box {
   border-top: 1px solid var(--line);
   background: rgba(5, 5, 9, .38);
 }
+
+#homeView .chat-hook-reply-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 7px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(207,55,255,.09);
+}
+
+#homeView .chat-hook-reply-preview.hidden { display: none; }
+#homeView .chat-hook-reply-preview div { min-width: 0; }
+#homeView .chat-hook-reply-preview strong { display: block; color: #dc71ff; font-size: 9px; }
+#homeView .chat-hook-reply-preview p { overflow: hidden; margin: 2px 0 0; color: #cfcfd8; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+#homeView .chat-hook-reply-preview > button { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: rgba(255,255,255,.08); color: #fff; font-size: 18px; cursor: pointer; }
+
+.chat-hook-action-preview {
+  min-width: 0;
+  padding: 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: rgba(207,55,255,.09);
+  text-align: left;
+}
+
+.chat-hook-action-preview strong { display: block; color: #dc71ff; font-size: 11px; }
+.chat-hook-action-preview p { overflow: hidden; margin: 3px 0 0; color: #d7d7df; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-hook-message-action-buttons { display: grid; gap: 7px; }
+.chat-hook-message-action-buttons.hidden { display: none; }
+.chat-hook-message-action-buttons button { width: 100%; min-height: 42px; justify-content: center; }
+.chat-hook-message-action-buttons button.hidden { display: none; }
+.chat-hook-message-action-buttons button.danger { border-color: rgba(255,92,92,.3); background: rgba(255,64,64,.12); color: #ff9b9b; }
 
 #homeView #chatHookMessageInput {
   display: block;

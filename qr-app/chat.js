@@ -15,6 +15,12 @@
   let sending = false
   let selectedMedia = null
   let adminPassword = ''
+  let replyingToMessageId = 0
+  let editingMessageId = 0
+  let actionMessageId = 0
+  let messageHoldTimer = 0
+  let messageHoldStart = null
+  let suppressMessageClickUntil = 0
   let pollTimer = 0
   let mobileSession = readMobileSession()
 
@@ -66,6 +72,27 @@
     const date = new Date(value || '')
     if (!Number.isFinite(date.getTime())) return ''
     return date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  }
+
+  function messagePreview(message) {
+    const text = String(message?.text || '').replace(/\s+/g, ' ').trim()
+    if (text) return text.slice(0, 120)
+    if (message?.hasImage || message?.imageUrl) return '📷 Imagem'
+    if (message?.hasVideo || message?.videoUrl) return '🎬 Vídeo'
+    return 'Mensagem'
+  }
+
+  function messagePermissions(message) {
+    const ready = Boolean(message) && !message.pending && !message.failed && Number(message.id || 0) > 0
+    const userId = Number(chatState?.user?.id || 0)
+    const isAdmin = chatState?.user?.isAdmin === true
+    const own = ready && userId > 0 && Number(message?.customerId || 0) === userId
+    return {
+      reply: ready,
+      edit: ready && (isAdmin || own),
+      delete: ready && (isAdmin || own),
+      pin: ready && isAdmin && own && Boolean(String(message?.text || '').trim())
+    }
   }
 
   async function requestJson(url, payload = {}) {
@@ -166,6 +193,10 @@
 
         <div id="chatMobileClosedNotice" class="chatMobileClosedNotice" hidden>Chat fechado pelo administrador</div>
         <section id="chatMobileComposer" class="chatMobileComposer">
+          <div id="chatMobileReplyPreview" class="chatMobileReplyPreview" hidden>
+            <div><strong>Respondendo a <span id="chatMobileReplyName"></span></strong><p id="chatMobileReplyText"></p></div>
+            <button id="chatMobileCancelReply" type="button" aria-label="Cancelar resposta">×</button>
+          </div>
           <div id="chatMobilePreview" class="chatMobilePreview" hidden>
             <img id="chatMobilePreviewImage" alt="Imagem escolhida" />
             <video id="chatMobilePreviewVideo" muted playsinline preload="metadata" hidden></video>
@@ -200,6 +231,31 @@
             <div class="chatMobileAdminActions"><button id="chatMobileAdminClear" type="button">Limpar chat</button><button id="chatMobileAdminClose" type="button">Cancelar</button><button id="chatMobileAdminSave" type="button">Salvar</button></div>
           </section>
         </div>
+        <div id="chatMobileMessageActions" class="chatMobileAdminBackdrop" hidden>
+          <section class="chatMobileMessageActionModal">
+            <h2 id="chatMobileMessageActionTitle">Opções da mensagem</h2>
+            <div class="chatMobileMessageActionPreview"><strong id="chatMobileMessageActionName"></strong><p id="chatMobileMessageActionText"></p></div>
+            <div id="chatMobileMessageActionButtons" class="chatMobileMessageActionButtons">
+              <button type="button" data-message-action="reply">Responder</button>
+              <button type="button" data-message-action="edit">Editar mensagem</button>
+              <button type="button" data-message-action="pin">Fixar mensagem</button>
+              <button class="danger" type="button" data-message-action="delete">Apagar mensagem</button>
+            </div>
+            <div id="chatMobileDeleteConfirmButtons" class="chatMobileMessageActionButtons" hidden>
+              <button type="button" data-message-action="cancel-delete">Voltar</button>
+              <button class="danger" type="button" data-message-action="confirm-delete">Apagar para todos</button>
+            </div>
+            <button id="chatMobileMessageActionCancel" class="chatMobileMessageActionCancel" type="button">Cancelar</button>
+          </section>
+        </div>
+        <div id="chatMobileEditModal" class="chatMobileAdminBackdrop" hidden>
+          <section class="chatMobileEditModal">
+            <h2>Editar mensagem</h2>
+            <textarea id="chatMobileEditInput" rows="6" maxlength="1000" placeholder="Digite o novo texto da mensagem..."></textarea>
+            <div id="chatMobileEditStatus" class="chatMobileStatus"></div>
+            <div class="chatMobileEditActions"><button id="chatMobileEditCancel" type="button">Cancelar</button><button id="chatMobileEditSave" type="button">Salvar edição</button></div>
+          </section>
+        </div>
       </main>`
 
     ensureEmojiPicker()
@@ -224,22 +280,12 @@
       container.innerHTML = '<div class="chatMobileEmpty">Nenhuma mensagem ainda. Comece a conversa.</div>'
       return
     }
-    const userId = Number(chatState?.user?.id || 0)
-    const isCurrentAdmin = chatState?.user?.isAdmin === true
-    const pinnedId = Number(chatState?.chat?.pinnedMessageId || 0)
     container.innerHTML = list.map((message) => {
       const name = escapeHtml(message.name || 'User')
       const text = escapeHtml(message.text || '').replace(/\n/g, '<br>')
-      const canPin = !message.pending && !message.failed && isCurrentAdmin && Number(message.customerId || 0) === userId && Boolean(String(message.text || '').trim())
-      const pin = canPin
-        ? `<button class="chatMobilePin" type="button" data-pin-message="${Number(message.id || 0)}">${Number(message.id || 0) === pinnedId ? 'Desafixar' : '📌 Fixar'}</button>`
-        : ''
-      const editAction = !message.pending && !message.failed && isCurrentAdmin
-        ? `<button class="chatMobileEdit" type="button" data-edit-message="${Number(message.id || 0)}" aria-label="Editar mensagem" title="Editar mensagem">✎</button>`
-        : ''
-      const canDelete = !message.pending && !message.failed && (isCurrentAdmin || Number(message.customerId || 0) === userId)
-      const deleteAction = canDelete
-        ? `<button class="chatMobileDelete" type="button" data-delete-message="${Number(message.id || 0)}" aria-label="Apagar mensagem" title="Apagar mensagem">🗑</button>`
+      const permissions = messagePermissions(message)
+      const reply = message.replyTo
+        ? `<button class="chatMobileReplyQuote" type="button" data-jump-message="${Number(message.replyTo.id || 0)}"><strong>${escapeHtml(message.replyTo.name || 'Usuário')}</strong><span>${escapeHtml(messagePreview(message.replyTo))}</span></button>`
         : ''
       const uploadBadge = message.pending
         ? '<span class="chatMobileUploadSpinner"></span>'
@@ -253,7 +299,7 @@
         ? `<div class="chatMobileMessageVideo${message.pending ? ' uploading' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadBadge}</div>`
         : ''
       return `
-        <article class="chatMobileMessage ${message.isAdmin ? 'admin' : 'user'}">
+        <article class="chatMobileMessage ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}" data-chat-message-id="${Number(message.id || 0)}">
           <div class="chatMobileAvatar">${avatarHtml(message.name, message.avatarUrl)}</div>
           <div class="chatMobileBubble">
             <div class="chatMobileMessageHead">
@@ -261,10 +307,8 @@
               ${message.isAdmin ? '<span>ADMIN</span>' : ''}
               <time>${escapeHtml(formatTime(message.createdAt))}</time>
               ${message.editedAt ? '<small class="chatMobileEdited">editada</small>' : ''}
-              ${pin}
-              ${editAction}
-              ${deleteAction}
             </div>
+            ${reply}
             ${text ? `<p>${text}</p>` : ''}
             ${image}
             ${video}
@@ -338,6 +382,7 @@
       lastMessageId = Math.max(lastMessageId, id)
     }
     if (changed) renderMessages(full)
+    if (replyingToMessageId && !messages.has(replyingToMessageId)) clearReplyToMessage()
     updateHeaderAndControls()
     const status = document.getElementById('chatMobileStatus')
     if (status?.dataset.connection === '1') {
@@ -511,6 +556,8 @@
       return
     }
     const media = selectedMedia ? { ...selectedMedia } : null
+    const replyToMessageId = messages.has(replyingToMessageId) ? replyingToMessageId : 0
+    const replyTo = replyToMessageId ? messages.get(replyToMessageId) : null
     const tempId = media ? Date.now() * 1000 + Math.floor(Math.random() * 1000) : 0
     if (tempId) {
       const user = chatState?.user || {}
@@ -524,6 +571,10 @@
         imageUrl: media.kind === 'image' ? media.dataUrl : '',
         videoUrl: media.kind === 'video' ? media.dataUrl : '',
         videoDurationSeconds: media.durationSeconds || 0,
+        replyTo: replyTo ? {
+          id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
+          text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasVideo: Boolean(replyTo.videoUrl)
+        } : null,
         createdAt: new Date().toISOString(),
         pending: true,
       })
@@ -536,12 +587,14 @@
     try {
       const result = await post('/chat/messages', {
         text,
+        replyToMessageId,
         image: media?.kind === 'image' ? { mimeType: media.mimeType, base64: media.base64 } : null,
         video: media?.kind === 'video' ? { mimeType: media.mimeType, base64: media.base64, durationSeconds: media.durationSeconds } : null,
       })
       if (tempId) messages.delete(tempId)
       if (input) input.value = ''
       clearSelectedMedia()
+      clearReplyToMessage()
       applyState(result, false)
       renderMessages(true)
       document.getElementById('chatMobileStatus').textContent = ''
@@ -571,13 +624,87 @@
     }
   }
 
+  function clearReplyToMessage() {
+    replyingToMessageId = 0
+    const preview = document.getElementById('chatMobileReplyPreview')
+    if (preview) preview.hidden = true
+  }
+
+  function replyToMessage(messageId) {
+    const message = messages.get(Math.floor(Number(messageId)))
+    if (!messagePermissions(message).reply) return
+    replyingToMessageId = Number(message.id)
+    document.getElementById('chatMobileReplyName').textContent = String(message.name || 'Usuário')
+    document.getElementById('chatMobileReplyText').textContent = messagePreview(message)
+    document.getElementById('chatMobileReplyPreview').hidden = false
+    closeMessageActions()
+    document.getElementById('chatMobileInput')?.focus()
+  }
+
+  function closeMessageActions() {
+    actionMessageId = 0
+    const modal = document.getElementById('chatMobileMessageActions')
+    if (modal) modal.hidden = true
+  }
+
+  function openMessageActions(messageId) {
+    const message = messages.get(Math.floor(Number(messageId)))
+    const permissions = messagePermissions(message)
+    if (!permissions.reply) return
+    actionMessageId = Number(message.id)
+    document.getElementById('chatMobileMessageActionTitle').textContent = 'Opções da mensagem'
+    document.getElementById('chatMobileMessageActionName').textContent = String(message.name || 'Usuário')
+    document.getElementById('chatMobileMessageActionText').textContent = messagePreview(message)
+    const buttons = document.getElementById('chatMobileMessageActionButtons')
+    buttons.hidden = false
+    buttons.querySelector('[data-message-action="reply"]').hidden = !permissions.reply
+    buttons.querySelector('[data-message-action="edit"]').hidden = !permissions.edit
+    buttons.querySelector('[data-message-action="delete"]').hidden = !permissions.delete
+    const pinButton = buttons.querySelector('[data-message-action="pin"]')
+    pinButton.hidden = !permissions.pin
+    pinButton.textContent = Number(chatState?.chat?.pinnedMessageId || 0) === Number(message.id) ? 'Desafixar mensagem' : 'Fixar mensagem'
+    document.getElementById('chatMobileDeleteConfirmButtons').hidden = true
+    document.getElementById('chatMobileMessageActions').hidden = false
+    navigator.vibrate?.(18)
+  }
+
+  function openPinnedMessageActions() {
+    const messageId = Number(chatState?.chat?.pinnedMessageId || 0)
+    if (chatState?.user?.isAdmin !== true || messageId < 1) return
+    if (messages.has(messageId)) {
+      openMessageActions(messageId)
+      return
+    }
+    actionMessageId = messageId
+    document.getElementById('chatMobileMessageActionTitle').textContent = 'Mensagem fixada'
+    document.getElementById('chatMobileMessageActionName').textContent = String(chatState?.user?.name || 'VS Hook')
+    document.getElementById('chatMobileMessageActionText').textContent = String(chatState?.chat?.pinnedMessage || '')
+    const buttons = document.getElementById('chatMobileMessageActionButtons')
+    buttons.hidden = false
+    buttons.querySelectorAll('[data-message-action]').forEach((button) => {
+      button.hidden = button.dataset.messageAction !== 'pin'
+    })
+    buttons.querySelector('[data-message-action="pin"]').textContent = 'Desafixar mensagem'
+    document.getElementById('chatMobileDeleteConfirmButtons').hidden = true
+    document.getElementById('chatMobileMessageActions').hidden = false
+    navigator.vibrate?.(18)
+  }
+
+  function requestDeleteFromActions() {
+    if (!messagePermissions(messages.get(actionMessageId)).delete) return
+    document.getElementById('chatMobileMessageActionTitle').textContent = 'Apagar mensagem?'
+    document.getElementById('chatMobileMessageActionButtons').hidden = true
+    document.getElementById('chatMobileDeleteConfirmButtons').hidden = false
+  }
+
   async function deleteMessage(messageId, button) {
     const normalizedId = Math.floor(Number(messageId))
     if (!Number.isInteger(normalizedId) || normalizedId < 1) return
-    if (!window.confirm('Apagar esta mensagem do Chat Hook para todos? Essa ação não pode ser desfeita.')) return
+    if (!messagePermissions(messages.get(normalizedId)).delete) return
     if (button) button.disabled = true
     try {
       const result = await post('/chat/delete', { messageId: normalizedId })
+      closeMessageActions()
       applyState(result, true)
       document.getElementById('chatMobileStatus').textContent = 'Mensagem apagada.'
     } catch (error) {
@@ -587,25 +714,42 @@
     }
   }
 
-  async function editMessage(messageId, button) {
-    if (chatState?.user?.isAdmin !== true) return
+  function closeEditMessage() {
+    editingMessageId = 0
+    document.getElementById('chatMobileEditModal').hidden = true
+    document.getElementById('chatMobileEditStatus').textContent = ''
+  }
+
+  function editMessage(messageId) {
     const normalizedId = Math.floor(Number(messageId))
     if (!Number.isInteger(normalizedId) || normalizedId < 1) return
     const message = messages.get(normalizedId)
-    if (!message) return
-    const editedText = window.prompt('Editar mensagem:', String(message.text || ''))
-    if (editedText === null) return
+    if (!messagePermissions(message).edit) return
+    editingMessageId = normalizedId
+    document.getElementById('chatMobileEditInput').value = String(message.text || '')
+    document.getElementById('chatMobileEditStatus').textContent = ''
+    closeMessageActions()
+    document.getElementById('chatMobileEditModal').hidden = false
+    setTimeout(() => document.getElementById('chatMobileEditInput')?.focus(), 0)
+  }
+
+  async function saveEditedMessage() {
+    const normalizedId = editingMessageId
+    if (!messagePermissions(messages.get(normalizedId)).edit) return
+    const editedText = String(document.getElementById('chatMobileEditInput')?.value || '')
     if (editedText.length > 1000) {
-      document.getElementById('chatMobileStatus').textContent = 'A mensagem pode ter no máximo 1000 caracteres.'
+      document.getElementById('chatMobileEditStatus').textContent = 'A mensagem pode ter no máximo 1000 caracteres.'
       return
     }
-    if (button) button.disabled = true
+    const button = document.getElementById('chatMobileEditSave')
+    button.disabled = true
     try {
       const result = await post('/chat/edit', { messageId: normalizedId, text: editedText })
       applyState(result, true)
+      closeEditMessage()
       document.getElementById('chatMobileStatus').textContent = 'Mensagem editada.'
     } catch (error) {
-      document.getElementById('chatMobileStatus').textContent = error.message
+      document.getElementById('chatMobileEditStatus').textContent = error.message
     } finally {
       if (button?.isConnected) button.disabled = false
     }
@@ -740,26 +884,99 @@
     document.getElementById('chatMobileCameraInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
     document.getElementById('chatMobileVideoInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'video'))
     document.getElementById('chatMobileRemoveImage')?.addEventListener('click', clearSelectedMedia)
+    document.getElementById('chatMobileCancelReply')?.addEventListener('click', clearReplyToMessage)
     document.getElementById('chatMobileSend')?.addEventListener('click', sendMessage)
-    document.getElementById('chatMobileMessages')?.addEventListener('click', (event) => {
-      const editButton = event.target.closest('[data-edit-message]')
-      if (editButton) {
-        editMessage(Number(editButton.dataset.editMessage || 0), editButton)
+    document.getElementById('chatMobileEditCancel')?.addEventListener('click', closeEditMessage)
+    document.getElementById('chatMobileEditSave')?.addEventListener('click', saveEditedMessage)
+    const messageActions = document.getElementById('chatMobileMessageActions')
+    document.getElementById('chatMobileMessageActionCancel')?.addEventListener('click', closeMessageActions)
+    messageActions?.addEventListener('click', (event) => {
+      if (event.target === messageActions) return closeMessageActions()
+      const action = event.target.closest('[data-message-action]')?.dataset.messageAction
+      const messageId = actionMessageId
+      if (!action || !messageId) return
+      if (action === 'reply') replyToMessage(messageId)
+      else if (action === 'edit') editMessage(messageId)
+      else if (action === 'pin') {
+        closeMessageActions()
+        setPinnedMessage(messageId)
+      } else if (action === 'delete') requestDeleteFromActions()
+      else if (action === 'cancel-delete') openMessageActions(messageId)
+      else if (action === 'confirm-delete') deleteMessage(messageId, event.target.closest('button'))
+    })
+    const editModal = document.getElementById('chatMobileEditModal')
+    editModal?.addEventListener('click', (event) => { if (event.target === editModal) closeEditMessage() })
+    const messagesContainer = document.getElementById('chatMobileMessages')
+    const cancelMessageHold = () => {
+      if (messageHoldTimer) clearTimeout(messageHoldTimer)
+      messageHoldTimer = 0
+      messageHoldStart = null
+    }
+    messagesContainer?.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      const article = event.target.closest('[data-chat-message-id]')
+      const messageId = Number(article?.dataset.chatMessageId || 0)
+      if (!messagePermissions(messages.get(messageId)).reply) return
+      cancelMessageHold()
+      messageHoldStart = { x: event.clientX, y: event.clientY, messageId }
+      messageHoldTimer = window.setTimeout(() => {
+        const heldMessageId = messageHoldStart?.messageId || 0
+        messageHoldTimer = 0
+        messageHoldStart = null
+        if (!heldMessageId) return
+        suppressMessageClickUntil = Date.now() + 700
+        openMessageActions(heldMessageId)
+      }, 520)
+    })
+    messagesContainer?.addEventListener('pointermove', (event) => {
+      if (!messageHoldStart) return
+      if (Math.hypot(event.clientX - messageHoldStart.x, event.clientY - messageHoldStart.y) > 12) cancelMessageHold()
+    })
+    ;['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => messagesContainer?.addEventListener(type, cancelMessageHold))
+    messagesContainer?.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('[data-chat-message-id]')) event.preventDefault()
+    })
+    messagesContainer?.addEventListener('click', (event) => {
+      if (Date.now() < suppressMessageClickUntil) {
+        event.preventDefault()
+        event.stopPropagation()
         return
       }
-      const deleteButton = event.target.closest('[data-delete-message]')
-      if (deleteButton) {
-        deleteMessage(Number(deleteButton.dataset.deleteMessage || 0), deleteButton)
-        return
-      }
-      const pin = event.target.closest('[data-pin-message]')
-      if (pin) {
-        setPinnedMessage(Number(pin.dataset.pinMessage || 0), pin)
+      const replyQuote = event.target.closest('[data-jump-message]')
+      if (replyQuote) {
+        const target = messagesContainer.querySelector(`[data-chat-message-id="${Number(replyQuote.dataset.jumpMessage || 0)}"]`)
+        target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        target?.classList.add('highlighted')
+        if (target) setTimeout(() => target.classList.remove('highlighted'), 900)
         return
       }
       const image = event.target.closest('[data-open-image]')
       if (image?.dataset.openImage) window.open(image.dataset.openImage, '_blank', 'noopener')
     })
+    const pinnedMessage = document.getElementById('chatMobilePinned')
+    let pinnedHoldTimer = 0
+    let pinnedHoldStart = null
+    const cancelPinnedHold = () => {
+      if (pinnedHoldTimer) clearTimeout(pinnedHoldTimer)
+      pinnedHoldTimer = 0
+      pinnedHoldStart = null
+    }
+    pinnedMessage?.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (event.target.closest('button') || chatState?.user?.isAdmin !== true || !Number(chatState?.chat?.pinnedMessageId || 0)) return
+      cancelPinnedHold()
+      pinnedHoldStart = { x: event.clientX, y: event.clientY }
+      pinnedHoldTimer = window.setTimeout(() => {
+        pinnedHoldTimer = 0
+        pinnedHoldStart = null
+        openPinnedMessageActions()
+      }, 520)
+    })
+    pinnedMessage?.addEventListener('pointermove', (event) => {
+      if (pinnedHoldStart && Math.hypot(event.clientX - pinnedHoldStart.x, event.clientY - pinnedHoldStart.y) > 12) cancelPinnedHold()
+    })
+    ;['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => pinnedMessage?.addEventListener(type, cancelPinnedHold))
+    pinnedMessage?.addEventListener('contextmenu', (event) => { if (!event.target.closest('button')) event.preventDefault() })
     document.getElementById('chatMobileUnpin')?.addEventListener('click', (event) => setPinnedMessage(0, event.currentTarget))
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') refresh(!chatState).catch(() => {})
