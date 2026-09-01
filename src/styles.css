@@ -9555,3 +9555,168 @@ body.tools-mode .copy-project-card .selected-folder-box {
     font-size: 13px !important;
   }
 }
+
+/* Segurança responsiva final: conteúdo dinâmico nunca pode esconder ações.
+   Algumas versões antigas desta folha fixavam a altura das telas e cortavam o
+   excedente. Mantemos os painéis densos, mas damos rolagem ao contêiner certo. */
+.content {
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+.actions,
+.inline-progress-area {
+  flex-shrink: 0;
+}
+
+/* Atualização: o chat continua ocupando a coluna da direita e somente a coluna
+   principal rola. A área mínima do card garante que Baixar/Instalar permaneça
+   dentro dele quando a barra de progresso aparece. */
+#homeView.active {
+  overflow: hidden !important;
+}
+
+#homeView .home-live-layout {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#homeView .home-main-column {
+  min-width: 0;
+  min-height: 0;
+  padding-right: 3px;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+#homeView #updateDescriptionCard.update-description-card:not(.hidden) {
+  flex: .75 1 150px !important;
+  min-height: 100px !important;
+}
+
+#homeView .home-update-split {
+  flex: 1 1 210px !important;
+  min-height: 210px !important;
+}
+
+#homeView #updateCard,
+#homeView #noUpdateCard {
+  min-height: 210px !important;
+}
+
+/* Ativação, Dispositivos, Conexão e Status podem ganhar campos, avisos ou
+   progresso em tempo de execução. A rolagem externa evita qualquer recorte. */
+body:not(.tools-mode):not(.lyrics-mode):not(.previous-mode) .content,
+body.bridge-mode .content {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+#licenseView.active,
+#devicesView.active,
+#bridgeView.active,
+#statusView.active {
+  height: auto !important;
+  min-height: 100% !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* O histórico já possui uma lista com rolagem própria; elimina a altura extra
+   que fazia a tela ultrapassar o rodapé da janela. */
+body.previous-mode .content {
+  overflow: hidden !important;
+}
+
+#previousView.active {
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+/* Ferramentas com progresso usam rolagem no card de controles. Assim uma nova
+   mensagem não empurra os botões para fora do painel. */
+body.tools-mode .hook-rename-card,
+body.tools-mode .create-project-setup-card,
+body.tools-mode .add-project-setup-card {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 1000px) {
+  .sidebar.top-menu-bar nav {
+    justify-content: flex-start !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-gutter: stable;
+  }
+
+  .sidebar.top-menu-bar .nav-item {
+    flex: 0 0 auto !important;
+    min-width: 104px !important;
+  }
+
+  #homeView.active,
+  body.download-compact #homeView.active {
+    height: auto !important;
+    min-height: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #homeView .home-live-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(560px, auto) minmax(520px, auto);
+    height: auto !important;
+    min-height: 1088px;
+    overflow: visible !important;
+  }
+
+  #homeView .home-main-column {
+    min-height: 560px;
+    padding-right: 0;
+    overflow: visible !important;
+  }
+
+  #homeView #updateDescriptionCard.update-description-card:not(.hidden) {
+    flex: 0 0 auto !important;
+    min-height: 120px !important;
+  }
+
+  #homeView .home-update-split {
+    flex: 0 0 230px !important;
+    min-height: 230px !important;
+  }
+
+  #homeView #updateCard,
+  #homeView #noUpdateCard {
+    min-height: 230px !important;
+  }
+
+  #homeView .home-chat-panel {
+    min-height: 520px;
+  }
+
+  body.previous-mode .content {
+    overflow-y: auto !important;
+  }
+
+  #previousView.active {
+    height: auto !important;
+    min-height: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  #previousView #previousUpdatesList.updates-list {
+    overflow: visible !important;
+  }
+}

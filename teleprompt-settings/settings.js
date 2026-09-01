@@ -150,6 +150,7 @@ const noticeControls = [
 const statusEl = document.getElementById('saveStatus');
 const noticeStatusEl =
   document.getElementById('recadosSaveStatus');
+const clearModeButton = document.getElementById('clearModeButton');
 
 function setStatus(message, kind = '') {
   statusEl.textContent = message;
@@ -209,6 +210,12 @@ function render() {
     'preset-selected', value.preset !== 'day');
   document.getElementById('presetDay').classList.toggle(
     'preset-selected', value.preset === 'day');
+  const clearModeActive = value.clearMode === true;
+  clearModeButton.classList.toggle('active', clearModeActive);
+  clearModeButton.setAttribute('aria-pressed', String(clearModeActive));
+  clearModeButton.textContent = clearModeActive
+    ? 'Modo Clear ON'
+    : 'Modo Clear';
   updateOutputs();
 }
 
@@ -450,4 +457,16 @@ document.getElementById('presetNight').addEventListener(
   'click', () => applyPreset('night'));
 document.getElementById('presetDay').addEventListener(
   'click', () => applyPreset('day'));
+clearModeButton.addEventListener('click', () => {
+  const selectedSlot = state.slot;
+  state.values[selectedSlot].clearMode =
+    state.values[selectedSlot].clearMode !== true;
+  const selectedPreset =
+    state.values[selectedSlot].preset === 'day' ? 'day' : 'night';
+  state.profiles[selectedSlot][selectedPreset] = {
+    ...state.values[selectedSlot]
+  };
+  render();
+  scheduleSave();
+});
 loadSettings();
