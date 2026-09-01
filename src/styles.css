@@ -6220,6 +6220,40 @@ body.tools-mode .create-project-actions button {
   padding: 6px 8px;
 }
 
+body.tools-mode .project-action-button.project-action-yellow {
+  border: 1px solid rgba(255, 211, 77, .72);
+  background: linear-gradient(135deg, #ffd84d, #f59e0b);
+  color: #281900;
+  box-shadow: 0 7px 18px rgba(245, 158, 11, .22);
+}
+
+body.tools-mode .project-action-button.project-action-yellow:hover:not(:disabled) {
+  border-color: #ffe899;
+  background: linear-gradient(135deg, #ffe36f, #f7ad20);
+}
+
+body.tools-mode .project-action-button.project-action-yellow:active:not(:disabled) {
+  background: linear-gradient(135deg, #f5c62d, #dc8505);
+  transform: translateY(1px);
+}
+
+body.tools-mode .project-action-button.project-action-green {
+  border: 1px solid rgba(158, 255, 0, .72);
+  background: linear-gradient(135deg, #a8ff24, #55cf00);
+  color: #102000;
+  box-shadow: 0 7px 18px rgba(92, 215, 0, .22);
+}
+
+body.tools-mode .project-action-button.project-action-green:hover:not(:disabled) {
+  border-color: #d1ff8a;
+  background: linear-gradient(135deg, #bdff50, #69dc10);
+}
+
+body.tools-mode .project-action-button.project-action-green:active:not(:disabled) {
+  background: linear-gradient(135deg, #8ce611, #43b700);
+  transform: translateY(1px);
+}
+
 body.tools-mode .create-project-setup-card .inline-progress-area,
 body.tools-mode .add-project-setup-card .inline-progress-area {
   flex: 0 0 auto;
