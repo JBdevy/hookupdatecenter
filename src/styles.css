@@ -6548,15 +6548,30 @@ body.tools-mode .tools-midi-panel .tools-midi-grid {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   grid-template-rows: none;
+  grid-auto-rows: max-content;
   align-items: start;
   align-content: start;
   gap: 9px;
 }
 
 body.tools-mode .tools-midi-panel .tools-midi-card {
+  height: auto;
   min-height: 0;
   padding: 10px 12px;
   gap: 9px;
+}
+
+body.tools-mode .tools-midi-panel .tool-card-header {
+  min-height: max-content;
+  flex: 0 0 auto;
+}
+
+body.tools-mode .tools-midi-panel .tool-card-header > div {
+  min-width: 0;
+}
+
+body.tools-mode .tools-midi-panel .tool-card-header h2 {
+  overflow-wrap: anywhere;
 }
 
 body.tools-mode .tools-midi-panel .hook-midi-mtc-card {

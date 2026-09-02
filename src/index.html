@@ -904,10 +904,10 @@
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="create-project">Create Project</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="add-project">Add Project</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">CNX Redundante</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="show-mode">Modo Show</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">Hook Marker</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="show-mode">Modo Show</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="pingpong">PingPong Hook</button>
         </nav>
 
@@ -1290,7 +1290,7 @@
                 <button id="hookMidiMtcPrimaryButton" class="secondary-button" type="button">Voltar para PC A</button>
               </div>
               <ol class="tools-instructions-list">
-                <li>Configure nos dois computadores o mesmo FPS de timecode: 24, 25, 29,97 ou 30 FPS.</li>
+                <li>O VS Hook utiliza o padrão fixo de 30 FPS nos dois computadores e no grandMA2.</li>
                 <li>PC A e PC B devem manter o Transmitter Time Code ativo para o PC C.</li>
                 <li>No PC B, selecione a ponta receptora como fonte externa MTC do REAPER e ative Jam Sync/freewheel.</li>
                 <li>No PC C, selecione a ponta receptora como entrada MIDI do grandMA2. O VS Hook entrega somente A ou B por vez.</li>
@@ -1457,11 +1457,7 @@
               <div class="form-grid hook-marker-common-settings">
                 <label>
                   FPS do timecode
-                  <select id="hookMarkerFps">
-                    <option value="24">24 FPS</option>
-                    <option value="25">25 FPS</option>
-                    <option value="30" selected>30 FPS</option>
-                  </select>
+                  <input type="text" value="30 FPS (padrão VS Hook)" readonly aria-readonly="true" />
                 </label>
                 <label>
                   Offset do timecode

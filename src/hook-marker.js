@@ -1,7 +1,5 @@
 const dgram = require('dgram');
 
-const GRANDMA2_FRAME_RATES = new Set([24, 25, 30]);
-
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -89,17 +87,15 @@ function markersForSong(song, rawMarkers) {
   const contained = normalizeMarkers(rawMarkers)
     .filter((marker) =>
       marker.position > song.start + 0.0005 &&
-      marker.position < song.end - 0.0005)
-    .map((marker) => ({
-      ...marker,
-      position: Math.max(0, marker.position - song.start)
-    }));
+      marker.position < song.end - 0.0005);
   return [
     {
       id: `region-${song.id}`,
       number: 1,
       name: song.name,
-      position: 0,
+      // Um MTC continuo identifica a musica pela posicao do projeto. Reiniciar
+      // todas as regioes em zero faria todos os shows do Slot 2 dispararem.
+      position: song.start,
       color: '',
       regionStart: true
     },
@@ -137,10 +133,8 @@ function secondsToTimecode(seconds, fps = 30) {
 }
 
 function normalizeSettings(settings = {}) {
-  const requestedFps = Math.round(finiteNumber(settings.fps, 30));
-  const fps = GRANDMA2_FRAME_RATES.has(requestedFps) ? requestedFps : 30;
   return {
-    fps,
+    fps: 30,
     offset: String(settings.offset || '00:00:00:00'),
     sequence: positiveInteger(settings.sequence, 1, 9999),
     executorPage: positiveInteger(settings.executorPage, 1, 9999),
@@ -210,7 +204,9 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
     `Assign Sequence ${settings.sequence} At Executor ${settings.executorPage}.${settings.executor} /o`,
     `Import \"${fileStem}-timecode\" At Timecode ${settings.timecodePool}`,
     `Assign Timecode ${settings.timecodePool} /Slot=${settings.timecodeSlot}`,
-    `Label Timecode ${settings.timecodePool} \"${projectName}\"`
+    `Label Timecode ${settings.timecodePool} \"${projectName}\"`,
+    // Um show ligado a fonte externa precisa ficar em Play, aguardando MTC.
+    `Go Timecode ${settings.timecodePool}`
   ];
   const lines = grandMa2Header(projectName, 'macro');
   lines.push(`  <Macro index="0" name="Hook Marker - ${xmlEscape(projectName)}">`);

@@ -2679,7 +2679,7 @@ async function refreshCopyProjectState() {
 
 function readHookMarkerSettings() {
   return {
-    fps: Number($('#hookMarkerFps')?.value || 30),
+    fps: 30,
     offset: String($('#hookMarkerOffset')?.value || '00:00:00:00').trim(),
     sequence: Number($('#hookMarkerSequence')?.value || 1),
     executorPage: Number($('#hookMarkerExecutorPage')?.value || 1),
@@ -2694,7 +2694,6 @@ function readHookMarkerSettings() {
 
 function applyHookMarkerSettings(settings = {}) {
   const fields = {
-    hookMarkerFps: settings.fps,
     hookMarkerOffset: settings.offset,
     hookMarkerSequence: settings.sequence,
     hookMarkerExecutorPage: settings.executorPage,
@@ -3048,7 +3047,7 @@ function setupToolsSubmenu() {
   $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
   $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
   [
-    '#hookMarkerFps', '#hookMarkerOffset', '#hookMarkerSequence',
+    '#hookMarkerOffset', '#hookMarkerSequence',
     '#hookMarkerExecutorPage', '#hookMarkerExecutor', '#hookMarkerTimecodePool',
     '#hookMarkerTimecodeSlot',
     '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
