@@ -41,6 +41,7 @@ const {
   CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE,
   auditCreateProjectFolders,
   buildCreateProjectRpp,
+  inferSongNameFromFolder,
   prepareCreateProjectMedia,
   readMp3AudioDuration,
   readPcmAudioDuration,
@@ -243,6 +244,7 @@ function getCopyProjectService() {
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const VSHOOK_FFMPEG_VERSION = '8.1.2';
+const VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION = 'macos-portable-2';
 const VSHOOK_FFMPEG_WINDOWS_ARCHIVE =
   `ffmpeg-${VSHOOK_FFMPEG_VERSION}-win64-lgpl-shared.zip`;
 const VSHOOK_FFMPEG_MACOS_ARCHIVE =
@@ -6294,7 +6296,14 @@ function hasCompleteWindowsFfmpegRoot(root) {
 }
 
 function hasCompleteMacFfmpegRoot(root) {
-  return physicalFs.existsSync(path.join(root, 'lib', 'libavutil.60.dylib')) &&
+  let revision = '';
+  try {
+    revision = physicalFs.readFileSync(
+      path.join(root, 'VSHOOK_RUNTIME_REVISION'), 'utf8'
+    ).trim();
+  } catch (_) {}
+  return revision === VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION &&
+    physicalFs.existsSync(path.join(root, 'lib', 'libavutil.60.dylib')) &&
     physicalFs.existsSync(path.join(root, 'lib', 'libavcodec.62.dylib')) &&
     physicalFs.existsSync(path.join(root, 'lib', 'libavformat.62.dylib')) &&
     physicalFs.existsSync(path.join(root, 'lib', 'libswscale.9.dylib')) &&
@@ -6692,6 +6701,9 @@ function installMacPayload(files, options = {}) {
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
   if (ffmpegArchive) {
+    commands.push(
+      `FFMPEG_REVISION=${shellQuote(VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION)}`
+    );
     commands.push(`FFMPEG_ZIP=${shellQuote(ffmpegArchive)}`);
     commands.push('FFMPEG_EXTRACT=$(mktemp -d /tmp/vshook-ffmpeg.XXXXXX)');
     commands.push('cleanup_vshook_ffmpeg() { rm -rf "$FFMPEG_EXTRACT"; }');
@@ -6704,6 +6716,8 @@ function installMacPayload(files, options = {}) {
     commands.push('test -f "$FFMPEG_SOURCE/lib/libswscale.9.dylib"');
     commands.push('test -f "$FFMPEG_SOURCE/lib/libavfilter.11.dylib"');
     commands.push('test -x "$FFMPEG_SOURCE/bin/ffmpeg"');
+    commands.push('test "$(cat "$FFMPEG_SOURCE/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION"');
+    commands.push('"$FFMPEG_SOURCE/bin/ffmpeg" -hide_banner -version >/dev/null');
   }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
@@ -6739,7 +6753,7 @@ function installMacPayload(files, options = {}) {
     commands.push('rm -rf "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_BACKUP"');
     commands.push('ditto "$FFMPEG_SOURCE" "$GLOBAL_FFMPEG_TMP"');
     commands.push('[ ! -e "$GLOBAL_FFMPEG_DIR" ] || mv "$GLOBAL_FFMPEG_DIR" "$GLOBAL_FFMPEG_BACKUP"');
-    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$GLOBAL_FFMPEG_DIR/bin/ffmpeg"; then');
+    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$GLOBAL_FFMPEG_DIR/bin/ffmpeg" && test "$(cat "$GLOBAL_FFMPEG_DIR/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION" && "$GLOBAL_FFMPEG_DIR/bin/ffmpeg" -hide_banner -version >/dev/null; then');
     commands.push('  rm -rf "$GLOBAL_FFMPEG_BACKUP"');
     commands.push('  rm -rf "$GLOBAL_FFMPEG_PARENT/VLC"');
     commands.push('else');
@@ -6799,7 +6813,7 @@ function installMacPayload(files, options = {}) {
       commands.push('  rm -rf "$USER_FFMPEG_TMP" "$USER_FFMPEG_BACKUP"');
       commands.push('  ditto "$FFMPEG_SOURCE" "$USER_FFMPEG_TMP"');
       commands.push('  [ ! -e "$USER_FFMPEG_DIR" ] || mv "$USER_FFMPEG_DIR" "$USER_FFMPEG_BACKUP"');
-      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$USER_FFMPEG_DIR/bin/ffmpeg"; then');
+      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$USER_FFMPEG_DIR/bin/ffmpeg" && test "$(cat "$USER_FFMPEG_DIR/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION" && "$USER_FFMPEG_DIR/bin/ffmpeg" -hide_banner -version >/dev/null; then');
       commands.push('    rm -rf "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_PARENT/VLC"');
       commands.push('    chown -R "$USER_NAME":staff "$USER_FFMPEG_DIR" 2>/dev/null || true');
       commands.push('  else');
@@ -7188,7 +7202,11 @@ function sanitizeHookRenameSuffix(raw) {
 }
 
 function getHookRenameFolderName(folderPath) {
-  return sanitizeHookRenameSuffix(path.basename(String(folderPath || '').replace(/[\\/]+$/g, '')) || 'pasta');
+  const rawFolderName = path.basename(String(folderPath || '').replace(/[\\/]+$/g, '')) || 'pasta';
+  // O Hook Rename usa a mesma inteligência do Create/Add Project para não
+  // incorporar marcas de fornecedores ao sufixo dos arquivos.
+  const inferredSongName = inferSongNameFromFolder(rawFolderName).name;
+  return sanitizeHookRenameSuffix(inferredSongName || rawFolderName);
 }
 
 function getHookRenameSuggestedSuffix(folderPath) {

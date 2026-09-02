@@ -56,6 +56,9 @@ async function main() {
   assert.strictEqual(inferSongNameFromFolder('Clube de VS - Ainda Ontem Chorei de Saudade').name, 'Ainda Ontem Chorei de Saudade');
   assert.strictEqual(inferSongNameFromFolder('VS Sertanejo - Página de Amigos').name, 'Página de Amigos');
   assert.strictEqual(inferSongNameFromFolder('Deus de Promessas - VS Gospel').name, 'Deus de Promessas');
+  assert.strictEqual(inferSongNameFromFolder('VS Premium - Temporal').name, 'Temporal');
+  assert.strictEqual(inferSongNameFromFolder('Clube do VS - Temporal').name, 'Temporal');
+  assert.strictEqual(inferSongNameFromFolder('Temporal - Clube de VS').name, 'Temporal');
   assert.strictEqual(inferSongNameFromFolder('MultiTracks.com.br - Bondade de Deus').name, 'Bondade de Deus');
   assert.strictEqual(inferSongNameFromFolder('MultiTracksForWorship.com - Way Maker').name, 'Way Maker');
   assert.strictEqual(inferSongNameFromFolder('Loop Community - Gratidão').name, 'Gratidão');

@@ -235,6 +235,26 @@ jobs:
           test -f "$FFMPEG_RUNTIME" || (echo "Pacote final da Hook Center sem o runtime FFmpeg universal." && exit 1)
           test "$(stat -f%z "$FFMPEG_RUNTIME")" -ge 8388608 || (echo "Runtime FFmpeg universal incompleto." && exit 1)
           test "$(head -c 2 "$FFMPEG_RUNTIME")" = "PK" || (echo "Runtime FFmpeg universal não é um ZIP válido." && exit 1)
+          FFMPEG_AUDIT="$RUNNER_TEMP/vshook-ffmpeg-audit"
+          rm -rf "$FFMPEG_AUDIT"
+          mkdir -p "$FFMPEG_AUDIT"
+          ditto -x -k "$FFMPEG_RUNTIME" "$FFMPEG_AUDIT"
+          FFMPEG_ROOT="$FFMPEG_AUDIT/FFmpeg"
+          test "$(cat "$FFMPEG_ROOT/VSHOOK_RUNTIME_REVISION")" = "macos-portable-2" || \
+            (echo "Runtime FFmpeg não possui a revisão portátil atual." && exit 1)
+          for BINARY in "$FFMPEG_ROOT/bin/ffmpeg" "$FFMPEG_ROOT/lib/"*.dylib; do
+            test -L "$BINARY" && continue
+            for ARCH in x86_64 arm64; do
+              INVALID_DEPS="$(otool -arch "$ARCH" -L "$BINARY" | tail -n +2 | awk '{print $1}' | grep -Ev '^(@rpath/|@loader_path/|@executable_path/|/usr/lib/|/System/Library/)' || true)"
+              test -z "$INVALID_DEPS" || {
+                echo "Runtime FFmpeg depende de componente externo em $(basename "$BINARY") [$ARCH]:"
+                echo "$INVALID_DEPS"
+                exit 1
+              }
+            done
+          done
+          "$FFMPEG_ROOT/bin/ffmpeg" -hide_banner -version >/dev/null || \
+            (echo "Executável FFmpeg empacotado não inicia." && exit 1)
 
       - name: Validate macOS theme payload
         run: |

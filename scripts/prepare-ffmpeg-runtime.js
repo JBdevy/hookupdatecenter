@@ -11,6 +11,7 @@ const ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(ROOT, 'vendor', 'ffmpeg');
 const WINDOWS_FILE = `ffmpeg-${VERSION}-win64-lgpl-shared.zip`;
 const MACOS_FILE = `ffmpeg-${VERSION}-macos-universal-lgpl-shared.zip`;
+const MACOS_RUNTIME_REVISION = 'macos-portable-2';
 const WINDOWS_URL =
   'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/' +
   'ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip';
@@ -45,7 +46,13 @@ function validMacRuntimeZip(filename) {
   const listing = spawnSync('/usr/bin/unzip', ['-Z1', filename], { encoding: 'utf8' });
   if (listing.status !== 0) return false;
   const entries = new Set(String(listing.stdout || '').split(/\r?\n/).filter(Boolean));
+  const revision = spawnSync(
+    '/usr/bin/unzip', ['-p', filename, 'FFmpeg/VSHOOK_RUNTIME_REVISION'],
+    { encoding: 'utf8' }
+  );
   return entries.has('FFmpeg/bin/ffmpeg') &&
+    revision.status === 0 &&
+    String(revision.stdout || '').trim() === MACOS_RUNTIME_REVISION &&
     [...entries].some((entry) => /FFmpeg\/lib\/libavfilter\.11(?:\.\d+)*\.dylib$/.test(entry));
 }
 

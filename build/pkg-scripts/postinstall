@@ -5,6 +5,8 @@
 # atualizacao com o REAPER fechado.
 set -euo pipefail
 
+FFMPEG_RUNTIME_REVISION="macos-portable-2"
+
 log() {
   echo "[Hook Center postinstall] $*"
 }
@@ -19,7 +21,11 @@ is_complete_ffmpeg() {
   [ -f "$root/lib/libavutil.60.dylib" ] &&
     [ -f "$root/lib/libavcodec.62.dylib" ] &&
     [ -f "$root/lib/libavformat.62.dylib" ] &&
-    [ -f "$root/lib/libswscale.9.dylib" ]
+    [ -f "$root/lib/libswscale.9.dylib" ] &&
+    [ -x "$root/bin/ffmpeg" ] &&
+    [ -f "$root/VSHOOK_RUNTIME_REVISION" ] &&
+    [ "$(cat "$root/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_RUNTIME_REVISION" ] &&
+    "$root/bin/ffmpeg" -hide_banner -version >/dev/null 2>&1
 }
 
 is_complete_companion() {

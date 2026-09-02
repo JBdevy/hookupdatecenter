@@ -2,6 +2,7 @@
 set -euo pipefail
 
 FFMPEG_VERSION="8.1.2"
+FFMPEG_RUNTIME_REVISION="macos-portable-2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTPUT="${1:-$PROJECT_ROOT/vendor/ffmpeg/ffmpeg-${FFMPEG_VERSION}-macos-universal-lgpl-shared.zip}"
@@ -41,6 +42,12 @@ build_arch() {
   mkdir -p "$build" "$prefix"
   (
     cd "$build"
+    # O runner pode ter Homebrew/MacPorts instalado. Sem limpar o ambiente,
+    # o configure detecta X11 apenas na fatia arm64 e grava caminhos absolutos
+    # /opt/homebrew nas dylibs, tornando o runtime inutil em outro Mac.
+    unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH
+    unset CPPFLAGS CFLAGS CXXFLAGS LDFLAGS
+    unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR DYLD_LIBRARY_PATH
     "$SOURCE/configure" \
       --prefix="$prefix" \
       --target-os=darwin \
@@ -56,6 +63,9 @@ build_arch() {
       --disable-avdevice \
       --disable-gpl \
       --disable-nonfree \
+      --disable-autodetect \
+      --disable-xlib \
+      --pkg-config=false \
       --enable-videotoolbox \
       --enable-audiotoolbox \
       --extra-cflags="-arch $arch -mmacosx-version-min=$minimum" \
@@ -79,6 +89,8 @@ FFmpeg ${FFMPEG_VERSION}
 Source: https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz
 Configuration: LGPL shared libraries, no --enable-gpl and no --enable-nonfree.
 EOF
+printf '%s\n' "$FFMPEG_RUNTIME_REVISION" > \
+  "$STAGE/VSHOOK_RUNTIME_REVISION"
 
 SIGN_IDENTITY="${VSHOOK_MACOS_SIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
@@ -115,6 +127,23 @@ for program in ffmpeg; do
   codesign --verify --strict "$STAGE/bin/$program"
 done
 
+# O pacote publicado so pode depender do proprio runtime e de componentes do
+# macOS. Esta verificacao examina separadamente x86_64 e arm64 para impedir a
+# regressao em que apenas Apple Silicon exigia libX11 do Homebrew.
+for binary in "$STAGE/bin/ffmpeg" "$STAGE/lib/"*.dylib; do
+  [ -L "$binary" ] && continue
+  for arch in x86_64 arm64; do
+    dependencies="$(otool -arch "$arch" -L "$binary" | tail -n +2 | awk '{print $1}')"
+    invalid="$(printf '%s\n' "$dependencies" | grep -Ev \
+      '^(@rpath/|@loader_path/|@executable_path/|/usr/lib/|/System/Library/)' || true)"
+    if [ -n "$invalid" ]; then
+      echo "Dependencia externa proibida em $(basename "$binary") [$arch]:" >&2
+      printf '%s\n' "$invalid" >&2
+      exit 1
+    fi
+  done
+done
+
 for link in "$WORK/prefix-arm64/lib/"*.dylib; do
   [ -L "$link" ] || continue
   name="$(basename "$link")"
@@ -122,6 +151,8 @@ for link in "$WORK/prefix-arm64/lib/"*.dylib; do
   [ -f "$STAGE/lib/$target" ] || continue
   ln -s "$target" "$STAGE/lib/$name"
 done
+
+"$STAGE/bin/ffmpeg" -hide_banner -version >/dev/null
 
 for required in \
   libavutil.60.dylib \
