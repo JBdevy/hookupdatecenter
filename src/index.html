@@ -79,7 +79,7 @@
 
               <ul id="changelogList" class="changelog hidden" aria-hidden="true"></ul>
 
-              <p class="home-installed-version-field">VS Hook instalada: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
+              <p class="home-installed-version-field">VS Hook Instalado: <strong id="homeInstalledVsHookVersionAlways">--</strong></p>
 
               <div class="actions update-actions-inline">
                 <button id="downloadButton" class="primary-button">Baixar</button>
@@ -134,17 +134,22 @@
               <div id="chatHookImagePreview" class="chat-hook-image-preview hidden">
                 <img id="chatHookImagePreviewImage" alt="Imagem escolhida" />
                 <audio id="chatHookAudioPreview" class="hidden" controls preload="metadata"></audio>
-                <video id="chatHookVideoPreview" class="hidden" muted playsinline preload="metadata"></video>
                 <button id="chatHookRemoveImageButton" type="button" aria-label="Remover mídia">×</button>
               </div>
               <textarea id="chatHookMessageInput" maxlength="1000" rows="2" placeholder="Escreva uma mensagem..."></textarea>
+              <div id="chatHookVoiceRecording" class="chat-hook-voice-recording hidden" aria-live="polite">
+                <span class="chat-hook-recording-dot" aria-hidden="true"></span>
+                <strong id="chatHookVoiceTimer">0:00</strong>
+                <span class="chat-hook-recording-label">Gravando mensagem de voz · máximo 1 min</span>
+                <button id="chatHookVoiceCancel" class="chat-hook-voice-cancel" type="button">Cancelar</button>
+                <button id="chatHookVoiceSend" class="chat-hook-voice-send" type="button">Enviar</button>
+              </div>
               <div class="chat-hook-composer-actions">
                 <div class="chat-hook-attachment-actions">
                   <button id="chatHookEmojiButton" class="chat-hook-icon-button" type="button" title="Emoji">😊</button>
                   <button id="chatHookImageButton" class="chat-hook-icon-button" type="button" title="Enviar foto ou print">📎</button>
                   <input id="chatHookImageInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
-                  <button id="chatHookAudioButton" class="chat-hook-icon-button" type="button" title="Enviar áudio">🎵</button>
-                  <input id="chatHookAudioInput" class="hidden" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,audio/webm" />
+                  <button id="chatHookAudioButton" class="chat-hook-icon-button" type="button" title="Gravar mensagem de voz" aria-label="Gravar mensagem de voz">🎙️</button>
                   <label class="chat-hook-enter-option" title="Quando ativo, Enter envia e Shift+Enter quebra a linha">
                     <input id="chatHookSendWithEnter" type="checkbox" />
                     <span>Enviar com Enter</span>
@@ -1799,6 +1804,7 @@
   </div>
 
   <script type="module" src="../node_modules/emoji-picker-element/index.js"></script>
+  <script src="chat-voice-recorder.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

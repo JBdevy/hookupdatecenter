@@ -8660,6 +8660,10 @@ body.tools-mode .copy-project-card .selected-folder-box {
   background: rgba(255, 255, 255, .055);
 }
 
+#homeView .chat-hook-message.audio-message .chat-hook-message-body {
+  width: min(390px, calc(100% - 56px));
+}
+
 #homeView .chat-hook-message.actionable .chat-hook-message-body {
   touch-action: pan-y;
   user-select: none;
@@ -8870,15 +8874,62 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 #homeView .chat-hook-message-audio {
   position: relative;
-  width: min(100%, 320px);
+  display: flex;
+  width: 100%;
+  min-width: 280px;
+  min-height: 68px;
+  align-items: center;
+  gap: 10px;
   margin-top: 6px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 214, 44, .24);
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255, 214, 44, .12), transparent 42%),
+    linear-gradient(135deg, rgba(25, 25, 34, .98), rgba(10, 10, 16, .98));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 7px 18px rgba(0,0,0,.2);
 }
 
 #homeView .chat-hook-message-audio audio {
+  display: none;
+}
+
+#homeView .chat-hook-audio-play {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  color: #111116;
+  cursor: pointer;
+}
+
+#homeView .chat-hook-audio-play {
+  width: 39px;
+  height: 39px;
+  padding: 0 0 0 2px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #ffe45c, #e5ad00);
+  box-shadow: 0 4px 12px rgba(255, 198, 0, .2);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+#homeView .chat-hook-audio-track { min-width: 0; flex: 1; }
+#homeView .chat-hook-audio-track > strong { display: block; margin-bottom: 5px; color: #f5f5f8; font-size: 9px; letter-spacing: .02em; }
+#homeView .chat-hook-audio-track input {
   display: block;
   width: 100%;
-  min-height: 38px;
+  height: 4px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  border-radius: 999px;
+  outline: none;
+  background: linear-gradient(90deg, #f5c518 var(--chat-audio-progress, 0%), rgba(255,255,255,.16) var(--chat-audio-progress, 0%));
+  cursor: pointer;
 }
+#homeView .chat-hook-audio-track input::-webkit-slider-thumb { width: 11px; height: 11px; appearance: none; border: 2px solid #17171e; border-radius: 50%; background: #ffe45c; box-shadow: 0 0 0 2px rgba(255,228,92,.18); }
+#homeView .chat-hook-audio-time { display: flex; justify-content: space-between; margin-top: 5px; color: #888996; font-size: 8px; font-variant-numeric: tabular-nums; }
 
 #homeView .chat-hook-message-audio.is-uploading audio {
   opacity: .68;
@@ -8980,6 +9031,35 @@ body.tools-mode .copy-project-card .selected-folder-box {
   gap: 6px;
   margin-top: 6px;
 }
+
+#homeView .chat-hook-voice-recording {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 214, 44, .42);
+  border-radius: 11px;
+  background: rgba(255, 204, 0, .075);
+}
+
+#homeView .chat-hook-voice-recording.hidden { display: none; }
+#homeView .chat-hook-recording-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 50%;
+  background: #ff3b30;
+  box-shadow: 0 0 0 5px rgba(255, 59, 48, .14);
+  animation: chatHookRecordingPulse 1s ease-in-out infinite;
+}
+#homeView .chat-hook-recording-label { min-width: 0; flex: 1; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+#homeView .chat-hook-voice-recording button { min-height: 29px; padding: 0 9px; border-radius: 8px; font-size: 9px; font-weight: 900; }
+#homeView .chat-hook-voice-cancel { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); color: #fff; }
+#homeView .chat-hook-voice-send { border: 0; background: linear-gradient(135deg, #32cf72, #168d45); color: #fff; }
+#homeView .chat-hook-composer.is-recording-voice #chatHookMessageInput,
+#homeView .chat-hook-composer.is-recording-voice .chat-hook-composer-actions { display: none; }
+@keyframes chatHookRecordingPulse { 50% { opacity: .42; transform: scale(.82); } }
 
 #homeView .chat-hook-attachment-actions {
   display: flex;
@@ -9770,14 +9850,15 @@ body.tools-mode .add-project-setup-card {
   }
 }
 
-/* Mantém cabeçalho, vídeo e versão instalada nas posições originais. O espaço
-   que antes crescia entre a versão e a ação é que deve ser compactado. */
+/* Mantem a versao e a acao agrupadas na parte inferior do card. */
 #homeView #updateCard .home-installed-version-field {
   flex: 0 0 auto !important;
+  margin-top: auto !important;
 }
 
 #homeView #updateCard .update-actions-inline {
-  margin-top: 4px !important;
+  margin-top: 10px !important;
+  margin-bottom: 0 !important;
 }
 
 /* O vídeo não muda de posição quando o progresso aparece no cabeçalho. */

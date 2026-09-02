@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor, powerSaveBlocker, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 // O Electron intercepta caminhos terminados em .asar no módulo fs comum.
@@ -244,11 +244,8 @@ function getCopyProjectService() {
 
 const BACKEND_URL = (process.env.BACKEND_URL || 'https://hookupdate7.up.railway.app').replace(/\/+$/, '');
 const VSHOOK_FFMPEG_VERSION = '8.1.2';
-const VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION = 'macos-portable-2';
 const VSHOOK_FFMPEG_WINDOWS_ARCHIVE =
   `ffmpeg-${VSHOOK_FFMPEG_VERSION}-win64-lgpl-shared.zip`;
-const VSHOOK_FFMPEG_MACOS_ARCHIVE =
-  `ffmpeg-${VSHOOK_FFMPEG_VERSION}-macos-universal-lgpl-shared.zip`;
 const UPDATE_API_URL_BASE = `${BACKEND_URL}/api/v3/latest`;
 const TEST_UPDATE_API_URL_BASE = `${BACKEND_URL}/api/latest`;
 const BRIDGE_APP_API_URL = `${BACKEND_URL}/api/bridge-app/latest?platform=${getPlatformKey()}`;
@@ -1110,8 +1107,7 @@ async function sendChatMessage(payload = {}) {
       text: String(payload.text || '').slice(0, 1000),
       replyToMessageId: Math.max(0, Math.floor(Number(payload.replyToMessageId) || 0)),
       image: payload.image && typeof payload.image === 'object' ? payload.image : null,
-      audio: payload.audio && typeof payload.audio === 'object' ? payload.audio : null,
-      video: payload.video && typeof payload.video === 'object' ? payload.video : null
+      audio: payload.audio && typeof payload.audio === 'object' ? payload.audio : null
     })
   });
 }
@@ -1908,25 +1904,15 @@ function runProcess(command, args = [], options = {}) {
 }
 
 function getCreateProjectFfmpegToolCandidates(toolName) {
-  const executable = process.platform === 'win32' ? `${toolName}.exe` : toolName;
+  if (process.platform !== 'win32') return [];
+  const executable = `${toolName}.exe`;
   const candidates = [];
-  if (process.platform === 'win32') {
-    candidates.push(path.join(
-      getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', 'bin', executable
-    ));
-    candidates.push(path.join(
-      getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', executable
-    ));
-  } else if (process.platform === 'darwin') {
-    candidates.push(path.join(
-      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg',
-      'bin', executable
-    ));
-    candidates.push(path.join(
-      os.homedir(), 'Library', 'Application Support', 'REAPER', 'UserPlugins',
-      'VSHookRuntime', 'FFmpeg', 'bin', executable
-    ));
-  }
+  candidates.push(path.join(
+    getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', 'bin', executable
+  ));
+  candidates.push(path.join(
+    getWindowsReaperUserPluginsDir(), 'VSHookRuntime', 'FFmpeg', executable
+  ));
   candidates.push(executable);
   return [...new Set(candidates)];
 }
@@ -2008,7 +1994,7 @@ async function buildCreateProjectAudit(folderPaths, sender = null, progressChann
   return auditCreateProjectFolders({
     folderPaths,
     durationResolver: getCreateProjectAudioDuration,
-    peakResolver: getCreateProjectAudioPeakDb,
+    peakResolver: process.platform === 'win32' ? getCreateProjectAudioPeakDb : null,
     onProgress: sender
       ? (progress) => sender.send(progressChannel, progress)
       : null
@@ -6295,31 +6281,6 @@ function hasCompleteWindowsFfmpegRoot(root) {
     physicalFs.existsSync(path.join(root, 'ffmpeg.exe'));
 }
 
-function hasCompleteMacFfmpegRoot(root) {
-  let revision = '';
-  try {
-    revision = physicalFs.readFileSync(
-      path.join(root, 'VSHOOK_RUNTIME_REVISION'), 'utf8'
-    ).trim();
-  } catch (_) {}
-  return revision === VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libavutil.60.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libavcodec.62.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libavformat.62.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libswscale.9.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'lib', 'libavfilter.11.dylib')) &&
-    physicalFs.existsSync(path.join(root, 'bin', 'ffmpeg'));
-}
-
-function getBundledMacFfmpegRuntimeDir() {
-  return '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg';
-}
-
-function hasInstalledBundledMacFfmpegRuntime() {
-  return process.platform === 'darwin' &&
-    hasCompleteMacFfmpegRoot(getBundledMacFfmpegRuntimeDir());
-}
-
 function hasInstalledFfmpegRuntime() {
   if (process.platform === 'win32') {
     const bundledRoot = path.join(
@@ -6328,25 +6289,13 @@ function hasInstalledFfmpegRuntime() {
     );
     return hasCompleteWindowsFfmpegRoot(bundledRoot);
   }
-  if (process.platform === 'darwin') {
-    const roots = [
-      '/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg',
-      path.join(
-        os.homedir(), 'Library', 'Application Support', 'REAPER',
-        'UserPlugins', 'VSHookRuntime', 'FFmpeg'
-      )
-    ];
-    return roots.some(hasCompleteMacFfmpegRoot);
-  }
   return false;
 }
 
 function getBundledFfmpegRuntimeArchive(required = false) {
   const filename = process.platform === 'win32'
     ? VSHOOK_FFMPEG_WINDOWS_ARCHIVE
-    : process.platform === 'darwin'
-      ? VSHOOK_FFMPEG_MACOS_ARCHIVE
-      : '';
+    : '';
   if (!filename) return '';
   const candidates = [
     path.join(process.resourcesPath, 'ffmpeg-runtime', filename),
@@ -6375,28 +6324,15 @@ function validateFfmpegRuntimeArchive(filename) {
   if (!stat.isFile() || stat.size < 1024 * 1024) {
     throw new Error('O runtime de vídeo do FFmpeg está vazio ou incompleto.');
   }
-  if (process.platform === 'win32') {
-    const handle = physicalFs.openSync(filename, 'r');
-    const header = Buffer.alloc(4);
-    try {
-      physicalFs.readSync(handle, header, 0, header.length, 0);
-    } finally {
-      physicalFs.closeSync(handle);
-    }
-    if (header[0] !== 0x50 || header[1] !== 0x4b) {
-      throw new Error('O pacote do FFmpeg não é um ZIP válido.');
-    }
-  } else if (process.platform === 'darwin') {
-    const handle = physicalFs.openSync(filename, 'r');
-    const header = Buffer.alloc(4);
-    try {
-      physicalFs.readSync(handle, header, 0, header.length, 0);
-    } finally {
-      physicalFs.closeSync(handle);
-    }
-    if (header[0] !== 0x50 || header[1] !== 0x4b) {
-      throw new Error('O pacote do FFmpeg não é um ZIP válido.');
-    }
+  const handle = physicalFs.openSync(filename, 'r');
+  const header = Buffer.alloc(4);
+  try {
+    physicalFs.readSync(handle, header, 0, header.length, 0);
+  } finally {
+    physicalFs.closeSync(handle);
+  }
+  if (header[0] !== 0x50 || header[1] !== 0x4b) {
+    throw new Error('O pacote do FFmpeg não é um ZIP válido.');
   }
 }
 
@@ -6663,8 +6599,6 @@ function isMacReaperRunning() {
 function installMacPayload(files, options = {}) {
   const installExtension = options.installExtension !== false;
   const installBundledAssets = options.installBundledAssets !== false;
-  const installFfmpegRuntime = options.installFfmpegRuntime === true ||
-    (installExtension && options.installFfmpegRuntime !== false);
   if (installExtension && isMacReaperRunning()) {
     throw new Error(
       'Encerre completamente o REAPER com Cmd+Q antes de instalar os componentes. ' +
@@ -6678,10 +6612,6 @@ function installMacPayload(files, options = {}) {
   if (installExtension) {
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
   }
-  const ffmpegArchive = installFfmpegRuntime && !hasInstalledBundledMacFfmpegRuntime()
-    ? getBundledFfmpegRuntimeArchive(true)
-    : '';
-  if (ffmpegArchive) validateFfmpegRuntimeArchive(ffmpegArchive);
   const commands = [];
   const vshookSource = installExtension ? files.vshookDylib : '';
   const companionSource = installBundledAssets ? path.join(
@@ -6693,32 +6623,13 @@ function installMacPayload(files, options = {}) {
     ? getBundledVshookThemePaths()
     : [];
   const installsReaperAssets = installExtension || hasCompanion ||
-    themeSources.length > 0 || !!ffmpegArchive;
+    themeSources.length > 0;
 
   commands.push('set -e');
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
-  if (ffmpegArchive) {
-    commands.push(
-      `FFMPEG_REVISION=${shellQuote(VSHOOK_FFMPEG_MACOS_RUNTIME_REVISION)}`
-    );
-    commands.push(`FFMPEG_ZIP=${shellQuote(ffmpegArchive)}`);
-    commands.push('FFMPEG_EXTRACT=$(mktemp -d /tmp/vshook-ffmpeg.XXXXXX)');
-    commands.push('cleanup_vshook_ffmpeg() { rm -rf "$FFMPEG_EXTRACT"; }');
-    commands.push('trap cleanup_vshook_ffmpeg EXIT');
-    commands.push('ditto -x -k "$FFMPEG_ZIP" "$FFMPEG_EXTRACT"');
-    commands.push('FFMPEG_SOURCE="$FFMPEG_EXTRACT/FFmpeg"');
-    commands.push('test -f "$FFMPEG_SOURCE/lib/libavutil.60.dylib"');
-    commands.push('test -f "$FFMPEG_SOURCE/lib/libavcodec.62.dylib"');
-    commands.push('test -f "$FFMPEG_SOURCE/lib/libavformat.62.dylib"');
-    commands.push('test -f "$FFMPEG_SOURCE/lib/libswscale.9.dylib"');
-    commands.push('test -f "$FFMPEG_SOURCE/lib/libavfilter.11.dylib"');
-    commands.push('test -x "$FFMPEG_SOURCE/bin/ffmpeg"');
-    commands.push('test "$(cat "$FFMPEG_SOURCE/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION"');
-    commands.push('"$FFMPEG_SOURCE/bin/ffmpeg" -hide_banner -version >/dev/null');
-  }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
   }
@@ -6743,24 +6654,6 @@ function installMacPayload(files, options = {}) {
     commands.push('cp -f "$VSHOOK_SOURCE" "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('chmod 755 "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp"');
     commands.push('mv -f "$GLOBAL_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$GLOBAL_PLUGIN_DIR/reaper_VSHookExt.dylib"');
-  }
-  if (ffmpegArchive) {
-    commands.push('GLOBAL_FFMPEG_PARENT="$GLOBAL_PLUGIN_DIR/VSHookRuntime"');
-    commands.push('GLOBAL_FFMPEG_DIR="$GLOBAL_FFMPEG_PARENT/FFmpeg"');
-    commands.push('GLOBAL_FFMPEG_TMP="$GLOBAL_FFMPEG_PARENT/.FFmpeg.tmp"');
-    commands.push('GLOBAL_FFMPEG_BACKUP="$GLOBAL_FFMPEG_PARENT/.FFmpeg.backup"');
-    commands.push('mkdir -p "$GLOBAL_FFMPEG_PARENT"');
-    commands.push('rm -rf "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_BACKUP"');
-    commands.push('ditto "$FFMPEG_SOURCE" "$GLOBAL_FFMPEG_TMP"');
-    commands.push('[ ! -e "$GLOBAL_FFMPEG_DIR" ] || mv "$GLOBAL_FFMPEG_DIR" "$GLOBAL_FFMPEG_BACKUP"');
-    commands.push('if mv "$GLOBAL_FFMPEG_TMP" "$GLOBAL_FFMPEG_DIR" && chmod -R a+rX "$GLOBAL_FFMPEG_DIR" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$GLOBAL_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$GLOBAL_FFMPEG_DIR/bin/ffmpeg" && test "$(cat "$GLOBAL_FFMPEG_DIR/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION" && "$GLOBAL_FFMPEG_DIR/bin/ffmpeg" -hide_banner -version >/dev/null; then');
-    commands.push('  rm -rf "$GLOBAL_FFMPEG_BACKUP"');
-    commands.push('  rm -rf "$GLOBAL_FFMPEG_PARENT/VLC"');
-    commands.push('else');
-    commands.push('  rm -rf "$GLOBAL_FFMPEG_DIR"');
-    commands.push('  [ ! -e "$GLOBAL_FFMPEG_BACKUP" ] || mv "$GLOBAL_FFMPEG_BACKUP" "$GLOBAL_FFMPEG_DIR"');
-    commands.push('  exit 1');
-    commands.push('fi');
   }
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
@@ -6804,24 +6697,6 @@ function installMacPayload(files, options = {}) {
       commands.push('  mv -f "$USER_PLUGIN_DIR/.reaper_VSHookExt.dylib.tmp" "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib"');
       commands.push('  chown "$USER_NAME":staff "$USER_PLUGIN_DIR/reaper_VSHookExt.dylib" 2>/dev/null || true');
     }
-    if (ffmpegArchive) {
-      commands.push('  USER_FFMPEG_PARENT="$USER_PLUGIN_DIR/VSHookRuntime"');
-      commands.push('  USER_FFMPEG_DIR="$USER_FFMPEG_PARENT/FFmpeg"');
-      commands.push('  USER_FFMPEG_TMP="$USER_FFMPEG_PARENT/.FFmpeg.tmp"');
-      commands.push('  USER_FFMPEG_BACKUP="$USER_FFMPEG_PARENT/.FFmpeg.backup"');
-      commands.push('  mkdir -p "$USER_FFMPEG_PARENT"');
-      commands.push('  rm -rf "$USER_FFMPEG_TMP" "$USER_FFMPEG_BACKUP"');
-      commands.push('  ditto "$FFMPEG_SOURCE" "$USER_FFMPEG_TMP"');
-      commands.push('  [ ! -e "$USER_FFMPEG_DIR" ] || mv "$USER_FFMPEG_DIR" "$USER_FFMPEG_BACKUP"');
-      commands.push('  if mv "$USER_FFMPEG_TMP" "$USER_FFMPEG_DIR" && chmod -R a+rX "$USER_FFMPEG_DIR" && test -f "$USER_FFMPEG_DIR/lib/libavutil.60.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavcodec.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavformat.62.dylib" && test -f "$USER_FFMPEG_DIR/lib/libswscale.9.dylib" && test -f "$USER_FFMPEG_DIR/lib/libavfilter.11.dylib" && test -x "$USER_FFMPEG_DIR/bin/ffmpeg" && test "$(cat "$USER_FFMPEG_DIR/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_REVISION" && "$USER_FFMPEG_DIR/bin/ffmpeg" -hide_banner -version >/dev/null; then');
-      commands.push('    rm -rf "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_PARENT/VLC"');
-      commands.push('    chown -R "$USER_NAME":staff "$USER_FFMPEG_DIR" 2>/dev/null || true');
-      commands.push('  else');
-      commands.push('    rm -rf "$USER_FFMPEG_DIR"');
-      commands.push('    [ ! -e "$USER_FFMPEG_BACKUP" ] || mv "$USER_FFMPEG_BACKUP" "$USER_FFMPEG_DIR"');
-      commands.push('    exit 1');
-      commands.push('  fi');
-    }
     if (hasCompanion) {
       commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
       commands.push('  mkdir -p "$USER_COMPANION_DIR"');
@@ -6840,11 +6715,6 @@ function installMacPayload(files, options = {}) {
     '-e',
     `do shell script ${JSON.stringify(script)} with administrator privileges`
   ], { stdio: 'ignore' });
-  if (ffmpegArchive && !hasInstalledBundledMacFfmpegRuntime()) {
-    throw new Error(
-      'O runtime FFmpeg do pacote não ficou completo em REAPER/UserPlugins.'
-    );
-  }
 }
 
 function getBundledReaperAssetsIdentity() {
@@ -6995,18 +6865,17 @@ async function syncBundledReaperAssetsOnStartup() {
   }
 
   if (process.platform === 'darwin') {
-    // Sem a extensão não há motivo para a primeira abertura copiar o FFmpeg nem
-    // pedir senha administrativa. O PKG já entrega os componentes; qualquer
-    // reparo restante acontece junto da instalação da extensão.
+    // Sem a extensão não há motivo para a primeira abertura pedir senha
+    // administrativa. O PKG já entrega os componentes; qualquer reparo
+    // restante acontece junto da instalação da extensão.
     if (!extensionInstalled) {
       return { ok: true, skipped: 'extension-not-installed' };
     }
-    const ffmpegRuntimeCurrent = hasInstalledBundledMacFfmpegRuntime();
     const identity = getBundledReaperAssetsIdentity();
     // O PKG instala companion e temas antes da primeira abertura. Não dependa
     // do Store aqui: na primeira execução ele ainda não possui a identidade.
     const assetsCurrent = macBundledReaperAssetsAreCurrent();
-    if (ffmpegRuntimeCurrent && assetsCurrent) {
+    if (assetsCurrent) {
       if (store.get('bundledReaperAssetsIdentity') !== identity) {
         store.set('bundledReaperAssetsIdentity', identity);
       }
@@ -7019,8 +6888,7 @@ async function syncBundledReaperAssetsOnStartup() {
     // instalação legada/incompleta, sem criar outro caminho de UserPlugins.
     installMacPayload(null, {
       installExtension: false,
-      installBundledAssets: !assetsCurrent,
-      installFfmpegRuntime: !ffmpegRuntimeCurrent
+      installBundledAssets: !assetsCurrent
     });
     store.set('bundledReaperAssetsIdentity', identity);
     return { ok: true, installed: true };
@@ -7043,7 +6911,7 @@ function scheduleBundledReaperAssetsSync(delayMs = 1200) {
     } catch (error) {
       // Não repete falha/cancelamento de senha para evitar um ciclo de prompts.
       console.error(
-        '[Hook Center] Não sincronizou runtime FFmpeg, Teleprompt Settings e temas:',
+        '[Hook Center] Não sincronizou Teleprompt Settings e temas:',
         error?.message || error
       );
     }
@@ -7130,8 +6998,7 @@ async function installDownloadedUpdate() {
     }
     validateExtensionBinaryFile(files.vshookDylib, 'vshookDylib');
     installMacPayload(files, {
-      installBundledAssets: !macBundledReaperAssetsAreCurrent(),
-      installFfmpegRuntime: !hasInstalledBundledMacFfmpegRuntime()
+      installBundledAssets: !macBundledReaperAssetsAreCurrent()
     });
   } else {
     throw new Error('Sistema operacional não suportado.');
@@ -8402,6 +8269,18 @@ function prepareForAppQuit() {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+
+  // Autoriza somente captura de audio solicitada pela propria janela da Hook
+  // Center. Camera e origens externas continuam bloqueadas.
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => {
+    if (permission !== 'media' || !isValidWindow(mainWindow) || webContents !== mainWindow.webContents) return false;
+    const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+    return mediaTypes.length > 0 && mediaTypes.every((type) => type === 'audio');
+  });
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = Array.isArray(details?.mediaTypes) ? details.mediaTypes : [];
+    callback(permission === 'media' && isValidWindow(mainWindow) && webContents === mainWindow.webContents && mediaTypes.length > 0 && mediaTypes.every((type) => type === 'audio'));
+  });
 
   cleanupLegacyWindowsVshookOnStartup();
 

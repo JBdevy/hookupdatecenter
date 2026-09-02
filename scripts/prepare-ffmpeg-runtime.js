@@ -4,14 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
-const { spawnSync } = require('child_process');
-
 const VERSION = '8.1.2';
 const ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(ROOT, 'vendor', 'ffmpeg');
 const WINDOWS_FILE = `ffmpeg-${VERSION}-win64-lgpl-shared.zip`;
-const MACOS_FILE = `ffmpeg-${VERSION}-macos-universal-lgpl-shared.zip`;
-const MACOS_RUNTIME_REVISION = 'macos-portable-2';
 const WINDOWS_URL =
   'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/' +
   'ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip';
@@ -19,12 +15,11 @@ const WINDOWS_URL =
 function selectedPlatform() {
   const args = new Set(process.argv.slice(2));
   if (args.has('--windows')) return 'windows';
-  if (args.has('--macos')) return 'macos';
   if (args.has('--current')) {
     if (process.platform === 'win32') return 'windows';
-    if (process.platform === 'darwin') return 'macos';
+    return 'skip';
   }
-  throw new Error('Informe --windows, --macos ou --current em Windows/macOS.');
+  throw new Error('Informe --windows ou --current. O FFmpeg é preparado somente para Windows.');
 }
 
 function validZip(filename, minimumBytes) {
@@ -39,21 +34,6 @@ function validZip(filename, minimumBytes) {
   } finally {
     fs.closeSync(handle);
   }
-}
-
-function validMacRuntimeZip(filename) {
-  if (!validZip(filename, 8 * 1024 * 1024) || process.platform !== 'darwin') return false;
-  const listing = spawnSync('/usr/bin/unzip', ['-Z1', filename], { encoding: 'utf8' });
-  if (listing.status !== 0) return false;
-  const entries = new Set(String(listing.stdout || '').split(/\r?\n/).filter(Boolean));
-  const revision = spawnSync(
-    '/usr/bin/unzip', ['-p', filename, 'FFmpeg/VSHOOK_RUNTIME_REVISION'],
-    { encoding: 'utf8' }
-  );
-  return entries.has('FFmpeg/bin/ffmpeg') &&
-    revision.status === 0 &&
-    String(revision.stdout || '').trim() === MACOS_RUNTIME_REVISION &&
-    [...entries].some((entry) => /FFmpeg\/lib\/libavfilter\.11(?:\.\d+)*\.dylib$/.test(entry));
 }
 
 function download(url, destination, redirects = 0) {
@@ -124,30 +104,14 @@ async function prepareWindows() {
   console.log(`Runtime FFmpeg incluído no build: ${destination}`);
 }
 
-function prepareMacos() {
-  const destination = path.join(OUTPUT_DIR, MACOS_FILE);
-  if (validMacRuntimeZip(destination)) {
-    console.log(`Runtime FFmpeg já preparado: ${destination}`);
+async function main() {
+  const platform = selectedPlatform();
+  if (platform === 'skip') {
+    console.log('FFmpeg não é necessário nesta plataforma.');
     return;
   }
-  if (process.platform !== 'darwin') {
-    throw new Error('O runtime universal do FFmpeg precisa ser preparado em um Mac.');
-  }
-  const script = path.join(ROOT, 'scripts', 'build-ffmpeg-runtime-macos.sh');
-  const result = spawnSync('/bin/bash', [script, destination], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    env: process.env
-  });
-  if (result.status !== 0 || !validMacRuntimeZip(destination)) {
-    throw new Error('Não foi possível gerar o runtime FFmpeg universal do macOS.');
-  }
-}
-
-async function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  if (selectedPlatform() === 'windows') await prepareWindows();
-  else prepareMacos();
+  await prepareWindows();
 }
 
 main().catch((error) => {

@@ -1,9 +1,8 @@
-# Runtime FFmpeg da Hook Center
+# Runtime FFmpeg para Windows
 
 O build Windows baixa o FFmpeg 8.1.x LGPL compartilhado do BtbN. O build
-macOS compila o fonte oficial 8.1.2 em duas arquiteturas e cria bibliotecas
-universais x86_64 + arm64 com VideoToolbox.
+macOS não empacota nem instala FFmpeg; a extensão usa o vídeo nativo do sistema.
 
-Os instaladores copiam somente esse runtime para
+O instalador Windows copia esse runtime para
 `REAPER/UserPlugins/VSHookRuntime/FFmpeg`. A pasta antiga `VLC` e removida
 apenas depois que a nova copia passa na verificacao de integridade.

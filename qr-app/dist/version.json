@@ -9,7 +9,7 @@
   "updateId": "1.0.1-v18",
   "minBridgeVersion": "1.0.1",
   "cacheVersion": "1.0.1-v18",
-  "chatHookMobile": "qr-auto-bootstrap-internet-delete-admin-video-v4",
+  "chatHookMobile": "hold-actions-reply-edit-own-v5",
   "multiLoopSlots": 4,
   "directorTablet": "grid-safari-sync-buttons-v1",
   "renderFix": "director-premix-longpress-items-v1",

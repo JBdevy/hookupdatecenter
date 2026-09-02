@@ -50,6 +50,9 @@ let chatHookPollTimer = 0;
 let chatHookPollInFlight = false;
 let chatHookSending = false;
 let chatHookSelectedMedia = null;
+let chatHookVoiceRecorder = null;
+let chatHookVoiceTimer = 0;
+let chatHookVoiceFinishing = false;
 let chatHookLastMessageId = 0;
 let chatHookRevision = 0;
 let chatHookClearedAt = '';
@@ -3138,6 +3141,43 @@ function formatChatHookTime(value) {
   return date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function formatChatHookAudioTime(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+
+function initializeChatHookAudioPlayers(container) {
+  container?.querySelectorAll('.chat-hook-message-audio').forEach((player) => {
+    const audio = player.querySelector('audio');
+    const toggle = player.querySelector('[data-chat-audio-action="toggle"]');
+    const seek = player.querySelector('[data-chat-audio-seek]');
+    const current = player.querySelector('[data-chat-audio-current]');
+    const duration = player.querySelector('[data-chat-audio-duration]');
+    if (!audio || !toggle || !seek || !current || !duration) return;
+    const sync = () => {
+      const total = Number.isFinite(audio.duration) ? audio.duration : 0;
+      const elapsed = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const progress = total > 0 ? Math.min(100, (elapsed / total) * 100) : 0;
+      toggle.textContent = audio.paused ? '▶' : '❚❚';
+      toggle.setAttribute('aria-label', audio.paused ? 'Reproduzir áudio' : 'Pausar áudio');
+      seek.value = String(progress);
+      seek.style.setProperty('--chat-audio-progress', `${progress}%`);
+      current.textContent = formatChatHookAudioTime(elapsed);
+      duration.textContent = formatChatHookAudioTime(total);
+    };
+    ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended']
+      .forEach((type) => audio.addEventListener(type, sync));
+    seek.addEventListener('input', () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        audio.currentTime = (Number(seek.value) / 100) * audio.duration;
+      }
+      sync();
+    });
+    sync();
+  });
+}
+
 function chatHookAvatarHtml(name, avatarUrl = '') {
   if (avatarUrl) return `<img src="${escapeHtml(avatarUrl)}" alt="" />`;
   return `<span>${escapeHtml(chatHookInitials(name))}</span>`;
@@ -3157,11 +3197,12 @@ function chatHookMessagePermissions(message) {
   const currentUserId = Number(chatHookState?.user?.id || 0);
   const isAdmin = chatHookState?.user?.isAdmin === true;
   const own = ready && currentUserId > 0 && Number(message?.customerId || 0) === currentUserId;
+  const hasAudio = Boolean(message?.hasAudio || message?.audioUrl);
   return {
     reply: ready,
-    edit: ready && (isAdmin || own),
+    edit: ready && !hasAudio && (isAdmin || own),
     delete: ready && (isAdmin || own),
-    pin: ready && isAdmin && own && Boolean(String(message?.text || '').trim())
+    pin: ready && !hasAudio && isAdmin && own && Boolean(String(message?.text || '').trim())
   };
 }
 
@@ -3193,8 +3234,18 @@ function renderChatHookMessages(forceBottom = false) {
     const image = message.imageUrl
       ? `<button class="chat-hook-message-image${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}" type="button"${message.pending ? ' disabled' : ` data-chat-image-url="${escapeHtml(message.imageUrl)}"`} title="${message.pending ? 'Enviando imagem' : 'Abrir imagem'}"><img src="${escapeHtml(message.imageUrl)}" alt="Imagem enviada por ${safeName}" />${uploadState}</button>`
       : '';
-    const audio = message.audioUrl
-      ? `<div class="chat-hook-message-audio${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><audio src="${escapeHtml(message.audioUrl)}" controls preload="metadata"></audio>${uploadState}</div>`
+    const hasAudio = Boolean(message.audioUrl);
+    const audio = hasAudio
+      ? `<div class="chat-hook-message-audio${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}">
+          <audio src="${escapeHtml(message.audioUrl)}" preload="metadata"></audio>
+          <button class="chat-hook-audio-play" type="button" data-chat-audio-action="toggle" aria-label="Reproduzir áudio">▶</button>
+          <div class="chat-hook-audio-track">
+            <strong>Mensagem de voz</strong>
+            <input type="range" min="0" max="100" step="0.1" value="0" data-chat-audio-seek aria-label="Posição do áudio" />
+            <div class="chat-hook-audio-time"><span data-chat-audio-current>0:00</span><span data-chat-audio-duration>0:00</span></div>
+          </div>
+          ${uploadState}
+        </div>`
       : '';
     const video = message.videoUrl
       ? `<div class="chat-hook-message-video${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadState}</div>`
@@ -3204,7 +3255,7 @@ function renderChatHookMessages(forceBottom = false) {
       ? `<button class="chat-hook-reply-quote" type="button" data-chat-jump-message-id="${Number(message.replyTo.id || 0)}"><strong>${escapeHtml(message.replyTo.name || 'Usuário')}</strong><span>${escapeHtml(chatHookMessagePreview(message.replyTo))}</span></button>`
       : '';
     return `
-      <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}" data-chat-message-id="${Number(message.id || 0)}">
+      <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}${hasAudio ? ' audio-message' : ''}" data-chat-message-id="${Number(message.id || 0)}">
         <div class="chat-hook-avatar">${chatHookAvatarHtml(message.name, message.avatarUrl)}</div>
         <div class="chat-hook-message-body">
           <div class="chat-hook-message-head">
@@ -3221,6 +3272,7 @@ function renderChatHookMessages(forceBottom = false) {
         </div>
       </article>`;
   }).join('');
+  initializeChatHookAudioPlayers(container);
   if (forceBottom || wasNearBottom) container.scrollTop = container.scrollHeight;
 }
 
@@ -3252,6 +3304,7 @@ function renderChatHookControls() {
   const exhausted = authenticated && !user?.isAdmin && limits.unlimited !== true && Number(limits.remainingToday || 0) <= 0;
   const closed = settings.open === false && !user?.isAdmin;
   const available = authenticated && !closed && !exhausted && cooldown <= 0 && !chatHookSending;
+  const recordingVoice = chatHookVoiceRecorder?.active === true;
   const input = $('#chatHookMessageInput');
   const send = $('#chatHookSendButton');
   const imageButton = $('#chatHookImageButton');
@@ -3259,7 +3312,7 @@ function renderChatHookControls() {
   const audioButton = $('#chatHookAudioButton');
   const emojiButton = $('#chatHookEmojiButton');
   if (input) {
-    input.disabled = !available;
+    input.disabled = !available || recordingVoice;
     input.placeholder = !authenticated
       ? 'Ative sua licença para participar'
       : closed
@@ -3274,19 +3327,14 @@ function renderChatHookControls() {
     send.disabled = !available;
     send.textContent = chatHookSending ? 'Enviando...' : (cooldown > 0 ? `${cooldown}s` : 'Enviar');
   }
-  if (imageButton) imageButton.disabled = !available;
-  if (audioButton) audioButton.disabled = !available;
+  if (imageButton) imageButton.disabled = !available || recordingVoice;
+  if (audioButton) audioButton.disabled = !available || chatHookVoiceFinishing;
   if (mediaInput) {
-    const isAdmin = user?.isAdmin === true;
-    mediaInput.accept = isAdmin
-      ? 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm'
-      : 'image/png,image/jpeg,image/webp,image/gif';
-    if (imageButton) imageButton.title = isAdmin ? 'Enviar foto, print ou vídeo de até 30s' : 'Enviar foto ou print';
-    if (!isAdmin && chatHookSelectedMedia?.kind === 'video') clearChatHookSelectedMedia();
+    mediaInput.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    if (imageButton) imageButton.title = 'Enviar foto ou print';
   }
-  const audioInput = $('#chatHookAudioInput');
-  if (audioInput) audioInput.disabled = !available;
-  if (emojiButton) emojiButton.disabled = !available;
+  if (emojiButton) emojiButton.disabled = !available || recordingVoice;
+  $('#chatHookComposer')?.classList.toggle('is-recording-voice', recordingVoice || chatHookVoiceFinishing);
   $('#chatHookClosedNotice')?.classList.toggle('hidden', !closed);
   $('#chatHookComposer')?.classList.toggle('hidden', closed);
   const quota = $('#chatHookQuota');
@@ -3596,22 +3644,6 @@ function readChatHookFile(file) {
   });
 }
 
-function readChatHookVideoDuration(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const video = document.createElement('video');
-    const finish = (callback) => {
-      URL.revokeObjectURL(url);
-      video.removeAttribute('src');
-      callback();
-    };
-    video.preload = 'metadata';
-    video.onloadedmetadata = () => finish(() => resolve(Number(video.duration) || 0));
-    video.onerror = () => finish(() => reject(new Error('Não foi possível verificar a duração do vídeo.')));
-    video.src = url;
-  });
-}
-
 async function readChatHookImage(file, maxBytes) {
   const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
   if (!file || !allowed.includes(String(file.type || '').toLowerCase())) {
@@ -3629,7 +3661,6 @@ async function readChatHookMedia(file) {
   const mimeType = String(file?.type || inferredAudioMime).toLowerCase();
   const imageTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
   const audioTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm'];
-  const videoTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
   if (imageTypes.includes(mimeType)) {
     if (file.size > 6 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 6 MB.');
     return { ...(await readChatHookFile(file)), kind: 'image' };
@@ -3638,12 +3669,7 @@ async function readChatHookMedia(file) {
     if (file.size > 20 * 1024 * 1024) throw new Error('O áudio deve ter no máximo 20 MB.');
     return { ...(await readChatHookFile(file)), mimeType, kind: 'audio' };
   }
-  if (!videoTypes.includes(mimeType)) throw new Error('Escolha uma imagem, um áudio ou um vídeo MP4, MOV ou WEBM.');
-  if (chatHookState?.user?.isAdmin !== true) throw new Error('Somente administradores podem enviar vídeos.');
-  if (file.size > 40 * 1024 * 1024) throw new Error('O vídeo deve ter no máximo 40 MB.');
-  const durationSeconds = await readChatHookVideoDuration(file);
-  if (!durationSeconds || durationSeconds > 30.25) throw new Error('O vídeo pode ter no máximo 30 segundos.');
-  return { ...(await readChatHookFile(file)), kind: 'video', durationSeconds };
+  throw new Error('Escolha uma imagem PNG, JPG, WEBP ou GIF.');
 }
 
 function clearChatHookSelectedMedia() {
@@ -3654,12 +3680,6 @@ function clearChatHookSelectedMedia() {
     imagePreview.removeAttribute('src');
     imagePreview.classList.remove('hidden');
   }
-  const videoPreview = $('#chatHookVideoPreview');
-  if (videoPreview) {
-    videoPreview.pause();
-    videoPreview.removeAttribute('src');
-    videoPreview.classList.add('hidden');
-  }
   const audioPreview = $('#chatHookAudioPreview');
   if (audioPreview) {
     audioPreview.pause();
@@ -3668,8 +3688,84 @@ function clearChatHookSelectedMedia() {
   }
   const input = $('#chatHookImageInput');
   if (input) input.value = '';
-  const audioInput = $('#chatHookAudioInput');
-  if (audioInput) audioInput.value = '';
+}
+
+function formatChatHookVoiceTime(seconds) {
+  const safe = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function stopChatHookVoiceTimer() {
+  if (chatHookVoiceTimer) clearInterval(chatHookVoiceTimer);
+  chatHookVoiceTimer = 0;
+}
+
+function updateChatHookVoiceTimer() {
+  const timer = $('#chatHookVoiceTimer');
+  const elapsed = chatHookVoiceRecorder?.elapsedSeconds?.() || 0;
+  if (timer) timer.textContent = formatChatHookVoiceTime(elapsed);
+  if (elapsed >= 60 && !chatHookVoiceFinishing) finishChatHookVoiceRecording(true);
+}
+
+async function startChatHookVoiceRecording() {
+  if (chatHookSending || chatHookVoiceRecorder?.active || chatHookVoiceFinishing) return;
+  const Recorder = window.VSHookVoiceRecorder;
+  if (typeof Recorder !== 'function') {
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = 'O gravador de voz não foi carregado.';
+    return;
+  }
+  clearChatHookSelectedMedia();
+  const recorder = new Recorder();
+  chatHookVoiceRecorder = recorder;
+  try {
+    await recorder.start();
+    $('#chatHookVoiceRecording')?.classList.remove('hidden');
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
+    updateChatHookVoiceTimer();
+    stopChatHookVoiceTimer();
+    chatHookVoiceTimer = setInterval(updateChatHookVoiceTimer, 250);
+    renderChatHookControls();
+  } catch (error) {
+    recorder.cancel();
+    chatHookVoiceRecorder = null;
+    $('#chatHookVoiceRecording')?.classList.add('hidden');
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
+    renderChatHookControls();
+  }
+}
+
+function cancelChatHookVoiceRecording() {
+  stopChatHookVoiceTimer();
+  chatHookVoiceRecorder?.cancel?.();
+  chatHookVoiceRecorder = null;
+  chatHookVoiceFinishing = false;
+  $('#chatHookVoiceRecording')?.classList.add('hidden');
+  if ($('#chatHookVoiceTimer')) $('#chatHookVoiceTimer').textContent = '0:00';
+  renderChatHookControls();
+}
+
+async function finishChatHookVoiceRecording(sendImmediately = true) {
+  if (!chatHookVoiceRecorder?.active || chatHookVoiceFinishing) return;
+  const recorder = chatHookVoiceRecorder;
+  chatHookVoiceFinishing = true;
+  stopChatHookVoiceTimer();
+  renderChatHookControls();
+  try {
+    chatHookSelectedMedia = await recorder.stop();
+    chatHookVoiceRecorder = null;
+    chatHookVoiceFinishing = false;
+    $('#chatHookVoiceRecording')?.classList.add('hidden');
+    if ($('#chatHookVoiceTimer')) $('#chatHookVoiceTimer').textContent = '0:00';
+    renderChatHookControls();
+    if (sendImmediately) await sendChatHookMessage();
+  } catch (error) {
+    recorder.cancel();
+    chatHookVoiceRecorder = null;
+    chatHookVoiceFinishing = false;
+    $('#chatHookVoiceRecording')?.classList.add('hidden');
+    if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
+    renderChatHookControls();
+  }
 }
 
 async function sendChatHookMessage() {
@@ -3694,8 +3790,6 @@ async function sendChatHookMessage() {
       text,
       imageUrl: selectedMedia.kind === 'image' ? selectedMedia.dataUrl : '',
       audioUrl: selectedMedia.kind === 'audio' ? selectedMedia.dataUrl : '',
-      videoUrl: selectedMedia.kind === 'video' ? selectedMedia.dataUrl : '',
-      videoDurationSeconds: selectedMedia.durationSeconds || 0,
       replyTo: replyTo ? {
         id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
         text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasAudio: Boolean(replyTo.audioUrl), hasVideo: Boolean(replyTo.videoUrl)
@@ -3715,8 +3809,11 @@ async function sendChatHookMessage() {
       text,
       replyToMessageId,
       image: selectedMedia?.kind === 'image' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
-      audio: selectedMedia?.kind === 'audio' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
-      video: selectedMedia?.kind === 'video' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64, durationSeconds: selectedMedia.durationSeconds } : null
+      audio: selectedMedia?.kind === 'audio' ? {
+        mimeType: selectedMedia.mimeType,
+        base64: selectedMedia.base64,
+        durationSeconds: selectedMedia.durationSeconds || 0
+      } : null
     });
     if (optimisticId) chatHookMessagesById.delete(optimisticId);
     if (input) input.value = '';
@@ -4001,13 +4098,11 @@ function setupChatHook() {
       chatHookSelectedMedia = await readChatHookMedia(event.target.files?.[0]);
       const imagePreview = $('#chatHookImagePreviewImage');
       const audioPreview = $('#chatHookAudioPreview');
-      const videoPreview = $('#chatHookVideoPreview');
-      if (chatHookSelectedMedia.kind === 'video') {
+      if (chatHookSelectedMedia.kind === 'audio') {
         if (imagePreview) imagePreview.classList.add('hidden');
-        if (audioPreview) audioPreview.classList.add('hidden');
-        if (videoPreview) {
-          videoPreview.src = chatHookSelectedMedia.dataUrl;
-          videoPreview.classList.remove('hidden');
+        if (audioPreview) {
+          audioPreview.src = chatHookSelectedMedia.dataUrl;
+          audioPreview.classList.remove('hidden');
         }
       } else {
         if (imagePreview) {
@@ -4015,7 +4110,6 @@ function setupChatHook() {
           imagePreview.classList.remove('hidden');
         }
         if (audioPreview) audioPreview.classList.add('hidden');
-        if (videoPreview) videoPreview.classList.add('hidden');
       }
       $('#chatHookImagePreview')?.classList.remove('hidden');
       if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
@@ -4024,26 +4118,9 @@ function setupChatHook() {
       if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
     }
   });
-  $('#chatHookAudioButton')?.addEventListener('click', () => $('#chatHookAudioInput')?.click());
-  $('#chatHookAudioInput')?.addEventListener('change', async (event) => {
-    try {
-      chatHookSelectedMedia = await readChatHookMedia(event.target.files?.[0]);
-      const imagePreview = $('#chatHookImagePreviewImage');
-      const audioPreview = $('#chatHookAudioPreview');
-      const videoPreview = $('#chatHookVideoPreview');
-      if (imagePreview) imagePreview.classList.add('hidden');
-      if (videoPreview) videoPreview.classList.add('hidden');
-      if (audioPreview) {
-        audioPreview.src = chatHookSelectedMedia.dataUrl;
-        audioPreview.classList.remove('hidden');
-      }
-      $('#chatHookImagePreview')?.classList.remove('hidden');
-      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
-    } catch (error) {
-      clearChatHookSelectedMedia();
-      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
-    }
-  });
+  $('#chatHookAudioButton')?.addEventListener('click', startChatHookVoiceRecording);
+  $('#chatHookVoiceCancel')?.addEventListener('click', cancelChatHookVoiceRecording);
+  $('#chatHookVoiceSend')?.addEventListener('click', () => finishChatHookVoiceRecording(true));
   $('#chatHookRemoveImageButton')?.addEventListener('click', clearChatHookSelectedMedia);
   $('#chatHookSendButton')?.addEventListener('click', sendChatHookMessage);
   $('#chatHookMessageInput')?.addEventListener('keydown', (event) => {
@@ -4064,6 +4141,7 @@ function setupChatHook() {
   };
   chatMessages?.addEventListener('pointerdown', (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.target.closest('button, input, audio')) return;
     const article = event.target.closest('[data-chat-message-id]');
     const messageId = Number(article?.dataset.chatMessageId || 0);
     if (!chatHookMessagePermissions(chatHookMessagesById.get(messageId)).reply) return;
@@ -4084,12 +4162,34 @@ function setupChatHook() {
   });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => chatMessages?.addEventListener(type, cancelChatMessageHold));
   chatMessages?.addEventListener('contextmenu', (event) => {
-    if (event.target.closest('[data-chat-message-id]')) event.preventDefault();
+    const article = event.target.closest('[data-chat-message-id]');
+    const messageId = Number(article?.dataset.chatMessageId || 0);
+    if (!messageId || !chatHookMessagePermissions(chatHookMessagesById.get(messageId)).reply) return;
+    event.preventDefault();
+    cancelChatMessageHold();
+    openChatHookMessageActions(messageId);
   });
   chatMessages?.addEventListener('click', (event) => {
     if (Date.now() < chatHookSuppressClickUntil) {
       event.preventDefault();
       event.stopPropagation();
+      return;
+    }
+    const audioAction = event.target.closest('[data-chat-audio-action]');
+    if (audioAction) {
+      const player = audioAction.closest('.chat-hook-message-audio');
+      const audio = player?.querySelector('audio');
+      if (!audio) return;
+      if (audioAction.dataset.chatAudioAction === 'toggle') {
+        if (audio.paused) {
+          chatMessages.querySelectorAll('.chat-hook-message-audio audio').forEach((candidate) => {
+            if (candidate !== audio) candidate.pause();
+          });
+          audio.play().catch(() => {});
+        } else {
+          audio.pause();
+        }
+      }
       return;
     }
     const replyQuote = event.target.closest('[data-chat-jump-message-id]');
@@ -4118,7 +4218,12 @@ function setupChatHook() {
     if (pinnedHoldStart && Math.hypot(event.clientX - pinnedHoldStart.x, event.clientY - pinnedHoldStart.y) > 12) cancelPinnedHold();
   });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => pinnedMessage?.addEventListener(type, cancelPinnedHold));
-  pinnedMessage?.addEventListener('contextmenu', (event) => { if (!event.target.closest('button')) event.preventDefault(); });
+  pinnedMessage?.addEventListener('contextmenu', (event) => {
+    if (event.target.closest('button') || !Number(chatHookState?.chat?.pinnedMessageId || 0)) return;
+    event.preventDefault();
+    cancelPinnedHold();
+    openPinnedChatHookActions();
+  });
   $('#chatHookUnpinButton')?.addEventListener('click', (event) => setChatHookPinnedMessage(0, event.currentTarget));
   $('#chatHookAvatarButton')?.addEventListener('click', () => $('#chatHookAvatarInput')?.click());
   $('#chatHookAvatarInput')?.addEventListener('change', async (event) => {

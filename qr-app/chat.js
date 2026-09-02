@@ -14,6 +14,9 @@
   let polling = false
   let sending = false
   let selectedMedia = null
+  let voiceRecorder = null
+  let voiceTimer = 0
+  let voiceFinishing = false
   let adminPassword = ''
   let replyingToMessageId = 0
   let editingMessageId = 0
@@ -74,6 +77,39 @@
     return date.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
 
+  function formatAudioTime(value) {
+    const seconds = Math.max(0, Number(value) || 0)
+    return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+  }
+
+  function initializeAudioPlayers(container) {
+    container?.querySelectorAll('.chatMobileMessageAudio').forEach((player) => {
+      const audio = player.querySelector('audio')
+      const toggle = player.querySelector('[data-audio-action="toggle"]')
+      const seek = player.querySelector('[data-audio-seek]')
+      const current = player.querySelector('[data-audio-current]')
+      const duration = player.querySelector('[data-audio-duration]')
+      if (!audio || !toggle || !seek || !current || !duration) return
+      const sync = () => {
+        const total = Number.isFinite(audio.duration) ? audio.duration : 0
+        const elapsed = Number.isFinite(audio.currentTime) ? audio.currentTime : 0
+        const progress = total > 0 ? Math.min(100, (elapsed / total) * 100) : 0
+        toggle.textContent = audio.paused ? '▶' : '❚❚'
+        toggle.setAttribute('aria-label', audio.paused ? 'Reproduzir áudio' : 'Pausar áudio')
+        seek.value = String(progress)
+        seek.style.setProperty('--audio-progress', `${progress}%`)
+        current.textContent = formatAudioTime(elapsed)
+        duration.textContent = formatAudioTime(total)
+      }
+      ;['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended'].forEach((type) => audio.addEventListener(type, sync))
+      seek.addEventListener('input', () => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) audio.currentTime = (Number(seek.value) / 100) * audio.duration
+        sync()
+      })
+      sync()
+    })
+  }
+
   function messagePreview(message) {
     const text = String(message?.text || '').replace(/\s+/g, ' ').trim()
     if (text) return text.slice(0, 120)
@@ -88,11 +124,12 @@
     const userId = Number(chatState?.user?.id || 0)
     const isAdmin = chatState?.user?.isAdmin === true
     const own = ready && userId > 0 && Number(message?.customerId || 0) === userId
+    const hasAudio = Boolean(message?.hasAudio || message?.audioUrl)
     return {
       reply: ready,
-      edit: ready && (isAdmin || own),
+      edit: ready && !hasAudio && (isAdmin || own),
       delete: ready && (isAdmin || own),
-      pin: ready && isAdmin && own && Boolean(String(message?.text || '').trim())
+      pin: ready && !hasAudio && isAdmin && own && Boolean(String(message?.text || '').trim())
     }
   }
 
@@ -201,8 +238,14 @@
           <div id="chatMobilePreview" class="chatMobilePreview" hidden>
             <img id="chatMobilePreviewImage" alt="Imagem escolhida" />
             <audio id="chatMobilePreviewAudio" controls preload="metadata" hidden></audio>
-            <video id="chatMobilePreviewVideo" muted playsinline preload="metadata" hidden></video>
             <button id="chatMobileRemoveImage" type="button" aria-label="Remover mídia">×</button>
+          </div>
+          <div id="chatMobileVoiceRecording" class="chatMobileVoiceRecording" hidden>
+            <span class="chatMobileRecordingDot" aria-hidden="true"></span>
+            <strong id="chatMobileVoiceTimer">0:00</strong>
+            <span class="chatMobileRecordingLabel">Gravando · máximo 1 min</span>
+            <button id="chatMobileVoiceCancel" class="chatMobileVoiceCancel" type="button">Cancelar</button>
+            <button id="chatMobileVoiceSend" class="chatMobileVoiceSend" type="button">Enviar</button>
           </div>
           <textarea id="chatMobileInput" rows="2" maxlength="1000" placeholder="Escreva uma mensagem..."></textarea>
           <emoji-picker id="chatMobileEmojiPicker" class="chatMobileEmojiPicker dark" locale="pt" emoji-version="17.0" data-source="https://cdn.jsdelivr.net/npm/emoji-picker-element-data@^1/pt/cldr/data.json" hidden></emoji-picker>
@@ -210,20 +253,14 @@
             <button id="chatMobileEmoji" class="chatMobileIconButton" type="button" aria-label="Emojis">😊</button>
             <button id="chatMobileGallery" class="chatMobileIconButton" type="button" aria-label="Escolher foto da galeria">📎</button>
             <button id="chatMobileCamera" class="chatMobileIconButton" type="button" aria-label="Tirar foto">📷</button>
-            <button id="chatMobileAudio" class="chatMobileIconButton" type="button" aria-label="Escolher áudio">🎵</button>
+            <button id="chatMobileAudio" class="chatMobileIconButton" type="button" aria-label="Gravar mensagem de voz">🎙️</button>
             <input id="chatMobileGalleryInput" type="file" accept="image/*" hidden />
             <input id="chatMobileCameraInput" type="file" accept="image/*" capture="environment" hidden />
-            <input id="chatMobileVideoInput" type="file" accept="video/mp4,video/quicktime,video/webm" capture="environment" hidden />
-            <input id="chatMobileAudioInput" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,audio/webm" hidden />
             <span id="chatMobileQuota"></span>
             <button id="chatMobileSend" class="chatMobileSend" type="button">Enviar</button>
           </div>
           <div id="chatMobileStatus" class="chatMobileStatus"></div>
         </section>
-        <div id="chatMobileCameraMenu" class="chatMobileCameraMenu" hidden>
-          <button id="chatMobilePhotoChoice" type="button">📷 Tirar foto</button>
-          <button id="chatMobileVideoChoice" type="button">🎥 Gravar vídeo — até 30s</button>
-        </div>
         <div id="chatMobileAdminModal" class="chatMobileAdminBackdrop" hidden>
           <section class="chatMobileAdminModal">
             <h2>Configurar Chat Hook</h2>
@@ -299,14 +336,20 @@
       const image = message.imageUrl
         ? `<button class="chatMobileMessageImage${message.pending ? ' uploading' : ''}" type="button" ${message.pending ? 'disabled' : `data-open-image="${escapeHtml(message.imageUrl)}"`}><img src="${escapeHtml(message.imageUrl)}" alt="Imagem de ${name}" />${uploadBadge}</button>`
         : ''
-      const audio = message.audioUrl
-        ? `<div class="chatMobileMessageAudio${message.pending ? ' uploading' : ''}"><audio src="${escapeHtml(message.audioUrl)}" controls preload="metadata"></audio>${uploadBadge}</div>`
+      const hasAudio = Boolean(message.audioUrl)
+      const audio = hasAudio
+        ? `<div class="chatMobileMessageAudio${message.pending ? ' uploading' : ''}">
+            <audio src="${escapeHtml(message.audioUrl)}" preload="metadata"></audio>
+            <button class="chatMobileAudioPlay" type="button" data-audio-action="toggle" aria-label="Reproduzir áudio">▶</button>
+            <div class="chatMobileAudioTrack"><strong>Mensagem de voz</strong><input type="range" min="0" max="100" step="0.1" value="0" data-audio-seek aria-label="Posição do áudio" /><div class="chatMobileAudioTime"><span data-audio-current>0:00</span><span data-audio-duration>0:00</span></div></div>
+            ${uploadBadge}
+          </div>`
         : ''
       const video = message.videoUrl
         ? `<div class="chatMobileMessageVideo${message.pending ? ' uploading' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadBadge}</div>`
         : ''
       return `
-        <article class="chatMobileMessage ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}" data-chat-message-id="${Number(message.id || 0)}">
+        <article class="chatMobileMessage ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}${hasAudio ? ' audioMessage' : ''}" data-chat-message-id="${Number(message.id || 0)}">
           <div class="chatMobileAvatar">${avatarHtml(message.name, message.avatarUrl)}</div>
           <div class="chatMobileBubble">
             <div class="chatMobileMessageHead">
@@ -323,6 +366,7 @@
           </div>
         </article>`
     }).join('')
+    initializeAudioPlayers(container)
     if (forceBottom || wasNearBottom) container.scrollTop = container.scrollHeight
   }
 
@@ -347,30 +391,29 @@
     const exhausted = user.id && !user.isAdmin && limits.unlimited !== true && Number(limits.remainingToday || 0) <= 0
     const closed = settings.open === false && !user.isAdmin
     const enabled = Boolean(user.id) && !exhausted && !closed && !sending
+    const recordingVoice = voiceRecorder?.active === true
     const input = document.getElementById('chatMobileInput')
     const send = document.getElementById('chatMobileSend')
     if (input) {
-      input.disabled = !enabled
+      input.disabled = !enabled || recordingVoice
       input.placeholder = closed ? 'O chat está fechado' : exhausted ? 'Limite diário atingido' : 'Escreva uma mensagem...'
     }
-    if (send) send.disabled = !enabled
+    if (send) send.disabled = !enabled || recordingVoice
     const composer = document.getElementById('chatMobileComposer')
     const closedNotice = document.getElementById('chatMobileClosedNotice')
     if (composer) composer.hidden = closed
     if (closedNotice) closedNotice.hidden = !closed
     ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera', 'chatMobileAudio'].forEach((id) => {
       const button = document.getElementById(id)
-      if (button) button.disabled = !enabled
+      if (button) button.disabled = !enabled || (recordingVoice && id !== 'chatMobileAudio') || voiceFinishing
     })
+    if (composer) composer.classList.toggle('recordingVoice', recordingVoice || voiceFinishing)
     const quota = document.getElementById('chatMobileQuota')
     if (quota) quota.textContent = user.isAdmin ? 'Administrador' : user.id ? (limits.unlimited === true ? `${Number(limits.usedToday || 0)} hoje • ilimitado` : `${Number(limits.usedToday || 0)}/${Number(limits.dailyLimit || 10)} hoje`) : '--'
     const adminMenu = document.getElementById('chatMobileAdminMenu')
     const avatarButton = document.getElementById('chatMobileAvatarButton')
     if (adminMenu) adminMenu.hidden = user.isAdmin !== true
     if (avatarButton) avatarButton.hidden = !user.id
-    const videoChoice = document.getElementById('chatMobileVideoChoice')
-    if (videoChoice) videoChoice.hidden = user.isAdmin !== true
-    if (user.isAdmin !== true && selectedMedia?.kind === 'video') clearSelectedMedia()
   }
 
   function applyState(next, full = false) {
@@ -477,34 +520,6 @@
     }
   }
 
-  function readVideoDuration(file) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file)
-      const video = document.createElement('video')
-      const finish = (callback) => {
-        URL.revokeObjectURL(url)
-        video.removeAttribute('src')
-        callback()
-      }
-      video.preload = 'metadata'
-      video.onloadedmetadata = () => finish(() => resolve(Number(video.duration) || 0))
-      video.onerror = () => finish(() => reject(new Error('Não foi possível verificar a duração do vídeo.')))
-      video.src = url
-    })
-  }
-
-  async function prepareVideo(file) {
-    const allowed = ['video/mp4', 'video/quicktime', 'video/webm']
-    const mimeType = String(file?.type || '').toLowerCase()
-    if (chatState?.user?.isAdmin !== true) throw new Error('Somente administradores podem enviar vídeos.')
-    if (!file || !allowed.includes(mimeType)) throw new Error('Grave um vídeo MP4, MOV ou WEBM.')
-    if (file.size > 40 * 1024 * 1024) throw new Error('O vídeo deve ter no máximo 40 MB.')
-    const durationSeconds = await readVideoDuration(file)
-    if (!durationSeconds || durationSeconds > 30.25) throw new Error('O vídeo pode ter no máximo 30 segundos.')
-    const dataUrl = await fileAsDataUrl(file)
-    return { kind: 'video', dataUrl, mimeType, base64: dataUrl.split(',')[1] || '', durationSeconds }
-  }
-
   async function prepareAudio(file) {
     const allowed = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm']
     const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || ''
@@ -519,21 +534,12 @@
   async function chooseMedia(file, kind = 'image') {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = kind === 'video' ? 'Preparando vídeo...' : kind === 'audio' ? 'Preparando áudio...' : 'Preparando imagem...'
-      selectedMedia = kind === 'video' ? await prepareVideo(file) : kind === 'audio' ? await prepareAudio(file) : await prepareImage(file)
+      if (status) status.textContent = kind === 'audio' ? 'Preparando áudio...' : 'Preparando imagem...'
+      selectedMedia = kind === 'audio' ? await prepareAudio(file) : await prepareImage(file)
       const imagePreview = document.getElementById('chatMobilePreviewImage')
       const audioPreview = document.getElementById('chatMobilePreviewAudio')
-      const videoPreview = document.getElementById('chatMobilePreviewVideo')
-      if (selectedMedia.kind === 'video') {
+      if (selectedMedia.kind === 'audio') {
         if (imagePreview) imagePreview.hidden = true
-        if (audioPreview) audioPreview.hidden = true
-        if (videoPreview) {
-          videoPreview.src = selectedMedia.dataUrl
-          videoPreview.hidden = false
-        }
-      } else if (selectedMedia.kind === 'audio') {
-        if (imagePreview) imagePreview.hidden = true
-        if (videoPreview) videoPreview.hidden = true
         if (audioPreview) {
           audioPreview.src = selectedMedia.dataUrl
           audioPreview.hidden = false
@@ -544,7 +550,6 @@
           imagePreview.hidden = false
         }
         if (audioPreview) audioPreview.hidden = true
-        if (videoPreview) videoPreview.hidden = true
       }
       const box = document.getElementById('chatMobilePreview')
       if (box) {
@@ -570,22 +575,100 @@
       imagePreview.removeAttribute('src')
       imagePreview.hidden = false
     }
-    const videoPreview = document.getElementById('chatMobilePreviewVideo')
-    if (videoPreview) {
-      videoPreview.pause()
-      videoPreview.removeAttribute('src')
-      videoPreview.hidden = true
-    }
     const audioPreview = document.getElementById('chatMobilePreviewAudio')
     if (audioPreview) {
       audioPreview.pause()
       audioPreview.removeAttribute('src')
       audioPreview.hidden = true
     }
-    ;['chatMobileGalleryInput', 'chatMobileCameraInput', 'chatMobileVideoInput', 'chatMobileAudioInput'].forEach((id) => {
+    ;['chatMobileGalleryInput', 'chatMobileCameraInput'].forEach((id) => {
       const input = document.getElementById(id)
       if (input) input.value = ''
     })
+  }
+
+  function formatVoiceTime(seconds) {
+    const safe = Math.max(0, Math.floor(Number(seconds) || 0))
+    return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`
+  }
+
+  function stopVoiceTimer() {
+    if (voiceTimer) clearInterval(voiceTimer)
+    voiceTimer = 0
+  }
+
+  function updateVoiceTimer() {
+    const elapsed = voiceRecorder?.elapsedSeconds?.() || 0
+    const timer = document.getElementById('chatMobileVoiceTimer')
+    if (timer) timer.textContent = formatVoiceTime(elapsed)
+    if (elapsed >= 60 && !voiceFinishing) finishVoiceRecording(true)
+  }
+
+  async function startVoiceRecording() {
+    if (sending || voiceRecorder?.active || voiceFinishing) return
+    const Recorder = window.VSHookVoiceRecorder
+    const status = document.getElementById('chatMobileStatus')
+    if (typeof Recorder !== 'function') {
+      if (status) status.textContent = 'O gravador de voz não foi carregado.'
+      return
+    }
+    clearSelectedMedia()
+    const recorder = new Recorder()
+    voiceRecorder = recorder
+    try {
+      await recorder.start()
+      document.getElementById('chatMobileVoiceRecording').hidden = false
+      if (status) status.textContent = ''
+      stopVoiceTimer()
+      updateVoiceTimer()
+      voiceTimer = setInterval(updateVoiceTimer, 250)
+      updateHeaderAndControls()
+    } catch (error) {
+      recorder.cancel()
+      voiceRecorder = null
+      document.getElementById('chatMobileVoiceRecording').hidden = true
+      if (status) status.textContent = error.message
+      updateHeaderAndControls()
+    }
+  }
+
+  function cancelVoiceRecording() {
+    stopVoiceTimer()
+    voiceRecorder?.cancel?.()
+    voiceRecorder = null
+    voiceFinishing = false
+    const panel = document.getElementById('chatMobileVoiceRecording')
+    if (panel) panel.hidden = true
+    const timer = document.getElementById('chatMobileVoiceTimer')
+    if (timer) timer.textContent = '0:00'
+    updateHeaderAndControls()
+  }
+
+  async function finishVoiceRecording(sendImmediately = true) {
+    if (!voiceRecorder?.active || voiceFinishing) return
+    const recorder = voiceRecorder
+    const status = document.getElementById('chatMobileStatus')
+    voiceFinishing = true
+    stopVoiceTimer()
+    updateHeaderAndControls()
+    try {
+      selectedMedia = await recorder.stop()
+      voiceRecorder = null
+      voiceFinishing = false
+      document.getElementById('chatMobileVoiceRecording').hidden = true
+      const timer = document.getElementById('chatMobileVoiceTimer')
+      if (timer) timer.textContent = '0:00'
+      updateHeaderAndControls()
+      if (sendImmediately) await sendMessage()
+    } catch (error) {
+      recorder.cancel()
+      voiceRecorder = null
+      voiceFinishing = false
+      const panel = document.getElementById('chatMobileVoiceRecording')
+      if (panel) panel.hidden = true
+      if (status) status.textContent = error.message
+      updateHeaderAndControls()
+    }
   }
 
   async function sendMessage() {
@@ -611,8 +694,6 @@
         text,
         imageUrl: media.kind === 'image' ? media.dataUrl : '',
         audioUrl: media.kind === 'audio' ? media.dataUrl : '',
-        videoUrl: media.kind === 'video' ? media.dataUrl : '',
-        videoDurationSeconds: media.durationSeconds || 0,
         replyTo: replyTo ? {
           id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
           text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasAudio: Boolean(replyTo.audioUrl), hasVideo: Boolean(replyTo.videoUrl)
@@ -631,8 +712,7 @@
         text,
         replyToMessageId,
         image: media?.kind === 'image' ? { mimeType: media.mimeType, base64: media.base64 } : null,
-        audio: media?.kind === 'audio' ? { mimeType: media.mimeType, base64: media.base64 } : null,
-        video: media?.kind === 'video' ? { mimeType: media.mimeType, base64: media.base64, durationSeconds: media.durationSeconds } : null,
+        audio: media?.kind === 'audio' ? { mimeType: media.mimeType, base64: media.base64, durationSeconds: media.durationSeconds || 0 } : null,
       })
       if (tempId) messages.delete(tempId)
       if (input) input.value = ''
@@ -867,7 +947,10 @@
   }
 
   function bindEvents() {
-    document.getElementById('chatMobileBack')?.addEventListener('click', () => window.vshookExitToProjectSelector?.())
+    document.getElementById('chatMobileBack')?.addEventListener('click', () => {
+      if (voiceRecorder?.active) cancelVoiceRecording()
+      window.vshookExitToProjectSelector?.()
+    })
     document.getElementById('chatMobileAdminMenu')?.addEventListener('click', openAdminSettings)
     document.getElementById('chatMobileAdminClose')?.addEventListener('click', () => { document.getElementById('chatMobileAdminModal').hidden = true })
     document.getElementById('chatMobileAdminSave')?.addEventListener('click', saveAdminSettings)
@@ -900,34 +983,15 @@
       picker.hidden = true
     })
     const cameraButton = document.getElementById('chatMobileCamera')
-    const cameraMenu = document.getElementById('chatMobileCameraMenu')
     document.getElementById('chatMobileGallery')?.addEventListener('click', () => document.getElementById('chatMobileGalleryInput')?.click())
     cameraButton?.addEventListener('click', (event) => {
-      event.stopPropagation()
-      if (chatState?.user?.isAdmin === true) {
-        if (cameraMenu) cameraMenu.hidden = !cameraMenu.hidden
-      } else {
-        document.getElementById('chatMobileCameraInput')?.click()
-      }
-    })
-    document.getElementById('chatMobilePhotoChoice')?.addEventListener('click', () => {
-      if (cameraMenu) cameraMenu.hidden = true
       document.getElementById('chatMobileCameraInput')?.click()
-    })
-    document.getElementById('chatMobileVideoChoice')?.addEventListener('click', () => {
-      if (cameraMenu) cameraMenu.hidden = true
-      document.getElementById('chatMobileVideoInput')?.click()
-    })
-    document.addEventListener('pointerdown', (event) => {
-      if (!cameraMenu || cameraMenu.hidden) return
-      if (event.target === cameraButton || cameraMenu.contains(event.target)) return
-      cameraMenu.hidden = true
     })
     document.getElementById('chatMobileGalleryInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
     document.getElementById('chatMobileCameraInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
-    document.getElementById('chatMobileVideoInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'video'))
-    document.getElementById('chatMobileAudio')?.addEventListener('click', () => document.getElementById('chatMobileAudioInput')?.click())
-    document.getElementById('chatMobileAudioInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'audio'))
+    document.getElementById('chatMobileAudio')?.addEventListener('click', startVoiceRecording)
+    document.getElementById('chatMobileVoiceCancel')?.addEventListener('click', cancelVoiceRecording)
+    document.getElementById('chatMobileVoiceSend')?.addEventListener('click', () => finishVoiceRecording(true))
     document.getElementById('chatMobileRemoveImage')?.addEventListener('click', clearSelectedMedia)
     document.getElementById('chatMobileCancelReply')?.addEventListener('click', clearReplyToMessage)
     document.getElementById('chatMobileSend')?.addEventListener('click', sendMessage)
@@ -959,6 +1023,7 @@
     }
     messagesContainer?.addEventListener('pointerdown', (event) => {
       if (event.pointerType === 'mouse' && event.button !== 0) return
+      if (event.target.closest('button, input, audio')) return
       const article = event.target.closest('[data-chat-message-id]')
       const messageId = Number(article?.dataset.chatMessageId || 0)
       if (!messagePermissions(messages.get(messageId)).reply) return
@@ -979,12 +1044,27 @@
     })
     ;['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => messagesContainer?.addEventListener(type, cancelMessageHold))
     messagesContainer?.addEventListener('contextmenu', (event) => {
-      if (event.target.closest('[data-chat-message-id]')) event.preventDefault()
+      const article = event.target.closest('[data-chat-message-id]')
+      const messageId = Number(article?.dataset.chatMessageId || 0)
+      if (!messageId || !messagePermissions(messages.get(messageId)).reply) return
+      event.preventDefault()
+      cancelMessageHold()
+      openMessageActions(messageId)
     })
     messagesContainer?.addEventListener('click', (event) => {
       if (Date.now() < suppressMessageClickUntil) {
         event.preventDefault()
         event.stopPropagation()
+        return
+      }
+      const audioAction = event.target.closest('[data-audio-action]')
+      if (audioAction) {
+        const audio = audioAction.closest('.chatMobileMessageAudio')?.querySelector('audio')
+        if (!audio) return
+        if (audio.paused) {
+          messagesContainer.querySelectorAll('.chatMobileMessageAudio audio').forEach((candidate) => { if (candidate !== audio) candidate.pause() })
+          audio.play().catch(() => {})
+        } else audio.pause()
         return
       }
       const replyQuote = event.target.closest('[data-jump-message]')
@@ -1021,7 +1101,12 @@
       if (pinnedHoldStart && Math.hypot(event.clientX - pinnedHoldStart.x, event.clientY - pinnedHoldStart.y) > 12) cancelPinnedHold()
     })
     ;['pointerup', 'pointercancel', 'pointerleave'].forEach((type) => pinnedMessage?.addEventListener(type, cancelPinnedHold))
-    pinnedMessage?.addEventListener('contextmenu', (event) => { if (!event.target.closest('button')) event.preventDefault() })
+    pinnedMessage?.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('button') || !Number(chatState?.chat?.pinnedMessageId || 0)) return
+      event.preventDefault()
+      cancelPinnedHold()
+      openPinnedMessageActions()
+    })
     document.getElementById('chatMobileUnpin')?.addEventListener('click', (event) => setPinnedMessage(0, event.currentTarget))
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') refresh(!chatState).catch(() => {})

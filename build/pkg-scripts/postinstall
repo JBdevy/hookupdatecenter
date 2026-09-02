@@ -5,8 +5,6 @@
 # atualizacao com o REAPER fechado.
 set -euo pipefail
 
-FFMPEG_RUNTIME_REVISION="macos-portable-2"
-
 log() {
   echo "[Hook Center postinstall] $*"
 }
@@ -16,59 +14,11 @@ fail() {
   exit 1
 }
 
-is_complete_ffmpeg() {
-  local root="$1"
-  [ -f "$root/lib/libavutil.60.dylib" ] &&
-    [ -f "$root/lib/libavcodec.62.dylib" ] &&
-    [ -f "$root/lib/libavformat.62.dylib" ] &&
-    [ -f "$root/lib/libswscale.9.dylib" ] &&
-    [ -x "$root/bin/ffmpeg" ] &&
-    [ -f "$root/VSHOOK_RUNTIME_REVISION" ] &&
-    [ "$(cat "$root/VSHOOK_RUNTIME_REVISION")" = "$FFMPEG_RUNTIME_REVISION" ] &&
-    "$root/bin/ffmpeg" -hide_banner -version >/dev/null 2>&1
-}
-
 is_complete_companion() {
   local app_bundle="$1"
   [ -d "$app_bundle" ] &&
     [ -f "$app_bundle/Contents/MacOS/VS Hook Teleprompt Settings" ] &&
     [ -f "$app_bundle/Contents/Resources/app.asar" ]
-}
-
-install_ffmpeg_runtime() {
-  local reaper_root="$1"
-  local parent="$reaper_root/UserPlugins/VSHookRuntime"
-  local target="$parent/FFmpeg"
-  local temporary="$parent/.FFmpeg.install.$$"
-  local backup="$parent/.FFmpeg.backup.$$"
-  local legacy_vlc="$parent/VLC"
-
-  if is_complete_ffmpeg "$target"; then
-    rm -rf "$legacy_vlc"
-    log "Runtime FFmpeg ja esta completo em $target"
-    return
-  fi
-
-  mkdir -p "$parent"
-  rm -rf "$temporary" "$backup"
-  ditto "$FFMPEG_SOURCE" "$temporary"
-  is_complete_ffmpeg "$temporary" || fail "A copia temporaria do FFmpeg esta incompleta."
-
-  if [ -e "$target" ]; then
-    mv "$target" "$backup"
-  fi
-  if mv "$temporary" "$target" && chmod -R a+rX "$target" && is_complete_ffmpeg "$target"; then
-    rm -rf "$backup"
-    rm -rf "$legacy_vlc"
-    log "Runtime FFmpeg instalado em $target"
-    return
-  fi
-
-  rm -rf "$target"
-  if [ -e "$backup" ]; then
-    mv "$backup" "$target" || true
-  fi
-  fail "Nao foi possivel instalar o runtime FFmpeg."
 }
 
 install_companion() {
@@ -142,43 +92,6 @@ THEMES_SOURCE="$RESOURCES/vshook-themes"
 is_complete_companion "$COMPANION_SOURCE" || fail "Teleprompt Settings empacotado esta incompleto."
 
 GLOBAL_REAPER="${TARGET_VOLUME}/Library/Application Support/REAPER"
-GLOBAL_FFMPEG_ROOT="$GLOBAL_REAPER/UserPlugins/VSHookRuntime/FFmpeg"
-INSTALL_FFMPEG_RUNTIME=0
-
-if ! is_complete_ffmpeg "$GLOBAL_FFMPEG_ROOT"; then
-  INSTALL_FFMPEG_RUNTIME=1
-else
-  rm -rf "$GLOBAL_REAPER/UserPlugins/VSHookRuntime/VLC"
-fi
-
-for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
-  [ -d "$USER_HOME" ] || continue
-  USER_NAME="$(basename "$USER_HOME")"
-  [ "$USER_NAME" = "Shared" ] && continue
-  USER_FFMPEG_ROOT="$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/FFmpeg"
-  if ! is_complete_ffmpeg "$USER_FFMPEG_ROOT"; then
-    INSTALL_FFMPEG_RUNTIME=1
-  else
-    rm -rf "$USER_HOME/Library/Application Support/REAPER/UserPlugins/VSHookRuntime/VLC"
-  fi
-done
-
-if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
-  FFMPEG_ZIP="$(find "$RESOURCES/ffmpeg-runtime" -maxdepth 1 -type f -name 'ffmpeg-*-macos-universal-lgpl-shared.zip' -print -quit)"
-  [ -n "$FFMPEG_ZIP" ] || fail "Runtime FFmpeg nao veio dentro da Hook Center."
-  FFMPEG_EXTRACT="$(mktemp -d /tmp/vshook-ffmpeg.XXXXXX)"
-  cleanup_ffmpeg() {
-    rm -rf "$FFMPEG_EXTRACT"
-  }
-  trap cleanup_ffmpeg EXIT
-  ditto -x -k "$FFMPEG_ZIP" "$FFMPEG_EXTRACT"
-  FFMPEG_SOURCE="$FFMPEG_EXTRACT/FFmpeg"
-  is_complete_ffmpeg "$FFMPEG_SOURCE" || fail "O ZIP do FFmpeg empacotado esta incompleto."
-fi
-
-if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
-  install_ffmpeg_runtime "$GLOBAL_REAPER"
-fi
 install_companion "$GLOBAL_REAPER"
 install_themes "$GLOBAL_REAPER/ColorThemes"
 
@@ -187,20 +100,11 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   USER_NAME="$(basename "$USER_HOME")"
   [ "$USER_NAME" = "Shared" ] && continue
   USER_REAPER="$USER_HOME/Library/Application Support/REAPER"
-  if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
-    install_ffmpeg_runtime "$USER_REAPER"
-  fi
   install_companion "$USER_REAPER"
   install_themes "$USER_REAPER/ColorThemes" "$USER_NAME"
   if id -u "$USER_NAME" >/dev/null 2>&1; then
-    chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookRuntime" 2>/dev/null || true
     chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookTelepromptSettings" 2>/dev/null || true
   fi
 done
-
-if [ "$INSTALL_FFMPEG_RUNTIME" -eq 1 ]; then
-  cleanup_ffmpeg
-  trap - EXIT
-fi
 
 log "Componentes do REAPER instalados antes da primeira abertura da Hook Center."

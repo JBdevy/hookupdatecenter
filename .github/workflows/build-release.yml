@@ -231,30 +231,6 @@ jobs:
           test -f "$ASAR" || (echo "Pacote final da Hook Center sem resources/app.asar." && exit 1)
           node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
           test ! -e "$APP/Contents/Resources/windows-midi-services" || (echo "Pacote macOS inclui indevidamente o instalador Windows MIDI Services." && exit 1)
-          FFMPEG_RUNTIME="$APP/Contents/Resources/ffmpeg-runtime/ffmpeg-8.1.2-macos-universal-lgpl-shared.zip"
-          test -f "$FFMPEG_RUNTIME" || (echo "Pacote final da Hook Center sem o runtime FFmpeg universal." && exit 1)
-          test "$(stat -f%z "$FFMPEG_RUNTIME")" -ge 8388608 || (echo "Runtime FFmpeg universal incompleto." && exit 1)
-          test "$(head -c 2 "$FFMPEG_RUNTIME")" = "PK" || (echo "Runtime FFmpeg universal não é um ZIP válido." && exit 1)
-          FFMPEG_AUDIT="$RUNNER_TEMP/vshook-ffmpeg-audit"
-          rm -rf "$FFMPEG_AUDIT"
-          mkdir -p "$FFMPEG_AUDIT"
-          ditto -x -k "$FFMPEG_RUNTIME" "$FFMPEG_AUDIT"
-          FFMPEG_ROOT="$FFMPEG_AUDIT/FFmpeg"
-          test "$(cat "$FFMPEG_ROOT/VSHOOK_RUNTIME_REVISION")" = "macos-portable-2" || \
-            (echo "Runtime FFmpeg não possui a revisão portátil atual." && exit 1)
-          for BINARY in "$FFMPEG_ROOT/bin/ffmpeg" "$FFMPEG_ROOT/lib/"*.dylib; do
-            test -L "$BINARY" && continue
-            for ARCH in x86_64 arm64; do
-              INVALID_DEPS="$(otool -arch "$ARCH" -L "$BINARY" | tail -n +2 | awk '{print $1}' | grep -Ev '^(@rpath/|@loader_path/|@executable_path/|/usr/lib/|/System/Library/)' || true)"
-              test -z "$INVALID_DEPS" || {
-                echo "Runtime FFmpeg depende de componente externo em $(basename "$BINARY") [$ARCH]:"
-                echo "$INVALID_DEPS"
-                exit 1
-              }
-            done
-          done
-          "$FFMPEG_ROOT/bin/ffmpeg" -hide_banner -version >/dev/null || \
-            (echo "Executável FFmpeg empacotado não inicia." && exit 1)
 
       - name: Validate macOS theme payload
         run: |
@@ -280,7 +256,6 @@ jobs:
           pkgutil --expand-full "$PKG" "$EXPANDED"
           POSTINSTALL="$(find "$EXPANDED" -type f -name postinstall -print -quit)"
           test -n "$POSTINSTALL" || (echo "PKG sem script postinstall." && exit 1)
-          grep -q 'VSHookRuntime' "$POSTINSTALL" || (echo "postinstall sem runtime FFmpeg." && exit 1)
           grep -q 'VSHookTelepromptSettings' "$POSTINSTALL" || (echo "postinstall sem Teleprompt Settings." && exit 1)
 
       - name: Notarize macOS PKG
