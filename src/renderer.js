@@ -579,13 +579,15 @@ function closeSupportQrModal() {
 }
 
 function updateDownloadCompactMode() {
-  const isHomeActive = $('#homeView')?.classList.contains('active');
-  const progressVisible = !$('#homeProgressArea')?.classList.contains('hidden');
-  document.body.classList.toggle('download-compact', !!isHomeActive && !!progressVisible);
+  // A barra da Home agora ocupa o espaço reservado abaixo do vídeo. Ela não
+  // deve mais redimensionar a tela nem deslocar os controles durante o download.
+  document.body.classList.remove('download-compact');
 }
 
 function setProgressVisible(visible) {
-  $('#homeProgressArea')?.classList.toggle('hidden', !visible);
+  const progressArea = $('#homeProgressArea');
+  progressArea?.classList.toggle('hidden', !visible);
+  progressArea?.setAttribute('aria-hidden', String(!visible));
   updateDownloadCompactMode();
 }
 
@@ -4802,7 +4804,7 @@ function fitUpdateDescriptionText() {
       return;
     }
 
-    const maximumFontSize = 15;
+    const maximumFontSize = 17;
     const minimumFontSize = 11;
     description.style.setProperty('font-size', `${maximumFontSize}px`, 'important');
     if (updateDescriptionFits(description)) return;
