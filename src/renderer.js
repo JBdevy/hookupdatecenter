@@ -4802,8 +4802,8 @@ function fitUpdateDescriptionText() {
       return;
     }
 
-    const maximumFontSize = 18;
-    const minimumFontSize = 1;
+    const maximumFontSize = 15;
+    const minimumFontSize = 11;
     description.style.setProperty('font-size', `${maximumFontSize}px`, 'important');
     if (updateDescriptionFits(description)) return;
 

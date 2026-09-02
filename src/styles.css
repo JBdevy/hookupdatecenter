@@ -9720,3 +9720,39 @@ body.tools-mode .add-project-setup-card {
     overflow: visible !important;
   }
 }
+
+/* Descrição compacta: ela não cresce junto com o restante da Home. O espaço
+   vertical liberado fica disponível para o card e as ações da atualização. */
+#homeView #updateDescriptionCard.update-description-card:not(.hidden) {
+  flex: 0 0 98px !important;
+  height: 98px !important;
+  min-height: 98px !important;
+  max-height: 98px !important;
+  padding: 6px 14px !important;
+}
+
+#homeView #updateDescriptionCard .eyebrow {
+  margin: 0 0 3px !important;
+  font-size: 9px !important;
+  line-height: 1 !important;
+}
+
+#homeView #updateDescriptionCard #updateDescription.update-description-text {
+  font-size: 15px !important;
+  line-height: 1.06 !important;
+}
+
+@media (max-height: 560px) {
+  #homeView #updateDescriptionCard.update-description-card:not(.hidden) {
+    flex-basis: 92px !important;
+    height: 92px !important;
+    min-height: 92px !important;
+    max-height: 92px !important;
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+  }
+
+  #homeView #updateDescriptionCard #updateDescription.update-description-text {
+    line-height: 1.02 !important;
+  }
+}
