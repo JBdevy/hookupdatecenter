@@ -9,7 +9,7 @@ const CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE = 'Não é possível criar este 
 const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Click', pattern: /\b(click|metronomo|metronome)\b/ },
   { name: 'Regência', pattern: /\b(regencia|maestro|gps|contagem|count in|countin)\b/ },
-  { name: 'Backing Vocal', pattern: /\b(back(?:ing)? vocals?|back vocais|back vozes?|back voz|backs?|bk|bgv)\b/ },
+  { name: 'Backing Vocal', pattern: /\b(back(?:ing)?(?: vocals?| vocais| vozes?| voz)?|backs?|bk|bgv)\b/ },
   { name: 'Guia', pattern: /\b(guia|guide|voz|vz)\b/ },
   { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion)\b/ },
   { name: 'Ukulele', pattern: /\b(ukulele|ukelele|uke)\b/ },
@@ -19,18 +19,19 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Violão', pattern: /\b(violao|acoustic guitar|acoustic)\b/ },
   { name: 'Guitarra', pattern: /\b(guitarras?|guitars?|gtr|guita|guit)\b/ },
   { name: 'Baixo', pattern: /\b(baixo|bass)\b/ },
-  { name: 'Bumbo', pattern: /\b(bumbo|kick)\b/ },
-  { name: 'Caixa', pattern: /\b(caixa|snare)\b/ },
-  { name: 'Hi-Hat', pattern: /\b(hi hat|hihat|chimbal|chimbau)\b/ },
-  { name: 'Tom', pattern: /\b(tom|toms)\b/ },
-  { name: 'Over', pattern: /\b(over|overhead|oh)\b/ },
-  { name: 'Pratos', pattern: /\b(prato|pratos|cymbal|cymbals)\b/ },
-  { name: 'Ride', pattern: /\b(ride)\b/ },
-  { name: 'Crash', pattern: /\b(crash)\b/ },
-  { name: 'Conga', pattern: /\b(conga|congas|tumbadora|tumbadoras)\b/ },
-  { name: 'Bongo', pattern: /\b(bongo|bongos)\b/ },
+  { name: 'Bumbo', pattern: /\b(bumbos?|kicks?|bass drums?|gran cassa|bd)\b/ },
+  { name: 'Caixa', pattern: /\b(caixas?|snares?|cx)\b/ },
+  { name: 'Hi-Hat', pattern: /\b(hi ?hats?|hihats?|chimbal|chimbais|chimbaus?|ximbal|ximbais|ximbaus?|hh)\b/ },
+  { name: 'Surdo', pattern: /\b(surdos?|sd|floor ?toms?)\b/ },
+  { name: 'Tom', pattern: /\b(tom ?toms?|tomtoms?|tontons?|rontons?|toms?)\b/ },
+  { name: 'Over', pattern: /\b(overs?|overheads?|ohs?)\b/ },
+  { name: 'Ride', pattern: /\b(rides?)\b/ },
+  { name: 'Crash', pattern: /\b(crash(?:es)?)\b/ },
+  { name: 'Reverse Cymbal', pattern: /\b(reverse cymbals?|rev cymbals?|revcymbl)\b/ },
+  { name: 'Pratos', pattern: /\b(prato|pratos|cymbals?|cymbs?|cym)\b/ },
+  { name: 'Conga', pattern: /\b(congas?|tumbadoras?|cg)\b/ },
+  { name: 'Bongo', pattern: /\b(bongos?|bg)\b/ },
   { name: 'Timbal', pattern: /\b(timbal|timbau|timbales?)\b/ },
-  { name: 'Surdo', pattern: /\b(surdo|surdos)\b/ },
   { name: 'Repique de Mão', pattern: /\b(repique de mao|hand repique)\b/ },
   { name: 'Repique', pattern: /\b(repique|repinique|repiniques?)\b/ },
   { name: 'Meia Lua', pattern: /\b(meia lua|half moon(?: tambourine)?)\b/ },
@@ -38,7 +39,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Tamborim', pattern: /\b(tamborim|tamborins)\b/ },
   { name: 'Shaker', pattern: /\b(shaker|shakers)\b/ },
   { name: 'Ganzá', pattern: /\b(ganza|ganzas)\b/ },
-  { name: 'Agogô', pattern: /\b(agogo|agogos)\b/ },
+  { name: 'Agogô', pattern: /\b(agogo|agogos|sambago bells?)\b/ },
   { name: 'Cowbell', pattern: /\b(cowbell|cowbells|cow bell|cow bells)\b/ },
   { name: 'Clave', pattern: /\b(clave|claves)\b/ },
   { name: 'Triângulo', pattern: /\b(triangulo|triangle)\b/ },
@@ -47,11 +48,11 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Darbuka', pattern: /\b(darbuka|darabuka|doumbek)\b/ },
   { name: 'Cabasa', pattern: /\b(cabasa|cabassa)\b/ },
   { name: 'Maracas', pattern: /\b(maraca|maracas)\b/ },
-  { name: 'Chocalho', pattern: /\b(chocalho|chocalhos)\b/ },
+  { name: 'Chocalho', pattern: /\b(chocalhos?|rattles?|jingle bells?|sleigh bells?)\b/ },
   { name: 'Cuíca', pattern: /\b(cuica|cuicas)\b/ },
   { name: 'Berimbau', pattern: /\b(berimbau|berimbaus)\b/ },
   { name: 'Caxixi', pattern: /\b(caxixi|caxixis)\b/ },
-  { name: 'Reco-Reco', pattern: /\b(reco reco|recoreco|guiro|guero)\b/ },
+  { name: 'Reco-Reco', pattern: /\b(reco reco|recoreco|guiros?|gueros?|guiras?)\b/ },
   { name: 'Afoxé', pattern: /\b(afoxe|afoxes)\b/ },
   { name: 'Alfaia', pattern: /\b(alfaia|alfaias)\b/ },
   { name: 'Zabumba', pattern: /\b(zabumba|zabumbas)\b/ },
@@ -60,15 +61,25 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Rebolo', pattern: /\b(rebolo|rebolos)\b/ },
   { name: 'Sopapo', pattern: /\b(sopapo|sopapos)\b/ },
   { name: 'Tarol', pattern: /\b(tarol|tarols)\b/ },
-  { name: 'Xequerê', pattern: /\b(xequere|shekere|chequere)\b/ },
+  { name: 'Xequerê', pattern: /\b(xequeres?|shekeres?|chequeres?)\b/ },
   { name: 'Rocar', pattern: /\b(rocar|rocar)\b/ },
   { name: 'Palmas', pattern: /\b(palmas|hand clap|handclap|claps?)\b/ },
   { name: 'Snap', pattern: /\b(finger snap|snap|snaps)\b/ },
   { name: 'Rimshot', pattern: /\b(rimshot|rim shot|rim)\b/ },
   { name: 'Tímpano', pattern: /\b(timpano|timpani|kettle drum)\b/ },
   { name: 'Tabla', pattern: /\b(tabla|tablas)\b/ },
+  { name: 'Taiko', pattern: /\b(taikos?|taiko drums?|wadaiko)\b/ },
+  { name: 'Tambora', pattern: /\b(tamboras?|dominican drums?)\b/ },
+  { name: 'Bodhrán', pattern: /\b(bodhran|bodhrans)\b/ },
+  { name: 'Frame Drum', pattern: /\b(frame drums?|tambores? de moldura)\b/ },
+  { name: 'Talking Drum', pattern: /\b(talking drums?)\b/ },
   { name: 'Gong', pattern: /\b(gong|gongs)\b/ },
+  { name: 'Jamblock', pattern: /\b(jam ?blocks?|jamblocks?)\b/ },
+  { name: 'Bloco', pattern: /\b(blast blocks?|granite blocks?|temple blocks?|blocks? de percussao)\b/ },
   { name: 'Woodblock', pattern: /\b(woodblock|wood block|wood blocks)\b/ },
+  { name: 'Bar Chimes', pattern: /\b(bar chimes?|mark trees?|wind chimes?)\b/ },
+  { name: 'Bell Tree', pattern: /\b(bell trees?)\b/ },
+  { name: 'Waterfall', pattern: /\b(percussion waterfalls?|waterfall percussion|waterfalls?)\b/ },
   { name: 'Vibraslap', pattern: /\b(vibraslap|vibra slap)\b/ },
   { name: 'Castanholas', pattern: /\b(castanholas?|castanets?)\b/ },
   { name: 'Apito', pattern: /\b(apito|apitos|whistle|whistles)\b/ },
@@ -79,43 +90,62 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Kalimba', pattern: /\b(kalimba|kalimbas)\b/ },
   { name: 'Steel Pan', pattern: /\b(steel pan|steelpan|steel drum)\b/ },
   { name: 'Handpan', pattern: /\b(handpan|handpans|hang drum)\b/ },
-  { name: 'Bateria', pattern: /\b(bateria|batera|drums?)\b/ },
+  { name: 'Bateria', pattern: /\b(baterias?|bateras?|drums?|drum ?kits?|drum ?sets?|drumsets?|kit de bateria|(?:606|707|808|909) ?kits?|linndrum|drum machine)\b/ },
   { name: 'Rhodes', pattern: /\b(rhodes|rhode)\b/ },
   { name: 'Wurlitzer', pattern: /\b(wurlitzer|wurli|wurly)\b/ },
   { name: 'Electric Piano', pattern: /\b(electric piano|e piano|ep)\b/ },
   { name: 'CP80', pattern: /\b(cp ?80)\b/ },
-  { name: 'DX Piano', pattern: /\b(dx ?7|dx piano|fm piano)\b/ },
+  { name: 'DX', pattern: /\b(dx(?: ?(?:1|5|7|9|11|21|27|100))?|dx (?:piano|ep|e piano|keys?|synth)|fm (?:piano|ep|e piano|keys?)|tx ?816)\b/ },
   { name: 'Honky Tonk', pattern: /\b(honky tonk|honkytonk)\b/ },
   { name: 'Clavi', pattern: /\b(clavinet|clavi|clav)\b/ },
-  { name: 'Hammond', pattern: /\b(hammond|b3 organ|b3)\b/ },
-  { name: 'Piano', pattern: /\b(piano)\b/ },
-  { name: 'Órgão', pattern: /\b(orgao|organ)\b/ },
+  { name: 'Hammond', pattern: /\b(hammond|b ?3 organ|b ?3)\b/ },
+  { name: 'Piano', pattern: /\b(piano|pno)\b/ },
+  { name: 'Órgão', pattern: /\b(orgao|organ|orgn)\b/ },
   { name: 'Cravo', pattern: /\b(cravo|harpsichord|harpsi)\b/ },
   { name: 'Celesta', pattern: /\b(celesta|celeste)\b/ },
   { name: 'Glockenspiel', pattern: /\b(glockenspiel|glock)\b/ },
   { name: 'Music Box', pattern: /\b(music box|caixinha de musica)\b/ },
   { name: 'Bells', pattern: /\b(bell|bells|sino|sinos)\b/ },
   { name: 'Mallet', pattern: /\b(mallet|mallets)\b/ },
-  { name: 'Synth Brass', pattern: /\b(synth brass|syn brass|synthbrass)\b/ },
-  { name: 'Synth Strings', pattern: /\b(synth strings|syn strings|synthstrings)\b/ },
+  { name: 'Synth Brass', pattern: /\b(synth brass|syn brass|synthbrass|syn ?brss|syn ?brs|sy ?brs|polybrss|poly brass|analog brass|slap brass|rich brass|flutish brass|velo brass|brass attack|horn blast|mks ?80 brass|(?:d ?50|juno(?: ?(?:60|106))?|jupiter(?: ?8)?|jp ?(?:6|8|8000)|jx|jd ?(?:80|800)|jv ?1080|xv ?5080|m ?1|triton|trinity|kronos|krome|kross|korg) (?:soft )?brass)\b/ },
+  { name: 'Synth Strings', pattern: /\b(synth strings?|syn strings?|synthstrings|syn ?str(?:ings?)?|(?:d ?50|juno(?: ?(?:6|60|106))?|jupiter(?: ?8)?|jp ?(?:6|8|8000)|jx|jd ?(?:80|800)) (?:slow )?str(?:ings?)?)\b/ },
   { name: 'Saw', pattern: /\b(saw|sawtooth)\b/ },
   { name: 'Square', pattern: /\b(square|square wave)\b/ },
   { name: 'Pulse', pattern: /\b(pulse|pulse wave)\b/ },
-  { name: 'Pad', pattern: /\b(pad)\b/ },
-  { name: 'Synth', pattern: /\b(synth|synthesizer|sintetizador)\b/ },
-  { name: 'Lead', pattern: /\b(lead)\b/ },
+  { name: 'Pad', pattern: /\b(pads?|d ?50 heaven|d ?50 stack pad|(?:sft|brt|choir|syn|str|bell|vox|jup ?8|jp ?8) ?pd)\b/ },
+  { name: 'Vox Synth', pattern: /\b(synth vox|syn ?vox|air vox|space voices?|vocal airy|vox synth|d ?50 voices?|vocal oohz|spaced voxx?|wavox)\b/ },
+  { name: 'Synth', pattern: /\b(synth|synthesizer|sintetizador|fast synth|slow synth|motion synth|poly ?synth|pulsating)\b/ },
+  { name: 'Lead', pattern: /\b(leads?|(?:sft|syn|synth|saw|square|sqr|mono|jp ?6|jp ?8|juno) ?ld)\b/ },
   { name: 'Pluck', pattern: /\b(pluck|plucked)\b/ },
   { name: 'Arp', pattern: /\b(arp|arpeggio|arpejo)\b/ },
-  { name: 'Teclado', pattern: /\b(teclado|keyboard|keys)\b/ },
+  { name: 'Teclado', pattern: /\b(teclado|keyboard|keys|poly ?keys?|polykey)\b/ },
   { name: 'Cordas', pattern: /\b(cordas|strings?)\b/ },
+  { name: 'Hit', pattern: /\b(orch ?hits?|orchhits?|orchestra ?hits?|orchestral ?hits?|orquestra ?hits?|orquestral ?hits?|orq ?hits?|orqhits?|brass ?hits?|double ?hits?|euro ?hits?|impact|stabs?|hits?)\b/ },
   { name: 'Percussão', pattern: /\b(percussao|percussion|perc)\b/ },
-  { name: 'Trompete', pattern: /\b(trompete|trumpet)\b/ },
-  { name: 'Trombone', pattern: /\b(trombone)\b/ },
-  { name: 'Sax', pattern: /\b(sax|saxofone|saxophone)\b/ },
+  { name: 'Metais', pattern: /(?:\b(metais|naipe(?: de metais)?|nipe(?: de metais)?|brass(?: sections?| ensembles?| falls?)?|brss ?sec(?:t(?:ion)?)?s?|brss ?falls?|sopros?|horn ?(?:sections?|orchestra|orch|swell)|hornorch|(?:noble|massed|afro) horns?|sax sections?|trumpet (?:and|&) trombone sections?|tp ?(?:and|&) ?tb ?sec(?:t(?:ion)?)?s?)\b|^horns?(?=\s+(?:l|r|\d+)\b|$))/ },
+  { name: 'Trompete Piccolo', pattern: /\b(trompete piccolo|piccolo trumpet)\b/ },
+  { name: 'Trompete Baixo', pattern: /\b(trompete baixo|bass trumpet)\b/ },
+  { name: 'Trompete', pattern: /\b(trompetes?|trumpets?|muted trumpet|mute trp|warm trp|trp|tpt)\b/ },
+  { name: 'Corneta', pattern: /\b(cornetas?|cornets?)\b/ },
+  { name: 'Flugelhorn', pattern: /\b(flugelhorns?|flugels?|fliscornes?|flicornes?)\b/ },
+  { name: 'Trombone Baixo', pattern: /\b(trombone baixo|bass trombone)\b/ },
+  { name: 'Trombone Alto', pattern: /\b(trombone alto|alto trombone)\b/ },
+  { name: 'Trombone Tenor', pattern: /\b(trombone tenor|tenor trombone)\b/ },
+  { name: 'Trombone', pattern: /\b(trombones?|valve trombone|tbn)\b/ },
+  { name: 'Sax Soprano', pattern: /\b(sax(?:ofone)? soprano|soprano sax(?:ophone)?|sprno ?sax)\b/ },
+  { name: 'Sax Alto', pattern: /\b(sax(?:ofone)? alto|alto sax(?:ophone)?)\b/ },
+  { name: 'Sax Tenor', pattern: /\b(sax(?:ofone)? tenor|tenor sax(?:ophone)?)\b/ },
+  { name: 'Sax Barítono', pattern: /\b(sax(?:ofone)? baritono|baritone sax(?:ophone)?|bari ?sax)\b/ },
+  { name: 'Sax', pattern: /\b(saxes|sax|saxofones?|saxophones?)\b/ },
   { name: 'Tuba', pattern: /\b(tuba|tubas)\b/ },
-  { name: 'Trompa', pattern: /\b(trompa|french horn|horns?)\b/ },
-  { name: 'Flugelhorn', pattern: /\b(flugelhorn|flugel)\b/ },
-  { name: 'Metais', pattern: /\b(metais|brass)\b/ },
+  { name: 'Sousafone', pattern: /\b(sousafones?|sousaphones?)\b/ },
+  { name: 'Bombardino', pattern: /\b(bombardinos?|eufonios?|euphoniums?)\b/ },
+  { name: 'Barítono de Metal', pattern: /\b(baritono de metal|baritone horns?|marching baritones?)\b/ },
+  { name: 'Trompa Alto', pattern: /\b(trompa (?:alto|tenor)|alto horns?|tenor horns?)\b/ },
+  { name: 'Mellophone', pattern: /\b(mellophones?|melofones?)\b/ },
+  { name: 'Trompa', pattern: /\b(trompas?|french horns?|fr ?horns?|corno frances)\b/ },
+  { name: 'Clarim', pattern: /\b(clarins?|bugles?)\b/ },
+  { name: 'Shofar', pattern: /\b(shofars?|shofarot|shofroth|schofars?)\b/ },
   { name: 'Piccolo', pattern: /\b(piccolo)\b/ },
   { name: 'Flauta Pan', pattern: /\b(flauta pan|pan flute)\b/ },
   { name: 'Flauta', pattern: /\b(flauta|flute)\b/ },
@@ -136,7 +166,45 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Sequencer', pattern: /\b(sequencer|sequence|sequencia|sequenciador|seq)\b/ },
   { name: 'FX', pattern: /\b(fx|sfx|efeito|efeitos)\b/ },
   { name: 'Loop', pattern: /\b(loop)\b/ },
-  { name: 'Playback', pattern: /\b(playback|pb)\b/ }
+  { name: 'Playback', pattern: /\b(playback|pb)\b/ },
+  { name: 'Universe', pattern: /\b(universe)\b/ },
+  { name: 'Fantasia', pattern: /\b(fantasia(?: jv)?)\b/ },
+  { name: 'Staccato Heaven', pattern: /\b((?:staccato|stac) heaven)\b/ },
+  { name: 'Digital Native Dance', pattern: /\b(digital native dance|native dance)\b/ },
+  { name: 'Pizzagogo', pattern: /\b(pizzagogo)\b/ },
+  { name: 'Glass Voices', pattern: /\b(glass voices?|glass vox)\b/ },
+  { name: 'Soundtrack', pattern: /\b(sound ?track)\b/ },
+  { name: 'M1', pattern: /\b(?:korg )?m ?1\b/ },
+  { name: 'Triton', pattern: /\b(?:korg )?triton(?: studio| le| extreme| rack)?\b/ },
+  { name: 'Trinity', pattern: /\b(?:korg )?trinity\b/ },
+  { name: 'Kronos', pattern: /\b(?:korg )?kronos\b/ },
+  { name: 'Nautilus', pattern: /\b(?:korg )?nautilus\b/ },
+  { name: 'Krome', pattern: /\b(?:korg )?krome\b/ },
+  { name: 'Kross', pattern: /\b(?:korg )?kross(?: ?2)?\b/ },
+  { name: 'Wavestation', pattern: /\b(?:korg )?wavestation\b/ },
+  { name: 'Wavestate', pattern: /\b(?:korg )?wavestate\b/ },
+  { name: 'Polysix', pattern: /\b(?:korg )?polysix\b/ },
+  { name: 'MS-20', pattern: /\b(?:korg )?ms ?20\b/ },
+  { name: 'Opsix', pattern: /\b(?:korg )?opsix\b/ },
+  { name: 'Modwave', pattern: /\b(?:korg )?modwave\b/ },
+  { name: 'Minilogue', pattern: /\b(?:korg )?minilogue(?: xd)?\b/ },
+  { name: 'KingKORG', pattern: /\bking ?korg\b/ },
+  { name: 'Korg PA', pattern: /\b(?:korg )?pa ?(?:5 x|4 x|1000|700|600)\b/ },
+  { name: 'Korg', pattern: /\bkorg\b/ },
+  { name: 'D-50', pattern: /\b(?:roland )?d ?50\b/ },
+  { name: 'JD-800', pattern: /\b(?:roland )?jd ?(?:80|800|990|08)\b/ },
+  { name: 'JV-1080', pattern: /\b(?:roland )?jv ?(?:1080|2080)\b/ },
+  { name: 'XV-5080', pattern: /\b(?:roland )?xv ?(?:5050|5080)\b/ },
+  { name: 'XP', pattern: /\b(?:roland )?xp ?(?:30|50|60|80)\b/ },
+  { name: 'Juno', pattern: /\b(?:roland )?juno(?: ?(?:6|60|106|x|x m|ds))?\b/ },
+  { name: 'Jupiter', pattern: /\b(?:roland )?(?:jupiter(?: ?(?:6|8|x|x m))?|jp ?(?:6|8|8000))\b/ },
+  { name: 'Fantom', pattern: /\b(?:roland )?fantom(?: ?(?:06|07|08|6|7|8|g|x))?\b/ },
+  { name: 'Integra-7', pattern: /\b(?:roland )?integra ?7\b/ },
+  { name: 'RD', pattern: /\b(?:roland )?rd ?(?:1000|2000|700|800|88)\b/ },
+  { name: 'SH-101', pattern: /\b(?:roland )?sh ?(?:101|2|4 d)\b/ },
+  { name: 'JX', pattern: /\b(?:roland )?jx ?(?:3 p|8 p|08)\b/ },
+  { name: 'System-8', pattern: /\b(?:roland )?system ?8\b/ },
+  { name: 'Roland', pattern: /\broland\b/ }
 ];
 
 const CREATE_PROJECT_TRACK_GROUPS = [
@@ -147,13 +215,17 @@ const CREATE_PROJECT_TRACK_GROUPS = [
   {
     key: 'teclados',
     name: 'Teclados',
-    trackNames: new Set(['Teclado', 'Piano', 'Rhodes', 'Wurlitzer', 'Electric Piano', 'CP80', 'DX Piano', 'Honky Tonk', 'Clavi', 'Hammond', 'Órgão', 'Cravo', 'Celesta', 'Glockenspiel', 'Music Box', 'Bells', 'Mallet', 'Synth Brass', 'Synth Strings', 'Saw', 'Square', 'Pulse', 'Pad', 'Synth', 'Lead', 'Pluck', 'Arp', 'Cordas'])
+    trackNames: new Set(['Teclado', 'Piano', 'Rhodes', 'Wurlitzer', 'Electric Piano', 'CP80', 'DX', 'Honky Tonk', 'Clavi', 'Hammond', 'Órgão', 'Cravo', 'Celesta', 'Glockenspiel', 'Music Box', 'Bells', 'Mallet', 'Synth Brass', 'Synth Strings', 'Saw', 'Square', 'Pulse', 'Pad', 'Vox Synth', 'Synth', 'Lead', 'Pluck', 'Arp', 'Cordas', 'Hit', 'Universe', 'Fantasia', 'Staccato Heaven', 'Digital Native Dance', 'Pizzagogo', 'Glass Voices', 'Soundtrack', 'M1', 'Triton', 'Trinity', 'Kronos', 'Nautilus', 'Krome', 'Kross', 'Wavestation', 'Wavestate', 'Polysix', 'MS-20', 'Opsix', 'Modwave', 'Minilogue', 'KingKORG', 'Korg PA', 'Korg', 'D-50', 'JD-800', 'JV-1080', 'XV-5080', 'XP', 'Juno', 'Jupiter', 'Fantom', 'Integra-7', 'RD', 'SH-101', 'JX', 'System-8', 'Roland'])
   },
-  { key: 'metais', name: 'Metais', trackNames: new Set(['Metais', 'Trompete', 'Trombone', 'Sax', 'Tuba', 'Trompa', 'Flugelhorn']) },
+  {
+    key: 'metais',
+    name: 'Metais',
+    trackNames: new Set(['Metais', 'Trompete Piccolo', 'Trompete Baixo', 'Trompete', 'Corneta', 'Flugelhorn', 'Trombone Baixo', 'Trombone Alto', 'Trombone Tenor', 'Trombone', 'Sax Soprano', 'Sax Alto', 'Sax Tenor', 'Sax Barítono', 'Sax', 'Tuba', 'Sousafone', 'Bombardino', 'Barítono de Metal', 'Trompa Alto', 'Mellophone', 'Trompa', 'Clarim', 'Shofar'])
+  },
   {
     key: 'percussivo',
     name: 'Percussivo',
-    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Gong', 'Woodblock', 'Vibraslap', 'Castanholas', 'Apito', 'Udu', 'Bateria', 'Percussão'])
+    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Reverse Cymbal', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Taiko', 'Tambora', 'Bodhrán', 'Frame Drum', 'Talking Drum', 'Gong', 'Jamblock', 'Bloco', 'Woodblock', 'Bar Chimes', 'Bell Tree', 'Waterfall', 'Vibraslap', 'Castanholas', 'Apito', 'Udu', 'Bateria', 'Percussão'])
   },
   { key: 'back-vocais', name: 'Back Vocais', trackNames: new Set(['Backing Vocal', 'Coro']) },
   { key: 'outros', name: 'Outros', trackNames: null }
@@ -172,10 +244,13 @@ const CREATE_PROJECT_GROUP_COLOR_PALETTE = [
 ];
 
 const TRACK_PRIORITY = new Map(CREATE_PROJECT_TRACK_RULES.map((rule, index) => [rule.name, index]));
+const KEYBOARD_MODEL_REFERENCE_PATTERN = /\b(?:korg|roland|m ?1|triton(?: studio| le| extreme| rack)?|trinity|kronos|nautilus|krome|kross(?: ?2)?|wavestation|wavestate|polysix|ms ?20|opsix|modwave|minilogue(?: xd)?|king ?korg|pa ?(?:5 x|4 x|1000|700|600)|d ?50|jd ?(?:80|800|990|08)|jv ?(?:1080|2080)|xv ?(?:5050|5080)|xp ?(?:30|50|60|80)|juno(?: ?(?:6|60|106|x|xm|x m|ds))?|jupiter(?: ?(?:6|8|x|xm|x m))?|jp ?(?:6|8|8000)|fantom(?: ?(?:06|07|08|6|7|8|g|x))?|integra ?7|rd ?(?:1000|2000|700|800|88)|sh ?(?:101|2|4 d)|jx ?(?:3 p|8 p|08)|system ?8)\b/g;
 
 function normalizeWords(value) {
   return String(value || '')
     .replace(/([a-zà-ÿ])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-zÀ-ÿ])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-zÀ-ÿ])/g, '$1 $2')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -189,7 +264,64 @@ function normalizeTrackKey(value) {
   return normalizeWords(value).replace(/\s+/g, ' ');
 }
 
-const SONG_FOLDER_LABEL_PATTERN = /^(?:vs\s+(?:professional|premium|pro)|clube\s+do\s+vs|playback\s+professional|pacote\s+vs)(?:\s+\d{2,4})?$/i;
+// Marcas e plataformas que costumam vir junto do nome da pasta baixada. A
+// comparação é feita com o texto normalizado e com a expressão inteira para
+// não remover palavras genéricas de títulos reais (por exemplo: "Loop de
+// Amor", "Primeiro Amor", "Worship You" ou "Studio 54").
+const SONG_FOLDER_SOURCE_LABEL_PATTERN_SOURCE = [
+  'vs\\s+(?:professional|premium|pro|sertanejo|gospel)',
+  'clube\\s+(?:do|de)\\s+vs',
+  'playback\\s+(?:professional|studio)',
+  'pacote\\s+vs',
+  'multi\\s*tracks\\s+for\\s+worship',
+  'multi\\s*tracks(?:\\s+com(?:\\s+br)?)?',
+  'loop\\s*community(?:\\s+com)?',
+  'prime\\s+by\\s+loop\\s*community',
+  'praise\\s*charts(?:\\s+com)?',
+  'worship\\s*backing\\s*(?:tracks|band)(?:\\s+com)?',
+  'custom\\s*backing\\s*tracks(?:\\s+(?:com|net))?',
+  'karaoke\\s*version(?:\\s+com)?',
+  'song\\s*galaxy(?:\\s+com)?',
+  'jam\\s*zone(?:\\s+com)?',
+  'jam\\s*kazam(?:\\s+com)?',
+  'hit\\s*trax',
+  'supreme\\s+(?:tracks|midi|network)',
+  'midi\\s*art(?:\\s+store)?',
+  'extreme\\s+backing\\s*tracks',
+  'jetset\\s+sound',
+  'shred\\s*trax'
+].join('|');
+
+const SONG_FOLDER_LABEL_PATTERN = new RegExp(
+  `^(?:www\\s+)?(?:${SONG_FOLDER_SOURCE_LABEL_PATTERN_SOURCE})(?:\\s+(?:com(?:\\s+(?:br|au))?|co\\s+uk|net|org|store|ca))?(?:\\s+\\d{2,4})?$`,
+  'i'
+);
+
+// Versão para reconhecer as mesmas marcas no começo/fim do texto original,
+// preservando pontos e hífens de domínios como MultiTracks.com.br.
+const SONG_FOLDER_RAW_LABEL_PATTERN_SOURCE = [
+  'vs\\s+(?:professional|premium|pro|sertanejo|gospel)',
+  'clube\\s+(?:do|de)\\s+vs',
+  'playback\\s+(?:professional|studio)',
+  'pacote\\s+vs',
+  'multi\\s*tracks\\s+for\\s+worship',
+  'multi\\s*tracks(?:\\s*\\.\\s*com(?:\\s*\\.\\s*br)?)?',
+  'loop\\s*community(?:\\s*\\.\\s*com)?',
+  'prime\\s+by\\s+loop\\s*community',
+  'praise\\s*charts(?:\\s*\\.\\s*com)?',
+  'worship\\s*backing\\s*(?:tracks|band)(?:\\s*\\.\\s*com)?',
+  'custom\\s*backing\\s*tracks(?:\\s*\\.\\s*(?:com|net))?',
+  'karaoke\\s*[- ]?\\s*version(?:\\s*\\.\\s*com)?',
+  'song\\s*galaxy(?:\\s*\\.\\s*com)?',
+  'jam\\s*zone(?:\\s*\\.\\s*com)?',
+  'jam\\s*kazam(?:\\s*\\.\\s*com)?',
+  'hit\\s*trax',
+  'supreme\\s*[- ]?\\s*(?:tracks|midi|network)',
+  'midi\\s*art(?:\\s*\\.\\s*store)?',
+  'extreme\\s+backing\\s*tracks',
+  'jetset\\s+sound',
+  'shred\\s*trax'
+].join('|');
 
 function inferSongNameFromFolder(folderPathOrName) {
   const rawName = path.basename(String(folderPathOrName || '')).trim();
@@ -211,8 +343,14 @@ function inferSongNameFromFolder(folderPathOrName) {
   });
   if (titlePieces.length) working = titlePieces.join(' - ');
 
-  const suffixPattern = /(?:\s*[-–—|_()]\s*)?(vs\s+(?:professional|premium|pro)|clube\s+do\s+vs|playback\s+professional|pacote\s+vs)(?:\s+\d{2,4})?\s*$/i;
-  const prefixPattern = /^\s*(vs\s+(?:professional|premium|pro)|clube\s+do\s+vs|playback\s+professional|pacote\s+vs)(?:\s+\d{2,4})?(?:\s*[-–—|_:]\s*)?/i;
+  const suffixPattern = new RegExp(
+    `(?:\\s*[-–—|_()]\\s*)?((?:www\\s*\\.\\s*)?(?:${SONG_FOLDER_RAW_LABEL_PATTERN_SOURCE})(?:\\s*\\.\\s*(?:com(?:\\s*\\.\\s*(?:br|au))?|co\\s*\\.\\s*uk|net|org|store|ca))?)(?:\\s+\\d{2,4})?\\s*$`,
+    'i'
+  );
+  const prefixPattern = new RegExp(
+    `^\\s*((?:www\\s*\\.\\s*)?(?:${SONG_FOLDER_RAW_LABEL_PATTERN_SOURCE})(?:\\s*\\.\\s*(?:com(?:\\s*\\.\\s*(?:br|au))?|co\\s*\\.\\s*uk|net|org|store|ca))?)(?:\\s+\\d{2,4})?(?:\\s*[-–—|_:]\\s*)?`,
+    'i'
+  );
   let match = working.match(suffixPattern);
   if (match) {
     removedLabels.push(match[1]);
@@ -225,10 +363,11 @@ function inferSongNameFromFolder(folderPathOrName) {
   }
 
   working = working.replace(/\s{2,}/g, ' ').replace(/^[-–—|_: ]+|[-–—|_: ]+$/g, '').trim();
+  const name = working || rawName;
   return {
-    name: working || rawName,
+    name,
     rawName,
-    changed: Boolean(working && normalizeWords(working) !== normalizeWords(rawName)),
+    changed: removedLabels.length > 0 || normalizeWords(name) !== normalizeWords(rawName),
     removedLabels: [...new Set(removedLabels.filter(Boolean))]
   };
 }
@@ -268,7 +407,11 @@ function inferUnknownTrackCandidate(fileStem, folderName = '') {
 }
 
 function findVariant(normalizedName, rule) {
-  const withoutBase = normalizedName.replace(rule.pattern, ' ').replace(/\s+/g, ' ').trim();
+  const withoutBase = normalizedName
+    .replace(rule.pattern, ' ')
+    .replace(KEYBOARD_MODEL_REFERENCE_PATTERN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   const variants = [];
   const has = (pattern) => pattern.test(withoutBase);
 

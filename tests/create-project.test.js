@@ -53,6 +53,23 @@ async function main() {
   assert.strictEqual(inferSongNameFromFolder('Sabor do Teu Beijo - VS Professional').name, 'Sabor do Teu Beijo');
   assert.strictEqual(inferSongNameFromFolder('Clube do VS - Evidências').name, 'Evidências');
   assert.strictEqual(inferSongNameFromFolder('Boate Azul (VS Premium)').name, 'Boate Azul');
+  assert.strictEqual(inferSongNameFromFolder('Clube de VS - Ainda Ontem Chorei de Saudade').name, 'Ainda Ontem Chorei de Saudade');
+  assert.strictEqual(inferSongNameFromFolder('VS Sertanejo - Página de Amigos').name, 'Página de Amigos');
+  assert.strictEqual(inferSongNameFromFolder('Deus de Promessas - VS Gospel').name, 'Deus de Promessas');
+  assert.strictEqual(inferSongNameFromFolder('MultiTracks.com.br - Bondade de Deus').name, 'Bondade de Deus');
+  assert.strictEqual(inferSongNameFromFolder('MultiTracksForWorship.com - Way Maker').name, 'Way Maker');
+  assert.strictEqual(inferSongNameFromFolder('Loop Community - Gratidão').name, 'Gratidão');
+  assert.strictEqual(inferSongNameFromFolder('Santo Pra Sempre (PraiseCharts)').name, 'Santo Pra Sempre');
+  assert.strictEqual(inferSongNameFromFolder('Worship Backing Band - Amazing Grace').name, 'Amazing Grace');
+  assert.strictEqual(inferSongNameFromFolder('Playback Studio - Porque Ele Vive').name, 'Porque Ele Vive');
+  assert.strictEqual(inferSongNameFromFolder('PlaybackStudio.com.br - Raridade').name, 'Raridade');
+  assert.strictEqual(inferSongNameFromFolder('Bohemian Rhapsody - Karaoke-Version.com').name, 'Bohemian Rhapsody');
+  assert.strictEqual(inferSongNameFromFolder('SongGalaxy.com - Africa').name, 'Africa');
+  assert.strictEqual(inferSongNameFromFolder('Jamzone - Hotel California').name, 'Hotel California');
+  assert.strictEqual(inferSongNameFromFolder('Loop de Amor').name, 'Loop de Amor');
+  assert.strictEqual(inferSongNameFromFolder('Primeiro Amor').name, 'Primeiro Amor');
+  assert.strictEqual(inferSongNameFromFolder('Worship You').name, 'Worship You');
+  assert.strictEqual(inferSongNameFromFolder('Studio 54').name, 'Studio 54');
   assert.strictEqual(classifyCreateProjectTrack('Click Base.wav', 'Música').name, 'Click');
   assert.strictEqual(classifyCreateProjectTrack('Metrônomo.wav', 'Música').name, 'Click');
   assert.strictEqual(classifyCreateProjectTrack('01 Maestro.wav', 'Música').name, 'Regência');
@@ -86,6 +103,62 @@ async function main() {
   assert.strictEqual(classifyCreateProjectTrack('Back.wav', 'Música').name, 'Backing Vocal');
   assert.strictEqual(classifyCreateProjectTrack('BK 2.wav', 'Música').name, 'Backing Vocal 2');
   assert.strictEqual(classifyCreateProjectTrack('Backing Vocals 3.wav', 'Música').name, 'Backing Vocal 3');
+  assert.strictEqual(classifyCreateProjectTrack('Backing.wav', 'Música').name, 'Backing Vocal');
+  assert.strictEqual(classifyCreateProjectTrack('ORCHHIT.wav', 'Música').name, 'Hit');
+  assert.strictEqual(classifyCreateProjectTrack('OrchHit2.wav', 'Música').name, 'Hit 2');
+  assert.strictEqual(classifyCreateProjectTrack('Impact.wav', 'Música').name, 'Hit');
+  assert.strictEqual(classifyCreateProjectTrack('DX.wav', 'Música').name, 'DX');
+  assert.strictEqual(classifyCreateProjectTrack('DX7.wav', 'Música').name, 'DX');
+  assert.strictEqual(classifyCreateProjectTrack('Nipe.wav', 'Música').name, 'Metais');
+  assert.strictEqual(classifyCreateProjectTrack('Brass Section.wav', 'Música').name, 'Metais');
+  assert.strictEqual(classifyCreateProjectTrack('Tp&Tb Section.wav', 'Música').name, 'Metais');
+  assert.strictEqual(classifyCreateProjectTrack('BrssSect.wav', 'Música').name, 'Metais');
+  assert.strictEqual(classifyCreateProjectTrack('Horns.wav', 'Música').name, 'Metais');
+  assert.strictEqual(classifyCreateProjectTrack('Cornet.wav', 'Música').name, 'Corneta');
+  assert.strictEqual(classifyCreateProjectTrack('Euphonium.wav', 'Música').name, 'Bombardino');
+  assert.strictEqual(classifyCreateProjectTrack('French Horn.wav', 'Música').name, 'Trompa');
+  assert.strictEqual(classifyCreateProjectTrack('Baritone Horn.wav', 'Música').name, 'Barítono de Metal');
+  assert.strictEqual(classifyCreateProjectTrack('Shofar.wav', 'Música').name, 'Shofar');
+  assert.strictEqual(classifyCreateProjectTrack('JamBlock.wav', 'Música').name, 'Jamblock');
+  assert.strictEqual(classifyCreateProjectTrack('drums.wav', 'Música').name, 'Bateria');
+  assert.strictEqual(classifyCreateProjectTrack('batera.wav', 'Música').name, 'Bateria');
+  assert.strictEqual(classifyCreateProjectTrack('CX.wav', 'Música').name, 'Caixa');
+  assert.strictEqual(classifyCreateProjectTrack('SD.wav', 'Música').name, 'Surdo');
+  assert.strictEqual(classifyCreateProjectTrack('CG.wav', 'Música').name, 'Conga');
+  assert.strictEqual(classifyCreateProjectTrack('BG.wav', 'Música').name, 'Bongo');
+  assert.strictEqual(classifyCreateProjectTrack('Hihat.wav', 'Música').name, 'Hi-Hat');
+  assert.strictEqual(classifyCreateProjectTrack('Ximbal.wav', 'Música').name, 'Hi-Hat');
+  assert.strictEqual(classifyCreateProjectTrack('Tom1.wav', 'Música').name, 'Tom 1');
+  assert.strictEqual(classifyCreateProjectTrack('Tom Tom 2.wav', 'Música').name, 'Tom 2');
+  assert.strictEqual(classifyCreateProjectTrack('Tonton3.wav', 'Música').name, 'Tom 3');
+  assert.strictEqual(classifyCreateProjectTrack('Ronton 4.wav', 'Música').name, 'Tom 4');
+  assert.strictEqual(classifyCreateProjectTrack('Over L.wav', 'Música').name, 'Over L');
+  assert.strictEqual(classifyCreateProjectTrack('Over R.wav', 'Música').name, 'Over R');
+  assert.strictEqual(classifyCreateProjectTrack('Ride Cymbal.wav', 'Música').name, 'Ride');
+  assert.strictEqual(classifyCreateProjectTrack('Crash Cymbal.wav', 'Música').name, 'Crash');
+  assert.strictEqual(classifyCreateProjectTrack('Korg M1.wav', 'Música').name, 'M1');
+  assert.strictEqual(classifyCreateProjectTrack('M1 Piano.wav', 'Música').name, 'Piano');
+  assert.strictEqual(classifyCreateProjectTrack('M1 Piano 2.wav', 'Música').name, 'Piano 2');
+  assert.strictEqual(classifyCreateProjectTrack('Korg Universe.wav', 'Música').name, 'Universe');
+  assert.strictEqual(classifyCreateProjectTrack('Triton Studio.wav', 'Música').name, 'Triton');
+  assert.strictEqual(classifyCreateProjectTrack('Kronos.wav', 'Música').name, 'Kronos');
+  assert.strictEqual(classifyCreateProjectTrack('Kross2.wav', 'Música').name, 'Kross');
+  assert.strictEqual(classifyCreateProjectTrack('Pa5X.wav', 'Música').name, 'Korg PA');
+  assert.strictEqual(classifyCreateProjectTrack('D50.wav', 'Música').name, 'D-50');
+  assert.strictEqual(classifyCreateProjectTrack('D-50 Fantasia.wav', 'Música').name, 'Fantasia');
+  assert.strictEqual(classifyCreateProjectTrack('D50 Stac Heaven.wav', 'Música').name, 'Staccato Heaven');
+  assert.strictEqual(classifyCreateProjectTrack('D50 Brass.wav', 'Música').name, 'Synth Brass');
+  assert.strictEqual(classifyCreateProjectTrack('JV1080.wav', 'Música').name, 'JV-1080');
+  assert.strictEqual(classifyCreateProjectTrack('XV-5080.wav', 'Música').name, 'XV-5080');
+  assert.strictEqual(classifyCreateProjectTrack('Juno Strings.wav', 'Música').name, 'Synth Strings');
+  assert.strictEqual(classifyCreateProjectTrack('JP-8000 Brass.wav', 'Música').name, 'Synth Brass');
+  assert.strictEqual(classifyCreateProjectTrack('D-50 Voices.wav', 'Música').name, 'Vox Synth');
+  assert.strictEqual(classifyCreateProjectTrack('D-50 Heaven.wav', 'Música').name, 'Pad');
+  assert.strictEqual(classifyCreateProjectTrack('JP8BrtPd.wav', 'Música').name, 'Pad');
+  assert.strictEqual(classifyCreateProjectTrack('Synth PolyKey.wav', 'Música').name, 'Synth');
+  assert.strictEqual(classifyCreateProjectTrack('Fantom-06.wav', 'Música').name, 'Fantom');
+  assert.strictEqual(classifyCreateProjectTrack('Integra-7.wav', 'Música').name, 'Integra-7');
+  assert.strictEqual(classifyCreateProjectTrack('Trance Stab.wav', 'Música').name, 'Hit');
   assert.strictEqual(classifyCreateProjectTrack('Sequencer.wav', 'Música').name, 'Sequencer');
   assert.strictEqual(classifyCreateProjectTrack('arquivo desconhecido.wav', 'Música').name, 'Out');
   assert.strictEqual(resolveCreateProjectTrackGroup('Click').name, 'Interno');
@@ -101,13 +174,24 @@ async function main() {
   assert.strictEqual(resolveCreateProjectTrackGroup('Clavi').name, 'Teclados');
   assert.strictEqual(resolveCreateProjectTrackGroup('Bells').name, 'Teclados');
   assert.strictEqual(resolveCreateProjectTrackGroup('Lead').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Hit 2').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('DX').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('M1').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Universe').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('D-50').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Fantom').name, 'Teclados');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Vox Synth').name, 'Teclados');
   assert.strictEqual(resolveCreateProjectTrackGroup('Trompete 2').name, 'Metais');
   assert.strictEqual(resolveCreateProjectTrackGroup('Sax').name, 'Metais');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Corneta').name, 'Metais');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Bombardino').name, 'Metais');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Shofar').name, 'Metais');
   assert.strictEqual(resolveCreateProjectTrackGroup('Bateria').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Conga').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Meia Lua').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Ganzá').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Cuíca').name, 'Percussivo');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Jamblock').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Marimba').name, 'Outros');
   assert.strictEqual(resolveCreateProjectTrackGroup('Xilofone').name, 'Outros');
   assert.strictEqual(resolveCreateProjectTrackGroup('Kalimba').name, 'Outros');
@@ -260,6 +344,24 @@ async function main() {
       collisionAudit.tracks.map((track) => track.name),
       ['Guitarra Base', 'Guitarra Base 2', 'Guitarra Base 3']
     );
+
+    const taxonomyFolder = path.join(root, 'Teste da taxonomia');
+    await fs.promises.mkdir(taxonomyFolder);
+    await fs.promises.writeFile(path.join(taxonomyFolder, 'HIT.wav'), createSilentWav(1));
+    await fs.promises.writeFile(path.join(taxonomyFolder, 'ORCHHIT.wav'), createSilentWav(1));
+    await fs.promises.writeFile(path.join(taxonomyFolder, 'JamBlock.wav'), createSilentWav(1));
+    const taxonomyAudit = await auditCreateProjectFolders({
+      folderPaths: [taxonomyFolder],
+      durationResolver: readPcmAudioDuration
+    });
+    const taxonomyFiles = taxonomyAudit.songs[0].files;
+    assert.strictEqual(new Set(taxonomyFiles.map((file) => file.trackKey)).size, taxonomyFiles.length);
+    assert(taxonomyFiles.every((file) => file.recognized && file.trackName !== 'Out'));
+    assert.deepStrictEqual(
+      taxonomyFiles.filter((file) => /hit/i.test(file.fileName)).map((file) => file.trackName).sort(),
+      ['Hit', 'Hit 2']
+    );
+    assert(taxonomyAudit.tracks.some((track) => track.name === 'Jamblock'));
   } finally {
     await fs.promises.rm(root, { recursive: true, force: true });
   }
