@@ -579,8 +579,8 @@ function closeSupportQrModal() {
 }
 
 function updateDownloadCompactMode() {
-  // A barra da Home agora ocupa o espaço reservado abaixo do vídeo. Ela não
-  // deve mais redimensionar a tela nem deslocar os controles durante o download.
+  // A barra da Home agora ocupa o lado esquerdo do cabeçalho. Ela não deve
+  // redimensionar a tela nem deslocar os controles durante o download.
   document.body.classList.remove('download-compact');
 }
 
@@ -3148,6 +3148,7 @@ function chatHookMessagePreview(message) {
   const text = String(message?.text || '').replace(/\s+/g, ' ').trim();
   if (text) return text.slice(0, 120);
   if (message?.hasImage || message?.imageUrl) return '📷 Imagem';
+  if (message?.hasAudio || message?.audioUrl) return '🎵 Áudio';
   if (message?.hasVideo || message?.videoUrl) return '🎬 Vídeo';
   return 'Mensagem';
 }
@@ -3193,6 +3194,9 @@ function renderChatHookMessages(forceBottom = false) {
     const image = message.imageUrl
       ? `<button class="chat-hook-message-image${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}" type="button"${message.pending ? ' disabled' : ` data-chat-image-url="${escapeHtml(message.imageUrl)}"`} title="${message.pending ? 'Enviando imagem' : 'Abrir imagem'}"><img src="${escapeHtml(message.imageUrl)}" alt="Imagem enviada por ${safeName}" />${uploadState}</button>`
       : '';
+    const audio = message.audioUrl
+      ? `<div class="chat-hook-message-audio${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><audio src="${escapeHtml(message.audioUrl)}" controls preload="metadata"></audio>${uploadState}</div>`
+      : '';
     const video = message.videoUrl
       ? `<div class="chat-hook-message-video${message.pending ? ' is-uploading' : ''}${message.failed ? ' is-failed' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadState}</div>`
       : '';
@@ -3213,6 +3217,7 @@ function renderChatHookMessages(forceBottom = false) {
           ${reply}
           ${safeText ? `<p>${safeText}</p>` : ''}
           ${image}
+          ${audio}
           ${video}
         </div>
       </article>`;
@@ -3229,7 +3234,7 @@ function renderChatHookCurrentUser() {
     currentAvatar.innerHTML = chatHookAvatarHtml(user?.name || 'Hook', user?.avatarUrl || '');
   }
   const avatarButton = $('#chatHookAvatarButton');
-  if (avatarButton) avatarButton.classList.toggle('hidden', user?.isAdmin !== true);
+  if (avatarButton) avatarButton.classList.toggle('hidden', !user?.id);
   $('#chatHookAdminMenuButton')?.classList.toggle('hidden', user?.isAdmin !== true);
 }
 
@@ -3252,6 +3257,7 @@ function renderChatHookControls() {
   const send = $('#chatHookSendButton');
   const imageButton = $('#chatHookImageButton');
   const mediaInput = $('#chatHookImageInput');
+  const audioButton = $('#chatHookAudioButton');
   const emojiButton = $('#chatHookEmojiButton');
   if (input) {
     input.disabled = !available;
@@ -3270,6 +3276,7 @@ function renderChatHookControls() {
     send.textContent = chatHookSending ? 'Enviando...' : (cooldown > 0 ? `${cooldown}s` : 'Enviar');
   }
   if (imageButton) imageButton.disabled = !available;
+  if (audioButton) audioButton.disabled = !available;
   if (mediaInput) {
     const isAdmin = user?.isAdmin === true;
     mediaInput.accept = isAdmin
@@ -3278,6 +3285,8 @@ function renderChatHookControls() {
     if (imageButton) imageButton.title = isAdmin ? 'Enviar foto, print ou vídeo de até 30s' : 'Enviar foto ou print';
     if (!isAdmin && chatHookSelectedMedia?.kind === 'video') clearChatHookSelectedMedia();
   }
+  const audioInput = $('#chatHookAudioInput');
+  if (audioInput) audioInput.disabled = !available;
   if (emojiButton) emojiButton.disabled = !available;
   $('#chatHookClosedNotice')?.classList.toggle('hidden', !closed);
   $('#chatHookComposer')?.classList.toggle('hidden', closed);
@@ -3616,14 +3625,21 @@ async function readChatHookImage(file, maxBytes) {
 }
 
 async function readChatHookMedia(file) {
-  const mimeType = String(file?.type || '').toLowerCase();
+  const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+  const inferredAudioMime = ({ mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', webm: 'audio/webm' })[extension] || '';
+  const mimeType = String(file?.type || inferredAudioMime).toLowerCase();
   const imageTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  const audioTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm'];
   const videoTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
   if (imageTypes.includes(mimeType)) {
     if (file.size > 6 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 6 MB.');
     return { ...(await readChatHookFile(file)), kind: 'image' };
   }
-  if (!videoTypes.includes(mimeType)) throw new Error('Escolha uma imagem ou um vídeo MP4, MOV ou WEBM.');
+  if (audioTypes.includes(mimeType)) {
+    if (file.size > 20 * 1024 * 1024) throw new Error('O áudio deve ter no máximo 20 MB.');
+    return { ...(await readChatHookFile(file)), mimeType, kind: 'audio' };
+  }
+  if (!videoTypes.includes(mimeType)) throw new Error('Escolha uma imagem, um áudio ou um vídeo MP4, MOV ou WEBM.');
   if (chatHookState?.user?.isAdmin !== true) throw new Error('Somente administradores podem enviar vídeos.');
   if (file.size > 40 * 1024 * 1024) throw new Error('O vídeo deve ter no máximo 40 MB.');
   const durationSeconds = await readChatHookVideoDuration(file);
@@ -3645,8 +3661,16 @@ function clearChatHookSelectedMedia() {
     videoPreview.removeAttribute('src');
     videoPreview.classList.add('hidden');
   }
+  const audioPreview = $('#chatHookAudioPreview');
+  if (audioPreview) {
+    audioPreview.pause();
+    audioPreview.removeAttribute('src');
+    audioPreview.classList.add('hidden');
+  }
   const input = $('#chatHookImageInput');
   if (input) input.value = '';
+  const audioInput = $('#chatHookAudioInput');
+  if (audioInput) audioInput.value = '';
 }
 
 async function sendChatHookMessage() {
@@ -3670,11 +3694,12 @@ async function sendChatHookMessage() {
       isAdmin: user.isAdmin === true,
       text,
       imageUrl: selectedMedia.kind === 'image' ? selectedMedia.dataUrl : '',
+      audioUrl: selectedMedia.kind === 'audio' ? selectedMedia.dataUrl : '',
       videoUrl: selectedMedia.kind === 'video' ? selectedMedia.dataUrl : '',
       videoDurationSeconds: selectedMedia.durationSeconds || 0,
       replyTo: replyTo ? {
         id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
-        text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasVideo: Boolean(replyTo.videoUrl)
+        text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasAudio: Boolean(replyTo.audioUrl), hasVideo: Boolean(replyTo.videoUrl)
       } : null,
       avatarUrl: user.avatarUrl || '',
       createdAt: new Date().toISOString(),
@@ -3691,6 +3716,7 @@ async function sendChatHookMessage() {
       text,
       replyToMessageId,
       image: selectedMedia?.kind === 'image' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
+      audio: selectedMedia?.kind === 'audio' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64 } : null,
       video: selectedMedia?.kind === 'video' ? { mimeType: selectedMedia.mimeType, base64: selectedMedia.base64, durationSeconds: selectedMedia.durationSeconds } : null
     });
     if (optimisticId) chatHookMessagesById.delete(optimisticId);
@@ -3975,9 +4001,11 @@ function setupChatHook() {
     try {
       chatHookSelectedMedia = await readChatHookMedia(event.target.files?.[0]);
       const imagePreview = $('#chatHookImagePreviewImage');
+      const audioPreview = $('#chatHookAudioPreview');
       const videoPreview = $('#chatHookVideoPreview');
       if (chatHookSelectedMedia.kind === 'video') {
         if (imagePreview) imagePreview.classList.add('hidden');
+        if (audioPreview) audioPreview.classList.add('hidden');
         if (videoPreview) {
           videoPreview.src = chatHookSelectedMedia.dataUrl;
           videoPreview.classList.remove('hidden');
@@ -3987,7 +4015,28 @@ function setupChatHook() {
           imagePreview.src = chatHookSelectedMedia.dataUrl;
           imagePreview.classList.remove('hidden');
         }
+        if (audioPreview) audioPreview.classList.add('hidden');
         if (videoPreview) videoPreview.classList.add('hidden');
+      }
+      $('#chatHookImagePreview')?.classList.remove('hidden');
+      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';
+    } catch (error) {
+      clearChatHookSelectedMedia();
+      if ($('#chatHookStatus')) $('#chatHookStatus').textContent = error.message;
+    }
+  });
+  $('#chatHookAudioButton')?.addEventListener('click', () => $('#chatHookAudioInput')?.click());
+  $('#chatHookAudioInput')?.addEventListener('change', async (event) => {
+    try {
+      chatHookSelectedMedia = await readChatHookMedia(event.target.files?.[0]);
+      const imagePreview = $('#chatHookImagePreviewImage');
+      const audioPreview = $('#chatHookAudioPreview');
+      const videoPreview = $('#chatHookVideoPreview');
+      if (imagePreview) imagePreview.classList.add('hidden');
+      if (videoPreview) videoPreview.classList.add('hidden');
+      if (audioPreview) {
+        audioPreview.src = chatHookSelectedMedia.dataUrl;
+        audioPreview.classList.remove('hidden');
       }
       $('#chatHookImagePreview')?.classList.remove('hidden');
       if ($('#chatHookStatus')) $('#chatHookStatus').textContent = '';

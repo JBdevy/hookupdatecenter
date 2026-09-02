@@ -35,7 +35,14 @@
         <div class="home-live-layout">
           <div class="home-main-column">
         <div class="hero-card home-compact-header">
-          <h1>Hook Center</h1>
+          <div id="homeProgressArea" class="inline-progress-area update-header-progress hidden" aria-live="polite" aria-hidden="true">
+            <div class="progress-shell">
+              <div id="progressBar" class="progress-bar"></div>
+            </div>
+            <div class="progress-row">
+              <span id="progressText">0%</span>
+            </div>
+          </div>
           <button id="checkButton" class="primary-button">Verificar atualização</button>
         </div>
         <div class="home-learning-actions">
@@ -68,15 +75,6 @@
                   <span class="play-icon">▶</span>
                   <span>Assistir vídeo da atualização</span>
                 </button>
-              </div>
-
-              <div id="homeProgressArea" class="inline-progress-area update-video-progress hidden" aria-live="polite" aria-hidden="true">
-                <div class="progress-shell">
-                  <div id="progressBar" class="progress-bar"></div>
-                </div>
-                <div class="progress-row">
-                  <span id="progressText">0%</span>
-                </div>
               </div>
 
               <ul id="changelogList" class="changelog hidden" aria-hidden="true"></ul>
@@ -135,8 +133,9 @@
               </div>
               <div id="chatHookImagePreview" class="chat-hook-image-preview hidden">
                 <img id="chatHookImagePreviewImage" alt="Imagem escolhida" />
+                <audio id="chatHookAudioPreview" class="hidden" controls preload="metadata"></audio>
                 <video id="chatHookVideoPreview" class="hidden" muted playsinline preload="metadata"></video>
-                <button id="chatHookRemoveImageButton" type="button" aria-label="Remover imagem">×</button>
+                <button id="chatHookRemoveImageButton" type="button" aria-label="Remover mídia">×</button>
               </div>
               <textarea id="chatHookMessageInput" maxlength="1000" rows="2" placeholder="Escreva uma mensagem..."></textarea>
               <div class="chat-hook-composer-actions">
@@ -144,6 +143,8 @@
                   <button id="chatHookEmojiButton" class="chat-hook-icon-button" type="button" title="Emoji">😊</button>
                   <button id="chatHookImageButton" class="chat-hook-icon-button" type="button" title="Enviar foto ou print">📎</button>
                   <input id="chatHookImageInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+                  <button id="chatHookAudioButton" class="chat-hook-icon-button" type="button" title="Enviar áudio">🎵</button>
+                  <input id="chatHookAudioInput" class="hidden" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,audio/webm" />
                   <label class="chat-hook-enter-option" title="Quando ativo, Enter envia e Shift+Enter quebra a linha">
                     <input id="chatHookSendWithEnter" type="checkbox" />
                     <span>Enviar com Enter</span>

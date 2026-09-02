@@ -78,6 +78,7 @@
     const text = String(message?.text || '').replace(/\s+/g, ' ').trim()
     if (text) return text.slice(0, 120)
     if (message?.hasImage || message?.imageUrl) return '📷 Imagem'
+    if (message?.hasAudio || message?.audioUrl) return '🎵 Áudio'
     if (message?.hasVideo || message?.videoUrl) return '🎬 Vídeo'
     return 'Mensagem'
   }
@@ -199,8 +200,9 @@
           </div>
           <div id="chatMobilePreview" class="chatMobilePreview" hidden>
             <img id="chatMobilePreviewImage" alt="Imagem escolhida" />
+            <audio id="chatMobilePreviewAudio" controls preload="metadata" hidden></audio>
             <video id="chatMobilePreviewVideo" muted playsinline preload="metadata" hidden></video>
-            <button id="chatMobileRemoveImage" type="button" aria-label="Remover imagem">×</button>
+            <button id="chatMobileRemoveImage" type="button" aria-label="Remover mídia">×</button>
           </div>
           <textarea id="chatMobileInput" rows="2" maxlength="1000" placeholder="Escreva uma mensagem..."></textarea>
           <emoji-picker id="chatMobileEmojiPicker" class="chatMobileEmojiPicker dark" locale="pt" emoji-version="17.0" data-source="https://cdn.jsdelivr.net/npm/emoji-picker-element-data@^1/pt/cldr/data.json" hidden></emoji-picker>
@@ -208,9 +210,11 @@
             <button id="chatMobileEmoji" class="chatMobileIconButton" type="button" aria-label="Emojis">😊</button>
             <button id="chatMobileGallery" class="chatMobileIconButton" type="button" aria-label="Escolher foto da galeria">📎</button>
             <button id="chatMobileCamera" class="chatMobileIconButton" type="button" aria-label="Tirar foto">📷</button>
+            <button id="chatMobileAudio" class="chatMobileIconButton" type="button" aria-label="Escolher áudio">🎵</button>
             <input id="chatMobileGalleryInput" type="file" accept="image/*" hidden />
             <input id="chatMobileCameraInput" type="file" accept="image/*" capture="environment" hidden />
             <input id="chatMobileVideoInput" type="file" accept="video/mp4,video/quicktime,video/webm" capture="environment" hidden />
+            <input id="chatMobileAudioInput" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,audio/webm" hidden />
             <span id="chatMobileQuota"></span>
             <button id="chatMobileSend" class="chatMobileSend" type="button">Enviar</button>
           </div>
@@ -295,6 +299,9 @@
       const image = message.imageUrl
         ? `<button class="chatMobileMessageImage${message.pending ? ' uploading' : ''}" type="button" ${message.pending ? 'disabled' : `data-open-image="${escapeHtml(message.imageUrl)}"`}><img src="${escapeHtml(message.imageUrl)}" alt="Imagem de ${name}" />${uploadBadge}</button>`
         : ''
+      const audio = message.audioUrl
+        ? `<div class="chatMobileMessageAudio${message.pending ? ' uploading' : ''}"><audio src="${escapeHtml(message.audioUrl)}" controls preload="metadata"></audio>${uploadBadge}</div>`
+        : ''
       const video = message.videoUrl
         ? `<div class="chatMobileMessageVideo${message.pending ? ' uploading' : ''}"><video src="${escapeHtml(message.videoUrl)}" controls playsinline preload="metadata" ${message.pending ? 'muted' : ''}></video>${uploadBadge}</div>`
         : ''
@@ -311,6 +318,7 @@
             ${reply}
             ${text ? `<p>${text}</p>` : ''}
             ${image}
+            ${audio}
             ${video}
           </div>
         </article>`
@@ -350,7 +358,7 @@
     const closedNotice = document.getElementById('chatMobileClosedNotice')
     if (composer) composer.hidden = closed
     if (closedNotice) closedNotice.hidden = !closed
-    ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera'].forEach((id) => {
+    ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera', 'chatMobileAudio'].forEach((id) => {
       const button = document.getElementById(id)
       if (button) button.disabled = !enabled
     })
@@ -359,7 +367,7 @@
     const adminMenu = document.getElementById('chatMobileAdminMenu')
     const avatarButton = document.getElementById('chatMobileAvatarButton')
     if (adminMenu) adminMenu.hidden = user.isAdmin !== true
-    if (avatarButton) avatarButton.hidden = user.isAdmin !== true
+    if (avatarButton) avatarButton.hidden = !user.id
     const videoChoice = document.getElementById('chatMobileVideoChoice')
     if (videoChoice) videoChoice.hidden = user.isAdmin !== true
     if (user.isAdmin !== true && selectedMedia?.kind === 'video') clearSelectedMedia()
@@ -497,28 +505,52 @@
     return { kind: 'video', dataUrl, mimeType, base64: dataUrl.split(',')[1] || '', durationSeconds }
   }
 
+  async function prepareAudio(file) {
+    const allowed = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm']
+    const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || ''
+    const inferredMime = ({ mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', webm: 'audio/webm' })[extension] || ''
+    const mimeType = String(file?.type || inferredMime).toLowerCase()
+    if (!file || !allowed.includes(mimeType)) throw new Error('Escolha um áudio MP3, WAV, M4A, AAC, OGG ou WEBM.')
+    if (file.size > 20 * 1024 * 1024) throw new Error('O áudio deve ter no máximo 20 MB.')
+    const dataUrl = await fileAsDataUrl(file)
+    return { kind: 'audio', dataUrl, mimeType, base64: dataUrl.split(',')[1] || '' }
+  }
+
   async function chooseMedia(file, kind = 'image') {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = kind === 'video' ? 'Preparando vídeo...' : 'Preparando imagem...'
-      selectedMedia = kind === 'video' ? await prepareVideo(file) : await prepareImage(file)
+      if (status) status.textContent = kind === 'video' ? 'Preparando vídeo...' : kind === 'audio' ? 'Preparando áudio...' : 'Preparando imagem...'
+      selectedMedia = kind === 'video' ? await prepareVideo(file) : kind === 'audio' ? await prepareAudio(file) : await prepareImage(file)
       const imagePreview = document.getElementById('chatMobilePreviewImage')
+      const audioPreview = document.getElementById('chatMobilePreviewAudio')
       const videoPreview = document.getElementById('chatMobilePreviewVideo')
       if (selectedMedia.kind === 'video') {
         if (imagePreview) imagePreview.hidden = true
+        if (audioPreview) audioPreview.hidden = true
         if (videoPreview) {
           videoPreview.src = selectedMedia.dataUrl
           videoPreview.hidden = false
+        }
+      } else if (selectedMedia.kind === 'audio') {
+        if (imagePreview) imagePreview.hidden = true
+        if (videoPreview) videoPreview.hidden = true
+        if (audioPreview) {
+          audioPreview.src = selectedMedia.dataUrl
+          audioPreview.hidden = false
         }
       } else {
         if (imagePreview) {
           imagePreview.src = selectedMedia.dataUrl
           imagePreview.hidden = false
         }
+        if (audioPreview) audioPreview.hidden = true
         if (videoPreview) videoPreview.hidden = true
       }
       const box = document.getElementById('chatMobilePreview')
-      if (box) box.hidden = false
+      if (box) {
+        box.classList.toggle('audio', selectedMedia.kind === 'audio')
+        box.hidden = false
+      }
       if (status) status.textContent = ''
     } catch (error) {
       clearSelectedMedia()
@@ -529,7 +561,10 @@
   function clearSelectedMedia() {
     selectedMedia = null
     const box = document.getElementById('chatMobilePreview')
-    if (box) box.hidden = true
+    if (box) {
+      box.hidden = true
+      box.classList.remove('audio')
+    }
     const imagePreview = document.getElementById('chatMobilePreviewImage')
     if (imagePreview) {
       imagePreview.removeAttribute('src')
@@ -541,7 +576,13 @@
       videoPreview.removeAttribute('src')
       videoPreview.hidden = true
     }
-    ;['chatMobileGalleryInput', 'chatMobileCameraInput', 'chatMobileVideoInput'].forEach((id) => {
+    const audioPreview = document.getElementById('chatMobilePreviewAudio')
+    if (audioPreview) {
+      audioPreview.pause()
+      audioPreview.removeAttribute('src')
+      audioPreview.hidden = true
+    }
+    ;['chatMobileGalleryInput', 'chatMobileCameraInput', 'chatMobileVideoInput', 'chatMobileAudioInput'].forEach((id) => {
       const input = document.getElementById(id)
       if (input) input.value = ''
     })
@@ -569,11 +610,12 @@
         avatarUrl: user.avatarUrl || '',
         text,
         imageUrl: media.kind === 'image' ? media.dataUrl : '',
+        audioUrl: media.kind === 'audio' ? media.dataUrl : '',
         videoUrl: media.kind === 'video' ? media.dataUrl : '',
         videoDurationSeconds: media.durationSeconds || 0,
         replyTo: replyTo ? {
           id: Number(replyTo.id), name: replyTo.name || 'Usuário', isAdmin: replyTo.isAdmin === true,
-          text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasVideo: Boolean(replyTo.videoUrl)
+          text: replyTo.text || '', hasImage: Boolean(replyTo.imageUrl), hasAudio: Boolean(replyTo.audioUrl), hasVideo: Boolean(replyTo.videoUrl)
         } : null,
         createdAt: new Date().toISOString(),
         pending: true,
@@ -589,6 +631,7 @@
         text,
         replyToMessageId,
         image: media?.kind === 'image' ? { mimeType: media.mimeType, base64: media.base64 } : null,
+        audio: media?.kind === 'audio' ? { mimeType: media.mimeType, base64: media.base64 } : null,
         video: media?.kind === 'video' ? { mimeType: media.mimeType, base64: media.base64, durationSeconds: media.durationSeconds } : null,
       })
       if (tempId) messages.delete(tempId)
@@ -883,6 +926,8 @@
     document.getElementById('chatMobileGalleryInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
     document.getElementById('chatMobileCameraInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
     document.getElementById('chatMobileVideoInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'video'))
+    document.getElementById('chatMobileAudio')?.addEventListener('click', () => document.getElementById('chatMobileAudioInput')?.click())
+    document.getElementById('chatMobileAudioInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'audio'))
     document.getElementById('chatMobileRemoveImage')?.addEventListener('click', clearSelectedMedia)
     document.getElementById('chatMobileCancelReply')?.addEventListener('click', clearReplyToMessage)
     document.getElementById('chatMobileSend')?.addEventListener('click', sendMessage)

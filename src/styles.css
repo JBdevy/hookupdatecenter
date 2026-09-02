@@ -7,16 +7,18 @@
   --text: #f4f4f8;
   --muted: #9fa0ad;
   --line: rgba(255,255,255,.08);
-  --accent: #cf37ff;
+  --accent: #facc15;
   --accent-2: #9eff00;
   --green: #9eff00;
+  --yellow: #facc15;
+  --yellow-dark: #ca8a04;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at top right, rgba(207,55,255,.24), transparent 34%), radial-gradient(circle at top left, rgba(158,255,0,.10), transparent 28%), var(--bg);
+  background: radial-gradient(circle at top right, rgba(250,204,21,.20), transparent 34%), radial-gradient(circle at top left, rgba(158,255,0,.12), transparent 28%), var(--bg);
 }
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar {
@@ -32,7 +34,7 @@ body {
   width: 58px;
   height: 58px;
   object-fit: contain;
-  filter: drop-shadow(0 0 16px rgba(158,255,0,.32)) drop-shadow(0 0 18px rgba(207,55,255,.26));
+  filter: drop-shadow(0 0 16px rgba(158,255,0,.32)) drop-shadow(0 0 18px rgba(250,204,21,.28));
 }
 .brand strong { display: block; font-size: 18px; }
 .brand span { display: block; color: var(--muted); font-size: 13px; }
@@ -43,7 +45,7 @@ nav { display: grid; gap: 10px; }
   border-radius: 12px; cursor: pointer; font-size: 14px;
 }
 .nav-item.active, .nav-item:hover {
-  background: rgba(207,55,255,.15); color: var(--text); border-color: rgba(207,55,255,.32);
+  background: linear-gradient(90deg, rgba(250,204,21,.15), rgba(158,255,0,.08)); color: var(--text); border-color: rgba(250,204,21,.38);
 }
 .sidebar-footer { margin-top: auto; color: var(--muted); font-size: 13px; }
 .content { flex: 1; padding: 24px; overflow: auto; font-size: 14px; }
@@ -67,7 +69,7 @@ h2 { font-size: 22px; }
 .primary-button, .secondary-button {
   border: 0; border-radius: 12px; padding: 10px 14px; cursor: pointer; color: white; font-weight: 700; font-size: 13px;
 }
-.primary-button { background: linear-gradient(135deg, var(--accent), #7a1fd1); box-shadow: 0 0 22px rgba(207,55,255,.18); }
+.primary-button { background: linear-gradient(135deg, var(--accent), var(--yellow-dark)); color: #17130a; box-shadow: 0 0 22px rgba(250,204,21,.20); }
 .secondary-button { background: rgba(255,255,255,.08); color: var(--text); }
 .primary-button:disabled { opacity: .55; cursor: not-allowed; }
 .hidden { display: none !important; }
@@ -81,7 +83,7 @@ h2 { font-size: 22px; }
   border-radius: 16px;
   overflow: hidden;
   background:
-    radial-gradient(circle at center, rgba(207,55,255,.20), transparent 42%),
+    radial-gradient(circle at center, rgba(250,204,21,.18), transparent 42%),
     linear-gradient(135deg, rgba(16,16,27,.98), rgba(5,5,8,.98));
   border: 1px solid var(--line);
 }
@@ -102,7 +104,7 @@ h2 { font-size: 22px; }
   cursor: pointer;
   font-weight: 800;
   font-size: 13px;
-  box-shadow: 0 0 28px rgba(207,55,255,.12);
+  box-shadow: 0 0 28px rgba(250,204,21,.13);
 }
 .video-play-button:hover {
   border-color: rgba(158,255,0,.50);
@@ -115,8 +117,9 @@ h2 { font-size: 22px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--accent), #7a1fd1);
-  box-shadow: 0 0 22px rgba(207,55,255,.25);
+  background: linear-gradient(135deg, var(--accent), var(--yellow-dark));
+  color: #17130a;
+  box-shadow: 0 0 22px rgba(250,204,21,.26);
 }
 .changelog { display: grid; gap: 7px; margin: 14px 0 18px; padding-left: 18px; color: #d6d6df; }
 .actions {
@@ -2311,7 +2314,7 @@ body.lyrics-mode .content {
   scroll-padding-top: 96px;
 }
 
-/* v16 Visual refresh: identidade mais elegante no app inteiro */
+/* Identidade visual da Hook Center: amarelo e verde sobre a base escura. */
 :root {
   --bg: #070810;
   --panel: #101321;
@@ -2319,16 +2322,18 @@ body.lyrics-mode .content {
   --text: #f7f7fb;
   --muted: #b1b4c8;
   --line: rgba(255,255,255,.10);
-  --accent: #bb39ff;
+  --accent: #facc15;
   --accent-2: #8dff1f;
   --green: #8dff1f;
+  --yellow: #facc15;
+  --yellow-dark: #ca8a04;
 }
 
 body {
   background:
     radial-gradient(circle at 10% 0%, rgba(141,255,31,.12), transparent 24%),
-    radial-gradient(circle at 100% 0%, rgba(187,57,255,.24), transparent 28%),
-    radial-gradient(circle at 50% 100%, rgba(47,86,255,.10), transparent 26%),
+    radial-gradient(circle at 100% 0%, rgba(250,204,21,.20), transparent 28%),
+    radial-gradient(circle at 50% 100%, rgba(34,197,94,.08), transparent 26%),
     linear-gradient(180deg, #090a12 0%, #06070d 100%);
 }
 
@@ -2354,13 +2359,13 @@ body {
 
 .nav-item.active,
 .nav-item:hover {
-  background: linear-gradient(135deg, rgba(187,57,255,.18), rgba(141,255,31,.09));
+  background: linear-gradient(135deg, rgba(250,204,21,.18), rgba(141,255,31,.09));
   box-shadow: 0 8px 28px rgba(0,0,0,.18);
 }
 
 .hero-card, .card {
   background:
-    radial-gradient(circle at top right, rgba(187,57,255,.10), transparent 30%),
+    radial-gradient(circle at top right, rgba(250,204,21,.09), transparent 30%),
     radial-gradient(circle at left bottom, rgba(141,255,31,.06), transparent 26%),
     linear-gradient(180deg, rgba(21,24,39,.98), rgba(13,16,28,.97));
   border: 1px solid rgba(255,255,255,.08);
@@ -2368,8 +2373,9 @@ body {
 }
 
 .primary-button {
-  background: linear-gradient(135deg, #d04bff, #7f28e8);
-  box-shadow: 0 10px 26px rgba(187,57,255,.24);
+  background: linear-gradient(135deg, #facc15, #ca8a04);
+  color: #17130a;
+  box-shadow: 0 10px 26px rgba(250,204,21,.20);
 }
 
 .secondary-button {
@@ -8780,7 +8786,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
   cursor: pointer;
 }
 
-#homeView .chat-hook-reply-quote strong { color: #dc71ff; font-size: 9px; }
+#homeView .chat-hook-reply-quote strong { color: #facc15; font-size: 9px; }
 #homeView .chat-hook-reply-quote span { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 #homeView .chat-hook-message-image {
@@ -8847,6 +8853,22 @@ body.tools-mode .copy-project-card .selected-folder-box {
   background: #050508;
 }
 
+#homeView .chat-hook-message-audio {
+  position: relative;
+  width: min(100%, 320px);
+  margin-top: 6px;
+}
+
+#homeView .chat-hook-message-audio audio {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+}
+
+#homeView .chat-hook-message-audio.is-uploading audio {
+  opacity: .68;
+}
+
 #homeView .chat-hook-message-video video {
   display: block;
   width: 100%;
@@ -8890,7 +8912,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 #homeView .chat-hook-reply-preview.hidden { display: none; }
 #homeView .chat-hook-reply-preview div { min-width: 0; }
-#homeView .chat-hook-reply-preview strong { display: block; color: #dc71ff; font-size: 9px; }
+#homeView .chat-hook-reply-preview strong { display: block; color: #facc15; font-size: 9px; }
 #homeView .chat-hook-reply-preview p { overflow: hidden; margin: 2px 0 0; color: #cfcfd8; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 #homeView .chat-hook-reply-preview > button { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: rgba(255,255,255,.08); color: #fff; font-size: 18px; cursor: pointer; }
 
@@ -8903,7 +8925,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
   text-align: left;
 }
 
-.chat-hook-action-preview strong { display: block; color: #dc71ff; font-size: 11px; }
+.chat-hook-action-preview strong { display: block; color: #facc15; font-size: 11px; }
 .chat-hook-action-preview p { overflow: hidden; margin: 3px 0 0; color: #d7d7df; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-hook-message-action-buttons { display: grid; gap: 7px; }
 .chat-hook-message-action-buttons.hidden { display: none; }
@@ -9024,6 +9046,17 @@ body.tools-mode .copy-project-card .selected-folder-box {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+#homeView .chat-hook-image-preview:has(audio:not(.hidden)) {
+  width: min(100%, 280px);
+  height: 48px;
+  padding: 5px 26px 5px 5px;
+}
+
+#homeView .chat-hook-image-preview audio {
+  width: 100%;
+  height: 36px;
 }
 
 #homeView .chat-hook-image-preview button {
@@ -9157,6 +9190,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 #homeView .hero-card.home-compact-header #checkButton {
   min-width: 190px !important;
+  margin-left: auto !important;
   padding-right: 22px !important;
   padding-left: 22px !important;
 }
@@ -9731,8 +9765,7 @@ body.tools-mode .add-project-setup-card {
   margin-top: 4px !important;
 }
 
-/* Progresso da atualização: faixa própria imediatamente abaixo do botão. Ela
-   permanece reservada quando invisível, portanto nada muda de posição. */
+/* O vídeo não muda de posição quando o progresso aparece no cabeçalho. */
 #homeView #updateCard #videoBox {
   position: relative !important;
   display: block !important;
@@ -9761,51 +9794,55 @@ body.tools-mode .add-project-setup-card {
   margin: 0 !important;
 }
 
-#homeView #updateCard #homeProgressArea.update-video-progress {
+#homeView .home-compact-header #homeProgressArea.update-header-progress {
   position: static !important;
   z-index: 4;
   display: grid !important;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) 40px;
   align-items: center;
-  column-gap: 6px;
-  flex: 0 0 12px !important;
-  width: 100%;
-  height: 12px !important;
-  min-height: 12px !important;
-  max-height: 12px !important;
+  column-gap: 8px;
+  flex: 1 1 auto !important;
+  width: auto;
+  min-width: 120px;
+  max-width: 480px;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
   margin: 0 !important;
-  padding: 2px 0 0 !important;
+  padding: 0 4px !important;
   overflow: hidden !important;
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
 }
 
-#homeView #updateCard #homeProgressArea.update-video-progress.hidden {
-  display: grid !important;
-  visibility: hidden;
-  opacity: 0;
-  pointer-events: none;
+#homeView .home-compact-header #homeProgressArea.update-header-progress.hidden {
+  display: none !important;
 }
 
-#homeView #updateCard #homeProgressArea.update-video-progress .progress-shell {
+#homeView .home-compact-header #homeProgressArea.update-header-progress .progress-shell {
   position: static;
   width: 100%;
-  height: 6px !important;
+  height: 10px !important;
   margin: 0 !important;
+  border-color: rgba(250, 204, 21, .46) !important;
+  background: rgba(255, 255, 255, .10) !important;
+  box-shadow: inset 0 0 8px rgba(0, 0, 0, .34), 0 0 12px rgba(250, 204, 21, .10);
 }
 
-#homeView #updateCard #homeProgressArea.update-video-progress .progress-row {
+#homeView .home-compact-header #homeProgressArea.update-header-progress .progress-row {
   position: static;
   display: flex;
-  width: 34px;
-  min-height: 10px !important;
+  width: 40px;
+  min-height: 18px !important;
   margin: 0 !important;
   padding: 0 !important;
   justify-content: flex-end;
+  align-items: center;
   border: 0 !important;
   background: transparent !important;
-  color: #f5f7fa;
-  font-size: 9px !important;
+  color: #facc15;
+  font-size: 11px !important;
+  font-weight: 800;
   line-height: 1 !important;
 }
