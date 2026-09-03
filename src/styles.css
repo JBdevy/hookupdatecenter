@@ -3216,6 +3216,11 @@ body.sidebar-open .sidebar {
   100% { box-shadow: 0 0 0 1px rgba(255,138,42,.38), 0 0 13px rgba(255,138,42,.12); border-color: rgba(255,138,42,.44); }
 }
 
+@keyframes hookCenterSoftGreenBorder {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(34,197,94,.42), 0 0 16px rgba(34,197,94,.20); border-color: rgba(74,222,128,.72); }
+  50% { box-shadow: 0 0 0 1px rgba(74,222,128,.52), 0 0 22px rgba(34,197,94,.30); border-color: rgba(134,239,172,.88); }
+}
+
 #hookCenterLearnButton:not(:disabled) {
   animation: hookCenterSoftJump 1.05s ease-in-out infinite !important;
   transform-origin: center;
@@ -3223,8 +3228,8 @@ body.sidebar-open .sidebar {
 }
 
 #openVideoModalButton {
-  border: 1px solid rgba(255,138,42,.30) !important;
-  animation: hookCenterSoftRgbBorder 3.2s linear infinite !important;
+  border: 1px solid rgba(74,222,128,.72) !important;
+  animation: hookCenterSoftGreenBorder 3.2s linear infinite !important;
 }
 
 #hookCenterUpdateButton {
@@ -4595,7 +4600,7 @@ body.tools-mode .hook-rename-folder-items {
   border-radius: 14px !important;
 }
 
-/* Depois de baixar e instalar: sem botao Reinstalar na Home. O video fica
+/* Depois de baixar e instalar: sem botao Reinstalar na Home. Tutoriais ficam
    acima e o texto "VS Hook Instalado:" ocupa embaixo o lugar da acao
    escondida. Reinstalar so pela aba Atualizacoes anteriores. */
 #homeView #updateCard.home-installed-final .update-actions-inline {
@@ -7631,15 +7636,23 @@ body.tools-mode .copy-project-card .selected-folder-box {
   min-width: 0;
 }
 
+#homeView .home-update-video-button {
+  min-width: 0;
+  min-height: 42px;
+  height: 42px;
+  border-radius: 13px;
+  font-weight: 900;
+}
+
 #homeView .home-tutorials-button {
   min-height: 42px;
   height: 42px;
-  border-color: #22c55e;
+  border-color: #ffb12e;
   border-radius: 13px;
-  background: linear-gradient(135deg, #16a34a, #4ade80);
-  color: #fff;
+  background: linear-gradient(135deg, #ffb52e, #f97316);
+  color: #251000;
   font-weight: 900;
-  box-shadow: 0 0 18px rgba(34, 197, 94, .3);
+  box-shadow: 0 0 18px rgba(249, 115, 22, .3);
 }
 
 @keyframes homeLearnJumpBlink {
@@ -9315,21 +9328,22 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 #homeView #openVideoModalButton.video-play-button {
+  position: relative;
   display: inline-flex;
   flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  padding: 3px 12px;
-  border-color: rgba(255, 177, 46, .72);
-  background: linear-gradient(135deg, #ffb52e, #f97316);
-  color: #251000;
-  box-shadow: 0 0 26px rgba(249, 115, 22, .3);
+  gap: 0;
+  padding: 3px 42px;
+  border-color: rgba(74, 222, 128, .76);
+  background: linear-gradient(135deg, #16a34a, #4ade80);
+  color: #052e16;
+  box-shadow: 0 0 26px rgba(34, 197, 94, .3);
 }
 
 #homeView #openVideoModalButton.video-play-button:hover {
-  border-color: #ffd28a;
-  background: linear-gradient(135deg, #ffc24b, #fb8b2a);
+  border-color: #bbf7d0;
+  background: linear-gradient(135deg, #22c55e, #6ee7a0);
 }
 
 #homeView .video-click-indicator {
@@ -9348,11 +9362,18 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 #homeView #openVideoModalButton .play-icon {
+  position: absolute;
+  left: 12px;
   width: 24px;
   height: 24px;
-  background: rgba(75, 31, 0, .88);
+  background: rgba(5, 46, 22, .88);
   color: #fff;
   box-shadow: none;
+}
+
+#homeView #openVideoModalButton span:last-child {
+  width: 100%;
+  text-align: center;
 }
 
 @keyframes video-click-bounce {
@@ -9946,7 +9967,7 @@ body.tools-mode .add-project-setup-card {
   margin-bottom: 0 !important;
 }
 
-/* O vídeo não muda de posição quando o progresso aparece no cabeçalho. */
+/* Tutoriais não mudam de posição quando o progresso aparece no cabeçalho. */
 #homeView #updateCard #videoBox {
   position: relative !important;
   display: block !important;
@@ -9964,7 +9985,7 @@ body.tools-mode .add-project-setup-card {
   text-align: center;
 }
 
-#homeView #updateCard #videoBox #openVideoModalButton {
+#homeView #updateCard #videoBox #hookTutorialsButton {
   position: relative !important;
   inset: auto !important;
   display: flex !important;
@@ -9973,6 +9994,15 @@ body.tools-mode .add-project-setup-card {
   min-height: 54px !important;
   max-height: 54px !important;
   margin: 0 !important;
+  border-color: rgba(255, 177, 46, .76) !important;
+  background: linear-gradient(135deg, #ffb52e, #f97316) !important;
+  color: #251000 !important;
+  box-shadow: 0 0 26px rgba(249, 115, 22, .3) !important;
+}
+
+#homeView #updateCard #videoBox #hookTutorialsButton:hover {
+  border-color: #ffd28a !important;
+  background: linear-gradient(135deg, #ffc24b, #fb8b2a) !important;
 }
 
 #homeView .home-compact-header #homeProgressArea.update-header-progress {

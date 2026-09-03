@@ -5191,7 +5191,7 @@ function renderState(nextState) {
 
     const rawYoutubeUrl = update.youtubeUrl || '';
     currentYoutubeWatchUrl = normalizeYoutubeWatchUrl(rawYoutubeUrl);
-    $('#videoBox').classList.toggle('hidden', !currentYoutubeWatchUrl);
+    $('#openVideoModalButton')?.classList.toggle('hidden', !currentYoutubeWatchUrl);
 
     // A descrição/changelog da atualização do VS Hook fica exclusivamente no card amarelo separado.
     // Não renderiza lista dentro do card principal para evitar duplicidade e liberar espaço.
@@ -5210,7 +5210,7 @@ function renderState(nextState) {
       showBackendUpdateDescription(hc.notes);
     }
     currentYoutubeWatchUrl = '';
-    $('#videoBox')?.classList.add('hidden');
+    $('#openVideoModalButton')?.classList.add('hidden');
     const changelogListEl = $('#changelogList');
     if (changelogListEl) {
       changelogListEl.innerHTML = '';
@@ -5218,6 +5218,8 @@ function renderState(nextState) {
       changelogListEl.setAttribute('aria-hidden', 'true');
     }
   } else {
+    currentYoutubeWatchUrl = '';
+    $('#openVideoModalButton')?.classList.add('hidden');
     const homeDescriptionCard = $('#updateDescriptionCard');
     if (homeDescriptionCard) {
       homeDescriptionCard.classList.add('hidden');
@@ -5232,7 +5234,7 @@ function renderState(nextState) {
 
   const homeDownloadButton = $('#downloadButton');
   // Depois que o usuario baixa e instala, o botao Reinstalar some da Home.
-  // O video permanece acima e o texto "VS Hook Instalado:" ocupa no rodape
+  // O botao de tutoriais permanece acima e o texto "VS Hook Instalado:" ocupa no rodape
   // do card o lugar da acao escondida. A reinstalacao passa a ser feita na
   // aba Atualizacoes anteriores.
   const homeCurrentInstalled = state.currentPackageInstalled === true;
