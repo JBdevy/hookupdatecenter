@@ -93,7 +93,7 @@
           <aside id="chatHookPanel" class="home-chat-panel" aria-label="Chat Hook">
             <div class="chat-hook-header">
               <div class="chat-hook-title-row">
-                <div id="chatHookCurrentAvatar" class="chat-hook-avatar chat-hook-current-avatar" aria-hidden="true">H</div>
+                <button id="chatHookCurrentAvatar" class="chat-hook-avatar chat-hook-current-avatar" type="button" aria-label="Abrir foto do perfil">H</button>
                 <div>
                   <h2>Chat Hook</h2>
                   <span id="chatHookConnectionStatus">Conectando...</span>
@@ -104,6 +104,10 @@
                 <button id="chatHookAvatarButton" class="chat-hook-avatar-button hidden" type="button" title="Alterar foto de perfil">Foto</button>
               </div>
               <input id="chatHookAvatarInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+            </div>
+            <div id="chatHookAvatarMenu" class="chat-hook-avatar-menu hidden">
+              <button type="button" data-chat-avatar-action="change">Alterar foto</button>
+              <button type="button" data-chat-avatar-action="remove">Remover foto</button>
             </div>
             <div id="chatHookAdminMenu" class="chat-hook-admin-menu hidden">
               <button type="button" data-chat-admin-action="config">Config Chat</button>

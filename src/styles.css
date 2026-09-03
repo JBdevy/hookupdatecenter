@@ -8303,6 +8303,15 @@ body.tools-mode .copy-project-card .selected-folder-box {
   font-weight: 900;
 }
 
+#homeView button.chat-hook-avatar {
+  padding: 0;
+  cursor: pointer;
+}
+
+#homeView button.chat-hook-avatar:disabled {
+  cursor: default;
+}
+
 #homeView .chat-hook-current-avatar {
   flex-basis: 54px;
   width: 54px;
@@ -8362,6 +8371,24 @@ body.tools-mode .copy-project-card .selected-folder-box {
   background: rgba(18, 18, 29, .98);
   box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
 }
+
+#homeView .chat-hook-avatar-menu {
+  position: absolute;
+  z-index: 36;
+  top: 62px;
+  right: 12px;
+  display: grid;
+  min-width: 150px;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid rgba(207, 55, 255, .35);
+  border-radius: 12px;
+  background: rgba(18, 18, 29, .98);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+}
+
+#homeView .chat-hook-avatar-menu.hidden { display: none; }
+#homeView .chat-hook-avatar-menu button { min-height: 36px; padding: 0 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.055); color: var(--text); text-align: left; cursor: pointer; }
 
 #homeView .chat-hook-admin-menu.hidden { display: none; }
 #homeView .chat-hook-admin-menu button { min-height: 36px; padding: 0 11px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: rgba(255,255,255,.055); color: var(--text); text-align: left; cursor: pointer; }
@@ -8661,7 +8688,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 #homeView .chat-hook-message.audio-message .chat-hook-message-body {
-  width: min(390px, calc(100% - 56px));
+  width: min(320px, calc(100% - 56px));
 }
 
 #homeView .chat-hook-message.actionable .chat-hook-message-body {
@@ -8876,14 +8903,14 @@ body.tools-mode .copy-project-card .selected-folder-box {
   position: relative;
   display: flex;
   width: 100%;
-  min-width: 280px;
-  min-height: 68px;
+  min-width: 220px;
+  min-height: 50px;
   align-items: center;
-  gap: 10px;
-  margin-top: 6px;
-  padding: 10px 11px;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 7px 8px;
   border: 1px solid rgba(255, 214, 44, .24);
-  border-radius: 13px;
+  border-radius: 11px;
   background:
     radial-gradient(circle at 12% 0%, rgba(255, 214, 44, .12), transparent 42%),
     linear-gradient(135deg, rgba(25, 25, 34, .98), rgba(10, 10, 16, .98));
@@ -8904,18 +8931,18 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 #homeView .chat-hook-audio-play {
-  width: 39px;
-  height: 39px;
+  width: 31px;
+  height: 31px;
   padding: 0 0 0 2px;
   border-radius: 50%;
   background: linear-gradient(145deg, #ffe45c, #e5ad00);
-  box-shadow: 0 4px 12px rgba(255, 198, 0, .2);
-  font-size: 14px;
+  box-shadow: 0 3px 9px rgba(255, 198, 0, .18);
+  font-size: 11px;
   font-weight: 900;
 }
 
 #homeView .chat-hook-audio-track { min-width: 0; flex: 1; }
-#homeView .chat-hook-audio-track > strong { display: block; margin-bottom: 5px; color: #f5f5f8; font-size: 9px; letter-spacing: .02em; }
+#homeView .chat-hook-audio-track > strong { display: block; margin-bottom: 3px; color: #f5f5f8; font-size: 9px; letter-spacing: .02em; }
 #homeView .chat-hook-audio-track input {
   display: block;
   width: 100%;
@@ -8928,8 +8955,8 @@ body.tools-mode .copy-project-card .selected-folder-box {
   background: linear-gradient(90deg, #f5c518 var(--chat-audio-progress, 0%), rgba(255,255,255,.16) var(--chat-audio-progress, 0%));
   cursor: pointer;
 }
-#homeView .chat-hook-audio-track input::-webkit-slider-thumb { width: 11px; height: 11px; appearance: none; border: 2px solid #17171e; border-radius: 50%; background: #ffe45c; box-shadow: 0 0 0 2px rgba(255,228,92,.18); }
-#homeView .chat-hook-audio-time { display: flex; justify-content: space-between; margin-top: 5px; color: #888996; font-size: 8px; font-variant-numeric: tabular-nums; }
+#homeView .chat-hook-audio-track input::-webkit-slider-thumb { width: 9px; height: 9px; appearance: none; border: 2px solid #17171e; border-radius: 50%; background: #ffe45c; box-shadow: 0 0 0 1px rgba(255,228,92,.18); }
+#homeView .chat-hook-audio-time { display: flex; justify-content: space-between; margin-top: 3px; color: #888996; font-size: 8px; font-variant-numeric: tabular-nums; }
 
 #homeView .chat-hook-message-audio.is-uploading audio {
   opacity: .68;

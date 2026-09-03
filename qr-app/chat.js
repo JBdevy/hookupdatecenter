@@ -17,7 +17,6 @@
   let voiceRecorder = null
   let voiceTimer = 0
   let voiceFinishing = false
-  let adminPassword = ''
   let replyingToMessageId = 0
   let editingMessageId = 0
   let actionMessageId = 0
@@ -90,6 +89,7 @@
       const current = player.querySelector('[data-audio-current]')
       const duration = player.querySelector('[data-audio-duration]')
       if (!audio || !toggle || !seek || !current || !duration) return
+      let animationFrame = 0
       const sync = () => {
         const total = Number.isFinite(audio.duration) ? audio.duration : 0
         const elapsed = Number.isFinite(audio.currentTime) ? audio.currentTime : 0
@@ -101,7 +101,22 @@
         current.textContent = formatAudioTime(elapsed)
         duration.textContent = formatAudioTime(total)
       }
-      ;['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended'].forEach((type) => audio.addEventListener(type, sync))
+      const stopSmoothSync = () => {
+        if (animationFrame) cancelAnimationFrame(animationFrame)
+        animationFrame = 0
+        sync()
+      }
+      const smoothSync = () => {
+        sync()
+        if (!audio.paused && !audio.ended && audio.isConnected) animationFrame = requestAnimationFrame(smoothSync)
+        else animationFrame = 0
+      }
+      audio.addEventListener('play', () => {
+        if (!animationFrame) animationFrame = requestAnimationFrame(smoothSync)
+        sync()
+      })
+      ;['loadedmetadata', 'durationchange', 'timeupdate'].forEach((type) => audio.addEventListener(type, sync))
+      ;['pause', 'ended', 'emptied'].forEach((type) => audio.addEventListener(type, stopSmoothSync))
       seek.addEventListener('input', () => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) audio.currentTime = (Number(seek.value) / 100) * audio.duration
         sync()
@@ -208,7 +223,7 @@
       <main class="chatMobileShell">
         <header class="chatMobileHeader">
           <button id="chatMobileBack" class="chatMobileBack" type="button" aria-label="Voltar">‹</button>
-          <div id="chatMobileCurrentAvatar" class="chatMobileAvatar chatMobileCurrentAvatar">H</div>
+          <button id="chatMobileCurrentAvatar" class="chatMobileAvatar chatMobileCurrentAvatar" type="button" aria-label="Abrir foto do perfil">H</button>
           <div class="chatMobileHeading">
             <h1>Chat Hook</h1>
             <span id="chatMobileConnection">Conectando...</span>
@@ -219,6 +234,10 @@
             <input id="chatMobileAvatarInput" type="file" accept="image/*" hidden />
           </div>
         </header>
+        <div id="chatMobileAvatarMenu" class="chatMobileCameraMenu chatMobileProfileMenu" hidden>
+          <button type="button" data-avatar-action="change">Alterar foto</button>
+          <button id="chatMobileRemoveAvatar" type="button" data-avatar-action="remove">Remover foto</button>
+        </div>
 
         <section id="chatMobilePinned" class="chatMobilePinned" hidden>
           <div><strong>📌 Mensagem fixada</strong><button id="chatMobileUnpin" type="button" hidden>Desafixar</button></div>
@@ -237,25 +256,13 @@
           </div>
           <div id="chatMobilePreview" class="chatMobilePreview" hidden>
             <img id="chatMobilePreviewImage" alt="Imagem escolhida" />
-            <audio id="chatMobilePreviewAudio" controls preload="metadata" hidden></audio>
             <button id="chatMobileRemoveImage" type="button" aria-label="Remover mídia">×</button>
-          </div>
-          <div id="chatMobileVoiceRecording" class="chatMobileVoiceRecording" hidden>
-            <span class="chatMobileRecordingDot" aria-hidden="true"></span>
-            <strong id="chatMobileVoiceTimer">0:00</strong>
-            <span class="chatMobileRecordingLabel">Gravando · máximo 1 min</span>
-            <button id="chatMobileVoiceCancel" class="chatMobileVoiceCancel" type="button">Cancelar</button>
-            <button id="chatMobileVoiceSend" class="chatMobileVoiceSend" type="button">Enviar</button>
           </div>
           <textarea id="chatMobileInput" rows="2" maxlength="1000" placeholder="Escreva uma mensagem..."></textarea>
           <emoji-picker id="chatMobileEmojiPicker" class="chatMobileEmojiPicker dark" locale="pt" emoji-version="17.0" data-source="https://cdn.jsdelivr.net/npm/emoji-picker-element-data@^1/pt/cldr/data.json" hidden></emoji-picker>
           <div class="chatMobileActions">
-            <button id="chatMobileEmoji" class="chatMobileIconButton" type="button" aria-label="Emojis">😊</button>
-            <button id="chatMobileGallery" class="chatMobileIconButton" type="button" aria-label="Escolher foto da galeria">📎</button>
-            <button id="chatMobileCamera" class="chatMobileIconButton" type="button" aria-label="Tirar foto">📷</button>
-            <button id="chatMobileAudio" class="chatMobileIconButton" type="button" aria-label="Gravar mensagem de voz">🎙️</button>
+            <button id="chatMobileGallery" class="chatMobileIconButton" type="button" aria-label="Adicionar foto">📎</button>
             <input id="chatMobileGalleryInput" type="file" accept="image/*" hidden />
-            <input id="chatMobileCameraInput" type="file" accept="image/*" capture="environment" hidden />
             <span id="chatMobileQuota"></span>
             <button id="chatMobileSend" class="chatMobileSend" type="button">Enviar</button>
           </div>
@@ -324,6 +331,13 @@
     container.innerHTML = list.map((message) => {
       const name = escapeHtml(message.name || 'User')
       const text = escapeHtml(message.text || '').replace(/\n/g, '<br>')
+      const currentUser = chatState?.user
+      const sameCustomer = Number(message.customerId || 0) > 0
+        && Number(message.customerId || 0) === Number(currentUser?.id || 0)
+      const sameAdminIdentity = currentUser?.isAdmin === true && message.isAdmin === true
+      const messageAvatarUrl = sameCustomer || sameAdminIdentity
+        ? String(currentUser?.avatarUrl || '')
+        : String(message.avatarUrl || '')
       const permissions = messagePermissions(message)
       const reply = message.replyTo
         ? `<button class="chatMobileReplyQuote" type="button" data-jump-message="${Number(message.replyTo.id || 0)}"><strong>${escapeHtml(message.replyTo.name || 'Usuário')}</strong><span>${escapeHtml(messagePreview(message.replyTo))}</span></button>`
@@ -350,7 +364,9 @@
         : ''
       return `
         <article class="chatMobileMessage ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}${hasAudio ? ' audioMessage' : ''}" data-chat-message-id="${Number(message.id || 0)}">
-          <div class="chatMobileAvatar">${avatarHtml(message.name, message.avatarUrl)}</div>
+          ${messageAvatarUrl
+            ? `<button class="chatMobileAvatar" type="button" data-open-image="${escapeHtml(messageAvatarUrl)}" aria-label="Abrir foto de ${name}">${avatarHtml(message.name, messageAvatarUrl)}</button>`
+            : `<div class="chatMobileAvatar">${avatarHtml(message.name, '')}</div>`}
           <div class="chatMobileBubble">
             <div class="chatMobileMessageHead">
               <strong>${name}</strong>
@@ -375,7 +391,11 @@
     const settings = chatState?.chat || {}
     const limits = chatState?.limits || {}
     const avatar = document.getElementById('chatMobileCurrentAvatar')
-    if (avatar) avatar.innerHTML = avatarHtml(user.name || 'Hook', user.avatarUrl || '')
+    if (avatar) {
+      avatar.innerHTML = avatarHtml(user.name || 'Hook', user.avatarUrl || '')
+      avatar.dataset.openImage = String(user.avatarUrl || '')
+      avatar.disabled = !user.avatarUrl
+    }
     const connection = document.getElementById('chatMobileConnection')
     const onlineCount = Math.max(0, Number(chatState?.presence?.onlineCount || 0))
     if (connection) connection.textContent = `${settings.open === false ? 'Somente administradores' : 'Ao vivo'} · ${onlineCount} online`
@@ -403,7 +423,7 @@
     const closedNotice = document.getElementById('chatMobileClosedNotice')
     if (composer) composer.hidden = closed
     if (closedNotice) closedNotice.hidden = !closed
-    ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera', 'chatMobileAudio'].forEach((id) => {
+    ;['chatMobileEmoji', 'chatMobileGallery', 'chatMobileCamera'].forEach((id) => {
       const button = document.getElementById(id)
       if (button) button.disabled = !enabled || (recordingVoice && id !== 'chatMobileAudio') || voiceFinishing
     })
@@ -414,17 +434,20 @@
     const avatarButton = document.getElementById('chatMobileAvatarButton')
     if (adminMenu) adminMenu.hidden = user.isAdmin !== true
     if (avatarButton) avatarButton.hidden = !user.id
+    const removeAvatar = document.getElementById('chatMobileRemoveAvatar')
+    if (removeAvatar) removeAvatar.hidden = !user.avatarUrl
   }
 
   function applyState(next, full = false) {
     if (!next?.ok) return
+    const avatarChanged = String(chatState?.user?.avatarUrl || '') !== String(next.user?.avatarUrl || '')
     if (full) {
       messages.clear()
       lastMessageId = 0
     }
     chatState = next
     revision = Math.max(0, Number(next.chat?.revision || 0))
-    let changed = full
+    let changed = full || avatarChanged
     for (const message of next.messages || []) {
       const id = Number(message.id || 0)
       if (!id) continue
@@ -520,22 +543,11 @@
     }
   }
 
-  async function prepareAudio(file) {
-    const allowed = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm']
-    const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || ''
-    const inferredMime = ({ mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', webm: 'audio/webm' })[extension] || ''
-    const mimeType = String(file?.type || inferredMime).toLowerCase()
-    if (!file || !allowed.includes(mimeType)) throw new Error('Escolha um áudio MP3, WAV, M4A, AAC, OGG ou WEBM.')
-    if (file.size > 20 * 1024 * 1024) throw new Error('O áudio deve ter no máximo 20 MB.')
-    const dataUrl = await fileAsDataUrl(file)
-    return { kind: 'audio', dataUrl, mimeType, base64: dataUrl.split(',')[1] || '' }
-  }
-
-  async function chooseMedia(file, kind = 'image') {
+  async function chooseMedia(file) {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = kind === 'audio' ? 'Preparando áudio...' : 'Preparando imagem...'
-      selectedMedia = kind === 'audio' ? await prepareAudio(file) : await prepareImage(file)
+      if (status) status.textContent = 'Preparando imagem...'
+      selectedMedia = await prepareImage(file)
       const imagePreview = document.getElementById('chatMobilePreviewImage')
       const audioPreview = document.getElementById('chatMobilePreviewAudio')
       if (selectedMedia.kind === 'audio') {
@@ -581,7 +593,7 @@
       audioPreview.removeAttribute('src')
       audioPreview.hidden = true
     }
-    ;['chatMobileGalleryInput', 'chatMobileCameraInput'].forEach((id) => {
+    ;['chatMobileGalleryInput'].forEach((id) => {
       const input = document.getElementById(id)
       if (input) input.value = ''
     })
@@ -712,7 +724,6 @@
         text,
         replyToMessageId,
         image: media?.kind === 'image' ? { mimeType: media.mimeType, base64: media.base64 } : null,
-        audio: media?.kind === 'audio' ? { mimeType: media.mimeType, base64: media.base64, durationSeconds: media.durationSeconds || 0 } : null,
       })
       if (tempId) messages.delete(tempId)
       if (input) input.value = ''
@@ -878,23 +889,8 @@
     }
   }
 
-  async function ensureAdminUnlocked() {
-    if (adminPassword) return true
-    const password = window.prompt('Digite a mesma senha usada para entrar no painel:')
-    if (!password) return false
-    try {
-      await post('/chat/admin/unlock', { adminPassword: password })
-      adminPassword = password
-      return true
-    } catch (error) {
-      document.getElementById('chatMobileStatus').textContent = error.message
-      return false
-    }
-  }
-
   async function openAdminSettings() {
     if (chatState?.user?.isAdmin !== true) return
-    if (!(await ensureAdminUnlocked())) return
     const settings = chatState.chat || {}
     document.getElementById('chatMobileAdminOpen').checked = settings.open !== false
     document.getElementById('chatMobileAdminLimit').value = String(settings.dailyMessageLimit || 10)
@@ -909,7 +905,6 @@
     const status = document.getElementById('chatMobileAdminStatus')
     try {
       const result = await post('/chat/admin/settings', {
-        adminPassword,
         open: document.getElementById('chatMobileAdminOpen').checked,
         dailyMessageLimit: Number(document.getElementById('chatMobileAdminLimit').value),
         dailyMessageUnlimited: document.getElementById('chatMobileAdminUnlimited').checked,
@@ -925,7 +920,7 @@
   async function clearChatAsAdmin() {
     if (!window.confirm('Apagar todas as mensagens e mídias do Chat Hook?')) return
     try {
-      const result = await post('/chat/admin/clear', { adminPassword })
+      const result = await post('/chat/admin/clear')
       applyState(result, true)
       document.getElementById('chatMobileAdminStatus').textContent = 'Chat limpo.'
     } catch (error) {
@@ -946,7 +941,23 @@
     }
   }
 
+  async function removeMobileAvatar() {
+    const status = document.getElementById('chatMobileStatus')
+    try {
+      if (status) status.textContent = 'Removendo foto...'
+      const result = await post('/chat/avatar', { remove: true })
+      applyState(result, true)
+      if (status) status.textContent = 'Foto removida.'
+    } catch (error) {
+      if (status) status.textContent = error.message
+    }
+  }
+
   function bindEvents() {
+    document.getElementById('chatMobileCurrentAvatar')?.addEventListener('click', (event) => {
+      const url = String(event.currentTarget?.dataset.openImage || '')
+      if (url) window.open(url, '_blank', 'noopener')
+    })
     document.getElementById('chatMobileBack')?.addEventListener('click', () => {
       if (voiceRecorder?.active) cancelVoiceRecording()
       window.vshookExitToProjectSelector?.()
@@ -956,7 +967,23 @@
     document.getElementById('chatMobileAdminSave')?.addEventListener('click', saveAdminSettings)
     document.getElementById('chatMobileAdminClear')?.addEventListener('click', clearChatAsAdmin)
     document.getElementById('chatMobileAdminUnlimited')?.addEventListener('change', (event) => { document.getElementById('chatMobileAdminLimit').disabled = event.target.checked })
-    document.getElementById('chatMobileAvatarButton')?.addEventListener('click', () => document.getElementById('chatMobileAvatarInput')?.click())
+    const avatarMenu = document.getElementById('chatMobileAvatarMenu')
+    const avatarMenuButton = document.getElementById('chatMobileAvatarButton')
+    avatarMenuButton?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (avatarMenu) avatarMenu.hidden = !avatarMenu.hidden
+    })
+    avatarMenu?.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-avatar-action]')?.dataset.avatarAction
+      if (!action) return
+      avatarMenu.hidden = true
+      if (action === 'change') document.getElementById('chatMobileAvatarInput')?.click()
+      else if (action === 'remove') removeMobileAvatar()
+    })
+    document.addEventListener('pointerdown', (event) => {
+      if (!avatarMenu || avatarMenu.hidden || event.target === avatarMenuButton || avatarMenu.contains(event.target)) return
+      avatarMenu.hidden = true
+    })
     document.getElementById('chatMobileAvatarInput')?.addEventListener('change', (event) => {
       uploadMobileAvatar(event.target.files?.[0])
       event.target.value = ''
@@ -982,16 +1009,11 @@
       if (event.target === picker || event.target === emojiButton || picker.contains(event.target)) return
       picker.hidden = true
     })
-    const cameraButton = document.getElementById('chatMobileCamera')
-    document.getElementById('chatMobileGallery')?.addEventListener('click', () => document.getElementById('chatMobileGalleryInput')?.click())
-    cameraButton?.addEventListener('click', (event) => {
-      document.getElementById('chatMobileCameraInput')?.click()
+    const attachmentButton = document.getElementById('chatMobileGallery')
+    attachmentButton?.addEventListener('click', () => {
+      document.getElementById('chatMobileGalleryInput')?.click()
     })
-    document.getElementById('chatMobileGalleryInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
-    document.getElementById('chatMobileCameraInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0], 'image'))
-    document.getElementById('chatMobileAudio')?.addEventListener('click', startVoiceRecording)
-    document.getElementById('chatMobileVoiceCancel')?.addEventListener('click', cancelVoiceRecording)
-    document.getElementById('chatMobileVoiceSend')?.addEventListener('click', () => finishVoiceRecording(true))
+    document.getElementById('chatMobileGalleryInput')?.addEventListener('change', (event) => chooseMedia(event.target.files?.[0]))
     document.getElementById('chatMobileRemoveImage')?.addEventListener('click', clearSelectedMedia)
     document.getElementById('chatMobileCancelReply')?.addEventListener('click', clearReplyToMessage)
     document.getElementById('chatMobileSend')?.addEventListener('click', sendMessage)

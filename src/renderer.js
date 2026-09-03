@@ -3155,6 +3155,7 @@ function initializeChatHookAudioPlayers(container) {
     const current = player.querySelector('[data-chat-audio-current]');
     const duration = player.querySelector('[data-chat-audio-duration]');
     if (!audio || !toggle || !seek || !current || !duration) return;
+    let animationFrame = 0;
     const sync = () => {
       const total = Number.isFinite(audio.duration) ? audio.duration : 0;
       const elapsed = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
@@ -3166,8 +3167,26 @@ function initializeChatHookAudioPlayers(container) {
       current.textContent = formatChatHookAudioTime(elapsed);
       duration.textContent = formatChatHookAudioTime(total);
     };
-    ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended']
+    const stopSmoothSync = () => {
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+      sync();
+    };
+    const smoothSync = () => {
+      sync();
+      if (!audio.paused && !audio.ended && audio.isConnected) {
+        animationFrame = requestAnimationFrame(smoothSync);
+      } else {
+        animationFrame = 0;
+      }
+    };
+    audio.addEventListener('play', () => {
+      if (!animationFrame) animationFrame = requestAnimationFrame(smoothSync);
+      sync();
+    });
+    ['loadedmetadata', 'durationchange', 'timeupdate']
       .forEach((type) => audio.addEventListener(type, sync));
+    ['pause', 'ended', 'emptied'].forEach((type) => audio.addEventListener(type, stopSmoothSync));
     seek.addEventListener('input', () => {
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         audio.currentTime = (Number(seek.value) / 100) * audio.duration;
@@ -3226,6 +3245,13 @@ function renderChatHookMessages(forceBottom = false) {
   container.innerHTML = messages.map((message) => {
     const safeName = escapeHtml(message.name || 'User');
     const safeText = escapeHtml(message.text || '').replace(/\n/g, '<br>');
+    const currentUser = chatHookState?.user;
+    const sameCustomer = Number(message.customerId || 0) > 0
+      && Number(message.customerId || 0) === Number(currentUser?.id || 0);
+    const sameAdminIdentity = currentUser?.isAdmin === true && message.isAdmin === true;
+    const messageAvatarUrl = sameCustomer || sameAdminIdentity
+      ? String(currentUser?.avatarUrl || '')
+      : String(message.avatarUrl || '');
     const uploadState = message.pending
       ? '<span class="chat-hook-upload-spinner" aria-label="Enviando mídia"></span>'
       : message.failed
@@ -3256,7 +3282,9 @@ function renderChatHookMessages(forceBottom = false) {
       : '';
     return `
       <article class="chat-hook-message ${message.isAdmin ? 'admin' : 'user'}${permissions.reply ? ' actionable' : ''}${hasAudio ? ' audio-message' : ''}" data-chat-message-id="${Number(message.id || 0)}">
-        <div class="chat-hook-avatar">${chatHookAvatarHtml(message.name, message.avatarUrl)}</div>
+        ${messageAvatarUrl
+          ? `<button class="chat-hook-avatar" type="button" data-chat-image-url="${escapeHtml(messageAvatarUrl)}" aria-label="Abrir foto de ${safeName}">${chatHookAvatarHtml(message.name, messageAvatarUrl)}</button>`
+          : `<div class="chat-hook-avatar">${chatHookAvatarHtml(message.name, '')}</div>`}
         <div class="chat-hook-message-body">
           <div class="chat-hook-message-head">
             <strong>${safeName}</strong>
@@ -3283,6 +3311,10 @@ function renderChatHookCurrentUser() {
   if (currentAvatar && currentAvatar.dataset.userKey !== userKey) {
     currentAvatar.dataset.userKey = userKey;
     currentAvatar.innerHTML = chatHookAvatarHtml(user?.name || 'Hook', user?.avatarUrl || '');
+  }
+  if (currentAvatar) {
+    currentAvatar.dataset.chatImageUrl = String(user?.avatarUrl || '');
+    currentAvatar.disabled = !user?.avatarUrl;
   }
   const avatarButton = $('#chatHookAvatarButton');
   if (avatarButton) avatarButton.classList.toggle('hidden', !user?.id);
@@ -3542,6 +3574,9 @@ async function publishUpdateFromChatModal() {
 
 function applyChatHookState(next, { full = false } = {}) {
   if (!next?.ok) return;
+  const previousAvatarUrl = String(chatHookState?.user?.avatarUrl || '');
+  const nextAvatarUrl = String(next.user?.avatarUrl || '');
+  const avatarChanged = previousAvatarUrl !== nextAvatarUrl;
   const nextRevision = Math.max(0, Number(next.chat?.revision || 0));
   const nextClearedAt = String(next.chat?.clearedAt || '');
   const resetMessages = full;
@@ -3552,7 +3587,7 @@ function applyChatHookState(next, { full = false } = {}) {
   chatHookRevision = nextRevision;
   chatHookClearedAt = nextClearedAt;
   chatHookState = next;
-  let messagesChanged = resetMessages;
+  let messagesChanged = resetMessages || avatarChanged;
   for (const message of (next.messages || [])) {
     const id = Number(message.id || 0);
     if (!id) continue;
@@ -3655,19 +3690,57 @@ async function readChatHookImage(file, maxBytes) {
   return { ...(await readChatHookFile(file)), kind: 'image' };
 }
 
+function loadChatHookImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Não foi possível preparar essa imagem.'));
+    image.src = url;
+  });
+}
+
+async function prepareChatHookAvatar(file) {
+  if (!file || !String(file.type || '').toLowerCase().startsWith('image/')) {
+    throw new Error('Escolha uma imagem válida.');
+  }
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const image = await loadChatHookImage(sourceUrl);
+    let width = image.naturalWidth || image.width;
+    let height = image.naturalHeight || image.height;
+    const maxSide = 720;
+    const scale = Math.min(1, maxSide / Math.max(width, height));
+    width = Math.max(1, Math.round(width * scale));
+    height = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Não foi possível preparar essa imagem.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    let quality = 0.86;
+    let dataUrl = canvas.toDataURL('image/jpeg', quality);
+    const targetBytes = 700 * 1024;
+    while ((dataUrl.length * 0.75) > targetBytes && quality > 0.46) {
+      quality -= 0.08;
+      dataUrl = canvas.toDataURL('image/jpeg', quality);
+    }
+    const base64 = dataUrl.split(',')[1] || '';
+    if (!base64) throw new Error('A imagem escolhida é inválida.');
+    return { kind: 'image', mimeType: 'image/jpeg', base64, dataUrl, name: file.name || 'foto.jpg' };
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+
 async function readChatHookMedia(file) {
-  const extension = String(file?.name || '').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
-  const inferredAudioMime = ({ mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', webm: 'audio/webm' })[extension] || '';
-  const mimeType = String(file?.type || inferredAudioMime).toLowerCase();
+  const mimeType = String(file?.type || '').toLowerCase();
   const imageTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-  const audioTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/webm'];
   if (imageTypes.includes(mimeType)) {
     if (file.size > 6 * 1024 * 1024) throw new Error('A imagem deve ter no máximo 6 MB.');
     return { ...(await readChatHookFile(file)), kind: 'image' };
-  }
-  if (audioTypes.includes(mimeType)) {
-    if (file.size > 20 * 1024 * 1024) throw new Error('O áudio deve ter no máximo 20 MB.');
-    return { ...(await readChatHookFile(file)), mimeType, kind: 'audio' };
   }
   throw new Error('Escolha uma imagem PNG, JPG, WEBP ou GIF.');
 }
@@ -4001,6 +4074,12 @@ function setupChatHook() {
     if (!menu || menu.classList.contains('hidden') || event.target === button || menu.contains(event.target)) return;
     menu.classList.add('hidden');
   });
+  document.addEventListener('pointerdown', (event) => {
+    const menu = $('#chatHookAvatarMenu');
+    const button = $('#chatHookAvatarButton');
+    if (!menu || menu.classList.contains('hidden') || event.target === button || menu.contains(event.target)) return;
+    menu.classList.add('hidden');
+  });
   $('#chatAdminPasswordConfirm')?.addEventListener('click', confirmChatAdminPassword);
   $('#chatAdminPasswordCancel')?.addEventListener('click', () => closeChatAdminPasswordModal(false));
   $('#chatAdminPasswordInput')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') confirmChatAdminPassword(); });
@@ -4225,14 +4304,43 @@ function setupChatHook() {
     openPinnedChatHookActions();
   });
   $('#chatHookUnpinButton')?.addEventListener('click', (event) => setChatHookPinnedMessage(0, event.currentTarget));
-  $('#chatHookAvatarButton')?.addEventListener('click', () => $('#chatHookAvatarInput')?.click());
+  $('#chatHookAvatarButton')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    $('#chatHookAvatarMenu')?.classList.toggle('hidden');
+  });
+  $('#chatHookAvatarMenu')?.addEventListener('click', async (event) => {
+    const action = event.target.closest('[data-chat-avatar-action]')?.dataset.chatAvatarAction;
+    if (!action) return;
+    $('#chatHookAvatarMenu')?.classList.add('hidden');
+    if (action === 'change') {
+      $('#chatHookAvatarInput')?.click();
+      return;
+    }
+    if (action === 'remove') {
+      const status = $('#chatHookStatus');
+      try {
+        if (status) status.textContent = 'Removendo foto...';
+        const result = await window.hookUpdateCenter.uploadChatAvatar({ remove: true });
+        applyChatHookState(result, { full: true });
+        renderChatHookMessages(true);
+        if (status) status.textContent = 'Foto removida.';
+      } catch (error) {
+        if (status) status.textContent = friendlyError(error, 'Não foi possível remover a foto.');
+      }
+    }
+  });
+  $('#chatHookCurrentAvatar')?.addEventListener('click', (event) => {
+    const url = String(event.currentTarget?.dataset.chatImageUrl || '');
+    if (url) window.hookUpdateCenter.openExternal(url).catch(() => {});
+  });
   $('#chatHookAvatarInput')?.addEventListener('change', async (event) => {
     const status = $('#chatHookStatus');
     try {
-      const image = await readChatHookImage(event.target.files?.[0], 3 * 1024 * 1024);
+      const image = await prepareChatHookAvatar(event.target.files?.[0]);
       if (status) status.textContent = 'Salvando foto...';
       const result = await window.hookUpdateCenter.uploadChatAvatar({ image: { mimeType: image.mimeType, base64: image.base64 } });
       applyChatHookState(result, { full: true });
+      renderChatHookMessages(true);
       if (status) status.textContent = 'Foto atualizada.';
     } catch (error) {
       if (status) status.textContent = friendlyError(error, 'Não foi possível alterar a foto.');

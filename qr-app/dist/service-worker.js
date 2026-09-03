@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-chat-actions-v42';
+const CACHE_NAME = 'vshook-mobile-1.0.1-chat-avatar-v45';
 const APP_ASSETS = [
   './',
   './index.html',

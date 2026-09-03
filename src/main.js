@@ -1177,6 +1177,7 @@ async function uploadChatAvatar(payload = {}) {
     method: 'POST',
     body: JSON.stringify({
       ...auth,
+      remove: payload.remove === true,
       image: payload.image && typeof payload.image === 'object' ? payload.image : null
     })
   });
