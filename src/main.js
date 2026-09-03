@@ -7251,13 +7251,32 @@ function summarizeHookRenameSkipped(skipped = []) {
   }, {});
 }
 
+function resolumeOnlyHookMarkerSettings(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const allowedKeys = [
+    'fps', 'offset', 'resolumeHost', 'resolumePort', 'resolumeFirstColumn'
+  ];
+  return allowedKeys.reduce((settings, key) => {
+    if (Object.prototype.hasOwnProperty.call(source, key)) settings[key] = source[key];
+    return settings;
+  }, {});
+}
+
 function saveHookMarkerSettings(input = {}) {
+  const storedSettings = store.get('hookMarker') || {};
+  const receivedSettings = input && typeof input === 'object' ? input : {};
+  const platformInput = process.platform === 'win32'
+    ? receivedSettings
+    : resolumeOnlyHookMarkerSettings(receivedSettings);
   const settings = normalizeHookMarkerSettings({
-    ...(store.get('hookMarker') || {}),
-    ...(input && typeof input === 'object' ? input : {})
+    ...storedSettings,
+    ...platformInput
   });
-  store.set('hookMarker', settings);
-  return settings;
+  const platformSettings = process.platform === 'win32'
+    ? settings
+    : resolumeOnlyHookMarkerSettings(settings);
+  store.set('hookMarker', platformSettings);
+  return platformSettings;
 }
 
 function hookMarkerProjectFromSnapshot(snapshot) {
@@ -7314,6 +7333,9 @@ async function selectHookMarkerExportFolder(title) {
 }
 
 async function exportHookMarkerGrandMa2(input = {}) {
+  if (process.platform !== 'win32') {
+    throw new Error('A MA Lighting não disponibiliza o grandMA2 para macOS. A integração do Hook Marker com grandMA2 está disponível apenas no Windows.');
+  }
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
   const songExports = buildGrandMa2SongExports(project, settings);
@@ -7855,8 +7877,10 @@ ipcMain.handle('hook-marker-save-settings', (_event, payload = {}) => ({
   ok: true,
   settings: saveHookMarkerSettings(payload)
 }));
-ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
-  exportHookMarkerGrandMa2(payload));
+if (process.platform === 'win32') {
+  ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
+    exportHookMarkerGrandMa2(payload));
+}
 ipcMain.handle('hook-marker-export-resolume', (_event, payload = {}) =>
   exportHookMarkerResolume(payload));
 ipcMain.handle('hook-marker-test-resolume', (_event, payload = {}) =>

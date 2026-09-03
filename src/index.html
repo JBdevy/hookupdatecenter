@@ -1273,7 +1273,7 @@
               </div>
               <p class="hook-midi-footnote muted">Envie MIDI para uma ponta e receba na outra. As portas temporárias permanecem até serem removidas, o serviço MIDI reiniciar ou o Windows reiniciar.</p>
             </div>
-            <div class="card tools-midi-card hook-midi-mtc-card">
+            <div id="hookMidiGrandMa2Card" class="card tools-midi-card hook-midi-mtc-card hidden">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Redundância de transporte</p><h2>MTC: PC A + PC B → PC C</h2></div>
                 <span id="hookMidiMtcBadge" class="badge">Escolha a saída</span>
@@ -1448,7 +1448,7 @@
             <div>
               <p class="eyebrow">Marcadores do REAPER para o show</p>
               <h1>Hook Marker</h1>
-              <p class="muted">Gere os cues de cada música do projeto para grandMA2 ou transforme os marcadores em colunas do Resolume.</p>
+              <p id="hookMarkerHeroDescription" class="muted">Gere os cues de cada música do projeto para grandMA2 ou transforme os marcadores em colunas do Resolume.</p>
             </div>
             <div class="hook-marker-hero-actions">
               <span id="hookMarkerStatusBadge" class="badge">Aguardando REAPER</span>
@@ -1475,7 +1475,7 @@
               </div>
             </section>
 
-            <section class="card hook-marker-target-card">
+            <section id="hookMarkerGrandMa2Card" class="card hook-marker-target-card hook-marker-grandma-card hidden">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Iluminação</p><h2>grandMA2</h2></div>
                 <span class="badge">XML</span>
@@ -1496,7 +1496,15 @@
               </ol>
             </section>
 
-            <section class="card hook-marker-target-card">
+            <aside id="hookMarkerGrandMa2MacNotice" class="card hook-marker-platform-notice hidden" role="note" aria-live="polite">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Disponibilidade</p><h2>grandMA2 disponível apenas no Windows</h2></div>
+                <span class="badge">Windows</span>
+              </div>
+              <p class="muted">A MA Lighting não disponibiliza o grandMA2 para macOS. Por isso, os recursos de exportação do Hook Marker para grandMA2 estão disponíveis somente na plataforma Windows. No macOS, o Hook Marker oferece apenas a integração com o Resolume.</p>
+            </aside>
+
+            <section class="card hook-marker-target-card hook-marker-resolume-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Vídeo</p><h2>Resolume</h2></div>
                 <span class="badge">OSC</span>

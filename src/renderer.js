@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
+const HOOK_CENTER_IS_MACOS = window.hookUpdateCenter?.platform === 'darwin';
 
 let state = null;
 let currentYoutubeWatchUrl = "";
@@ -2146,14 +2147,16 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
   const mtcOutputInput = $('#hookMidiMtcOutputName');
   const mtcOutputOptions = $('#hookMidiMtcOutputOptions');
   const mtcBadge = $('#hookMidiMtcBadge');
+  const grandMa2Card = $('#hookMidiGrandMa2Card');
   const ports = Array.isArray(data.ports) ? data.ports : [];
   const busy = hookMidiBusy || data.busy === true;
-  const macos = data.macos === true || data.platform === 'darwin';
+  const macos = HOOK_CENTER_IS_MACOS || data.macos === true || data.platform === 'darwin';
   const heroDescription = $('#hookMidiHeroDescription');
   const platformLabel = $('#hookMidiPlatformLabel');
   const providerTitle = $('#hookMidiProviderTitle');
   windows10Card?.classList.toggle('hidden', data.windows10 !== true);
   macCard?.classList.toggle('hidden', !macos);
+  grandMa2Card?.classList.toggle('hidden', macos);
   portsCard?.classList.toggle('hidden', data.supported !== true || macos);
   nameField?.classList.toggle('hidden', macos);
   installButton?.classList.toggle('hidden', !(data.supported && !data.consoleInstalled));
@@ -2227,7 +2230,7 @@ function renderHookMidiAvailability(nextState = hookMidiState) {
       : data.mtcOutputName
         ? `Saída: ${data.mtcOutputName}` : 'Escolha a saída';
   }
-  renderHookMidiMtcSwitch(data.mtcSwitch || {});
+  if (!macos) renderHookMidiMtcSwitch(data.mtcSwitch || {});
   updateHookMidiNamePreview();
 }
 
@@ -2680,33 +2683,57 @@ async function refreshCopyProjectState() {
   try { renderCopyProjectState(await window.hookUpdateCenter.getCopyProjectState()); } catch (_) {}
 }
 
+function configurePlatformSpecificTools() {
+  const grandMa2Card = $('#hookMarkerGrandMa2Card');
+  const grandMa2MidiCard = $('#hookMidiGrandMa2Card');
+  const macNotice = $('#hookMarkerGrandMa2MacNotice');
+  const grid = document.querySelector('.hook-marker-grid');
+  const heroDescription = $('#hookMarkerHeroDescription');
+  grandMa2Card?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
+  grandMa2MidiCard?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
+  macNotice?.classList.toggle('hidden', !HOOK_CENTER_IS_MACOS);
+  grid?.classList.toggle('is-macos', HOOK_CENTER_IS_MACOS);
+  if (HOOK_CENTER_IS_MACOS && heroDescription) {
+    heroDescription.textContent = 'Transforme os marcadores de cada música do projeto em colunas do Resolume.';
+  }
+}
+
 function readHookMarkerSettings() {
-  return {
+  const settings = {
     fps: 30,
     offset: String($('#hookMarkerOffset')?.value || '00:00:00:00').trim(),
-    sequence: Number($('#hookMarkerSequence')?.value || 1),
-    executorPage: Number($('#hookMarkerExecutorPage')?.value || 1),
-    executor: Number($('#hookMarkerExecutor')?.value || 1),
-    timecodePool: Number($('#hookMarkerTimecodePool')?.value || 1),
-    timecodeSlot: Number($('#hookMarkerTimecodeSlot')?.value || 2),
     resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
     resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
     resolumeFirstColumn: Number($('#hookMarkerResolumeFirstColumn')?.value || 1)
   };
+  if (!HOOK_CENTER_IS_MACOS) {
+    Object.assign(settings, {
+      sequence: Number($('#hookMarkerSequence')?.value || 1),
+      executorPage: Number($('#hookMarkerExecutorPage')?.value || 1),
+      executor: Number($('#hookMarkerExecutor')?.value || 1),
+      timecodePool: Number($('#hookMarkerTimecodePool')?.value || 1),
+      timecodeSlot: Number($('#hookMarkerTimecodeSlot')?.value || 2)
+    });
+  }
+  return settings;
 }
 
 function applyHookMarkerSettings(settings = {}) {
   const fields = {
     hookMarkerOffset: settings.offset,
-    hookMarkerSequence: settings.sequence,
-    hookMarkerExecutorPage: settings.executorPage,
-    hookMarkerExecutor: settings.executor,
-    hookMarkerTimecodePool: settings.timecodePool,
-    hookMarkerTimecodeSlot: settings.timecodeSlot,
     hookMarkerResolumeHost: settings.resolumeHost,
     hookMarkerResolumePort: settings.resolumePort,
     hookMarkerResolumeFirstColumn: settings.resolumeFirstColumn
   };
+  if (!HOOK_CENTER_IS_MACOS) {
+    Object.assign(fields, {
+      hookMarkerSequence: settings.sequence,
+      hookMarkerExecutorPage: settings.executorPage,
+      hookMarkerExecutor: settings.executor,
+      hookMarkerTimecodePool: settings.timecodePool,
+      hookMarkerTimecodeSlot: settings.timecodeSlot
+    });
+  }
   Object.entries(fields).forEach(([id, value]) => {
     const input = $(`#${id}`);
     if (input && value !== undefined && value !== null) input.value = String(value);
@@ -2782,10 +2809,13 @@ function renderHookMarkerPreview() {
       { id: `region-${song.id}`, name: song.name, position: 0, regionStart: true },
       ...contained.map((marker) => ({ ...marker, position: Math.max(0, (Number(marker.position) || 0) - start) }))
     ];
+    const targetSummary = HOOK_CENTER_IS_MACOS
+      ? `Resolume · ${cues.length} cue${cues.length === 1 ? '' : 's'}`
+      : `Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}`;
     return `
       <div class="hook-marker-song-heading">
         <strong>${escapeHtml(song.name || `Música ${songIndex + 1}`)}</strong>
-        <span>Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}</span>
+        <span>${targetSummary}</span>
       </div>
       ${cues.map((cue, cueIndex) => {
         const resolumeIndex = resolumeGlobalIndex.get(String(cue.id));
@@ -2849,10 +2879,12 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
     ? (hookMarkerState.projectPath || 'Projeto ainda não foi salvo em disco.')
     : 'Abra o REAPER e carregue um projeto com marcadores.';
   $('#hookMarkerCountBadge').textContent = `${songs.length} música${songs.length === 1 ? '' : 's'} · ${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
-  const canExportGrandMa2 = connected && songs.length > 0 && !hookMarkerBusy;
   const canUseResolume = connected &&
     (markers.length > 0 || songs.length > 0) && !hookMarkerBusy;
-  $('#hookMarkerExportGrandMa2Button').disabled = !canExportGrandMa2;
+  const grandMa2Button = $('#hookMarkerExportGrandMa2Button');
+  if (grandMa2Button) {
+    grandMa2Button.disabled = HOOK_CENTER_IS_MACOS || !connected || !songs.length || hookMarkerBusy;
+  }
   $('#hookMarkerExportResolumeButton').disabled = !canUseResolume;
   $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
   $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
@@ -2899,7 +2931,8 @@ async function saveHookMarkerSettingsFromUi() {
 }
 
 async function exportHookMarkerGrandMa2() {
-  if (hookMarkerBusy) return;
+  if (HOOK_CENTER_IS_MACOS || hookMarkerBusy ||
+      typeof window.hookUpdateCenter.exportHookMarkerGrandMa2 !== 'function') return;
   hookMarkerBusy = true;
   renderHookMarkerState();
   try {
@@ -2998,16 +3031,18 @@ function setupToolsSubmenu() {
   $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
   $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
   $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
-  $('#hookMidiMtcSaveButton')?.addEventListener('click', saveHookMidiMtcOutputFromUi);
-  $('#hookMidiMtcOutputName')?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') saveHookMidiMtcOutputFromUi();
-  });
-  $('#hookMidiMtcAutoButton')?.addEventListener('click', () =>
-    setHookMidiMtcSwitchSource('auto'));
-  $('#hookMidiMtcBackupButton')?.addEventListener('click', () =>
-    setHookMidiMtcSwitchSource('b'));
-  $('#hookMidiMtcPrimaryButton')?.addEventListener('click', () =>
-    setHookMidiMtcSwitchSource('a'));
+  if (!HOOK_CENTER_IS_MACOS) {
+    $('#hookMidiMtcSaveButton')?.addEventListener('click', saveHookMidiMtcOutputFromUi);
+    $('#hookMidiMtcOutputName')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') saveHookMidiMtcOutputFromUi();
+    });
+    $('#hookMidiMtcAutoButton')?.addEventListener('click', () =>
+      setHookMidiMtcSwitchSource('auto'));
+    $('#hookMidiMtcBackupButton')?.addEventListener('click', () =>
+      setHookMidiMtcSwitchSource('b'));
+    $('#hookMidiMtcPrimaryButton')?.addEventListener('click', () =>
+      setHookMidiMtcSwitchSource('a'));
+  }
   $('#hookMidiPortName')?.addEventListener('input', updateHookMidiNamePreview);
   $('#hookMidiPortName')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') createHookMidiPortFromUi();
@@ -3045,14 +3080,18 @@ function setupToolsSubmenu() {
     });
   });
   $('#hookMarkerRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({ applySettings: false }));
-  $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);
+  if (!HOOK_CENTER_IS_MACOS) {
+    $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);
+  }
   $('#hookMarkerExportResolumeButton')?.addEventListener('click', exportHookMarkerResolume);
   $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
   $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
   [
-    '#hookMarkerOffset', '#hookMarkerSequence',
-    '#hookMarkerExecutorPage', '#hookMarkerExecutor', '#hookMarkerTimecodePool',
-    '#hookMarkerTimecodeSlot',
+    '#hookMarkerOffset',
+    ...(!HOOK_CENTER_IS_MACOS ? [
+      '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
+      '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
+    ] : []),
     '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
     '#hookMarkerResolumeFirstColumn'
   ].forEach((selector) => {
@@ -5553,6 +5592,7 @@ function setupPurchaseFieldVisibility() {
 
 
 async function init() {
+  configurePlatformSpecificTools();
   setupSidebarToggle();
   setupPurchaseFieldVisibility();
   window.addEventListener('resize', fitUpdateDescriptionText);

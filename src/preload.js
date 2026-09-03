@@ -3,6 +3,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 const systemVersion = typeof process.getSystemVersion === 'function'
   ? process.getSystemVersion()
   : '';
+const hookMarkerWindowsApis = process.platform === 'win32'
+  ? {
+      exportHookMarkerGrandMa2: (payload) =>
+        ipcRenderer.invoke('hook-marker-export-grandma2', payload)
+    }
+  : {};
 
 contextBridge.exposeInMainWorld('hookUpdateCenter', {
   platform: process.platform,
@@ -69,7 +75,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   setHookMidiMtcSwitchSource: (payload) => ipcRenderer.invoke('hook-midi-mtc-switch-source', payload),
   getHookMarkerState: () => ipcRenderer.invoke('hook-marker-get-state'),
   saveHookMarkerSettings: (payload) => ipcRenderer.invoke('hook-marker-save-settings', payload),
-  exportHookMarkerGrandMa2: (payload) => ipcRenderer.invoke('hook-marker-export-grandma2', payload),
+  ...hookMarkerWindowsApis,
   exportHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-export-resolume', payload),
   testHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-test-resolume', payload),
   startHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-start-resolume', payload),

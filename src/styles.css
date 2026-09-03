@@ -6899,6 +6899,27 @@ body.tools-mode .copy-project-card .selected-folder-box {
   grid-column: 1 / -1;
 }
 
+.hook-marker-grid.is-macos .hook-marker-platform-notice,
+.hook-marker-grid.is-macos .hook-marker-resolume-card {
+  grid-column: 1 / -1;
+}
+
+.hook-marker-platform-notice {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(111, 183, 255, .28);
+  background: linear-gradient(135deg, rgba(67, 142, 255, .10), rgba(24, 28, 39, .78));
+}
+
+.hook-marker-platform-notice h2,
+.hook-marker-platform-notice p {
+  margin: 0;
+}
+
+.hook-marker-platform-notice p {
+  line-height: 1.55;
+}
+
 .hook-marker-project-card,
 .hook-marker-target-card,
 .hook-marker-preview-card {
