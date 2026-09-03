@@ -5231,10 +5231,23 @@ function renderState(nextState) {
   }
 
   const homeDownloadButton = $('#downloadButton');
+  // Depois que o usuario baixa e instala, o botao Reinstalar some da Home.
+  // Fica apenas o texto "VS Hook Instalado:" e o video, que descem para o
+  // rodape do card. A reinstalacao passa a ser feita na aba Atualizacoes
+  // anteriores.
+  const homeCurrentInstalled = state.currentPackageInstalled === true;
   if (homeDownloadButton && !combinedDownloadInProgress) {
     homeDownloadButton.disabled = !hasHomeUpdate;
-    homeDownloadButton.textContent = state.currentPackageInstalled ? 'Reinstalar' : 'Baixar';
-    homeDownloadButton.classList.toggle('reinstall-button', state.currentPackageInstalled === true);
+    homeDownloadButton.textContent = homeCurrentInstalled ? 'Reinstalar' : 'Baixar';
+    homeDownloadButton.classList.toggle('reinstall-button', homeCurrentInstalled);
+    homeDownloadButton.classList.toggle('hidden', homeCurrentInstalled);
+  }
+  const homeUpdateCardEl = $('#updateCard');
+  if (homeUpdateCardEl) {
+    homeUpdateCardEl.classList.toggle('home-installed-final', homeCurrentInstalled);
+  }
+  if (homeCurrentInstalled) {
+    $('#installButton')?.classList.add('hidden');
   }
 
   if (hasStatusTestUpdate) {
