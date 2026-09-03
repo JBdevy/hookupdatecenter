@@ -179,7 +179,9 @@ function auditAddProjectRpp(rppText, incomingAudit, { projectPath = '' } = {}) {
     throw new Error('A auditoria não possui músicas válidas para adicionar.');
   }
   const model = inspectRppProject(rppText);
-  const appendStart = model.timelineEnd > 0 ? model.timelineEnd + CREATE_PROJECT_REGION_GAP_SECONDS : 0;
+  const appendStart = model.timelineEnd > 0
+    ? model.timelineEnd + CREATE_PROJECT_REGION_GAP_SECONDS
+    : CREATE_PROJECT_REGION_GAP_SECONDS;
   const shifted = shiftIncomingAudit(incomingAudit, appendStart, model.regionCount);
   const existingTracks = buildExistingTrackMap(model);
   const tracks = shifted.tracks.map((track) => {

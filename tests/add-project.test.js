@@ -102,7 +102,12 @@ function main() {
   assert(updatedRpp.includes('MARKER 2 65 "" 1'));
   assert(!/\n      GROUP \d+/.test(updatedRpp));
   assert(updatedRpp.includes('RECORD_PATH "Media" ""'));
-  assert(updatedRpp.includes('VOLPAN 1.995262315 0 1 -1'));
+  assert(updatedRpp.includes('VOLPAN 1 0 1.995262315 -1'));
+  assert(!/^      VOLPAN (?!1 0 )/gm.test(updatedRpp));
+
+  const emptyRpp = '<REAPER_PROJECT 0.1 "7.0/x64" 1700000000\n>\n';
+  const emptyAudit = auditAddProjectRpp(emptyRpp, makeAudit('Primeira música', [makeFile('Click', 2)]));
+  assert.strictEqual(emptyAudit.songs[0].start, 60);
 
   const model = inspectRppProject(updatedRpp);
   const internalFolder = model.groupFolders.get('interno');

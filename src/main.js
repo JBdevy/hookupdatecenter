@@ -1950,14 +1950,9 @@ function ensureCreateProjectFfmpegTool(toolName) {
 
 async function getCreateProjectAudioDuration(filePath) {
   const extension = path.extname(filePath).toLowerCase();
-  if (extension === '.mp3') {
-    const mp3Duration = await readMp3AudioDuration(filePath).catch(() => 0);
-    if (mp3Duration > 0) return mp3Duration;
-  } else {
-    const pcmDuration = await readPcmAudioDuration(filePath).catch(() => 0);
-    if (pcmDuration > 0) return pcmDuration;
-  }
-
+  // Os leitores internos continuam como fallback, mas MP3 VBR nem sempre
+  // possui Xing/VBRI. Nesses arquivos calcular pelo primeiro frame produz
+  // exatamente o sintoma de alguns itens terminarem antes/depois do áudio.
   if (process.platform === 'darwin') {
     try {
       const output = await runProcess('/usr/bin/afinfo', ['-r', filePath], { timeout: 15000 });
@@ -1966,6 +1961,31 @@ async function getCreateProjectAudioDuration(filePath) {
       const duration = Number(match?.[1]);
       if (Number.isFinite(duration) && duration > 0) return duration;
     } catch (_) {}
+  }
+
+  if (process.platform === 'win32') {
+    const ffprobe = findCreateProjectFfmpegTool('ffprobe');
+    if (ffprobe) {
+      try {
+        const output = await runProcess(ffprobe, [
+          '-v', 'error',
+          '-select_streams', 'a:0',
+          '-show_entries', 'format=duration',
+          '-of', 'default=noprint_wrappers=1:nokey=1',
+          filePath
+        ], { timeout: 15000 });
+        const duration = Number.parseFloat(output);
+        if (Number.isFinite(duration) && duration > 0) return duration;
+      } catch (_) {}
+    }
+  }
+
+  if (extension === '.mp3') {
+    const mp3Duration = await readMp3AudioDuration(filePath).catch(() => 0);
+    if (mp3Duration > 0) return mp3Duration;
+  } else {
+    const pcmDuration = await readPcmAudioDuration(filePath).catch(() => 0);
+    if (pcmDuration > 0) return pcmDuration;
   }
 
   throw new Error('não foi possível descobrir a duração');

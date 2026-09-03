@@ -73,6 +73,7 @@ async function main() {
   assert.strictEqual(inferSongNameFromFolder('Primeiro Amor').name, 'Primeiro Amor');
   assert.strictEqual(inferSongNameFromFolder('Worship You').name, 'Worship You');
   assert.strictEqual(inferSongNameFromFolder('Studio 54').name, 'Studio 54');
+  assert.strictEqual(inferSongNameFromFolder('VS Profissional - Minha Música').name, 'Minha Música');
   assert.strictEqual(classifyCreateProjectTrack('Click Base.wav', 'Música').name, 'Click');
   assert.strictEqual(classifyCreateProjectTrack('Metrônomo.wav', 'Música').name, 'Click');
   assert.strictEqual(classifyCreateProjectTrack('01 Maestro.wav', 'Música').name, 'Regência');
@@ -123,6 +124,15 @@ async function main() {
   assert.strictEqual(classifyCreateProjectTrack('Baritone Horn.wav', 'Música').name, 'Barítono de Metal');
   assert.strictEqual(classifyCreateProjectTrack('Shofar.wav', 'Música').name, 'Shofar');
   assert.strictEqual(classifyCreateProjectTrack('JamBlock.wav', 'Música').name, 'Jamblock');
+  assert.strictEqual(classifyCreateProjectTrack('Bacurinha.wav', 'Música').name, 'Bacurinha');
+  assert.strictEqual(classifyCreateProjectTrack('Pandeirola.wav', 'Música').name, 'Pandeirola');
+  assert.strictEqual(classifyCreateProjectTrack('Solo.wav', 'Música').name, 'Solo');
+  assert.strictEqual(classifyCreateProjectTrack('Key.wav', 'Música').name, 'Teclado');
+  assert.strictEqual(classifyCreateProjectTrack('Vocal.wav', 'Música').name, 'Vocal');
+  assert.strictEqual(classifyCreateProjectTrack('Vox.wav', 'Música').name, 'Vox');
+  assert.strictEqual(classifyCreateProjectTrack('VL Nylon.wav', 'Música').name, 'Violão Nylon');
+  assert.strictEqual(classifyCreateProjectTrack('Vinheta.wav', 'Música').name, 'Vinheta');
+  assert.strictEqual(classifyCreateProjectTrack('Fantasy.wav', 'Música').name, 'Fantasia');
   assert.strictEqual(classifyCreateProjectTrack('drums.wav', 'Música').name, 'Bateria');
   assert.strictEqual(classifyCreateProjectTrack('batera.wav', 'Música').name, 'Bateria');
   assert.strictEqual(classifyCreateProjectTrack('CX.wav', 'Música').name, 'Caixa');
@@ -195,6 +205,11 @@ async function main() {
   assert.strictEqual(resolveCreateProjectTrackGroup('Ganzá').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Cuíca').name, 'Percussivo');
   assert.strictEqual(resolveCreateProjectTrackGroup('Jamblock').name, 'Percussivo');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Bacurinha').name, 'Percussivo');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Pandeirola').name, 'Percussivo');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Violão Nylon').name, 'Violões');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Vocal').name, 'Back Vocais');
+  assert.strictEqual(resolveCreateProjectTrackGroup('Vox').name, 'Back Vocais');
   assert.strictEqual(resolveCreateProjectTrackGroup('Marimba').name, 'Outros');
   assert.strictEqual(resolveCreateProjectTrackGroup('Xilofone').name, 'Outros');
   assert.strictEqual(resolveCreateProjectTrackGroup('Kalimba').name, 'Outros');
@@ -247,9 +262,10 @@ async function main() {
     assert.strictEqual(audit.songs[0].duration, 3);
     assert.strictEqual(audit.songs[1].name, 'Evidências');
     assert.strictEqual(CREATE_PROJECT_REGION_GAP_SECONDS, 60);
-    assert.strictEqual(audit.songs[1].start, 63);
+    assert.strictEqual(audit.songs[0].start, 60);
+    assert.strictEqual(audit.songs[1].start, 123);
     assert.strictEqual(audit.songs[1].duration, 4);
-    assert.strictEqual(audit.totalDuration, 67);
+    assert.strictEqual(audit.totalDuration, 127);
     assert.strictEqual(audit.emptyFolders.length, 1);
     assert.strictEqual(measuredPeaks.length, 4);
     assert(audit.songs.flatMap((song) => song.files)
@@ -287,8 +303,9 @@ async function main() {
     assert.strictEqual((rpp.match(/\n    <ITEM/g) || []).length, 7);
     assert(rpp.includes('NAME "Regência"'));
     assert(rpp.includes('NAME "Out"'));
-    assert(rpp.includes('VOLPAN 1.995262315 0 1 -1'));
-    assert(rpp.includes('VOLPAN 1.258925412 0 1 -1'));
+    assert(rpp.includes('VOLPAN 1 0 1.995262315 -1'));
+    assert(rpp.includes('VOLPAN 1 0 1.258925412 -1'));
+    assert(!/^      VOLPAN (?!1 0 )/gm.test(rpp));
     for (const group of audit.groups) {
       assert(rpp.includes(`NAME "${group.name}"\n    PEAKCOL ${group.color}`));
       assert(rpp.includes(`NAME "${group.tracks[0].name}"\n    PEAKCOL ${group.color}`));
@@ -296,8 +313,8 @@ async function main() {
     assert.strictEqual((rpp.match(/\n    ISBUS 1 1/g) || []).length, audit.groups.length);
     assert.strictEqual((rpp.match(/\n    ISBUS 2 -1/g) || []).length, audit.groups.length);
     assert(!/\n      GROUP \d+/.test(rpp));
-    assert(rpp.includes('MARKER 1 0 "Sabor do Teu Beijo"'));
-    assert(rpp.includes('MARKER 2 63 "Evidências"'));
+    assert(rpp.includes('MARKER 1 60 "Sabor do Teu Beijo"'));
+    assert(rpp.includes('MARKER 2 123 "Evidências"'));
     assert(!rpp.includes('ignorar.flac'));
     assert(!rpp.includes(songA));
     assert(rpp.includes('FILE "Media\\001 - Sabor do Teu Beijo - Click.wav"'));

@@ -10,12 +10,15 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Click', pattern: /\b(click|metronomo|metronome)\b/ },
   { name: 'Regência', pattern: /\b(regencia|maestro|gps|contagem|count in|countin)\b/ },
   { name: 'Backing Vocal', pattern: /\b(back(?:ing)?(?: vocals?| vocais| vozes?| voz)?|backs?|bk|bgv)\b/ },
+  { name: 'Vocal', pattern: /^vocals?(?: \d+)?$/ },
+  { name: 'Vox', pattern: /^vox(?: \d+)?$/ },
   { name: 'Guia', pattern: /\b(guia|guide|voz|vz)\b/ },
   { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion)\b/ },
   { name: 'Ukulele', pattern: /\b(ukulele|ukelele|uke)\b/ },
   { name: 'Cavaquinho', pattern: /\b(cavaquinho|cavaquinhos|cavaco|cavacos)\b/ },
   { name: 'Banjo', pattern: /\b(banjo|banjos)\b/ },
   { name: 'Bandolim', pattern: /\b(bandolim|bandolins|mandolin|mandolins)\b/ },
+  { name: 'Violão Nylon', pattern: /\b(vl nylon|violao nylon|nylon guitar|nylon)\b/ },
   { name: 'Violão', pattern: /\b(violao|acoustic guitar|acoustic)\b/ },
   { name: 'Guitarra', pattern: /\b(guitarras?|guitars?|gtr|guita|guit)\b/ },
   { name: 'Baixo', pattern: /\b(baixo|bass)\b/ },
@@ -36,6 +39,8 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Repique', pattern: /\b(repique|repinique|repiniques?)\b/ },
   { name: 'Meia Lua', pattern: /\b(meia lua|half moon(?: tambourine)?)\b/ },
   { name: 'Pandeiro', pattern: /\b(pandeiro|pandeiros|tambourine|tambourines)\b/ },
+  { name: 'Pandeirola', pattern: /\b(pandeirola|pandeirolas)\b/ },
+  { name: 'Bacurinha', pattern: /\b(bacurinha|bacurinhas)\b/ },
   { name: 'Tamborim', pattern: /\b(tamborim|tamborins)\b/ },
   { name: 'Shaker', pattern: /\b(shaker|shakers)\b/ },
   { name: 'Ganzá', pattern: /\b(ganza|ganzas)\b/ },
@@ -118,7 +123,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Lead', pattern: /\b(leads?|(?:sft|syn|synth|saw|square|sqr|mono|jp ?6|jp ?8|juno) ?ld)\b/ },
   { name: 'Pluck', pattern: /\b(pluck|plucked)\b/ },
   { name: 'Arp', pattern: /\b(arp|arpeggio|arpejo)\b/ },
-  { name: 'Teclado', pattern: /\b(teclado|keyboard|keys|poly ?keys?|polykey)\b/ },
+  { name: 'Teclado', pattern: /\b(teclado|keyboard|keys?|poly ?keys?|polykey)\b/ },
   { name: 'Cordas', pattern: /\b(cordas|strings?)\b/ },
   { name: 'Hit', pattern: /\b(orch ?hits?|orchhits?|orchestra ?hits?|orchestral ?hits?|orquestra ?hits?|orquestral ?hits?|orq ?hits?|orqhits?|brass ?hits?|double ?hits?|euro ?hits?|impact|stabs?|hits?)\b/ },
   { name: 'Percussão', pattern: /\b(percussao|percussion|perc)\b/ },
@@ -167,8 +172,10 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'FX', pattern: /\b(fx|sfx|efeito|efeitos)\b/ },
   { name: 'Loop', pattern: /\b(loop)\b/ },
   { name: 'Playback', pattern: /\b(playback|pb)\b/ },
+  { name: 'Solo', pattern: /\bsolo\b/ },
+  { name: 'Vinheta', pattern: /\b(vinheta|vinhetas)\b/ },
   { name: 'Universe', pattern: /\b(universe)\b/ },
-  { name: 'Fantasia', pattern: /\b(fantasia(?: jv)?)\b/ },
+  { name: 'Fantasia', pattern: /\b(fantasia(?: jv)?|fantasy)\b/ },
   { name: 'Staccato Heaven', pattern: /\b((?:staccato|stac) heaven)\b/ },
   { name: 'Digital Native Dance', pattern: /\b(digital native dance|native dance)\b/ },
   { name: 'Pizzagogo', pattern: /\b(pizzagogo)\b/ },
@@ -210,7 +217,7 @@ const CREATE_PROJECT_TRACK_RULES = [
 const CREATE_PROJECT_TRACK_GROUPS = [
   { key: 'interno', name: 'Interno', trackNames: new Set(['Regência', 'Click', 'Guia']) },
   { key: 'guitarras', name: 'Guitarras', trackNames: new Set(['Guitarra']) },
-  { key: 'violoes', name: 'Violões', trackNames: new Set(['Violão', 'Ukulele', 'Cavaquinho', 'Banjo', 'Bandolim']) },
+  { key: 'violoes', name: 'Violões', trackNames: new Set(['Violão', 'Violão Nylon', 'Ukulele', 'Cavaquinho', 'Banjo', 'Bandolim']) },
   { key: 'sanfonas', name: 'Sanfonas', trackNames: new Set(['Sanfona']) },
   {
     key: 'teclados',
@@ -225,9 +232,9 @@ const CREATE_PROJECT_TRACK_GROUPS = [
   {
     key: 'percussivo',
     name: 'Percussivo',
-    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Reverse Cymbal', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Taiko', 'Tambora', 'Bodhrán', 'Frame Drum', 'Talking Drum', 'Gong', 'Jamblock', 'Bloco', 'Woodblock', 'Bar Chimes', 'Bell Tree', 'Waterfall', 'Vibraslap', 'Castanholas', 'Apito', 'Udu', 'Bateria', 'Percussão'])
+    trackNames: new Set(['Bumbo', 'Caixa', 'Hi-Hat', 'Tom', 'Over', 'Reverse Cymbal', 'Pratos', 'Ride', 'Crash', 'Conga', 'Bongo', 'Timbal', 'Surdo', 'Repique de Mão', 'Repique', 'Meia Lua', 'Pandeiro', 'Pandeirola', 'Bacurinha', 'Tamborim', 'Shaker', 'Ganzá', 'Agogô', 'Cowbell', 'Clave', 'Triângulo', 'Cajón', 'Djembe', 'Darbuka', 'Cabasa', 'Maracas', 'Chocalho', 'Cuíca', 'Berimbau', 'Caxixi', 'Reco-Reco', 'Afoxé', 'Alfaia', 'Zabumba', 'Atabaque', 'Tantã', 'Rebolo', 'Sopapo', 'Tarol', 'Xequerê', 'Rocar', 'Palmas', 'Snap', 'Rimshot', 'Tímpano', 'Tabla', 'Taiko', 'Tambora', 'Bodhrán', 'Frame Drum', 'Talking Drum', 'Gong', 'Jamblock', 'Bloco', 'Woodblock', 'Bar Chimes', 'Bell Tree', 'Waterfall', 'Vibraslap', 'Castanholas', 'Apito', 'Udu', 'Bateria', 'Percussão'])
   },
-  { key: 'back-vocais', name: 'Back Vocais', trackNames: new Set(['Backing Vocal', 'Coro']) },
+  { key: 'back-vocais', name: 'Back Vocais', trackNames: new Set(['Backing Vocal', 'Vocal', 'Vox', 'Coro']) },
   { key: 'outros', name: 'Outros', trackNames: null }
 ];
 
@@ -269,7 +276,7 @@ function normalizeTrackKey(value) {
 // não remover palavras genéricas de títulos reais (por exemplo: "Loop de
 // Amor", "Primeiro Amor", "Worship You" ou "Studio 54").
 const SONG_FOLDER_SOURCE_LABEL_PATTERN_SOURCE = [
-  'vs\\s+(?:professional|premium|pro|sertanejo|gospel)',
+  'vs\\s+(?:professional|profissional|premium|pro|sertanejo|gospel)',
   'clube\\s+(?:do|de)\\s+vs',
   'playback\\s+(?:professional|studio)',
   'pacote\\s+vs',
@@ -300,7 +307,7 @@ const SONG_FOLDER_LABEL_PATTERN = new RegExp(
 // Versão para reconhecer as mesmas marcas no começo/fim do texto original,
 // preservando pontos e hífens de domínios como MultiTracks.com.br.
 const SONG_FOLDER_RAW_LABEL_PATTERN_SOURCE = [
-  'vs\\s+(?:professional|premium|pro|sertanejo|gospel)',
+  'vs\\s+(?:professional|profissional|premium|pro|sertanejo|gospel)',
   'clube\\s+(?:do|de)\\s+vs',
   'playback\\s+(?:professional|studio)',
   'pacote\\s+vs',
@@ -518,7 +525,9 @@ function compareTracks(a, b) {
 
 function getCreateProjectTrackBaseName(trackName) {
   const name = String(trackName || '');
-  return CREATE_PROJECT_TRACK_RULES.find((rule) => name === rule.name || name.startsWith(`${rule.name} `))?.name || 'Out';
+  return CREATE_PROJECT_TRACK_RULES
+    .filter((rule) => name === rule.name || name.startsWith(`${rule.name} `))
+    .sort((left, right) => right.name.length - left.name.length)[0]?.name || 'Out';
 }
 
 function resolveCreateProjectTrackGroup(trackName) {
@@ -615,7 +624,9 @@ async function auditCreateProjectFolders({ folderPaths = [], durationResolver, p
   }
 
   let processed = 0;
-  let timelinePosition = 0;
+  // Reserva o primeiro minuto do grid e mantém um minuto inteiro entre o fim
+  // de uma música e o começo da próxima.
+  let timelinePosition = CREATE_PROJECT_REGION_GAP_SECONDS;
   const songs = [];
   const trackMap = new Map();
 
@@ -623,16 +634,14 @@ async function auditCreateProjectFolders({ folderPaths = [], durationResolver, p
     const measured = await mapWithConcurrency(discovered.audioFiles, 4, async (filePath) => {
       const classification = classifyCreateProjectTrack(filePath, discovered.inferredSongName.name);
       try {
-        const normalizeInternalPeak = classification.name === 'Click' || classification.name === 'Regência';
-        const [resolvedDuration, peakDb] = await Promise.all([
-          durationResolver(filePath),
-          normalizeInternalPeak && typeof peakResolver === 'function'
-            ? peakResolver(filePath)
-            : Promise.resolve(null)
-        ]);
+        const resolvedDuration = await durationResolver(filePath);
         const duration = Number(resolvedDuration);
         if (!Number.isFinite(duration) || duration <= 0) throw new Error('duração inválida');
-        const takeVolume = normalizeInternalPeak && peakDb !== null
+        const shouldNormalize = classification.name === 'Click' || classification.name === 'Regência';
+        const peakDb = shouldNormalize && typeof peakResolver === 'function'
+          ? await peakResolver(filePath)
+          : null;
+        const takeVolume = shouldNormalize && peakDb !== null
           ? calculatePeakNormalizationGain(peakDb)
           : 1;
         processed += 1;
@@ -647,8 +656,12 @@ async function auditCreateProjectFolders({ folderPaths = [], durationResolver, p
           recognized: classification.recognized,
           candidateName: classification.candidateName || '',
           candidateKey: classification.candidateKey || '',
-          peakDb: normalizeInternalPeak && peakDb !== null ? peakDb : null,
-          normalizePeakDb: normalizeInternalPeak && peakDb !== null ? CREATE_PROJECT_INTERNAL_PEAK_DB : null,
+          // O primeiro valor de VOLPAN é o volume do item e permanece 1.
+          // A normalização do REAPER é aplicada no ganho do take (3º valor).
+          peakDb,
+          normalizePeakDb: shouldNormalize && peakDb !== null
+            ? CREATE_PROJECT_INTERNAL_PEAK_DB
+            : null,
           takeVolume
         };
       } catch (error) {
@@ -931,9 +944,6 @@ function buildItemChunk(file, song, itemId) {
   const sourceType = file.extension === '.mp3' ? 'MP3' : 'WAVE';
   const sourcePath = file.projectFilePath || file.filePath;
   const fileLine = sourceType === 'MP3' ? `FILE ${quoteRpp(sourcePath)} 1` : `FILE ${quoteRpp(sourcePath)}`;
-  const takeVolume = Number.isFinite(Number(file.takeVolume)) && Number(file.takeVolume) > 0
-    ? Number(file.takeVolume)
-    : 1;
   return [
     '    <ITEM',
     `      POSITION ${rppNumber(song.start)}`,
@@ -948,7 +958,7 @@ function buildItemChunk(file, song, itemId) {
     `      IGUID ${createGuid()}`,
     `      IID ${itemId}`,
     `      NAME ${quoteRpp(file.fileName)}`,
-    `      VOLPAN ${rppNumber(takeVolume)} 0 1 -1`,
+    `      VOLPAN 1 0 ${rppNumber(file.takeVolume || 1)} -1`,
     '      SOFFS 0',
     '      PLAYRATE 1 1 0 -1 0 0.0025',
     '      CHANMODE 0',
