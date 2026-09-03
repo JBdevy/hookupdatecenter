@@ -5232,9 +5232,9 @@ function renderState(nextState) {
 
   const homeDownloadButton = $('#downloadButton');
   // Depois que o usuario baixa e instala, o botao Reinstalar some da Home.
-  // Fica apenas o texto "VS Hook Instalado:" e o video, que descem para o
-  // rodape do card. A reinstalacao passa a ser feita na aba Atualizacoes
-  // anteriores.
+  // O video permanece acima e o texto "VS Hook Instalado:" ocupa no rodape
+  // do card o lugar da acao escondida. A reinstalacao passa a ser feita na
+  // aba Atualizacoes anteriores.
   const homeCurrentInstalled = state.currentPackageInstalled === true;
   if (homeDownloadButton && !combinedDownloadInProgress) {
     homeDownloadButton.disabled = !hasHomeUpdate;

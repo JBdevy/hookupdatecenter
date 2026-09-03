@@ -4595,21 +4595,21 @@ body.tools-mode .hook-rename-folder-items {
   border-radius: 14px !important;
 }
 
-/* Depois de baixar e instalar: sem botao Reinstalar na Home. O texto
-   "VS Hook Instalado:" desce para onde ficava o botao e o video fica logo
-   abaixo dele. Reinstalar so pela aba Atualizacoes anteriores. */
+/* Depois de baixar e instalar: sem botao Reinstalar na Home. O video fica
+   acima e o texto "VS Hook Instalado:" ocupa embaixo o lugar da acao
+   escondida. Reinstalar so pela aba Atualizacoes anteriores. */
 #homeView #updateCard.home-installed-final .update-actions-inline {
   display: none !important;
 }
 
 #homeView #updateCard.home-installed-final .home-installed-version-field {
-  order: 8 !important;
+  order: 9 !important;
   margin-top: auto !important;
   margin-bottom: 6px !important;
 }
 
 #homeView #updateCard.home-installed-final #videoBox {
-  order: 9 !important;
+  order: 8 !important;
   margin: 0 !important;
 }
 
