@@ -1,4 +1,5 @@
 @import url("./button-gradients.css");
+@import url("./safe-area.css");
 
 * { box-sizing: border-box; }
 #app {
@@ -35,7 +36,7 @@ button, input {
   overflow: hidden;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) {
-  padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+  padding: max(8px, var(--vsh-safe-top)) max(8px, var(--vsh-safe-right)) max(8px, var(--vsh-safe-bottom)) max(8px, var(--vsh-safe-left));
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   height: 100%;
@@ -44,7 +45,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
 /* O modo Musico nao recebe data-director-device, entao precisa da mesma
    margem de area segura para nao ficar embaixo do notch do iPhone. */
 .app.musicianMonitor {
-  padding: max(8px, env(safe-area-inset-top, 0px)) max(8px, env(safe-area-inset-right, 0px)) max(8px, env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px));
+  padding: max(8px, var(--vsh-safe-top)) max(8px, var(--vsh-safe-right)) max(8px, var(--vsh-safe-bottom)) max(8px, var(--vsh-safe-left));
 }
 .app.musicianMonitor > .container {
   height: 100%;
@@ -369,7 +370,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
 }
 .partsOverlay {
   position: fixed;
-  inset: 8px;
+  inset: max(8px, var(--vsh-safe-top)) max(8px, var(--vsh-safe-right)) max(8px, var(--vsh-safe-bottom)) max(8px, var(--vsh-safe-left));
   z-index: 1600;
   display: flex;
   pointer-events: auto;
@@ -507,7 +508,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding: 14px;
+  padding: max(14px, var(--vsh-safe-top)) max(14px, var(--vsh-safe-right)) max(14px, var(--vsh-safe-bottom)) max(14px, var(--vsh-safe-left));
   box-sizing: border-box;
   z-index: 999;
 }
@@ -4176,7 +4177,7 @@ body.boot-loading {
 /* Lyrics screen */
 .btnLyricsOpen{background:linear-gradient(180deg,#1e293b 0%,#0f172a 100%);border:1px solid #38bdf8;color:#e0f2fe;font-weight:900}
 .settingsActionActive{background:#14532d!important;border-color:#22c55e!important;color:#dcfce7!important}
-.lyricsScreen{position:fixed;inset:0;z-index:1900;background:linear-gradient(180deg,#0b1118 0%,#0b1220 100%);color:#f8fafc;display:flex;flex-direction:column;transform:translateX(0);animation:lyricsSlideIn .18s ease-out;overflow:hidden;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px calc(env(safe-area-inset-bottom,0px) + 12px)}
+.lyricsScreen{position:fixed;inset:0;z-index:1900;background:linear-gradient(180deg,#0b1118 0%,#0b1220 100%);color:#f8fafc;display:flex;flex-direction:column;transform:translateX(0);animation:lyricsSlideIn .18s ease-out;overflow:hidden;padding:calc(var(--vsh-safe-top) + 10px) 12px calc(var(--vsh-safe-bottom) + 12px)}
 @keyframes lyricsSlideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
 .lyricsTopBar{flex:0 0 auto;display:grid;grid-template-columns:74px minmax(0,1fr) 58px;gap:8px;align-items:center;margin-bottom:10px}
 .lyricsEditButton,.lyricsBackButton{height:42px;border-radius:10px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px}
@@ -4191,8 +4192,8 @@ body.boot-loading {
 .lyricsEditorInput{width:100%;height:100%;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;color:#f8fafc;padding:18px 16px 92px;font-size:19px;line-height:1.5;font-weight:700;font-family:inherit;-webkit-overflow-scrolling:touch}
 .lyricsEditorInput::placeholder{color:#64748b}
 .lyricsCharCount{position:absolute;right:14px;bottom:12px;color:#94a3b8;font-size:12px;font-weight:900;background:rgba(2,6,23,.78);padding:4px 8px;border-radius:999px}
-.lyricsFloatingOk{position:fixed;right:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:1910;height:52px;min-width:82px;border-radius:999px;border:1px solid #22c55e;background:#16a34a;color:#fff;font-weight:900;font-size:17px;box-shadow:0 12px 28px rgba(0,0,0,.42)}
-.lyricsFloatingCancel{position:fixed;left:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:1910;height:46px;min-width:94px;border-radius:999px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px;box-shadow:0 12px 28px rgba(0,0,0,.36)}
+.lyricsFloatingOk{position:fixed;right:18px;bottom:calc(var(--vsh-safe-bottom) + 18px);z-index:1910;height:52px;min-width:82px;border-radius:999px;border:1px solid #22c55e;background:#16a34a;color:#fff;font-weight:900;font-size:17px;box-shadow:0 12px 28px rgba(0,0,0,.42)}
+.lyricsFloatingCancel{position:fixed;left:18px;bottom:calc(var(--vsh-safe-bottom) + 18px);z-index:1910;height:46px;min-width:94px;border-radius:999px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900;font-size:14px;box-shadow:0 12px 28px rgba(0,0,0,.36)}
 .app[data-theme="light"] .lyricsScreen{background:linear-gradient(180deg,#f8fafc 0%,#e2e8f0 100%);color:#0f172a}
 .app[data-theme="light"] .lyricsBody,.app[data-theme="light"] .lyricsNowPlaying{background:rgba(255,255,255,.95);border-color:#cbd5e1}
 .app[data-theme="light"] .lyricsTextView,.app[data-theme="light"] .lyricsEditorInput{color:#0f172a}
@@ -4222,7 +4223,7 @@ body.boot-loading {
   color: #fff;
   display: flex;
   flex-direction: column;
-  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)) 10px;
+  padding: max(10px, var(--vsh-safe-top)) 10px max(10px, var(--vsh-safe-bottom)) 10px;
   box-sizing: border-box;
 }
 
@@ -4324,7 +4325,7 @@ body.boot-loading {
 .lyricsFloatingOk {
   position: fixed;
   right: 20px;
-  bottom: max(18px, env(safe-area-inset-bottom));
+  bottom: max(18px, var(--vsh-safe-bottom));
   z-index: 2600;
   min-width: 78px;
   height: 46px;
@@ -4338,7 +4339,7 @@ body.boot-loading {
 .lyricsFloatingCancel {
   position: fixed;
   left: 20px;
-  bottom: max(18px, env(safe-area-inset-bottom));
+  bottom: max(18px, var(--vsh-safe-bottom));
   z-index: 2600;
   min-width: 96px;
   height: 46px;
@@ -4385,7 +4386,7 @@ body.boot-loading {
   position: fixed;
   left: 8px;
   right: 8px;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+  bottom: calc(var(--vsh-safe-bottom) + 104px);
   z-index: 2990;
   display: flex;
   justify-content: center;
@@ -4402,7 +4403,7 @@ body.boot-loading {
   pointer-events: auto;
 }
 .app:has(.vshookMarkerFooter) .appPopup {
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+  bottom: calc(var(--vsh-safe-bottom) + 12px) !important;
 }
 @media (max-width: 480px) {
   .markerFooterContainer .listBox {
@@ -4410,14 +4411,14 @@ body.boot-loading {
     scroll-padding-bottom: 150px !important;
   }
   .vshookMarkerFooter {
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 98px);
+    bottom: calc(var(--vsh-safe-bottom) + 98px);
   }
 }
 
 /* v73: reserva de rodapé também na tela principal do diretor */
 .contentPanel .listBox {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 118px) !important;
-  scroll-padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 118px) !important;
+  padding-bottom: calc(var(--vsh-safe-bottom) + 118px) !important;
+  scroll-padding-bottom: calc(var(--vsh-safe-bottom) + 118px) !important;
 }
 .markerFooterContainer .listBox {
   padding-bottom: 160px !important;
@@ -4429,10 +4430,10 @@ body.boot-loading {
 .markerGoConfirmed .text,.markerGoConfirmed .timeText,.markerGoConfirmed .markerSelectedText,.markerGoConfirmed .markerSelectedTimeText,.markerGoConfirmed .marqueeStatic,.markerGoConfirmed .marqueeTrack,.markerGoConfirmed .marqueeSegment{color:#fff!important}
 .markerContentPanel{display:flex;flex-direction:column;min-height:0}
 .markerListBox{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:8px!important;scroll-padding-bottom:12px!important;border-bottom-left-radius:0;border-bottom-right-radius:0}
-.vshookFixedFooter{flex:0 0 132px;min-height:132px;margin-top:8px;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px);border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}
+.vshookFixedFooter{flex:0 0 132px;min-height:132px;margin-top:8px;padding:10px 12px calc(var(--vsh-safe-bottom) + 10px);border-top:1px solid rgba(148,163,184,.32);background:linear-gradient(180deg,rgba(15,23,42,.98),rgba(2,6,23,.99));display:flex;align-items:flex-start;justify-content:center;position:relative;z-index:20}
 .vshookFixedFooter .floatingCancelButton{position:static!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;width:min(62vw,280px)!important;min-width:190px!important;height:54px!important;pointer-events:auto}
 .footerButtonPlaceholder{height:54px}
-.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 18px)!important;z-index:3010}
+.app:has(.vshookFixedFooter) .appPopup{bottom:calc(var(--vsh-safe-bottom) + 18px)!important;z-index:3010}
 @media(max-width:480px){.vshookFixedFooter{flex-basis:124px;min-height:124px}.vshookFixedFooter .floatingCancelButton{height:52px!important}}
 
 
@@ -4448,7 +4449,7 @@ body.boot-loading {
   z-index:2 !important;
 }
 .app:has(.vshookFixedFooter) .appPopup{
-  bottom:calc(env(safe-area-inset-bottom,0px) + 16px) !important;
+  bottom:calc(var(--vsh-safe-bottom) + 16px) !important;
   min-height:58px !important;
   padding:10px 16px !important;
   font-size:18px !important;
@@ -4462,7 +4463,7 @@ body.boot-loading {
   align-items:flex-start !important;
 }
 .app:has(.musicosFixedFooter) .appPopup{
-  bottom:calc(env(safe-area-inset-bottom,0px) + 16px) !important;
+  bottom:calc(var(--vsh-safe-bottom) + 16px) !important;
   min-height:58px !important;
   padding:10px 16px !important;
   font-size:18px !important;
@@ -4489,7 +4490,7 @@ body.boot-loading {
   pointer-events:none;
 }
 .app:has(.lyricsScreen) .appPopup{
-  top:calc(env(safe-area-inset-top,0px) + 58px)!important;
+  top:calc(var(--vsh-safe-top) + 58px)!important;
   bottom:auto!important;
   left:50%!important;
   transform:translateX(-50%)!important;
@@ -4509,7 +4510,7 @@ body.boot-loading {
 @media(max-width:480px){
   .lyricsPopupSlot{flex-basis:52px;min-height:52px;margin-bottom:7px;}
   .app:has(.lyricsScreen) .appPopup{
-    top:calc(env(safe-area-inset-top,0px) + 54px)!important;
+    top:calc(var(--vsh-safe-top) + 54px)!important;
     width:min(78vw,310px)!important;
     min-height:38px!important;
     padding:7px 12px!important;
@@ -4518,9 +4519,9 @@ body.boot-loading {
 }
 
 /* v92 ajuste final: diretor com rodape menor e musicos sem rodape */
-.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)!important;}
-.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 14px)!important;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important;}
-@media(max-width:480px){.vshookFixedFooter{flex-basis:148px!important;min-height:148px!important}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(env(safe-area-inset-bottom,0px) + 12px)!important;min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}
+.vshookFixedFooter{flex:0 0 155px!important;min-height:155px!important;margin-top:6px!important;padding:10px 12px calc(var(--vsh-safe-bottom) + 10px)!important;}
+.app:has(.vshookFixedFooter) .appPopup{bottom:calc(var(--vsh-safe-bottom) + 14px)!important;min-height:54px!important;padding:9px 14px!important;font-size:17px!important;width:min(76vw,340px)!important;line-height:1.06!important;}
+@media(max-width:480px){.vshookFixedFooter{flex-basis:148px!important;min-height:148px!important}.app:has(.vshookFixedFooter) .appPopup{bottom:calc(var(--vsh-safe-bottom) + 12px)!important;min-height:50px!important;padding:8px 12px!important;font-size:16px!important;width:min(74vw,320px)!important}}
 
 
 /* v97: popup da tela de letras mais baixo e estável */
@@ -4530,13 +4531,13 @@ body.boot-loading {
   margin:6px 0 10px 0!important;
 }
 .app:has(.lyricsScreen) .appPopup{
-  top:calc(env(safe-area-inset-top,0px) + 82px)!important;
+  top:calc(var(--vsh-safe-top) + 82px)!important;
   bottom:auto!important;
   z-index:3200!important;
 }
 @media(max-width:480px){
   .lyricsPopupSlot{flex-basis:68px!important;min-height:68px!important;margin-top:6px!important;margin-bottom:8px!important;}
-  .app:has(.lyricsScreen) .appPopup{top:calc(env(safe-area-inset-top,0px) + 76px)!important;}
+  .app:has(.lyricsScreen) .appPopup{top:calc(var(--vsh-safe-top) + 76px)!important;}
 }
 
 /* v98: popup do Diretor dentro do espaco reservado da tela de letras */
@@ -5818,8 +5819,8 @@ body.boot-loading {
   box-shadow:none!important;
   background:transparent!important;
   color:#f8fafc!important;
-  padding:14px 4px calc(env(safe-area-inset-bottom,0px) + 64px)!important;
-  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  padding:14px 4px calc(var(--vsh-safe-bottom) + 64px)!important;
+  scroll-padding-bottom:calc(var(--vsh-safe-bottom) + 64px)!important;
   margin:0!important;
   transform:none!important;
   scroll-margin-top:0!important;
@@ -5839,7 +5840,7 @@ body.boot-loading {
 .lyricsScreenEditing .lyricsCharCount{
   position:absolute!important;
   right:18px!important;
-  bottom:calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  bottom:calc(var(--vsh-safe-bottom) + 10px)!important;
   z-index:3700!important;
   margin:0!important;
   width:max-content!important;
@@ -5866,14 +5867,14 @@ body.boot-loading {
   overflow:hidden!important;
   align-items:flex-start!important;
   justify-content:center!important;
-  padding:calc(env(safe-area-inset-top,0px) + 14px) 14px calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+  padding:calc(var(--vsh-safe-top) + 14px) 14px calc(var(--vsh-safe-bottom) + 10px)!important;
   overscroll-behavior:none!important;
   touch-action:manipulation!important;
 }
 .authGateWrap{
   min-height:0!important;
   height:auto!important;
-  max-height:calc(var(--app-vh,100dvh) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 24px)!important;
+  max-height:calc(var(--app-vh,100dvh) - var(--vsh-safe-top) - var(--vsh-safe-bottom) - 24px)!important;
   align-items:flex-start!important;
   overflow:hidden!important;
 }
@@ -5906,8 +5907,8 @@ body.boot-loading {
 
 /* v142 - editor de letras sem espaço vazio exagerado e swipe de saída */
 .lyricsScreenEditing .lyricsEditorInput{
-  padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
-  scroll-padding-bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;
+  padding-bottom:calc(var(--vsh-safe-bottom) + 64px)!important;
+  scroll-padding-bottom:calc(var(--vsh-safe-bottom) + 64px)!important;
 }
 .lyricsScreenEditing .lyricsBody{
   overflow:hidden!important;
@@ -6183,7 +6184,7 @@ body.boot-loading {
   overflow:hidden!important;
 }
 .musicosListBox{
-  padding-bottom:max(8px, env(safe-area-inset-bottom, 0px))!important;
+  padding-bottom:max(8px, var(--vsh-safe-bottom))!important;
   scroll-padding-bottom:12px!important;
 }
 .app .item.blockItem{
@@ -6830,7 +6831,7 @@ button,
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom));
+  padding: max(10px, var(--vsh-safe-top)) 10px max(10px, var(--vsh-safe-bottom));
   background: #070b12;
   color: #f8fafc;
   overflow: hidden;
@@ -7429,7 +7430,7 @@ button,
   position: fixed;
   inset: 0;
   z-index: 1750;
-  padding: 8px;
+  padding: max(8px, var(--vsh-safe-top)) max(8px, var(--vsh-safe-right)) max(8px, var(--vsh-safe-bottom)) max(8px, var(--vsh-safe-left));
   background: #0b1118;
   display: flex;
   overflow: hidden;
@@ -7780,16 +7781,16 @@ button,
 
 
 /* 2.9 - Premix por toque longo: tela cheia com itens da música */
-.premixFullScreen{position:fixed;inset:0;z-index:10040;width:100%;height:var(--app-vh,100dvh);box-sizing:border-box;padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));background:#05070b;overflow:hidden}
+.premixFullScreen{position:fixed;inset:0;z-index:10040;width:100%;height:var(--app-vh,100dvh);box-sizing:border-box;padding:max(8px,var(--vsh-safe-top)) max(8px,var(--vsh-safe-right)) max(8px,var(--vsh-safe-bottom)) max(8px,var(--vsh-safe-left));background:#05070b;overflow:hidden}
 
 /* Diretor Tablet: barra lateral e representação gráfica fixa no topo. */
-html[data-director-device="tablet"] .app:not(.musicianMonitor){position:relative;padding:max(8px,var(--tablet-safe-top,env(safe-area-inset-top,0px))) calc(76px + var(--tablet-safe-right,env(safe-area-inset-right,0px))) max(8px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px))) calc(76px + var(--tablet-safe-left,env(safe-area-inset-left,0px)))!important;display:flex!important;flex-direction:column!important}
+html[data-director-device="tablet"] .app:not(.musicianMonitor){position:relative;padding:max(8px,var(--tablet-safe-top,var(--vsh-safe-top))) calc(76px + var(--tablet-safe-right,var(--vsh-safe-right))) max(8px,var(--tablet-safe-bottom,var(--vsh-safe-bottom))) calc(76px + var(--tablet-safe-left,var(--vsh-safe-left)))!important;display:flex!important;flex-direction:column!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container{width:100%!important;height:auto!important;min-height:0!important;flex:1 1 auto!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.contentPanel,
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container>.tabletMainSplit{flex:1 1 0!important;min-height:0!important;height:auto!important;overflow:hidden!important}
 html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container .contentPanel>.listBox{flex:1 1 0!important;min-height:0!important;height:auto!important}
-.tabletDirectorSidebar{position:absolute;z-index:10070;left:max(8px,var(--tablet-safe-left,env(safe-area-inset-left,0px)));top:max(8px,var(--tablet-safe-top,env(safe-area-inset-top,0px)));bottom:max(8px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px)));width:60px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 10px 28px rgba(0,0,0,.34);display:flex;flex-direction:column;align-items:center;padding:8px 6px;gap:6px}
-.tabletDirectorSidebarRight{left:auto;right:max(8px,var(--tablet-safe-right,env(safe-area-inset-right,0px)))}
+.tabletDirectorSidebar{position:absolute;z-index:10070;left:max(8px,var(--tablet-safe-left,var(--vsh-safe-left)));top:max(8px,var(--tablet-safe-top,var(--vsh-safe-top)));bottom:max(8px,var(--tablet-safe-bottom,var(--vsh-safe-bottom)));width:60px;border:1px solid #263244;border-radius:11px;background:linear-gradient(180deg,#111827,#080d14);box-shadow:0 10px 28px rgba(0,0,0,.34);display:flex;flex-direction:column;align-items:center;padding:8px 6px;gap:6px}
+.tabletDirectorSidebarRight{left:auto;right:max(8px,var(--tablet-safe-right,var(--vsh-safe-right)))}
 .tabletDirectorSidebarSingle{padding:4px 6px;gap:3px}
 .tabletDirectorSidebarSingle .tabletSidebarButton{width:46px;height:34px;min-height:34px}
 .tabletDirectorSidebarSingle .tabletSidebarVerticalMedium{flex-basis:60px;height:60px;min-height:60px;padding-top:4px;padding-bottom:4px;font-size:6.5px}
@@ -7907,7 +7908,7 @@ html[data-director-device="phone"] .tabletMultiLoopAutoLimitModal{width:min(92vw
 .tabletTopBarTuner,.tabletTopBarBpm,.tabletTopBarMixer,.tabletTopBarParts{background:#c90000;border-color:#ff2a2a;color:#fff}
 .tabletTopBarButtonActive{border-color:#4ade80!important;background:#22c55e!important;color:#fff!important;box-shadow:0 0 0 1px rgba(34,197,94,.24),0 0 12px rgba(34,197,94,.3)!important}
 .tabletTopBarButton:active{filter:brightness(1.18)}
-.tabletSearchScreen{position:absolute;z-index:10055;left:calc(76px + var(--tablet-safe-left,env(safe-area-inset-left,0px)));right:calc(76px + var(--tablet-safe-right,env(safe-area-inset-right,0px)));top:50px;bottom:0;display:flex;min-width:0;min-height:0;padding:8px;box-sizing:border-box;background:rgba(5,7,11,.98)}
+.tabletSearchScreen{position:absolute;z-index:10055;left:calc(76px + var(--tablet-safe-left,var(--vsh-safe-left)));right:calc(76px + var(--tablet-safe-right,var(--vsh-safe-right)));top:50px;bottom:0;display:flex;min-width:0;min-height:0;padding:8px;box-sizing:border-box;background:rgba(5,7,11,.98)}
 .tabletSearchPanel{display:flex;flex:1 1 auto;min-width:0;min-height:0;flex-direction:column;padding:12px;border:1px solid #475569;border-radius:12px;background:#0b1220;box-shadow:0 14px 32px rgba(0,0,0,.34)}
 .tabletSearchHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
 .tabletSearchTitle{color:#facc15;font-size:18px;font-weight:1000;letter-spacing:.08em}
@@ -7938,7 +7939,7 @@ html[data-director-device="phone"] .tabletMultiLoopAutoLimitModal{width:min(92vw
 .app[data-theme="light"] .tabletSearchResultName{color:#111827}
 .app[data-theme="light"] .tabletSearchResultDestination{color:#475569}
 .app[data-theme="light"] .btnAutoUnavailable{border-color:#94a3b8!important;background:#cbd5e1!important;color:#64748b!important}
-html[data-director-device="phone"] .tabletSearchScreen{position:fixed;z-index:10080;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto}
+html[data-director-device="phone"] .tabletSearchScreen{position:fixed;z-index:10080;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(var(--vsh-safe-top) + 10px) 10px calc(var(--vsh-safe-bottom) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto}
 html[data-director-device="phone"] .tabletSearchPanel{width:100%;height:100%;min-height:0;padding:10px;box-sizing:border-box;touch-action:auto}
 html[data-director-device="phone"] .tabletSearchHeader{margin-bottom:10px}
 html[data-director-device="phone"] .tabletSearchClose{width:112px;height:44px!important;min-height:44px!important}
@@ -7955,7 +7956,7 @@ html[data-director-device="tablet"].directorSearchPortraitMode .app:not(.musicia
 html[data-director-device="tablet"].directorSearchPortraitMode .app>.tabletDirectorSidebar,
 html[data-director-device="tablet"].directorSearchPortraitMode .app>.tabletDirectorTopBar,
 html[data-director-device="tablet"].directorSearchPortraitMode .app>.container{display:none!important}
-html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchScreen{position:fixed;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto!important}
+html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchScreen{position:fixed;inset:0;left:0;right:0;top:0;bottom:0;width:100%;height:100%;min-height:0;padding:calc(var(--vsh-safe-top) + 10px) 10px calc(var(--vsh-safe-bottom) + 10px);background:#05070b;box-sizing:border-box;touch-action:auto!important}
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchPanel{width:100%;height:100%;min-height:0;padding:10px;border:0;border-radius:0;box-shadow:none;box-sizing:border-box;touch-action:auto!important}
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchHeader{margin-bottom:10px}
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchTitle{font-size:22px}
@@ -8017,10 +8018,10 @@ html[data-director-device="tablet"] .directorTpOverlay{
   bottom:0!important;
   width:100%!important;
   height:var(--app-vh,100dvh)!important;
-  padding:max(4px,var(--tablet-safe-top,env(safe-area-inset-top,0px)))
-    max(4px,var(--tablet-safe-right,env(safe-area-inset-right,0px)))
-    max(4px,var(--tablet-safe-bottom,env(safe-area-inset-bottom,0px)))
-    max(4px,var(--tablet-safe-left,env(safe-area-inset-left,0px)))!important;
+  padding:max(4px,var(--tablet-safe-top,var(--vsh-safe-top)))
+    max(4px,var(--tablet-safe-right,var(--vsh-safe-right)))
+    max(4px,var(--tablet-safe-bottom,var(--vsh-safe-bottom)))
+    max(4px,var(--tablet-safe-left,var(--vsh-safe-left)))!important;
   box-sizing:border-box!important;
 }
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTrack{height:3px!important}
@@ -8363,7 +8364,7 @@ html[data-director-device="tablet"] .tabletPartsContent [data-item-type="marker"
   z-index: 10080;
   width: 100%;
   height: var(--recados-app-height, 100vh);
-  padding: calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px);
+  padding: calc(var(--vsh-safe-top) + 10px) 10px calc(var(--vsh-safe-bottom) + 10px);
   display: grid;
   grid-template-rows: auto auto auto minmax(0,1fr) auto auto auto;
   gap: 10px;
@@ -8901,8 +8902,8 @@ html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption 
 }
 .directorInterfaceAccessButton {
   position: fixed;
-  top: max(12px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
+  top: max(12px, var(--vsh-safe-top));
+  right: max(12px, var(--vsh-safe-right));
   z-index: 120000;
   min-width: 132px;
   min-height: 46px;
@@ -8934,9 +8935,9 @@ html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption 
 }
 
 html[data-director-device="phone"] .directorInterfaceAccessButton {
-  top: max(68px, calc(env(safe-area-inset-top) + 56px));
-  left: max(12px, env(safe-area-inset-left));
-  right: max(12px, env(safe-area-inset-right));
+  top: max(68px, calc(var(--vsh-safe-top) + 56px));
+  left: max(12px, var(--vsh-safe-left));
+  right: max(12px, var(--vsh-safe-right));
   z-index: 2147483000;
   width: auto;
   min-width: 0;
@@ -9827,7 +9828,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
   position: fixed !important;
   inset: 0 !important;
   z-index: 1760 !important;
-  padding: 8px !important;
+  padding: max(8px, var(--vsh-safe-top)) max(8px, var(--vsh-safe-right)) max(8px, var(--vsh-safe-bottom)) max(8px, var(--vsh-safe-left)) !important;
   align-items: stretch !important;
   overflow: hidden !important;
   background: #0b1118 !important;
@@ -10289,8 +10290,8 @@ html[data-director-device="tablet"] .projectModalOverlay {
 
 /* Lupa no modo Tablet em celular: conserva a mesma escala da tela principal. */
 html[data-director-device="tablet"].directorSearchPortraitMode .tabletSearchScreen {
-  left: calc(76px + var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
-  right: calc(76px + var(--tablet-safe-right, env(safe-area-inset-right, 0px))) !important;
+  left: calc(76px + var(--tablet-safe-left, var(--vsh-safe-left))) !important;
+  right: calc(76px + var(--tablet-safe-right, var(--vsh-safe-right))) !important;
   width: auto !important;
   max-width: none !important;
   overflow-x: hidden !important;
@@ -10440,10 +10441,10 @@ html[data-director-device="tablet"] .tabletBpmCurrentValue.bpmGenericValue {
 /* Tablet: PreMix e MultiLoops ocupam somente a mesma área útil do painel. */
 html[data-director-device="tablet"] .premixFullScreen {
   inset: auto !important;
-  left: calc(76px + var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
-  right: calc(76px + var(--tablet-safe-right, env(safe-area-inset-right, 0px))) !important;
-  top: max(8px, var(--tablet-safe-top, env(safe-area-inset-top, 0px))) !important;
-  bottom: max(8px, var(--tablet-safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+  left: calc(76px + var(--tablet-safe-left, var(--vsh-safe-left))) !important;
+  right: calc(76px + var(--tablet-safe-right, var(--vsh-safe-right))) !important;
+  top: max(8px, var(--tablet-safe-top, var(--vsh-safe-top))) !important;
+  bottom: max(8px, var(--tablet-safe-bottom, var(--vsh-safe-bottom))) !important;
   width: auto !important;
   height: auto !important;
   padding: 0 !important;
@@ -10627,11 +10628,12 @@ html[data-director-device="phone"] .app .item.playing .rowProgressTrack > .playi
 
 /* Todo modal do tablet respeita a área principal entre as barras laterais. */
 html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay {
+  padding: 14px !important;
   inset: auto !important;
-  left: calc(76px + var(--tablet-safe-left, env(safe-area-inset-left, 0px))) !important;
-  right: calc(76px + var(--tablet-safe-right, env(safe-area-inset-right, 0px))) !important;
-  top: calc(max(8px, var(--tablet-safe-top, env(safe-area-inset-top, 0px))) + 54px) !important;
-  bottom: max(8px, var(--tablet-safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+  left: calc(76px + var(--tablet-safe-left, var(--vsh-safe-left))) !important;
+  right: calc(76px + var(--tablet-safe-right, var(--vsh-safe-right))) !important;
+  top: calc(max(8px, var(--tablet-safe-top, var(--vsh-safe-top))) + 54px) !important;
+  bottom: max(8px, var(--tablet-safe-bottom, var(--vsh-safe-bottom))) !important;
   width: auto !important;
   height: auto !important;
   max-width: none !important;
@@ -11174,4 +11176,15 @@ html body #app .app .item.numberedItem.blockItem.playing::after {
   overflow-y: auto !important;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/* VS_HOOK_PHONE_BLOCK_FLUSH_V1 — no Diretor em celular o bloco encosta nas
+   musicas. A folga de 4px (1px no modo compacto) separava o bloco da lista
+   como se fosse outra secao; no tablet o espacamento continua igual. */
+html[data-director-device="phone"] .app .item.blockItem,
+html[data-director-device="phone"] .app .item.blockItem[data-song-id],
+html[data-director-device="phone"] .app .item.blockItem[data-region-id],
+html[data-director-device="phone"] .app .item.blockItem[data-item-id] {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
 }

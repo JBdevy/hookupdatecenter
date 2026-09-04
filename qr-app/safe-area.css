@@ -1,0 +1,36 @@
+/* VS_HOOK_SAFE_AREA_V1 — padrao unico de area segura dos apps.
+
+   Notch, Dynamic Island, camera furada e barra de gestos existem no iPhone e
+   tambem em varios Android. env(safe-area-inset-*) e o padrao da W3C que o
+   proprio sistema preenche, entao a mesma regra serve para os dois e devolve
+   0px em aparelho sem recorte — nada muda onde nao ha recorte.
+
+   Pre-requisito: <meta name="viewport" ... viewport-fit=cover> (ja aplicado em
+   index.html, musicos.html e recados.html). Sem isso o sistema devolve 0px.
+
+   COMO USAR — so existem dois casos:
+
+   1) Camada que cobre a tela (overlay, modal, tela cheia, shell):
+      padding: max(8px, var(--vsh-safe-top))
+               max(8px, var(--vsh-safe-right))
+               max(8px, var(--vsh-safe-bottom))
+               max(8px, var(--vsh-safe-left));
+      O max() garante o recuo minimo do desenho e cresce so ate o recorte,
+      entao o conteudo encosta no limite seguro sem empurrar o layout inteiro.
+      Camada afastada das bordas usa a mesma forma no inset:
+      inset: max(8px, var(--vsh-safe-top)) ... ;
+
+   2) Elemento ancorado numa borda (botao flutuante, menu suspenso):
+      bottom: calc(var(--vsh-safe-bottom) + 18px);
+      Aqui o valor do desenho e uma distancia a partir da borda segura, entao
+      soma em vez de max().
+
+   Nunca escreva env(safe-area-inset-*) direto numa regra nova: use os tokens,
+   assim da para auditar tudo com uma busca so. */
+
+:root {
+  --vsh-safe-top: env(safe-area-inset-top, 0px);
+  --vsh-safe-right: env(safe-area-inset-right, 0px);
+  --vsh-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --vsh-safe-left: env(safe-area-inset-left, 0px);
+}

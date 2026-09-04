@@ -10057,3 +10057,33 @@ body.tools-mode .add-project-setup-card {
   font-weight: 800;
   line-height: 1 !important;
 }
+
+/* Barra de progresso dos cards de "Atualizacoes anteriores". A barra do
+   cabecalho vive dentro de #homeView e nunca aparece nesta aba, entao cada
+   card mostra a propria enquanto baixa, instala ou reinstala. */
+#previousView .previous-update-card .previous-progress-area {
+  margin: 0 0 7px !important;
+}
+
+#previousView .previous-update-card .previous-progress-area .progress-shell {
+  margin-top: 0 !important;
+  height: 7px !important;
+}
+
+#previousView .previous-update-card .previous-progress-area .progress-row {
+  margin-top: 4px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+  justify-content: flex-end;
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* Enquanto o processo principal ainda nao envia porcentagem (preparo, copia
+   local e abertura do instalador) a barra so indica atividade. Reaproveita a
+   animacao ja usada na copia de projetos. */
+#previousView .previous-update-card .previous-progress-area .progress-bar.previous-progress-indeterminate {
+  width: 32% !important;
+  animation: copy-project-progress 1.15s ease-in-out infinite alternate;
+}

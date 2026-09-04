@@ -32,6 +32,7 @@ let testDownloadInProgress = false;
 let directedDownloadReady = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let activeUpdateDownloadSurface = '';
+let activePreviousProgress = null;
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
 let recadosHubSelectedSlot = 'global';
@@ -609,8 +610,12 @@ function resetVsHookProgress(surface = 'home') {
 }
 
 function updateVsHookProgress(progress, surface = activeUpdateDownloadSurface || 'home') {
-  const testSurface = surface === 'test';
   const safeProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+  if (surface === 'previous') {
+    updatePreviousProgress(safeProgress);
+    return;
+  }
+  const testSurface = surface === 'test';
   const progressBar = $(testSurface ? '#statusProgressBar' : '#progressBar');
   if (progressBar) progressBar.style.width = `${safeProgress}%`;
   const progressText = $(testSurface ? '#statusProgressText' : '#progressText');
@@ -620,6 +625,52 @@ function updateVsHookProgress(progress, surface = activeUpdateDownloadSurface ||
   if (safeProgress >= 100 && ready) {
     $(testSurface ? '#statusInstallButton' : '#installButton')
       ?.classList.remove('hidden');
+  }
+}
+
+// A barra do cabecalho vive dentro de #homeView e nunca aparece na aba
+// "Atualizacoes anteriores". Cada card mostra a propria barra usando os mesmos
+// eventos de progresso do processo principal.
+function startPreviousProgress(card, label = 'Preparando...') {
+  const area = card?.querySelector('.previous-progress-area');
+  if (!area) return;
+  activePreviousProgress = area;
+  activeUpdateDownloadSurface = 'previous';
+  const progressBar = area.querySelector('.progress-bar');
+  if (progressBar) {
+    progressBar.style.width = '0%';
+    // Sem porcentagem ainda: mostra atividade em vez de um numero inventado.
+    progressBar.classList.add('previous-progress-indeterminate');
+  }
+  const progressText = area.querySelector('.previous-progress-text');
+  if (progressText) progressText.textContent = label;
+  area.classList.remove('hidden');
+  area.setAttribute('aria-hidden', 'false');
+}
+
+function updatePreviousProgress(progress) {
+  const area = activePreviousProgress;
+  if (!area) return;
+  const progressBar = area.querySelector('.progress-bar');
+  if (progressBar) {
+    progressBar.classList.remove('previous-progress-indeterminate');
+    progressBar.style.width = `${progress}%`;
+  }
+  const progressText = area.querySelector('.previous-progress-text');
+  if (progressText) progressText.textContent = `${progress}%`;
+}
+
+function stopPreviousProgress() {
+  const area = activePreviousProgress;
+  activePreviousProgress = null;
+  if (activeUpdateDownloadSurface === 'previous') activeUpdateDownloadSurface = '';
+  if (!area) return;
+  area.classList.add('hidden');
+  area.setAttribute('aria-hidden', 'true');
+  const progressBar = area.querySelector('.progress-bar');
+  if (progressBar) {
+    progressBar.classList.remove('previous-progress-indeterminate');
+    progressBar.style.width = '0%';
   }
 }
 
@@ -5434,6 +5485,14 @@ function renderPreviousUpdates(updates) {
         <p class="previous-local-status ${cached ? 'is-cached' : ''}">
           ${cached ? 'Salva neste computador' : 'Disponível somente online'}${installed ? ' · instalada' : ''}
         </p>
+        <div class="previous-progress-area hidden" aria-live="polite" aria-hidden="true">
+          <div class="progress-shell">
+            <div class="progress-bar"></div>
+          </div>
+          <div class="progress-row">
+            <span class="previous-progress-text">0%</span>
+          </div>
+        </div>
         <div class="actions">
           <button class="primary-button previous-install-button${installed ? ' reinstall-button' : ''}" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>${packageAvailable ? (installed ? 'Reinstalar' : 'Instalar') : 'Indisponível'}</button>
           <button class="${cached ? 'danger-button' : 'secondary-button'} previous-cache-button" data-index="${index}" ${packageAvailable ? '' : 'disabled'}>
@@ -5480,6 +5539,7 @@ function renderPreviousUpdates(updates) {
         button.textContent = reinstalling
           ? (source === 'internet' ? 'Baixando...' : 'Reinstalando...')
           : (update.cached ? 'Instalando...' : 'Baixando...');
+        startPreviousProgress(button.closest('.previous-update-card'), button.textContent);
         await window.hookUpdateCenter.installCachedUpdatePackage(
           reinstalling ? { update, source } : { update }
         );
@@ -5504,6 +5564,7 @@ function renderPreviousUpdates(updates) {
           type: 'error'
         });
       } finally {
+        stopPreviousProgress();
         button.disabled = false;
         button.textContent = update.installed === true ? 'Reinstalar' : 'Instalar';
       }
@@ -5535,6 +5596,7 @@ function renderPreviousUpdates(updates) {
           if (!(await ensureLicenseActiveForDownload())) return;
           button.disabled = true;
           button.textContent = 'Baixando...';
+          startPreviousProgress(button.closest('.previous-update-card'), 'Baixando...');
           await window.hookUpdateCenter.cacheUpdatePackage({ update });
         }
         renderState(await window.hookUpdateCenter.getState());
@@ -5546,6 +5608,7 @@ function renderPreviousUpdates(updates) {
           type: 'error'
         });
       } finally {
+        stopPreviousProgress();
         button.disabled = false;
       }
     });

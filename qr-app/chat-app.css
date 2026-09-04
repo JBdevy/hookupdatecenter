@@ -1,4 +1,5 @@
 @import url("./button-gradients.css");
+@import url("./safe-area.css");
 
 :root {
   color-scheme: dark;
@@ -38,7 +39,7 @@ button { -webkit-tap-highlight-color: transparent; }
   align-items: center;
   gap: 10px;
   min-height: 70px;
-  padding: calc(9px + env(safe-area-inset-top)) 12px 9px;
+  padding: calc(9px + var(--vsh-safe-top)) 12px 9px;
   border-bottom: 1px solid rgba(255, 255, 255, .09);
   background: rgba(12, 12, 20, .88);
   backdrop-filter: blur(18px);
@@ -258,7 +259,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileComposer {
   position: relative;
   flex: 0 0 auto;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  padding: 8px 10px calc(8px + var(--vsh-safe-bottom));
   border-top: 1px solid rgba(255, 255, 255, .1);
   background: rgba(10, 10, 17, .96);
 }
@@ -345,7 +346,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileCameraMenu {
   position: fixed;
   right: 12px;
-  bottom: calc(76px + env(safe-area-inset-bottom));
+  bottom: calc(76px + var(--vsh-safe-bottom));
   z-index: 60;
   display: grid;
   min-width: 220px;
@@ -368,7 +369,7 @@ button { -webkit-tap-highlight-color: transparent; }
   font-weight: 800;
   text-align: left;
 }
-.chatMobileProfileMenu { top: calc(68px + env(safe-area-inset-top)); right: 12px; bottom: auto; }
+.chatMobileProfileMenu { top: calc(68px + var(--vsh-safe-top)); right: 12px; bottom: auto; }
 .chatMobileProfileMenu button[hidden] { display: none !important; }
 
 .chatMobileAdminBackdrop{position:absolute;inset:0;z-index:50;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
@@ -398,7 +399,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileEditActions button:last-child{background:linear-gradient(135deg,#cf37ff,#8425df)}
 
 @media (max-height: 620px) {
-  .chatMobileHeader { min-height: 58px; padding-top: calc(5px + env(safe-area-inset-top)); padding-bottom: 5px; }
+  .chatMobileHeader { min-height: 58px; padding-top: calc(5px + var(--vsh-safe-top)); padding-bottom: 5px; }
   .chatMobileCurrentAvatar { width: 46px; height: 46px; flex-basis: 46px; }
   .chatMobileMessages { padding-top: 8px; padding-bottom: 8px; }
   .chatMobileComposer textarea { min-height: 42px; max-height: 64px; }

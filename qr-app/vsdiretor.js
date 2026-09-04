@@ -446,6 +446,58 @@
     return readLocal('vshook_director_theme', 'dark') === 'light' ? 'light' : 'dark'
   }
 
+  // Som e vibracao de toque: o modulo ui-feedback.js guarda o estado e faz o
+  // clique. Se ele nao tiver carregado, tudo aqui vira silencio, nunca erro.
+  function uiSoundEnabled() {
+    try {
+      return !!(window.vshookUiFeedback && window.vshookUiFeedback.isEnabled())
+    } catch (error) {
+      return false
+    }
+  }
+
+  function setUiSoundEnabled(value) {
+    try {
+      if (window.vshookUiFeedback) window.vshookUiFeedback.setEnabled(value)
+    } catch (error) {}
+    scheduleRender(true)
+  }
+
+  // No tema claro o fundo das listas fica branco. A cor que a extensao manda
+  // (modo branco do repertorio, cor herdada do bloco, cor da faixa) pode
+  // chegar clara demais e sumir. So a cor sem contraste vira preta: as
+  // demais continuam identificando a musica como no tema escuro.
+  const LIGHT_THEME_TEXT_INK = '#050505'
+  const LIGHT_THEME_MIN_CONTRAST = 2.5
+
+  function readHexColorChannels(color) {
+    const raw = String(color || '').trim().replace(/^#/, '')
+    const hex = raw.length === 3 ? raw.split('').map((part) => part + part).join('') : raw
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return null
+    return [0, 2, 4].map((start) => Number.parseInt(hex.slice(start, start + 2), 16))
+  }
+
+  function colorContrastOnWhite(color) {
+    const channels = readHexColorChannels(color)
+    if (!channels) return null
+    const linear = (value) => {
+      const ratio = value / 255
+      return ratio <= 0.03928 ? ratio / 12.92 : Math.pow((ratio + 0.055) / 1.055, 2.4)
+    }
+    const luminance = 0.2126 * linear(channels[0]) +
+      0.7152 * linear(channels[1]) +
+      0.0722 * linear(channels[2])
+    return 1.05 / (luminance + 0.05)
+  }
+
+  function themeSafeTextColor(color) {
+    if (!color || getAppTheme() !== 'light') return color
+    const contrast = colorContrastOnWhite(color)
+    return contrast !== null && contrast < LIGHT_THEME_MIN_CONTRAST
+      ? LIGHT_THEME_TEXT_INK
+      : color
+  }
+
   function getDrawerVisualStyle(data = state.snapshot) {
     const colors = {
       yellow: '#fff02e', green: '#1aff57', blue: '#3394ff', purple: '#b852ff',
@@ -608,6 +660,9 @@
       button.classList.toggle('btnAutoplayActive', active)
       button.classList.toggle('btn', !active)
     })
+    // As cores das listas sao resolvidas na renderizacao, entao a troca de tema
+    // precisa redesenhar para o texto claro demais virar preto na hora.
+    scheduleRender(true)
   }
 
   const TELEPROMPT_FONT_OPTIONS = [
@@ -1500,9 +1555,9 @@
   function itemColorStyle(item, type) {
     const blockColorMode = getBlockColorMode()
     if (type !== 'marker' && isBlock(item) && blockColorMode === 'none') {
-      return ' style="color:#ffffff!important"'
+      return ` style="color:${themeSafeTextColor('#ffffff')}!important"`
     }
-    const color = type === 'marker' ? '' : getLuaItemTextColor(item, type)
+    const color = type === 'marker' ? '' : themeSafeTextColor(getLuaItemTextColor(item, type))
     return color ? ` style="color:${escapeHtml(color)}!important"` : ''
   }
 
@@ -5993,7 +6048,7 @@
       const liveVisual = !markedBlack && cls.split(/\s+/).includes('liveExecutedItem')
       const playlistWithoutBlocks = type === 'playlist' && !playlistHasBlocks && !isBlockRow
       const noBlockTextColor = playlistWithoutBlocks
-        ? getNoBlockTextColor(state.snapshot)
+        ? themeSafeTextColor(getNoBlockTextColor(state.snapshot))
         : ''
       const itemBaseColorStyle = noBlockTextColor
         ? ` style="color:${noBlockTextColor}!important"`
@@ -7325,8 +7380,10 @@
     const theme = getAppTheme()
     const borderMode = getBorderColorMode()
     const borderModeLabel = getBorderColorModeLabel(borderMode)
+    const soundOn = uiSoundEnabled()
+    const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
-      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
     const sortContext = state.showTunerScreen
       ? (state.tunerSourceTab === 'regions' ? 'regions' : 'playlist')
@@ -7338,7 +7395,7 @@
     const familyViewControls = getFamilyViewControlsEnabled()
     const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">${interfaceBlocking ? '[x]' : '[ ]'} Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">${hideAccessNotification ? '[x]' : '[ ]'} Bloquear notificação de acesso da interface</button></div></div>`
     const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">${familyViewControls ? '[x]' : '[ ]'} VIEW — Mostrar/Ocultar</button></div></div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div><div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}<div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderNumberOrderConfirm() {
@@ -10533,7 +10590,7 @@
           .app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.selectedPink .selectedPinkText,.app .item.selectedPink .selectedPinkTimeText,.app .item.queuedYellow .queuedYellowText,.app .item.queuedYellow .queuedYellowTimeText,.app .item.queuedGreen .queuedGreenText,.app .item.queuedGreen .queuedGreenTimeText,.app .item.queuedYellow .leftCol span,.app .item.queuedYellow .rightCol span,.app .item.queuedGreen .leftCol span,.app .item.queuedGreen .rightCol span,.app .item.queuedYellow .marqueeStatic,.app .item.queuedYellow .marqueeTrack,.app .item.queuedYellow .marqueeSegment,.app .item.queuedGreen .marqueeStatic,.app .item.queuedGreen .marqueeTrack,.app .item.queuedGreen .marqueeSegment,.app .item.playing .playingText,.app .item.playing .playingTimeText,.app .item.playing .leftCol span,.app .item.playing .rightCol span,.app .item.playing .marqueeStatic,.app .item.playing .marqueeTrack,.app .item.playing .marqueeSegment{color:#050505!important;text-shadow:none!important}
         </style>
         <style>
-          .transportSeekHoldTarget{flex:0 0 auto}.transportSeekOverlay{position:fixed;inset:0;z-index:10060;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:18px 10px}.transportSeekModal{width:min(92vw,500px);max-width:500px;border:1px solid #7c3aed;border-radius:16px;background:#0b1220;box-shadow:0 24px 56px rgba(0,0,0,.5),0 0 0 1px rgba(167,139,250,.18);padding:14px;display:flex;flex-direction:column;gap:12px}.transportSeekRegionCard{border:1px solid #7c3aed;border-radius:12px;overflow:hidden;background:#111827}.transportSeekRegionTitle{padding:7px 10px;background:#6d28d9;color:#f8fafc;font-weight:1000;font-size:12px;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.transportSeekWaveButton{position:relative;display:block;width:100%;height:126px;border:0;background:linear-gradient(180deg,#1b1f2a 0%,#0f172a 100%);padding:0;overflow:hidden;touch-action:none}.transportSeekWaveGrid{position:absolute;inset:0;background-image:linear-gradient(to right,rgba(255,255,255,.06) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px);background-size:22px 100%,100% 22px}.transportSeekWaveBars{position:absolute;left:10px;right:10px;top:18px;bottom:16px;display:flex;align-items:center;gap:2px}.transportSeekWaveBar{flex:1 1 0;background:linear-gradient(180deg,rgba(203,213,225,.88),rgba(100,116,139,.88));border-radius:999px;align-self:center;min-height:10%}.transportSeekMarkers{position:absolute;inset:0;pointer-events:none}.transportSeekMarkerLine{position:absolute;top:10px;bottom:10px;width:1px;background:rgba(6,182,212,.78);transform:translateX(-50%);box-shadow:0 0 7px rgba(6,182,212,.32)}.transportSeekMarkerLoop{width:2px;background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.58);z-index:3}.transportSeekMarkerHead{position:absolute;left:50%;top:-7px;transform:translateX(-50%);height:11px;line-height:11px;padding:0 3px;background:#ef4444;border:1px solid #fecaca;color:#fff;font-size:6.5px;font-weight:1000;letter-spacing:.04em;white-space:nowrap;box-shadow:0 0 6px rgba(239,68,68,.55)}.transportSeekMarkerHeadCyan{background:#06b6d4;border-color:#a5f3fc;color:#042f2e;box-shadow:0 0 6px rgba(6,182,212,.58)}.transportSeekCursorLine{position:absolute;top:8px;bottom:8px;width:2px;background:#14b8a6;transform:translateX(-50%);box-shadow:0 0 0 1px rgba(20,184,166,.18),0 0 10px rgba(20,184,166,.46)}.transportSeekCursorHead{position:absolute;top:5px;width:10px;height:10px;border-radius:999px;background:#14b8a6;transform:translateX(-50%);box-shadow:0 0 0 2px rgba(15,23,42,.88)}.transportSeekMeta{display:flex;align-items:center;justify-content:space-between;gap:10px}.transportSeekMetaText{color:#facc15;font-size:12px;font-weight:900;letter-spacing:.03em;white-space:nowrap}.transportSeekButtons{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.86fr);gap:10px}.transportSeekButtons>button{height:44px!important;min-height:44px!important}
+          .transportSeekHoldTarget{flex:0 0 auto}.transportSeekOverlay{position:fixed;inset:0;z-index:10060;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:max(18px,var(--vsh-safe-top)) max(10px,var(--vsh-safe-right)) max(18px,var(--vsh-safe-bottom)) max(10px,var(--vsh-safe-left))}.transportSeekModal{width:min(92vw,500px);max-width:500px;border:1px solid #7c3aed;border-radius:16px;background:#0b1220;box-shadow:0 24px 56px rgba(0,0,0,.5),0 0 0 1px rgba(167,139,250,.18);padding:14px;display:flex;flex-direction:column;gap:12px}.transportSeekRegionCard{border:1px solid #7c3aed;border-radius:12px;overflow:hidden;background:#111827}.transportSeekRegionTitle{padding:7px 10px;background:#6d28d9;color:#f8fafc;font-weight:1000;font-size:12px;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.transportSeekWaveButton{position:relative;display:block;width:100%;height:126px;border:0;background:linear-gradient(180deg,#1b1f2a 0%,#0f172a 100%);padding:0;overflow:hidden;touch-action:none}.transportSeekWaveGrid{position:absolute;inset:0;background-image:linear-gradient(to right,rgba(255,255,255,.06) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px);background-size:22px 100%,100% 22px}.transportSeekWaveBars{position:absolute;left:10px;right:10px;top:18px;bottom:16px;display:flex;align-items:center;gap:2px}.transportSeekWaveBar{flex:1 1 0;background:linear-gradient(180deg,rgba(203,213,225,.88),rgba(100,116,139,.88));border-radius:999px;align-self:center;min-height:10%}.transportSeekMarkers{position:absolute;inset:0;pointer-events:none}.transportSeekMarkerLine{position:absolute;top:10px;bottom:10px;width:1px;background:rgba(6,182,212,.78);transform:translateX(-50%);box-shadow:0 0 7px rgba(6,182,212,.32)}.transportSeekMarkerLoop{width:2px;background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.58);z-index:3}.transportSeekMarkerHead{position:absolute;left:50%;top:-7px;transform:translateX(-50%);height:11px;line-height:11px;padding:0 3px;background:#ef4444;border:1px solid #fecaca;color:#fff;font-size:6.5px;font-weight:1000;letter-spacing:.04em;white-space:nowrap;box-shadow:0 0 6px rgba(239,68,68,.55)}.transportSeekMarkerHeadCyan{background:#06b6d4;border-color:#a5f3fc;color:#042f2e;box-shadow:0 0 6px rgba(6,182,212,.58)}.transportSeekCursorLine{position:absolute;top:8px;bottom:8px;width:2px;background:#14b8a6;transform:translateX(-50%);box-shadow:0 0 0 1px rgba(20,184,166,.18),0 0 10px rgba(20,184,166,.46)}.transportSeekCursorHead{position:absolute;top:5px;width:10px;height:10px;border-radius:999px;background:#14b8a6;transform:translateX(-50%);box-shadow:0 0 0 2px rgba(15,23,42,.88)}.transportSeekMeta{display:flex;align-items:center;justify-content:space-between;gap:10px}.transportSeekMetaText{color:#facc15;font-size:12px;font-weight:900;letter-spacing:.03em;white-space:nowrap}.transportSeekButtons{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.86fr);gap:10px}.transportSeekButtons>button{height:44px!important;min-height:44px!important}
         </style>
         <style>
           .musicianMonitor .topStatusRow{grid-template-columns:minmax(58px,1fr) minmax(118px,.82fr) 34px!important}.musicianMonitor .topTimerBtn{width:100%!important;min-width:0!important;cursor:default!important;display:flex!important;align-items:center!important;justify-content:center!important;line-height:1!important}.musicianMonitor .topPlaylistButton{cursor:default!important}.musicianMonitor .controlsRowMusicianTp{display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:6px!important;margin-bottom:8px!important}.musicianMonitor .musicianTpOnlyButton{width:100%!important;height:42px!important;min-height:42px!important}.musicianMonitor .item{cursor:default!important}.musicianMonitor .playbackQueueHeader{flex:0 0 94px!important;min-height:94px!important;max-height:94px!important;width:100%!important;margin:0 0 8px!important;touch-action:pan-y!important}.musicianMonitor .playbackQueueLoop{animation:directorLoopPanelBlink .72s steps(2,end) infinite!important}.musicianMonitor .musicianSettingsExitButtons{margin-top:34px!important}.musicianMonitor .listBox{flex:1 1 auto!important;min-height:0!important}
@@ -12738,7 +12795,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -13259,6 +13316,8 @@
       }
       case 'theme-light': setAppTheme('light'); break
       case 'theme-dark': setAppTheme('dark'); break
+      case 'sound-on': setUiSoundEnabled(true); break
+      case 'sound-off': setUiSoundEnabled(false); break
       case 'interface-blocking-toggle': {
         const next = !getInterfaceBlockingEnabled()
         if (next) {
