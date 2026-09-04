@@ -2990,7 +2990,7 @@ async function exportHookMarkerGrandMa2() {
     const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2(readHookMarkerSettings());
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Cada música foi organizada em sua própria pasta. Dentro dela, copie o timecode para importexport e o macro para macros no grandMA2.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Os macros estão na pasta "macros" e os timecodes na pasta "import", sem subpastas por música.`,
       type: 'success'
     });
   } catch (error) {

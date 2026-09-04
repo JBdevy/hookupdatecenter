@@ -1489,11 +1489,12 @@
                 <label>Timecode inicial<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
                 <label>Slot MTC<input id="hookMarkerTimecodeSlot" type="number" min="1" max="8" value="2" /></label>
               </div>
-              <p class="muted hook-marker-help">Gera um macro e um Timecode XML para cada região de música. O início da própria região é sempre a Cue 1; os marcadores internos vêm depois. Sequence, Executor e Timecode avançam automaticamente a cada música. O padrão MTC é o Slot 2.</p>
+              <p class="muted hook-marker-help">Gera um macro e um Timecode XML para cada região de música. O início da própria região é sempre a Cue 1; os marcadores internos vêm depois. Sequence, Executor e Timecode avançam automaticamente a cada música. O Timecode Show fica em AutoStart: ao dar Play no REAPER, o MTC do Slot 2 executa as cues automaticamente.</p>
               <button id="hookMarkerExportGrandMa2Button" class="primary-button" type="button" disabled>Exportar grandMA2</button>
               <ol class="hook-marker-ma2-steps">
                 <li>REAPER envia MTC pela saída <strong>Hook MIDI (A)</strong>.</li>
                 <li>grandMA2 recebe pela entrada <strong>Hook MIDI (B)</strong>.</li>
+                <li>Os tempos seguem o grid do REAPER. Se mover uma região ou marcador depois da exportação, exporte e importe novamente.</li>
                 <li>Cada música recebe seus próprios XMLs, começando pela cue do início da região.</li>
               </ol>
             </section>

@@ -1,5 +1,6 @@
 node_modules/ 
 dist/
+dist-mtc-autostart/
 !qr-app/dist/
 !qr-app/dist/chat.js
 !qr-app/dist/chat-app.css

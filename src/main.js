@@ -7365,21 +7365,22 @@ async function exportHookMarkerGrandMa2(input = {}) {
   const targetFolder = await selectHookMarkerExportFolder(
     'Escolher pasta para os arquivos grandMA2');
   if (!targetFolder) return { ok: false, cancelled: true };
+  const macroFolderPath = path.join(targetFolder, 'macros');
+  const importFolderPath = path.join(targetFolder, 'import');
+  await Promise.all([
+    fs.promises.mkdir(macroFolderPath, { recursive: true }),
+    fs.promises.mkdir(importFolderPath, { recursive: true })
+  ]);
   const files = [];
   for (const songExport of songExports) {
-    // Cada musica forma um pacote independente. Deixar todos os XMLs soltos
-    // na raiz dificulta identificar qual macro acompanha qual Timecode no
-    // importexport do grandMA2, principalmente em repertorios grandes.
-    const songFolderPath = path.join(targetFolder, songExport.stem);
-    await fs.promises.mkdir(songFolderPath, { recursive: true });
-    const macroPath = path.join(songFolderPath, songExport.macroFileName);
-    const timecodePath = path.join(
-      songFolderPath, songExport.timecodeFileName);
+    // Agrupa por tipo de objeto, sem recriar uma subpasta para cada musica.
+    const macroPath = path.join(macroFolderPath, songExport.macroFileName);
+    const timecodePath = path.join(importFolderPath, songExport.timecodeFileName);
     await fs.promises.writeFile(macroPath, songExport.macroXml, 'utf8');
     await fs.promises.writeFile(timecodePath, songExport.timecodeXml, 'utf8');
     files.push({
       songName: songExport.song.name,
-      folderPath: songFolderPath,
+      folderPath: targetFolder,
       macroPath,
       timecodePath,
       cueCount: songExport.markerCount,
@@ -7391,6 +7392,8 @@ async function exportHookMarkerGrandMa2(input = {}) {
   return {
     ok: true,
     folderPath: targetFolder,
+    macroFolderPath,
+    importFolderPath,
     songCount: songExports.length,
     markerCount: songExports.reduce((total, item) => total + item.markerCount, 0),
     fileCount: files.length * 2,

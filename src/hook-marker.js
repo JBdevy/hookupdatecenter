@@ -132,6 +132,18 @@ function secondsToTimecode(seconds, fps = 30) {
     .join(':');
 }
 
+function secondsToGrandMa2TriggerTime(seconds) {
+  let totalCentiseconds = Math.max(0,
+    Math.round(finiteNumber(seconds, 0) * 100));
+  const centiseconds = totalCentiseconds % 100;
+  totalCentiseconds = Math.floor(totalCentiseconds / 100);
+  const secs = totalCentiseconds % 60;
+  totalCentiseconds = Math.floor(totalCentiseconds / 60);
+  const minutes = totalCentiseconds % 60;
+  const hours = Math.floor(totalCentiseconds / 60);
+  return `${hours}H${minutes}M${secs}.${String(centiseconds).padStart(2, '0')}S`;
+}
+
 function normalizeSettings(settings = {}) {
   return {
     fps: 30,
@@ -162,8 +174,16 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   const markers = normalizeMarkers(project.markers);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
+  const eventFrames = markers.map((marker) =>
+    Math.max(0, Math.round((marker.position + offsetSeconds) * settings.fps)));
+  const projectEndFrame = Math.max(0, Math.ceil(
+    (finiteNumber(project.end, 0) + offsetSeconds) * settings.fps));
+  const lastEventFrame = eventFrames.length ? Math.max(...eventFrames) : 0;
+  const showLength = Math.max(
+    projectEndFrame,
+    lastEventFrame + settings.fps);
   const lines = grandMa2Header(projectName, 'timecode');
-  lines.push(`  <Timecode index="${settings.timecodePool - 1}" name="${xmlEscape(projectName)}" slot="TC Slot ${settings.timecodeSlot}" frame_format="${settings.fps} FPS">`);
+  lines.push(`  <Timecode index="${settings.timecodePool - 1}" name="${xmlEscape(projectName)}" slot="TC Slot ${settings.timecodeSlot}" frame_format="${settings.fps} FPS" lenght="${showLength}" offset="0">`);
   lines.push('    <Track index="0" active="true" expanded="true">');
   lines.push(`      <Object name="Executor ${settings.executorPage}.${settings.executor}">`);
   lines.push('        <No>30</No>');
@@ -173,7 +193,7 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   lines.push('      </Object>');
   lines.push('      <SubTrack index="0">');
   markers.forEach((marker, index) => {
-    const frame = Math.max(0, Math.round((marker.position + offsetSeconds) * settings.fps));
+    const frame = eventFrames[index];
     lines.push(`        <Event index="${index}" time="${frame}" command="Goto" pressed="true" step="${marker.cue}">`);
     lines.push(`          <Cue name="${xmlEscape(marker.name)}">`);
     lines.push(`            <No>${settings.executorPage}</No>`);
@@ -182,6 +202,9 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
     lines.push('          </Cue>');
     lines.push('        </Event>');
   });
+  lines.push('      </SubTrack>');
+  lines.push('      <SubTrack index="1" fader_command="Master">');
+  lines.push('        <Event index="0" fader_level="1" />');
   lines.push('      </SubTrack>');
   lines.push('    </Track>');
   lines.push('  </Timecode>');
@@ -194,22 +217,36 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
   const markers = normalizeMarkers(project.markers);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
   const fileStem = safeFileStem(project.fileStem || projectName);
+  const offsetSeconds = parseOffset(settings.offset, settings.fps);
   const commands = [
-    `Store Sequence ${settings.sequence} /o`,
+    'SelectDrive 1',
+    'ClearAll',
+    ...markers.flatMap((marker) => {
+      const frame = Math.max(0,
+        Math.round((marker.position + offsetSeconds) * settings.fps));
+      const triggerTime = secondsToGrandMa2TriggerTime(frame / settings.fps);
+      return [
+        `Store Sequence ${settings.sequence} Cue ${marker.cue} /nc`,
+        `Label Sequence ${settings.sequence} Cue ${marker.cue} \"${marker.name}\"`,
+        `Assign Sequence ${settings.sequence} Cue ${marker.cue} /Trig=Timecode /TrigTime=${triggerTime}`
+      ];
+    }),
     `Label Sequence ${settings.sequence} \"${projectName}\"`,
-    ...markers.flatMap((marker) => [
-      `Store Sequence ${settings.sequence} Cue ${marker.cue} /o`,
-      `Label Sequence ${settings.sequence} Cue ${marker.cue} \"${marker.name}\"`
-    ]),
     `Assign Sequence ${settings.sequence} At Executor ${settings.executorPage}.${settings.executor} /o`,
     `Import \"${fileStem}-timecode\" At Timecode ${settings.timecodePool}`,
     `Assign Timecode ${settings.timecodePool} /Slot=${settings.timecodeSlot}`,
+    // AutoStart recoloca o show em Play sempre que o MTC externo reaparece.
+    // StatusCall fica desligado porque todos os shows compartilham o mesmo slot:
+    // religar o estado de shows anteriores acionaria cues antigas do repertorio.
+    `Assign Timecode ${settings.timecodePool} /AutoStart=On`,
+    `Assign Timecode ${settings.timecodePool} /StatusCall=Off`,
+    `Assign Timecode ${settings.timecodePool} /SwitchOff=\"Keep Playbacks\"`,
     `Label Timecode ${settings.timecodePool} \"${projectName}\"`,
     // Um show ligado a fonte externa precisa ficar em Play, aguardando MTC.
     `Go Timecode ${settings.timecodePool}`
   ];
   const lines = grandMa2Header(projectName, 'macro');
-  lines.push(`  <Macro index="0" name="Hook Marker - ${xmlEscape(projectName)}">`);
+  lines.push(`  <Macro index="0" name="${xmlEscape(projectName)}">`);
   commands.forEach((command, index) => {
     lines.push(`    <Macroline index="${index}">`);
     lines.push(`      <text>${xmlEscape(command)}</text>`);
@@ -244,6 +281,7 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
     const songProject = {
       projectName: song.name,
       fileStem: stem,
+      end: song.end,
       markers: markersForSong(song, project.markers)
     };
     return {
@@ -371,5 +409,6 @@ module.exports = {
   parseOffset,
   safeFileStem,
   secondsToTimecode,
+  secondsToGrandMa2TriggerTime,
   testResolumeColumn
 };
