@@ -446,11 +446,20 @@
     return readLocal('vshook_director_theme', 'dark') === 'light' ? 'light' : 'dark'
   }
 
-  // Som e vibracao de toque: o modulo ui-feedback.js guarda o estado e faz o
-  // clique. Se ele nao tiver carregado, tudo aqui vira silencio, nunca erro.
+  // Som e vibracao de toque: o modulo ui-feedback.js guarda os dois estados,
+  // que sao independentes, e respeita o silencioso do aparelho. Se ele nao
+  // tiver carregado, tudo aqui vira silencio, nunca erro.
   function uiSoundEnabled() {
     try {
-      return !!(window.vshookUiFeedback && window.vshookUiFeedback.isEnabled())
+      return !!(window.vshookUiFeedback && window.vshookUiFeedback.isSoundEnabled())
+    } catch (error) {
+      return false
+    }
+  }
+
+  function uiVibrateEnabled() {
+    try {
+      return !!(window.vshookUiFeedback && window.vshookUiFeedback.isVibrateEnabled())
     } catch (error) {
       return false
     }
@@ -458,7 +467,14 @@
 
   function setUiSoundEnabled(value) {
     try {
-      if (window.vshookUiFeedback) window.vshookUiFeedback.setEnabled(value)
+      if (window.vshookUiFeedback) window.vshookUiFeedback.setSoundEnabled(value)
+    } catch (error) {}
+    scheduleRender(true)
+  }
+
+  function setUiVibrateEnabled(value) {
+    try {
+      if (window.vshookUiFeedback) window.vshookUiFeedback.setVibrateEnabled(value)
     } catch (error) {}
     scheduleRender(true)
   }
@@ -7381,7 +7397,8 @@
     const borderMode = getBorderColorMode()
     const borderModeLabel = getBorderColorModeLabel(borderMode)
     const soundOn = uiSoundEnabled()
-    const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div></div>`
+    const vibrateOn = uiVibrateEnabled()
+    const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM E VIBRAÇÃO</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div><div class="settingsThemeGrid"><button class="${vibrateOn ? 'btnAutoplayActive' : 'btn'}" data-action="vibrate-on">VIBRAR LIGADO</button><button class="${vibrateOn ? 'btn' : 'btnAutoplayActive'}" data-action="vibrate-off">VIBRAR DESLIGADO</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
       return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
@@ -12795,7 +12812,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'vibrate-on', 'vibrate-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -13318,6 +13335,8 @@
       case 'theme-dark': setAppTheme('dark'); break
       case 'sound-on': setUiSoundEnabled(true); break
       case 'sound-off': setUiSoundEnabled(false); break
+      case 'vibrate-on': setUiVibrateEnabled(true); break
+      case 'vibrate-off': setUiVibrateEnabled(false); break
       case 'interface-blocking-toggle': {
         const next = !getInterfaceBlockingEnabled()
         if (next) {
