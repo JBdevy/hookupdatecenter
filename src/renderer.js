@@ -2905,7 +2905,9 @@ function renderHookMarkerRuntimeState(nextState) {
     } else if (active) {
       const lastCue = Number(hookMarkerRuntimeState.lastTriggeredCue) || 0;
       status.textContent = hookMarkerRuntimeState.resolumePaused
-        ? 'Ativo. REAPER parado; reprodução do Resolume pausada.'
+        ? `Ativo. REAPER parado; Resolume pausado${
+          hookMarkerRuntimeState.selectedColumn
+            ? ` na coluna ${hookMarkerRuntimeState.selectedColumn}` : ''}.`
         : lastCue > 0
         ? `Ativo. Último cue enviado: ${lastCue}.`
         : `Ativo com ${hookMarkerRuntimeState.cueCount || 0} cues. Aguardando o Play do REAPER.`;

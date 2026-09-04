@@ -35,6 +35,7 @@ const {
   normalizeMarkers,
   normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
+  selectResolumeColumn,
   setResolumeCompositionSpeed,
   testResolumeColumn
 } = require('./hook-marker');
@@ -174,6 +175,7 @@ let hookMarkerResolumeRuntime = {
   hasRun: false,
   seekedWhileStopped: false,
   resolumePaused: false,
+  lastSelectedColumn: 0,
   lastTriggeredCue: 0,
   lastError: ''
 };
@@ -7419,6 +7421,7 @@ function getHookMarkerResolumeRuntimeState() {
     lastPosition: Number(runtime.lastPosition) || 0,
     lastTriggeredCue: Number(runtime.lastTriggeredCue) || 0,
     resolumePaused: runtime.resolumePaused === true,
+    selectedColumn: Number(runtime.lastSelectedColumn) || 0,
     lastError: runtime.lastError || ''
   };
 }
@@ -7453,6 +7456,7 @@ function stopHookMarkerResolumeRuntime(error = '') {
     hasRun: false,
     seekedWhileStopped: false,
     resolumePaused: false,
+    lastSelectedColumn: 0,
     lastTriggeredCue: hookMarkerResolumeRuntime.lastTriggeredCue || 0,
     lastError: String(error || '')
   };
@@ -7507,13 +7511,27 @@ async function hookMarkerResolumeTick() {
     const startedNow = running && !wasRunning;
 
     if (!running) {
-      if (!wasRunning && Math.abs(position - previous) > 0.08) {
+      const cursorMoved = !wasRunning &&
+        Math.abs(position - previous) > 0.08;
+      if (cursorMoved) {
         hookMarkerResolumeRuntime.seekedWhileStopped = true;
       }
       if (!hookMarkerResolumeRuntime.resolumePaused) {
         await setResolumeCompositionSpeed(
           hookMarkerResolumeRuntime.settings, 0);
         hookMarkerResolumeRuntime.resolumePaused = true;
+        publishHookMarkerResolumeRuntimeState();
+      }
+      const selectedCue = findResolumeCueAtPosition(
+        hookMarkerResolumeRuntime.cues, position);
+      if (selectedCue && (cursorMoved ||
+          hookMarkerResolumeRuntime.forceLocate ||
+          hookMarkerResolumeRuntime.lastSelectedColumn !==
+            selectedCue.column)) {
+        await selectResolumeColumn(
+          hookMarkerResolumeRuntime.settings, selectedCue.column);
+        hookMarkerResolumeRuntime.lastSelectedColumn = selectedCue.column;
+        hookMarkerResolumeRuntime.forceLocate = false;
         publishHookMarkerResolumeRuntimeState();
       }
     }
@@ -7544,6 +7562,7 @@ async function hookMarkerResolumeTick() {
           hookMarkerResolumeRuntime.settings, cue.column);
         if (!hookMarkerResolumeRuntime.active) return;
         hookMarkerResolumeRuntime.lastTriggeredCue = cue.cue;
+        hookMarkerResolumeRuntime.lastSelectedColumn = cue.column;
         hookMarkerResolumeRuntime.lastError = '';
         publishHookMarkerResolumeRuntimeState();
       }
@@ -7582,6 +7601,7 @@ async function startHookMarkerResolumeRuntime(input = {}) {
     hasRun: false,
     seekedWhileStopped: false,
     resolumePaused: false,
+    lastSelectedColumn: 0,
     forceLocate: false,
     lastMapRefreshAt: Date.now(),
     lastTransportSampleAt: Date.now(),

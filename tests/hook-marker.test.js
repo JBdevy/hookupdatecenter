@@ -41,9 +41,13 @@ assert(songExport.timecodeXml.includes('lenght="1200" offset="0"'));
 assert(songExport.timecodeXml.includes('time="300" command="Goto"'));
 assert(songExport.timecodeXml.includes('time="360" command="Goto"'));
 assert(songExport.timecodeXml.includes(
+  'time="900" command="Off" pressed="true"'));
+assert(!songExport.timecodeXml.includes(
   'time="600" command="Off" pressed="true"'));
 assert(songExport.timecodeXml.includes('<SubTrack index="1" fader_command="Master">'));
 assert(secondSongExport.timecodeXml.includes(
+  'time="300" command="Off" pressed="true"'));
+assert(!secondSongExport.timecodeXml.includes(
   'time="1200" command="Off" pressed="true"'));
 
 const resolumeMap = buildResolumeMap({

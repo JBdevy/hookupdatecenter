@@ -174,21 +174,32 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   const markers = normalizeMarkers(project.markers);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
-  const eventFrames = markers.map((marker) =>
-    Math.max(0, Math.round((marker.position + offsetSeconds) * settings.fps)));
+  const switchOffFrames = Array.isArray(project.switchOffAt)
+    ? project.switchOffAt.map((position) => Math.max(0,
+      Math.round((finiteNumber(position, 0) + offsetSeconds) * settings.fps)))
+    : [];
+  const events = [
+    ...markers.map((marker) => ({
+      frame: Math.max(0,
+        Math.round((marker.position + offsetSeconds) * settings.fps)),
+      command: 'Goto',
+      marker
+    })),
+    ...switchOffFrames.map((frame) => ({ frame, command: 'Off' }))
+  ].sort((left, right) => {
+    const frameDifference = left.frame - right.frame;
+    if (frameDifference !== 0) return frameDifference;
+    if (left.command === right.command) return 0;
+    return left.command === 'Off' ? -1 : 1;
+  });
   const timelineEndFrame = Math.max(0, Math.ceil(
     (finiteNumber(project.end, 0) + offsetSeconds) * settings.fps));
-  const lastEventFrame = eventFrames.length ? Math.max(...eventFrames) : 0;
-  const offAtSeconds = finiteNumber(project.offAt ?? project.end, 0);
-  const offEventFrame = offAtSeconds > 0
-    ? Math.max(
-      lastEventFrame + 1,
-      Math.round((offAtSeconds + offsetSeconds) * settings.fps))
-    : null;
+  const lastEventFrame = events.length
+    ? events[events.length - 1].frame
+    : 0;
   const showLength = Math.max(
     timelineEndFrame,
-    lastEventFrame + settings.fps,
-    offEventFrame === null ? 0 : offEventFrame + settings.fps);
+    lastEventFrame + settings.fps);
   const lines = grandMa2Header(projectName, 'timecode');
   lines.push(`  <Timecode index="${settings.timecodePool - 1}" name="${xmlEscape(projectName)}" slot="TC Slot ${settings.timecodeSlot}" frame_format="${settings.fps} FPS" lenght="${showLength}" offset="0">`);
   lines.push('    <Track index="0" active="true" expanded="true">');
@@ -199,9 +210,13 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   lines.push(`        <No>${settings.executor}</No>`);
   lines.push('      </Object>');
   lines.push('      <SubTrack index="0">');
-  markers.forEach((marker, index) => {
-    const frame = eventFrames[index];
-    lines.push(`        <Event index="${index}" time="${frame}" command="Goto" pressed="true" step="${marker.cue}">`);
+  events.forEach((event, index) => {
+    if (event.command === 'Off') {
+      lines.push(`        <Event index="${index}" time="${event.frame}" command="Off" pressed="true" />`);
+      return;
+    }
+    const marker = event.marker;
+    lines.push(`        <Event index="${index}" time="${event.frame}" command="Goto" pressed="true" step="${marker.cue}">`);
     lines.push(`          <Cue name="${xmlEscape(marker.name)}">`);
     lines.push(`            <No>${settings.executorPage}</No>`);
     lines.push(`            <No>${settings.executor}</No>`);
@@ -209,11 +224,6 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
     lines.push('          </Cue>');
     lines.push('        </Event>');
   });
-  if (offEventFrame !== null) {
-    // Encerra somente o executor desta musica. Com StatusCall ligado, um seek
-    // para outra musica tambem recompõe este estado e evita duas execuções.
-    lines.push(`        <Event index="${markers.length}" time="${offEventFrame}" command="Off" pressed="true" />`);
-  }
   lines.push('      </SubTrack>');
   lines.push('      <SubTrack index="1" fader_command="Master">');
   lines.push('        <Event index="0" fader_level="1" />');
@@ -296,10 +306,14 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
     const songProject = {
       projectName: song.name,
       fileStem: stem,
-      // Todos os shows cobrem a timeline inteira, mas cada executor recebe Off
-      // no final de sua própria região.
+      // Todos os shows cobrem a timeline inteira. O executor desta musica
+      // permanece ativo ao parar e depois do fim da regiao; ele recebe Off
+      // somente quando outra musica comeca. Assim o StatusCall recompõe um
+      // seek deixando ativo apenas o executor da cue-alvo.
       end: timelineEnd,
-      offAt: song.end,
+      switchOffAt: songs
+        .filter((otherSong) => otherSong.id !== song.id)
+        .map((otherSong) => otherSong.start),
       markers: markersForSong(song, project.markers)
     };
     return {
@@ -457,6 +471,21 @@ async function testResolumeColumn(inputSettings = {}, columnOverride = null) {
   return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
 }
 
+async function selectResolumeColumn(inputSettings = {}, columnOverride = null) {
+  const settings = normalizeSettings(inputSettings);
+  const column = positiveInteger(
+    columnOverride, settings.resolumeFirstColumn, 99999);
+  const address = `/composition/columns/${column}/selected`;
+  const socket = dgram.createSocket('udp4');
+  try {
+    await sendUdpPacket(socket, encodeOscInt(address, 1),
+      settings.resolumePort, settings.resolumeHost);
+  } finally {
+    socket.close();
+  }
+  return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
+}
+
 async function setResolumeCompositionSpeed(inputSettings = {}, speed = 1) {
   const settings = normalizeSettings(inputSettings);
   const address = '/composition/speed';
@@ -487,6 +516,7 @@ module.exports = {
   safeFileStem,
   secondsToTimecode,
   secondsToGrandMa2TriggerTime,
+  selectResolumeColumn,
   setResolumeCompositionSpeed,
   testResolumeColumn
 };
