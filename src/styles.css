@@ -10087,3 +10087,25 @@ body.tools-mode .add-project-setup-card {
   width: 32% !important;
   animation: copy-project-progress 1.15s ease-in-out infinite alternate;
 }
+
+/* No estado pós-instalação, centraliza a ação no espaço livre do card e deixa
+   o botão um pouco mais compacto. A versão instalada continua no rodapé. */
+#homeView #updateCard.home-installed-final #videoBox {
+  flex: 0 0 46px !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  max-height: 46px !important;
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
+}
+
+#homeView #updateCard.home-installed-final #videoBox #hookTutorialsButton {
+  width: calc(100% - 24px) !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  max-height: 46px !important;
+  margin: 0 auto !important;
+  padding: 0 28px !important;
+  border-radius: 12px !important;
+  font-size: 15px !important;
+}
