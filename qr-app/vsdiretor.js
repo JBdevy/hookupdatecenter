@@ -5973,7 +5973,13 @@
       const id = escapeHtml(getId(item))
       const rawId = getId(item)
       const isBlockRow = isBlock(item)
-      const rowNumber = showRowNumber && !isBlockRow ? getRowNumberText(item, entry.songNumber) : ''
+      // A coluna de numeros acompanha a linha do bloco mostrando a ordem dele
+      // (1°, 2°, ...), igual a extensao. Musicas seguem a numeracao normal.
+      const rowNumber = !showRowNumber
+        ? ''
+        : isBlockRow
+          ? `${Math.max(1, Number(entry.blockNumber) || 1)}°`
+          : getRowNumberText(item, entry.songNumber)
       const name = escapeHtml(getRowDisplayName(item, entry.index, entry.blockNumber))
       const sec = getDurationSec(item)
       const time = sec ? formatTime(sec) : ''
