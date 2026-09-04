@@ -98,7 +98,9 @@ const store = new Store({
     },
     deviceName: '',
     deviceLoginEmail: '',
+    deviceLoginName: '',
     deviceLoginAt: null,
+    deviceLoggedOut: false,
     transferHookCode: '',
     dropHookDestinationPath: '',
     autoStart: true,
@@ -823,10 +825,24 @@ async function loginLicenseDevices(email) {
     lastStatusAt: new Date().toISOString()
   }
   store.set('deviceLoginEmail', result.email || cleanEmail)
+  store.set('deviceLoginName', String(result.name || '').trim())
   store.set('deviceLoginAt', new Date().toISOString())
+  store.set('deviceLoggedOut', false)
   store.set('license', nextLicense)
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
   return { ok:true, result, state:getAppState() }
+}
+
+function logoutLicenseDevices() {
+  // Logout da conta e ativacao da maquina sao estados independentes. Mantemos
+  // a licenca local intacta para que sair da interface nao desative o VS Hook.
+  store.set('deviceLoginEmail', '')
+  store.set('deviceLoginName', '')
+  store.set('deviceLoginAt', null)
+  store.set('deviceLoggedOut', true)
+  const nextState = getAppState()
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', nextState)
+  return { ok: true, state: nextState }
 }
 
 async function removeLicenseDevice(removeMachineId, emailOverride = '') {
@@ -4763,6 +4779,12 @@ function toggleLyricsWindowFullscreen(win) {
 function getAppState() {
   const hookCenterBinaryVersion = app.getVersion();
   const installedVsHookVersion = getInstalledVsHookVersion();
+  const license = store.get('license') || {};
+  const storedDeviceLoginEmail = String(store.get('deviceLoginEmail') || '').trim();
+  const explicitlyLoggedOut = store.get('deviceLoggedOut') === true;
+  // A compatibilidade com versoes anteriores considera quem ja tinha um
+  // e-mail de licenca salvo como logado, exceto depois de um logout explicito.
+  const deviceLoggedIn = !explicitlyLoggedOut && Boolean(storedDeviceLoginEmail || license.email);
   return {
     // A versão binária continua separada e é a única usada para decidir se o
     // instalador da Hook Center precisa ser baixado novamente.
@@ -4790,10 +4812,12 @@ function getAppState() {
     currentPackageInstalled: isUpdatePackageInstalled(getCurrentUpdatePackage()),
     currentPackageCached: Boolean(findCachedUpdateManifest(getCurrentUpdatePackage())),
     updateCacheDirectory: getOfflineUpdateCacheRoot(),
-    license: store.get('license'),
-    machineId: (store.get('license') || {}).machineId || '',
+    license,
+    machineId: license.machineId || '',
     deviceName: getStoredDeviceName(),
-    deviceLoginEmail: store.get('deviceLoginEmail') || (store.get('license') || {}).email || '',
+    deviceLoggedIn,
+    deviceLoginEmail: explicitlyLoggedOut ? '' : (storedDeviceLoginEmail || license.email || ''),
+    deviceLoginName: explicitlyLoggedOut ? '' : String(store.get('deviceLoginName') || '').trim(),
     
     platform: process.platform,
     platformKey: getPlatformKey(),
@@ -8281,6 +8305,7 @@ ipcMain.handle('set-device-name', (_event, payload) => {
   return { ok: true, deviceName, state: getAppState() }
 });
 ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseDevices(payload?.email || ''));
+ipcMain.handle('logout-license-devices', () => logoutLicenseDevices());
 ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload?.machineId || payload?.deviceId || payload?.removeMachineId || '', payload?.email || ''));
 ipcMain.handle('activate-license', async (_event, payload) => {
   const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);

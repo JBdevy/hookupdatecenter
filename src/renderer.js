@@ -72,7 +72,157 @@ let releaseNotesReadScrollFrame = 0;
 let hookTutorialGroups = { tutorials: [], questions: [] };
 let hookTutorialCategory = 'tutorials';
 let pingPongResizeObserver = null;
+let accountLoginBusy = false;
+let accountLoginTransitionActive = false;
+let accountWelcomeTimer = 0;
 const chatHookMessagesById = new Map();
+
+function isAccountLoggedIn(nextState = state) {
+  return nextState?.deviceLoggedIn === true;
+}
+
+function accountWelcomeName(value) {
+  return String(value || '').trim();
+}
+
+function setAccountLoginBusy(busy) {
+  accountLoginBusy = busy;
+  const gateButton = $('#accountLoginButton');
+  const devicesButton = $('#devicesLoginButton');
+  if (gateButton) {
+    gateButton.disabled = busy;
+    gateButton.textContent = busy ? 'Entrando...' : 'Entrar';
+  }
+  if (devicesButton) {
+    devicesButton.disabled = busy;
+    devicesButton.textContent = busy ? 'Entrando...' : 'Entrar';
+  }
+}
+
+function syncAccountAccessState(nextState = state) {
+  const gate = $('#accountLoginGate');
+  const welcome = $('#accountWelcomeScreen');
+  const loggedIn = isAccountLoggedIn(nextState);
+  document.body.classList.remove('auth-pending');
+
+  if (accountLoginTransitionActive) return;
+
+  document.body.classList.toggle('account-locked', !loggedIn);
+  gate?.classList.toggle('hidden', loggedIn);
+  gate?.setAttribute('aria-hidden', String(loggedIn));
+  if (!loggedIn) {
+    welcome?.classList.add('hidden');
+    welcome?.classList.remove('is-showing');
+    welcome?.setAttribute('aria-hidden', 'true');
+    const input = $('#accountLoginEmail');
+    if (input && !input.value) input.value = nextState?.deviceLoginEmail || '';
+    setTimeout(() => input?.focus(), 80);
+  }
+}
+
+function showAccountWelcome(name, email) {
+  const gate = $('#accountLoginGate');
+  const welcome = $('#accountWelcomeScreen');
+  const welcomeGreeting = $('#accountWelcomeGreeting');
+  const welcomeName = $('#accountWelcomeName');
+  if (!welcome) return Promise.resolve();
+
+  if (accountWelcomeTimer) clearTimeout(accountWelcomeTimer);
+  const customerName = accountWelcomeName(name);
+  if (welcomeGreeting) welcomeGreeting.textContent = customerName ? 'Bem-vindo,' : 'Bem-vindo';
+  if (welcomeName) {
+    welcomeName.textContent = customerName;
+    welcomeName.classList.toggle('hidden', !customerName);
+  }
+  document.body.classList.add('account-locked');
+  gate?.classList.add('hidden');
+  gate?.setAttribute('aria-hidden', 'true');
+  welcome.classList.remove('hidden');
+  welcome.setAttribute('aria-hidden', 'false');
+  // Reinicia a animacao mesmo quando o usuario troca de conta sem fechar o app.
+  welcome.classList.remove('is-showing');
+  void welcome.offsetWidth;
+  welcome.classList.add('is-showing');
+
+  return new Promise((resolve) => {
+    accountWelcomeTimer = setTimeout(() => {
+      accountWelcomeTimer = 0;
+      welcome.classList.remove('is-showing');
+      welcome.classList.add('hidden');
+      welcome.setAttribute('aria-hidden', 'true');
+      resolve();
+    }, 2000);
+  });
+}
+
+async function performAccountLogin(email) {
+  const cleanEmail = String(email || '').trim();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Digite o e-mail usado na compra.');
+  }
+  if (accountLoginBusy) return null;
+
+  setAccountLoginBusy(true);
+  accountLoginTransitionActive = true;
+  try {
+    const result = await window.hookUpdateCenter.loginLicenseDevices({ email: cleanEmail });
+    const nextState = result.state || await window.hookUpdateCenter.getState();
+    renderState(nextState);
+    await showAccountWelcome(result?.result?.name || nextState?.deviceLoginName, result?.result?.email || cleanEmail);
+    accountLoginTransitionActive = false;
+    syncAccountAccessState(nextState);
+    return result;
+  } catch (error) {
+    accountLoginTransitionActive = false;
+    syncAccountAccessState(state);
+    throw error;
+  } finally {
+    setAccountLoginBusy(false);
+  }
+}
+
+function setupAccountAccess() {
+  $('#accountLoginForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const message = $('#accountLoginMessage');
+    const input = $('#accountLoginEmail');
+    if (message) message.textContent = '';
+    try {
+      const result = await performAccountLogin(input?.value || '');
+      if (!result) return;
+      if (result?.result?.reason === 'device_limit') {
+        setView('devices');
+        showModal({ title: 'Remova 1 dispositivo', message: result.result.message || 'Remova 1 dispositivo primeiro.', type: 'error' });
+      }
+    } catch (error) {
+      if (message) message.textContent = friendlyError(error, 'Não foi possível entrar. Tente novamente.');
+      input?.focus();
+    }
+  });
+
+  $('#devicesLogoutButton')?.addEventListener('click', async () => {
+    const button = $('#devicesLogoutButton');
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = 'Saindo...';
+      }
+      const result = await window.hookUpdateCenter.logoutLicenseDevices();
+      const loginInput = $('#accountLoginEmail');
+      if (loginInput) loginInput.value = '';
+      if ($('#accountLoginMessage')) $('#accountLoginMessage').textContent = '';
+      setView('home');
+      renderState(result.state || await window.hookUpdateCenter.getState());
+    } catch (error) {
+      showModal({ title: 'Dispositivos', message: friendlyError(error, 'Não foi possível sair. Tente novamente.'), type: 'error' });
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Sair';
+      }
+    }
+  });
+}
 function setLyricsConfigSlot(slot) {
   selectedLyricsConfigSlot = Number(slot) === 2 ? 2 : 1;
 
@@ -5057,48 +5207,6 @@ async function ensureDeviceName() {
   return await promptDeviceNameModal(current)
 }
 
-function promptDeviceLoginModal() {
-  return new Promise((resolve) => {
-    const backdrop = $('#deviceLoginModal')
-    const input = $('#deviceLoginModalEmail')
-    const error = $('#deviceLoginModalError')
-    if (!backdrop || !input) return resolve(false)
-    input.value = state?.deviceLoginEmail || state?.license?.email || ''
-    error.textContent = ''
-    backdrop.classList.remove('hidden')
-    setTimeout(() => input.focus(), 30)
-    const cleanup = (ok) => {
-      backdrop.classList.add('hidden')
-      $('#deviceLoginModalEnter')?.removeEventListener('click', onEnter)
-      $('#deviceLoginModalLater')?.removeEventListener('click', onLater)
-      input.removeEventListener('keydown', onKey)
-      resolve(ok)
-    }
-    const onEnter = async () => {
-      const email = input.value.trim()
-      if (!email || !email.includes('@')) { error.textContent = 'Digite o e-mail usado na compra.'; return }
-      try {
-        const result = await window.hookUpdateCenter.loginLicenseDevices({ email })
-        renderState(result.state || await window.hookUpdateCenter.getState())
-        const msg = result?.result?.message || 'Login realizado.'
-        if (result?.result?.reason === 'device_limit') {
-          setView('devices')
-          showModal({ title:'Remova 1 dispositivo', message:msg, type:'error' })
-        }
-        cleanup(true)
-      } catch (error) {
-        error.textContent = friendlyError(error, 'Ocorreu um erro. Contate o suporte.')
-      }
-    }
-    const onLater = () => cleanup(false)
-    const onKey = (event) => { if (event.key === 'Enter') onEnter(); if (event.key === 'Escape') onLater() }
-    $('#deviceLoginModalEnter')?.addEventListener('click', onEnter)
-    $('#deviceLoginModalLater')?.addEventListener('click', onLater)
-    input.addEventListener('keydown', onKey)
-  })
-}
-
-
 function updateLyricsWindowButtons() {
   const windows = state?.lyricsWindows || {};
   const oneOpen = !!windows.oneOpen;
@@ -5185,6 +5293,7 @@ function showBackendUpdateDescription(value) {
 
 function renderState(nextState) {
   state = nextState;
+  syncAccountAccessState(state);
   updateLyricsWindowButtons();
   $('#currentVersion').textContent = formatHookCenterDisplayVersion(state.statusDisplayVersion || state.currentVersion);
   const installedVersionLabel = state.installedVsHookVersion ? `v${String(state.installedVsHookVersion).replace(/^v/i, '')}` : '--';
@@ -5398,9 +5507,6 @@ async function refreshBridgeState() {
 
 async function refreshState() {
   renderState(await window.hookUpdateCenter.getState());
-  if (!(state?.deviceLoginEmail || state?.license?.email)) {
-    setTimeout(() => promptDeviceLoginModal(), 250);
-  }
 }
 
 
@@ -5672,6 +5778,7 @@ async function init() {
   configurePlatformSpecificTools();
   setupSidebarToggle();
   setupPurchaseFieldVisibility();
+  setupAccountAccess();
   window.addEventListener('resize', fitUpdateDescriptionText);
   const updateDescriptionCard = $('#updateDescriptionCard');
   if (updateDescriptionCard && typeof ResizeObserver === 'function') {
@@ -6095,9 +6202,8 @@ async function init() {
 
   $('#devicesLoginButton')?.addEventListener('click', async () => {
     try {
-      await ensureDeviceName()
-      const result = await window.hookUpdateCenter.loginLicenseDevices({ email: $('#devicesEmailInput')?.value || $('#emailInput')?.value || '' })
-      renderState(result.state || await window.hookUpdateCenter.getState())
+      const result = await performAccountLogin($('#devicesEmailInput')?.value || $('#emailInput')?.value || '')
+      if (!result) return
       const msg = result?.result?.message || 'Login realizado.'
       $('#devicesMessage').textContent = msg
       if (result?.result?.reason === 'device_limit') showModal({ title:'Remova 1 dispositivo', message:msg, type:'error' })

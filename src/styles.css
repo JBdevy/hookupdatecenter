@@ -10109,3 +10109,373 @@ body.tools-mode .add-project-setup-card {
   border-radius: 12px !important;
   font-size: 15px !important;
 }
+
+/* Login da conta: separado da ativacao da licenca. */
+body.auth-pending,
+body.account-locked {
+  overflow: hidden !important;
+}
+
+body.auth-pending .app-shell,
+body.account-locked .app-shell {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(.992);
+}
+
+.app-shell {
+  transition: opacity .24s ease, transform .24s ease;
+}
+
+.account-entry-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  min-width: 100vw;
+  min-height: 100vh;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(84, 24, 5, .34), transparent 38%),
+    linear-gradient(145deg, #020202 0%, #090604 50%, #030202 100%);
+}
+
+.account-ambient,
+.account-frost-mask {
+  position: absolute;
+  inset: -8%;
+  pointer-events: none;
+}
+
+.account-ambient {
+  z-index: -3;
+  overflow: hidden;
+  animation: accountAmbientDrift 11s ease-in-out infinite alternate;
+}
+
+.account-frost-mask {
+  z-index: -1;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(4, 4, 4, .26), rgba(5, 5, 5, .50)),
+    repeating-linear-gradient(115deg, rgba(255,255,255,.012) 0 1px, transparent 1px 5px);
+  -webkit-backdrop-filter: blur(11px) saturate(.82);
+  backdrop-filter: blur(11px) saturate(.82);
+}
+
+.account-orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 118vw;
+  height: 54vh;
+  border: 2px solid rgba(255, 119, 22, .34);
+  border-left-color: transparent;
+  border-right-color: rgba(255, 55, 24, .16);
+  border-radius: 50%;
+  box-shadow: 0 0 16px rgba(255, 110, 20, .22), inset 0 0 18px rgba(255, 75, 18, .10);
+  transform: translate(-50%, -50%) rotate(-10deg);
+}
+
+.account-orbit-one {
+  animation: accountOrbitOne 12s ease-in-out infinite alternate;
+}
+
+.account-orbit-two {
+  width: 96vw;
+  height: 76vh;
+  opacity: .52;
+  transform: translate(-50%, -50%) rotate(18deg);
+  animation: accountOrbitTwo 15s ease-in-out infinite alternate;
+}
+
+.account-light {
+  position: absolute;
+  width: 44vw;
+  height: 44vw;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: .20;
+}
+
+.account-light-one {
+  left: -12%;
+  bottom: -30%;
+  background: #ff7418;
+  animation: accountLightOne 9s ease-in-out infinite alternate;
+}
+
+.account-light-two {
+  right: -16%;
+  top: -32%;
+  background: #e33218;
+  animation: accountLightTwo 10s ease-in-out infinite alternate;
+}
+
+.account-particles {
+  position: absolute;
+  inset: 0;
+  opacity: .42;
+  background-image:
+    radial-gradient(circle, rgba(255, 167, 65, .95) 0 1px, transparent 1.5px),
+    radial-gradient(circle, rgba(255, 77, 31, .75) 0 1px, transparent 1.5px);
+  background-position: 0 0, 37px 51px;
+  background-size: 109px 97px, 151px 137px;
+  -webkit-mask-image: radial-gradient(circle at center, #000 5%, transparent 72%);
+  mask-image: radial-gradient(circle at center, #000 5%, transparent 72%);
+  animation: accountParticles 18s linear infinite;
+}
+
+.account-login-card {
+  position: relative;
+  z-index: 2;
+  width: min(410px, calc(100vw - 44px));
+  padding: 24px 34px 28px;
+  border: 1px solid rgba(255, 146, 54, .28);
+  border-radius: 30px;
+  text-align: center;
+  background: linear-gradient(155deg, rgba(25, 19, 15, .64), rgba(8, 8, 8, .76));
+  box-shadow:
+    0 35px 100px rgba(0, 0, 0, .64),
+    0 0 46px rgba(255, 101, 24, .10),
+    inset 0 1px 0 rgba(255, 255, 255, .07);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
+  animation: accountCardEnter .55s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.account-logo-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 150px;
+  height: 150px;
+  margin: 0 auto -2px;
+}
+
+.account-logo-halo {
+  position: absolute;
+  inset: 13px;
+  border: 1px solid rgba(255, 143, 48, .46);
+  border-top-color: transparent;
+  border-radius: 34px;
+  filter: drop-shadow(0 0 12px rgba(255, 111, 29, .30));
+  animation: accountLogoHalo 8s linear infinite;
+}
+
+.account-login-logo {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  border-radius: 28px;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 24px rgba(0,0,0,.45)) drop-shadow(0 0 16px rgba(255, 117, 29, .18));
+  animation: accountLogoFloat 3.4s ease-in-out infinite;
+}
+
+.account-product-name {
+  margin: 2px 0 22px;
+  font-family: "Segoe UI Variable Display", "Arial Narrow", Segoe UI, sans-serif;
+  font-size: clamp(34px, 4vw, 45px);
+  font-style: italic;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -.055em;
+  text-transform: uppercase;
+  color: #f7f7f7;
+  text-shadow: 0 0 24px rgba(255, 121, 25, .18);
+}
+
+.account-product-name span {
+  color: #ff941f;
+}
+
+.account-login-form {
+  display: grid;
+  gap: 10px;
+  text-align: left;
+}
+
+.account-login-form label {
+  color: rgba(255,255,255,.72);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.account-login-form input {
+  width: 100%;
+  height: 48px;
+  padding: 0 15px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 13px;
+  outline: none;
+  color: #fff;
+  background: rgba(5, 5, 5, .58);
+  box-shadow: inset 0 1px 10px rgba(0,0,0,.32);
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+.account-login-form input:focus {
+  border-color: rgba(255, 143, 39, .74);
+  background: rgba(8, 8, 8, .78);
+  box-shadow: 0 0 0 3px rgba(255, 126, 25, .11), 0 0 24px rgba(255, 95, 18, .09);
+}
+
+.account-login-hint {
+  margin: 0 0 4px;
+  color: rgba(255, 255, 255, .56);
+  font-size: 12px;
+  text-align: center;
+}
+
+.account-login-form .primary-button {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 4px;
+  border: 1px solid rgba(255, 191, 91, .42);
+  border-radius: 13px;
+  font-size: 14px;
+  letter-spacing: .025em;
+  background: linear-gradient(135deg, #ffb22f, #ff741b 62%, #dd481b);
+  box-shadow: 0 12px 30px rgba(255, 87, 18, .20), inset 0 1px 0 rgba(255,255,255,.34);
+}
+
+.account-login-form .primary-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.account-login-message {
+  min-height: 18px;
+  margin: 0;
+  color: #ff8b7c;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.account-welcome-content {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.account-welcome-logo {
+  width: 156px;
+  height: 156px;
+  margin-bottom: 18px;
+  border-radius: 34px;
+  object-fit: contain;
+  filter: drop-shadow(0 20px 34px rgba(0,0,0,.5)) drop-shadow(0 0 24px rgba(255, 121, 25, .18));
+}
+
+.account-welcome-content p {
+  margin: 0 0 5px;
+  color: rgba(255,255,255,.66);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.account-welcome-content h2 {
+  margin: 0;
+  max-width: min(680px, calc(100vw - 60px));
+  color: #fff;
+  font-family: "Segoe UI Variable Display", Segoe UI, sans-serif;
+  font-size: clamp(40px, 7vw, 72px);
+  font-weight: 900;
+  letter-spacing: -.05em;
+  line-height: 1.05;
+  text-shadow: 0 0 30px rgba(255, 117, 29, .28);
+}
+
+.account-welcome-layer.is-showing .account-welcome-content {
+  animation: accountWelcomeTwoSeconds 2s cubic-bezier(.2, .72, .22, 1) both;
+}
+
+.account-welcome-layer.is-showing .account-welcome-logo {
+  animation: accountWelcomeLogoTwoSeconds 2s ease-in-out both;
+}
+
+#devicesView .account-logout-button {
+  border: 1px solid rgba(255, 255, 255, .11);
+}
+
+@keyframes accountAmbientDrift {
+  from { transform: scale(1.03) translate3d(-1.2%, -.6%, 0); }
+  to { transform: scale(1.08) translate3d(1.2%, .8%, 0); }
+}
+
+@keyframes accountOrbitOne {
+  from { transform: translate(-50%, -50%) rotate(-13deg) scale(.98); opacity: .44; }
+  to { transform: translate(-50%, -50%) rotate(-5deg) scale(1.04); opacity: .82; }
+}
+
+@keyframes accountOrbitTwo {
+  from { transform: translate(-50%, -50%) rotate(14deg) scale(1.03); }
+  to { transform: translate(-50%, -50%) rotate(23deg) scale(.97); }
+}
+
+@keyframes accountLightOne {
+  to { transform: translate3d(18%, -9%, 0) scale(1.15); opacity: .27; }
+}
+
+@keyframes accountLightTwo {
+  to { transform: translate3d(-16%, 14%, 0) scale(.92); opacity: .25; }
+}
+
+@keyframes accountParticles {
+  to { background-position: 109px 97px, -114px 188px; }
+}
+
+@keyframes accountCardEnter {
+  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes accountLogoFloat {
+  0%, 100% { transform: translateY(2px) scale(1); }
+  50% { transform: translateY(-6px) scale(1.018); }
+}
+
+@keyframes accountLogoHalo {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes accountWelcomeTwoSeconds {
+  0% { opacity: 0; transform: translateY(18px) scale(.97); }
+  18%, 72% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-8px) scale(1.025); }
+}
+
+@keyframes accountWelcomeLogoTwoSeconds {
+  0% { opacity: 0; transform: translateY(14px) scale(.82) rotate(-3deg); }
+  22%, 70% { opacity: 1; transform: translateY(0) scale(1) rotate(0); }
+  100% { opacity: 0; transform: translateY(-7px) scale(1.05) rotate(2deg); }
+}
+
+@media (max-height: 650px) {
+  .account-login-card { padding: 15px 30px 18px; }
+  .account-logo-stage { width: 124px; height: 124px; }
+  .account-login-logo { width: 106px; height: 106px; border-radius: 24px; }
+  .account-product-name { margin-bottom: 14px; font-size: 34px; }
+  .account-login-form input { height: 43px; }
+  .account-login-form .primary-button { min-height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .account-ambient,
+  .account-orbit,
+  .account-light,
+  .account-particles,
+  .account-logo-halo,
+  .account-login-logo,
+  .account-login-card {
+    animation: none !important;
+  }
+}

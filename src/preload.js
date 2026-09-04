@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getDeviceName: () => ipcRenderer.invoke('get-device-name'),
   setDeviceName: (payload) => ipcRenderer.invoke('set-device-name', payload),
   loginLicenseDevices: (payload) => ipcRenderer.invoke('login-license-devices', payload),
+  logoutLicenseDevices: () => ipcRenderer.invoke('logout-license-devices'),
   removeLicenseDevice: (payload) => ipcRenderer.invoke('remove-license-device', payload),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   openSupport: () => ipcRenderer.invoke('open-support'),

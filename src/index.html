@@ -6,7 +6,48 @@
   <title>Hook Center</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="auth-pending">
+  <section id="accountLoginGate" class="account-entry-layer hidden" aria-labelledby="accountLoginTitle" aria-hidden="true">
+    <div class="account-ambient" aria-hidden="true">
+      <span class="account-orbit account-orbit-one"></span>
+      <span class="account-orbit account-orbit-two"></span>
+      <span class="account-light account-light-one"></span>
+      <span class="account-light account-light-two"></span>
+      <span class="account-particles"></span>
+    </div>
+    <div class="account-frost-mask" aria-hidden="true"></div>
+    <div class="account-login-card">
+      <div class="account-logo-stage" aria-hidden="true">
+        <span class="account-logo-halo"></span>
+        <img src="../assets/logo.png" class="account-login-logo" alt="" />
+      </div>
+      <h1 id="accountLoginTitle" class="account-product-name"><span>VS</span> Hook</h1>
+      <form id="accountLoginForm" class="account-login-form" novalidate>
+        <label for="accountLoginEmail">E-mail</label>
+        <input id="accountLoginEmail" type="email" inputmode="email" placeholder="cliente@email.com" autocomplete="email" spellcheck="false" />
+        <p class="account-login-hint">Entre com o mesmo e-mail da compra.</p>
+        <button id="accountLoginButton" class="primary-button" type="submit">Entrar</button>
+        <p id="accountLoginMessage" class="account-login-message" role="alert" aria-live="polite"></p>
+      </form>
+    </div>
+  </section>
+
+  <section id="accountWelcomeScreen" class="account-entry-layer account-welcome-layer hidden" aria-hidden="true" aria-live="polite">
+    <div class="account-ambient" aria-hidden="true">
+      <span class="account-orbit account-orbit-one"></span>
+      <span class="account-orbit account-orbit-two"></span>
+      <span class="account-light account-light-one"></span>
+      <span class="account-light account-light-two"></span>
+      <span class="account-particles"></span>
+    </div>
+    <div class="account-frost-mask" aria-hidden="true"></div>
+    <div class="account-welcome-content">
+      <img src="../assets/logo.png" class="account-welcome-logo" alt="" />
+      <p id="accountWelcomeGreeting">Bem-vindo,</p>
+      <h2 id="accountWelcomeName">Usuário</h2>
+    </div>
+  </section>
+
   <div class="app-shell">
     <header class="sidebar top-menu-bar">
       <div class="brand">
@@ -286,6 +327,7 @@
             </div>
             <div class="actions">
               <button id="devicesLoginButton" class="primary-button" type="button">Entrar</button>
+              <button id="devicesLogoutButton" class="secondary-button account-logout-button" type="button">Sair</button>
               <button id="saveDeviceNameButton" class="secondary-button" type="button">Salvar nome</button>
             </div>
             <div id="devicesMessage" class="license-message muted"></div>
@@ -1762,21 +1804,6 @@
       </div>
     </div>
   </div>
-
-  <div id="deviceLoginModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
-    <div class="hook-modal device-name-modal">
-      <div class="modal-icon info">i</div>
-      <h2>Login da compra</h2>
-      <p>Entre com o mesmo e-mail utilizado na compra para carregar seus dispositivos ativados.</p>
-      <input id="deviceLoginModalEmail" type="email" placeholder="cliente@email.com" autocomplete="off" />
-      <div id="deviceLoginModalError" class="device-modal-error"></div>
-      <div class="modal-actions">
-        <button id="deviceLoginModalLater" class="secondary-button modal-button" type="button">Depois</button>
-        <button id="deviceLoginModalEnter" class="primary-button modal-button" type="button">Entrar</button>
-      </div>
-    </div>
-  </div>
-
 
   <div id="supportQrModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
     <div class="hook-modal support-qr-modal">
