@@ -1517,11 +1517,10 @@
                 <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
                 <label>Primeira coluna<input id="hookMarkerResolumeFirstColumn" type="number" min="1" max="99999" value="1" /></label>
               </div>
-              <p class="muted hook-marker-help">O início de cada região musical e cada marcador são associados a uma coluna na ordem da timeline. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
+              <p class="muted hook-marker-help">O início de cada região musical e cada marcador são associados a uma coluna na ordem da timeline. Play e seek recuperam a coluna do trecho atual; ao parar o REAPER, o Resolume também é pausado. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
               <div class="actions hook-marker-actions">
                 <button id="hookMarkerTestResolumeButton" class="secondary-button" type="button">Testar primeira coluna</button>
-                <button id="hookMarkerExportResolumeButton" class="primary-button" type="button" disabled>Exportar mapa</button>
-                <button id="hookMarkerRunResolumeButton" class="secondary-button hook-marker-run-button" type="button" disabled>Ativar durante o Play</button>
+                <button id="hookMarkerRunResolumeButton" class="primary-button hook-marker-run-button" type="button" disabled>Ativar durante o Play</button>
               </div>
               <p id="hookMarkerResolumeRuntimeStatus" class="muted hook-marker-runtime-status">Execução automática desligada.</p>
             </section>

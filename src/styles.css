@@ -6108,6 +6108,10 @@ body.previous-mode .content > .view.active {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), 0 8px 24px rgba(0, 0, 0, .18);
 }
 
+.tools-submenu.without-hook-midi {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
 .tools-submenu-button {
   --tc: #ff8a2a;
   min-width: 0;
@@ -7044,10 +7048,6 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 .hook-marker-actions button {
   width: 100%;
-}
-
-.hook-marker-run-button {
-  grid-column: 1 / -1;
 }
 
 .hook-marker-run-button.is-running {

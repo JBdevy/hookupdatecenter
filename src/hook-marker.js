@@ -176,12 +176,19 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
   const eventFrames = markers.map((marker) =>
     Math.max(0, Math.round((marker.position + offsetSeconds) * settings.fps)));
-  const projectEndFrame = Math.max(0, Math.ceil(
+  const timelineEndFrame = Math.max(0, Math.ceil(
     (finiteNumber(project.end, 0) + offsetSeconds) * settings.fps));
   const lastEventFrame = eventFrames.length ? Math.max(...eventFrames) : 0;
+  const offAtSeconds = finiteNumber(project.offAt ?? project.end, 0);
+  const offEventFrame = offAtSeconds > 0
+    ? Math.max(
+      lastEventFrame + 1,
+      Math.round((offAtSeconds + offsetSeconds) * settings.fps))
+    : null;
   const showLength = Math.max(
-    projectEndFrame,
-    lastEventFrame + settings.fps);
+    timelineEndFrame,
+    lastEventFrame + settings.fps,
+    offEventFrame === null ? 0 : offEventFrame + settings.fps);
   const lines = grandMa2Header(projectName, 'timecode');
   lines.push(`  <Timecode index="${settings.timecodePool - 1}" name="${xmlEscape(projectName)}" slot="TC Slot ${settings.timecodeSlot}" frame_format="${settings.fps} FPS" lenght="${showLength}" offset="0">`);
   lines.push('    <Track index="0" active="true" expanded="true">');
@@ -202,6 +209,11 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
     lines.push('          </Cue>');
     lines.push('        </Event>');
   });
+  if (offEventFrame !== null) {
+    // Encerra somente o executor desta musica. Com StatusCall ligado, um seek
+    // para outra musica tambem recompõe este estado e evita duas execuções.
+    lines.push(`        <Event index="${markers.length}" time="${offEventFrame}" command="Off" pressed="true" />`);
+  }
   lines.push('      </SubTrack>');
   lines.push('      <SubTrack index="1" fader_command="Master">');
   lines.push('        <Event index="0" fader_level="1" />');
@@ -236,10 +248,10 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
     `Import \"${fileStem}-timecode\" At Timecode ${settings.timecodePool}`,
     `Assign Timecode ${settings.timecodePool} /Slot=${settings.timecodeSlot}`,
     // AutoStart recoloca o show em Play sempre que o MTC externo reaparece.
-    // StatusCall fica desligado porque todos os shows compartilham o mesmo slot:
-    // religar o estado de shows anteriores acionaria cues antigas do repertorio.
+    // StatusCall recompõe imediatamente a última cue anterior quando o MTC
+    // salta para outro ponto, em vez de esperar o próximo evento da timeline.
     `Assign Timecode ${settings.timecodePool} /AutoStart=On`,
-    `Assign Timecode ${settings.timecodePool} /StatusCall=Off`,
+    `Assign Timecode ${settings.timecodePool} /StatusCall=On`,
     `Assign Timecode ${settings.timecodePool} /SwitchOff=\"Keep Playbacks\"`,
     `Label Timecode ${settings.timecodePool} \"${projectName}\"`,
     // Um show ligado a fonte externa precisa ficar em Play, aguardando MTC.
@@ -267,6 +279,9 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
     throw new Error('A numeração inicial não tem espaço suficiente para todas as músicas. Reduza Sequence, Executor ou Timecode inicial.');
   }
   const usedStems = new Map();
+  const timelineEnd = Math.max(
+    finiteNumber(project.end, 0),
+    ...songs.map((song) => song.end));
   return songs.map((song, index) => {
     const baseStem = safeFileStem(song.name);
     const occurrence = (usedStems.get(baseStem.toLocaleLowerCase()) || 0) + 1;
@@ -281,7 +296,10 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
     const songProject = {
       projectName: song.name,
       fileStem: stem,
-      end: song.end,
+      // Todos os shows cobrem a timeline inteira, mas cada executor recebe Off
+      // no final de sua própria região.
+      end: timelineEnd,
+      offAt: song.end,
       markers: markersForSong(song, project.markers)
     };
     return {
@@ -342,11 +360,20 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
     cues: timelineCues.map((marker, index) => {
       const position = marker.position + offsetSeconds;
       const column = settings.resolumeFirstColumn + index;
+      const song = marker.regionStart === true
+        ? songs.find((item) => item.id === marker.songId)
+        : songs.find((item) =>
+          marker.position > item.start + 0.0005 &&
+          marker.position < item.end - 0.0005);
       return {
         cue: index + 1,
         sourceType: marker.regionStart === true ? 'region_start' : 'marker',
         regionStart: marker.regionStart === true,
-        songId: marker.songId || null,
+        songId: song?.id || marker.songId || null,
+        songStartSeconds: song
+          ? Number((song.start + offsetSeconds).toFixed(6)) : null,
+        songEndSeconds: song
+          ? Number((song.end + offsetSeconds).toFixed(6)) : null,
         markerNumber: marker.regionStart === true ? null : marker.number,
         markerName: marker.name,
         markerColor: marker.color || null,
@@ -358,6 +385,28 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
       };
     })
   };
+}
+
+function findResolumeCueAtPosition(rawCues, rawPosition) {
+  const cues = Array.isArray(rawCues) ? rawCues : [];
+  const position = Math.max(0, finiteNumber(rawPosition, 0));
+  let current = null;
+  for (const cue of cues) {
+    const cuePosition = finiteNumber(cue?.positionSeconds, -1);
+    if (cuePosition < 0 || cuePosition > position + 0.045) continue;
+    const songStart = finiteNumber(cue?.songStartSeconds, NaN);
+    const songEnd = finiteNumber(cue?.songEndSeconds, NaN);
+    const belongsToSong = !!cue?.songId &&
+      Number.isFinite(songStart) && Number.isFinite(songEnd);
+    if (belongsToSong &&
+        (position < songStart - 0.0005 || position >= songEnd - 0.0005)) {
+      continue;
+    }
+    if (!current || cuePosition >= finiteNumber(current.positionSeconds, -1)) {
+      current = cue;
+    }
+  }
+  return current;
 }
 
 function oscString(value) {
@@ -372,6 +421,17 @@ function encodeOscInt(address, value) {
   const integer = Buffer.alloc(4);
   integer.writeInt32BE(Math.trunc(finiteNumber(value, 0)), 0);
   return Buffer.concat([oscString(address), oscString(',i'), integer]);
+}
+
+function encodeOscAbsoluteFloat(address, value) {
+  const number = Buffer.alloc(4);
+  number.writeFloatBE(finiteNumber(value, 0), 0);
+  return Buffer.concat([
+    oscString(address),
+    oscString(',sf'),
+    oscString('a'),
+    number
+  ]);
 }
 
 function sendUdpPacket(socket, packet, port, host) {
@@ -397,10 +457,27 @@ async function testResolumeColumn(inputSettings = {}, columnOverride = null) {
   return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
 }
 
+async function setResolumeCompositionSpeed(inputSettings = {}, speed = 1) {
+  const settings = normalizeSettings(inputSettings);
+  const address = '/composition/speed';
+  const socket = dgram.createSocket('udp4');
+  try {
+    await sendUdpPacket(socket,
+      encodeOscAbsoluteFloat(address, speed),
+      settings.resolumePort,
+      settings.resolumeHost);
+  } finally {
+    socket.close();
+  }
+  return { ok: true, address, speed, host: settings.resolumeHost, port: settings.resolumePort };
+}
+
 module.exports = {
   buildGrandMa2SongExports,
   buildResolumeMap,
+  encodeOscAbsoluteFloat,
   encodeOscInt,
+  findResolumeCueAtPosition,
   generateGrandMa2Macro,
   generateGrandMa2Timecode,
   normalizeMarkers,
@@ -410,5 +487,6 @@ module.exports = {
   safeFileStem,
   secondsToTimecode,
   secondsToGrandMa2TriggerTime,
+  setResolumeCompositionSpeed,
   testResolumeColumn
 };

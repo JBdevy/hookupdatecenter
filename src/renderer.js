@@ -2904,7 +2904,9 @@ function renderHookMarkerRuntimeState(nextState) {
       status.classList.add('is-error');
     } else if (active) {
       const lastCue = Number(hookMarkerRuntimeState.lastTriggeredCue) || 0;
-      status.textContent = lastCue > 0
+      status.textContent = hookMarkerRuntimeState.resolumePaused
+        ? 'Ativo. REAPER parado; reprodução do Resolume pausada.'
+        : lastCue > 0
         ? `Ativo. Último cue enviado: ${lastCue}.`
         : `Ativo com ${hookMarkerRuntimeState.cueCount || 0} cues. Aguardando o Play do REAPER.`;
       status.classList.remove('is-error');
@@ -2936,7 +2938,6 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   if (grandMa2Button) {
     grandMa2Button.disabled = HOOK_CENTER_IS_MACOS || !connected || !songs.length || hookMarkerBusy;
   }
-  $('#hookMarkerExportResolumeButton').disabled = !canUseResolume;
   $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
   $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
   $('#hookMarkerTestResolumeButton').disabled = hookMarkerBusy;
@@ -3001,25 +3002,6 @@ async function exportHookMarkerGrandMa2() {
   }
 }
 
-async function exportHookMarkerResolume() {
-  if (hookMarkerBusy) return;
-  hookMarkerBusy = true;
-  renderHookMarkerState();
-  try {
-    const result = await window.hookUpdateCenter.exportHookMarkerResolume(readHookMarkerSettings());
-    if (!result?.cancelled) showModal({
-      title: 'Mapa Resolume pronto',
-      message: `${result.markerCount} cues exportados com os endereços OSC das colunas.`,
-      type: 'success'
-    });
-  } catch (error) {
-    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível exportar o mapa do Resolume.'), type: 'error' });
-  } finally {
-    hookMarkerBusy = false;
-    renderHookMarkerState();
-  }
-}
-
 async function testHookMarkerResolume() {
   if (hookMarkerBusy) return;
   hookMarkerBusy = true;
@@ -3040,7 +3022,11 @@ async function testHookMarkerResolume() {
 }
 
 function setToolsPanel(panelName = 'rename') {
-  const allowed = ['rename', 'create-project', 'add-project', 'cable', 'midi', 'copy-project', 'show-mode', 'hook-marker', 'pingpong'];
+  const allowed = [
+    'rename', 'create-project', 'add-project', 'cable',
+    ...(!HOOK_CENTER_IS_MACOS ? ['midi'] : []),
+    'copy-project', 'show-mode', 'hook-marker', 'pingpong'
+  ];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
   $$('[data-tools-panel]').forEach((button) => {
@@ -3063,6 +3049,16 @@ function setToolsPanel(panelName = 'rename') {
 }
 
 function setupToolsSubmenu() {
+  if (HOOK_CENTER_IS_MACOS) {
+    const midiButton = document.querySelector('[data-tools-panel="midi"]');
+    const midiPanel = document.querySelector('[data-tools-panel-content="midi"]');
+    midiButton?.setAttribute('hidden', '');
+    midiButton?.setAttribute('aria-hidden', 'true');
+    midiPanel?.setAttribute('hidden', '');
+    midiPanel?.setAttribute('aria-hidden', 'true');
+    document.querySelector('.tools-submenu')?.classList.add('without-hook-midi');
+    if (selectedToolsPanel === 'midi') selectedToolsPanel = 'rename';
+  }
   $$('[data-tools-panel]').forEach((button) => {
     button.addEventListener('click', () => setToolsPanel(button.dataset.toolsPanel));
   });
@@ -3079,10 +3075,10 @@ function setupToolsSubmenu() {
   $('#directCableProjectSyncDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('projectSync'));
   $('#directCableTimecodeDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('timecode'));
   $('#directCableTimecodeBackupDisconnectButton')?.addEventListener('click', () => disconnectDirectCableFromUi('timecodeBackup'));
-  $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
-  $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
-  $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
   if (!HOOK_CENTER_IS_MACOS) {
+    $('#hookMidiStartButton')?.addEventListener('click', createHookMidiPortFromUi);
+    $('#hookMidiRefreshButton')?.addEventListener('click', refreshHookMidiState);
+    $('#hookMidiInstallButton')?.addEventListener('click', installHookMidiComponentsFromUi);
     $('#hookMidiMtcSaveButton')?.addEventListener('click', saveHookMidiMtcOutputFromUi);
     $('#hookMidiMtcOutputName')?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') saveHookMidiMtcOutputFromUi();
@@ -3134,7 +3130,6 @@ function setupToolsSubmenu() {
   if (!HOOK_CENTER_IS_MACOS) {
     $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);
   }
-  $('#hookMarkerExportResolumeButton')?.addEventListener('click', exportHookMarkerResolume);
   $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
   $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
   [
@@ -3151,10 +3146,12 @@ function setupToolsSubmenu() {
   $('#hookMarkerOffset')?.addEventListener('input', renderHookMarkerPreview);
   $('#hookMarkerResolumeFirstColumn')?.addEventListener('input', renderHookMarkerPreview);
   window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
-  window.hookUpdateCenter.onHookMidiMtcSwitch((state) => {
-    hookMidiState = { ...(hookMidiState || {}), mtcSwitch: state || {} };
-    renderHookMidiAvailability();
-  });
+  if (!HOOK_CENTER_IS_MACOS) {
+    window.hookUpdateCenter.onHookMidiMtcSwitch((state) => {
+      hookMidiState = { ...(hookMidiState || {}), mtcSwitch: state || {} };
+      renderHookMidiAvailability();
+    });
+  }
   window.hookUpdateCenter.onHookMarkerRuntimeState(renderHookMarkerRuntimeState);
   window.hookUpdateCenter.onDirectCableStatus?.((state) => {
     directCableState = state;

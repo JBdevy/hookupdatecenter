@@ -31,10 +31,11 @@ const { createQrSvg } = require('./qr-svg');
 const {
   buildGrandMa2SongExports,
   buildResolumeMap,
+  findResolumeCueAtPosition,
   normalizeMarkers,
   normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
-  safeFileStem,
+  setResolumeCompositionSpeed,
   testResolumeColumn
 } = require('./hook-marker');
 const {
@@ -170,6 +171,9 @@ let hookMarkerResolumeRuntime = {
   cues: [],
   lastPosition: 0,
   wasRunning: false,
+  hasRun: false,
+  seekedWhileStopped: false,
+  resolumePaused: false,
   lastTriggeredCue: 0,
   lastError: ''
 };
@@ -7401,35 +7405,6 @@ async function exportHookMarkerGrandMa2(input = {}) {
   };
 }
 
-async function exportHookMarkerResolume(input = {}) {
-  const project = await requireHookMarkerProject();
-  const settings = saveHookMarkerSettings(input);
-  const map = buildResolumeMap(project, settings);
-  if (!map.cues.length) {
-    throw new Error('O projeto aberto no REAPER não possui regiões ou marcadores para exportar ao Resolume.');
-  }
-  const stem = safeFileStem(project.projectName);
-  const options = {
-    title: 'Exportar mapa de cues do Resolume',
-    defaultPath: path.join(app.getPath('documents'), `${stem}-resolume.json`),
-    filters: [
-      { name: 'Mapa Resolume do Hook Marker', extensions: ['json'] },
-      { name: 'Todos os arquivos', extensions: ['*'] }
-    ]
-  };
-  const result = mainWindow
-    ? await dialog.showSaveDialog(mainWindow, options)
-    : await dialog.showSaveDialog(options);
-  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
-  await fs.promises.writeFile(result.filePath,
-    `${JSON.stringify(map, null, 2)}\n`, 'utf8');
-  return {
-    ok: true,
-    filePath: result.filePath,
-    markerCount: map.cues.length
-  };
-}
-
 async function testHookMarkerResolume(input = {}) {
   const settings = saveHookMarkerSettings(input);
   return testResolumeColumn(settings, settings.resolumeFirstColumn);
@@ -7443,6 +7418,7 @@ function getHookMarkerResolumeRuntimeState() {
     cueCount: Array.isArray(runtime.cues) ? runtime.cues.length : 0,
     lastPosition: Number(runtime.lastPosition) || 0,
     lastTriggeredCue: Number(runtime.lastTriggeredCue) || 0,
+    resolumePaused: runtime.resolumePaused === true,
     lastError: runtime.lastError || ''
   };
 }
@@ -7460,6 +7436,12 @@ function stopHookMarkerResolumeRuntime(error = '') {
     clearInterval(hookMarkerResolumeTimer);
     hookMarkerResolumeTimer = null;
   }
+  if (hookMarkerResolumeRuntime.resolumePaused &&
+      hookMarkerResolumeRuntime.settings) {
+    // Nunca deixa o Resolume congelado ao desativar a automação.
+    setResolumeCompositionSpeed(
+      hookMarkerResolumeRuntime.settings, 1).catch(() => {});
+  }
   hookMarkerResolumeTickRunning = false;
   hookMarkerResolumeRuntime = {
     active: false,
@@ -7468,6 +7450,9 @@ function stopHookMarkerResolumeRuntime(error = '') {
     cues: hookMarkerResolumeRuntime.cues || [],
     lastPosition: hookMarkerResolumeRuntime.lastPosition || 0,
     wasRunning: false,
+    hasRun: false,
+    seekedWhileStopped: false,
+    resolumePaused: false,
     lastTriggeredCue: hookMarkerResolumeRuntime.lastTriggeredCue || 0,
     lastError: String(error || '')
   };
@@ -7487,37 +7472,91 @@ async function hookMarkerResolumeTick() {
       return;
     }
     hookMarkerResolumeRuntime.lastSuccessfulTickAt = Date.now();
+
+    if (Date.now() -
+        (Number(hookMarkerResolumeRuntime.lastMapRefreshAt) || 0) >= 400) {
+      hookMarkerResolumeRuntime.lastMapRefreshAt = Date.now();
+      const project = await requireHookMarkerProject();
+      const refreshedMap = buildResolumeMap(
+        project, hookMarkerResolumeRuntime.settings);
+      const refreshedSignature = JSON.stringify(refreshedMap.cues);
+      if (refreshedMap.cues.length && refreshedSignature !==
+          hookMarkerResolumeRuntime.cueMapSignature) {
+        hookMarkerResolumeRuntime.projectName = project.projectName;
+        hookMarkerResolumeRuntime.cues = refreshedMap.cues;
+        hookMarkerResolumeRuntime.cueMapSignature = refreshedSignature;
+        hookMarkerResolumeRuntime.forceLocate = true;
+        publishHookMarkerResolumeRuntimeState();
+      }
+    }
+
     const transport = status.transport;
     const playState = Number(transport.playState) || 0;
     const running = (playState & 1) === 1 || (playState & 4) === 4;
     const position = Math.max(0, Number(transport.position) || 0);
-    let previous = Math.max(0, Number(hookMarkerResolumeRuntime.lastPosition) || 0);
-    if (position < previous - 0.08 || position > previous + 4) previous = position - 0.06;
+    const previous = Math.max(0,
+      Number(hookMarkerResolumeRuntime.lastPosition) || 0);
+    const now = Date.now();
+    const elapsed = Math.max(0,
+      (now - (Number(hookMarkerResolumeRuntime.lastTransportSampleAt) || now)) /
+      1000);
+    const jumpTolerance = Math.max(0.35, elapsed + 0.25);
+    const jumped = position < previous - 0.08 ||
+      position > previous + jumpTolerance;
+    const wasRunning = hookMarkerResolumeRuntime.wasRunning === true;
+    const startedNow = running && !wasRunning;
+
+    if (!running) {
+      if (!wasRunning && Math.abs(position - previous) > 0.08) {
+        hookMarkerResolumeRuntime.seekedWhileStopped = true;
+      }
+      if (!hookMarkerResolumeRuntime.resolumePaused) {
+        await setResolumeCompositionSpeed(
+          hookMarkerResolumeRuntime.settings, 0);
+        hookMarkerResolumeRuntime.resolumePaused = true;
+        publishHookMarkerResolumeRuntimeState();
+      }
+    }
 
     if (running) {
-      const startedNow = !hookMarkerResolumeRuntime.wasRunning;
-      const lowerBound = startedNow ? Math.max(0, position - 0.08) : previous + 0.0005;
-      const dueCues = hookMarkerResolumeRuntime.cues.filter((cue) =>
-        cue.positionSeconds >= lowerBound && cue.positionSeconds <= position + 0.045);
-      for (const cue of dueCues) {
-        testResolumeColumn(hookMarkerResolumeRuntime.settings, cue.column)
-          .then(() => {
-            if (!hookMarkerResolumeRuntime.active) return;
-            hookMarkerResolumeRuntime.lastTriggeredCue = cue.cue;
-            hookMarkerResolumeRuntime.lastError = '';
-            publishHookMarkerResolumeRuntimeState();
-          })
-          .catch((error) => {
-            if (!hookMarkerResolumeRuntime.active) return;
-            hookMarkerResolumeRuntime.lastError = error?.message || 'Falha ao enviar OSC.';
-            publishHookMarkerResolumeRuntimeState();
-          });
+      if (hookMarkerResolumeRuntime.resolumePaused) {
+        await setResolumeCompositionSpeed(
+          hookMarkerResolumeRuntime.settings, 1);
+        hookMarkerResolumeRuntime.resolumePaused = false;
+        publishHookMarkerResolumeRuntimeState();
       }
+      const shouldLocate = jumped || hookMarkerResolumeRuntime.forceLocate ||
+        (startedNow && (!hookMarkerResolumeRuntime.hasRun ||
+          hookMarkerResolumeRuntime.seekedWhileStopped));
+      const locatedCue = shouldLocate
+        ? findResolumeCueAtPosition(
+          hookMarkerResolumeRuntime.cues, position)
+        : null;
+      const dueCues = locatedCue
+        ? [locatedCue]
+        : shouldLocate
+          ? []
+          : hookMarkerResolumeRuntime.cues.filter((cue) =>
+            cue.positionSeconds >= previous + 0.0005 &&
+            cue.positionSeconds <= position + 0.045);
+      for (const cue of dueCues) {
+        await testResolumeColumn(
+          hookMarkerResolumeRuntime.settings, cue.column);
+        if (!hookMarkerResolumeRuntime.active) return;
+        hookMarkerResolumeRuntime.lastTriggeredCue = cue.cue;
+        hookMarkerResolumeRuntime.lastError = '';
+        publishHookMarkerResolumeRuntimeState();
+      }
+      hookMarkerResolumeRuntime.hasRun = true;
+      hookMarkerResolumeRuntime.seekedWhileStopped = false;
+      hookMarkerResolumeRuntime.forceLocate = false;
     }
     hookMarkerResolumeRuntime.wasRunning = running;
     hookMarkerResolumeRuntime.lastPosition = position;
+    hookMarkerResolumeRuntime.lastTransportSampleAt = now;
   } catch (error) {
     hookMarkerResolumeRuntime.lastError = error?.message || 'Falha ao acompanhar o transporte.';
+    publishHookMarkerResolumeRuntimeState();
   } finally {
     hookMarkerResolumeTickRunning = false;
   }
@@ -7537,8 +7576,15 @@ async function startHookMarkerResolumeRuntime(input = {}) {
     projectName: project.projectName,
     settings,
     cues: cueMap.cues,
+    cueMapSignature: JSON.stringify(cueMap.cues),
     lastPosition: Math.max(0, Number(status?.transport?.position) || 0),
     wasRunning: false,
+    hasRun: false,
+    seekedWhileStopped: false,
+    resolumePaused: false,
+    forceLocate: false,
+    lastMapRefreshAt: Date.now(),
+    lastTransportSampleAt: Date.now(),
     lastTriggeredCue: 0,
     lastError: '',
     lastSuccessfulTickAt: Date.now()
@@ -7904,8 +7950,6 @@ if (process.platform === 'win32') {
   ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
     exportHookMarkerGrandMa2(payload));
 }
-ipcMain.handle('hook-marker-export-resolume', (_event, payload = {}) =>
-  exportHookMarkerResolume(payload));
 ipcMain.handle('hook-marker-test-resolume', (_event, payload = {}) =>
   testHookMarkerResolume(payload));
 ipcMain.handle('hook-marker-start-resolume', (_event, payload = {}) =>

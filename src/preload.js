@@ -76,7 +76,6 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   getHookMarkerState: () => ipcRenderer.invoke('hook-marker-get-state'),
   saveHookMarkerSettings: (payload) => ipcRenderer.invoke('hook-marker-save-settings', payload),
   ...hookMarkerWindowsApis,
-  exportHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-export-resolume', payload),
   testHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-test-resolume', payload),
   startHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-start-resolume', payload),
   stopHookMarkerResolume: () => ipcRenderer.invoke('hook-marker-stop-resolume'),
