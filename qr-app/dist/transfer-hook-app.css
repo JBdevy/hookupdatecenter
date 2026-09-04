@@ -1,8 +1,9 @@
 @import url("./button-gradients.css");
+@import url("./safe-area.css");
 
 :root { color-scheme: dark; }
 body { margin:0; background:#071019; color:#f8fafc; font-family:"Segoe UI",system-ui,sans-serif; }
-.transferHookApp { min-height:100vh; padding:max(16px,env(safe-area-inset-top)) 14px max(24px,env(safe-area-inset-bottom)); background:radial-gradient(circle at top,#17334b 0,transparent 35%),#071019; }
+.transferHookApp { min-height:100vh; padding:max(16px,var(--vsh-safe-top)) 14px max(24px,var(--vsh-safe-bottom)); background:radial-gradient(circle at top,#17334b 0,transparent 35%),#071019; }
 .transferHookHeader { display:flex; align-items:center; gap:12px; max-width:680px; margin:0 auto 16px; }
 .transferHookBack { width:44px; height:44px; border:1px solid #3b5569; border-radius:14px; background:#111e29; color:#fff; font-size:25px; }
 .transferHookHeader h1 { margin:0; font-size:25px; }

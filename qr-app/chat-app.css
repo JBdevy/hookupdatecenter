@@ -372,7 +372,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .chatMobileProfileMenu { top: calc(68px + var(--vsh-safe-top)); right: 12px; bottom: auto; }
 .chatMobileProfileMenu button[hidden] { display: none !important; }
 
-.chatMobileAdminBackdrop{position:absolute;inset:0;z-index:50;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
+.chatMobileAdminBackdrop{position:absolute;inset:0;z-index:50;display:grid;place-items:center;padding:max(18px,var(--vsh-safe-top)) max(18px,var(--vsh-safe-right)) max(18px,var(--vsh-safe-bottom)) max(18px,var(--vsh-safe-left));background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
 .chatMobileAdminBackdrop[hidden]{display:none!important}
 .chatMobileAdminModal{display:grid;gap:13px;width:min(100%,440px);padding:18px;border:1px solid rgba(207,55,255,.35);border-radius:18px;background:#151521;box-shadow:0 24px 70px rgba(0,0,0,.55)}
 .chatMobileAdminModal h2{margin:0}

@@ -212,6 +212,16 @@
     partsArmedMarkerUntil: 0,
     partsArmedBridgeHoldUntil: 0,
     partsArmedMissingSince: 0,
+    // O bridge continua anunciando o alvo anterior por alguns ciclos depois da
+    // confirmacao no dedo. Enquanto ele repetir esse mesmo id, a escolha local
+    // manda — sem isso a Part engatilhada pisca e volta para a antiga.
+    partsLocalIgnoreBridgeArmedId: '',
+    partsLocalIgnoreBridgeUntil: 0,
+    // Engatilhar um alvo que esta ATRAS do cursor (o INICIO da propria musica,
+    // por exemplo) so se cumpre quando o cursor volta. Sem saber a direcao, o
+    // app achava que o salto ja tinha acontecido e desarmava na hora.
+    partsArmedBackward: false,
+    partsArmedLastPlayPos: null,
     partsMarkerSongSource: 'playing',
     partsArmedOwnerSongId: '',
     partsArmedOwnerTab: '',
@@ -3001,6 +3011,35 @@
     syncTransportSeekModalDom()
   }
 
+  // Toda escolha de Part no dedo passa por aqui. Guarda qual alvo o bridge
+  // esta anunciando NESTE momento: e o valor velho, o que estava na tela antes
+  // do toque. Enquanto ele repetir exatamente esse id, a leitura dele e
+  // ignorada e quem pinta a lista e a escolha local. Assim que o bridge muda
+  // para qualquer outro valor — inclusive o alvo novo — ele volta a mandar.
+  // Cancelar, trocar de musica ou sair das Parts devolve a leitura ao bridge
+  // na hora: nao existe mais escolha local para proteger.
+  function releasePartsBridgeHold() {
+    state.partsLocalIgnoreBridgeArmedId = ''
+    state.partsLocalIgnoreBridgeUntil = 0
+    state.partsArmedBackward = false
+    state.partsArmedLastPlayPos = null
+  }
+
+  function holdPartsBridgeArmedState(data = state.snapshot) {
+    state.partsLocalIgnoreBridgeArmedId = String(data?.armedMarkerId || data?.markerGoId || '')
+    state.partsLocalIgnoreBridgeUntil = now() + 6000
+  }
+
+  // O alvo pode estar na frente do cursor (salto adiante, o caso comum) ou
+  // atras dele (voltar para o INICIO da musica). Sao dois jeitos diferentes de
+  // saber que o salto aconteceu, entao a direcao fica anotada no engatilhamento.
+  function markPartsArmedDirection(id, data = state.snapshot) {
+    const armedPos = getMarkerPositionById(id, data)
+    const playPos = getCurrentPlaybackPosition(data)
+    state.partsArmedBackward = armedPos !== null && playPos !== null && playPos >= armedPos - 0.08
+    state.partsArmedLastPlayPos = null
+  }
+
   function clearPartsArmedOwner() {
     state.partsArmedOwnerSongId = ''
     state.partsArmedOwnerTab = ''
@@ -4110,13 +4149,16 @@
 
     if (currentTime >= Number(
           state.sharedControlsLocalUntil || 0)) {
-      state.pendingAutoBloco = null
-      state.pendingAutoStop = null
-      state.pendingStopPauseMode = null
-      state.pendingLoop = null
-      state.pendingMultiLoopBypass = null
-      state.pendingLive = null
-      state.pendingPreviewMode = null
+      // Nenhum botao de ligar/desligar espera o bridge para mudar de cor. Cada
+      // um manda na propria pintura ate o SEU prazo acabar ou ate o bridge
+      // confirmar o valor pedido — nunca no prazo curto de outro comando.
+      if (currentTime >= Number(state.pendingAutoBlocoUntil || 0)) state.pendingAutoBloco = null
+      if (currentTime >= Number(state.pendingAutoStopUntil || 0)) state.pendingAutoStop = null
+      if (currentTime >= Number(state.pendingStopPauseModeUntil || 0)) state.pendingStopPauseMode = null
+      if (currentTime >= Number(state.pendingLoopUntil || 0)) state.pendingLoop = null
+      if (currentTime >= Number(state.pendingMultiLoopBypassUntil || 0)) state.pendingMultiLoopBypass = null
+      if (currentTime >= Number(state.pendingLiveUntil || 0)) state.pendingLive = null
+      if (currentTime >= Number(state.pendingPreviewUntil || 0)) state.pendingPreviewMode = null
       state.sharedControlsLocalUntil = 0
 
       const bridgePlaylistId = String(
@@ -5625,9 +5667,14 @@
             showPopup('STOP/PAUSE NÃO SINCRONIZADO', 'error', 1600)
           }
         }
-        if (state.pendingLoop !== null && state.snapshot?.loopActive === state.pendingLoop) {
-          state.pendingLoop = null
-          state.pendingLoopUntil = 0
+        if (state.pendingLoop !== null) {
+          const bridgeLoop = state.snapshot?.loopActive === true ||
+            state.snapshot?.repeatEnabled === true ||
+            state.snapshot?.loopEnabled === true
+          if (bridgeLoop === state.pendingLoop) {
+            state.pendingLoop = null
+            state.pendingLoopUntil = 0
+          }
         }
         if (state.pendingMultiLoopBypass !== null) {
           const bridgeBypass = state.snapshot?.multiloops?.bypassActive === true
@@ -11514,8 +11561,23 @@
       return
     }
 
-    const nativeArmed = now() < Number(state.markerSelectionClearedUntil || 0) ? '' : String(data?.armedMarkerId || data?.markerGoId || '')
+    let nativeArmed = now() < Number(state.markerSelectionClearedUntil || 0) ? '' : String(data?.armedMarkerId || data?.markerGoId || '')
+    // Eco do alvo anterior: o bridge repete o id que ja estava anunciado antes
+    // do toque. Aceitar isso era o vai e volta visual — a Part recem-escolhida
+    // perdia a cor e a antiga voltava a mandar.
+    const echoingOldTarget = !!nativeArmed &&
+      nativeArmed === state.partsLocalIgnoreBridgeArmedId &&
+      nativeArmed !== state.partsArmedMarkerId &&
+      nativeArmed !== state.partsLocalSelectedMarkerId &&
+      now() < Number(state.partsLocalIgnoreBridgeUntil || 0)
+    if (echoingOldTarget) nativeArmed = ''
+    else if (nativeArmed && nativeArmed !== state.partsLocalIgnoreBridgeArmedId) {
+      // O bridge mudou de alvo: a leitura dele volta a valer imediatamente.
+      state.partsLocalIgnoreBridgeArmedId = ''
+      state.partsLocalIgnoreBridgeUntil = 0
+    }
     if (nativeArmed) {
+      if (nativeArmed !== state.partsArmedMarkerId) markPartsArmedDirection(nativeArmed, data)
       state.partsArmedMarkerId = nativeArmed
       state.partsLocalSelectedMarkerId = nativeArmed
       state.partsArmedMarkerUntil = Number.MAX_SAFE_INTEGER
@@ -11530,7 +11592,17 @@
     }
     const armedPos = getMarkerPositionById(state.partsArmedMarkerId, data)
     const playPos = firstFiniteNumber([data?.playPosition, data?.currentPlayPosition, data?.position])
-    const crossed = !state.partsArmedOwnerSongId && armedPos !== null && playPos !== null && playPos >= armedPos - 0.08
+    const previousPlayPos = state.partsArmedLastPlayPos
+    if (playPos !== null) state.partsArmedLastPlayPos = playPos
+    // Alvo na frente: o salto aconteceu quando o cursor chegou nele. Alvo atras
+    // (o INICIO da propria musica): so quando o cursor VOLTOU para la, senao o
+    // engatilhamento morreria no primeiro snapshot, que e o sumico relatado.
+    const reachedTarget = state.partsArmedBackward
+      ? previousPlayPos !== null && playPos !== null &&
+        playPos < previousPlayPos - 0.25 &&
+        playPos >= armedPos - 0.35 && playPos <= armedPos + 1.5
+      : playPos !== null && playPos >= armedPos - 0.08
+    const crossed = !state.partsArmedOwnerSongId && armedPos !== null && !!reachedTarget
     if (!crossed && !isPlaying(data)) {
       const sampledAt = now()
       if (sampledAt < Number(state.partsArmedBridgeHoldUntil || 0)) {
@@ -11778,6 +11850,7 @@
     state.partsArmedMarkerId = ''
     state.partsArmedMarkerUntil = 0
     clearPartsArmedOwner()
+    releasePartsBridgeHold()
     postCommand('set_page', { page: 'markers', activeTab: 'markers' })
     if (document.documentElement.dataset.directorDevice === 'tablet') {
       postCommand('parts_visibility_set', { partsColumn: 1, visible: true })
@@ -11859,6 +11932,7 @@
     state.partsArmedMarkerId = ''
     state.partsArmedMarkerUntil = 0
     clearPartsArmedOwner()
+    releasePartsBridgeHold()
   }
 
   function focusOpenTabletTransportPanel(id, tab, source = 'selected') {
@@ -12019,6 +12093,9 @@
         : { id, markerId: id, activeTab: 'markers', page: 'markers', confirm: true }
       state.selectedMarkerId = id
       state.markerSelectionClearedUntil = 0
+      // Ja no primeiro toque: senao o proximo snapshot repintava a Part antiga
+      // de verde e apagava o amarelo que o dedo acabou de escolher.
+      holdPartsBridgeArmedState(state.snapshot)
       if (!isPlaying()) {
         state.partsLocalSelectedMarkerId = id
         state.partsArmedMarkerId = ''
@@ -12028,6 +12105,8 @@
         postCommand('marker_go', { ...markerCommandPayload, stopped: true })
         return
       }
+      // Escolher outra Part sempre vale, mesmo com uma ja engatilhada: a antiga
+      // solta e a nova entra em amarelo esperando a confirmacao.
       if (state.partsLocalSelectedMarkerId !== id) {
         state.partsLocalSelectedMarkerId = id
         state.partsArmedMarkerId = ''
@@ -12036,10 +12115,12 @@
         syncMarkerSelectionDom()
         return
       }
+      // Confirmacao: fica verde aqui, na hora, sem esperar o bridge responder.
       state.partsArmedMarkerId = id
       state.partsArmedMarkerUntil = Number.MAX_SAFE_INTEGER
       state.partsArmedBridgeHoldUntil = now() + 2500
       state.partsArmedMissingSince = 0
+      markPartsArmedDirection(id, state.snapshot)
       capturePartsArmedOwner(state.snapshot)
       syncMarkerSelectionDom()
       postCommand('marker_go', { ...markerCommandPayload, armed: true })
@@ -13555,7 +13636,7 @@
       case 'project-modal-ok': state.showProjectModal = false; scheduleRender(true); break
       case 'auth-login': login(); break
       case 'toggle-password': state.showPassword = !state.showPassword; scheduleRender(true); break
-      case 'marker-cancel': state.selectedMarkerId = ''; state.markerSelectionClearedUntil = now() + 5000; state.partsLocalSelectedMarkerId = ''; state.partsArmedMarkerId = ''; state.partsArmedMarkerUntil = 0; clearPartsArmedOwner(); syncMarkerSelectionDom(); postCommand('marker_cancel', { key: 'ESC', escapeKey: true, activeTab: 'markers', page: 'markers', cancelArmedMarker: true, clearMarkerSelection: true }); scheduleRender(true); break
+      case 'marker-cancel': state.selectedMarkerId = ''; state.markerSelectionClearedUntil = now() + 5000; state.partsLocalSelectedMarkerId = ''; state.partsArmedMarkerId = ''; state.partsArmedMarkerUntil = 0; clearPartsArmedOwner(); releasePartsBridgeHold(); syncMarkerSelectionDom(); postCommand('marker_cancel', { key: 'ESC', escapeKey: true, activeTab: 'markers', page: 'markers', cancelArmedMarker: true, clearMarkerSelection: true }); scheduleRender(true); break
       case 'parts-song-playing': {
         if (!getPartsSongTarget('playing').available) break
         state.partsMarkerSongSource = 'playing'

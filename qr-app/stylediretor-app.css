@@ -2631,6 +2631,7 @@ body.boot-loading {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--vsh-app-pad);
   background:
     radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
     radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
@@ -2735,6 +2736,7 @@ body.boot-loading {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--vsh-app-pad);
   background:
     radial-gradient(circle at 50% 42%, rgba(34,197,94,0.16) 0%, rgba(34,197,94,0.06) 20%, rgba(5,7,10,0) 42%),
     radial-gradient(circle at 58% 56%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.05) 18%, rgba(5,7,10,0) 38%),
@@ -3720,6 +3722,9 @@ body.boot-loading {
 }
 
 .tunerOverlay {
+  /* safe-area-ok: a gaveta e que encosta nas bordas, e o recuo seguro esta
+     nela (.tunerDrawer). Aqui o padding tem que ficar zerado para a gaveta
+     colar na lateral da tela. */
   z-index: 1670;
   align-items: stretch;
   justify-content: flex-end;
@@ -3733,7 +3738,8 @@ body.boot-loading {
   background: #111827;
   border-left: 1px solid #364152;
   box-shadow: -18px 0 42px rgba(0,0,0,0.45);
-  padding: 16px 14px 20px;
+  /* A gaveta cobre a tela inteira, entao o recuo seguro vai nela. */
+  padding: max(16px, var(--vsh-safe-top)) max(14px, var(--vsh-safe-right)) max(20px, var(--vsh-safe-bottom)) 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -3855,7 +3861,7 @@ body.boot-loading {
   .tunerDrawer {
     width: calc(50vw + 26px);
     min-width: 260px;
-    padding: 14px 12px 18px;
+    padding: max(14px, var(--vsh-safe-top)) max(12px, var(--vsh-safe-right)) max(18px, var(--vsh-safe-bottom)) 12px;
   }
 
   .tunerRowControls {
@@ -3940,7 +3946,7 @@ body.boot-loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 28px 18px;
+  padding: max(28px, var(--vsh-safe-top)) max(18px, var(--vsh-safe-right)) max(28px, var(--vsh-safe-bottom)) max(18px, var(--vsh-safe-left));
   background:
     radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
     #0b1118;
@@ -4038,7 +4044,7 @@ body.boot-loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 28px 18px;
+  padding: max(28px, var(--vsh-safe-top)) max(18px, var(--vsh-safe-right)) max(28px, var(--vsh-safe-bottom)) max(18px, var(--vsh-safe-left));
   background:
     radial-gradient(circle at top, rgba(249, 195, 42, 0.14), transparent 38%),
     #0b1118;
@@ -6420,7 +6426,7 @@ button,
 /* VS_HOOK_PARTS_STABLE_PANEL */
 .partsOverlay {
   inset: 0 !important;
-  padding: 8px !important;
+  padding: var(--vsh-app-pad) !important;
   background: #0b1118 !important;
 }
 
@@ -7760,7 +7766,7 @@ button,
   color: #111827;
 }
 @media (max-width: 480px) {
-  .directorTpOverlay { padding: 6px; }
+  .directorTpOverlay { padding: max(6px, var(--vsh-safe-top)) max(6px, var(--vsh-safe-right)) max(6px, var(--vsh-safe-bottom)) max(6px, var(--vsh-safe-left)); }
   .directorTpContent { padding: 7px; gap: 7px; }
   .directorTpTab { height: 40px; font-size: 12px; }
   .directorTpText { padding: 16px; font-size: clamp(24px, 7.6vw, 44px); }
@@ -9381,13 +9387,13 @@ html[data-director-device="phone"] .controlsRowDirectorMainPhone > [data-action=
 /* Tamanho final dos modais: ocupam de fato todo o espaço útil da tela. */
 html[data-director-device="tablet"] .tabletPlaylistModalOverlay,
 html[data-director-device="tablet"] .projectModalOverlay {
-  padding: 62px 8px 8px !important;
+  padding: max(62px, var(--tablet-safe-top, var(--vsh-safe-top))) max(8px, var(--tablet-safe-right, var(--vsh-safe-right))) max(8px, var(--tablet-safe-bottom, var(--vsh-safe-bottom))) max(8px, var(--tablet-safe-left, var(--vsh-safe-left))) !important;
   align-items: stretch !important;
   overflow: hidden !important;
 }
 html[data-director-device="tablet"] .tabletSettingsModalOverlay,
 html[data-director-device="tablet"] .tabletMultiLoopModalOverlay {
-  padding: 62px 8px 8px !important;
+  padding: max(62px, var(--tablet-safe-top, var(--vsh-safe-top))) max(8px, var(--tablet-safe-right, var(--vsh-safe-right))) max(8px, var(--tablet-safe-bottom, var(--vsh-safe-bottom))) max(8px, var(--tablet-safe-left, var(--vsh-safe-left))) !important;
   align-items: stretch !important;
   overflow: hidden !important;
 }
@@ -9443,7 +9449,7 @@ html[data-director-device="phone"] .tabletPlaylistModalOverlay,
 html[data-director-device="phone"] .projectModalOverlay,
 html[data-director-device="phone"] .tabletSettingsModalOverlay,
 html[data-director-device="phone"] .tabletMultiLoopModalOverlay {
-  padding: 6px !important;
+  padding: max(6px, var(--vsh-safe-top)) max(6px, var(--vsh-safe-right)) max(6px, var(--vsh-safe-bottom)) max(6px, var(--vsh-safe-left)) !important;
   align-items: stretch !important;
   overflow: hidden !important;
 }
@@ -10254,7 +10260,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .premixFullRowSele
 }
 
 /* Route do Mixer aberto por toque longo. */
-.mixerRouteOverlay { align-items:center!important;justify-content:center!important;padding:8px!important }
+.mixerRouteOverlay { align-items:center!important;justify-content:center!important;padding:var(--vsh-app-pad)!important }
 .mixerRouteModalBox { display:flex!important;flex-direction:column!important;width:min(96vw,680px)!important;max-width:680px!important;max-height:min(86vh,680px)!important;padding:16px!important;overflow:hidden!important;box-sizing:border-box!important }
 .mixerRouteTrackName { max-width:440px;margin-top:3px;color:#facc15;font-size:12px;font-weight:1000;overflow:hidden;text-overflow:ellipsis;white-space:nowrap }
 .mixerRouteList { display:flex;flex:1 1 auto;min-height:0;flex-direction:column;gap:8px;overflow-y:auto;overscroll-behavior:contain }
@@ -10281,7 +10287,10 @@ html[data-director-device="tablet"] .tabletBpmInlineValue {
 }
 html[data-director-device="tablet"] .tabletBpmInlineControlsPlaying { opacity:.45; }
 
-/* Mantém o topo dos modais e estende somente a borda inferior no tablet. */
+/* Mantém o topo dos modais e estende somente a borda inferior no tablet.
+   safe-area-ok: a borda de baixo da camada ja para em
+   max(8px, var(--tablet-safe-bottom)) na regra do modal do tablet, entao aqui
+   o padding de baixo tem que ser zero para o conteudo chegar ate ela. */
 html[data-director-device="tablet"] .tabletPlaylistModalOverlay,
 html[data-director-device="tablet"] .tabletSettingsModalOverlay,
 html[data-director-device="tablet"] .projectModalOverlay {
@@ -10619,7 +10628,7 @@ html[data-director-device="phone"] .app .item.playing .rowProgressTrack > .playi
   .playlistMultiButton { min-width: 68px; padding-left: 5px; padding-right: 5px; font-size: 10px; }
 }
 
-.playlistPreviewModalOverlay{z-index:2800!important;display:flex;align-items:center;justify-content:center;padding:16px}
+.playlistPreviewModalOverlay{z-index:2800!important;display:flex;align-items:center;justify-content:center;padding:max(16px,var(--vsh-safe-top)) max(16px,var(--vsh-safe-right)) max(16px,var(--vsh-safe-bottom)) max(16px,var(--vsh-safe-left))}
 .playlistPreviewModalBox{width:min(92vw,560px);max-width:560px;padding:18px;display:flex;flex-direction:column;gap:16px}
 .playlistPreviewGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .playlistPreviewSlot{min-height:64px;border:1px solid #64748b;border-radius:10px;background:linear-gradient(135deg,#303640,#1d232d);color:#f8fafc;font-weight:1000;font-size:15px}
@@ -10639,6 +10648,8 @@ html[data-director-device="tablet"] .app:not(.musicianMonitor) > .modalOverlay {
   max-width: none !important;
 }
 html[data-director-device="tablet"] .app:not(.musicianMonitor) > .tabletMultiLoopModalOverlay {
+  /* safe-area-ok: a regra acima ja prendeu esta camada dentro da area segura
+     do tablet pelas bordas; estes 8px sao so o respiro interno. */
   justify-content: center !important;
   padding: 8px !important;
 }

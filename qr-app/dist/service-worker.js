@@ -1,9 +1,12 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-chat-avatar-v45';
+const CACHE_NAME = 'vshook-mobile-1.0.1-safe-area-v46';
 const APP_ASSETS = [
   './',
   './index.html',
   './app-shell.js',
+  './ui-feedback.js',
   './app-shell.css',
+  './safe-area.css',
+  './button-gradients.css',
   './stylediretor.css',
   './stylediretor-app.css',
   './vsdiretor.js',

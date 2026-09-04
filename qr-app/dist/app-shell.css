@@ -1,4 +1,5 @@
 @import url("./button-gradients.css");
+@import url("./safe-area.css");
 
 * { box-sizing: border-box; }
 html, body, #app {
@@ -15,7 +16,7 @@ button, input { font: inherit; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: max(28px, env(safe-area-inset-top, 0px)) max(18px, env(safe-area-inset-right, 0px)) max(28px, env(safe-area-inset-bottom, 0px)) max(18px, env(safe-area-inset-left, 0px));
+  padding: max(28px, var(--vsh-safe-top)) max(18px, var(--vsh-safe-right)) max(28px, var(--vsh-safe-bottom)) max(18px, var(--vsh-safe-left));
   background: radial-gradient(circle at top, rgba(249,195,42,.14), transparent 38%), #0b1118;
 }
 .vshook-shell-card {
@@ -121,7 +122,7 @@ html[data-director-device="tablet"] #app {
   display:flex;
   align-items:center;
   justify-content:center;
-  padding:max(18px,env(safe-area-inset-top,0px)) max(18px,env(safe-area-inset-right,0px)) max(18px,env(safe-area-inset-bottom,0px)) max(18px,env(safe-area-inset-left,0px));
+  padding:max(18px,var(--vsh-safe-top)) max(18px,var(--vsh-safe-right)) max(18px,var(--vsh-safe-bottom)) max(18px,var(--vsh-safe-left));
   overflow-y:auto;
   background:radial-gradient(circle at top,rgba(249,195,42,.16),transparent 42%),#0b1118;
 }
@@ -272,7 +273,7 @@ html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell-card
 @media (orientation:landscape) and (max-height:560px) {
   html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell,
   html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell {
-    padding:max(6px,env(safe-area-inset-top,0px)) max(10px,env(safe-area-inset-right,0px)) max(6px,env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));
+    padding:max(6px,var(--vsh-safe-top)) max(10px,var(--vsh-safe-right)) max(6px,var(--vsh-safe-bottom)) max(10px,var(--vsh-safe-left));
   }
   html[data-director-device="tablet"].directorShellPortraitMode .vshook-shell-card,
   html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell-card {
