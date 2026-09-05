@@ -350,6 +350,49 @@ function generateGrandMa2InstallerMacro(project = {}, songExports = []) {
     commands);
 }
 
+function buildGrandMa2Assignments(
+  project = {}, savedAssignments = {}, options = {}) {
+  const songs = normalizeSongs(project.songs || project.regions);
+  const assignments = Object.create(null);
+  const occupiedOffsets = new Set();
+  const validOffset = (value) => {
+    const text = String(value ?? '').trim();
+    if (!/^\d+$/.test(text)) return null;
+    const offset = Number(text);
+    return Number.isSafeInteger(offset) && offset >= 0 && offset < 9999
+      ? offset : null;
+  };
+
+  // Mantém inclusive as músicas que saíram do projeto. O grandMA2 não pode
+  // ser consultado durante a exportação, portanto reutilizar automaticamente
+  // um destino antigo poderia sobrescrever um executor que ainda existe no
+  // show. Músicas novas sempre entram depois do maior destino já reservado.
+  for (const [key, rawOffset] of Object.entries(savedAssignments || {})) {
+    if (!String(key).startsWith('region:')) continue;
+    const offset = validOffset(rawOffset);
+    if (offset === null || occupiedOffsets.has(offset)) continue;
+    assignments[key] = offset;
+    occupiedOffsets.add(offset);
+  }
+
+  if (options.includeUnassigned !== false) {
+    let nextOffset = occupiedOffsets.size
+      ? Math.max(...occupiedOffsets) + 1 : 0;
+    for (const song of songs) {
+      const key = `region:${song.id}`;
+      if (Object.hasOwn(assignments, key)) continue;
+      while (occupiedOffsets.has(nextOffset)) nextOffset += 1;
+      if (nextOffset >= 9999) {
+        throw new Error('O mapa grandMA2 atingiu o limite de 9.999 músicas.');
+      }
+      assignments[key] = nextOffset;
+      occupiedOffsets.add(nextOffset);
+      nextOffset += 1;
+    }
+  }
+  return assignments;
+}
+
 function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}) {
   const baseSettings = normalizeSettings(inputSettings);
   const allSongs = normalizeSongs(project.songs || project.regions);
@@ -359,8 +402,13 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}
   const selectedSongs = allSongs
     .map((song, projectIndex) => ({ song, projectIndex }))
     .filter(({ song }) => !selectedSongIds || selectedSongIds.has(song.id));
+  const assignmentFor = ({ song, projectIndex }) => {
+    const rawOffset = options.assignments?.[`region:${song.id}`];
+    const text = String(rawOffset ?? '').trim();
+    return /^\d+$/.test(text) ? Number(text) : projectIndex;
+  };
   const lastSelectedOffset = selectedSongs.reduce(
-    (highest, entry) => Math.max(highest, entry.projectIndex), -1);
+    (highest, entry) => Math.max(highest, assignmentFor(entry)), -1);
   if (lastSelectedOffset >= 0 &&
       (baseSettings.sequence + lastSelectedOffset > 9999 ||
        baseSettings.executor + lastSelectedOffset > 9999 ||
@@ -389,11 +437,12 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}
     ...allSongs.map((song) => song.end));
   return selectedSongs.map(({ song, projectIndex }) => {
     const stem = stems[projectIndex];
+    const assignedOffset = assignmentFor({ song, projectIndex });
     const settings = normalizeSettings({
       ...baseSettings,
-      sequence: baseSettings.sequence + projectIndex,
-      executor: baseSettings.executor + projectIndex,
-      timecodePool: baseSettings.timecodePool + projectIndex
+      sequence: baseSettings.sequence + assignedOffset,
+      executor: baseSettings.executor + assignedOffset,
+      timecodePool: baseSettings.timecodePool + assignedOffset
     });
     const songProject = {
       projectName: song.name,
@@ -746,6 +795,7 @@ async function setResolumeCompositionSpeed(inputSettings = {}, speed = 1) {
 }
 
 module.exports = {
+  buildGrandMa2Assignments,
   buildGrandMa2SongExports,
   buildResolumeMap,
   encodeOscAbsoluteFloat,

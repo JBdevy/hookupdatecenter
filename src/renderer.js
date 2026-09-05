@@ -3246,7 +3246,11 @@ function renderHookMarkerPreview() {
       { id: `region-${song.id}`, name: song.name, position: 0, regionStart: true },
       ...contained.map((marker) => ({ ...marker, position: Math.max(0, (Number(marker.position) || 0) - start) }))
     ];
-    const targetSummary = `Sequence ${(settings.sequence || 1) + songIndex} · Executor ${settings.executorPage || 1}.${(settings.executor || 1) + songIndex} · Timecode ${(settings.timecodePool || 1) + songIndex}`;
+    const savedOffset = Number(
+      hookMarkerState?.grandMa2Map?.assignments?.[`region:${song.id}`]);
+    const targetOffset = Number.isSafeInteger(savedOffset) && savedOffset >= 0
+      ? savedOffset : songIndex;
+    const targetSummary = `Sequence ${(settings.sequence || 1) + targetOffset} · Executor ${settings.executorPage || 1}.${(settings.executor || 1) + targetOffset} · Timecode ${(settings.timecodePool || 1) + targetOffset}`;
     const songTitle = escapeHtml(song.name || `Música ${songIndex + 1}`);
     const songSelector = `<label class="hook-marker-song-select">
           <input type="checkbox" data-hook-marker-song-index="${songIndex}"${selected ? ' checked' : ''} aria-label="Selecionar ${songTitle}" />
@@ -3679,7 +3683,7 @@ async function exportHookMarkerGrandMa2() {
     });
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML.\n\nNo grandMA2, importe apenas "${result.installerMacroFileName || '00-VS-Hook-Instalar-Tudo-macro.xml'}" da pasta "macros" e execute-o uma vez. Ele prepara todas as músicas e importa os Timecodes automaticamente. Os macros individuais permanecem na pasta como recuperação.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML.\n\nNo grandMA2, importe apenas "${result.installerMacroFileName || '00-VS-Hook-Instalar-Tudo-macro.xml'}" da pasta "macros" e execute-o uma vez. Ele prepara todas as músicas e importa os Timecodes automaticamente. Os macros individuais permanecem na pasta como recuperação.\n\nO mapa de Sequence, Executor e Timecode foi gravado no projeto. Salve o .rpp antes de levá-lo para outro computador.`,
       type: 'success'
     });
   } catch (error) {

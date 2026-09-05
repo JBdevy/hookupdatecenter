@@ -1,5 +1,6 @@
 const assert = require('assert');
 const {
+  buildGrandMa2Assignments,
   buildGrandMa2SongExports,
   buildResolumeMap,
   encodeOscAbsoluteFloat,
@@ -97,6 +98,38 @@ assert(!partialInstallerMacro.includes('Musica Teste-timecode'));
 assert(partialInstallerMacro.includes('Outra Musica-timecode'));
 assert(!partialInstallerMacro.includes('Store Sequence 4 Cue 1 /nc'));
 assert(partialInstallerMacro.includes('Store Sequence 5 Cue 1 /nc'));
+
+const persistedGrandMa2Assignments = buildGrandMa2Assignments({
+  regions: [
+    { id: 'song-new-before', name: 'Nova no começo', start: 1, end: 5 },
+    { id: 'song-1', name: 'Musica Teste', start: 10, end: 20 },
+    { id: 'song-2', name: 'Outra Musica', start: 30, end: 40 }
+  ]
+}, {
+  'region:song-1': 0,
+  'region:song-2': 1
+});
+assert.strictEqual(persistedGrandMa2Assignments['region:song-1'], 0);
+assert.strictEqual(persistedGrandMa2Assignments['region:song-2'], 1);
+assert.strictEqual(persistedGrandMa2Assignments['region:song-new-before'], 2,
+  'Música nova deve entrar depois dos destinos já reservados.');
+const mappedPartialExport = buildGrandMa2SongExports({
+  regions: [
+    { id: 'song-new-before', name: 'Nova no começo', start: 1, end: 5 },
+    { id: 'song-1', name: 'Musica Teste', start: 10, end: 20 },
+    { id: 'song-2', name: 'Outra Musica', start: 30, end: 40 }
+  ]
+}, {
+  sequence: 1,
+  executor: 1,
+  timecodePool: 1
+}, {
+  selectedSongIds: ['song-new-before'],
+  assignments: persistedGrandMa2Assignments
+});
+assert.strictEqual(mappedPartialExport[0].settings.sequence, 3);
+assert.strictEqual(mappedPartialExport[0].settings.executor, 3);
+assert.strictEqual(mappedPartialExport[0].settings.timecodePool, 3);
 
 const grandMaReservedNameExport = buildGrandMa2SongExports({
   projectName: 'Teste de nomes',

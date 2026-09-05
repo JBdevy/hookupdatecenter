@@ -30,6 +30,7 @@ const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createCopyProjectService } = require('./copy-project');
 const { createQrSvg } = require('./qr-svg');
 const {
+  buildGrandMa2Assignments,
   buildGrandMa2SongExports,
   buildResolumeMap,
   findResolumeCueAtPosition,
@@ -7428,6 +7429,10 @@ function hookMarkerProjectFromSnapshot(snapshot) {
     projectPath,
     markers: normalizeMarkers(snapshot.markers),
     songs: normalizeSongs(snapshot.regions),
+    grandMa2MapAssignments:
+      String(snapshot.grandMa2MapAssignments || ''),
+    grandMa2MapSettings:
+      String(snapshot.grandMa2MapSettings || ''),
     resolumeMapAssignmentsWithMarkers:
       String(snapshot.resolumeMapAssignmentsWithMarkers || ''),
     resolumeMapAssignmentsRegionsOnly:
@@ -7466,6 +7471,112 @@ function parseHookMarkerResolumeAssignments(rawValue) {
   } catch (_) {
     return null;
   }
+}
+
+function parseHookMarkerGrandMa2Assignments(rawValue) {
+  if (!rawValue) return null;
+  try {
+    const parsed = typeof rawValue === 'string'
+      ? JSON.parse(rawValue) : rawValue;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const assignments = Object.create(null);
+    for (const [key, rawOffset] of Object.entries(parsed)) {
+      const text = String(rawOffset ?? '').trim();
+      if (!String(key).startsWith('region:') || !/^\d+$/.test(text)) continue;
+      const offset = Number(text);
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset >= 9999) continue;
+      assignments[key] = offset;
+    }
+    return assignments;
+  } catch (_) {
+    return null;
+  }
+}
+
+function parseHookMarkerGrandMa2Settings(rawValue) {
+  if (!rawValue) return null;
+  try {
+    const parsed = typeof rawValue === 'string'
+      ? JSON.parse(rawValue) : rawValue;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return normalizeHookMarkerSettings({
+      sequence: parsed.sequence,
+      executorPage: parsed.executorPage,
+      executor: parsed.executor,
+      timecodePool: parsed.timecodePool,
+      timecodeSlot: parsed.timecodeSlot
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+function grandMa2SettingsForProject(project, localSettings) {
+  if (process.platform !== 'win32') return localSettings;
+  const projectSettings = parseHookMarkerGrandMa2Settings(
+    project?.grandMa2MapSettings);
+  if (!projectSettings) return localSettings;
+  const merged = normalizeHookMarkerSettings({
+    ...localSettings,
+    sequence: projectSettings.sequence,
+    executorPage: projectSettings.executorPage,
+    executor: projectSettings.executor,
+    timecodePool: projectSettings.timecodePool,
+    timecodeSlot: projectSettings.timecodeSlot
+  });
+  return merged;
+}
+
+function buildPersistedHookMarkerGrandMa2Map(
+  project, { createMissing = false } = {}) {
+  const allAssignments = store.get('hookMarkerGrandMa2Assignments') || {};
+  const projectKey = hookMarkerResolumeProjectKey(project);
+  const localAssignments = allAssignments[projectKey] &&
+      typeof allAssignments[projectKey] === 'object'
+    ? allAssignments[projectKey] : {};
+  const projectAssignments =
+    parseHookMarkerGrandMa2Assignments(project.grandMa2MapAssignments) || {};
+  // O RPP é a autoridade entre computadores. O mapa local cobre apenas o
+  // pequeno intervalo entre gravar o ExtState e o próximo snapshot.
+  const savedAssignments = {
+    ...localAssignments,
+    ...projectAssignments
+  };
+  const assignments = buildGrandMa2Assignments(
+    project, savedAssignments, { includeUnassigned: createMissing === true });
+  if (createMissing &&
+      JSON.stringify(localAssignments) !== JSON.stringify(assignments)) {
+    store.set('hookMarkerGrandMa2Assignments', {
+      ...allAssignments,
+      [projectKey]: assignments
+    });
+  }
+  return {
+    created: Object.keys(savedAssignments).length > 0 || createMissing,
+    assignments
+  };
+}
+
+async function syncHookMarkerGrandMa2MapToExtension(
+  project, assignments, settings) {
+  if (!project?.connected || !assignments) return false;
+  return postNativeBridgeCommand({
+    type: 'grandma2_map_update',
+    projectPath: project.projectPath || '',
+    projectName: project.projectName || '',
+    assignments,
+    settings: {
+      sequence: settings.sequence,
+      executorPage: settings.executorPage,
+      executor: settings.executor,
+      timecodePool: settings.timecodePool,
+      timecodeSlot: settings.timecodeSlot
+    }
+  }).catch(() => false);
 }
 
 function buildPersistedHookMarkerResolumeMap(
@@ -7554,9 +7665,13 @@ async function getHookMarkerState({ forceRefresh = false } = {}) {
   const snapshot = await getNativeBridgeStateSnapshot(
     3000, { force: forceRefresh === true });
   const project = hookMarkerProjectFromSnapshot(snapshot);
-  const settings = saveHookMarkerSettings();
+  const settings = grandMa2SettingsForProject(
+    project, saveHookMarkerSettings());
   let resolumeMap = null;
+  let grandMa2Map = null;
   if (project.connected) {
+    grandMa2Map = buildPersistedHookMarkerGrandMa2Map(
+      project, { createMissing: false });
     const cueMap = buildPersistedHookMarkerResolumeMap(
       project, settings, { createMissing: false });
     resolumeMap = {
@@ -7572,6 +7687,7 @@ async function getHookMarkerState({ forceRefresh = false } = {}) {
     ...project,
     markerCount: project.markers.length,
     songCount: project.songs.length,
+    grandMa2Map,
     resolumeMap,
     settings
   };
@@ -8319,9 +8435,10 @@ async function exportHookMarkerGrandMa2(input = {}) {
   const selectedSongIds = Array.isArray(input.selectedSongIds)
     ? input.selectedSongIds.map((id) => String(id))
     : undefined;
-  const songExports = buildGrandMa2SongExports(
-    project, settings, { selectedSongIds });
-  if (!songExports.length) {
+  const selectedSongs = selectedSongIds
+    ? project.songs.filter((song) => selectedSongIds.includes(String(song.id)))
+    : project.songs;
+  if (!selectedSongs.length) {
     throw new Error(selectedSongIds
       ? 'Selecione pelo menos uma música para exportar.'
       : 'O projeto aberto no REAPER não possui regiões de música para exportar.');
@@ -8329,6 +8446,17 @@ async function exportHookMarkerGrandMa2(input = {}) {
   const targetFolder = await selectHookMarkerExportFolder(
     'Escolher pasta para os arquivos grandMA2');
   if (!targetFolder) return { ok: false, cancelled: true };
+  const grandMa2Map = buildPersistedHookMarkerGrandMa2Map(
+    project, { createMissing: true });
+  const mapQueued = await syncHookMarkerGrandMa2MapToExtension(
+    project, grandMa2Map.assignments, settings);
+  if (!mapQueued) {
+    throw new Error('Não foi possível gravar o mapa grandMA2 no projeto do REAPER. Confirme que a extensão VS Hook está atualizada e tente novamente.');
+  }
+  const songExports = buildGrandMa2SongExports(project, settings, {
+    selectedSongIds,
+    assignments: grandMa2Map.assignments
+  });
   const macroFolderPath = path.join(targetFolder, 'macros');
   const importFolderPath = path.join(targetFolder, 'import');
   await Promise.all([
