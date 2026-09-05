@@ -37,8 +37,8 @@ const {
   normalizeMarkers,
   normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
-  selectResolumeColumn,
-  setResolumeColumnPlayhead,
+  safeFileStem,
+  selectResolumeDeck,
   setResolumeCompositionSpeed,
   testResolumeColumn
 } = require('./hook-marker');
@@ -131,6 +131,8 @@ const store = new Store({
       timecodeSlot: 2,
       resolumeHost: '127.0.0.1',
       resolumePort: 7000,
+      resolumeWebPort: 8080,
+      resolumeIncludeMarkers: true,
       resolumeFirstColumn: 1
     },
     hookMarkerResolumeAssignments: {},
@@ -183,6 +185,9 @@ let hookMarkerResolumeRuntime = {
   hasRun: false,
   seekedWhileStopped: false,
   resolumePaused: false,
+  preparedDeck: 0,
+  preparedColumn: 0,
+  lastSelectedDeck: 0,
   lastSelectedColumn: 0,
   lastTriggeredCue: 0,
   lastError: ''
@@ -7376,7 +7381,9 @@ function summarizeHookRenameSkipped(skipped = []) {
 function resolumeOnlyHookMarkerSettings(input = {}) {
   const source = input && typeof input === 'object' ? input : {};
   const allowedKeys = [
-    'fps', 'resolumeHost', 'resolumePort', 'resolumeFirstColumn'
+    'fps', 'resolumeHost', 'resolumePort', 'resolumeWebPort',
+    'resolumeIncludeMarkers',
+    'resolumeFirstColumn'
   ];
   return allowedKeys.reduce((settings, key) => {
     if (Object.prototype.hasOwnProperty.call(source, key)) settings[key] = source[key];
@@ -7420,7 +7427,11 @@ function hookMarkerProjectFromSnapshot(snapshot) {
     projectName: String(snapshot.projectName || fallbackName).trim() || fallbackName,
     projectPath,
     markers: normalizeMarkers(snapshot.markers),
-    songs: normalizeSongs(snapshot.regions)
+    songs: normalizeSongs(snapshot.regions),
+    resolumeMapAssignmentsWithMarkers:
+      String(snapshot.resolumeMapAssignmentsWithMarkers || ''),
+    resolumeMapAssignmentsRegionsOnly:
+      String(snapshot.resolumeMapAssignmentsRegionsOnly || '')
   };
 }
 
@@ -7435,26 +7446,94 @@ function hookMarkerResolumeProjectKey(project = {}) {
   return crypto.createHash('sha256').update(identity).digest('hex');
 }
 
-function buildPersistedHookMarkerResolumeMap(project, settings) {
+function parseHookMarkerResolumeAssignments(rawValue) {
+  if (!rawValue) return null;
+  try {
+    const parsed = typeof rawValue === 'string'
+      ? JSON.parse(rawValue) : rawValue;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const assignments = Object.create(null);
+    for (const [key, rawAssignment] of Object.entries(parsed)) {
+      const assignment = String(rawAssignment ?? '').trim();
+      if (!key || !/^\d+:\d+$/.test(assignment)) {
+        continue;
+      }
+      assignments[key] = assignment;
+    }
+    return assignments;
+  } catch (_) {
+    return null;
+  }
+}
+
+function buildPersistedHookMarkerResolumeMap(
+  project, settings, { createMissing = false } = {}) {
   const allAssignments = store.get('hookMarkerResolumeAssignments') || {};
   const projectKey = hookMarkerResolumeProjectKey(project);
-  const savedAssignments = allAssignments[projectKey] || {};
-  const cueMap = buildResolumeMap(project, settings, savedAssignments);
-  if (JSON.stringify(savedAssignments) !== JSON.stringify(cueMap.assignments)) {
+  // Cada modo mantém seu próprio mapa. Desligar os marcadores compacta as
+  // regiões sem apagar a posição estável do mapa completo caso sejam ligados
+  // novamente depois.
+  const assignmentKey = settings.resolumeIncludeMarkers === false
+    ? `${projectKey}:regions-only` : projectKey;
+  const hasLocalMap = Object.hasOwn(allAssignments, assignmentKey);
+  const projectAssignments = parseHookMarkerResolumeAssignments(
+    settings.resolumeIncludeMarkers === false
+      ? project.resolumeMapAssignmentsRegionsOnly
+      : project.resolumeMapAssignmentsWithMarkers);
+  const mapAlreadyCreated = hasLocalMap || projectAssignments !== null;
+  const savedAssignments = hasLocalMap &&
+      allAssignments[assignmentKey] &&
+      typeof allAssignments[assignmentKey] === 'object'
+    ? allAssignments[assignmentKey]
+    : (projectAssignments || {});
+  // Consultas, atualizações da tela e o acompanhamento do transporte jamais
+  // ganham permissão para numerar fontes novas. Só "Criar mapa" faz isso.
+  const cueMap = buildResolumeMap(project, settings, savedAssignments, {
+    includeUnassigned: createMissing === true
+  });
+  const availableMap = createMissing
+    ? cueMap
+    : buildResolumeMap(project, settings, savedAssignments);
+  if (createMissing &&
+      (!mapAlreadyCreated ||
+       JSON.stringify(savedAssignments) !== JSON.stringify(cueMap.assignments))) {
     store.set('hookMarkerResolumeAssignments', {
       ...allAssignments,
-      [projectKey]: cueMap.assignments
+      [assignmentKey]: cueMap.assignments
     });
   }
-  return cueMap;
+  return {
+    ...cueMap,
+    created: mapAlreadyCreated || createMissing,
+    pendingCueCount: Math.max(0,
+      availableMap.cues.length - cueMap.cues.length),
+    availableCueCount: availableMap.cues.length
+  };
 }
 
 async function syncHookMarkerResolumeMapToExtension(project, settings, cueMap) {
   if (!project?.connected || !cueMap) return false;
+  const withMarkersMap = settings.resolumeIncludeMarkers !== false
+    ? cueMap
+    : buildPersistedHookMarkerResolumeMap(project, {
+        ...settings,
+        resolumeIncludeMarkers: true
+      }, { createMissing: false });
+  const regionsOnlyMap = settings.resolumeIncludeMarkers === false
+    ? cueMap
+    : buildPersistedHookMarkerResolumeMap(project, {
+        ...settings,
+        resolumeIncludeMarkers: false
+      }, { createMissing: false });
   const signature = JSON.stringify({
     projectKey: hookMarkerResolumeProjectKey(project),
+    includeMarkers: settings.resolumeIncludeMarkers !== false,
     firstColumn: cueMap.destination?.firstColumn || settings.resolumeFirstColumn,
-    assignments: cueMap.assignments
+    assignments: cueMap.assignments,
+    assignmentsWithMarkers: withMarkersMap.assignments,
+    assignmentsRegionsOnly: regionsOnlyMap.assignments
   });
   if (signature === hookMarkerResolumeSyncSignature) return true;
   const sent = await postNativeBridgeCommand({
@@ -7462,27 +7541,754 @@ async function syncHookMarkerResolumeMapToExtension(project, settings, cueMap) {
     projectPath: project.projectPath || '',
     projectName: project.projectName || '',
     firstColumn: cueMap.destination?.firstColumn || 1,
-    assignments: cueMap.assignments
+    includeMarkers: settings.resolumeIncludeMarkers !== false,
+    assignments: cueMap.assignments,
+    assignmentsWithMarkers: withMarkersMap.assignments,
+    assignmentsRegionsOnly: regionsOnlyMap.assignments
   }).catch(() => false);
   if (sent) hookMarkerResolumeSyncSignature = signature;
   return sent;
 }
 
-async function getHookMarkerState() {
-  const snapshot = await getNativeBridgeStateSnapshot(3000);
+async function getHookMarkerState({ forceRefresh = false } = {}) {
+  const snapshot = await getNativeBridgeStateSnapshot(
+    3000, { force: forceRefresh === true });
   const project = hookMarkerProjectFromSnapshot(snapshot);
   const settings = saveHookMarkerSettings();
+  let resolumeMap = null;
   if (project.connected) {
-    const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
-    await syncHookMarkerResolumeMapToExtension(
-      project, settings, cueMap).catch(() => false);
+    const cueMap = buildPersistedHookMarkerResolumeMap(
+      project, settings, { createMissing: false });
+    resolumeMap = {
+      created: cueMap.created === true,
+      firstColumn: cueMap.destination?.firstColumn || 1,
+      cues: cueMap.cues,
+      pendingCueCount: cueMap.pendingCueCount || 0,
+      availableCueCount: cueMap.availableCueCount || 0
+    };
   }
   return {
     ok: true,
     ...project,
     markerCount: project.markers.length,
     songCount: project.songs.length,
+    resolumeMap,
     settings
+  };
+}
+
+async function createHookMarkerResolumeMap(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  // Os modos são mapas independentes. Assim, cada música conserva seu deck e,
+  // no modo sem marcadores, usa somente a coluna 1 desse deck.
+  const withMarkersMap = buildPersistedHookMarkerResolumeMap(project, {
+    ...settings,
+    resolumeIncludeMarkers: true
+  }, { createMissing: true });
+  const regionsOnlyMap = buildPersistedHookMarkerResolumeMap(project, {
+    ...settings,
+    resolumeIncludeMarkers: false
+  }, { createMissing: true });
+  const activeMap = settings.resolumeIncludeMarkers === false
+    ? regionsOnlyMap : withMarkersMap;
+  hookMarkerResolumeSyncSignature = '';
+  const synced = await syncHookMarkerResolumeMapToExtension(
+    project, settings, activeMap);
+  if (!synced) {
+    throw new Error('Não foi possível gravar o Mapa Resolume no projeto. Confirme se a extensão VS Hook está ativa no REAPER.');
+  }
+  if (hookMarkerResolumeRuntime.active) {
+    hookMarkerResolumeRuntime.settings = settings;
+    hookMarkerResolumeRuntime.projectName = project.projectName;
+    hookMarkerResolumeRuntime.cues = activeMap.cues;
+    hookMarkerResolumeRuntime.cueMapSignature =
+      JSON.stringify(activeMap.cues);
+    hookMarkerResolumeRuntime.forceLocate = true;
+    hookMarkerResolumeRuntime.lastError = '';
+    publishHookMarkerResolumeRuntimeState();
+  }
+  return getHookMarkerState();
+}
+
+function hookMarkerResolumeApiBase(settings = {}) {
+  const normalized = normalizeHookMarkerSettings(settings);
+  const rawHost = String(normalized.resolumeHost || '127.0.0.1')
+    .trim().replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+  const host = rawHost.includes(':') && !rawHost.startsWith('[')
+    ? `[${rawHost}]` : rawHost;
+  return `http://${host}:${normalized.resolumeWebPort}/api/v1`;
+}
+
+async function hookMarkerResolumeApiRequest(
+  settings, endpoint, {
+    method = 'GET', json, text: textBody, timeoutMilliseconds = 15000
+  } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(),
+    Math.max(1000, Number(timeoutMilliseconds) || 15000));
+  try {
+    const headers = {};
+    let body;
+    if (json !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(json);
+    } else if (textBody !== undefined) {
+      headers['Content-Type'] = 'text/plain';
+      body = String(textBody);
+    }
+    const response = await fetch(
+      `${hookMarkerResolumeApiBase(settings)}${endpoint}`, {
+        method,
+        headers,
+        body,
+        signal: controller.signal
+      });
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(`Resolume respondeu ${response.status}${
+        responseText ? `: ${responseText.slice(0, 240)}` : ''}`);
+    }
+    if (!responseText) return null;
+    try {
+      return JSON.parse(responseText);
+    } catch (_) {
+      return responseText;
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error(
+        'O Arena demorou demais para responder à operação.');
+      timeoutError.code = 'RESOLUME_REQUEST_TIMEOUT';
+      throw timeoutError;
+    }
+    if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(
+      String(error?.message || error))) {
+      throw new Error('Não foi possível acessar o Webserver do Resolume. Ative-o nas Preferências e confirme o IP e a porta 8080.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitForHookMarkerResolumeComposition(
+  settings, predicate, description, timeoutMilliseconds = 10000) {
+  const startedAt = Date.now();
+  let lastError = null;
+  while (Date.now() - startedAt < timeoutMilliseconds) {
+    try {
+      const composition = await hookMarkerResolumeApiRequest(
+        settings, '/composition');
+      if (predicate(composition)) return composition;
+      lastError = null;
+    } catch (error) {
+      // Durante uma troca de composição o Arena pode responder brevemente com
+      // 404/412. A confirmação abaixo continua até o limite definido.
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 90));
+  }
+  throw new Error(`${description}${lastError?.message
+    ? ` Última resposta: ${lastError.message}` : ''}`);
+}
+
+function hookMarkerResolumeCompositionSignature(composition) {
+  return JSON.stringify({
+    name: String(composition?.name?.value || ''),
+    decks: Array.isArray(composition?.decks)
+      ? composition.decks.map((deck) => [
+        String(deck?.id ?? ''),
+        String(deck?.name?.value || ''),
+        deck?.selected?.value === true
+      ]) : [],
+    columns: Array.isArray(composition?.columns)
+      ? composition.columns.map((column) => [
+        String(column?.id ?? ''),
+        String(column?.name?.value || '')
+      ]) : []
+  });
+}
+
+async function waitForHookMarkerResolumeStable(
+  settings, timeoutMilliseconds = 30000, stableMilliseconds = 1400) {
+  const startedAt = Date.now();
+  let stableSince = 0;
+  let previousSignature = '';
+  let latest = null;
+  while (Date.now() - startedAt < timeoutMilliseconds) {
+    latest = await hookMarkerResolumeApiRequest(
+      settings, '/composition', { timeoutMilliseconds: 5000 });
+    const signature = hookMarkerResolumeCompositionSignature(latest);
+    if (signature === previousSignature) {
+      if (stableSince && Date.now() - stableSince >= stableMilliseconds) {
+        return latest;
+      }
+    } else {
+      previousSignature = signature;
+      stableSince = Date.now();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  }
+  throw new Error(
+    'O Arena ainda está processando operações anteriores. Aguarde terminar e tente novamente.');
+}
+
+async function mutateHookMarkerResolumeComposition(
+  settings, endpoint, requestOptions, predicate, description,
+  timeoutMilliseconds = 30000) {
+  let requestError = null;
+  try {
+    await hookMarkerResolumeApiRequest(settings, endpoint, {
+      ...requestOptions,
+      timeoutMilliseconds: Math.min(8000, timeoutMilliseconds)
+    });
+  } catch (error) {
+    requestError = error;
+    // Algumas versões do Arena aplicam a operação, mas deixam a resposta HTTP
+    // pendurada. Nesse caso, a leitura do estado abaixo é a confirmação real.
+    if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') throw error;
+  }
+  try {
+    return await waitForHookMarkerResolumeComposition(
+      settings, predicate, description, timeoutMilliseconds);
+  } catch (error) {
+    if (requestError?.code === 'RESOLUME_REQUEST_TIMEOUT') {
+      throw new Error(`${description} O Arena não confirmou a alteração após o tempo limite.`);
+    }
+    throw error;
+  }
+}
+
+async function selectHookMarkerResolumeDeck(
+  settings, deckId, deckIndex, description) {
+  const predicate = (candidate) => candidate?.decks?.some((deck) =>
+    deck?.id === deckId && deck?.selected?.value === true);
+  const endpoints = [
+    `/composition/decks/${deckIndex}/select`,
+    `/composition/decks/by-id/${deckId}/select`,
+    `/composition/decks/${deckIndex}/select`
+  ];
+  let lastError = null;
+  for (const endpoint of endpoints) {
+    try {
+      const current = await hookMarkerResolumeApiRequest(
+        settings, '/composition', { timeoutMilliseconds: 5000 });
+      if (predicate(current)) return current;
+      await hookMarkerResolumeApiRequest(settings, endpoint, {
+        method: 'POST',
+        timeoutMilliseconds: 8000
+      });
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+      }
+    }
+    try {
+      return await waitForHookMarkerResolumeComposition(
+        settings, predicate, description, 7000);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 320));
+  }
+  throw new Error(`${description}${lastError?.message
+    ? ` Última resposta: ${lastError.message}` : ''}`);
+}
+
+async function resetHookMarkerResolumeComposition(settings) {
+  let composition = await waitForHookMarkerResolumeStable(settings);
+  const initialDeckCount = Array.isArray(composition?.decks)
+    ? composition.decks.length : 0;
+  if (initialDeckCount < 1) {
+    throw new Error('O Arena não informou os decks da composição aberta.');
+  }
+
+  // O endpoint /composition/new pode ficar aguardando indefinidamente no
+  // Arena 7.27 quando a composição atual possui alterações. Criar um deck
+  // vazio e apagar os anteriores entrega a mesma base limpa sem abrir um
+  // diálogo oculto dentro do Resolume.
+  const initialDeckIds = new Set(composition.decks.map(
+    (deck) => String(deck?.id ?? '')));
+  composition = await mutateHookMarkerResolumeComposition(
+    settings, '/composition/decks/add', { method: 'POST' },
+    (candidate) => Array.isArray(candidate?.decks) &&
+      candidate.decks.some((deck) =>
+        !initialDeckIds.has(String(deck?.id ?? ''))),
+    'O Arena não confirmou a criação do deck vazio inicial.');
+  const blankDeck = composition.decks.find((deck) =>
+    !initialDeckIds.has(String(deck?.id ?? '')));
+  const blankDeckId = blankDeck?.id;
+  if (blankDeckId === undefined || blankDeckId === null) {
+    throw new Error('O Arena criou o deck vazio sem uma identificação válida.');
+  }
+
+  const blankDeckIndex = composition.decks.findIndex(
+    (deck) => deck?.id === blankDeckId) + 1;
+  composition = await selectHookMarkerResolumeDeck(
+    settings, blankDeckId, blankDeckIndex,
+    'O Arena não confirmou a seleção do deck vazio inicial.');
+
+  for (const oldDeck of composition.decks.filter(
+    (deck) => deck?.id !== blankDeckId)) {
+    const oldDeckId = oldDeck?.id;
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/decks/by-id/${oldDeckId}`,
+      { method: 'DELETE' },
+      (candidate) => Array.isArray(candidate?.decks) &&
+        !candidate.decks.some((deck) => deck?.id === oldDeckId) &&
+        candidate.decks.some((deck) => deck?.id === blankDeckId),
+      'O Arena não confirmou a remoção de um deck antigo.');
+  }
+
+  while (Array.isArray(composition?.columns) &&
+      composition.columns.length > 1) {
+    const column = composition.columns[composition.columns.length - 1];
+    const columnId = column?.id;
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/columns/by-id/${columnId}`,
+      { method: 'DELETE' },
+      (candidate) => Array.isArray(candidate?.columns) &&
+        !candidate.columns.some((item) => item?.id === columnId),
+      'O Arena não confirmou a limpeza das colunas do deck inicial.');
+  }
+  return waitForHookMarkerResolumeStable(settings);
+}
+
+function hookMarkerResolumeDeckDefinition(compositionMap, deckNumber) {
+  const cues = (Array.isArray(compositionMap?.cues)
+    ? compositionMap.cues : [])
+    .filter((cue) => Number(cue?.deck) === deckNumber)
+    .sort((left, right) => Number(left?.column) - Number(right?.column));
+  const requiredColumns = Math.max(
+    1, ...cues.map((cue) => Number(cue?.column) || 1));
+  const regionCue = cues.find((cue) => cue?.regionStart === true);
+  return {
+    cues,
+    requiredColumns,
+    deckName: regionCue?.deckName || `Reservado VS Hook ${deckNumber}`
+  };
+}
+
+async function configureHookMarkerResolumeDeck(
+  settings, composition, compositionMap, deckId, deckNumber) {
+  const definition = hookMarkerResolumeDeckDefinition(
+    compositionMap, deckNumber);
+  composition = await selectHookMarkerResolumeDeck(
+    settings, deckId, deckNumber,
+    `O Arena não confirmou a seleção do deck ${deckNumber}.`);
+
+  let columnCount = Array.isArray(composition?.columns)
+    ? composition.columns.length : 1;
+  if (columnCount < definition.requiredColumns) {
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, '/composition/grow-to', {
+        method: 'POST',
+        json: { column_count: definition.requiredColumns }
+      },
+      (candidate) => Array.isArray(candidate?.columns) &&
+        candidate.columns.length >= definition.requiredColumns,
+      `O Arena não confirmou as ${definition.requiredColumns} colunas do deck ${deckNumber}.`,
+      45000);
+    columnCount = composition.columns.length;
+  }
+  while (columnCount > definition.requiredColumns && columnCount > 1) {
+    const columnId = composition.columns[columnCount - 1]?.id;
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/columns/by-id/${columnId}`,
+      { method: 'DELETE' },
+      (candidate) => Array.isArray(candidate?.columns) &&
+        !candidate.columns.some((column) => column?.id === columnId),
+      `O Arena não confirmou a remoção da coluna extra ${columnCount} no deck ${deckNumber}.`);
+    columnCount = composition.columns.length;
+  }
+
+  const columnNames = composition.columns
+    .slice(0, definition.requiredColumns)
+    .map((_, index) => {
+      const column = index + 1;
+      const cue = definition.cues.find(
+        (item) => Number(item?.column) === column);
+      return column === 1
+        ? 'Início' : String(cue?.columnName || '').trim();
+    });
+  const namedColumns = composition.columns
+    .slice(0, definition.requiredColumns)
+    .map((column, index) => ({
+      id: column.id,
+      index,
+      name: columnNames[index]
+    }))
+    .filter((column) => column.name);
+  composition = await mutateHookMarkerResolumeComposition(
+    settings, '/composition', {
+      method: 'PUT',
+      json: {
+        columns: namedColumns.map((column) => ({
+          id: column.id,
+          name: { value: column.name }
+        }))
+      }
+    },
+    (candidate) => candidate?.decks?.some((item) =>
+      item?.id === deckId && item?.selected?.value === true) &&
+      namedColumns.every((column) =>
+        String(candidate?.columns?.[column.index]?.name?.value || '') ===
+          column.name),
+    `O Arena não confirmou os nomes das colunas do deck ${deckNumber}.`,
+    45000);
+  return {
+    composition,
+    columnCount: definition.requiredColumns,
+    deckName: definition.deckName
+  };
+}
+
+async function waitForHookMarkerResolumeFile(
+  filePath, previousStat = null, timeoutMilliseconds = 10000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMilliseconds) {
+    try {
+      const stat = fs.statSync(filePath);
+      const changed = !previousStat ||
+        stat.mtimeMs > previousStat.mtimeMs + 0.5 ||
+        stat.size !== previousStat.size;
+      if (stat.isFile() && stat.size > 0 && changed) return stat;
+    } catch (_) {}
+    await new Promise((resolve) => setTimeout(resolve, 90));
+  }
+  throw new Error('O Arena não confirmou o salvamento do arquivo .avc.');
+}
+
+function hookMarkerResolumeDefaultCompositionFolder(productName = '') {
+  const documents = app.getPath('documents');
+  const preferredFolder = /avenue/i.test(String(productName))
+    ? 'Resolume Avenue' : 'Resolume Arena';
+  const candidates = [
+    path.join(documents, preferredFolder, 'Compositions'),
+    path.join(documents, 'Resolume Arena', 'Compositions'),
+    path.join(documents, 'Resolume Avenue', 'Compositions')
+  ];
+  return candidates.find((candidate) => {
+    try { return fs.statSync(candidate).isDirectory(); } catch (_) { return false; }
+  }) || documents;
+}
+
+async function createHookMarkerResolumeProject(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  const product = await hookMarkerResolumeApiRequest(
+    settings, '/product').catch((error) => {
+      throw new Error(error?.message ||
+        'Ative o Webserver do Resolume para criar a composição.');
+    });
+  const major = Number(product?.major) || 0;
+  const minor = Number(product?.minor) || 0;
+  if (!/arena/i.test(String(product?.name || ''))) {
+    throw new Error('A criação automática com um deck por música requer o Resolume Arena.');
+  }
+  if (major < 7 || (major === 7 && minor < 22)) {
+    throw new Error('A criação automática do projeto requer Resolume Arena 7.22 ou mais recente.');
+  }
+
+  const defaultName = `${safeFileStem(project.projectName || 'Projeto VS Hook')}.avc`;
+  const saveOptions = {
+    title: 'Salvar projeto do Resolume',
+    defaultPath: path.join(
+      hookMarkerResolumeDefaultCompositionFolder(product?.name), defaultName),
+    filters: [
+      { name: 'Composição do Resolume', extensions: ['avc'] },
+      { name: 'Todos os arquivos', extensions: ['*'] }
+    ],
+    showOverwriteConfirmation: true
+  };
+  const saveResult = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, saveOptions)
+    : await dialog.showSaveDialog(saveOptions);
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { ok: false, cancelled: true };
+  }
+  const compositionPath = path.extname(saveResult.filePath).toLowerCase() === '.avc'
+    ? path.resolve(saveResult.filePath)
+    : path.resolve(`${saveResult.filePath}.avc`);
+  if (fs.existsSync(compositionPath)) {
+    const overwriteOptions = {
+      type: 'warning',
+      title: 'Substituir composição?',
+      message: `Já existe uma composição chamada "${path.basename(compositionPath)}".`,
+      detail: 'Ela somente será substituída se você confirmar. Esta ação não pode ser desfeita pela Hook Center.',
+      buttons: ['Cancelar', 'Substituir'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    };
+    const overwrite = mainWindow
+      ? await dialog.showMessageBox(mainWindow, overwriteOptions)
+      : await dialog.showMessageBox(overwriteOptions);
+    if (overwrite.response !== 1) return { ok: false, cancelled: true };
+  }
+
+  // O mapa precisa existir antes de modificar o Resolume. Se o REAPER não
+  // aceitar o ProjExtState, a composição atual permanece intacta.
+  await createHookMarkerResolumeMap(settings);
+  const compositionMap = buildPersistedHookMarkerResolumeMap(
+    project, settings, { createMissing: false });
+  const regionCues = compositionMap.cues.filter(
+    (cue) => cue.regionStart === true);
+  const highestDeck = regionCues.reduce(
+    (highest, cue) => Math.max(highest, Number(cue.deck) || 0), 0);
+  if (!highestDeck) {
+    throw new Error('O projeto não possui regiões de música para criar decks.');
+  }
+
+  let compositionStarted = false;
+  try {
+    const compositionName = project.projectName || 'Projeto VS Hook';
+    const deckNames = Array.from({ length: highestDeck }, (_, index) => {
+      const songCue = regionCues.find((cue) => cue.deck === index + 1);
+      return songCue?.deckName || `Reservado VS Hook ${index + 1}`;
+    });
+    let composition = await waitForHookMarkerResolumeStable(settings);
+    const canResume =
+      String(composition?.name?.value || '') === compositionName &&
+      Array.isArray(composition?.decks) &&
+      composition.decks.length === highestDeck &&
+      deckNames.every((name, index) =>
+        String(composition.decks[index]?.name?.value || '') === name);
+    if (!canResume) {
+      composition = await resetHookMarkerResolumeComposition(settings);
+    }
+    compositionStarted = true;
+    const templateDeckId = composition?.decks?.[0]?.id;
+    if (templateDeckId === undefined || templateDeckId === null) {
+      throw new Error('O Arena não informou o deck-base da nova composição.');
+    }
+
+    if (!canResume) {
+      // Duplicar o deck já reduzido para uma coluna evita que cada música
+      // nasça com as nove colunas padrão do Arena.
+      while (composition.decks.length < highestDeck) {
+        const previousIds = new Set(composition.decks.map(
+          (deck) => String(deck?.id ?? '')));
+        const expectedDeck = composition.decks.length + 1;
+        composition = await mutateHookMarkerResolumeComposition(
+          settings, `/composition/decks/by-id/${templateDeckId}/duplicate`,
+          { method: 'POST' },
+          (candidate) => Array.isArray(candidate?.decks) &&
+            candidate.decks.some((deck) =>
+              !previousIds.has(String(deck?.id ?? ''))),
+          `O Arena não confirmou a criação do deck ${expectedDeck}.`, 45000);
+      }
+
+      const newDeckEntries = composition.decks.slice(0, highestDeck);
+      composition = await mutateHookMarkerResolumeComposition(
+        settings, '/composition', {
+          method: 'PUT',
+          json: {
+            name: { value: compositionName },
+            decks: newDeckEntries.map((deck, index) => ({
+              id: deck.id,
+              name: { value: deckNames[index] }
+            }))
+          }
+        },
+        (candidate) => String(candidate?.name?.value || '') === compositionName &&
+          newDeckEntries.every((deck, index) => {
+            const current = candidate?.decks?.find(
+              (item) => item?.id === deck.id);
+            return String(current?.name?.value || '') === deckNames[index];
+          }),
+        'O Arena não confirmou os nomes da composição e dos decks.', 45000);
+      composition = await waitForHookMarkerResolumeStable(
+        settings, 30000, 700);
+    }
+    const deckEntries = composition.decks.slice(0, highestDeck);
+
+    let totalColumns = 0;
+    for (let deck = 1; deck <= highestDeck; deck += 1) {
+      const deckId = deckEntries[deck - 1]?.id;
+      const configured = await configureHookMarkerResolumeDeck(
+        settings, composition, compositionMap, deckId, deck);
+      composition = configured.composition;
+      totalColumns += configured.columnCount;
+    }
+    composition = await selectHookMarkerResolumeDeck(
+      settings, templateDeckId, 1,
+      'O Arena não confirmou a seleção do primeiro deck.');
+    await waitForHookMarkerResolumeStable(settings, 30000, 900);
+    let previousFileStat = null;
+    try { previousFileStat = fs.statSync(compositionPath); } catch (_) {}
+    try {
+      await hookMarkerResolumeApiRequest(settings, '/composition/save', {
+        method: 'POST',
+        text: pathToFileURL(compositionPath).href,
+        timeoutMilliseconds: 15000
+      });
+    } catch (error) {
+      // Assim como nas alterações da composição, o Arena pode salvar o
+      // arquivo e manter somente a resposta HTTP pendurada.
+      if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') throw error;
+    }
+    await waitForHookMarkerResolumeFile(
+      compositionPath, previousFileStat, 45000);
+    return {
+      ok: true,
+      filePath: compositionPath,
+      fileName: path.basename(compositionPath),
+      productName: String(product?.name || 'Resolume'),
+      productVersion: [major, minor, Number(product?.micro) || 0].join('.'),
+      deckCount: highestDeck,
+      totalColumns,
+      includeMarkers: settings.resolumeIncludeMarkers !== false
+    };
+  } catch (error) {
+    throw new Error(`${compositionStarted
+      ? 'A composição nova foi iniciada, mas não pôde ser concluída.'
+      : 'Não foi possível iniciar a composição.'} ${error?.message || error}`);
+  }
+}
+
+async function addHookMarkerResolumeSongs(input = {}) {
+  const project = await requireHookMarkerProject();
+  const settings = saveHookMarkerSettings(input);
+  const product = await hookMarkerResolumeApiRequest(
+    settings, '/product').catch((error) => {
+      throw new Error(error?.message ||
+        'Ative o Webserver do Resolume para adicionar as músicas.');
+    });
+  const major = Number(product?.major) || 0;
+  const minor = Number(product?.minor) || 0;
+  if (!/arena/i.test(String(product?.name || '')) ||
+      major < 7 || (major === 7 && minor < 22)) {
+    throw new Error(
+      'Adicionar músicas automaticamente requer Resolume Arena 7.22 ou mais recente.');
+  }
+
+  // Atualiza os dois mapas e anexa as regiões novas sem alterar os números já
+  // gravados no RPP.
+  await createHookMarkerResolumeMap(settings);
+  const compositionMap = buildPersistedHookMarkerResolumeMap(
+    project, settings, { createMissing: false });
+  const regionCues = compositionMap.cues.filter(
+    (cue) => cue.regionStart === true);
+  const highestDeck = regionCues.reduce(
+    (highest, cue) => Math.max(highest, Number(cue.deck) || 0), 0);
+  if (!highestDeck) {
+    throw new Error('O projeto não possui regiões de música para adicionar.');
+  }
+
+  let composition = await waitForHookMarkerResolumeStable(settings);
+  const compositionName = project.projectName || 'Projeto VS Hook';
+  if (String(composition?.name?.value || '') !== compositionName) {
+    throw new Error(
+      `Abra no Arena a composição "${compositionName}" criada pela Hook Center antes de adicionar músicas.`);
+  }
+  const initialDeckCount = Array.isArray(composition?.decks)
+    ? composition.decks.length : 0;
+  if (initialDeckCount < 1) {
+    throw new Error('O Arena não informou os decks da composição aberta.');
+  }
+
+  const expectedExistingNames = Array.from(
+    { length: Math.min(initialDeckCount, highestDeck) }, (_, index) =>
+      hookMarkerResolumeDeckDefinition(
+        compositionMap, index + 1).deckName);
+  const existingDecksMatch = expectedExistingNames.every((name, index) =>
+    String(composition.decks[index]?.name?.value || '') === name);
+  if (!existingDecksMatch) {
+    throw new Error(
+      'Os decks abertos não correspondem ao mapa deste projeto. Abra o arquivo .avc correto para não adicionar músicas na composição errada.');
+  }
+  if (initialDeckCount >= highestDeck) {
+    return {
+      ok: true,
+      addedDeckCount: 0,
+      totalDeckCount: initialDeckCount,
+      totalColumns: 0,
+      saved: false
+    };
+  }
+
+  const selectedDeck = composition.decks.find(
+    (deck) => deck?.selected?.value === true);
+  const newDecks = [];
+  while (composition.decks.length < highestDeck) {
+    const previousIds = new Set(composition.decks.map(
+      (deck) => String(deck?.id ?? '')));
+    const deckNumber = composition.decks.length + 1;
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, '/composition/decks/add', { method: 'POST' },
+      (candidate) => Array.isArray(candidate?.decks) &&
+        candidate.decks.some((deck) =>
+          !previousIds.has(String(deck?.id ?? ''))),
+      `O Arena não confirmou a criação do deck ${deckNumber}.`, 45000);
+    const createdDeck = composition.decks.find((deck) =>
+      !previousIds.has(String(deck?.id ?? '')));
+    if (!createdDeck?.id) {
+      throw new Error(`O Arena não informou o ID do deck ${deckNumber}.`);
+    }
+    newDecks.push({ id: createdDeck.id, number: deckNumber });
+  }
+
+  composition = await mutateHookMarkerResolumeComposition(
+    settings, '/composition', {
+      method: 'PUT',
+      json: {
+        decks: newDecks.map((deck) => ({
+          id: deck.id,
+          name: {
+            value: hookMarkerResolumeDeckDefinition(
+              compositionMap, deck.number).deckName
+          }
+        }))
+      }
+    },
+    (candidate) => newDecks.every((deck) => {
+      const current = candidate?.decks?.find(
+        (item) => item?.id === deck.id);
+      return String(current?.name?.value || '') ===
+        hookMarkerResolumeDeckDefinition(
+          compositionMap, deck.number).deckName;
+    }),
+    'O Arena não confirmou os nomes dos novos decks.', 45000);
+  composition = await waitForHookMarkerResolumeStable(
+    settings, 30000, 700);
+
+  let totalColumns = 0;
+  for (const deck of newDecks) {
+    const configured = await configureHookMarkerResolumeDeck(
+      settings, composition, compositionMap, deck.id, deck.number);
+    composition = configured.composition;
+    totalColumns += configured.columnCount;
+  }
+
+  if (selectedDeck?.id && composition.decks.some(
+    (deck) => deck?.id === selectedDeck.id)) {
+    composition = await selectHookMarkerResolumeDeck(
+      settings, selectedDeck.id,
+      composition.decks.findIndex((deck) => deck?.id === selectedDeck.id) + 1,
+      'O Arena não confirmou o retorno ao deck selecionado anteriormente.');
+  }
+  await waitForHookMarkerResolumeStable(settings, 30000, 900);
+
+  let saved = true;
+  try {
+    await hookMarkerResolumeApiRequest(settings, '/composition/save', {
+      method: 'POST',
+      timeoutMilliseconds: 15000
+    });
+  } catch (error) {
+    if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') saved = false;
+  }
+  return {
+    ok: true,
+    addedDeckCount: newDecks.length,
+    firstAddedDeck: initialDeckCount + 1,
+    lastAddedDeck: highestDeck,
+    totalDeckCount: highestDeck,
+    totalColumns,
+    saved
   };
 }
 
@@ -7506,7 +8312,7 @@ async function selectHookMarkerExportFolder(title) {
 
 async function exportHookMarkerGrandMa2(input = {}) {
   if (process.platform !== 'win32') {
-    throw new Error('A MA Lighting não disponibiliza o grandMA2 para macOS. A integração do Hook Marker com grandMA2 está disponível apenas no Windows.');
+    throw new Error('A MA Lighting não disponibiliza o grandMA2 para macOS. A ferramenta grandMA2 da Hook Center está disponível apenas no Windows.');
   }
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
@@ -7587,6 +8393,7 @@ function getHookMarkerResolumeRuntimeState() {
     lastTriggeredCue: Number(runtime.lastTriggeredCue) || 0,
     resolumePaused: runtime.resolumePaused === true,
     selectedColumn: Number(runtime.lastSelectedColumn) || 0,
+    selectedDeck: Number(runtime.lastSelectedDeck) || 0,
     lastError: runtime.lastError || ''
   };
 }
@@ -7621,6 +8428,9 @@ function stopHookMarkerResolumeRuntime(error = '') {
     hasRun: false,
     seekedWhileStopped: false,
     resolumePaused: false,
+    preparedDeck: 0,
+    preparedColumn: 0,
+    lastSelectedDeck: 0,
     lastSelectedColumn: 0,
     lastTriggeredCue: hookMarkerResolumeRuntime.lastTriggeredCue || 0,
     lastError: String(error || '')
@@ -7647,10 +8457,8 @@ async function hookMarkerResolumeTick() {
       hookMarkerResolumeRuntime.lastMapRefreshAt = Date.now();
       const project = await requireHookMarkerProject();
       const refreshedMap = buildPersistedHookMarkerResolumeMap(
-        project, hookMarkerResolumeRuntime.settings);
-      syncHookMarkerResolumeMapToExtension(
-        project, hookMarkerResolumeRuntime.settings, refreshedMap)
-        .catch(() => false);
+        project, hookMarkerResolumeRuntime.settings,
+        { createMissing: false });
       const refreshedSignature = JSON.stringify(refreshedMap.cues);
       if (refreshedMap.cues.length && refreshedSignature !==
           hookMarkerResolumeRuntime.cueMapSignature) {
@@ -7696,30 +8504,35 @@ async function hookMarkerResolumeTick() {
       const stoppedNow = wasRunning;
       if (selectedCue && (cursorMoved || stoppedNow ||
           hookMarkerResolumeRuntime.forceLocate ||
+          hookMarkerResolumeRuntime.lastSelectedDeck !==
+            selectedCue.deck ||
           hookMarkerResolumeRuntime.lastSelectedColumn !==
             selectedCue.column)) {
-        await selectResolumeColumn(
-          hookMarkerResolumeRuntime.settings, selectedCue.column);
-        await setResolumeColumnPlayhead(
-          hookMarkerResolumeRuntime.settings,
-          selectedCue.column,
-          Math.max(0, position - (Number.isFinite(
-            Number(selectedCue.positionSeconds))
-            ? Number(selectedCue.positionSeconds)
-            : position)));
+        // O botao triangular acima da coluna e o Connect: ele prepara todos os
+        // clips da coluna. Como a composicao ja esta em velocidade zero, a
+        // coluna inteira e conectada sem que os videos avancem.
+        if (hookMarkerResolumeRuntime.lastSelectedDeck !==
+            selectedCue.deck) {
+          await selectResolumeDeck(
+            hookMarkerResolumeRuntime.settings, selectedCue.deck);
+        }
+        if (hookMarkerResolumeRuntime.lastSelectedDeck !==
+              selectedCue.deck ||
+            hookMarkerResolumeRuntime.lastSelectedColumn !==
+              selectedCue.column) {
+          await testResolumeColumn(
+            hookMarkerResolumeRuntime.settings, selectedCue.column);
+        }
+        hookMarkerResolumeRuntime.lastSelectedDeck = selectedCue.deck;
         hookMarkerResolumeRuntime.lastSelectedColumn = selectedCue.column;
+        hookMarkerResolumeRuntime.preparedDeck = selectedCue.deck;
+        hookMarkerResolumeRuntime.preparedColumn = selectedCue.column;
         hookMarkerResolumeRuntime.forceLocate = false;
         publishHookMarkerResolumeRuntimeState();
       }
     }
 
     if (running) {
-      if (hookMarkerResolumeRuntime.resolumePaused) {
-        await setResolumeCompositionSpeed(
-          hookMarkerResolumeRuntime.settings, 1);
-        hookMarkerResolumeRuntime.resolumePaused = false;
-        publishHookMarkerResolumeRuntimeState();
-      }
       const shouldLocate = jumped || hookMarkerResolumeRuntime.forceLocate ||
         (startedNow && (!hookMarkerResolumeRuntime.hasRun ||
           hookMarkerResolumeRuntime.seekedWhileStopped));
@@ -7735,16 +8548,35 @@ async function hookMarkerResolumeTick() {
             cue.positionSeconds > previous + 0.000001 &&
             cue.positionSeconds <= position + 0.000001);
       for (const cue of dueCues) {
-        await testResolumeColumn(
-          hookMarkerResolumeRuntime.settings, cue.column);
+        const alreadyPrepared = startedNow &&
+          hookMarkerResolumeRuntime.resolumePaused &&
+          hookMarkerResolumeRuntime.preparedDeck === cue.deck &&
+          hookMarkerResolumeRuntime.preparedColumn === cue.column;
+        if (!alreadyPrepared) {
+          if (hookMarkerResolumeRuntime.lastSelectedDeck !== cue.deck) {
+            await selectResolumeDeck(
+              hookMarkerResolumeRuntime.settings, cue.deck);
+          }
+          await testResolumeColumn(
+            hookMarkerResolumeRuntime.settings, cue.column);
+        }
         if (!hookMarkerResolumeRuntime.active) return;
         hookMarkerResolumeRuntime.lastTriggeredCue = cue.cue;
+        hookMarkerResolumeRuntime.lastSelectedDeck = cue.deck;
         hookMarkerResolumeRuntime.lastSelectedColumn = cue.column;
         hookMarkerResolumeRuntime.lastError = '';
         publishHookMarkerResolumeRuntimeState();
       }
+      if (hookMarkerResolumeRuntime.resolumePaused) {
+        await setResolumeCompositionSpeed(
+          hookMarkerResolumeRuntime.settings, 1);
+        hookMarkerResolumeRuntime.resolumePaused = false;
+        publishHookMarkerResolumeRuntimeState();
+      }
       hookMarkerResolumeRuntime.hasRun = true;
       hookMarkerResolumeRuntime.seekedWhileStopped = false;
+      hookMarkerResolumeRuntime.preparedDeck = 0;
+      hookMarkerResolumeRuntime.preparedColumn = 0;
       hookMarkerResolumeRuntime.forceLocate = false;
     }
     hookMarkerResolumeRuntime.wasRunning = running;
@@ -7761,9 +8593,11 @@ async function hookMarkerResolumeTick() {
 async function startHookMarkerResolumeRuntime(input = {}) {
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
-  const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
-  await syncHookMarkerResolumeMapToExtension(
-    project, settings, cueMap).catch(() => false);
+  const cueMap = buildPersistedHookMarkerResolumeMap(
+    project, settings, { createMissing: false });
+  if (!cueMap.created) {
+    throw new Error('Crie o Mapa Resolume antes de iniciar a conexão.');
+  }
   if (!cueMap.cues.length) {
     throw new Error('O projeto aberto no REAPER não possui regiões ou marcadores para enviar ao Resolume.');
   }
@@ -7780,6 +8614,9 @@ async function startHookMarkerResolumeRuntime(input = {}) {
     hasRun: false,
     seekedWhileStopped: false,
     resolumePaused: false,
+    preparedDeck: 0,
+    preparedColumn: 0,
+    lastSelectedDeck: 0,
     lastSelectedColumn: 0,
     forceLocate: false,
     lastMapRefreshAt: Date.now(),
@@ -8140,16 +8977,18 @@ ipcMain.handle('hook-midi-mtc-switch-source', (_event, payload) => {
   }
   return timecodeLanRelay.setMtcSwitchSource(payload?.source || 'auto');
 });
-ipcMain.handle('hook-marker-get-state', () => getHookMarkerState());
+ipcMain.handle('hook-marker-get-state', (_event, options = {}) =>
+  getHookMarkerState(options));
 ipcMain.handle('hook-marker-save-settings', async (_event, payload = {}) => {
   const settings = saveHookMarkerSettings(payload);
-  try {
-    const project = await requireHookMarkerProject();
-    const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
-    await syncHookMarkerResolumeMapToExtension(project, settings, cueMap);
-  } catch (_) {}
   return { ok: true, settings };
 });
+ipcMain.handle('hook-marker-create-resolume-map', (_event, payload = {}) =>
+  createHookMarkerResolumeMap(payload));
+ipcMain.handle('hook-marker-create-resolume-project', (_event, payload = {}) =>
+  createHookMarkerResolumeProject(payload));
+ipcMain.handle('hook-marker-add-resolume-songs', (_event, payload = {}) =>
+  addHookMarkerResolumeSongs(payload));
 if (process.platform === 'win32') {
   ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
     exportHookMarkerGrandMa2(payload));
@@ -8626,9 +9465,8 @@ app.whenReady().then(async () => {
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
-  // Mantem o Mapa Resolume da extensao alinhado mesmo quando o usuario nao
-  // abre a aba Hook Marker nesta sessao. E somente leitura + ProjExtState;
-  // nenhum comando de transporte ou OSC e executado aqui.
+  // Le somente o mapa ja gravado no RPP. Atribuir colunas novas fica reservado
+  // ao botao Criar mapa da ferramenta Resolume.
   getHookMarkerState().catch(() => null);
 
   // O NSIS/PKG já instala runtime, Teleprompt e temas antes da primeira

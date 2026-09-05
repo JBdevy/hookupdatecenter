@@ -957,7 +957,8 @@
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="create-project">Create Project</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="add-project">Add Project</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="cable">CNX Redundante</button>
-          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">Hook Marker</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="hook-marker">grandMA2</button>
+          <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="resolume">Resolume</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="midi">Hook MIDI</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="show-mode">Modo Show</button>
           <button class="tools-submenu-button" type="button" role="tab" aria-selected="false" data-tools-panel="copy-project">Drop Hook</button>
@@ -1490,9 +1491,9 @@
         <div id="toolsHookMarkerPanel" class="tools-panel tools-hook-marker-panel" data-tools-panel-content="hook-marker" role="tabpanel">
           <div class="hero-card tools-hero hook-marker-hero">
             <div>
-              <p class="eyebrow">Marcadores do REAPER para o show</p>
-              <h1>Hook Marker</h1>
-              <p id="hookMarkerHeroDescription" class="muted">Gere os cues de cada música do projeto para grandMA2 ou transforme os marcadores em colunas do Resolume.</p>
+              <p class="eyebrow">Iluminação sincronizada pelo REAPER</p>
+              <h1>grandMA2</h1>
+              <p class="muted">Gere os XMLs de Macro e Timecode de cada música para executar as cues pelo MTC.</p>
             </div>
             <div class="hook-marker-hero-actions">
               <span id="hookMarkerStatusBadge" class="badge">Aguardando REAPER</span>
@@ -1515,7 +1516,7 @@
               </div>
             </section>
 
-            <section id="hookMarkerGrandMa2Card" class="card hook-marker-target-card hook-marker-grandma-card hidden">
+            <section id="hookMarkerGrandMa2Card" class="card hook-marker-target-card hook-marker-grandma-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Iluminação</p><h2>grandMA2</h2></div>
                 <span class="badge">XML</span>
@@ -1550,31 +1551,6 @@
               </ol>
             </section>
 
-            <aside id="hookMarkerGrandMa2MacNotice" class="card hook-marker-platform-notice hidden" role="note" aria-live="polite">
-              <div class="tool-card-header">
-                <div><p class="eyebrow">Disponibilidade</p><h2>grandMA2 disponível apenas no Windows</h2></div>
-                <span class="badge">Windows</span>
-              </div>
-              <p class="muted">A MA Lighting não disponibiliza o grandMA2 para macOS. Por isso, os recursos de exportação do Hook Marker para grandMA2 estão disponíveis somente na plataforma Windows. No macOS, o Hook Marker oferece apenas a integração com o Resolume.</p>
-            </aside>
-
-            <section class="card hook-marker-target-card hook-marker-resolume-card">
-              <div class="tool-card-header">
-                <div><p class="eyebrow">Vídeo</p><h2>Resolume</h2></div>
-                <span class="badge">OSC</span>
-              </div>
-              <div class="hook-marker-resolume-fields">
-                <label>IP do Resolume<input id="hookMarkerResolumeHost" type="text" value="127.0.0.1" autocomplete="off" /></label>
-                <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
-              </div>
-              <p class="muted hook-marker-help">O mapa começa sempre na coluna 1. O início de cada região musical e cada marcador são associados a uma coluna na ordem da timeline. Play e seek recuperam a coluna do trecho atual; ao parar o REAPER, o Resolume também é pausado. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
-              <div class="actions hook-marker-actions">
-                <button id="hookMarkerTestResolumeButton" class="secondary-button" type="button">Testar coluna 1</button>
-                <button id="hookMarkerRunResolumeButton" class="primary-button hook-marker-run-button" type="button" disabled>Ativar durante o Play</button>
-              </div>
-              <p id="hookMarkerResolumeRuntimeStatus" class="muted hook-marker-runtime-status">Execução automática desligada.</p>
-            </section>
-
             <section class="card hook-marker-preview-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Prévia</p><h2>Cues encontrados</h2></div>
@@ -1584,11 +1560,80 @@
                   <button id="hookMarkerClearSongsButton" class="secondary-button" type="button">Limpar</button>
                 </div>
               </div>
-              <div class="hook-marker-preview-head" aria-hidden="true">
-                <span>Cue</span><span>Marcador</span><span>Tempo</span><span>Resolume</span>
+              <div class="hook-marker-preview-head hook-marker-grandma-preview-head" aria-hidden="true">
+                <span>Cue</span><span>Marcador</span><span>Tempo</span>
               </div>
               <div id="hookMarkerPreviewList" class="hook-marker-preview-list">
                 <p class="muted">Conecte o REAPER para visualizar os marcadores.</p>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div id="toolsResolumePanel" class="tools-panel tools-resolume-panel" data-tools-panel-content="resolume" role="tabpanel">
+          <div class="hero-card tools-hero hook-marker-hero">
+            <div>
+              <p class="eyebrow">Resolume Arena 7.22+</p>
+              <h1>Resolume</h1>
+              <p class="muted">Conecte o REAPER ao Resolume e transforme o início das músicas e seus marcadores em colunas OSC.</p>
+            </div>
+            <div class="hook-marker-hero-actions">
+              <span id="resolumeToolStatusBadge" class="badge">Aguardando REAPER</span>
+              <button id="resolumeToolRefreshButton" class="secondary-button" type="button">Atualizar marcadores</button>
+            </div>
+          </div>
+
+          <div class="hook-marker-resolume-version-notice resolume-tool-version-notice" role="note">
+            <strong>Resolume Arena 7.22+</strong>
+            <span>A preparação da coluna inteira com o transporte parado foi projetada para esta versão ou mais recente.</span>
+          </div>
+
+          <div class="hook-marker-grid resolume-tool-grid">
+            <section class="card hook-marker-project-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Projeto aberto</p><h2 id="resolumeToolProjectName">Nenhum projeto conectado</h2></div>
+                <span id="resolumeToolCountBadge" class="badge">0 colunas necessárias</span>
+              </div>
+              <p id="resolumeToolProjectPath" class="muted hook-marker-project-path">Abra o REAPER e carregue um projeto com marcadores.</p>
+            </section>
+
+            <section class="card hook-marker-target-card hook-marker-resolume-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Conexão de vídeo</p><h2>REAPER → Resolume</h2></div>
+                <span class="badge">OSC</span>
+              </div>
+              <div class="hook-marker-resolume-fields">
+                <label>IP do Resolume<input id="hookMarkerResolumeHost" type="text" value="127.0.0.1" autocomplete="off" /></label>
+                <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
+                <label>Porta Webserver<input id="hookMarkerResolumeWebPort" type="number" min="1" max="65535" value="8080" /></label>
+              </div>
+              <label class="resolume-marker-option">
+                <input id="hookMarkerResolumeIncludeMarkers" type="checkbox" checked />
+                <span>
+                  <strong>Considerar marcadores</strong>
+                  <small>Quando desmarcado, somente o início das regiões ocupa colunas.</small>
+                </span>
+              </label>
+              <p class="muted hook-marker-help">Cada música recebe um deck com seu nome. A coluna 1 se chama Início e os marcadores internos ocupam as colunas seguintes. Criar mapa grava essa relação no projeto do REAPER; Criar projeto monta uma composição nova; Adicionar músicas acrescenta somente os decks das regiões novas à composição aberta. Ative OSC Input (porta 7000) e Webserver (porta 8080) no Resolume.</p>
+              <div class="actions hook-marker-actions resolume-connection-actions">
+                <button id="hookMarkerCreateResolumeMapButton" class="secondary-button" type="button" disabled>Criar mapa</button>
+                <button id="hookMarkerCreateResolumeProjectButton" class="secondary-button" type="button" disabled>Criar projeto no Resolume</button>
+                <button id="hookMarkerAddResolumeSongsButton" class="secondary-button" type="button" disabled>Adicionar músicas</button>
+                <button id="hookMarkerRunResolumeButton" class="primary-button hook-marker-run-button" type="button" disabled>Iniciar conexão REAPER → Resolume</button>
+              </div>
+              <p id="hookMarkerResolumeRuntimeStatus" class="muted hook-marker-runtime-status">Conexão desligada.</p>
+            </section>
+
+            <section class="card hook-marker-preview-card resolume-tool-preview-card">
+              <div class="tool-card-header">
+                <div><p class="eyebrow">Mapa Resolume</p><h2>Colunas do projeto</h2></div>
+                <span id="resolumeToolMapCountBadge" class="badge">0 colunas</span>
+              </div>
+              <div class="hook-marker-preview-head resolume-tool-preview-head" aria-hidden="true">
+                <span>Deck</span><span>Coluna</span><span>Nome</span><span>Tempo</span>
+              </div>
+              <div id="resolumeToolPreviewList" class="hook-marker-preview-list">
+                <p class="muted">Conecte o REAPER para visualizar o mapa de colunas.</p>
               </div>
             </section>
           </div>

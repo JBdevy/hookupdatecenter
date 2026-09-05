@@ -634,8 +634,8 @@ function requestNativeBridgeJson(pathname, options = {}) {
 }
 
 
-async function refreshNativeBridgeState() {
-  if (nativeBridgeStateCache &&
+async function refreshNativeBridgeState(force = false) {
+  if (!force && nativeBridgeStateCache &&
       (Date.now() - nativeBridgeStateCacheAt) <
         NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS) {
     return nativeBridgeStateCache
@@ -664,8 +664,9 @@ async function refreshNativeBridgeState() {
   }
 }
 
-async function getNativeBridgeStateSnapshot(maxStaleMs = 3000) {
-  const refreshed = await refreshNativeBridgeState()
+async function getNativeBridgeStateSnapshot(
+  maxStaleMs = 3000, { force = false } = {}) {
+  const refreshed = await refreshNativeBridgeState(force)
   if (refreshed) return refreshed
   if (nativeBridgeStateCache &&
       Date.now() - nativeBridgeStateCacheAt <=

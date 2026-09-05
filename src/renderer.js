@@ -5,6 +5,7 @@ const HOOK_CENTER_IS_MACOS = window.hookUpdateCenter?.platform === 'darwin';
 let state = null;
 let currentYoutubeWatchUrl = "";
 let pendingModalRequest = null;
+let modalLocked = false;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
 let createProjectDestination = null;
@@ -22,6 +23,9 @@ let macShowModeState = null;
 let macShowModeBusy = false;
 let hookMarkerState = null;
 let hookMarkerBusy = false;
+let hookMarkerRefreshing = false;
+let hookMarkerRefreshMessage = '';
+let hookMarkerRefreshMessageTimer = 0;
 let hookMarkerRuntimeState = { active: false };
 let hookMarkerSelectedSongIds = new Set();
 let hookMarkerKnownSongIds = new Set();
@@ -654,10 +658,12 @@ function resetModalControls() {
   const okButton = $('#modalOkButton');
   const alternativeButton = $('#modalAlternativeButton');
   const cancelButton = $('#modalCancelButton');
-  backdrop?.classList.remove('reinstall-source-choice');
+  backdrop?.classList.remove('reinstall-source-choice', 'modal-blocking');
+  modalLocked = false;
   if (okButton) {
     okButton.textContent = 'OK';
     okButton.disabled = false;
+    okButton.classList.remove('hidden');
   }
   if (alternativeButton) {
     alternativeButton.textContent = 'Reinstalar do PC';
@@ -684,6 +690,22 @@ function showModal({ title = 'Aviso', message = '', type = 'info' }) {
   $('#modalOkButton').focus();
 }
 
+function showBlockingModal({
+  title = 'Aguarde',
+  message = 'A operação está sendo concluída.'
+} = {}) {
+  showModal({ title, message, type: 'loading' });
+  modalLocked = true;
+  $('#appModal')?.classList.add('modal-blocking');
+  $('#modalOkButton')?.classList.add('hidden');
+}
+
+function closeBlockingModal() {
+  if (!modalLocked) return;
+  modalLocked = false;
+  settleModal(false);
+}
+
 function settleModal(value) {
   const request = pendingModalRequest;
   pendingModalRequest = null;
@@ -693,6 +715,7 @@ function settleModal(value) {
 }
 
 function hideModal() {
+  if (modalLocked) return;
   const dismissValue = pendingModalRequest
     ? pendingModalRequest.dismissValue
     : false;
@@ -3054,20 +3077,8 @@ async function refreshCopyProjectState() {
 }
 
 function configurePlatformSpecificTools() {
-  const grandMa2Card = $('#hookMarkerGrandMa2Card');
   const grandMa2MidiCard = $('#hookMidiGrandMa2Card');
-  const macNotice = $('#hookMarkerGrandMa2MacNotice');
-  const grid = document.querySelector('.hook-marker-grid');
-  const heroDescription = $('#hookMarkerHeroDescription');
-  const songSelectionControls = $('#hookMarkerSongSelectionControls');
-  grandMa2Card?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
   grandMa2MidiCard?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
-  macNotice?.classList.toggle('hidden', !HOOK_CENTER_IS_MACOS);
-  grid?.classList.toggle('is-macos', HOOK_CENTER_IS_MACOS);
-  songSelectionControls?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
-  if (HOOK_CENTER_IS_MACOS && heroDescription) {
-    heroDescription.textContent = 'Transforme os marcadores de cada música do projeto em colunas do Resolume.';
-  }
 }
 
 function readHookMarkerSettings() {
@@ -3076,6 +3087,8 @@ function readHookMarkerSettings() {
     offset: '00:00:00:00',
     resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
     resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
+    resolumeWebPort: Number($('#hookMarkerResolumeWebPort')?.value || 8080),
+    resolumeIncludeMarkers: $('#hookMarkerResolumeIncludeMarkers')?.checked !== false,
     resolumeFirstColumn: 1
   };
   if (!HOOK_CENTER_IS_MACOS) {
@@ -3093,7 +3106,8 @@ function readHookMarkerSettings() {
 function applyHookMarkerSettings(settings = {}) {
   const fields = {
     hookMarkerResolumeHost: settings.resolumeHost,
-    hookMarkerResolumePort: settings.resolumePort
+    hookMarkerResolumePort: settings.resolumePort,
+    hookMarkerResolumeWebPort: settings.resolumeWebPort
   };
   if (!HOOK_CENTER_IS_MACOS) {
     Object.assign(fields, {
@@ -3108,6 +3122,10 @@ function applyHookMarkerSettings(settings = {}) {
     const input = $(`#${id}`);
     if (input && value !== undefined && value !== null) input.value = String(value);
   });
+  const includeMarkers = $('#hookMarkerResolumeIncludeMarkers');
+  if (includeMarkers) {
+    includeMarkers.checked = settings.resolumeIncludeMarkers !== false;
+  }
   updateHookMarkerGrandMa2Summary();
 }
 
@@ -3216,34 +3234,6 @@ function renderHookMarkerPreview() {
   const settings = readHookMarkerSettings();
   updateHookMarkerGrandMa2Summary(settings);
   const fps = Math.max(1, Math.round(settings.fps || 30));
-  const firstColumn = 1;
-  const regionStarts = songs.map((song, index) => ({
-    id: `region-${song.id}`,
-    position: Number(song.start) || 0,
-    regionStart: true,
-    order: index
-  }));
-  const resolumeMarkers = markers.filter((marker) => {
-    const position = Number(marker.position) || 0;
-    return songs.some((song) =>
-      position > (Number(song.start) || 0) + 0.0005 &&
-      position < (Number(song.end) || 0) - 0.0005) &&
-      !regionStarts.some((regionStart) =>
-        Math.abs(regionStart.position - position) <= 0.0005);
-  });
-  const resolumeTimeline = [...regionStarts, ...resolumeMarkers]
-    .sort((left, right) => {
-      const positionDelta = (Number(left.position) || 0) -
-        (Number(right.position) || 0);
-      if (positionDelta !== 0) return positionDelta;
-      if (left.regionStart !== right.regionStart) {
-        return left.regionStart === true ? -1 : 1;
-      }
-      return (Number(left.number ?? left.order) || 0) -
-        (Number(right.number ?? right.order) || 0);
-    });
-  const resolumeGlobalIndex = new Map(resolumeTimeline.map(
-    (cue, index) => [String(cue.id), index]));
   const songHtml = songs.map((song, songIndex) => {
     const selected = hookMarkerSelectedSongIds.has(String(song.id));
     const start = Number(song.start) || 0;
@@ -3256,13 +3246,9 @@ function renderHookMarkerPreview() {
       { id: `region-${song.id}`, name: song.name, position: 0, regionStart: true },
       ...contained.map((marker) => ({ ...marker, position: Math.max(0, (Number(marker.position) || 0) - start) }))
     ];
-    const targetSummary = HOOK_CENTER_IS_MACOS
-      ? `Resolume · ${cues.length} cue${cues.length === 1 ? '' : 's'}`
-      : `Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}`;
+    const targetSummary = `Sequence ${(settings.sequence || 1) + songIndex} · Executor ${settings.executorPage || 1}.${(settings.executor || 1) + songIndex} · Timecode ${(settings.timecodePool || 1) + songIndex}`;
     const songTitle = escapeHtml(song.name || `Música ${songIndex + 1}`);
-    const songSelector = HOOK_CENTER_IS_MACOS
-      ? `<strong>${songTitle}</strong>`
-      : `<label class="hook-marker-song-select">
+    const songSelector = `<label class="hook-marker-song-select">
           <input type="checkbox" data-hook-marker-song-index="${songIndex}"${selected ? ' checked' : ''} aria-label="Selecionar ${songTitle}" />
           <strong>${songTitle}</strong>
         </label>`;
@@ -3271,19 +3257,15 @@ function renderHookMarkerPreview() {
         ${songSelector}
         <span>${targetSummary}</span>
       </div>
-      ${cues.map((cue, cueIndex) => {
-        const resolumeIndex = resolumeGlobalIndex.get(String(cue.id));
-        return `
-          <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}${selected ? '' : ' is-song-unselected'}">
+      ${cues.map((cue, cueIndex) => `
+          <div class="hook-marker-preview-item is-grandma${cue.regionStart ? ' is-region-start' : ''}${selected ? '' : ' is-song-unselected'}">
             <strong>${cueIndex + 1}</strong>
             <span title="${escapeHtml(cue.name || '')}">${escapeHtml(cue.name || `Cue ${cueIndex + 1}`)}${cue.regionStart ? ' — início da região' : ''}</span>
             <code>${hookMarkerTimecode(Number(cue.position) || 0, fps)}</code>
-            <span>${resolumeIndex === undefined ? '—' : `Coluna ${firstColumn + resolumeIndex}`}</span>
-          </div>`;
-      }).join('')}`;
+          </div>`).join('')}`;
   }).join('');
   list.innerHTML = songHtml ||
-    '<p class="muted">Não existem músicas válidas. Marcadores soltos não ocupam colunas do Resolume.</p>';
+    '<p class="muted">Não existem regiões de música válidas para exportar ao grandMA2.</p>';
   list.querySelectorAll('[data-hook-marker-song-index]').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const song = songs[Number(checkbox.dataset.hookMarkerSongIndex)];
@@ -3296,13 +3278,61 @@ function renderHookMarkerPreview() {
   });
 }
 
+function renderResolumeToolPreview() {
+  const list = $('#resolumeToolPreviewList');
+  if (!list) return;
+  const connected = hookMarkerState?.connected === true;
+  const mapCreated = hookMarkerState?.resolumeMap?.created === true;
+  const pendingCueCount = Math.max(0,
+    Number(hookMarkerState?.resolumeMap?.pendingCueCount) || 0);
+  const cues = Array.isArray(hookMarkerState?.resolumeMap?.cues)
+    ? hookMarkerState.resolumeMap.cues : [];
+  const deckCount = Math.max(0,
+    ...cues.map((cue) => Number(cue.deck) || 0));
+  const countLabel = !mapCreated
+    ? 'Mapa não criado'
+    : `${deckCount} deck${deckCount === 1 ? '' : 's'} · ${cues.length} coluna${cues.length === 1 ? '' : 's'}${
+        pendingCueCount > 0 ? ` · ${pendingCueCount} novo${pendingCueCount === 1 ? '' : 's'}` : ''}`;
+  const countBadge = $('#resolumeToolMapCountBadge');
+  if (countBadge) countBadge.textContent = countLabel;
+  if (!connected) {
+    list.innerHTML = '<p class="muted">Conecte o REAPER para visualizar o mapa de colunas.</p>';
+    return;
+  }
+  if (!mapCreated) {
+    list.innerHTML = '<p class="muted">Clique em <strong>Criar mapa</strong> para numerar as regiões e os marcadores internos e gravar o mapa no projeto.</p>';
+    return;
+  }
+  if (!cues.length) {
+    list.innerHTML = pendingCueCount > 0
+      ? '<p class="muted">Há itens novos no projeto. Clique em <strong>Criar mapa</strong> para acrescentá-los sem alterar as colunas existentes.</p>'
+      : '<p class="muted">Não existem regiões de música nem marcadores internos para mapear. Marcadores soltos não ocupam colunas.</p>';
+    return;
+  }
+  list.innerHTML = cues.map((cue) => {
+    const isRegionStart = cue.sourceType === 'region_start' || cue.regionStart === true;
+    const deckName = escapeHtml(cue.deckName || `Música ${cue.deck || ''}`);
+    const columnName = escapeHtml(cue.columnName ||
+      cue.markerName || (isRegionStart ? 'Início' : 'Marcador'));
+    return `
+      <div class="hook-marker-preview-item resolume-tool-preview-item${isRegionStart ? ' is-region-start' : ''}">
+        <strong title="${deckName}">Deck ${Number(cue.deck) || '—'}</strong>
+        <strong>${Number(cue.column) || '—'}</strong>
+        <span title="${columnName}">${columnName}</span>
+        <code>${escapeHtml(cue.timecode || hookMarkerTimecode(cue.positionSeconds, 30))}</code>
+      </div>`;
+  }).join('');
+}
+
 function renderHookMarkerRuntimeState(nextState) {
   if (nextState) hookMarkerRuntimeState = nextState;
   const active = hookMarkerRuntimeState?.active === true;
   const button = $('#hookMarkerRunResolumeButton');
   const status = $('#hookMarkerResolumeRuntimeStatus');
   if (button) {
-    button.textContent = active ? 'Desativar execução' : 'Ativar durante o Play';
+    button.textContent = active
+      ? 'Encerrar conexão REAPER → Resolume'
+      : 'Iniciar conexão REAPER → Resolume';
     button.classList.toggle('is-running', active);
   }
   if (status) {
@@ -3314,13 +3344,13 @@ function renderHookMarkerRuntimeState(nextState) {
       status.textContent = hookMarkerRuntimeState.resolumePaused
         ? `Ativo. REAPER parado; Resolume pausado${
           hookMarkerRuntimeState.selectedColumn
-            ? ` na coluna ${hookMarkerRuntimeState.selectedColumn}` : ''}.`
+            ? ` no deck ${hookMarkerRuntimeState.selectedDeck || '—'}, coluna ${hookMarkerRuntimeState.selectedColumn}` : ''}.`
         : lastCue > 0
         ? `Ativo. Último cue enviado: ${lastCue}.`
         : `Ativo com ${hookMarkerRuntimeState.cueCount || 0} cues. Aguardando o Play do REAPER.`;
       status.classList.remove('is-error');
     } else {
-      status.textContent = 'Execução automática desligada.';
+      status.textContent = 'Conexão desligada.';
       status.classList.remove('is-error');
     }
   }
@@ -3332,10 +3362,18 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   const connected = hookMarkerState?.connected === true;
   const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
   const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
+  const resolumeMapCreated = hookMarkerState?.resolumeMap?.created === true;
+  const resolumePendingCueCount = Math.max(0,
+    Number(hookMarkerState?.resolumeMap?.pendingCueCount) || 0);
+  const resolumeCues = Array.isArray(hookMarkerState?.resolumeMap?.cues)
+    ? hookMarkerState.resolumeMap.cues : [];
+  const resolumeDeckCount = Math.max(0,
+    ...resolumeCues.map((cue) => Number(cue.deck) || 0));
   syncHookMarkerSongSelection(songs);
   const selectedSongCount = selectedHookMarkerSongIds(songs).length;
   const badge = $('#hookMarkerStatusBadge');
-  if (badge) badge.textContent = connected ? 'REAPER conectado' : 'Aguardando REAPER';
+  if (badge) badge.textContent = hookMarkerRefreshMessage ||
+    (connected ? 'REAPER conectado' : 'Aguardando REAPER');
   $('#hookMarkerProjectName').textContent = connected
     ? (hookMarkerState.projectName || 'Projeto sem nome')
     : 'Nenhum projeto conectado';
@@ -3343,28 +3381,117 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
     ? (hookMarkerState.projectPath || 'Projeto ainda não foi salvo em disco.')
     : 'Abra o REAPER e carregue um projeto com marcadores.';
   $('#hookMarkerCountBadge').textContent = `${songs.length} música${songs.length === 1 ? '' : 's'} · ${markers.length} marcador${markers.length === 1 ? '' : 'es'}`;
-  const canUseResolume = connected &&
-    (markers.length > 0 || songs.length > 0) && !hookMarkerBusy;
+  const resolumeStatusBadge = $('#resolumeToolStatusBadge');
+  if (resolumeStatusBadge) {
+    resolumeStatusBadge.textContent = hookMarkerRefreshMessage ||
+      (connected ? 'REAPER conectado' : 'Aguardando REAPER');
+  }
+  const resolumeProjectName = $('#resolumeToolProjectName');
+  if (resolumeProjectName) {
+    resolumeProjectName.textContent = connected
+      ? (hookMarkerState.projectName || 'Projeto sem nome')
+      : 'Nenhum projeto conectado';
+  }
+  const resolumeProjectPath = $('#resolumeToolProjectPath');
+  if (resolumeProjectPath) {
+    resolumeProjectPath.textContent = connected
+      ? (hookMarkerState.projectPath || 'Projeto ainda não foi salvo em disco.')
+      : 'Abra o REAPER e carregue um projeto com marcadores.';
+  }
+  const resolumeCountBadge = $('#resolumeToolCountBadge');
+  if (resolumeCountBadge) {
+    resolumeCountBadge.textContent = !resolumeMapCreated
+      ? 'Mapa não criado'
+      : `${resolumeDeckCount} deck${resolumeDeckCount === 1 ? '' : 's'} · ${resolumeCues.length} coluna${resolumeCues.length === 1 ? '' : 's'}${
+          resolumePendingCueCount > 0
+            ? ` · ${resolumePendingCueCount} novo${resolumePendingCueCount === 1 ? '' : 's'}` : ''}`;
+  }
+  const canUseResolume = connected && resolumeMapCreated &&
+    resolumeCues.length > 0 && !hookMarkerBusy;
   const grandMa2Button = $('#hookMarkerExportGrandMa2Button');
   if (grandMa2Button) {
     grandMa2Button.disabled = HOOK_CENTER_IS_MACOS || !connected ||
       !songs.length || selectedSongCount === 0 || hookMarkerBusy;
   }
-  $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
-  $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
-  $('#hookMarkerTestResolumeButton').disabled = hookMarkerBusy;
+  const runResolumeButton = $('#hookMarkerRunResolumeButton');
+  if (runResolumeButton) {
+    runResolumeButton.disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
+  }
+  const createResolumeMapButton = $('#hookMarkerCreateResolumeMapButton');
+  if (createResolumeMapButton) {
+    createResolumeMapButton.disabled = !connected || !songs.length || hookMarkerBusy;
+    createResolumeMapButton.textContent = 'Criar mapa';
+  }
+  const createResolumeProjectButton = $('#hookMarkerCreateResolumeProjectButton');
+  if (createResolumeProjectButton) {
+    createResolumeProjectButton.disabled = !connected || !songs.length || hookMarkerBusy;
+  }
+  const addResolumeSongsButton = $('#hookMarkerAddResolumeSongsButton');
+  if (addResolumeSongsButton) {
+    addResolumeSongsButton.disabled = !connected || !songs.length || hookMarkerBusy;
+  }
+  const grandMaRefreshButton = $('#hookMarkerRefreshButton');
+  if (grandMaRefreshButton) {
+    grandMaRefreshButton.disabled = hookMarkerBusy || hookMarkerRefreshing;
+    grandMaRefreshButton.textContent = hookMarkerRefreshing
+      ? 'Atualizando…' : 'Atualizar marcadores';
+  }
+  const resolumeRefreshButton = $('#resolumeToolRefreshButton');
+  if (resolumeRefreshButton) {
+    resolumeRefreshButton.disabled = hookMarkerBusy || hookMarkerRefreshing;
+    resolumeRefreshButton.textContent = hookMarkerRefreshing
+      ? 'Atualizando…' : 'Atualizar marcadores';
+  }
   updateHookMarkerSongSelectionControls(songs);
   renderHookMarkerPreview();
+  renderResolumeToolPreview();
 }
 
-async function refreshHookMarkerState({ applySettings = true } = {}) {
+async function refreshHookMarkerState({
+  applySettings = true, showFeedback = false
+} = {}) {
+  if (hookMarkerRefreshing) return;
+  if (showFeedback) {
+    hookMarkerRefreshing = true;
+    hookMarkerRefreshMessage = '';
+    if (hookMarkerRefreshMessageTimer) {
+      clearTimeout(hookMarkerRefreshMessageTimer);
+      hookMarkerRefreshMessageTimer = 0;
+    }
+    renderHookMarkerState();
+  }
   try {
-    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), { applySettings });
+    const nextState = await window.hookUpdateCenter.getHookMarkerState({
+      forceRefresh: showFeedback
+    });
+    renderHookMarkerState(nextState, { applySettings });
     renderHookMarkerRuntimeState(await window.hookUpdateCenter.getHookMarkerRuntimeState());
+    if (showFeedback) {
+      const songCount = Array.isArray(nextState?.songs)
+        ? nextState.songs.length : 0;
+      const markerCount = Array.isArray(nextState?.markers)
+        ? nextState.markers.length : 0;
+      hookMarkerRefreshMessage =
+        `${songCount} música${songCount === 1 ? '' : 's'} · ${markerCount} marcador${markerCount === 1 ? '' : 'es'} atualizados`;
+    }
   } catch (error) {
     hookMarkerState = { connected: false, markers: [], songs: [] };
     renderHookMarkerState();
-    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível ler os marcadores do REAPER.'), type: 'error' });
+    showModal({
+      title: selectedToolsPanel === 'resolume' ? 'Resolume' : 'grandMA2',
+      message: friendlyError(error, 'Não foi possível ler os marcadores do REAPER.'),
+      type: 'error'
+    });
+  } finally {
+    if (showFeedback) {
+      hookMarkerRefreshing = false;
+      renderHookMarkerState();
+      hookMarkerRefreshMessageTimer = setTimeout(() => {
+        hookMarkerRefreshMessage = '';
+        hookMarkerRefreshMessageTimer = 0;
+        renderHookMarkerState();
+      }, 2200);
+    }
   }
 }
 
@@ -3378,8 +3505,143 @@ async function toggleHookMarkerResolumeRuntime() {
       : await window.hookUpdateCenter.startHookMarkerResolume(readHookMarkerSettings());
     renderHookMarkerRuntimeState(runtime);
   } catch (error) {
-    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível alterar a execução automática do Resolume.'), type: 'error' });
+    showModal({ title: 'Resolume', message: friendlyError(error, 'Não foi possível alterar a conexão com o Resolume.'), type: 'error' });
   } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function createHookMarkerResolumeMapFromUi() {
+  if (hookMarkerBusy ||
+      typeof window.hookUpdateCenter.createHookMarkerResolumeMap !== 'function') return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  try {
+    const state = await window.hookUpdateCenter.createHookMarkerResolumeMap(
+      readHookMarkerSettings());
+    renderHookMarkerState(state, { applySettings: false });
+    const cues = Array.isArray(state?.resolumeMap?.cues)
+      ? state.resolumeMap.cues : [];
+    const decks = Math.max(0,
+      ...cues.map((cue) => Number(cue.deck) || 0));
+    showModal({
+      title: 'Mapa Resolume criado',
+      message: `${decks} deck(s) e ${cues.length} coluna(s) no modo ${
+        state?.settings?.resolumeIncludeMarkers === false
+          ? 'somente regiões' : 'regiões e marcadores'}.
+
+Os dois modos foram atualizados e gravados no projeto do REAPER. Salve o projeto para persistir a alteração no arquivo .RPP.`,
+      type: 'success'
+    });
+  } catch (error) {
+    showModal({
+      title: 'Mapa Resolume',
+      message: friendlyError(error, 'Não foi possível criar o Mapa Resolume.'),
+      type: 'error'
+    });
+  } finally {
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function createHookMarkerResolumeProjectFromUi() {
+  if (hookMarkerBusy ||
+      typeof window.hookUpdateCenter.createHookMarkerResolumeProject !== 'function') return;
+  const confirmed = await confirmModal({
+    title: 'Criar projeto no Resolume',
+    message: `A composição aberta no Resolume será limpa para montar o novo projeto.
+
+O arquivo original no disco não será alterado, pois o resultado será salvo em outro arquivo .avc. Porém, alterações que ainda não foram salvas no projeto aberto serão perdidas.
+
+Salve essas alterações antes de continuar, caso sejam importantes.`,
+    type: 'info',
+    okText: 'Criar projeto',
+    cancelText: 'Cancelar'
+  });
+  if (!confirmed) return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  showBlockingModal({
+    title: 'Criando projeto no Resolume',
+    message: 'Aguarde enquanto o Arena cria e confirma os decks, as colunas e o arquivo .avc.\n\nNão feche o Resolume nem a Hook Center.'
+  });
+  try {
+    const result = await window.hookUpdateCenter.createHookMarkerResolumeProject(
+      readHookMarkerSettings());
+    if (result?.cancelled) {
+      closeBlockingModal();
+      return;
+    }
+    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), {
+      applySettings: false
+    });
+    showModal({
+      title: 'Projeto Resolume criado',
+      message: `${result.deckCount} deck(s) e ${result.totalColumns} coluna(s) foram criados e nomeados${
+        result.includeMarkers === false ? ' sem considerar marcadores' : ''}.
+
+Arquivo salvo em:
+${result.filePath}`,
+      type: 'success'
+    });
+  } catch (error) {
+    console.error('Falha ao criar projeto no Resolume:', error);
+    showModal({
+      title: 'Criar projeto no Resolume',
+      message: cleanErrorMessage(error) ||
+        'Não foi possível criar o projeto no Resolume.',
+      type: 'error'
+    });
+  } finally {
+    closeBlockingModal();
+    hookMarkerBusy = false;
+    renderHookMarkerState();
+  }
+}
+
+async function addHookMarkerResolumeSongsFromUi() {
+  if (hookMarkerBusy ||
+      typeof window.hookUpdateCenter.addHookMarkerResolumeSongs !== 'function') return;
+  hookMarkerBusy = true;
+  renderHookMarkerState();
+  showBlockingModal({
+    title: 'Adicionando músicas ao Resolume',
+    message: 'Aguarde enquanto a Hook Center identifica as regiões novas e prepara somente os decks que ainda não existem.\n\nOs decks atuais e seus vídeos não serão apagados.'
+  });
+  try {
+    const result = await window.hookUpdateCenter.addHookMarkerResolumeSongs(
+      readHookMarkerSettings());
+    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState({
+      forceRefresh: true
+    }), { applySettings: false });
+    if (!result?.addedDeckCount) {
+      showModal({
+        title: 'Adicionar músicas',
+        message: 'Nenhuma música nova foi encontrada. A composição já possui todos os decks deste projeto.',
+        type: 'info'
+      });
+      return;
+    }
+    showModal({
+      title: 'Músicas adicionadas',
+      message: `${result.addedDeckCount} deck(s) novo(s) foram criados, do deck ${result.firstAddedDeck} ao ${result.lastAddedDeck}, com ${result.totalColumns} coluna(s) no total.${
+        result.saved === false
+          ? '\n\nO Arena não confirmou o salvamento automático. Salve a composição pelo próprio Resolume.'
+          : '\n\nA composição aberta foi salva pelo Arena.'}`,
+      type: 'success'
+    });
+  } catch (error) {
+    console.error('Falha ao adicionar músicas no Resolume:', error);
+    showModal({
+      title: 'Adicionar músicas',
+      message: cleanErrorMessage(error) ||
+        'Não foi possível adicionar as músicas ao Resolume.',
+      type: 'error'
+    });
+  } finally {
+    closeBlockingModal();
     hookMarkerBusy = false;
     renderHookMarkerState();
   }
@@ -3393,6 +3655,9 @@ async function saveHookMarkerSettingsFromUi() {
     if (hookMarkerRuntimeState?.active) {
       renderHookMarkerRuntimeState(await window.hookUpdateCenter.stopHookMarkerResolume());
     }
+    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), {
+      applySettings: false
+    });
   } catch (_) {}
 }
 
@@ -3405,7 +3670,7 @@ async function exportHookMarkerGrandMa2() {
     const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
     const selectedSongIds = selectedHookMarkerSongIds(songs);
     if (!selectedSongIds.length) {
-      showModal({ title: 'Hook Marker', message: 'Selecione pelo menos uma música na prévia.', type: 'info' });
+      showModal({ title: 'grandMA2', message: 'Selecione pelo menos uma música na prévia.', type: 'info' });
       return;
     }
     const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2({
@@ -3418,26 +3683,7 @@ async function exportHookMarkerGrandMa2() {
       type: 'success'
     });
   } catch (error) {
-    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível exportar os arquivos grandMA2.'), type: 'error' });
-  } finally {
-    hookMarkerBusy = false;
-    renderHookMarkerState();
-  }
-}
-
-async function testHookMarkerResolume() {
-  if (hookMarkerBusy) return;
-  hookMarkerBusy = true;
-  renderHookMarkerState();
-  try {
-    const result = await window.hookUpdateCenter.testHookMarkerResolume(readHookMarkerSettings());
-    showModal({
-      title: 'Comando enviado ao Resolume',
-      message: `A coluna ${result.column} foi acionada em ${result.host}:${result.port}.`,
-      type: 'success'
-    });
-  } catch (error) {
-    showModal({ title: 'Hook Marker', message: friendlyError(error, 'Não foi possível enviar o comando OSC ao Resolume.'), type: 'error' });
+    showModal({ title: 'grandMA2', message: friendlyError(error, 'Não foi possível exportar os arquivos grandMA2.'), type: 'error' });
   } finally {
     hookMarkerBusy = false;
     renderHookMarkerState();
@@ -3447,8 +3693,8 @@ async function testHookMarkerResolume() {
 function setToolsPanel(panelName = 'rename') {
   const allowed = [
     'rename', 'create-project', 'add-project', 'cable',
-    ...(!HOOK_CENTER_IS_MACOS ? ['midi'] : []),
-    'copy-project', 'show-mode', 'hook-marker', 'pingpong'
+    ...(!HOOK_CENTER_IS_MACOS ? ['hook-marker', 'midi'] : []),
+    'resolume', 'copy-project', 'show-mode', 'pingpong'
   ];
   if (selectedToolsPanel === 'pingpong' && panelName !== 'pingpong' && pingPongGame.running) stopPingPongGame();
   selectedToolsPanel = allowed.includes(panelName) ? panelName : 'rename';
@@ -3467,7 +3713,9 @@ function setToolsPanel(panelName = 'rename') {
   if (selectedToolsPanel === 'midi') refreshHookMidiState();
   if (selectedToolsPanel === 'copy-project') refreshCopyProjectState();
   if (selectedToolsPanel === 'show-mode') refreshMacShowMode();
-  if (selectedToolsPanel === 'hook-marker') refreshHookMarkerState();
+  if (selectedToolsPanel === 'hook-marker' || selectedToolsPanel === 'resolume') {
+    refreshHookMarkerState();
+  }
   if (selectedToolsPanel === 'pingpong') requestAnimationFrame(resizePingPongCanvas);
 }
 
@@ -3475,12 +3723,21 @@ function setupToolsSubmenu() {
   if (HOOK_CENTER_IS_MACOS) {
     const midiButton = document.querySelector('[data-tools-panel="midi"]');
     const midiPanel = document.querySelector('[data-tools-panel-content="midi"]');
+    const grandMa2Button = document.querySelector('[data-tools-panel="hook-marker"]');
+    const grandMa2Panel = document.querySelector('[data-tools-panel-content="hook-marker"]');
     midiButton?.setAttribute('hidden', '');
     midiButton?.setAttribute('aria-hidden', 'true');
     midiPanel?.setAttribute('hidden', '');
     midiPanel?.setAttribute('aria-hidden', 'true');
-    document.querySelector('.tools-submenu')?.classList.add('without-hook-midi');
-    if (selectedToolsPanel === 'midi') selectedToolsPanel = 'rename';
+    grandMa2Button?.setAttribute('hidden', '');
+    grandMa2Button?.setAttribute('aria-hidden', 'true');
+    grandMa2Panel?.setAttribute('hidden', '');
+    grandMa2Panel?.setAttribute('aria-hidden', 'true');
+    document.querySelector('.tools-submenu')?.classList.add(
+      'without-hook-midi', 'without-grandma2');
+    if (selectedToolsPanel === 'midi' || selectedToolsPanel === 'hook-marker') {
+      selectedToolsPanel = 'resolume';
+    }
   }
   $$('[data-tools-panel]').forEach((button) => {
     button.addEventListener('click', () => setToolsPanel(button.dataset.toolsPanel));
@@ -3549,12 +3806,21 @@ function setupToolsSubmenu() {
       showModal({ title: 'Drop Hook', message: friendlyError(error, 'Não foi possível abrir a pasta recebida.'), type: 'error' });
     });
   });
-  $('#hookMarkerRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({ applySettings: false }));
+  $('#hookMarkerRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({
+    applySettings: false,
+    showFeedback: true
+  }));
+  $('#resolumeToolRefreshButton')?.addEventListener('click', () => refreshHookMarkerState({
+    applySettings: false,
+    showFeedback: true
+  }));
   if (!HOOK_CENTER_IS_MACOS) {
     $('#hookMarkerExportGrandMa2Button')?.addEventListener('click', exportHookMarkerGrandMa2);
   }
-  $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
   $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
+  $('#hookMarkerCreateResolumeMapButton')?.addEventListener('click', createHookMarkerResolumeMapFromUi);
+  $('#hookMarkerCreateResolumeProjectButton')?.addEventListener('click', createHookMarkerResolumeProjectFromUi);
+  $('#hookMarkerAddResolumeSongsButton')?.addEventListener('click', addHookMarkerResolumeSongsFromUi);
   $('#hookMarkerSelectAllSongsButton')?.addEventListener('click', () => {
     setAllHookMarkerSongsSelected(true);
   });
@@ -3569,7 +3835,9 @@ function setupToolsSubmenu() {
       '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
       '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
     ] : []),
-    '#hookMarkerResolumeHost', '#hookMarkerResolumePort'
+    '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
+    '#hookMarkerResolumeWebPort',
+    '#hookMarkerResolumeIncludeMarkers'
   ].forEach((selector) => {
     $(selector)?.addEventListener('change', saveHookMarkerSettingsFromUi);
   });
@@ -6095,6 +6363,7 @@ async function init() {
   refreshChatHook(true).catch(() => {});
 
   $('#modalOkButton').addEventListener('click', () => {
+    if (modalLocked) return;
     if (pendingModalRequest) {
       settleModal(pendingModalRequest.okValue);
       return;
@@ -6102,6 +6371,7 @@ async function init() {
     hideModal();
   });
   $('#modalAlternativeButton')?.addEventListener('click', (event) => {
+    if (modalLocked) return;
     if (event.currentTarget.disabled) return;
     if (pendingModalRequest) {
       settleModal(pendingModalRequest.alternativeValue);
@@ -6110,13 +6380,16 @@ async function init() {
     hideModal();
   });
   $('#modalCancelButton').addEventListener('click', () => {
+    if (modalLocked) return;
     if (pendingModalRequest) {
       settleModal(pendingModalRequest.cancelValue);
       return;
     }
     hideModal();
   });
-  $('#appModal').addEventListener('click', (event) => { if (event.target.id === 'appModal') hideModal(); });
+  $('#appModal').addEventListener('click', (event) => {
+    if (!modalLocked && event.target.id === 'appModal') hideModal();
+  });
   $('#releaseNotesReadContinue')?.addEventListener('click', () => closeReleaseNotesReadModal(true));
   $('#releaseNotesReadCancel')?.addEventListener('click', () => closeReleaseNotesReadModal(false));
   $('#releaseNotesReadModal')?.addEventListener('click', (event) => {
@@ -6191,6 +6464,7 @@ async function init() {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (modalLocked) return;
       if (!$('#technicalNoticeModal')?.classList.contains('hidden')) closeTechnicalNoticeModal();
       else if (!$('#recadosModal')?.classList.contains('hidden')) closeRecadosModal();
       else if (!$('#bridgeNetworkModal')?.classList.contains('hidden')) closeBridgeNetworkModal();

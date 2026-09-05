@@ -499,6 +499,23 @@ input:focus {
   border-color: rgba(255,150,95,.34);
 }
 
+.modal-icon.loading {
+  border-color: rgba(255, 138, 42, .2);
+  border-top-color: #ff8a2a;
+  border-right-color: #ffc04a;
+  color: transparent;
+  text-shadow: none;
+  animation: hookModalLoadingSpin .8s linear infinite;
+}
+
+.modal-backdrop.modal-blocking {
+  cursor: wait;
+}
+
+@keyframes hookModalLoadingSpin {
+  to { transform: rotate(360deg); }
+}
+
 .hook-modal h2 {
   margin: 0 0 12px;
   font-size: 21px;
@@ -6156,7 +6173,7 @@ body.previous-mode .content > .view.active {
 /* Menu interno da aba Ferramentas. */
 .tools-submenu {
   display: grid;
-  grid-template-columns: repeat(9, minmax(0, 1fr));
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   align-items: stretch;
   gap: 8px;
   width: 100%;
@@ -6169,6 +6186,14 @@ body.previous-mode .content > .view.active {
 }
 
 .tools-submenu.without-hook-midi {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+
+.tools-submenu.without-grandma2 {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+
+.tools-submenu.without-hook-midi.without-grandma2 {
   grid-template-columns: repeat(8, minmax(0, 1fr));
 }
 
@@ -6199,11 +6224,12 @@ body.previous-mode .content > .view.active {
 .tools-submenu-button:nth-child(2) { --tc: #ff7f1f; } /* Create Project */
 .tools-submenu-button:nth-child(3) { --tc: #ffa72a; } /* Add Project */
 .tools-submenu-button:nth-child(4) { --tc: #ffcf3a; } /* CNX Redundante */
-.tools-submenu-button:nth-child(5) { --tc: #ffe94a; } /* Hook Marker */
-.tools-submenu-button:nth-child(6) { --tc: #9ada3c; } /* Hook MIDI */
-.tools-submenu-button:nth-child(7) { --tc: #3fd08a; } /* Modo Show */
-.tools-submenu-button:nth-child(8) { --tc: #33c9c2; } /* Drop Hook */
-.tools-submenu-button:nth-child(9) { --tc: #ff6ba8; } /* PingPong Hook */
+.tools-submenu-button:nth-child(5) { --tc: #ffe94a; } /* grandMA2 */
+.tools-submenu-button:nth-child(6) { --tc: #9ada3c; } /* Resolume */
+.tools-submenu-button:nth-child(7) { --tc: #3fd08a; } /* Hook MIDI */
+.tools-submenu-button:nth-child(8) { --tc: #33c9c2; } /* Modo Show */
+.tools-submenu-button:nth-child(9) { --tc: #43a7e8; } /* Drop Hook */
+.tools-submenu-button:nth-child(10) { --tc: #ff6ba8; } /* PingPong Hook */
 
 .tools-submenu-button:hover {
   border-color: color-mix(in srgb, var(--tc) 48%, transparent);
@@ -6960,7 +6986,10 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 @media (max-width: 850px) {
-  .tools-submenu {
+  .tools-submenu,
+  .tools-submenu.without-hook-midi,
+  .tools-submenu.without-grandma2,
+  .tools-submenu.without-hook-midi.without-grandma2 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .copy-project-grid {
@@ -6972,10 +7001,15 @@ body.tools-mode .copy-project-card .selected-folder-box {
   }
 }
 
-.tools-hook-marker-panel.active {
+.tools-hook-marker-panel.active,
+.tools-resolume-panel.active {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 9px;
   overflow: auto;
+}
+
+.tools-resolume-panel.active {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .hook-marker-hero,
@@ -7005,25 +7039,9 @@ body.tools-mode .copy-project-card .selected-folder-box {
   grid-column: 1 / -1;
 }
 
-.hook-marker-grid.is-macos .hook-marker-platform-notice,
-.hook-marker-grid.is-macos .hook-marker-resolume-card {
+.tools-hook-marker-panel .hook-marker-target-card,
+.resolume-tool-grid .hook-marker-target-card {
   grid-column: 1 / -1;
-}
-
-.hook-marker-platform-notice {
-  display: grid;
-  gap: 8px;
-  border-color: rgba(255, 176, 90, .28);
-  background: linear-gradient(135deg, rgba(255, 160, 70, .10), rgba(30, 30, 30, .78));
-}
-
-.hook-marker-platform-notice h2,
-.hook-marker-platform-notice p {
-  margin: 0;
-}
-
-.hook-marker-platform-notice p {
-  line-height: 1.55;
 }
 
 .hook-marker-project-card,
@@ -7134,7 +7152,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 .hook-marker-resolume-fields {
-  grid-template-columns: minmax(0, 1.45fr) minmax(0, .75fr);
+  grid-template-columns: minmax(0, 1.45fr) repeat(2, minmax(0, .75fr));
 }
 
 .hook-marker-ma2-fields label,
@@ -7147,11 +7165,81 @@ body.tools-mode .copy-project-card .selected-folder-box {
   font-weight: 850;
 }
 
+.resolume-marker-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 160, 50, .18);
+  border-radius: 8px;
+  background: rgba(255, 145, 35, .045);
+  cursor: pointer;
+}
+
+.resolume-marker-option input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: #ff922b;
+  cursor: pointer;
+}
+
+.resolume-marker-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.resolume-marker-option strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.resolume-marker-option small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .hook-marker-help {
   min-height: 34px;
   margin: 0;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.hook-marker-resolume-version-notice {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 160, 50, .25);
+  border-radius: 8px;
+  background: rgba(255, 145, 35, .08);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.hook-marker-resolume-version-notice strong {
+  color: #ffad52;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.resolume-tool-version-notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 13px;
+  border-color: rgba(255, 160, 50, .38);
+  background: linear-gradient(90deg, rgba(255, 145, 35, .14), rgba(255, 145, 35, .045));
+}
+
+.resolume-tool-version-notice strong {
+  color: #ffb45f;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .hook-marker-target-card > .primary-button {
@@ -7182,6 +7270,14 @@ body.tools-mode .copy-project-card .selected-folder-box {
   margin-top: auto;
 }
 
+.resolume-connection-actions {
+  grid-template-columns: minmax(110px, .38fr) minmax(180px, .68fr) minmax(0, 1fr) !important;
+}
+
+.resolume-connection-actions .hook-marker-run-button {
+  grid-column: 1 / -1;
+}
+
 .hook-marker-actions button {
   width: 100%;
 }
@@ -7209,6 +7305,16 @@ body.tools-mode .copy-project-card .selected-folder-box {
   grid-template-columns: 58px minmax(180px, 1fr) 110px 96px;
   align-items: center;
   gap: 10px;
+}
+
+.hook-marker-grandma-preview-head,
+.hook-marker-preview-item.is-grandma {
+  grid-template-columns: 58px minmax(180px, 1fr) 110px;
+}
+
+.resolume-tool-preview-head,
+.resolume-tool-preview-item {
+  grid-template-columns: 84px 64px minmax(180px, 1fr) 110px;
 }
 
 .hook-marker-preview-head {
@@ -7349,6 +7455,9 @@ body.tools-mode .copy-project-card .selected-folder-box {
   .hook-marker-actions {
     grid-template-columns: 1fr;
   }
+  .resolume-connection-actions {
+    grid-template-columns: 1fr !important;
+  }
   .hook-marker-preview-head {
     display: none;
   }
@@ -7362,6 +7471,14 @@ body.tools-mode .copy-project-card .selected-folder-box {
   }
   .hook-marker-preview-item {
     grid-template-columns: 42px minmax(0, 1fr);
+  }
+  .hook-marker-preview-item.is-grandma,
+  .resolume-tool-preview-item {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+  .resolume-tool-version-notice {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
   .hook-marker-advanced-settings summary {
     grid-template-columns: minmax(0, 1fr) auto;

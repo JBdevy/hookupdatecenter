@@ -4,7 +4,8 @@ const {
   buildResolumeMap,
   encodeOscAbsoluteFloat,
   findResolumeCueAtPosition,
-  generateGrandMa2InstallerMacro
+  generateGrandMa2InstallerMacro,
+  normalizeSettings
 } = require('../src/hook-marker');
 
 const songExports = buildGrandMa2SongExports({
@@ -134,13 +135,105 @@ assert.strictEqual(findResolumeCueAtPosition(
 assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 25), null);
 assert.strictEqual(findResolumeCueAtPosition(
-  resolumeMap.cues, 35)?.column, 3);
+  resolumeMap.cues, 35)?.column, 1);
+assert.strictEqual(findResolumeCueAtPosition(
+  resolumeMap.cues, 35)?.deck, 2);
 assert.strictEqual(resolumeMap.cues.length, 3,
   'Marcadores fora de todas as musicas nao devem ocupar coluna.');
 assert(!resolumeMap.cues.some((cue) => cue.sourceKey === 'marker:marker-outside'));
 assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 9.999), null,
   'A coluna nao pode disparar antes de o transporte cruzar o marcador.');
+
+const regionsOnlyResolumeMap = buildResolumeMap({
+  projectName: 'Somente regiões',
+  regions: [
+    { id: 'song-1', name: 'Musica Teste', start: 10, end: 20 },
+    { id: 'song-2', name: 'Outra Musica', start: 30, end: 40 }
+  ],
+  markers: [
+    { id: 'marker-1', number: 1, name: 'Refrao', position: 12 },
+    { id: 'marker-2', number: 2, name: 'Solo', position: 32 }
+  ]
+}, { resolumeIncludeMarkers: false });
+assert.deepStrictEqual(
+  regionsOnlyResolumeMap.cues.map((cue) => cue.sourceKey),
+  ['region:song-1', 'region:song-2'],
+  'Ao desativar marcadores, somente inicios de regioes devem ocupar colunas.');
+assert.deepStrictEqual(
+  regionsOnlyResolumeMap.cues.map((cue) => cue.column),
+  [1, 1],
+  'Toda musica deve comecar na coluna 1 do proprio deck.');
+assert.deepStrictEqual(
+  regionsOnlyResolumeMap.cues.map((cue) => cue.deck), [1, 2]);
+assert.strictEqual(normalizeSettings({}).resolumeIncludeMarkers, true,
+  'Projetos antigos devem continuar considerando marcadores por padrao.');
+assert.strictEqual(
+  normalizeSettings({ resolumeIncludeMarkers: false }).resolumeIncludeMarkers,
+  false);
+
+const explicitMapProject = {
+  projectName: 'Mapa explícito',
+  regions: [
+    { id: 'r1', name: 'Primeira', start: 0, end: 20 },
+    { id: 'r2', name: 'Segunda', start: 30, end: 50 }
+  ],
+  markers: [
+    { id: 'm1', number: 1, name: 'Parte 1', position: 5 },
+    { id: 'm2', number: 2, name: 'Parte 2', position: 10 }
+  ]
+};
+const explicitWithMarkers = buildResolumeMap(explicitMapProject, {
+  resolumeIncludeMarkers: true
+});
+const explicitRegionsOnly = buildResolumeMap(explicitMapProject, {
+  resolumeIncludeMarkers: false
+});
+assert.deepStrictEqual(
+  explicitWithMarkers.cues.map((cue) => [cue.deck, cue.column]),
+  [[1, 1], [1, 2], [1, 3], [2, 1]],
+  'Cada musica deve usar seu proprio deck e colunas locais.');
+assert.deepStrictEqual(
+  explicitRegionsOnly.cues.map((cue) => [cue.deck, cue.column]),
+  [[1, 1], [2, 1]],
+  'Sem marcadores, cada deck deve conter somente a coluna Inicio.');
+
+const savedExplicitAssignments = {
+  'region:r1': '0:0',
+  'marker:m1': '0:1'
+};
+const readOnlyExplicitMap = buildResolumeMap(explicitMapProject, {
+  resolumeIncludeMarkers: true
+}, savedExplicitAssignments, { includeUnassigned: false });
+assert.deepStrictEqual(
+  readOnlyExplicitMap.cues.map((cue) => cue.sourceKey),
+  ['region:r1', 'marker:m1'],
+  'Ler o mapa não pode atribuir colunas às fontes novas.');
+const updatedExplicitMap = buildResolumeMap(explicitMapProject, {
+  resolumeIncludeMarkers: true
+}, savedExplicitAssignments);
+assert.strictEqual(updatedExplicitMap.assignments['region:r1'], '0:0');
+assert.strictEqual(updatedExplicitMap.assignments['marker:m1'], '0:1');
+assert.strictEqual(updatedExplicitMap.assignments['marker:m2'], '0:2');
+assert.strictEqual(updatedExplicitMap.assignments['region:r2'], '1:0',
+  'Criar o mapa novamente deve manter o deck antigo e acrescentar os novos.');
+
+const zeroRegionMap = buildResolumeMap({
+  projectName: 'Regiao zero',
+  regions: [{ id: 0, name: 'Primeira', start: 1, end: 5 }],
+  markers: []
+});
+assert.strictEqual(zeroRegionMap.cues[0].sourceKey, 'region:0',
+  'A regiao de ID zero deve manter identidade estavel no mapa.');
+
+const unnamedResolumeMarkerMap = buildResolumeMap({
+  projectName: 'Marcador sem nome',
+  regions: [{ id: 'r1', name: 'Musica', start: 0, end: 20 }],
+  markers: [{ id: 'm1', number: 1, name: '', position: 5 }]
+});
+assert.strictEqual(unnamedResolumeMarkerMap.cues[0].columnName, 'Início');
+assert.strictEqual(unnamedResolumeMarkerMap.cues[1].columnName, '',
+  'Marcador sem nome deve conservar o nome automatico da coluna do Resolume.');
 
 const childOnlyResolumeMap = buildResolumeMap({
   projectName: 'Familia Resolume',
@@ -169,13 +262,15 @@ const compactedResolumeMap = buildResolumeMap({
     { id: 'outside', number: 2, name: 'Solto', position: 25 }
   ]
 }, {}, {
-  'region:song-1': 0,
-  'marker:outside': 1,
-  'marker:inside': 2,
-  'region:song-2': 3
+  'region:song-1': '0:0',
+  'marker:outside': '0:1',
+  'marker:inside': '0:2',
+  'region:song-2': '1:0'
 });
 assert.deepStrictEqual(
-  compactedResolumeMap.cues.map((cue) => cue.column), [1, 2, 3]);
+  compactedResolumeMap.cues.map((cue) => [cue.deck, cue.column]),
+  [[1, 1], [1, 3], [2, 1]],
+  'Remover uma fonte nao deve renumerar decks e colunas ja entregues.');
 assert(!Object.hasOwn(compactedResolumeMap.assignments, 'marker:outside'));
 
 const movedResolumeMap = buildResolumeMap({
@@ -186,11 +281,12 @@ const movedResolumeMap = buildResolumeMap({
   ],
   markers: [{ id: 'marker-1', number: 1, name: 'Refrao', position: 22 }]
 }, { resolumeFirstColumn: 4 }, resolumeMap.assignments);
-const columnsBySource = Object.fromEntries(
-  movedResolumeMap.cues.map((cue) => [cue.sourceKey, cue.column]));
-assert.strictEqual(columnsBySource['region:song-1'], 1);
-assert.strictEqual(columnsBySource['marker:marker-1'], 2);
-assert.strictEqual(columnsBySource['region:song-2'], 3);
+const slotsBySource = Object.fromEntries(
+  movedResolumeMap.cues.map((cue) => [
+    cue.sourceKey, `${cue.deck}:${cue.column}`]));
+assert.strictEqual(slotsBySource['region:song-1'], '1:1');
+assert.strictEqual(slotsBySource['marker:marker-1'], '1:2');
+assert.strictEqual(slotsBySource['region:song-2'], '2:1');
 
 const collidingNames = buildGrandMa2SongExports({
   projectName: 'Nomes repetidos',

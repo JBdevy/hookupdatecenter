@@ -74,8 +74,12 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   openHookMidiComponents: () => ipcRenderer.invoke('hook-midi-open-components'),
   setHookMidiMtcOutput: (payload) => ipcRenderer.invoke('hook-midi-set-mtc-output', payload),
   setHookMidiMtcSwitchSource: (payload) => ipcRenderer.invoke('hook-midi-mtc-switch-source', payload),
-  getHookMarkerState: () => ipcRenderer.invoke('hook-marker-get-state'),
+  getHookMarkerState: (options) => ipcRenderer.invoke(
+    'hook-marker-get-state', options || {}),
   saveHookMarkerSettings: (payload) => ipcRenderer.invoke('hook-marker-save-settings', payload),
+  createHookMarkerResolumeMap: (payload) => ipcRenderer.invoke('hook-marker-create-resolume-map', payload),
+  createHookMarkerResolumeProject: (payload) => ipcRenderer.invoke('hook-marker-create-resolume-project', payload),
+  addHookMarkerResolumeSongs: (payload) => ipcRenderer.invoke('hook-marker-add-resolume-songs', payload),
   ...hookMarkerWindowsApis,
   testHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-test-resolume', payload),
   startHookMarkerResolume: (payload) => ipcRenderer.invoke('hook-marker-start-resolume', payload),

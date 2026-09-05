@@ -60,10 +60,13 @@ function normalizeMarkers(rawMarkers) {
       const markerNumber = positiveInteger(
         marker?.number ?? marker?.index ?? sourceIndex + 1,
         sourceIndex + 1);
+      const rawName = String(
+        marker?.name ?? marker?.label ?? '').trim();
       return {
         id: String(marker?.id || `m${markerNumber}`),
         number: markerNumber,
-        name: cleanLabel(marker?.name ?? marker?.label, `Marcador ${markerNumber}`),
+        name: cleanLabel(rawName, `Marcador ${markerNumber}`),
+        hasCustomName: rawName.length > 0,
         position,
         color: /^#[0-9a-f]{6}$/i.test(String(marker?.color || ''))
           ? String(marker.color).toUpperCase()
@@ -84,7 +87,9 @@ function normalizeSongs(rawRegions) {
       const end = Math.max(start, finiteNumber(
         region.endPos ?? region.end, start));
       return {
-        id: String(region.id || region.uid || `song-${sourceIndex + 1}`),
+        // Preserva inclusive o ID numerico 0 entregue pelo REAPER. Usar `||`
+        // aqui faria a regiao 0 receber outra identidade e perder a coluna.
+        id: String(region.id ?? region.uid ?? `song-${sourceIndex + 1}`),
         name: cleanLabel(region.name ?? region.label, `Música ${sourceIndex + 1}`),
         start,
         end,
@@ -157,6 +162,7 @@ function secondsToGrandMa2TriggerTime(seconds) {
 }
 
 function normalizeSettings(settings = {}) {
+  const rawResolumeIncludeMarkers = settings.resolumeIncludeMarkers;
   return {
     fps: 30,
     // O VS Hook trabalha diretamente na timeline do REAPER. Valores antigos
@@ -169,6 +175,15 @@ function normalizeSettings(settings = {}) {
     timecodeSlot: positiveInteger(settings.timecodeSlot, 2, 8),
     resolumeHost: String(settings.resolumeHost || '127.0.0.1').trim() || '127.0.0.1',
     resolumePort: positiveInteger(settings.resolumePort, 7000, 65535),
+    resolumeWebPort: positiveInteger(settings.resolumeWebPort, 8080, 65535),
+    // Ausente significa ligado para preservar o comportamento das versões
+    // anteriores. Somente um false explícito desativa os marcadores.
+    resolumeIncludeMarkers: rawResolumeIncludeMarkers === undefined ||
+      rawResolumeIncludeMarkers === null
+      ? true
+      : rawResolumeIncludeMarkers !== false &&
+        String(rawResolumeIncludeMarkers).trim().toLowerCase() !== 'false' &&
+        String(rawResolumeIncludeMarkers).trim() !== '0',
     // O mapa da Hook Center e o mapa nativo da extensão usam a mesma base.
     // Valores antigos salvos são deliberadamente migrados para a coluna 1.
     resolumeFirstColumn: 1
@@ -408,7 +423,8 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}
   });
 }
 
-function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {}) {
+function buildResolumeMap(
+  project = {}, inputSettings = {}, savedAssignments = {}, options = {}) {
   const settings = normalizeSettings(inputSettings);
   const markers = normalizeMarkers(project.markers);
   const songs = normalizeSongs(project.songs || project.regions);
@@ -421,16 +437,22 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
     position: song.start,
     color: '',
     regionStart: true,
-    songId: song.id
+    songId: song.id,
+    song
   }));
-  // Marcadores soltos nao pertencem ao mapa. Um marcador exatamente no inicio
-  // tambem nao cria outra coluna, pois o inicio da regiao e a cue autoritativa.
-  const markersInsideSongs = markers.filter((marker) =>
-    songs.some((song) =>
-      marker.position > song.start + 0.0005 &&
-      marker.position < song.end - 0.0005) &&
-    !regionStarts.some((regionStart) =>
-      Math.abs(regionStart.position - marker.position) <= 0.0005));
+  // Marcadores soltos nao pertencem ao mapa. Em regioes sobrepostas, o
+  // marcador pertence a menor regiao reproduzivel que o contem.
+  const markersInsideSongs = settings.resolumeIncludeMarkers
+    ? markers.map((marker) => {
+      const song = songs
+        .filter((candidate) =>
+          marker.position > candidate.start + 0.0005 &&
+          marker.position < candidate.end - 0.0005)
+        .sort((left, right) =>
+          (left.end - left.start) - (right.end - right.start))[0];
+      return song ? { ...marker, songId: song.id, song } : null;
+    }).filter(Boolean)
+    : [];
   const timelineCues = [...regionStarts, ...markersInsideSongs]
     .sort((left, right) => {
       const positionDelta = left.position - right.position;
@@ -440,35 +462,92 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
       }
       return left.number - right.number;
     });
-  // A coluna pertence ao ID da fonte, nao a posicao atual na timeline. Fontes
-  // que deixaram de ser elegiveis sao descartadas e os offsets restantes sao
-  // compactados; assim marcador solto nao deixa buraco nem reserva coluna.
+  // Cada regiao recebe um deck estavel e sempre comeca na coluna 1. Marcadores
+  // recebem colunas locais a partir da 2 dentro do deck da propria musica.
+  // Mover uma regiao no grid nao altera seu deck; fontes novas sao anexadas.
   const assignments = Object.create(null);
-  const occupied = new Set();
-  let nextOffset = 0;
+  const occupiedDecks = new Set();
   const sourceKeyFor = (marker) => marker.regionStart
     ? `region:${marker.songId}` : `marker:${marker.id}`;
   const validSourceKeys = new Set(timelineCues.map(sourceKeyFor));
-  const validSavedAssignments = Object.entries(savedAssignments || {})
-    .filter(([key, offset]) => validSourceKeys.has(key) &&
-      Number.isInteger(offset) && offset >= 0 && offset < 99999)
-    .sort((left, right) => left[1] - right[1]);
-  for (const [key] of validSavedAssignments) {
-    if (Object.hasOwn(assignments, key)) continue;
-    assignments[key] = nextOffset;
-    occupied.add(nextOffset);
-    nextOffset += 1;
+  const parseAssignment = (value) => {
+    const match = String(value ?? '').match(/^(\d+):(\d+)$/);
+    if (!match) return null;
+    const deckOffset = Number(match[1]);
+    const columnOffset = Number(match[2]);
+    return Number.isInteger(deckOffset) && deckOffset >= 0 &&
+      deckOffset < 99999 && Number.isInteger(columnOffset) &&
+      columnOffset >= 0 && columnOffset < 99999
+      ? { deckOffset, columnOffset } : null;
+  };
+  const saved = Object.entries(savedAssignments || {})
+    .filter(([key]) => validSourceKeys.has(key))
+    .map(([key, value]) => ({ key, assignment: parseAssignment(value) }))
+    .filter((entry) => entry.assignment);
+
+  for (const entry of saved
+    .filter(({ key, assignment }) =>
+      key.startsWith('region:') && assignment.columnOffset === 0)
+    .sort((left, right) =>
+      left.assignment.deckOffset - right.assignment.deckOffset)) {
+    if (occupiedDecks.has(entry.assignment.deckOffset)) continue;
+    assignments[entry.key] = `${entry.assignment.deckOffset}:0`;
+    occupiedDecks.add(entry.assignment.deckOffset);
   }
-  for (const marker of timelineCues) {
-    const key = sourceKeyFor(marker);
-    if (!Object.hasOwn(assignments, key)) assignments[key] = nextOffset++;
-    if (settings.resolumeFirstColumn + assignments[key] > 99999) {
-      throw new Error('A coluna inicial não deixa espaço suficiente para o Mapa Resolume.');
+
+  if (options.includeUnassigned !== false) {
+    let nextDeckOffset = occupiedDecks.size
+      ? Math.max(...occupiedDecks) + 1 : 0;
+    for (const regionStart of regionStarts) {
+      const key = sourceKeyFor(regionStart);
+      if (Object.hasOwn(assignments, key)) continue;
+      while (occupiedDecks.has(nextDeckOffset)) nextDeckOffset += 1;
+      assignments[key] = `${nextDeckOffset}:0`;
+      occupiedDecks.add(nextDeckOffset);
+      nextDeckOffset += 1;
     }
   }
+
+  for (const song of songs) {
+    const regionKey = `region:${song.id}`;
+    const regionAssignment = parseAssignment(assignments[regionKey]);
+    if (!regionAssignment) continue;
+    const occupiedColumns = new Set([0]);
+    const songMarkers = markersInsideSongs
+      .filter((marker) => marker.songId === song.id)
+      .sort((left, right) =>
+        left.position - right.position || left.number - right.number);
+    const savedMarkers = saved
+      .filter(({ key, assignment }) =>
+        key.startsWith('marker:') &&
+        assignment.deckOffset === regionAssignment.deckOffset &&
+        assignment.columnOffset >= 1 &&
+        songMarkers.some((marker) => sourceKeyFor(marker) === key))
+      .sort((left, right) =>
+        left.assignment.columnOffset - right.assignment.columnOffset);
+    for (const entry of savedMarkers) {
+      if (occupiedColumns.has(entry.assignment.columnOffset)) continue;
+      assignments[entry.key] =
+        `${entry.assignment.deckOffset}:${entry.assignment.columnOffset}`;
+      occupiedColumns.add(entry.assignment.columnOffset);
+    }
+    if (options.includeUnassigned !== false) {
+      let nextColumnOffset = Math.max(...occupiedColumns) + 1;
+      for (const marker of songMarkers) {
+        const key = sourceKeyFor(marker);
+        if (Object.hasOwn(assignments, key)) continue;
+        while (occupiedColumns.has(nextColumnOffset)) nextColumnOffset += 1;
+        assignments[key] = `${regionAssignment.deckOffset}:${nextColumnOffset}`;
+        occupiedColumns.add(nextColumnOffset);
+        nextColumnOffset += 1;
+      }
+    }
+  }
+  const mappedTimelineCues = timelineCues.filter((marker) =>
+    Object.hasOwn(assignments, sourceKeyFor(marker)));
   return {
     format: 'vshook-resolume-cues',
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     projectName,
     fps: settings.fps,
@@ -478,18 +557,18 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
       protocol: 'OSC/UDP',
       host: settings.resolumeHost,
       port: settings.resolumePort,
-      firstColumn: settings.resolumeFirstColumn,
-      mapping: 'columns'
+      firstDeck: 1,
+      firstColumn: 1,
+      mapping: 'decks-and-columns'
     },
-    cues: timelineCues.map((marker, index) => {
+    cues: mappedTimelineCues.map((marker, index) => {
       const position = marker.position + offsetSeconds;
       const sourceKey = sourceKeyFor(marker);
-      const column = settings.resolumeFirstColumn + assignments[sourceKey];
-      const song = marker.regionStart === true
-        ? songs.find((item) => item.id === marker.songId)
-        : songs.find((item) =>
-          marker.position > item.start + 0.0005 &&
-          marker.position < item.end - 0.0005);
+      const assignment = parseAssignment(assignments[sourceKey]);
+      const deck = assignment.deckOffset + 1;
+      const column = assignment.columnOffset + 1;
+      const song = marker.song || songs.find((item) =>
+        item.id === marker.songId);
       return {
         cue: index + 1,
         sourceKey,
@@ -502,10 +581,17 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
           ? Number((song.end + offsetSeconds).toFixed(6)) : null,
         markerNumber: marker.regionStart === true ? null : marker.number,
         markerName: marker.name,
+        deckName: song?.name || `Música ${deck}`,
+        // Marcador sem nome conserva o nome automático do próprio Resolume.
+        columnName: marker.regionStart === true
+          ? 'Início'
+          : (marker.hasCustomName === true ? marker.name : ''),
         markerColor: marker.color || null,
         positionSeconds: Number(position.toFixed(6)),
         timecode: secondsToTimecode(position, settings.fps),
+        deck,
         column,
+        oscDeckAddress: `/composition/decks/${deck}/select`,
         oscAddress: `/composition/columns/${column}/connect`,
         oscValue: 1
       };
@@ -583,11 +669,11 @@ async function testResolumeColumn(inputSettings = {}, columnOverride = null) {
   return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
 }
 
-async function selectResolumeColumn(inputSettings = {}, columnOverride = null) {
+async function selectResolumeDeck(
+  inputSettings = {}, deckOverride = null, settleMilliseconds = 70) {
   const settings = normalizeSettings(inputSettings);
-  const column = positiveInteger(
-    columnOverride, settings.resolumeFirstColumn, 99999);
-  const address = `/composition/columns/${column}/selected`;
+  const deck = positiveInteger(deckOverride, 1, 99999);
+  const address = `/composition/decks/${deck}/select`;
   const socket = dgram.createSocket('udp4');
   try {
     await sendUdpPacket(socket, encodeOscInt(address, 1),
@@ -595,7 +681,18 @@ async function selectResolumeColumn(inputSettings = {}, columnOverride = null) {
   } finally {
     socket.close();
   }
-  return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
+  const delay = Math.max(0, Math.min(500,
+    Math.round(finiteNumber(settleMilliseconds, 70))));
+  if (delay > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  return {
+    ok: true,
+    address,
+    deck,
+    host: settings.resolumeHost,
+    port: settings.resolumePort
+  };
 }
 
 async function setResolumeColumnPlayhead(
@@ -664,7 +761,7 @@ module.exports = {
   safeFileStem,
   secondsToTimecode,
   secondsToGrandMa2TriggerTime,
-  selectResolumeColumn,
+  selectResolumeDeck,
   setResolumeColumnPlayhead,
   setResolumeCompositionSpeed,
   testResolumeColumn
