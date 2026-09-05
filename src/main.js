@@ -38,6 +38,7 @@ const {
   normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
   selectResolumeColumn,
+  setResolumeColumnPlayhead,
   setResolumeCompositionSpeed,
   testResolumeColumn
 } = require('./hook-marker');
@@ -7692,12 +7693,20 @@ async function hookMarkerResolumeTick() {
       }
       const selectedCue = findResolumeCueAtPosition(
         hookMarkerResolumeRuntime.cues, position);
-      if (selectedCue && (cursorMoved ||
+      const stoppedNow = wasRunning;
+      if (selectedCue && (cursorMoved || stoppedNow ||
           hookMarkerResolumeRuntime.forceLocate ||
           hookMarkerResolumeRuntime.lastSelectedColumn !==
             selectedCue.column)) {
         await selectResolumeColumn(
           hookMarkerResolumeRuntime.settings, selectedCue.column);
+        await setResolumeColumnPlayhead(
+          hookMarkerResolumeRuntime.settings,
+          selectedCue.column,
+          Math.max(0, position - (Number.isFinite(
+            Number(selectedCue.positionSeconds))
+            ? Number(selectedCue.positionSeconds)
+            : position)));
         hookMarkerResolumeRuntime.lastSelectedColumn = selectedCue.column;
         hookMarkerResolumeRuntime.forceLocate = false;
         publishHookMarkerResolumeRuntimeState();

@@ -423,12 +423,15 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
     regionStart: true,
     songId: song.id
   }));
-  // Um marcador exatamente no inicio da regiao nao pode disparar duas colunas
-  // no mesmo frame. Nesse caso o inicio da regiao e a cue autoritativa.
-  const markersOutsideRegionStarts = markers.filter((marker) =>
+  // Marcadores soltos nao pertencem ao mapa. Um marcador exatamente no inicio
+  // tambem nao cria outra coluna, pois o inicio da regiao e a cue autoritativa.
+  const markersInsideSongs = markers.filter((marker) =>
+    songs.some((song) =>
+      marker.position > song.start + 0.0005 &&
+      marker.position < song.end - 0.0005) &&
     !regionStarts.some((regionStart) =>
       Math.abs(regionStart.position - marker.position) <= 0.0005));
-  const timelineCues = [...regionStarts, ...markersOutsideRegionStarts]
+  const timelineCues = [...regionStarts, ...markersInsideSongs]
     .sort((left, right) => {
       const positionDelta = left.position - right.position;
       if (positionDelta !== 0) return positionDelta;
@@ -437,20 +440,27 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
       }
       return left.number - right.number;
     });
-  // A column belongs to the source ID, never its current timeline position.
-  // Keep deleted IDs reserved so undo/reopening cannot steal another clip.
+  // A coluna pertence ao ID da fonte, nao a posicao atual na timeline. Fontes
+  // que deixaram de ser elegiveis sao descartadas e os offsets restantes sao
+  // compactados; assim marcador solto nao deixa buraco nem reserva coluna.
   const assignments = Object.create(null);
   const occupied = new Set();
   let nextOffset = 0;
-  for (const [key, offset] of Object.entries(savedAssignments || {})) {
-    if (!/^(region|marker):.+$/.test(key) || !Number.isInteger(offset) ||
-        offset < 0 || offset >= 99999 || occupied.has(offset)) continue;
-    assignments[key] = offset;
-    occupied.add(offset);
-    nextOffset = Math.max(nextOffset, offset + 1);
+  const sourceKeyFor = (marker) => marker.regionStart
+    ? `region:${marker.songId}` : `marker:${marker.id}`;
+  const validSourceKeys = new Set(timelineCues.map(sourceKeyFor));
+  const validSavedAssignments = Object.entries(savedAssignments || {})
+    .filter(([key, offset]) => validSourceKeys.has(key) &&
+      Number.isInteger(offset) && offset >= 0 && offset < 99999)
+    .sort((left, right) => left[1] - right[1]);
+  for (const [key] of validSavedAssignments) {
+    if (Object.hasOwn(assignments, key)) continue;
+    assignments[key] = nextOffset;
+    occupied.add(nextOffset);
+    nextOffset += 1;
   }
   for (const marker of timelineCues) {
-    const key = marker.regionStart ? `region:${marker.songId}` : `marker:${marker.id}`;
+    const key = sourceKeyFor(marker);
     if (!Object.hasOwn(assignments, key)) assignments[key] = nextOffset++;
     if (settings.resolumeFirstColumn + assignments[key] > 99999) {
       throw new Error('A coluna inicial não deixa espaço suficiente para o Mapa Resolume.');
@@ -473,7 +483,7 @@ function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {
     },
     cues: timelineCues.map((marker, index) => {
       const position = marker.position + offsetSeconds;
-      const sourceKey = marker.regionStart ? `region:${marker.songId}` : `marker:${marker.id}`;
+      const sourceKey = sourceKeyFor(marker);
       const column = settings.resolumeFirstColumn + assignments[sourceKey];
       const song = marker.regionStart === true
         ? songs.find((item) => item.id === marker.songId)
@@ -588,6 +598,41 @@ async function selectResolumeColumn(inputSettings = {}, columnOverride = null) {
   return { ok: true, address, column, host: settings.resolumeHost, port: settings.resolumePort };
 }
 
+async function setResolumeColumnPlayhead(
+  inputSettings = {}, columnOverride = null, positionSeconds = 0) {
+  const settings = normalizeSettings(inputSettings);
+  const column = positiveInteger(
+    columnOverride, settings.resolumeFirstColumn, 99999);
+  const position = Math.max(0, finiteNumber(positionSeconds, 0));
+  // O Resolume nao possui um playhead por coluna. Cada clip da coluna tem seu
+  // proprio endereco, entao preparamos a mesma posicao nas camadas possiveis.
+  // Enderecos de camadas inexistentes sao simplesmente ignorados pelo Resolume.
+  const layerLimit = 64;
+  const socket = dgram.createSocket('udp4');
+  try {
+    const sends = [];
+    for (let layer = 1; layer <= layerLimit; layer += 1) {
+      const address =
+        `/composition/layers/${layer}/clips/${column}/transport/position`;
+      sends.push(sendUdpPacket(socket,
+        encodeOscAbsoluteFloat(address, position),
+        settings.resolumePort,
+        settings.resolumeHost));
+    }
+    await Promise.all(sends);
+  } finally {
+    socket.close();
+  }
+  return {
+    ok: true,
+    column,
+    position,
+    layers: layerLimit,
+    host: settings.resolumeHost,
+    port: settings.resolumePort
+  };
+}
+
 async function setResolumeCompositionSpeed(inputSettings = {}, speed = 1) {
   const settings = normalizeSettings(inputSettings);
   const address = '/composition/speed';
@@ -620,6 +665,7 @@ module.exports = {
   secondsToTimecode,
   secondsToGrandMa2TriggerTime,
   selectResolumeColumn,
+  setResolumeColumnPlayhead,
   setResolumeCompositionSpeed,
   testResolumeColumn
 };

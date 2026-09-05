@@ -3223,9 +3223,14 @@ function renderHookMarkerPreview() {
     regionStart: true,
     order: index
   }));
-  const resolumeMarkers = markers.filter((marker) =>
-    !regionStarts.some((regionStart) =>
-      Math.abs(regionStart.position - (Number(marker.position) || 0)) <= 0.0005));
+  const resolumeMarkers = markers.filter((marker) => {
+    const position = Number(marker.position) || 0;
+    return songs.some((song) =>
+      position > (Number(song.start) || 0) + 0.0005 &&
+      position < (Number(song.end) || 0) - 0.0005) &&
+      !regionStarts.some((regionStart) =>
+        Math.abs(regionStart.position - position) <= 0.0005);
+  });
   const resolumeTimeline = [...regionStarts, ...resolumeMarkers]
     .sort((left, right) => {
       const positionDelta = (Number(left.position) || 0) -
@@ -3277,14 +3282,8 @@ function renderHookMarkerPreview() {
           </div>`;
       }).join('')}`;
   }).join('');
-  const markerHtml = markers.map((marker, index) => `
-    <div class="hook-marker-preview-item">
-      <strong>${index + 1}</strong>
-      <span title="${escapeHtml(marker.name || '')}">${escapeHtml(marker.name || `Marcador ${index + 1}`)}</span>
-      <code>${hookMarkerTimecode(Number(marker.position) || 0, fps)}</code>
-      <span>Coluna ${firstColumn + index}</span>
-    </div>`).join('');
-  list.innerHTML = songHtml || markerHtml;
+  list.innerHTML = songHtml ||
+    '<p class="muted">Não existem músicas válidas. Marcadores soltos não ocupam colunas do Resolume.</p>';
   list.querySelectorAll('[data-hook-marker-song-index]').forEach((checkbox) => {
     checkbox.addEventListener('change', () => {
       const song = songs[Number(checkbox.dataset.hookMarkerSongIndex)];

@@ -119,7 +119,10 @@ const resolumeMap = buildResolumeMap({
     { id: 'song-1', name: 'Musica Teste', start: 10, end: 20 },
     { id: 'song-2', name: 'Outra Musica', start: 30, end: 40 }
   ],
-  markers: [{ id: 'marker-1', number: 1, name: 'Refrao', position: 12 }]
+  markers: [
+    { id: 'marker-1', number: 1, name: 'Refrao', position: 12 },
+    { id: 'marker-outside', number: 2, name: 'Solto', position: 25 }
+  ]
 }, { resolumeFirstColumn: 4 });
 
 assert.strictEqual(resolumeMap.destination.firstColumn, 1,
@@ -132,9 +135,48 @@ assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 25), null);
 assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 35)?.column, 3);
+assert.strictEqual(resolumeMap.cues.length, 3,
+  'Marcadores fora de todas as musicas nao devem ocupar coluna.');
+assert(!resolumeMap.cues.some((cue) => cue.sourceKey === 'marker:marker-outside'));
 assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 9.999), null,
   'A coluna nao pode disparar antes de o transporte cruzar o marcador.');
+
+const childOnlyResolumeMap = buildResolumeMap({
+  projectName: 'Familia Resolume',
+  regions: [
+    { id: 'parent', name: 'Bloco', start: 0, end: 30, isHashParent: true },
+    { id: 'child', name: 'Musica Filho', start: 10, end: 20, isHashChild: true }
+  ],
+  markers: [
+    { id: 'parent-only', number: 1, name: 'Solto no pai', position: 5 },
+    { id: 'inside-child', number: 2, name: 'Parte', position: 12 }
+  ]
+});
+assert.deepStrictEqual(
+  childOnlyResolumeMap.cues.map((cue) => cue.sourceKey),
+  ['region:child', 'marker:inside-child'],
+  'Regiao-pai e marcadores fora das musicas-filho nao devem ocupar colunas.');
+
+const compactedResolumeMap = buildResolumeMap({
+  projectName: 'Mapa antigo',
+  regions: [
+    { id: 'song-1', name: 'Musica Teste', start: 10, end: 20 },
+    { id: 'song-2', name: 'Outra Musica', start: 30, end: 40 }
+  ],
+  markers: [
+    { id: 'inside', number: 1, name: 'Parte', position: 12 },
+    { id: 'outside', number: 2, name: 'Solto', position: 25 }
+  ]
+}, {}, {
+  'region:song-1': 0,
+  'marker:outside': 1,
+  'marker:inside': 2,
+  'region:song-2': 3
+});
+assert.deepStrictEqual(
+  compactedResolumeMap.cues.map((cue) => cue.column), [1, 2, 3]);
+assert(!Object.hasOwn(compactedResolumeMap.assignments, 'marker:outside'));
 
 const movedResolumeMap = buildResolumeMap({
   projectName: 'Teste Resolume',
