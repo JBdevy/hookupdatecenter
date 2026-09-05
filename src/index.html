@@ -1524,20 +1524,33 @@
                 <div><p class="eyebrow">Iluminação</p><h2>grandMA2</h2></div>
                 <span class="badge">XML</span>
               </div>
-              <div class="hook-marker-ma2-fields">
-                <label>Sequence inicial<input id="hookMarkerSequence" type="number" min="1" max="9999" value="1" /></label>
-                <label>Página<input id="hookMarkerExecutorPage" type="number" min="1" max="9999" value="1" /></label>
-                <label>Executor inicial<input id="hookMarkerExecutor" type="number" min="1" max="9999" value="1" /></label>
-                <label>Timecode inicial<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
-                <label>Slot MTC<input id="hookMarkerTimecodeSlot" type="number" min="1" max="8" value="2" /></label>
-              </div>
-              <p class="muted hook-marker-help">Gera um macro e um Timecode XML para cada região de música. O início da própria região é sempre a Cue 1; os marcadores internos vêm depois. Sequence, Executor e Timecode avançam automaticamente a cada música. O Timecode Show fica em AutoStart: ao dar Play no REAPER, o MTC do Slot 2 executa as cues automaticamente.</p>
+              <details id="hookMarkerGrandMa2Advanced" class="hook-marker-advanced-settings">
+                <summary>
+                  <span>Configuração avançada</span>
+                  <small id="hookMarkerGrandMa2Summary">Seq 1 · Página 1 · Exec 1 · TC 1 · MTC 2</small>
+                </summary>
+                <div class="hook-marker-advanced-content">
+                  <div class="hook-marker-ma2-fields">
+                    <label>Sequence inicial<input id="hookMarkerSequence" type="number" min="1" max="9999" value="1" /></label>
+                    <label>Página<input id="hookMarkerExecutorPage" type="number" min="1" max="9999" value="1" /></label>
+                    <label>Executor inicial<input id="hookMarkerExecutor" type="number" min="1" max="9999" value="1" /></label>
+                    <label>Timecode inicial<input id="hookMarkerTimecodePool" type="number" min="1" max="9999" value="1" /></label>
+                    <label>Slot MTC<input id="hookMarkerTimecodeSlot" type="number" min="1" max="8" value="2" /></label>
+                  </div>
+                  <div class="hook-marker-advanced-footer">
+                    <p class="muted">Altere somente para evitar posições já ocupadas em um show existente.</p>
+                    <button id="hookMarkerResetGrandMa2Button" class="secondary-button" type="button">Restaurar padrões</button>
+                  </div>
+                </div>
+              </details>
+              <p class="muted hook-marker-help">Gera os XMLs individuais e um macro geral para preparar todas as músicas de uma vez. O início de cada região é sempre a Cue 1; os marcadores internos vêm depois. Sequence, Executor e Timecode avançam automaticamente a cada música. O Timecode Show fica em AutoStart: ao dar Play no REAPER, o MTC do slot configurado executa as cues automaticamente.</p>
               <button id="hookMarkerExportGrandMa2Button" class="primary-button" type="button" disabled>Exportar grandMA2</button>
               <ol class="hook-marker-ma2-steps">
                 <li>REAPER envia MTC pela saída <strong>Hook MIDI (A)</strong>.</li>
                 <li>grandMA2 recebe pela entrada <strong>Hook MIDI (B)</strong>.</li>
                 <li>Os tempos seguem o grid do REAPER. Se mover uma região ou marcador depois da exportação, exporte e importe novamente.</li>
-                <li>Cada música recebe seus próprios XMLs, começando pela cue do início da região.</li>
+                <li>Na pasta <strong>macros</strong>, importe o arquivo <strong>00-VS-Hook-Instalar-Tudo</strong> e execute-o uma vez.</li>
+                <li>Ele prepara todas as músicas; os XMLs individuais ficam disponíveis apenas como recuperação.</li>
               </ol>
             </section>
 
@@ -1557,11 +1570,10 @@
               <div class="hook-marker-resolume-fields">
                 <label>IP do Resolume<input id="hookMarkerResolumeHost" type="text" value="127.0.0.1" autocomplete="off" /></label>
                 <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
-                <label>Primeira coluna<input id="hookMarkerResolumeFirstColumn" type="number" min="1" max="99999" value="1" /></label>
               </div>
-              <p class="muted hook-marker-help">O início de cada região musical e cada marcador são associados a uma coluna na ordem da timeline. Play e seek recuperam a coluna do trecho atual; ao parar o REAPER, o Resolume também é pausado. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
+              <p class="muted hook-marker-help">O mapa começa sempre na coluna 1. O início de cada região musical e cada marcador são associados a uma coluna na ordem da timeline. Play e seek recuperam a coluna do trecho atual; ao parar o REAPER, o Resolume também é pausado. Ative OSC Input no Resolume; a porta padrão é 7000.</p>
               <div class="actions hook-marker-actions">
-                <button id="hookMarkerTestResolumeButton" class="secondary-button" type="button">Testar primeira coluna</button>
+                <button id="hookMarkerTestResolumeButton" class="secondary-button" type="button">Testar coluna 1</button>
                 <button id="hookMarkerRunResolumeButton" class="primary-button hook-marker-run-button" type="button" disabled>Ativar durante o Play</button>
               </div>
               <p id="hookMarkerResolumeRuntimeStatus" class="muted hook-marker-runtime-status">Execução automática desligada.</p>
@@ -1570,7 +1582,11 @@
             <section class="card hook-marker-preview-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Prévia</p><h2>Cues encontrados</h2></div>
-                <span class="badge">REAPER → show</span>
+                <div id="hookMarkerSongSelectionControls" class="hook-marker-preview-actions">
+                  <span id="hookMarkerSelectedSongCount" class="badge">0 selecionadas</span>
+                  <button id="hookMarkerSelectAllSongsButton" class="secondary-button" type="button">Selecionar todas</button>
+                  <button id="hookMarkerClearSongsButton" class="secondary-button" type="button">Limpar</button>
+                </div>
               </div>
               <div class="hook-marker-preview-head" aria-hidden="true">
                 <span>Cue</span><span>Marcador</span><span>Tempo</span><span>Resolume</span>

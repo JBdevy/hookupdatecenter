@@ -157,7 +157,9 @@ function normalizeSettings(settings = {}) {
     timecodeSlot: positiveInteger(settings.timecodeSlot, 2, 8),
     resolumeHost: String(settings.resolumeHost || '127.0.0.1').trim() || '127.0.0.1',
     resolumePort: positiveInteger(settings.resolumePort, 7000, 65535),
-    resolumeFirstColumn: positiveInteger(settings.resolumeFirstColumn, 1, 99999)
+    // O mapa da Hook Center e o mapa nativo da extensão usam a mesma base.
+    // Valores antigos salvos são deliberadamente migrados para a coluna 1.
+    resolumeFirstColumn: 1
   };
 }
 
@@ -236,13 +238,13 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   return `${lines.join('\r\n')}\r\n`;
 }
 
-function generateGrandMa2Macro(project = {}, inputSettings = {}) {
+function buildGrandMa2MacroCommands(project = {}, inputSettings = {}) {
   const settings = normalizeSettings(inputSettings);
   const markers = normalizeMarkers(project.markers);
   const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
   const fileStem = safeFileStem(project.fileStem || projectName);
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
-  const commands = [
+  return [
     'SelectDrive 1',
     'ClearAll',
     ...markers.flatMap((marker) => {
@@ -275,8 +277,13 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
     // Um show ligado a fonte externa precisa ficar em Play, aguardando MTC.
     `Go Timecode ${settings.timecodePool}`
   ];
-  const lines = grandMa2Header(projectName, 'macro');
-  lines.push(`  <Macro index="0" name="${xmlEscape(projectName)}">`);
+}
+
+function renderGrandMa2MacroXml(showName, macroName, commands) {
+  const cleanShowName = cleanLabel(showName, 'Projeto VS Hook');
+  const cleanMacroName = cleanLabel(macroName, 'VS Hook - Instalar Tudo');
+  const lines = grandMa2Header(cleanShowName, 'macro');
+  lines.push(`  <Macro index="0" name="${xmlEscape(cleanMacroName)}">`);
   commands.forEach((command, index) => {
     lines.push(`    <Macroline index="${index}">`);
     lines.push(`      <text>${xmlEscape(command)}</text>`);
@@ -287,23 +294,53 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
   return `${lines.join('\r\n')}\r\n`;
 }
 
-function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
+function generateGrandMa2Macro(project = {}, inputSettings = {}) {
+  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  return renderGrandMa2MacroXml(
+    projectName,
+    projectName,
+    buildGrandMa2MacroCommands(project, inputSettings));
+}
+
+function generateGrandMa2InstallerMacro(project = {}, songExports = []) {
+  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  const commands = ['SelectDrive 1'];
+  for (const songExport of songExports) {
+    const songCommands = Array.isArray(songExport?.macroCommands)
+      ? songExport.macroCommands : [];
+    commands.push(...songCommands.filter((command) =>
+      String(command || '').trim().toLowerCase() !== 'selectdrive 1'));
+  }
+  return renderGrandMa2MacroXml(
+    projectName,
+    'VS Hook - Instalar Tudo',
+    commands);
+}
+
+function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}) {
   const baseSettings = normalizeSettings(inputSettings);
-  const songs = normalizeSongs(project.songs || project.regions);
-  const lastSongOffset = Math.max(0, songs.length - 1);
-  if (baseSettings.sequence + lastSongOffset > 9999 ||
-      baseSettings.executor + lastSongOffset > 9999 ||
-      baseSettings.timecodePool + lastSongOffset > 9999) {
+  const allSongs = normalizeSongs(project.songs || project.regions);
+  const selectedSongIds = Array.isArray(options.selectedSongIds)
+    ? new Set(options.selectedSongIds.map((id) => String(id)))
+    : null;
+  const selectedSongs = allSongs
+    .map((song, projectIndex) => ({ song, projectIndex }))
+    .filter(({ song }) => !selectedSongIds || selectedSongIds.has(song.id));
+  const lastSelectedOffset = selectedSongs.reduce(
+    (highest, entry) => Math.max(highest, entry.projectIndex), -1);
+  if (lastSelectedOffset >= 0 &&
+      (baseSettings.sequence + lastSelectedOffset > 9999 ||
+       baseSettings.executor + lastSelectedOffset > 9999 ||
+       baseSettings.timecodePool + lastSelectedOffset > 9999)) {
     throw new Error('A numeração inicial não tem espaço suficiente para todas as músicas. Reduza Sequence, Executor ou Timecode inicial.');
   }
-  const baseStems = songs.map((song) => safeFileStem(song.name));
+  // Calcula os nomes usando o projeto inteiro. Assim uma exportação parcial
+  // mantém o mesmo arquivo e os mesmos destinos da exportação completa.
+  const baseStems = allSongs.map((song) => safeFileStem(song.name));
   const reservedStems = new Set(baseStems.map((stem) => stem.toLowerCase()));
-  const usedStems = new Set();
-  const timelineEnd = Math.max(
-    finiteNumber(project.end, 0),
-    ...songs.map((song) => song.end));
-  return songs.map((song, index) => {
-    const baseStem = baseStems[index];
+  // Reserva o nome do macro geral para nenhuma música poder sobrescrevê-lo.
+  const usedStems = new Set(['00-vs-hook-instalar-tudo']);
+  const stems = baseStems.map((baseStem) => {
     let stem = baseStem;
     let occurrence = 2;
     while (usedStems.has(stem.toLowerCase()) ||
@@ -312,11 +349,18 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
       stem = `${baseStem.slice(0, 96 - suffix.length).replace(/[. ]+$/g, '')}${suffix}`;
     }
     usedStems.add(stem.toLowerCase());
+    return stem;
+  });
+  const timelineEnd = Math.max(
+    finiteNumber(project.end, 0),
+    ...allSongs.map((song) => song.end));
+  return selectedSongs.map(({ song, projectIndex }) => {
+    const stem = stems[projectIndex];
     const settings = normalizeSettings({
       ...baseSettings,
-      sequence: baseSettings.sequence + index,
-      executor: baseSettings.executor + index,
-      timecodePool: baseSettings.timecodePool + index
+      sequence: baseSettings.sequence + projectIndex,
+      executor: baseSettings.executor + projectIndex,
+      timecodePool: baseSettings.timecodePool + projectIndex
     });
     const songProject = {
       projectName: song.name,
@@ -326,11 +370,12 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
       // somente quando outra musica comeca. Assim o StatusCall recompõe um
       // seek deixando ativo apenas o executor da cue-alvo.
       end: timelineEnd,
-      switchOffAt: songs
+      switchOffAt: allSongs
         .filter((otherSong) => otherSong.id !== song.id)
         .map((otherSong) => otherSong.start),
       markers: markersForSong(song, project.markers)
     };
+    const macroCommands = buildGrandMa2MacroCommands(songProject, settings);
     return {
       song,
       stem,
@@ -338,7 +383,8 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
       markerCount: songProject.markers.length,
       macroFileName: `${stem}-macro.xml`,
       timecodeFileName: `${stem}-timecode.xml`,
-      macroXml: generateGrandMa2Macro(songProject, settings),
+      macroCommands,
+      macroXml: renderGrandMa2MacroXml(song.name, song.name, macroCommands),
       timecodeXml: generateGrandMa2Timecode(songProject, settings)
     };
   });
@@ -546,6 +592,7 @@ module.exports = {
   encodeOscInt,
   findResolumeCueAtPosition,
   generateGrandMa2Macro,
+  generateGrandMa2InstallerMacro,
   generateGrandMa2Timecode,
   normalizeMarkers,
   normalizeSongs,

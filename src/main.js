@@ -33,6 +33,7 @@ const {
   buildGrandMa2SongExports,
   buildResolumeMap,
   findResolumeCueAtPosition,
+  generateGrandMa2InstallerMacro,
   normalizeMarkers,
   normalizeSongs,
   normalizeSettings: normalizeHookMarkerSettings,
@@ -1220,10 +1221,14 @@ async function fetchJson(url, options = {}) {
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
 
   if (!response.ok) {
+    // A confirmação por e-mail pode usar 200, 400 ou 401 conforme a versão do
+    // backend. Entregue essa resposta ao fluxo do modal para que um código
+    // incorreto não vire um erro genérico e não descarte o desafio atual.
+    if (data?.verificationRequired === true) return data;
     const message = data?.message || data?.error || `HTTP ${response.status}`;
     const error = new Error(message);
     error.status = response.status;
-    error.retryAfter = Number(data?.retryAfter) || 0;
+    error.retryAfter = Number(data?.retryAfterSeconds ?? data?.retryAfter) || 0;
     error.data = data;
     throw error;
   }
@@ -7455,7 +7460,7 @@ async function syncHookMarkerResolumeMapToExtension(project, settings, cueMap) {
     type: 'resolume_map_update',
     projectPath: project.projectPath || '',
     projectName: project.projectName || '',
-    firstColumn: settings.resolumeFirstColumn,
+    firstColumn: cueMap.destination?.firstColumn || 1,
     assignments: cueMap.assignments
   }).catch(() => false);
   if (sent) hookMarkerResolumeSyncSignature = signature;
@@ -7504,9 +7509,15 @@ async function exportHookMarkerGrandMa2(input = {}) {
   }
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
-  const songExports = buildGrandMa2SongExports(project, settings);
+  const selectedSongIds = Array.isArray(input.selectedSongIds)
+    ? input.selectedSongIds.map((id) => String(id))
+    : undefined;
+  const songExports = buildGrandMa2SongExports(
+    project, settings, { selectedSongIds });
   if (!songExports.length) {
-    throw new Error('O projeto aberto no REAPER não possui regiões de música para exportar.');
+    throw new Error(selectedSongIds
+      ? 'Selecione pelo menos uma música para exportar.'
+      : 'O projeto aberto no REAPER não possui regiões de música para exportar.');
   }
   const targetFolder = await selectHookMarkerExportFolder(
     'Escolher pasta para os arquivos grandMA2');
@@ -7535,6 +7546,17 @@ async function exportHookMarkerGrandMa2(input = {}) {
       timecodePool: songExport.settings.timecodePool
     });
   }
+  const occupiedMacroNames = new Set(
+    songExports.map((item) => item.macroFileName.toLowerCase()));
+  let installerNumber = 1;
+  let installerMacroFileName = '00-VS-Hook-Instalar-Tudo-macro.xml';
+  while (occupiedMacroNames.has(installerMacroFileName.toLowerCase())) {
+    installerNumber += 1;
+    installerMacroFileName = `00-VS-Hook-Instalar-Tudo-${installerNumber}-macro.xml`;
+  }
+  const installerMacroPath = path.join(macroFolderPath, installerMacroFileName);
+  const installerMacroXml = generateGrandMa2InstallerMacro(project, songExports);
+  await fs.promises.writeFile(installerMacroPath, installerMacroXml, 'utf8');
   return {
     ok: true,
     folderPath: targetFolder,
@@ -7542,14 +7564,16 @@ async function exportHookMarkerGrandMa2(input = {}) {
     importFolderPath,
     songCount: songExports.length,
     markerCount: songExports.reduce((total, item) => total + item.markerCount, 0),
-    fileCount: files.length * 2,
+    fileCount: files.length * 2 + 1,
+    installerMacroFileName,
+    installerMacroPath,
     files
   };
 }
 
 async function testHookMarkerResolume(input = {}) {
   const settings = saveHookMarkerSettings(input);
-  return testResolumeColumn(settings, settings.resolumeFirstColumn);
+  return testResolumeColumn(settings, 1);
 }
 
 function getHookMarkerResolumeRuntimeState() {

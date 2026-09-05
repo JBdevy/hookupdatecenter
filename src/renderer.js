@@ -23,6 +23,9 @@ let macShowModeBusy = false;
 let hookMarkerState = null;
 let hookMarkerBusy = false;
 let hookMarkerRuntimeState = { active: false };
+let hookMarkerSelectedSongIds = new Set();
+let hookMarkerKnownSongIds = new Set();
+let hookMarkerSelectionProjectKey = '';
 let copyProjectState = null;
 let copyProjectSourceFolder = null;
 let copyProjectDestinationFolder = null;
@@ -83,7 +86,7 @@ function emailVerificationPayload(response) {
   return candidate?.verificationRequired === true ? candidate : null;
 }
 
-function promptLicenseEmailCode({ title, verification, errorMessage = '', resendAt = 0 }) {
+function promptLicenseEmailCode({ title, verification, errorMessage = '', resendAt = 0, retryAt = 0 }) {
   return new Promise((resolve) => {
     const backdrop = $('#licenseEmailCodeModal');
     const input = $('#licenseEmailCodeInput');
@@ -106,17 +109,32 @@ function promptLicenseEmailCode({ title, verification, errorMessage = '', resend
     backdrop.classList.remove('hidden');
 
     let countdownTimer = 0;
-    const updateResend = () => {
-      const seconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
-      resendButton.disabled = seconds > 0;
-      resendButton.textContent = seconds > 0 ? `Reenviar (${seconds}s)` : 'Reenviar';
-      if (!seconds && countdownTimer) {
+    let retryFinished = false;
+    const hadRetryCooldown = retryAt > Date.now();
+    const updateCountdowns = () => {
+      const resendSeconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
+      const retrySeconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+      resendButton.disabled = resendSeconds > 0;
+      resendButton.textContent = resendSeconds > 0 ? `Reenviar (${resendSeconds}s)` : 'Reenviar';
+      input.disabled = retrySeconds > 0;
+      confirmButton.disabled = retrySeconds > 0;
+      confirmButton.textContent = retrySeconds > 0 ? `Aguarde (${retrySeconds}s)` : 'Confirmar';
+      if (retrySeconds > 0) {
+        error.textContent = `Muitas tentativas. Aguarde ${retrySeconds}s para tentar novamente.`;
+      } else if (hadRetryCooldown && !retryFinished) {
+        retryFinished = true;
+        error.textContent = 'Você já pode tentar novamente.';
+        setTimeout(() => input.focus(), 40);
+      }
+      if (!resendSeconds && !retrySeconds && countdownTimer) {
         clearInterval(countdownTimer);
         countdownTimer = 0;
       }
     };
-    updateResend();
-    if (resendAt > Date.now()) countdownTimer = setInterval(updateResend, 1000);
+    updateCountdowns();
+    if (resendAt > Date.now() || retryAt > Date.now()) {
+      countdownTimer = setInterval(updateCountdowns, 250);
+    }
 
     const finish = (value) => {
       if (countdownTimer) clearInterval(countdownTimer);
@@ -129,6 +147,7 @@ function promptLicenseEmailCode({ title, verification, errorMessage = '', resend
       resolve(value);
     };
     const confirm = () => {
+      if (retryAt > Date.now()) return;
       const code = String(input.value || '').replace(/\D/g, '').slice(0, 6);
       if (code.length !== 6) {
         error.textContent = 'Digite os 6 números enviados por e-mail.';
@@ -150,7 +169,7 @@ function promptLicenseEmailCode({ title, verification, errorMessage = '', resend
     resendButton.onclick = () => {
       if (!resendButton.disabled) finish({ action:'resend' });
     };
-    setTimeout(() => input.focus(), 40);
+    if (!input.disabled) setTimeout(() => input.focus(), 40);
   });
 }
 
@@ -160,26 +179,47 @@ async function runEmailVerifiedLicenseAction(operation, title) {
   let resendAt = verification
     ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
     : 0;
+  let retryAt = verification?.reason === 'code_cooldown'
+    ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+    : 0;
   let errorMessage = verification?.ok === false ? verification.message || '' : '';
 
   while (verification) {
-    const answer = await promptLicenseEmailCode({ title, verification, errorMessage, resendAt });
+    const answer = await promptLicenseEmailCode({ title, verification, errorMessage, resendAt, retryAt });
     if (answer.action === 'cancel') return null;
     if (answer.action === 'resend') {
-      response = await operation({});
-      verification = emailVerificationPayload(response);
-      resendAt = verification
-        ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
-        : 0;
-      errorMessage = verification?.ok === false ? verification.message || '' : '';
+      try {
+        response = await operation({});
+        verification = emailVerificationPayload(response);
+        resendAt = verification
+          ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
+          : 0;
+        retryAt = verification?.reason === 'code_cooldown'
+          ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+          : 0;
+        errorMessage = verification?.ok === false ? verification.message || '' : '';
+      } catch (error) {
+        errorMessage = cleanErrorMessage(error);
+      }
       continue;
     }
-    response = await operation({
-      challengeId:verification.challengeId,
-      verificationCode:answer.code
-    });
-    verification = emailVerificationPayload(response);
-    errorMessage = verification?.ok === false ? verification.message || 'Código inválido.' : '';
+    try {
+      response = await operation({
+        challengeId:verification.challengeId,
+        verificationCode:answer.code
+      });
+      verification = emailVerificationPayload(response);
+      retryAt = verification?.reason === 'code_cooldown'
+        ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+        : 0;
+      errorMessage = verification?.ok === false ? verification.message || 'Código inválido.' : '';
+    } catch (error) {
+      // Preserve o challenge e reabra o mesmo modal. Assim um erro de código
+      // não encerra o login nem obriga o usuário a aguardar outro envio.
+      errorMessage = cleanErrorMessage(error);
+      const retryMatch = errorMessage.match(/aguarde\s+(\d+)s/i);
+      retryAt = retryMatch ? Date.now() + Math.max(1, Number(retryMatch[1]) || 60) * 1000 : 0;
+    }
   }
   return response;
 }
@@ -530,6 +570,14 @@ function friendlyError(error, fallback) {
     'mensagens permitidas hoje',
     'aguarde ',
     'somente administradores do chat',
+    'código incorreto',
+    'codigo incorreto',
+    'código inválido',
+    'codigo invalido',
+    'código expirou',
+    'codigo expirou',
+    'código bloqueado',
+    'codigo bloqueado',
     'escolha uma imagem',
     'a imagem deve ter no máximo',
     'a imagem deve ter no maximo',
@@ -3011,10 +3059,12 @@ function configurePlatformSpecificTools() {
   const macNotice = $('#hookMarkerGrandMa2MacNotice');
   const grid = document.querySelector('.hook-marker-grid');
   const heroDescription = $('#hookMarkerHeroDescription');
+  const songSelectionControls = $('#hookMarkerSongSelectionControls');
   grandMa2Card?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
   grandMa2MidiCard?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
   macNotice?.classList.toggle('hidden', !HOOK_CENTER_IS_MACOS);
   grid?.classList.toggle('is-macos', HOOK_CENTER_IS_MACOS);
+  songSelectionControls?.classList.toggle('hidden', HOOK_CENTER_IS_MACOS);
   if (HOOK_CENTER_IS_MACOS && heroDescription) {
     heroDescription.textContent = 'Transforme os marcadores de cada música do projeto em colunas do Resolume.';
   }
@@ -3026,7 +3076,7 @@ function readHookMarkerSettings() {
     offset: String($('#hookMarkerOffset')?.value || '00:00:00:00').trim(),
     resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
     resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
-    resolumeFirstColumn: Number($('#hookMarkerResolumeFirstColumn')?.value || 1)
+    resolumeFirstColumn: 1
   };
   if (!HOOK_CENTER_IS_MACOS) {
     Object.assign(settings, {
@@ -3044,8 +3094,7 @@ function applyHookMarkerSettings(settings = {}) {
   const fields = {
     hookMarkerOffset: settings.offset,
     hookMarkerResolumeHost: settings.resolumeHost,
-    hookMarkerResolumePort: settings.resolumePort,
-    hookMarkerResolumeFirstColumn: settings.resolumeFirstColumn
+    hookMarkerResolumePort: settings.resolumePort
   };
   if (!HOOK_CENTER_IS_MACOS) {
     Object.assign(fields, {
@@ -3060,6 +3109,36 @@ function applyHookMarkerSettings(settings = {}) {
     const input = $(`#${id}`);
     if (input && value !== undefined && value !== null) input.value = String(value);
   });
+  updateHookMarkerGrandMa2Summary();
+}
+
+function updateHookMarkerGrandMa2Summary(settings = readHookMarkerSettings()) {
+  const summary = $('#hookMarkerGrandMa2Summary');
+  if (!summary || HOOK_CENTER_IS_MACOS) return;
+  const positive = (value, fallback) => Math.max(1, Math.round(Number(value) || fallback));
+  summary.textContent = [
+    `Seq ${positive(settings.sequence, 1)}`,
+    `Página ${positive(settings.executorPage, 1)}`,
+    `Exec ${positive(settings.executor, 1)}`,
+    `TC ${positive(settings.timecodePool, 1)}`,
+    `MTC ${Math.min(8, positive(settings.timecodeSlot, 2))}`
+  ].join(' · ');
+}
+
+async function resetHookMarkerGrandMa2Settings() {
+  const defaults = {
+    hookMarkerSequence: 1,
+    hookMarkerExecutorPage: 1,
+    hookMarkerExecutor: 1,
+    hookMarkerTimecodePool: 1,
+    hookMarkerTimecodeSlot: 2
+  };
+  Object.entries(defaults).forEach(([id, value]) => {
+    const input = $(`#${id}`);
+    if (input) input.value = String(value);
+  });
+  updateHookMarkerGrandMa2Summary();
+  await saveHookMarkerSettingsFromUi();
 }
 
 function hookMarkerTimecode(seconds, fps) {
@@ -3081,6 +3160,53 @@ function parseHookMarkerOffset(value, fps) {
   return parts[0] * 3600 + parts[1] * 60 + parts[2] + parts[3] / Math.max(1, fps);
 }
 
+function hookMarkerSongSelectionKey(nextState = hookMarkerState) {
+  return `${String(nextState?.projectPath || '').trim()}|${String(nextState?.projectName || '').trim()}`;
+}
+
+function syncHookMarkerSongSelection(songs) {
+  if (!hookMarkerState?.connected) return;
+  const projectKey = hookMarkerSongSelectionKey();
+  const availableIds = new Set(songs.map((song) => String(song.id)));
+  if (projectKey !== hookMarkerSelectionProjectKey) {
+    hookMarkerSelectionProjectKey = projectKey;
+    hookMarkerSelectedSongIds = new Set(availableIds);
+  } else {
+    // Músicas que acabaram de aparecer no projeto entram selecionadas; as
+    // escolhas já feitas pelo usuário continuam intactas.
+    for (const id of availableIds) {
+      if (!hookMarkerKnownSongIds.has(id)) hookMarkerSelectedSongIds.add(id);
+    }
+    hookMarkerSelectedSongIds = new Set(
+      [...hookMarkerSelectedSongIds].filter((id) => availableIds.has(id)));
+  }
+  hookMarkerKnownSongIds = availableIds;
+}
+
+function selectedHookMarkerSongIds(songs = []) {
+  return songs
+    .map((song) => String(song.id))
+    .filter((id) => hookMarkerSelectedSongIds.has(id));
+}
+
+function updateHookMarkerSongSelectionControls(songs = []) {
+  const selectedCount = selectedHookMarkerSongIds(songs).length;
+  const count = $('#hookMarkerSelectedSongCount');
+  if (count) count.textContent = `${selectedCount} de ${songs.length} selecionada${selectedCount === 1 ? '' : 's'}`;
+  const selectAll = $('#hookMarkerSelectAllSongsButton');
+  const clear = $('#hookMarkerClearSongsButton');
+  if (selectAll) selectAll.disabled = hookMarkerBusy || !songs.length || selectedCount === songs.length;
+  if (clear) clear.disabled = hookMarkerBusy || selectedCount === 0;
+}
+
+function setAllHookMarkerSongsSelected(selected) {
+  const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
+  hookMarkerSelectedSongIds = selected
+    ? new Set(songs.map((song) => String(song.id)))
+    : new Set();
+  renderHookMarkerState();
+}
+
 function renderHookMarkerPreview() {
   const list = $('#hookMarkerPreviewList');
   if (!list) return;
@@ -3095,9 +3221,10 @@ function renderHookMarkerPreview() {
     return;
   }
   const settings = readHookMarkerSettings();
+  updateHookMarkerGrandMa2Summary(settings);
   const fps = Math.max(1, Math.round(settings.fps || 30));
   const offset = parseHookMarkerOffset(settings.offset, fps);
-  const firstColumn = Math.max(1, Math.round(settings.resolumeFirstColumn || 1));
+  const firstColumn = 1;
   const regionStarts = songs.map((song, index) => ({
     id: `region-${song.id}`,
     position: Number(song.start) || 0,
@@ -3121,6 +3248,7 @@ function renderHookMarkerPreview() {
   const resolumeGlobalIndex = new Map(resolumeTimeline.map(
     (cue, index) => [String(cue.id), index]));
   const songHtml = songs.map((song, songIndex) => {
+    const selected = hookMarkerSelectedSongIds.has(String(song.id));
     const start = Number(song.start) || 0;
     const end = Math.max(start, Number(song.end) || start);
     const contained = markers.filter((marker) => {
@@ -3134,15 +3262,22 @@ function renderHookMarkerPreview() {
     const targetSummary = HOOK_CENTER_IS_MACOS
       ? `Resolume · ${cues.length} cue${cues.length === 1 ? '' : 's'}`
       : `Sequence ${settings.sequence + songIndex} · Executor ${settings.executorPage}.${settings.executor + songIndex} · Timecode ${settings.timecodePool + songIndex}`;
+    const songTitle = escapeHtml(song.name || `Música ${songIndex + 1}`);
+    const songSelector = HOOK_CENTER_IS_MACOS
+      ? `<strong>${songTitle}</strong>`
+      : `<label class="hook-marker-song-select">
+          <input type="checkbox" data-hook-marker-song-index="${songIndex}"${selected ? ' checked' : ''} aria-label="Selecionar ${songTitle}" />
+          <strong>${songTitle}</strong>
+        </label>`;
     return `
-      <div class="hook-marker-song-heading">
-        <strong>${escapeHtml(song.name || `Música ${songIndex + 1}`)}</strong>
+      <div class="hook-marker-song-heading${selected ? '' : ' is-unselected'}">
+        ${songSelector}
         <span>${targetSummary}</span>
       </div>
       ${cues.map((cue, cueIndex) => {
         const resolumeIndex = resolumeGlobalIndex.get(String(cue.id));
         return `
-          <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}">
+          <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}${selected ? '' : ' is-song-unselected'}">
             <strong>${cueIndex + 1}</strong>
             <span title="${escapeHtml(cue.name || '')}">${escapeHtml(cue.name || `Cue ${cueIndex + 1}`)}${cue.regionStart ? ' — início da região' : ''}</span>
             <code>${hookMarkerTimecode((Number(cue.position) || 0) + offset, fps)}</code>
@@ -3158,6 +3293,16 @@ function renderHookMarkerPreview() {
       <span>Coluna ${firstColumn + index}</span>
     </div>`).join('');
   list.innerHTML = songHtml || markerHtml;
+  list.querySelectorAll('[data-hook-marker-song-index]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      const song = songs[Number(checkbox.dataset.hookMarkerSongIndex)];
+      if (!song) return;
+      const id = String(song.id);
+      if (checkbox.checked) hookMarkerSelectedSongIds.add(id);
+      else hookMarkerSelectedSongIds.delete(id);
+      renderHookMarkerState();
+    });
+  });
 }
 
 function renderHookMarkerRuntimeState(nextState) {
@@ -3196,6 +3341,8 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   const connected = hookMarkerState?.connected === true;
   const markers = Array.isArray(hookMarkerState?.markers) ? hookMarkerState.markers : [];
   const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
+  syncHookMarkerSongSelection(songs);
+  const selectedSongCount = selectedHookMarkerSongIds(songs).length;
   const badge = $('#hookMarkerStatusBadge');
   if (badge) badge.textContent = connected ? 'REAPER conectado' : 'Aguardando REAPER';
   $('#hookMarkerProjectName').textContent = connected
@@ -3209,11 +3356,13 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
     (markers.length > 0 || songs.length > 0) && !hookMarkerBusy;
   const grandMa2Button = $('#hookMarkerExportGrandMa2Button');
   if (grandMa2Button) {
-    grandMa2Button.disabled = HOOK_CENTER_IS_MACOS || !connected || !songs.length || hookMarkerBusy;
+    grandMa2Button.disabled = HOOK_CENTER_IS_MACOS || !connected ||
+      !songs.length || selectedSongCount === 0 || hookMarkerBusy;
   }
   $('#hookMarkerRunResolumeButton').disabled = !canUseResolume && hookMarkerRuntimeState?.active !== true;
   $('#hookMarkerRefreshButton').disabled = hookMarkerBusy;
   $('#hookMarkerTestResolumeButton').disabled = hookMarkerBusy;
+  updateHookMarkerSongSelectionControls(songs);
   renderHookMarkerPreview();
 }
 
@@ -3246,6 +3395,7 @@ async function toggleHookMarkerResolumeRuntime() {
 }
 
 async function saveHookMarkerSettingsFromUi() {
+  updateHookMarkerGrandMa2Summary();
   renderHookMarkerPreview();
   try {
     await window.hookUpdateCenter.saveHookMarkerSettings(readHookMarkerSettings());
@@ -3261,10 +3411,19 @@ async function exportHookMarkerGrandMa2() {
   hookMarkerBusy = true;
   renderHookMarkerState();
   try {
-    const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2(readHookMarkerSettings());
+    const songs = Array.isArray(hookMarkerState?.songs) ? hookMarkerState.songs : [];
+    const selectedSongIds = selectedHookMarkerSongIds(songs);
+    if (!selectedSongIds.length) {
+      showModal({ title: 'Hook Marker', message: 'Selecione pelo menos uma música na prévia.', type: 'info' });
+      return;
+    }
+    const result = await window.hookUpdateCenter.exportHookMarkerGrandMa2({
+      ...readHookMarkerSettings(),
+      selectedSongIds
+    });
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML. Os macros estão na pasta "macros" e os timecodes na pasta "import", sem subpastas por música.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML.\n\nNo grandMA2, importe apenas "${result.installerMacroFileName || '00-VS-Hook-Instalar-Tudo-macro.xml'}" da pasta "macros" e execute-o uma vez. Ele prepara todas as músicas e importa os Timecodes automaticamente. Os macros individuais permanecem na pasta como recuperação.`,
       type: 'success'
     });
   } catch (error) {
@@ -3405,19 +3564,32 @@ function setupToolsSubmenu() {
   }
   $('#hookMarkerTestResolumeButton')?.addEventListener('click', testHookMarkerResolume);
   $('#hookMarkerRunResolumeButton')?.addEventListener('click', toggleHookMarkerResolumeRuntime);
+  $('#hookMarkerSelectAllSongsButton')?.addEventListener('click', () => {
+    setAllHookMarkerSongsSelected(true);
+  });
+  $('#hookMarkerClearSongsButton')?.addEventListener('click', () => {
+    setAllHookMarkerSongsSelected(false);
+  });
+  $('#hookMarkerResetGrandMa2Button')?.addEventListener('click', () => {
+    resetHookMarkerGrandMa2Settings().catch(() => {});
+  });
   [
     '#hookMarkerOffset',
     ...(!HOOK_CENTER_IS_MACOS ? [
       '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
       '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
     ] : []),
-    '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
-    '#hookMarkerResolumeFirstColumn'
+    '#hookMarkerResolumeHost', '#hookMarkerResolumePort'
   ].forEach((selector) => {
     $(selector)?.addEventListener('change', saveHookMarkerSettingsFromUi);
   });
   $('#hookMarkerOffset')?.addEventListener('input', renderHookMarkerPreview);
-  $('#hookMarkerResolumeFirstColumn')?.addEventListener('input', renderHookMarkerPreview);
+  [
+    '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
+    '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
+  ].forEach((selector) => {
+    $(selector)?.addEventListener('input', () => updateHookMarkerGrandMa2Summary());
+  });
   window.hookUpdateCenter.onCopyProjectState(renderCopyProjectState);
   if (!HOOK_CENTER_IS_MACOS) {
     window.hookUpdateCenter.onHookMidiMtcSwitch((state) => {
