@@ -7375,7 +7375,7 @@ function summarizeHookRenameSkipped(skipped = []) {
 function resolumeOnlyHookMarkerSettings(input = {}) {
   const source = input && typeof input === 'object' ? input : {};
   const allowedKeys = [
-    'fps', 'offset', 'resolumeHost', 'resolumePort', 'resolumeFirstColumn'
+    'fps', 'resolumeHost', 'resolumePort', 'resolumeFirstColumn'
   ];
   return allowedKeys.reduce((settings, key) => {
     if (Object.prototype.hasOwnProperty.call(source, key)) settings[key] = source[key];

@@ -3073,7 +3073,7 @@ function configurePlatformSpecificTools() {
 function readHookMarkerSettings() {
   const settings = {
     fps: 30,
-    offset: String($('#hookMarkerOffset')?.value || '00:00:00:00').trim(),
+    offset: '00:00:00:00',
     resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
     resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
     resolumeFirstColumn: 1
@@ -3092,7 +3092,6 @@ function readHookMarkerSettings() {
 
 function applyHookMarkerSettings(settings = {}) {
   const fields = {
-    hookMarkerOffset: settings.offset,
     hookMarkerResolumeHost: settings.resolumeHost,
     hookMarkerResolumePort: settings.resolumePort
   };
@@ -3152,12 +3151,6 @@ function hookMarkerTimecode(seconds, fps) {
   const hours = Math.floor(framesTotal / 60);
   return [hours, minutes, secs, frames]
     .map((value) => String(value).padStart(2, '0')).join(':');
-}
-
-function parseHookMarkerOffset(value, fps) {
-  const parts = String(value || '').trim().split(':').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part) || part < 0)) return 0;
-  return parts[0] * 3600 + parts[1] * 60 + parts[2] + parts[3] / Math.max(1, fps);
 }
 
 function hookMarkerSongSelectionKey(nextState = hookMarkerState) {
@@ -3223,7 +3216,6 @@ function renderHookMarkerPreview() {
   const settings = readHookMarkerSettings();
   updateHookMarkerGrandMa2Summary(settings);
   const fps = Math.max(1, Math.round(settings.fps || 30));
-  const offset = parseHookMarkerOffset(settings.offset, fps);
   const firstColumn = 1;
   const regionStarts = songs.map((song, index) => ({
     id: `region-${song.id}`,
@@ -3280,7 +3272,7 @@ function renderHookMarkerPreview() {
           <div class="hook-marker-preview-item${cue.regionStart ? ' is-region-start' : ''}${selected ? '' : ' is-song-unselected'}">
             <strong>${cueIndex + 1}</strong>
             <span title="${escapeHtml(cue.name || '')}">${escapeHtml(cue.name || `Cue ${cueIndex + 1}`)}${cue.regionStart ? ' — início da região' : ''}</span>
-            <code>${hookMarkerTimecode((Number(cue.position) || 0) + offset, fps)}</code>
+            <code>${hookMarkerTimecode(Number(cue.position) || 0, fps)}</code>
             <span>${resolumeIndex === undefined ? '—' : `Coluna ${firstColumn + resolumeIndex}`}</span>
           </div>`;
       }).join('')}`;
@@ -3289,7 +3281,7 @@ function renderHookMarkerPreview() {
     <div class="hook-marker-preview-item">
       <strong>${index + 1}</strong>
       <span title="${escapeHtml(marker.name || '')}">${escapeHtml(marker.name || `Marcador ${index + 1}`)}</span>
-      <code>${hookMarkerTimecode((Number(marker.position) || 0) + offset, fps)}</code>
+      <code>${hookMarkerTimecode(Number(marker.position) || 0, fps)}</code>
       <span>Coluna ${firstColumn + index}</span>
     </div>`).join('');
   list.innerHTML = songHtml || markerHtml;
@@ -3574,7 +3566,6 @@ function setupToolsSubmenu() {
     resetHookMarkerGrandMa2Settings().catch(() => {});
   });
   [
-    '#hookMarkerOffset',
     ...(!HOOK_CENTER_IS_MACOS ? [
       '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
       '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
@@ -3583,7 +3574,6 @@ function setupToolsSubmenu() {
   ].forEach((selector) => {
     $(selector)?.addEventListener('change', saveHookMarkerSettingsFromUi);
   });
-  $('#hookMarkerOffset')?.addEventListener('input', renderHookMarkerPreview);
   [
     '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
     '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'

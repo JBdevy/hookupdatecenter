@@ -19,7 +19,10 @@ const songExports = buildGrandMa2SongExports({
   executorPage: 2,
   executor: 7,
   timecodePool: 9,
-  timecodeSlot: 2
+  timecodeSlot: 2,
+  // Configurações antigas podem continuar no armazenamento local, mas não
+  // devem mais deslocar os eventos exportados.
+  offset: '00:00:05:00'
 });
 const [songExport, secondSongExport] = songExports;
 const installerMacro = generateGrandMa2InstallerMacro({
@@ -34,6 +37,7 @@ assert(songExport.macroXml.includes('<Macro index="0" name="Musica Teste">'));
 assert(!songExport.macroXml.includes('Hook Marker -'));
 assert(songExport.macroXml.includes(
   'Assign Sequence 4 Cue 1 /Trig=Timecode /TrigTime=0H0M10.00S'));
+assert(!songExport.macroXml.includes('/TrigTime=0H0M15.00S'));
 assert(songExport.macroXml.includes(
   'Assign Sequence 4 Cue 2 /Trig=Timecode /TrigTime=0H0M12.00S'));
 assert(songExport.macroXml.includes('Assign Timecode 9 /Slot=2'));
@@ -92,6 +96,22 @@ assert(!partialInstallerMacro.includes('Musica Teste-timecode'));
 assert(partialInstallerMacro.includes('Outra Musica-timecode'));
 assert(!partialInstallerMacro.includes('Store Sequence 4 Cue 1 /nc'));
 assert(partialInstallerMacro.includes('Store Sequence 5 Cue 1 /nc'));
+
+const grandMaReservedNameExport = buildGrandMa2SongExports({
+  projectName: 'Teste de nomes',
+  regions: [
+    { id: 'song-special', name: 'Musica $especial', start: 0, end: 20 }
+  ],
+  markers: [
+    { id: 'marker-special', number: 1, name: '$pre refrão', position: 10 }
+  ]
+})[0];
+assert(grandMaReservedNameExport.macroXml.includes(
+  'Label Sequence 1 Cue 2 &quot;pre refrão&quot;'));
+assert(!grandMaReservedNameExport.macroXml.includes('$pre refrão'));
+assert(grandMaReservedNameExport.timecodeXml.includes('<Cue name="pre refrão">'));
+assert.strictEqual(grandMaReservedNameExport.timecodeFileName,
+  'Musica especial-timecode.xml');
 
 const resolumeMap = buildResolumeMap({
   projectName: 'Teste Resolume',

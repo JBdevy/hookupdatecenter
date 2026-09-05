@@ -29,8 +29,18 @@ function cleanLabel(value, fallback = 'Marcador') {
   return (cleaned || fallback).slice(0, 96);
 }
 
+function cleanGrandMa2Name(value, fallback = 'Marcador') {
+  const sanitize = (input) => cleanLabel(input, '')
+    // O "$" e outros simbolos abaixo possuem significado na linha de comando
+    // do grandMA2, mesmo dentro do texto usado pelo comando Label.
+    .replace(/[$%&@!#^~`+={}\[\]();:'"<>/\\|?*]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (sanitize(value) || sanitize(fallback) || 'Marcador').slice(0, 96);
+}
+
 function safeFileStem(value) {
-  const normalized = cleanLabel(value, 'Projeto VS Hook')
+  const normalized = cleanGrandMa2Name(value, 'Projeto VS Hook')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[<>:"/\\|?*]+/g, '-')
@@ -149,7 +159,9 @@ function secondsToGrandMa2TriggerTime(seconds) {
 function normalizeSettings(settings = {}) {
   return {
     fps: 30,
-    offset: String(settings.offset || '00:00:00:00'),
+    // O VS Hook trabalha diretamente na timeline do REAPER. Valores antigos
+    // salvos são ignorados para não deslocar cues ou colunas sem o usuário ver.
+    offset: '00:00:00:00',
     sequence: positiveInteger(settings.sequence, 1, 9999),
     executorPage: positiveInteger(settings.executorPage, 1, 9999),
     executor: positiveInteger(settings.executor, 1, 9999),
@@ -175,8 +187,11 @@ function grandMa2Header(projectName, styleName) {
 
 function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
   const settings = normalizeSettings(inputSettings);
-  const markers = normalizeMarkers(project.markers);
-  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  const markers = normalizeMarkers(project.markers).map((marker) => ({
+    ...marker,
+    name: cleanGrandMa2Name(marker.name, `Marcador ${marker.cue}`)
+  }));
+  const projectName = cleanGrandMa2Name(project.projectName, 'Projeto VS Hook');
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
   const switchOffFrames = Array.isArray(project.switchOffAt)
     ? project.switchOffAt.map((position) => Math.max(0,
@@ -240,8 +255,11 @@ function generateGrandMa2Timecode(project = {}, inputSettings = {}) {
 
 function buildGrandMa2MacroCommands(project = {}, inputSettings = {}) {
   const settings = normalizeSettings(inputSettings);
-  const markers = normalizeMarkers(project.markers);
-  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  const markers = normalizeMarkers(project.markers).map((marker) => ({
+    ...marker,
+    name: cleanGrandMa2Name(marker.name, `Marcador ${marker.cue}`)
+  }));
+  const projectName = cleanGrandMa2Name(project.projectName, 'Projeto VS Hook');
   const fileStem = safeFileStem(project.fileStem || projectName);
   const offsetSeconds = parseOffset(settings.offset, settings.fps);
   return [
@@ -280,8 +298,8 @@ function buildGrandMa2MacroCommands(project = {}, inputSettings = {}) {
 }
 
 function renderGrandMa2MacroXml(showName, macroName, commands) {
-  const cleanShowName = cleanLabel(showName, 'Projeto VS Hook');
-  const cleanMacroName = cleanLabel(macroName, 'VS Hook - Instalar Tudo');
+  const cleanShowName = cleanGrandMa2Name(showName, 'Projeto VS Hook');
+  const cleanMacroName = cleanGrandMa2Name(macroName, 'VS Hook - Instalar Tudo');
   const lines = grandMa2Header(cleanShowName, 'macro');
   lines.push(`  <Macro index="0" name="${xmlEscape(cleanMacroName)}">`);
   commands.forEach((command, index) => {
@@ -295,7 +313,7 @@ function renderGrandMa2MacroXml(showName, macroName, commands) {
 }
 
 function generateGrandMa2Macro(project = {}, inputSettings = {}) {
-  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  const projectName = cleanGrandMa2Name(project.projectName, 'Projeto VS Hook');
   return renderGrandMa2MacroXml(
     projectName,
     projectName,
@@ -303,7 +321,7 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
 }
 
 function generateGrandMa2InstallerMacro(project = {}, songExports = []) {
-  const projectName = cleanLabel(project.projectName, 'Projeto VS Hook');
+  const projectName = cleanGrandMa2Name(project.projectName, 'Projeto VS Hook');
   const commands = ['SelectDrive 1'];
   for (const songExport of songExports) {
     const songCommands = Array.isArray(songExport?.macroCommands)
