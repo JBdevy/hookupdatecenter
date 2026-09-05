@@ -23,7 +23,8 @@ const {
   getAllLanIps,
   ensureJsonFile,
   getNativeBridgeStateSnapshot,
-  getNativeTimecodeStatusSnapshot
+  getNativeTimecodeStatusSnapshot,
+  postNativeBridgeCommand
 } = require('./bridge-server');
 const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createCopyProjectService } = require('./copy-project');
@@ -129,6 +130,7 @@ const store = new Store({
       resolumePort: 7000,
       resolumeFirstColumn: 1
     },
+    hookMarkerResolumeAssignments: {},
     lyrics: {
       textColor: '#ffea00',
       clockColor: '#00ff55',
@@ -167,6 +169,7 @@ let mtcRedundantUiState = {
 let copyProjectService = null;
 let hookMarkerResolumeTimer = null;
 let hookMarkerResolumeTickRunning = false;
+let hookMarkerResolumeSyncSignature = '';
 let hookMarkerResolumeRuntime = {
   active: false,
   projectName: '',
@@ -194,6 +197,30 @@ function getTransferHookFixedCode() {
   const createdCode = String(crypto.randomInt(100000, 1000000));
   store.set('transferHookCode', createdCode);
   return createdCode;
+}
+
+const CENTER_INSTALL_RECEIPT_FILENAME =
+  'vshook-center-install-complete.flag';
+
+function getCenterInstallReceiptMtimeMs() {
+  try {
+    const receiptPath = path.join(
+      process.resourcesPath || '', CENTER_INSTALL_RECEIPT_FILENAME);
+    const stat = physicalFs.statSync(receiptPath);
+    return stat.isFile() ? stat.mtimeMs : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function pendingCenterInstallerWasCompleted(pending = {}) {
+  const receiptMtimeMs = getCenterInstallReceiptMtimeMs();
+  const previousReceiptMtimeMs = Math.max(
+    0, Number(pending.previousReceiptMtimeMs) || 0);
+  const queuedAtMs = Date.parse(String(
+    pending.queuedAt || pending.startedAt || '')) || 0;
+  return receiptMtimeMs > previousReceiptMtimeMs + 0.5 &&
+    (!queuedAtMs || receiptMtimeMs >= queuedAtMs - 2000);
 }
 
 function getTimecodeLanDeviceId() {
@@ -794,7 +821,16 @@ function saveStoredDeviceName(name) {
   return value
 }
 
+let licenseSessionRevision = 0;
+
+function assertCurrentLicenseSession(revision) {
+  if (revision !== licenseSessionRevision) {
+    throw new Error('A conta mudou durante a solicitação. Tente novamente.');
+  }
+}
+
 async function loginLicenseDevices(email) {
+  const revision = ++licenseSessionRevision;
   const license = store.get('license') || {}
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const cleanEmail = normalizeEmail(email || license.email || store.get('deviceLoginEmail'))
@@ -804,18 +840,27 @@ async function loginLicenseDevices(email) {
     method: 'POST',
     body: JSON.stringify({ email: cleanEmail, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   })
+  assertCurrentLicenseSession(revision);
+  if (result.ok !== true) throw new Error(result.message || 'Não foi possível entrar.');
+  licenseSessionRevision += 1;
+  const accountChanged = normalizeEmail(license.email) !== normalizeEmail(result.email || cleanEmail);
+  const accountLicense = accountChanged ? {} : license;
+  if (accountChanged || !result.active) removeLocalLicense();
   if (result.active) saveSignedLicenseToken(result.licenseToken)
   const nextLicense = {
-    ...license,
+    ...accountLicense,
+    cpf: accountLicense.cpf || '',
+    cnpj: accountLicense.cnpj || '',
+    document: accountLicense.document || '',
     email: result.email || cleanEmail,
     machineId,
     active: !!result.active,
-    devicesUsed: result.devicesUsed ?? license.devicesUsed ?? 0,
-    maxDevices: result.maxDevices ?? license.maxDevices ?? 0,
+    devicesUsed: result.devicesUsed ?? accountLicense.devicesUsed ?? 0,
+    maxDevices: result.maxDevices ?? accountLicense.maxDevices ?? 0,
     devices: Array.isArray(result.devices) ? result.devices : [],
-    planType: result.planType || license.planType || 'none',
-    planLabel: result.planLabel || license.planLabel || '',
-    billingPeriod: result.billingPeriod || license.billingPeriod || '',
+    planType: result.planType || accountLicense.planType || 'none',
+    planLabel: result.planLabel || accountLicense.planLabel || '',
+    billingPeriod: result.billingPeriod || accountLicense.billingPeriod || '',
     subscriptionOverdue: result.subscriptionOverdue === true,
     subscriptionStatus: result.subscriptionStatus || '',
     subscriptionGraceUntil: result.subscriptionGraceUntil || '',
@@ -834,6 +879,7 @@ async function loginLicenseDevices(email) {
 }
 
 function logoutLicenseDevices() {
+  licenseSessionRevision += 1;
   // Logout da conta e ativacao da maquina sao estados independentes. Mantemos
   // a licenca local intacta para que sair da interface nao desative o VS Hook.
   store.set('deviceLoginEmail', '')
@@ -846,6 +892,7 @@ function logoutLicenseDevices() {
 }
 
 async function removeLicenseDevice(removeMachineId, emailOverride = '') {
+  const revision = licenseSessionRevision;
   const license = store.get('license') || {}
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const cleanEmail = normalizeEmail(emailOverride || license.email || store.get('deviceLoginEmail'))
@@ -855,6 +902,7 @@ async function removeLicenseDevice(removeMachineId, emailOverride = '') {
     method: 'POST',
     body: JSON.stringify({ email: cleanEmail, machineId, removeMachineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   })
+  assertCurrentLicenseSession(revision);
   const nextLicense = {
     ...license,
     email: result.email || cleanEmail,
@@ -997,6 +1045,10 @@ function saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, p
 
 function removeLocalLicense() {
   const licenseDir = getSharedLicenseDir();
+  // A extensao atual valida este token. Remova-o primeiro para que uma falha
+  // ou um cancelamento da limpeza administrativa no macOS nao mantenha a
+  // sessao assinada anterior ativa.
+  removeSignedLicenseToken();
   applyLicenseFileChanges({
     removes: [
       getSharedLicensePath(),
@@ -1004,15 +1056,15 @@ function removeLocalLicense() {
       ...getLegacyLicensePaths()
     ]
   });
-  removeSignedLicenseToken();
-
   return licenseDir;
 }
 
 async function persistActiveLocalLicenseFromStore(extraPayload = null, options = {}) {
+  const revision = licenseSessionRevision;
   const license = store.get('license') || {};
   if (!license.active) return false;
   const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  if (revision !== licenseSessionRevision) return false;
   const email = normalizeEmail(license.email || store.get('deviceLoginEmail'));
   if (!machineId || !email) return false;
 
@@ -3075,6 +3127,7 @@ async function checkAndInstallBridgeAppUpdate() {
 }
 
 async function checkLicenseStatus(manual = false) {
+  const revision = licenseSessionRevision;
   const license = store.get('license') || {};
   const now = Date.now();
   const lastClockAt = Date.parse(license.lastLocalClockAt || '') || 0;
@@ -3113,6 +3166,7 @@ async function checkLicenseStatus(manual = false) {
       method: 'POST',
       body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
     });
+    if (revision !== licenseSessionRevision) return { ok: false, stale: true, state: getAppState() };
 
     const active = result.active !== false && result.ok !== false;
     const nextLicense = {
@@ -3160,6 +3214,7 @@ async function checkLicenseStatus(manual = false) {
         }
       }
     } else {
+      removeSignedLicenseToken();
       if (manual || process.platform !== 'darwin') {
         removeLocalLicense();
       }
@@ -3171,6 +3226,7 @@ async function checkLicenseStatus(manual = false) {
 
     return { ok: true, active, result, state: getAppState() };
   } catch (error) {
+    if (revision !== licenseSessionRevision) return { ok: false, stale: true, state: getAppState() };
     const currentLicense = store.get('license') || {};
     if (currentLicense.active === true) {
       const lastOnlineAt = Date.parse(currentLicense.lastOnlineValidationAt || currentLicense.lastStatusAt || '') || Date.now();
@@ -5093,134 +5149,17 @@ function validateUpdateInstallerFile(filePath) {
 }
 
 async function downloadFile(url, destPath, onProgress, options = {}) {
-  // Uma identidade estável cria uma URL diferente para cada publicação, mas
-  // permite que R2/CDN reutilizem o mesmo objeto nas novas tentativas. O modo
-  // aleatório/no-cache fica reservado a uma renovação realmente forçada.
   const cacheVersion = String(options.cacheVersion || '').trim();
   const forceNoCache = options.cacheBust === true && !cacheVersion;
   const requestUrl = cacheVersion
     ? appendDownloadCacheBust(url, cacheVersion)
     : (forceNoCache ? appendDownloadCacheBust(url) : url);
-  let resumeOffset = 0;
-  if (options.resume === true) {
-    try {
-      const partialStat = fs.statSync(destPath);
-      if (partialStat.isFile() && partialStat.size > 0) resumeOffset = partialStat.size;
-    } catch (_) {}
-  }
-  const controller = new AbortController();
-  const inactivityTimeoutMs = Math.max(
-    5000,
-    Number(options.timeoutMs) || 120000
-  );
-  let timeoutHandle = null;
-  const armTimeout = () => {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-    timeoutHandle = setTimeout(() => controller.abort(), inactivityTimeoutMs);
-  };
-  armTimeout();
-  try {
-    const requestHeaders = {};
-    if (forceNoCache) {
-      requestHeaders['Cache-Control'] = 'no-cache, no-store, max-age=0';
-      requestHeaders.Pragma = 'no-cache';
-    }
-    if (resumeOffset > 0) requestHeaders.Range = `bytes=${resumeOffset}-`;
-    const response = await fetch(requestUrl, {
-      headers: requestHeaders,
-      signal: controller.signal
-    });
-    if (response.status === 416 && resumeOffset > 0) {
-      await fs.promises.rm(destPath, { force: true }).catch(() => {});
-      return downloadFile(url, destPath, onProgress, { ...options, resume: false });
-    }
-    if (!response.ok) {
-      throw new Error(`Falha ao baixar ${url}: HTTP ${response.status}`);
-    }
-
-    const responseLength = Number(response.headers.get('content-length')) || 0;
-    const contentRange = String(response.headers.get('content-range') || '');
-    const rangeMatch = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
-    const acceptedResume = resumeOffset > 0 && response.status === 206 &&
-      rangeMatch && Number(rangeMatch[1]) === resumeOffset;
-    if (resumeOffset > 0 && response.status === 206 && !acceptedResume) {
-      await fs.promises.rm(destPath, { force: true }).catch(() => {});
-      throw new Error('O servidor devolveu uma faixa inválida ao continuar o download. Tente novamente.');
-    }
-    if (!acceptedResume) resumeOffset = 0;
-    const rangeTotal = acceptedResume && rangeMatch?.[3] !== '*'
-      ? Number(rangeMatch[3])
-      : 0;
-    const total = rangeTotal || (responseLength > 0 ? resumeOffset + responseLength : 0);
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-
-    const file = fs.createWriteStream(destPath, { flags: acceptedResume ? 'a' : 'w' });
-    let downloaded = resumeOffset;
-    onProgress(total > 0 ? Math.round((downloaded / total) * 100) : 0, {
-      downloaded,
-      total,
-      resumed: acceptedResume
-    });
-
-    if (!response.body || typeof response.body.getReader !== 'function') {
-      const buffer = Buffer.from(await response.arrayBuffer());
-      downloaded += buffer.length;
-      file.write(buffer);
-      file.end();
-      await new Promise((resolve, reject) => {
-        file.on('finish', resolve);
-        file.on('error', reject);
-      });
-    } else {
-      const reader = response.body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          armTimeout();
-          const chunk = Buffer.from(value);
-          downloaded += chunk.length;
-          if (!file.write(chunk)) {
-            await new Promise((resolve) => file.once('drain', resolve));
-          }
-          if (total > 0) {
-            onProgress(Math.round((downloaded / total) * 100), {
-              downloaded,
-              total,
-              resumed: acceptedResume
-            });
-          }
-        }
-      } finally {
-        file.end();
-      }
-      await new Promise((resolve, reject) => {
-        file.on('finish', resolve);
-        file.on('error', reject);
-      });
-    }
-
-    if (downloaded <= 0 ||
-        (total > 0 &&
-         !response.headers.get('content-encoding') &&
-         downloaded !== total)) {
-      throw new Error('O download terminou incompleto.');
-    }
-
-    onProgress(100, {
-      downloaded,
-      total: total || downloaded,
-      resumed: acceptedResume
-    });
-    return { downloaded, total };
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error('O download ficou sem resposta e foi interrompido.');
-    }
-    throw error;
-  } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  }
+  return require('./artifact-download').downloadArtifact(requestUrl, destPath, onProgress, {
+    ...options,
+    headers: forceNoCache
+      ? { 'Cache-Control': 'no-cache, no-store, max-age=0', Pragma: 'no-cache' }
+      : {}
+  });
 }
 
 let offlineUpdateCacheRecoveryComplete = false;
@@ -5932,6 +5871,7 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     files: Object.fromEntries(
       Object.entries(cachedFiles).filter(([key]) => key !== 'installer')
     ),
+    previousReceiptMtimeMs: getCenterInstallReceiptMtimeMs(),
     queuedAt: new Date().toISOString()
   });
   if (process.platform === 'win32') {
@@ -5951,7 +5891,10 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
     };
   }
   const openError = await shell.openPath(cachedFiles.installer);
-  if (openError) throw new Error(openError);
+  if (openError) {
+    store.set('pendingPostCenterUpdateInstall', null);
+    throw new Error(openError);
+  }
   quitAfterMacInstallerIsOpened();
   return {
     ok: true,
@@ -6972,7 +6915,25 @@ function scheduleBundledReaperAssetsSync(delayMs = 1200) {
 async function completePendingPostCenterUpdateInstall() {
   const pending = store.get('pendingPostCenterUpdateInstall');
   if (!pending?.files) return { ok: true, skipped: 'none' };
+  // Abrir o EXE/PKG nao prova que o usuario confirmou e concluiu a instalacao.
+  // Somente o hook final do instalador atualiza este recibo. Sem ele, a
+  // Central antiga jamais pode instalar a extensao que ficou pendente.
+  if (!pendingCenterInstallerWasCompleted(pending)) {
+    const queuedAtMs = Date.parse(String(pending.queuedAt || '')) || 0;
+    if (queuedAtMs && Date.now() - queuedAtMs > 24 * 60 * 60 * 1000) {
+      store.set('pendingPostCenterUpdateInstall', null);
+      return { ok: true, skipped: 'center-installer-expired' };
+    }
+    return { ok: true, skipped: 'center-installer-not-confirmed' };
+  }
   const targetVersion = String(pending.targetCenterVersion || '');
+  const normalizedTargetVersion = targetVersion.trim().replace(/^v/i, '');
+  const normalizedRunningVersion = String(app.getVersion() || '')
+    .trim().replace(/^v/i, '');
+  if (normalizedTargetVersion &&
+      compareVersions(normalizedRunningVersion, normalizedTargetVersion) !== 0) {
+    return { ok: true, skipped: 'center-installer-version-mismatch' };
+  }
   const files = pending.files || {};
   if (process.platform === 'win32') {
     if (!files.vshookDll || !fs.existsSync(files.vshookDll)) {
@@ -7352,15 +7313,65 @@ function hookMarkerProjectFromSnapshot(snapshot) {
   };
 }
 
+function hookMarkerResolumeProjectKey(project = {}) {
+  const projectPath = String(project.projectPath || '').trim();
+  const normalizedProjectPath = projectPath
+    ? path.resolve(projectPath).replace(/\\/g, '/') : '';
+  const identity = normalizedProjectPath
+    ? (process.platform === 'win32'
+        ? normalizedProjectPath.toLowerCase() : normalizedProjectPath)
+    : `unsaved:${String(project.projectName || 'Projeto VS Hook').trim().toLowerCase()}`;
+  return crypto.createHash('sha256').update(identity).digest('hex');
+}
+
+function buildPersistedHookMarkerResolumeMap(project, settings) {
+  const allAssignments = store.get('hookMarkerResolumeAssignments') || {};
+  const projectKey = hookMarkerResolumeProjectKey(project);
+  const savedAssignments = allAssignments[projectKey] || {};
+  const cueMap = buildResolumeMap(project, settings, savedAssignments);
+  if (JSON.stringify(savedAssignments) !== JSON.stringify(cueMap.assignments)) {
+    store.set('hookMarkerResolumeAssignments', {
+      ...allAssignments,
+      [projectKey]: cueMap.assignments
+    });
+  }
+  return cueMap;
+}
+
+async function syncHookMarkerResolumeMapToExtension(project, settings, cueMap) {
+  if (!project?.connected || !cueMap) return false;
+  const signature = JSON.stringify({
+    projectKey: hookMarkerResolumeProjectKey(project),
+    firstColumn: cueMap.destination?.firstColumn || settings.resolumeFirstColumn,
+    assignments: cueMap.assignments
+  });
+  if (signature === hookMarkerResolumeSyncSignature) return true;
+  const sent = await postNativeBridgeCommand({
+    type: 'resolume_map_update',
+    projectPath: project.projectPath || '',
+    projectName: project.projectName || '',
+    firstColumn: settings.resolumeFirstColumn,
+    assignments: cueMap.assignments
+  }).catch(() => false);
+  if (sent) hookMarkerResolumeSyncSignature = signature;
+  return sent;
+}
+
 async function getHookMarkerState() {
   const snapshot = await getNativeBridgeStateSnapshot(3000);
   const project = hookMarkerProjectFromSnapshot(snapshot);
+  const settings = saveHookMarkerSettings();
+  if (project.connected) {
+    const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
+    await syncHookMarkerResolumeMapToExtension(
+      project, settings, cueMap).catch(() => false);
+  }
   return {
     ok: true,
     ...project,
     markerCount: project.markers.length,
     songCount: project.songs.length,
-    settings: saveHookMarkerSettings()
+    settings
   };
 }
 
@@ -7505,8 +7516,11 @@ async function hookMarkerResolumeTick() {
         (Number(hookMarkerResolumeRuntime.lastMapRefreshAt) || 0) >= 400) {
       hookMarkerResolumeRuntime.lastMapRefreshAt = Date.now();
       const project = await requireHookMarkerProject();
-      const refreshedMap = buildResolumeMap(
+      const refreshedMap = buildPersistedHookMarkerResolumeMap(
         project, hookMarkerResolumeRuntime.settings);
+      syncHookMarkerResolumeMapToExtension(
+        project, hookMarkerResolumeRuntime.settings, refreshedMap)
+        .catch(() => false);
       const refreshedSignature = JSON.stringify(refreshedMap.cues);
       if (refreshedMap.cues.length && refreshedSignature !==
           hookMarkerResolumeRuntime.cueMapSignature) {
@@ -7535,8 +7549,9 @@ async function hookMarkerResolumeTick() {
     const startedNow = running && !wasRunning;
 
     if (!running) {
-      const cursorMoved = !wasRunning &&
-        Math.abs(position - previous) > 0.08;
+      // Stop pode devolver o cursor ao inicio. Essa mudanca tambem precisa
+      // armar o proximo Play; caso contrario a primeira coluna nao dispara.
+      const cursorMoved = Math.abs(position - previous) > 0.08;
       if (cursorMoved) {
         hookMarkerResolumeRuntime.seekedWhileStopped = true;
       }
@@ -7579,8 +7594,8 @@ async function hookMarkerResolumeTick() {
         : shouldLocate
           ? []
           : hookMarkerResolumeRuntime.cues.filter((cue) =>
-            cue.positionSeconds >= previous + 0.0005 &&
-            cue.positionSeconds <= position + 0.045);
+            cue.positionSeconds > previous + 0.000001 &&
+            cue.positionSeconds <= position + 0.000001);
       for (const cue of dueCues) {
         await testResolumeColumn(
           hookMarkerResolumeRuntime.settings, cue.column);
@@ -7608,7 +7623,9 @@ async function hookMarkerResolumeTick() {
 async function startHookMarkerResolumeRuntime(input = {}) {
   const project = await requireHookMarkerProject();
   const settings = saveHookMarkerSettings(input);
-  const cueMap = buildResolumeMap(project, settings);
+  const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
+  await syncHookMarkerResolumeMapToExtension(
+    project, settings, cueMap).catch(() => false);
   if (!cueMap.cues.length) {
     throw new Error('O projeto aberto no REAPER não possui regiões ou marcadores para enviar ao Resolume.');
   }
@@ -7986,10 +8003,15 @@ ipcMain.handle('hook-midi-mtc-switch-source', (_event, payload) => {
   return timecodeLanRelay.setMtcSwitchSource(payload?.source || 'auto');
 });
 ipcMain.handle('hook-marker-get-state', () => getHookMarkerState());
-ipcMain.handle('hook-marker-save-settings', (_event, payload = {}) => ({
-  ok: true,
-  settings: saveHookMarkerSettings(payload)
-}));
+ipcMain.handle('hook-marker-save-settings', async (_event, payload = {}) => {
+  const settings = saveHookMarkerSettings(payload);
+  try {
+    const project = await requireHookMarkerProject();
+    const cueMap = buildPersistedHookMarkerResolumeMap(project, settings);
+    await syncHookMarkerResolumeMapToExtension(project, settings, cueMap);
+  } catch (_) {}
+  return { ok: true, settings };
+});
 if (process.platform === 'win32') {
   ipcMain.handle('hook-marker-export-grandma2', (_event, payload = {}) =>
     exportHookMarkerGrandMa2(payload));
@@ -8308,6 +8330,7 @@ ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseD
 ipcMain.handle('logout-license-devices', () => logoutLicenseDevices());
 ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload?.machineId || payload?.deviceId || payload?.removeMachineId || '', payload?.email || ''));
 ipcMain.handle('activate-license', async (_event, payload) => {
+  const revision = ++licenseSessionRevision;
   const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
   const cpf = docParts.cpf;
   const cnpj = docParts.cnpj;
@@ -8332,6 +8355,9 @@ ipcMain.handle('activate-license', async (_event, payload) => {
     body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
   });
 
+  assertCurrentLicenseSession(revision);
+  if (result.ok !== true || result.active !== true) throw new Error(result.message || 'A licença não foi ativada.');
+  licenseSessionRevision += 1;
   saveSignedLicenseToken(result.licenseToken, { required: true });
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
   let activationPersistenceWarning = '';
@@ -8445,6 +8471,10 @@ app.whenReady().then(async () => {
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
+  // Mantem o Mapa Resolume da extensao alinhado mesmo quando o usuario nao
+  // abre a aba Hook Marker nesta sessao. E somente leitura + ProjExtState;
+  // nenhum comando de transporte ou OSC e executado aqui.
+  getHookMarkerState().catch(() => null);
 
   // O NSIS/PKG já instala runtime, Teleprompt e temas antes da primeira
   // abertura. A rotina abaixo é apenas uma recuperação assíncrona para uma

@@ -141,6 +141,14 @@
 
   Delete "$R9\HookDeveloper\VSCore\installing.flag"
   RMDir /r "$TEMP\HookCenterUpgradeBackup"
+
+  ; Recibo de conclusao. A Central nova so instala a extensao pendente quando
+  ; este arquivo foi regravado pelo fim do instalador; abrir/cancelar o EXE
+  ; nao e suficiente.
+  CreateDirectory "$INSTDIR\resources"
+  FileOpen $R7 "$INSTDIR\resources\vshook-center-install-complete.flag" w
+  FileWrite $R7 "installed"
+  FileClose $R7
 !macroend
 
 !macro customUnInstall

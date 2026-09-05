@@ -107,4 +107,5 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   fi
 done
 
+touch "$RESOURCES/vshook-center-install-complete.flag"
 log "Componentes do REAPER instalados antes da primeira abertura da Hook Center."

@@ -36,7 +36,9 @@ function safeFileStem(value) {
     .replace(/[<>:"/\\|?*]+/g, '-')
     .replace(/[. ]+$/g, '')
     .trim();
-  return (normalized || 'Projeto VS Hook').slice(0, 100);
+  const stem = (normalized || 'Projeto VS Hook').slice(0, 96).replace(/[. ]+$/g, '');
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(stem)
+    ? `_${stem}`.slice(0, 96) : stem;
 }
 
 function normalizeMarkers(rawMarkers) {
@@ -257,6 +259,12 @@ function generateGrandMa2Macro(project = {}, inputSettings = {}) {
     `Assign Sequence ${settings.sequence} At Executor ${settings.executorPage}.${settings.executor} /o`,
     `Import \"${fileStem}-timecode\" At Timecode ${settings.timecodePool}`,
     `Assign Timecode ${settings.timecodePool} /Slot=${settings.timecodeSlot}`,
+    // O grandMA2 usa 0,5 s de Pre Roll por padrao. Como o MTC ja chega
+    // posicionado e preparado pelo VS Hook, esse atraso so posterga a cue.
+    `Assign TimecodeSlot ${settings.timecodeSlot} /PreRoll=0`,
+    // Zera tambem a cauda do Slot ao pausar/parar. Keep Playbacks abaixo
+    // conserva a ultima iluminacao, portanto isso nao escurece o palco.
+    `Assign TimecodeSlot ${settings.timecodeSlot} /AfterRoll=0`,
     // AutoStart recoloca o show em Play sempre que o MTC externo reaparece.
     // StatusCall recompõe imediatamente a última cue anterior quando o MTC
     // salta para outro ponto, em vez de esperar o próximo evento da timeline.
@@ -288,15 +296,22 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
       baseSettings.timecodePool + lastSongOffset > 9999) {
     throw new Error('A numeração inicial não tem espaço suficiente para todas as músicas. Reduza Sequence, Executor ou Timecode inicial.');
   }
-  const usedStems = new Map();
+  const baseStems = songs.map((song) => safeFileStem(song.name));
+  const reservedStems = new Set(baseStems.map((stem) => stem.toLowerCase()));
+  const usedStems = new Set();
   const timelineEnd = Math.max(
     finiteNumber(project.end, 0),
     ...songs.map((song) => song.end));
   return songs.map((song, index) => {
-    const baseStem = safeFileStem(song.name);
-    const occurrence = (usedStems.get(baseStem.toLocaleLowerCase()) || 0) + 1;
-    usedStems.set(baseStem.toLocaleLowerCase(), occurrence);
-    const stem = occurrence === 1 ? baseStem : `${baseStem}-${occurrence}`;
+    const baseStem = baseStems[index];
+    let stem = baseStem;
+    let occurrence = 2;
+    while (usedStems.has(stem.toLowerCase()) ||
+        (stem !== baseStem && reservedStems.has(stem.toLowerCase()))) {
+      const suffix = `-${occurrence++}`;
+      stem = `${baseStem.slice(0, 96 - suffix.length).replace(/[. ]+$/g, '')}${suffix}`;
+    }
+    usedStems.add(stem.toLowerCase());
     const settings = normalizeSettings({
       ...baseSettings,
       sequence: baseSettings.sequence + index,
@@ -329,7 +344,7 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}) {
   });
 }
 
-function buildResolumeMap(project = {}, inputSettings = {}) {
+function buildResolumeMap(project = {}, inputSettings = {}, savedAssignments = {}) {
   const settings = normalizeSettings(inputSettings);
   const markers = normalizeMarkers(project.markers);
   const songs = normalizeSongs(project.songs || project.regions);
@@ -358,6 +373,25 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
       }
       return left.number - right.number;
     });
+  // A column belongs to the source ID, never its current timeline position.
+  // Keep deleted IDs reserved so undo/reopening cannot steal another clip.
+  const assignments = Object.create(null);
+  const occupied = new Set();
+  let nextOffset = 0;
+  for (const [key, offset] of Object.entries(savedAssignments || {})) {
+    if (!/^(region|marker):.+$/.test(key) || !Number.isInteger(offset) ||
+        offset < 0 || offset >= 99999 || occupied.has(offset)) continue;
+    assignments[key] = offset;
+    occupied.add(offset);
+    nextOffset = Math.max(nextOffset, offset + 1);
+  }
+  for (const marker of timelineCues) {
+    const key = marker.regionStart ? `region:${marker.songId}` : `marker:${marker.id}`;
+    if (!Object.hasOwn(assignments, key)) assignments[key] = nextOffset++;
+    if (settings.resolumeFirstColumn + assignments[key] > 99999) {
+      throw new Error('A coluna inicial não deixa espaço suficiente para o Mapa Resolume.');
+    }
+  }
   return {
     format: 'vshook-resolume-cues',
     version: 1,
@@ -365,15 +399,18 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
     projectName,
     fps: settings.fps,
     offset: settings.offset,
+    assignments,
     destination: {
       protocol: 'OSC/UDP',
       host: settings.resolumeHost,
       port: settings.resolumePort,
+      firstColumn: settings.resolumeFirstColumn,
       mapping: 'columns'
     },
     cues: timelineCues.map((marker, index) => {
       const position = marker.position + offsetSeconds;
-      const column = settings.resolumeFirstColumn + index;
+      const sourceKey = marker.regionStart ? `region:${marker.songId}` : `marker:${marker.id}`;
+      const column = settings.resolumeFirstColumn + assignments[sourceKey];
       const song = marker.regionStart === true
         ? songs.find((item) => item.id === marker.songId)
         : songs.find((item) =>
@@ -381,6 +418,7 @@ function buildResolumeMap(project = {}, inputSettings = {}) {
           marker.position < item.end - 0.0005);
       return {
         cue: index + 1,
+        sourceKey,
         sourceType: marker.regionStart === true ? 'region_start' : 'marker',
         regionStart: marker.regionStart === true,
         songId: song?.id || marker.songId || null,
@@ -407,7 +445,7 @@ function findResolumeCueAtPosition(rawCues, rawPosition) {
   let current = null;
   for (const cue of cues) {
     const cuePosition = finiteNumber(cue?.positionSeconds, -1);
-    if (cuePosition < 0 || cuePosition > position + 0.045) continue;
+    if (cuePosition < 0 || cuePosition > position + 0.000001) continue;
     const songStart = finiteNumber(cue?.songStartSeconds, NaN);
     const songEnd = finiteNumber(cue?.songEndSeconds, NaN);
     const belongsToSong = !!cue?.songId &&

@@ -33,6 +33,8 @@ assert(songExport.macroXml.includes(
 assert(songExport.macroXml.includes(
   'Assign Sequence 4 Cue 2 /Trig=Timecode /TrigTime=0H0M12.00S'));
 assert(songExport.macroXml.includes('Assign Timecode 9 /Slot=2'));
+assert(songExport.macroXml.includes('Assign TimecodeSlot 2 /PreRoll=0'));
+assert(songExport.macroXml.includes('Assign TimecodeSlot 2 /AfterRoll=0'));
 assert(songExport.macroXml.includes('Assign Timecode 9 /AutoStart=On'));
 assert(songExport.macroXml.includes('Assign Timecode 9 /StatusCall=On'));
 assert(songExport.macroXml.includes('Assign Timecode 9 /SwitchOff=&quot;Keep Playbacks&quot;'));
@@ -67,6 +69,38 @@ assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 25), null);
 assert.strictEqual(findResolumeCueAtPosition(
   resolumeMap.cues, 35)?.column, 6);
+assert.strictEqual(findResolumeCueAtPosition(
+  resolumeMap.cues, 9.999), null,
+  'A coluna nao pode disparar antes de o transporte cruzar o marcador.');
+
+const movedResolumeMap = buildResolumeMap({
+  projectName: 'Teste Resolume',
+  regions: [
+    { id: 'song-2', name: 'Outra Musica', start: 5, end: 9 },
+    { id: 'song-1', name: 'Musica Teste', start: 20, end: 30 }
+  ],
+  markers: [{ id: 'marker-1', number: 1, name: 'Refrao', position: 22 }]
+}, { resolumeFirstColumn: 4 }, resolumeMap.assignments);
+const columnsBySource = Object.fromEntries(
+  movedResolumeMap.cues.map((cue) => [cue.sourceKey, cue.column]));
+assert.strictEqual(columnsBySource['region:song-1'], 4);
+assert.strictEqual(columnsBySource['marker:marker-1'], 5);
+assert.strictEqual(columnsBySource['region:song-2'], 6);
+
+const collidingNames = buildGrandMa2SongExports({
+  projectName: 'Nomes repetidos',
+  regions: [
+    { id: 'a', name: 'Musica', start: 0, end: 5 },
+    { id: 'b', name: 'Musica', start: 5, end: 10 },
+    { id: 'c', name: 'Musica-2', start: 10, end: 15 }
+  ],
+  markers: []
+});
+const generatedNames = collidingNames.flatMap((item) => [
+  item.macroFileName.toLowerCase(), item.timecodeFileName.toLowerCase()
+]);
+assert.strictEqual(new Set(generatedNames).size, generatedNames.length,
+  'Musicas com nomes repetidos nao podem sobrescrever XMLs umas das outras.');
 
 const pausePacket = encodeOscAbsoluteFloat('/composition/speed', 0);
 assert(pausePacket.includes(Buffer.from(',sf\0')));

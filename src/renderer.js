@@ -75,6 +75,7 @@ let pingPongResizeObserver = null;
 let accountLoginBusy = false;
 let accountLoginTransitionActive = false;
 let accountWelcomeTimer = 0;
+let accountAccessRevision = 0;
 const chatHookMessagesById = new Map();
 
 function isAccountLoggedIn(nextState = state) {
@@ -162,17 +163,21 @@ async function performAccountLogin(email) {
   }
   if (accountLoginBusy) return null;
 
+  const revision = ++accountAccessRevision;
   setAccountLoginBusy(true);
   accountLoginTransitionActive = true;
   try {
     const result = await window.hookUpdateCenter.loginLicenseDevices({ email: cleanEmail });
     const nextState = result.state || await window.hookUpdateCenter.getState();
+    if (revision !== accountAccessRevision) return null;
     renderState(nextState);
     await showAccountWelcome(result?.result?.name || nextState?.deviceLoginName, result?.result?.email || cleanEmail);
+    if (revision !== accountAccessRevision) return null;
     accountLoginTransitionActive = false;
-    syncAccountAccessState(nextState);
+    syncAccountAccessState(state);
     return result;
   } catch (error) {
+    if (revision !== accountAccessRevision) return null;
     accountLoginTransitionActive = false;
     syncAccountAccessState(state);
     throw error;
@@ -201,6 +206,8 @@ function setupAccountAccess() {
   });
 
   $('#devicesLogoutButton')?.addEventListener('click', async () => {
+    accountAccessRevision += 1;
+    accountLoginTransitionActive = false;
     const button = $('#devicesLogoutButton');
     try {
       if (button) {

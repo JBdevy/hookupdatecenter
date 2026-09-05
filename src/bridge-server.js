@@ -2244,4 +2244,5 @@ module.exports = {
   getAllLanIps,
   getNativeBridgeStateSnapshot,
   getNativeTimecodeStatusSnapshot,
+  postNativeBridgeCommand,
 }
