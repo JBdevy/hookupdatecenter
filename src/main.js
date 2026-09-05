@@ -102,6 +102,7 @@ const store = new Store({
     deviceLoginName: '',
     deviceLoginAt: null,
     deviceLoggedOut: false,
+    licenseActivationSession: null,
     transferHookCode: '',
     dropHookDestinationPath: '',
     autoStart: true,
@@ -289,9 +290,9 @@ const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CHAT_PRESENCE_HEARTBEAT_MS = 20 * 1000;
 const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
-const LICENSE_OFFLINE_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
+const LICENSE_OFFLINE_GRACE_MS = 12 * 24 * 60 * 60 * 1000;
 const LICENSE_OFFLINE_WARNING_MS = 3 * 24 * 60 * 60 * 1000;
-const LICENSE_CLOCK_ROLLBACK_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
+const LICENSE_CLOCK_ROLLBACK_TOLERANCE_MS = 10 * 60 * 1000;
 
 const LICENSE_PRODUCT = 'VSLIVE';
 const LICENSE_SECRET_A = 'JBKeys_VSLIVE_CORE';
@@ -300,6 +301,10 @@ const LICENSE_SECRET_C = 'JBK_ADMIN_OFFLINE';
 const SIGNED_LICENSE_FILE = process.platform === 'win32'
   ? 'vshook_license_v3.token'
   : '.vshook_license_v3.token';
+const LICENSE_CLOCK_FILE = process.platform === 'win32'
+  ? 'vshook_license_clock_v1.dat'
+  : '.vshook_license_clock_v1.dat';
+const LICENSE_CLOCK_DIGEST_PREFIX = 'VSHOOK_CLOCK_V1_GUARD_2026';
 
 function getAppIconPath() {
   const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
@@ -767,6 +772,54 @@ function getSharedSignedLicensePath() {
   return path.join(path.dirname(getSharedMachineIdPath()), SIGNED_LICENSE_FILE);
 }
 
+function readSignedLicenseToken() {
+  try {
+    const token = String(fs.readFileSync(getSharedSignedLicensePath(), 'utf8') || '').trim();
+    return token.length <= 16384 && token.split('.').length === 3 ? token : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function decodeSignedLicensePayload(token) {
+  try {
+    const parts = String(token || '').trim().split('.');
+    if (parts.length !== 3) return null;
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeSignedLicenseClockState(token) {
+  const payload = decodeSignedLicensePayload(token);
+  if (Number(payload?.ct || 0) !== 1) return;
+  const issuedAt = Math.floor(Number(payload?.iat || 0));
+  const machineId = normalizeMachineId(payload?.m);
+  const fingerprint = normalizeMachineId(payload?.f);
+  if (!issuedAt || !machineId || !/^[0-9A-F]{64}$/.test(fingerprint)) {
+    throw new Error('O token não contém a proteção de relógio esperada.');
+  }
+  // O iat vem assinado pelo backend e impede que um relógio local já
+  // retrocedido inicialize o estado de segurança no passado.
+  const highWatermark = Math.max(issuedAt, Math.floor(Date.now() / 1000));
+  const digest = crypto.createHash('sha256')
+    .update(`${LICENSE_CLOCK_DIGEST_PREFIX}|1|${highWatermark}|${machineId}|${fingerprint}`)
+    .digest('hex')
+    .toUpperCase();
+  const target = path.join(path.dirname(getSharedMachineIdPath()), LICENSE_CLOCK_FILE);
+  const temp = `${target}.tmp-${process.pid}`;
+  const content = `1\n${highWatermark}\n${machineId}\n${fingerprint}\n${digest}\n`;
+  fs.mkdirSync(path.dirname(target), { recursive:true });
+  fs.writeFileSync(temp, content, { encoding:'utf8', mode:0o600 });
+  if (process.platform === 'win32' && fs.existsSync(target)) {
+    try { execFileSync('attrib.exe', ['-h', target], { windowsHide:true, stdio:'ignore' }); } catch (_) {}
+  }
+  try { fs.rmSync(target, { force:true }); } catch (_) {}
+  fs.renameSync(temp, target);
+  hideLicenseShardOnWindows(target);
+}
+
 function saveSignedLicenseToken(token, { required = false } = {}) {
   const clean = String(token || '').trim();
   if (!clean) {
@@ -778,6 +831,7 @@ function saveSignedLicenseToken(token, { required = false } = {}) {
   if (clean.length > 16384 || clean.split('.').length !== 3) {
     throw new Error('A licença assinada recebida é inválida.');
   }
+  writeSignedLicenseClockState(clean);
   const target = getSharedSignedLicensePath();
   const temp = `${target}.tmp-${process.pid}`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -829,18 +883,44 @@ function assertCurrentLicenseSession(revision) {
   }
 }
 
-async function loginLicenseDevices(email) {
+function getStoredActivationSessionToken(email) {
+  const session = store.get('licenseActivationSession') || {};
+  const token = String(session.token || '').trim();
+  const expiresAt = Date.parse(session.expiresAt || '') || 0;
+  if (!/^[0-9a-f]{64}$/i.test(token) || expiresAt <= Date.now() ||
+      normalizeEmail(session.email) !== normalizeEmail(email)) {
+    store.set('licenseActivationSession', null);
+    return '';
+  }
+  return token;
+}
+
+async function loginLicenseDevices(payload = {}) {
   const revision = ++licenseSessionRevision;
   const license = store.get('license') || {}
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
-  const cleanEmail = normalizeEmail(email || license.email || store.get('deviceLoginEmail'))
+  const request = typeof payload === 'string' ? { email:payload } : (payload || {})
+  const cleanEmail = normalizeEmail(request.email || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.')
   const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/login`, {
     method: 'POST',
-    body: JSON.stringify({ email: cleanEmail, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({
+      email:cleanEmail,
+      machineId,
+      deviceFingerprint,
+      platform:process.platform,
+      computerName:getStoredDeviceName(),
+      challengeId:String(request.challengeId || ''),
+      verificationCode:String(request.verificationCode || ''),
+      licenseToken:readSignedLicenseToken(),
+      clockStateVersion:1
+    })
   })
   assertCurrentLicenseSession(revision);
+  if (result.verificationRequired === true) {
+    return { ok:true, verificationRequired:true, result, state:getAppState() }
+  }
   if (result.ok !== true) throw new Error(result.message || 'Não foi possível entrar.');
   licenseSessionRevision += 1;
   const accountChanged = normalizeEmail(license.email) !== normalizeEmail(result.email || cleanEmail);
@@ -873,6 +953,11 @@ async function loginLicenseDevices(email) {
   store.set('deviceLoginName', String(result.name || '').trim())
   store.set('deviceLoginAt', new Date().toISOString())
   store.set('deviceLoggedOut', false)
+  store.set('licenseActivationSession', result.activationSessionToken ? {
+    token:String(result.activationSessionToken),
+    expiresAt:result.activationSessionExpiresAt || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    email:result.email || cleanEmail
+  } : null)
   store.set('license', nextLicense)
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
   return { ok:true, result, state:getAppState() }
@@ -886,23 +971,43 @@ function logoutLicenseDevices() {
   store.set('deviceLoginName', '')
   store.set('deviceLoginAt', null)
   store.set('deviceLoggedOut', true)
+  store.set('licenseActivationSession', null)
   const nextState = getAppState()
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', nextState)
   return { ok: true, state: nextState }
 }
 
-async function removeLicenseDevice(removeMachineId, emailOverride = '') {
+async function removeLicenseDevice(payload = {}, emailOverride = '') {
   const revision = licenseSessionRevision;
   const license = store.get('license') || {}
+  const request = typeof payload === 'string'
+    ? { removeMachineId:payload, email:emailOverride }
+    : (payload || {})
+  const removeMachineId = normalizeMachineId(request.machineId || request.deviceId || request.removeMachineId || '')
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
-  const cleanEmail = normalizeEmail(emailOverride || license.email || store.get('deviceLoginEmail'))
+  const cleanEmail = normalizeEmail(request.email || emailOverride || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
+  if (!removeMachineId) throw new Error('Dispositivo inválido.')
   const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/remove-device`, {
     method: 'POST',
-    body: JSON.stringify({ email: cleanEmail, machineId, removeMachineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({
+      email:cleanEmail,
+      machineId,
+      removeMachineId,
+      deviceFingerprint,
+      platform:process.platform,
+      computerName:getStoredDeviceName(),
+      challengeId:String(request.challengeId || ''),
+      verificationCode:String(request.verificationCode || ''),
+      clockStateVersion:1
+    })
   })
   assertCurrentLicenseSession(revision);
+  if (result.verificationRequired === true) {
+    return { ok:true, verificationRequired:true, result, state:getAppState() }
+  }
+  if (result.ok !== true) throw new Error(result.message || 'Não foi possível remover o dispositivo.')
   const nextLicense = {
     ...license,
     email: result.email || cleanEmail,
@@ -3164,7 +3269,7 @@ async function checkLicenseStatus(manual = false) {
   try {
     const result = await fetchJson(`${BACKEND_URL}/api/license/status`, {
       method: 'POST',
-      body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
+      body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName(), licenseToken:readSignedLicenseToken(), clockStateVersion:1 })
     });
     if (revision !== licenseSessionRevision) return { ok: false, stale: true, state: getAppState() };
 
@@ -8326,9 +8431,9 @@ ipcMain.handle('set-device-name', (_event, payload) => {
   const deviceName = saveStoredDeviceName(payload?.deviceName || payload?.name || '')
   return { ok: true, deviceName, state: getAppState() }
 });
-ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseDevices(payload?.email || ''));
+ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseDevices(payload || {}));
 ipcMain.handle('logout-license-devices', () => logoutLicenseDevices());
-ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload?.machineId || payload?.deviceId || payload?.removeMachineId || '', payload?.email || ''));
+ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload || {}));
 ipcMain.handle('activate-license', async (_event, payload) => {
   const revision = ++licenseSessionRevision;
   const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
@@ -8352,10 +8457,27 @@ ipcMain.handle('activate-license', async (_event, payload) => {
 
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
-    body: JSON.stringify({ cpf, cnpj, document, email, machineId, deviceFingerprint, platform: process.platform, computerName: getStoredDeviceName() })
+    body: JSON.stringify({
+      cpf,
+      cnpj,
+      document,
+      email,
+      machineId,
+      deviceFingerprint,
+      platform:process.platform,
+      computerName:getStoredDeviceName(),
+      challengeId:String(payload?.challengeId || ''),
+      verificationCode:String(payload?.verificationCode || ''),
+      licenseToken:readSignedLicenseToken(),
+      activationSessionToken:getStoredActivationSessionToken(email),
+      clockStateVersion:1
+    })
   });
 
   assertCurrentLicenseSession(revision);
+  if (result.verificationRequired === true) {
+    return { ok:true, verificationRequired:true, result, state:getAppState() };
+  }
   if (result.ok !== true || result.active !== true) throw new Error(result.message || 'A licença não foi ativada.');
   licenseSessionRevision += 1;
   saveSignedLicenseToken(result.licenseToken, { required: true });

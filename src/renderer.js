@@ -78,6 +78,112 @@ let accountWelcomeTimer = 0;
 let accountAccessRevision = 0;
 const chatHookMessagesById = new Map();
 
+function emailVerificationPayload(response) {
+  const candidate = response?.result?.verificationRequired === true ? response.result : response;
+  return candidate?.verificationRequired === true ? candidate : null;
+}
+
+function promptLicenseEmailCode({ title, verification, errorMessage = '', resendAt = 0 }) {
+  return new Promise((resolve) => {
+    const backdrop = $('#licenseEmailCodeModal');
+    const input = $('#licenseEmailCodeInput');
+    const confirmButton = $('#licenseEmailCodeConfirm');
+    const cancelButton = $('#licenseEmailCodeCancel');
+    const resendButton = $('#licenseEmailCodeResend');
+    const error = $('#licenseEmailCodeError');
+    if (!backdrop || !input || !confirmButton || !cancelButton || !resendButton) {
+      resolve({ action:'cancel' });
+      return;
+    }
+
+    $('#licenseEmailCodeTitle').textContent = title || 'Digite o código';
+    $('#licenseEmailCodeMessage').textContent = verification?.ok === false
+      ? 'Digite o código de 6 dígitos enviado para o e-mail da compra.'
+      : (verification?.message || 'Enviamos um código de 6 dígitos para o e-mail da compra.');
+    $('#licenseEmailCodeAddress').textContent = verification?.maskedEmail || '';
+    error.textContent = errorMessage || '';
+    input.value = '';
+    backdrop.classList.remove('hidden');
+
+    let countdownTimer = 0;
+    const updateResend = () => {
+      const seconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
+      resendButton.disabled = seconds > 0;
+      resendButton.textContent = seconds > 0 ? `Reenviar (${seconds}s)` : 'Reenviar';
+      if (!seconds && countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = 0;
+      }
+    };
+    updateResend();
+    if (resendAt > Date.now()) countdownTimer = setInterval(updateResend, 1000);
+
+    const finish = (value) => {
+      if (countdownTimer) clearInterval(countdownTimer);
+      backdrop.classList.add('hidden');
+      input.oninput = null;
+      input.onkeydown = null;
+      confirmButton.onclick = null;
+      cancelButton.onclick = null;
+      resendButton.onclick = null;
+      resolve(value);
+    };
+    const confirm = () => {
+      const code = String(input.value || '').replace(/\D/g, '').slice(0, 6);
+      if (code.length !== 6) {
+        error.textContent = 'Digite os 6 números enviados por e-mail.';
+        input.focus();
+        return;
+      }
+      finish({ action:'confirm', code });
+    };
+    input.oninput = () => {
+      input.value = String(input.value || '').replace(/\D/g, '').slice(0, 6);
+      error.textContent = '';
+    };
+    input.onkeydown = (event) => {
+      if (event.key === 'Enter') confirm();
+      if (event.key === 'Escape') finish({ action:'cancel' });
+    };
+    confirmButton.onclick = confirm;
+    cancelButton.onclick = () => finish({ action:'cancel' });
+    resendButton.onclick = () => {
+      if (!resendButton.disabled) finish({ action:'resend' });
+    };
+    setTimeout(() => input.focus(), 40);
+  });
+}
+
+async function runEmailVerifiedLicenseAction(operation, title) {
+  let response = await operation({});
+  let verification = emailVerificationPayload(response);
+  let resendAt = verification
+    ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
+    : 0;
+  let errorMessage = verification?.ok === false ? verification.message || '' : '';
+
+  while (verification) {
+    const answer = await promptLicenseEmailCode({ title, verification, errorMessage, resendAt });
+    if (answer.action === 'cancel') return null;
+    if (answer.action === 'resend') {
+      response = await operation({});
+      verification = emailVerificationPayload(response);
+      resendAt = verification
+        ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
+        : 0;
+      errorMessage = verification?.ok === false ? verification.message || '' : '';
+      continue;
+    }
+    response = await operation({
+      challengeId:verification.challengeId,
+      verificationCode:answer.code
+    });
+    verification = emailVerificationPayload(response);
+    errorMessage = verification?.ok === false ? verification.message || 'Código inválido.' : '';
+  }
+  return response;
+}
+
 function isAccountLoggedIn(nextState = state) {
   return nextState?.deviceLoggedIn === true;
 }
@@ -167,7 +273,15 @@ async function performAccountLogin(email) {
   setAccountLoginBusy(true);
   accountLoginTransitionActive = true;
   try {
-    const result = await window.hookUpdateCenter.loginLicenseDevices({ email: cleanEmail });
+    const result = await runEmailVerifiedLicenseAction(
+      (verification) => window.hookUpdateCenter.loginLicenseDevices({ email:cleanEmail, ...verification }),
+      'Confirmar login'
+    );
+    if (!result) {
+      accountLoginTransitionActive = false;
+      syncAccountAccessState(state);
+      return null;
+    }
     const nextState = result.state || await window.hookUpdateCenter.getState();
     if (revision !== accountAccessRevision) return null;
     renderState(nextState);
@@ -5159,7 +5273,15 @@ function renderDevices() {
       })
       if (!ok) return
       try {
-        const result = await window.hookUpdateCenter.removeLicenseDevice({ machineId, email: $('#devicesEmailInput')?.value || email })
+        const result = await runEmailVerifiedLicenseAction(
+          (verification) => window.hookUpdateCenter.removeLicenseDevice({
+            machineId,
+            email:$('#devicesEmailInput')?.value || email,
+            ...verification
+          }),
+          'Confirmar remoção'
+        )
+        if (!result) return
         renderState(result.state || await window.hookUpdateCenter.getState())
         $('#devicesMessage').textContent = isCurrentDevice ? 'Este computador foi removido da licença.' : 'Dispositivo removido.'
         if (isCurrentDevice) {
@@ -6136,10 +6258,18 @@ async function init() {
       $('#activateButton').textContent = 'Ativando...';
       $('#licenseMessage').textContent = 'Verificando dados...';
 
-      const result = await window.hookUpdateCenter.activateLicense({
-        cpf: $('#cpfInput').value,
-        email: $('#emailInput').value
-      });
+      const result = await runEmailVerifiedLicenseAction(
+        (verification) => window.hookUpdateCenter.activateLicense({
+          cpf:$('#cpfInput').value,
+          email:$('#emailInput').value,
+          ...verification
+        }),
+        'Confirmar ativação'
+      );
+      if (!result) {
+        $('#licenseMessage').textContent = 'Ativação cancelada.';
+        return;
+      }
 
       renderState(result.state || await window.hookUpdateCenter.getState());
       const msg = result?.result?.message || result?.result?.warning || 'Licença ativada com sucesso.';
