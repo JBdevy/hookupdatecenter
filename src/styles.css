@@ -7392,7 +7392,15 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 .resolume-tool-preview-head,
 .resolume-tool-preview-item {
-  grid-template-columns: minmax(150px, 1.2fr) 64px minmax(150px, 1fr) 110px;
+  grid-template-columns: minmax(0, 240px) 100px minmax(0, 1fr) 110px;
+}
+
+.resolume-tool-preview-head > *,
+.resolume-tool-preview-item > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hook-marker-preview-head {
@@ -7550,9 +7558,11 @@ body.tools-mode .copy-project-card .selected-folder-box {
   .hook-marker-preview-item {
     grid-template-columns: 42px minmax(0, 1fr);
   }
-  .hook-marker-preview-item.is-grandma,
-  .resolume-tool-preview-item {
+  .hook-marker-preview-item.is-grandma {
     grid-template-columns: 42px minmax(0, 1fr);
+  }
+  .resolume-tool-preview-item {
+    grid-template-columns: minmax(0, 1fr) 110px;
   }
   .resolume-tool-version-notice {
     grid-template-columns: 1fr;
