@@ -7519,6 +7519,13 @@ function parseHookMarkerResolumeAssignments(rawValue) {
     }
     const assignments = Object.create(null);
     for (const [key, rawAssignment] of Object.entries(parsed)) {
+      if (key === '__vshookDecks' && Array.isArray(rawAssignment)) {
+        assignments[key] = rawAssignment.filter((entry) => entry &&
+          Number.isInteger(entry.deck) && entry.deck > 0 &&
+          typeof entry.sourceKey === 'string' &&
+          typeof entry.name === 'string');
+        continue;
+      }
       const assignment = String(rawAssignment ?? '').trim();
       if (!key || !/^\d+:\d+$/.test(assignment)) {
         continue;
@@ -7662,6 +7669,11 @@ function buildPersistedHookMarkerResolumeMap(
   const cueMap = buildResolumeMap(project, settings, savedAssignments, {
     includeUnassigned: createMissing === true
   });
+  // Metadados da exportação acompanham os IDs no RPP. Recriar/consultar o
+  // mapa não deve substituir os nomes exportados pelos nomes atuais.
+  if (Array.isArray(savedAssignments.__vshookDecks)) {
+    cueMap.assignments.__vshookDecks = savedAssignments.__vshookDecks;
+  }
   const availableMap = createMissing
     ? cueMap
     : buildResolumeMap(project, settings, savedAssignments);
@@ -7717,6 +7729,48 @@ async function syncHookMarkerResolumeMapToExtension(project, settings, cueMap) {
   }).catch(() => false);
   if (sent) hookMarkerResolumeSyncSignature = signature;
   return sent;
+}
+
+function hookMarkerResolumeDecksMatch(composition, compositionMap) {
+  const records = compositionMap.assignments?.__vshookDecks || [];
+  return (composition.decks || []).every((deck, index) => {
+    const number = index + 1;
+    const cue = compositionMap.cues.find(item =>
+      item.regionStart === true && Number(item.deck) === number);
+    const record = records.find(item => item.deck === number);
+    if (record) {
+      // O ID da região deve continuar no mesmo destino, independentemente
+      // do nome atual da música. O rótulo antigo identifica o deck exportado.
+      return record.sourceKey === (cue?.sourceKey || '') &&
+        String(deck?.name?.value || '') === record.name;
+    }
+    // Projetos anteriores ainda não possuem histórico. Só associe a primeira
+    // vez quando a música e seu destino puderem ser conferidos pelo nome.
+    return String(deck?.name?.value || '') ===
+      (cue?.deckName || `Reservado VS Hook ${number}`);
+  });
+}
+
+async function rememberHookMarkerResolumeDecks(project, settings, compositionMap, composition) {
+  const records = composition.decks.map((deck, index) => ({
+    deck: index + 1,
+    sourceKey: compositionMap.cues.find(cue =>
+      cue.regionStart === true && Number(cue.deck) === index + 1)?.sourceKey || '',
+    name: String(deck?.name?.value || '')
+  }));
+  const assignments = { ...compositionMap.assignments, __vshookDecks: records };
+  const allAssignments = store.get('hookMarkerResolumeAssignments') || {};
+  const projectKey = hookMarkerResolumeProjectKey(project);
+  const assignmentKey = settings.resolumeIncludeMarkers === false
+    ? `${projectKey}:regions-only` : projectKey;
+  const updatedMap = { ...compositionMap, assignments };
+  if (!await syncHookMarkerResolumeMapToExtension(project, settings, updatedMap)) {
+    throw new Error('Não foi possível gravar o vínculo das músicas no REAPER. Mantenha o projeto aberto e tente novamente.');
+  }
+  store.set('hookMarkerResolumeAssignments', {
+    ...allAssignments, [assignmentKey]: assignments
+  });
+  compositionMap.assignments = assignments;
 }
 
 async function getHookMarkerState({ forceRefresh = false } = {}) {
@@ -8300,6 +8354,7 @@ async function createHookMarkerResolumeProject(input = {}) {
     }
     await waitForHookMarkerResolumeFile(
       compositionPath, previousFileStat, 45000);
+    await rememberHookMarkerResolumeDecks(project, settings, compositionMap, composition);
     return {
       ok: true,
       filePath: compositionPath,
@@ -8353,28 +8408,22 @@ async function addHookMarkerResolumeSongs(input = {}) {
   }
 
   let composition = await waitForHookMarkerResolumeStable(settings);
-  const compositionName = project.projectName || 'Projeto VS Hook';
-  if (String(composition?.name?.value || '') !== compositionName) {
-    throw new Error(
-      `Abra no Arena a composição "${compositionName}" criada pela Hook Center antes de adicionar músicas.`);
-  }
   const initialDeckCount = Array.isArray(composition?.decks)
     ? composition.decks.length : 0;
   if (initialDeckCount < 1) {
     throw new Error('O Arena não informou os decks da composição aberta.');
   }
 
-  const expectedExistingNames = Array.from(
-    { length: Math.min(initialDeckCount, highestDeck) }, (_, index) =>
-      hookMarkerResolumeDeckDefinition(
-        compositionMap, index + 1).deckName);
-  const existingDecksMatch = expectedExistingNames.every((name, index) =>
-    String(composition.decks[index]?.name?.value || '') === name);
+  // O usuário pode salvar o AVC com outro nome, inclusive sem os acentos do
+  // RPP. A correspondência é conferida pelas músicas nos destinos do mapa,
+  // não pelo título da composição ou pelo nome escolhido para o arquivo.
+  const existingDecksMatch = hookMarkerResolumeDecksMatch(composition, compositionMap);
   if (!existingDecksMatch) {
     throw new Error(
       'Os decks abertos não correspondem ao mapa deste projeto. Abra o arquivo .avc correto para não adicionar músicas na composição errada.');
   }
   if (initialDeckCount >= highestDeck) {
+    await rememberHookMarkerResolumeDecks(project, settings, compositionMap, composition);
     return {
       ok: true,
       addedDeckCount: 0,
@@ -8458,6 +8507,7 @@ async function addHookMarkerResolumeSongs(input = {}) {
   } catch (error) {
     if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') saved = false;
   }
+  await rememberHookMarkerResolumeDecks(project, settings, compositionMap, composition);
   return {
     ok: true,
     addedDeckCount: newDecks.length,
