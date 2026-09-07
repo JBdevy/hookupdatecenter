@@ -7392,7 +7392,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 .resolume-tool-preview-head,
 .resolume-tool-preview-item {
-  grid-template-columns: minmax(0, 240px) 100px minmax(0, 1fr) 110px;
+  grid-template-columns: minmax(0, 1.2fr) 100px minmax(0, 1fr) 110px;
 }
 
 .resolume-tool-preview-head > *,

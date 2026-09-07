@@ -49,7 +49,8 @@ app.whenReady().then(async () => {
     assert.equal(state.ellipsis, 'ellipsis');
     assert(state.clipped && state.title, `long name must truncate, keeping full tooltip at ${width}`);
     if (state.headerVisible) {
-      assert(state.music.width <= 240, `music column too wide at ${width}`);
+      assert(state.music.width < state.viewport * 0.6, `music column too wide at ${width}`);
+      if (width >= 940) assert(state.music.width > 300, `music column needs more room at ${width}`);
       assert(state.headers[1].width >= 100, 'Marcadores needs room for its label');
       for (let index = 1; index < 4; index++) {
         assert(state.headers[index].left - state.headers[index - 1].right >= 9);

@@ -3909,7 +3909,7 @@ async function exportHookMarkerGrandMa2() {
     });
     if (!result?.cancelled) showModal({
       title: 'Arquivos grandMA2 prontos',
-      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML.\n\nNo grandMA2, importe apenas "${result.installerMacroFileName || '00-VS-Hook-Instalar-Tudo-macro.xml'}" da pasta "macros" e execute-o uma vez. Ele prepara todas as músicas e importa os Timecodes automaticamente. Os macros individuais permanecem na pasta como recuperação.\n\nO mapa de Sequence, Executor e Timecode foi gravado no projeto. Salve o .rpp antes de levá-lo para outro computador.`,
+      message: `${result.songCount} música(s) exportada(s): ${result.markerCount} cues em ${result.fileCount} arquivos XML.\n\nNo grandMA2, importe apenas "${result.installerMacroFileName || 'Importar tudo - nome do projeto'}" da pasta "macros" e execute-o uma vez. Ele prepara todas as músicas e importa os Timecodes automaticamente. Os macros individuais permanecem na pasta como recuperação.\n\nO mapa de Sequence, Executor e Timecode foi gravado no projeto. Salve o .rpp antes de levá-lo para outro computador.`,
       type: 'success'
     });
   } catch (error) {

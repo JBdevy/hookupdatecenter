@@ -318,7 +318,7 @@ function buildGrandMa2MacroCommands(project = {}, inputSettings = {}) {
 
 function renderGrandMa2MacroXml(showName, macroName, commands) {
   const cleanShowName = cleanGrandMa2Name(showName, 'Projeto VS Hook');
-  const cleanMacroName = cleanGrandMa2Name(macroName, 'VS Hook - Instalar Tudo');
+  const cleanMacroName = cleanGrandMa2Name(macroName, `Importar tudo - ${cleanShowName}`);
   const lines = grandMa2Header(cleanShowName, 'macro');
   lines.push(`  <Macro index="0" name="${xmlEscape(cleanMacroName)}">`);
   commands.forEach((command, index) => {
@@ -350,7 +350,7 @@ function generateGrandMa2InstallerMacro(project = {}, songExports = []) {
   }
   return renderGrandMa2MacroXml(
     projectName,
-    'VS Hook - Instalar Tudo',
+    `Importar tudo - ${projectName}`,
     commands);
 }
 
@@ -423,7 +423,8 @@ function buildGrandMa2SongExports(project = {}, inputSettings = {}, options = {}
   // mantém o mesmo arquivo e os mesmos destinos da exportação completa.
   const baseStems = allSongs.map((song) => safeFileStem(song.name));
   const reservedStems = new Set(baseStems.map((stem) => stem.toLowerCase()));
-  // Reserva o nome do macro geral para nenhuma música poder sobrescrevê-lo.
+  // Mantem a reserva legada para nao mudar nomes de musicas ja exportadas.
+  // O macro geral atual resolve colisoes com estes arquivos na exportacao.
   const usedStems = new Set(['00-vs-hook-instalar-tudo']);
   const stems = baseStems.map((baseStem) => {
     let stem = baseStem;

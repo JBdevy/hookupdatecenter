@@ -4096,6 +4096,7 @@
 
   function syncSharedInterfaceState(data = state.snapshot) {
     if (!data || typeof data !== 'object') return
+    syncNativeTabletSearchState(data)
     const currentTime = now()
     const previousSelectionTarget =
       getDirectorSelectionScrollTarget()
@@ -9938,12 +9939,14 @@
 
   function getNativeTabletSearchEntries(data = state.snapshot || {}) {
     const smartSearch = data?.smartSearch
-    if (!smartSearch || !Array.isArray(smartSearch.results) || !smartSearch.open || smartSearch.ready === false) return null
+    if (!smartSearch || !Array.isArray(smartSearch.results) || !smartSearch.open || smartSearch.ready === false ||
+        smartSearch.protocolVersion !== 2 ||
+        smartSearch.searchClient !== state.tabletSearchNativeClient ||
+        Number(smartSearch.searchSerial) !== state.tabletSearchNativeSerial ||
+        Number(smartSearch.searchSequence) !== state.tabletSearchNativeQuerySequence) return null
     const localQuery = normalizeTabletSearchText(state.tabletSearchQuery).trim()
     const appliedQuery = normalizeTabletSearchText(smartSearch.appliedQuery).trim()
-    // Enquanto os 120 ms de debounce nativo ainda nao terminaram, conserva a
-    // resposta otimista local. Assim que a extensao aplicar o texto, ela passa
-    // a ser a unica fonte dos resultados e de sua pagina de origem.
+    // Somente resultados confirmados para esta sessao e esta revisao do texto.
     if (localQuery !== appliedQuery) return null
     return smartSearch.results.map((item) => ({
       id: String(item?.id || ''),
@@ -9960,13 +9963,7 @@
   }
 
   function getFilteredTabletSearchEntries(data = state.snapshot || {}) {
-    const nativeEntries = getNativeTabletSearchEntries(data)
-    if (nativeEntries) return nativeEntries
-    const query = normalizeTabletSearchText(state.tabletSearchQuery).trim()
-    const entries = getTabletSearchEntries(data)
-    if (!query) return entries
-    const terms = query.split(/\s+/).filter(Boolean)
-    return entries.filter((entry) => terms.every((term) => entry.searchText.indexOf(term) >= 0))
+    return getNativeTabletSearchEntries(data) || []
   }
 
   function tabletSearchEntryIsInActivePlaylist(entry, data = state.snapshot || {}) {
@@ -9976,10 +9973,16 @@
   }
 
   function renderTabletSearchResults(data = state.snapshot || {}) {
+    if (state.tabletSearchNativeError) {
+      return `<div class="tabletSearchEmpty" role="alert">${escapeHtml(state.tabletSearchNativeError)}<br><button type="button" class="btn" data-action="tablet-search-retry">TENTAR NOVAMENTE</button></div>`
+    }
+    if (state.tabletSearchNativeActivation) return '<div class="tabletSearchEmpty" role="status">CONFIRMANDO NA EXTENSÃO…</div>'
+    if (!getNativeTabletSearchEntries(data)) return '<div class="tabletSearchEmpty" role="status">AGUARDE, PESQUISANDO…</div>'
     const entries = getFilteredTabletSearchEntries(data)
     if (!entries.length) return '<div class="tabletSearchEmpty">NENHUMA MÚSICA ENCONTRADA</div>'
     return entries.map((entry) => {
-      const destination = tabletSearchEntryIsInActivePlaylist(entry, data) ? 'REPERTÓRIO' : 'MÚSICAS'
+      const returnsToPlaylist = isPlaying(data) && !!data?.smartSearch?.sourcePlaylistName
+      const destination = !entry.regionsPage || returnsToPlaylist ? 'REPERTÓRIO' : 'MÚSICAS'
       const childLabel = entry.isChild ? `<span class="tabletSearchResultParent">FILHO DE ${escapeHtml(entry.parentName || 'REGIÃO')}</span>` : ''
       const duration = entry.durationSec > 0 ? formatTime(entry.durationSec) : ''
       return `<button type="button" class="tabletSearchResult" data-action="tablet-search-result" data-search-id="${escapeHtml(entry.id)}" data-search-start="${escapeHtml(Number(entry.start || 0))}"><span class="tabletSearchResultMain"><span class="tabletSearchResultName">${escapeHtml(entry.name)}</span>${childLabel}</span><span class="tabletSearchResultSide"><span class="tabletSearchResultDestination">${destination}</span>${duration ? `<span class="tabletSearchResultTime">${escapeHtml(duration)}</span>` : ''}</span></button>`
@@ -9997,7 +10000,7 @@
             <button type="button" class="btn tabletSearchClose" data-action="tablet-search-close">FECHAR</button>
           </div>
           <div class="tabletSearchInputRow">
-            <input id="tabletSearchInput" class="tabletSearchInput" type="search" inputmode="search" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PESQUISAR MÚSICA" value="${escapeHtml(state.tabletSearchQuery)}">
+            <input id="tabletSearchInput" class="tabletSearchInput" type="search" inputmode="search" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PESQUISAR MÚSICA" value="${escapeHtml(state.tabletSearchQuery)}" ${state.tabletSearchNativeActivation ? 'disabled' : ''}>
             <span class="tabletSearchCount" data-tablet-search-count>${count}</span>
           </div>
           <div class="tabletSearchResults" data-tablet-search-results>${renderTabletSearchResults(data)}</div>
@@ -10010,7 +10013,10 @@
     if (!state.showTabletSearch) return
     const results = root.querySelector('[data-tablet-search-results]')
     const count = root.querySelector('[data-tablet-search-count]')
-    if (results) results.innerHTML = renderTabletSearchResults(state.snapshot || {})
+    const html = renderTabletSearchResults(state.snapshot || {})
+    if (results && results.innerHTML !== html) results.innerHTML = html
+    const input = document.getElementById('tabletSearchInput')
+    if (input) input.disabled = !!state.tabletSearchNativeActivation
     if (count) count.textContent = String(getFilteredTabletSearchEntries(state.snapshot || {}).length)
   }
 
@@ -12842,49 +12848,144 @@
     scheduleRender(true)
   }
 
+  function nativeTabletSearchPayload() {
+    return {
+      searchClient: state.tabletSearchNativeClient,
+      searchSerial: state.tabletSearchNativeSerial,
+      searchSequence: ++state.tabletSearchNativeSequence,
+    }
+  }
+
+  function nativeTabletSearchIsCurrent(payload) {
+    return state.showTabletSearch &&
+      payload.searchClient === state.tabletSearchNativeClient &&
+      payload.searchSerial === state.tabletSearchNativeSerial
+  }
+
+  async function postNativeTabletSearchCommand(type, payload) {
+    const response = await postCommand(type, payload)
+    if (!response?.ok) throw new Error('connection')
+    const result = await response.json()
+    if (result?.ok !== true) throw new Error('connection')
+  }
+
+  function failNativeTabletSearch(payload, message) {
+    if (!nativeTabletSearchIsCurrent(payload) ||
+        payload.searchSequence !== state.tabletSearchNativeSequence) return
+    window.clearTimeout(state.tabletSearchNativeTimeout)
+    state.tabletSearchNativeActivation = null
+    state.tabletSearchNativeError = message
+    syncTabletSearchResultsDom()
+  }
+
+  function waitForNativeTabletSearch(payload) {
+    window.clearTimeout(state.tabletSearchNativeTimeout)
+    state.tabletSearchNativeTimeout = window.setTimeout(() => {
+      failNativeTabletSearch(payload,
+        'A EXTENSÃO NÃO CONFIRMOU A AÇÃO. CONFIRA A CONEXÃO E O ESTADO DA MÚSICA ANTES DE TENTAR NOVAMENTE.')
+    }, 8000)
+  }
+
+  function syncNativeTabletSearchState(data) {
+    if (!state.showTabletSearch) return
+    const search = data?.smartSearch
+    if (search && search.protocolVersion !== 2) {
+      failNativeTabletSearch({
+        searchClient: state.tabletSearchNativeClient,
+        searchSerial: state.tabletSearchNativeSerial,
+        searchSequence: state.tabletSearchNativeSequence,
+      }, 'ATUALIZE A EXTENSÃO VS HOOK PARA USAR ESTA LUPA.')
+      return
+    }
+    if (!search || search.searchClient !== state.tabletSearchNativeClient ||
+        Number(search.searchSerial) !== state.tabletSearchNativeSerial) return
+    const pending = state.tabletSearchNativeActivation
+    if (pending && Number(search.activationSequence) === pending.searchSequence) {
+      window.clearTimeout(state.tabletSearchNativeTimeout)
+      if (search.activationOk === true) {
+        closeTabletSearchState({ notifyNative: false })
+        scheduleRender(true)
+      } else {
+        failNativeTabletSearch(pending, search.activationError ||
+          'NÃO FOI POSSÍVEL SELECIONAR. ATUALIZE A PESQUISA E TENTE NOVAMENTE.')
+      }
+      return
+    }
+    if (!pending && getNativeTabletSearchEntries(data)) {
+      window.clearTimeout(state.tabletSearchNativeTimeout)
+    }
+  }
+
   function beginNativeTabletSearch() {
+    if (!state.showTabletSearch) return
     if (state.tabletSearchNativeQueryTimer) {
       window.clearTimeout(state.tabletSearchNativeQueryTimer)
       state.tabletSearchNativeQueryTimer = 0
     }
     state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
-    const serial = state.tabletSearchNativeSerial
-    state.tabletSearchNativeOpenPromise = postCommand('smart_search_open', {
-      page: state.activeTab,
-      searchSerial: serial,
+    state.tabletSearchNativeClient ||= `director-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    state.tabletSearchNativeSequence = 0
+    state.tabletSearchNativeError = ''
+    state.tabletSearchNativeActivation = null
+    const payload = nativeTabletSearchPayload()
+    state.tabletSearchNativeOpenPromise = postNativeTabletSearchCommand('smart_search_open', {
+      ...payload, page: state.tabletSearchSourceTab || state.activeTab,
+    }).then(() => true, () => {
+      failNativeTabletSearch({ ...payload, searchSequence: state.tabletSearchNativeSequence },
+        'NÃO FOI POSSÍVEL ABRIR A LUPA. CONFIRA A CONEXÃO COM A HOOK CENTER.')
+      return false
     })
+    queueNativeTabletSearchQuery(state.tabletSearchQuery)
   }
 
   function queueNativeTabletSearchQuery(query) {
+    if (state.tabletSearchNativeActivation) return
     if (state.tabletSearchNativeQueryTimer) window.clearTimeout(state.tabletSearchNativeQueryTimer)
-    const serial = Number(state.tabletSearchNativeSerial || 0)
+    const payload = nativeTabletSearchPayload()
+    state.tabletSearchNativeQuerySequence = payload.searchSequence
+    state.tabletSearchNativeError = ''
+    waitForNativeTabletSearch(payload)
     const openPromise = state.tabletSearchNativeOpenPromise
     state.tabletSearchNativeQueryTimer = window.setTimeout(() => {
       state.tabletSearchNativeQueryTimer = 0
-      const send = () => {
-        if (!state.showTabletSearch || serial !== Number(state.tabletSearchNativeSerial || 0)) return
-        postCommand('smart_search_query', { query, searchSerial: serial })
+      const send = (opened) => {
+        if (!opened || !nativeTabletSearchIsCurrent(payload) ||
+            payload.searchSequence !== state.tabletSearchNativeQuerySequence ||
+            state.tabletSearchNativeActivation) return
+        postNativeTabletSearchCommand('smart_search_query', { ...payload, query })
+          .catch(() => failNativeTabletSearch(payload, 'NÃO FOI POSSÍVEL PESQUISAR. CONFIRA A CONEXÃO E TENTE NOVAMENTE.'))
       }
-      Promise.resolve(openPromise).then(send, send)
+      Promise.resolve(openPromise).then(send)
     }, 24)
   }
 
   function activateNativeTabletSearchResult(payload) {
+    if (!state.showTabletSearch || state.tabletSearchNativeActivation || state.tabletSearchNativeError) return
     if (state.tabletSearchNativeQueryTimer) {
       window.clearTimeout(state.tabletSearchNativeQueryTimer)
       state.tabletSearchNativeQueryTimer = 0
     }
-    const serial = Number(state.tabletSearchNativeSerial || 0)
+    const request = { ...payload, ...nativeTabletSearchPayload() }
+    state.tabletSearchNativeActivation = request
+    waitForNativeTabletSearch(request)
+    syncTabletSearchResultsDom()
     const openPromise = state.tabletSearchNativeOpenPromise
-    const send = () => postCommand('smart_search_activate', {
-      ...payload,
-      searchSerial: serial,
-    })
-    Promise.resolve(openPromise).then(send, send)
+    const send = (opened) => {
+      if (!opened || !nativeTabletSearchIsCurrent(request) ||
+          state.tabletSearchNativeActivation !== request) return
+      postNativeTabletSearchCommand('smart_search_activate', request)
+        .catch(() => failNativeTabletSearch(request, 'NÃO FOI POSSÍVEL CONFIRMAR A SELEÇÃO. CONFIRA A CONEXÃO E O ESTADO DA MÚSICA.'))
+    }
+    Promise.resolve(openPromise).then(send)
   }
 
   function closeTabletSearchState(options = {}) {
     const wasOpen = state.showTabletSearch
+    const closePayload = wasOpen ? nativeTabletSearchPayload() : null
+    const openPromise = state.tabletSearchNativeOpenPromise
+    window.clearTimeout(state.tabletSearchNativeTimeout)
+    state.tabletSearchNativeActivation = null
+    state.tabletSearchNativeError = ''
     const input = document.getElementById('tabletSearchInput')
     if (input) {
       try { input.blur() } catch (_) {}
@@ -12899,10 +13000,10 @@
       document.documentElement.classList.contains('directorSearchViewportRestoring')
     if (wasOpen || hadLegacySearchViewport) setDirectorSearchPortraitMode(false)
     if (wasOpen && options.notifyNative !== false) {
-      state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
-      // Envia antes do eventual comando de troca de aba disparado pelo mesmo
-      // clique, para que o retorno da Lupa nao sobrescreva a navegacao nova.
-      postCommand('smart_search_close')
+      // A sessao acompanha o fechamento: um close atrasado nao fecha outra lupa.
+      Promise.resolve(openPromise).then((opened) => {
+        if (opened) postNativeTabletSearchCommand('smart_search_close', closePayload).catch(() => {})
+      })
     }
   }
 
@@ -12928,29 +13029,23 @@
   }
 
   function handleTabletSearchResult(searchId, element = null) {
+    if (!state.showTabletSearch || state.tabletSearchNativeActivation || state.tabletSearchNativeError) return
     const id = String(searchId || '')
     const data = state.snapshot || {}
-    const entry = getFilteredTabletSearchEntries(data).find((candidate) => String(candidate.id) === id) ||
-      getTabletSearchEntries(data).find((candidate) => String(candidate.id) === id)
+    const rawStart = element?.getAttribute?.('data-search-start')
+    const attributeStart = rawStart == null ? NaN : Number(rawStart)
+    const entry = getFilteredTabletSearchEntries(data).find((candidate) =>
+      String(candidate.id) === id && (!Number.isFinite(attributeStart) ||
+        Math.abs(Number(candidate.start) - attributeStart) <= 0.003))
     if (!entry) return
-    const attributeStart = Number(element?.getAttribute?.('data-search-start'))
-    const resultStart = Number.isFinite(attributeStart)
-      ? attributeStart : Number(entry.start || 0)
+    const resultStart = Number(entry.start || 0)
     activateNativeTabletSearchResult({
       resultId: entry.id,
       resultStart,
       query: state.tabletSearchQuery,
     })
 
-    // A extensao fecha a propria Lupa e executa selecao/fila/insercao. O app
-    // apenas fecha sua camada visual; nenhuma regra nativa e duplicada aqui.
-    closeTabletSearchState({ notifyNative: false })
-    state.showProjectModal = false
-    state.showPlaylistModal = false
-    state.showSettingsModal = false
-    state.showTelepromptScreen = false
-    state.showRecadosScreen = false
-    scheduleRender(true)
+    // Fecha somente quando o snapshot confirmar esta ativacao especifica.
   }
 
   function handleAction(action, el, event) {
@@ -12999,6 +13094,7 @@
         state.showMenu = false
         if (opening) {
           state.showTabletSearch = true
+          state.tabletSearchSourceTab = state.activeTab
           beginNativeTabletSearch()
           setDirectorSearchPortraitMode(true)
           state.showProjectModal = false
@@ -13012,6 +13108,7 @@
         if (opening) window.requestAnimationFrame(() => window.requestAnimationFrame(focusTabletSearchInput))
         break
       }
+      case 'tablet-search-retry': beginNativeTabletSearch(); syncTabletSearchResultsDom(); break
       case 'tablet-search-close': closeTabletSearchState(); scheduleRender(true); break
       case 'tablet-search-result': handleTabletSearchResult(el.getAttribute('data-search-id'), el); break
       case 'go-playlist':
@@ -14994,9 +15091,10 @@
       if (event.target?.id === 'directorPassInput') state.authPass = event.target.value
       if (event.target?.id === 'directorRecadosTextInput') return
       if (event.target?.id === 'tabletSearchInput') {
+        if (state.tabletSearchNativeActivation) return
         state.tabletSearchQuery = event.target.value
-        syncTabletSearchResultsDom()
         queueNativeTabletSearchQuery(state.tabletSearchQuery)
+        syncTabletSearchResultsDom()
         return
       }
       if (event.target?.matches?.('[data-timer-countdown-input]')) {

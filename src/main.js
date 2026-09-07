@@ -8565,11 +8565,12 @@ async function exportHookMarkerGrandMa2(input = {}) {
   }
   const occupiedMacroNames = new Set(
     songExports.map((item) => item.macroFileName.toLowerCase()));
+  const installerStem = safeFileStem(`00-Importar tudo - ${project.projectName || 'Projeto VS Hook'}`);
   let installerNumber = 1;
-  let installerMacroFileName = '00-VS-Hook-Instalar-Tudo-macro.xml';
+  let installerMacroFileName = `${installerStem}-macro.xml`;
   while (occupiedMacroNames.has(installerMacroFileName.toLowerCase())) {
     installerNumber += 1;
-    installerMacroFileName = `00-VS-Hook-Instalar-Tudo-${installerNumber}-macro.xml`;
+    installerMacroFileName = `${installerStem}-${installerNumber}-macro.xml`;
   }
   const installerMacroPath = path.join(macroFolderPath, installerMacroFileName);
   const installerMacroXml = generateGrandMa2InstallerMacro(project, songExports);

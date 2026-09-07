@@ -67,7 +67,12 @@ assert(secondSongExport.timecodeXml.includes(
   'time="300" command="Off" pressed="true"'));
 assert(!secondSongExport.timecodeXml.includes(
   'time="1200" command="Off" pressed="true"'));
-assert(installerMacro.includes('<Macro index="0" name="VS Hook - Instalar Tudo">'));
+assert(installerMacro.includes('<Macro index="0" name="Importar tudo - Teste MTC">'));
+assert(!installerMacro.includes('Instalar Tudo'));
+assert(generateGrandMa2InstallerMacro({}, []).includes(
+  '<Macro index="0" name="Importar tudo - Projeto VS Hook">'));
+assert(generateGrandMa2InstallerMacro({ projectName: 'São João $ "Show"' }, []).includes(
+  '<Macro index="0" name="Importar tudo - Sao Joao Show">'));
 assert.strictEqual((installerMacro.match(/SelectDrive 1/g) || []).length, 1,
   'O macro geral deve selecionar o drive apenas uma vez.');
 assert(installerMacro.includes('Import &quot;Musica Teste-timecode&quot; At Timecode 9'));
