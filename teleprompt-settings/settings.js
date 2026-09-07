@@ -3,6 +3,7 @@ const BRIDGE = 'http://127.0.0.1:47830';
 const defaults = {
   preset: 'night',
   textColor: '#ffea00',
+  highlightColor: '#00ff55',
   textBoxColor: '#ffea00',
   clockColor: '#00ff55',
   clockExpiredColor: '#ff3131',
@@ -60,6 +61,7 @@ const defaults = {
 const presetColors = {
   night: {
     textColor: '#ffea00',
+    highlightColor: '#00ff55',
     textBoxColor: '#ffea00',
     clockColor: '#00ff55',
     clockExpiredColor: '#ff3131',
@@ -74,6 +76,7 @@ const presetColors = {
   },
   day: {
     textColor: '#ffffff',
+    highlightColor: '#d97706',
     textBoxColor: '#ffffff',
     clockColor: '#ffffff',
     clockExpiredColor: '#d60000',

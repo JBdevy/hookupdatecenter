@@ -37,6 +37,12 @@ assert(!songExport.macroXml.includes('Select Drive (1 = onPC'));
 assert(songExport.macroXml.includes('ClearAll'));
 assert(songExport.macroXml.includes('<Macro index="0" name="Musica Teste">'));
 assert(!songExport.macroXml.includes('Hook Marker -'));
+assert(songExport.macroXml.includes('Label Sequence 4 Cue 1 &quot;Inicio&quot;'));
+assert(secondSongExport.macroXml.includes('Label Sequence 5 Cue 1 &quot;Inicio&quot;'));
+assert(songExport.timecodeXml.includes('<Cue name="Inicio">'));
+assert(secondSongExport.timecodeXml.includes('<Cue name="Inicio">'));
+assert(installerMacro.includes('Label Sequence 4 Cue 1 &quot;Inicio&quot;'));
+assert(installerMacro.includes('Label Sequence 5 Cue 1 &quot;Inicio&quot;'));
 assert(songExport.macroXml.includes(
   'Assign Sequence 4 Cue 1 /Trig=Timecode /TrigTime=0H0M10.00S'));
 assert(!songExport.macroXml.includes('/TrigTime=0H0M15.00S'));
@@ -141,11 +147,33 @@ const grandMaReservedNameExport = buildGrandMa2SongExports({
   ]
 })[0];
 assert(grandMaReservedNameExport.macroXml.includes(
-  'Label Sequence 1 Cue 2 &quot;pre refrão&quot;'));
+  'Label Sequence 1 Cue 2 &quot;pre refrao&quot;'));
 assert(!grandMaReservedNameExport.macroXml.includes('$pre refrão'));
-assert(grandMaReservedNameExport.timecodeXml.includes('<Cue name="pre refrão">'));
+assert(grandMaReservedNameExport.timecodeXml.includes('<Cue name="pre refrao">'));
 assert.strictEqual(grandMaReservedNameExport.timecodeFileName,
   'Musica especial-timecode.xml');
+
+const grandMaPunctuationExport = buildGrandMa2SongExports({
+  projectName: 'Teste de pontuação',
+  regions: [
+    { id: 'song-punctuation', name: 'ISABELA – ZUFA', start: 0, end: 20 }
+  ],
+  markers: [
+    {
+      id: 'marker-punctuation',
+      number: 1,
+      name: 'CHOPP, ALEGRIA E DIVERSÃO',
+      position: 10
+    }
+  ]
+})[0];
+assert(grandMaPunctuationExport.macroXml.includes(
+  'Label Sequence 1 &quot;ISABELA - ZUFA&quot;'));
+assert(grandMaPunctuationExport.macroXml.includes(
+  'Label Sequence 1 Cue 2 &quot;CHOPP ALEGRIA E DIVERSAO&quot;'));
+assert(!/[À-ÖØ-öø-ÿ,–]/.test(grandMaPunctuationExport.macroXml));
+assert.strictEqual(grandMaPunctuationExport.timecodeFileName,
+  'ISABELA - ZUFA-timecode.xml');
 
 const resolumeMap = buildResolumeMap({
   projectName: 'Teste Resolume',

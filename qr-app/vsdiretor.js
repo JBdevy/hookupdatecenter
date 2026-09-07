@@ -333,6 +333,56 @@
       .replace(/'/g, '&#39;')
   }
 
+  function parseTelepromptHighlightedText(value) {
+    const text = String(value || '')
+    const segments = []
+    const append = (content, highlighted = false) => {
+      if (!content) return
+      const previous = segments[segments.length - 1]
+      if (previous && previous.highlighted === highlighted) previous.text += content
+      else segments.push({ text: content, highlighted })
+    }
+    let cursor = 0
+    while (cursor < text.length) {
+      if (text[cursor] !== '*' || cursor + 1 >= text.length || /\s/.test(text[cursor + 1])) {
+        append(text[cursor])
+        cursor += 1
+        continue
+      }
+      let closing = cursor + 1
+      while (closing < text.length) {
+        if (text[closing] === '*' && closing > cursor + 1 && !/\s/.test(text[closing - 1])) break
+        closing += 1
+      }
+      if (closing >= text.length) {
+        append(text[cursor])
+        cursor += 1
+        continue
+      }
+      append(text.slice(cursor + 1, closing), true)
+      cursor = closing + 1
+    }
+    return segments
+  }
+
+  function renderTelepromptHighlightedText(element, value) {
+    if (!element) return
+    const source = String(value || '')
+    const fragment = document.createDocumentFragment()
+    parseTelepromptHighlightedText(source).forEach((segment) => {
+      if (!segment.highlighted) {
+        fragment.appendChild(document.createTextNode(segment.text))
+        return
+      }
+      const highlight = document.createElement('span')
+      highlight.className = 'directorTpHighlight'
+      highlight.textContent = segment.text
+      fragment.appendChild(highlight)
+    })
+    element.replaceChildren(fragment)
+    element.dataset.highlightSource = source
+  }
+
   function upperText(value) {
     const input = String(value ?? '').trim()
     let output = ''
@@ -725,7 +775,7 @@
 
   const APP_TELEPROMPT_DEFAULTS = Object.freeze({
     preset: 'night',
-    textColor: '#ffea00', textBoxColor: '#ffea00',
+    textColor: '#ffea00', highlightColor: '#00ff55', textBoxColor: '#ffea00',
     clockColor: '#00ff55', clockExpiredColor: '#ff3131',
     clockBorderColor: '#00ff55', localClockColor: '#00ff55',
     localClockBorderColor: '#00ff55',
@@ -761,7 +811,7 @@
   })
 
   const APP_TELEPROMPT_DAY_COLORS = Object.freeze({
-    textColor: '#ffffff', textBoxColor: '#ffffff', clockColor: '#ffffff',
+    textColor: '#ffffff', highlightColor: '#d97706', textBoxColor: '#ffffff', clockColor: '#ffffff',
     clockExpiredColor: '#d60000', clockBorderColor: '#ffffff',
     localClockColor: '#ffffff', localClockBorderColor: '#ffffff',
     borderColor: '#ffffff',
@@ -8358,6 +8408,12 @@
     const normalizedSlot = Number(slot) === 2 ? 2 : 1
     const prefix = `tp${normalizedSlot}`
     const nested = data?.[prefix] && typeof data[prefix] === 'object' ? data[prefix] : {}
+    const extensionSettings = data?.telepromptPreviewSettings?.[prefix] ||
+      data?.telepromptSettings?.[prefix] || {}
+    const highlightColor = normalizeHexColor(
+      extensionSettings?.highlightColor,
+      APP_TELEPROMPT_DEFAULTS.highlightColor
+    )
     const mediaPath = String(
       nested.mediaPath
       || nested.path
@@ -8468,6 +8524,7 @@
       mediaPath,
       mediaUrl,
       text,
+      highlightColor,
       songName,
       currentTime,
       mediaOffset,
@@ -8576,7 +8633,7 @@
   function getDirectorTelepromptContentKey(slot = state.telepromptSlot, data = state.snapshot) {
     const tp = getDirectorTelepromptState(slot, data)
     const chord = getDirectorTelepromptChordState(data)
-    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off', chord.text, chord.itemIndex, chord.itemStart, chord.itemEnd, chord.clearMode ? 'chord-clear' : 'chord-on'].join('|')
+    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.highlightColor, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off', chord.text, chord.itemIndex, chord.itemStart, chord.itemEnd, chord.clearMode ? 'chord-clear' : 'chord-on'].join('|')
   }
 
   function renderDirectorTelepromptPreviewHtml(preview) {
@@ -8890,12 +8947,14 @@
     if (!state.showTelepromptScreen) return ''
     const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
     const settings = getAppTelepromptSettings(slot)
+    const teleprompt = getDirectorTelepromptState(slot, data)
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const transportPanel = getHideTelepromptTransport(slot)
       ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
     const cssVariables = [
       `--app-tp-text-color:${settings.textColor}`,
+      `--app-tp-highlight-color:${teleprompt.highlightColor}`,
       `--app-tp-text-box-color:${settings.textBoxColor}`,
       `--app-tp-clock-color:${isCountdownOverrun(data) ? settings.clockExpiredColor : settings.clockColor}`,
       `--app-tp-clock-border:${settings.clockBorderColor}`,
@@ -9266,6 +9325,7 @@
     viewport.setAttribute('data-single-side-clock', singleSideClock ? '1' : '0')
     const variables = {
       '--app-tp-text-color': settings.textColor,
+      '--app-tp-highlight-color': tp.highlightColor,
       '--app-tp-text-box-color': settings.textBoxColor,
       '--app-tp-clock-color': isCountdownOverrun(state.snapshot) ? settings.clockExpiredColor : settings.clockColor,
       '--app-tp-clock-border': settings.clockBorderColor,
@@ -9434,7 +9494,9 @@
 
     const showText = hasText
     if (text) {
-      if (text.textContent !== displayText) text.textContent = displayText
+      if (text.dataset.highlightSource !== displayText) {
+        renderTelepromptHighlightedText(text, displayText)
+      }
       text.classList.toggle('directorTpHidden', !showText)
       text.classList.toggle('directorTpTextOverlay', hasMedia)
       text.classList.toggle('directorTpTextOnly', !hasMedia && showText)

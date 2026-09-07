@@ -3315,6 +3315,77 @@ body.sidebar-open .sidebar {
 }
 
 /* Ferramentas / Hook Rename */
+.hook-rename-modes {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.hook-rename-modes > button {
+  flex: 1;
+}
+.hook-rename-modes > button.active {
+  color: #ffb45a;
+  border-color: #be702a;
+  background: linear-gradient(180deg, #4c331c, #291e15);
+}
+.hook-rename-remove-label {
+  display: flex;
+  flex-direction: column;
+  margin: 10px 0;
+}
+.hook-rename-suggestions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.hook-rename-suggestions > small {
+  grid-column: 1 / -1;
+}
+.hook-rename-suggestions > button {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hook-rename-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.hook-rename-suggestion-viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+}
+.hook-rename-suggestion-text {
+  display: block;
+  width: max-content;
+  white-space: nowrap;
+}
+.hook-rename-suggestion-count {
+  flex: 0 0 auto;
+  opacity: .65;
+}
+.hook-rename-suggestion.is-overflowing .hook-rename-suggestion-text {
+  animation: hookRenameSuggestionMarquee var(--rename-marquee-duration, 8s) linear infinite;
+}
+@keyframes hookRenameSuggestionMarquee {
+  0%, 15% { transform: translateX(0); }
+  75%, 90% { transform: translateX(var(--rename-marquee-distance, 0px)); }
+  100% { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hook-rename-suggestion.is-overflowing .hook-rename-suggestion-text { animation: none; }
+}
+#toolsRenamePanel[aria-busy="true"] {
+  cursor: progress;
+}
 .tools-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr);
@@ -6264,8 +6335,15 @@ body.previous-mode .content > .view.active {
 }
 
 .tools-rename-panel.active {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 7px;
+}
+
+body.tools-mode #toolsRenamePanel .hook-rename-card {
+  overflow-y: auto;
+}
+body.tools-mode #toolsRenamePanel .hook-rename-card > * {
+  flex-shrink: 0;
 }
 
 .tools-create-project-panel.active {
@@ -7152,7 +7230,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 .hook-marker-resolume-fields {
-  grid-template-columns: minmax(0, 1.45fr) repeat(2, minmax(0, .75fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .hook-marker-ma2-fields label,
@@ -7271,7 +7349,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 }
 
 .resolume-connection-actions {
-  grid-template-columns: minmax(110px, .38fr) minmax(180px, .68fr) minmax(0, 1fr) !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
 }
 
 .resolume-connection-actions .hook-marker-run-button {
@@ -7314,7 +7392,7 @@ body.tools-mode .copy-project-card .selected-folder-box {
 
 .resolume-tool-preview-head,
 .resolume-tool-preview-item {
-  grid-template-columns: 84px 64px minmax(180px, 1fr) 110px;
+  grid-template-columns: minmax(150px, 1.2fr) 64px minmax(150px, 1fr) 110px;
 }
 
 .hook-marker-preview-head {

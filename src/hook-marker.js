@@ -31,9 +31,13 @@ function cleanLabel(value, fallback = 'Marcador') {
 
 function cleanGrandMa2Name(value, fallback = 'Marcador') {
   const sanitize = (input) => cleanLabel(input, '')
-    // O "$" e outros simbolos abaixo possuem significado na linha de comando
-    // do grandMA2, mesmo dentro do texto usado pelo comando Label.
-    .replace(/[$%&@!#^~`+={}\[\]();:'"<>/\\|?*]+/g, ' ')
+    // O grandMA2 rejeita nomes com caracteres fora do conjunto ingles. Isso
+    // inclui acentos, virgulas, aspas tipograficas e travessoes copiados de
+    // títulos, mesmo quando o texto esta entre aspas no comando Label.
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/[^A-Za-z0-9 _-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return (sanitize(value) || sanitize(fallback) || 'Marcador').slice(0, 96);
@@ -109,7 +113,7 @@ function markersForSong(song, rawMarkers) {
     {
       id: `region-${song.id}`,
       number: 1,
-      name: song.name,
+      name: 'Inicio',
       // Um MTC continuo identifica a musica pela posicao do projeto. Reiniciar
       // todas as regioes em zero faria todos os shows do Slot 2 dispararem.
       position: song.start,

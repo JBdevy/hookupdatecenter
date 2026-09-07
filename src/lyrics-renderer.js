@@ -24,6 +24,7 @@ document.documentElement.dataset.platform = window.hookUpdateCenter.platform || 
 
 let settings = {
   textColor: '#ffea00',
+  highlightColor: '#00ff55',
   textBoxColor: '#ffea00',
   clockColor: '#00ff55',
   borderColor: '#00ff55',
@@ -108,6 +109,57 @@ let contentProgressRaf = 0;
 
 function normalizeColor(value, fallback) {
   return /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? value : fallback;
+}
+
+function parseHighlightedLyrics(value) {
+  const text = String(value || '');
+  const segments = [];
+  const append = (content, highlighted = false) => {
+    if (!content) return;
+    const previous = segments[segments.length - 1];
+    if (previous && previous.highlighted === highlighted) {
+      previous.text += content;
+    } else {
+      segments.push({ text: content, highlighted });
+    }
+  };
+
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] !== '*' || cursor + 1 >= text.length || /\s/.test(text[cursor + 1])) {
+      append(text[cursor]);
+      cursor += 1;
+      continue;
+    }
+    let closing = cursor + 1;
+    while (closing < text.length) {
+      if (text[closing] === '*' && closing > cursor + 1 && !/\s/.test(text[closing - 1])) break;
+      closing += 1;
+    }
+    if (closing >= text.length) {
+      append(text[cursor]);
+      cursor += 1;
+      continue;
+    }
+    append(text.slice(cursor + 1, closing), true);
+    cursor = closing + 1;
+  }
+  return segments;
+}
+
+function renderHighlightedLyrics(element, value) {
+  const fragment = document.createDocumentFragment();
+  parseHighlightedLyrics(value).forEach((segment) => {
+    if (!segment.highlighted) {
+      fragment.appendChild(document.createTextNode(segment.text));
+      return;
+    }
+    const highlight = document.createElement('span');
+    highlight.className = 'lyrics-text-highlight';
+    highlight.textContent = segment.text;
+    fragment.appendChild(highlight);
+  });
+  element.replaceChildren(fragment);
 }
 
 
@@ -369,6 +421,7 @@ function applySettings(next = {}) {
   if (next && next.slot && Number(next.slot) !== lyricsSlot) return;
   settings = { ...settings, ...incoming };
   document.documentElement.style.setProperty('--lyrics-text-color', normalizeColor(settings.textColor, '#ffea00'));
+  document.documentElement.style.setProperty('--lyrics-highlight-color', normalizeColor(settings.highlightColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-text-box-color', normalizeColor(settings.textBoxColor || settings.textColor, '#ffea00'));
   document.documentElement.style.setProperty('--lyrics-clock-color', normalizeColor(settings.clockColor, '#00ff55'));
   document.documentElement.style.setProperty('--lyrics-border-color', normalizeColor(settings.borderColor || settings.clockColor, '#00ff55'));
@@ -839,7 +892,7 @@ function updateFontFit() {
     return;
   }
 
-  textEl.textContent = lastText;
+  renderHighlightedLyrics(textEl, lastText);
   const max = window.innerHeight >= 850 ? 86 : window.innerHeight >= 650 ? 74 : 58;
   const min = 18;
   let chosen = min;

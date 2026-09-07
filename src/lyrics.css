@@ -2,6 +2,7 @@
 
 :root {
   --lyrics-text-color: #ffea00;
+  --lyrics-highlight-color: #00ff55;
   --lyrics-text-box-color: #ffea00;
   --lyrics-clock-color: #00ff55;
   --lyrics-border-color: #00ff55;
@@ -206,6 +207,9 @@ body.border-hidden::before {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   text-shadow: 0 .045em .045em rgba(0,0,0,.95);
+}
+.lyrics-text-highlight {
+  color: var(--lyrics-highlight-color);
 }
 @media (max-height: 500px) {
   .lyrics-overlay { top: 12px; }

@@ -29,6 +29,8 @@ const {
 const { createTimecodeLanRelay } = require('./timecode-lan');
 const { createCopyProjectService } = require('./copy-project');
 const { createQrSvg } = require('./qr-svg');
+const { selectAppNetwork, appNetworkSignature } = require('./bridge-network');
+const { auditRemoval, executeRemoval, auditSuggestions } = require('./hook-rename-removal');
 const {
   buildGrandMa2Assignments,
   buildGrandMa2SongExports,
@@ -162,6 +164,8 @@ let bridgeInfos = [];
 let bridgeConfig = null;
 let bridgeLastError = '';
 let bridgeWatchTimer = null;
+let bridgeNetworkWatchTimer = null;
+let bridgeNetworkSignature = '';
 let directCableWatchTimer = null;
 let directCableWatchRunning = false;
 let directCableWatchSnapshot = null;
@@ -2078,7 +2082,26 @@ async function checkBridgeAppUpdates(manual = false) {
 }
 
 function sha256File(filePath) {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex').toLowerCase();
+  return sha256FileChunked(filePath).toLowerCase();
+}
+
+function sha256FileChunked(filePath) {
+  const hash = crypto.createHash('sha256');
+  const handle = fs.openSync(filePath, 'r');
+  // Arquivos de atualização e runtimes podem ter centenas de MB. Ler em
+  // blocos impede que o processo principal retenha um Buffer do tamanho do
+  // arquivo inteiro depois da verificação.
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(handle, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(handle);
+  }
+  return hash.digest('hex');
 }
 
 function runProcess(command, args = [], options = {}) {
@@ -2825,6 +2848,16 @@ function notifyDirectCableTransition(channel, previousMarker, current) {
 
 async function pollDirectCableConnections() {
   if (directCableWatchRunning) return;
+  const hasConfiguredCable = Object.keys(DIRECT_CABLE_CHANNELS)
+    .some((channel) => Boolean(getStoredDirectCableChannel(channel).ip));
+  // Sem cabo configurado, enumerar todas as placas (PowerShell no Windows e
+  // system_profiler no macOS) a cada poucos segundos só desperdiça CPU.
+  // A tela da ferramenta continua fazendo a leitura completa quando aberta.
+  if (!hasConfiguredCable) {
+    directCableWatchSnapshot = null;
+    directCableWatchState = null;
+    return;
+  }
   directCableWatchRunning = true;
   try {
     const state = await getDirectCableState();
@@ -3399,27 +3432,44 @@ function saveBridgeConfig(config) {
 
 function getSelectedBridgeNetwork(config = readBridgeConfig()) {
   const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
-  const reservedCableIps = new Set([
+  const reservedCableIps = [
     getDirectCableChannelIp('projectSync'),
     getDirectCableChannelIp('timecode'),
     getDirectCableChannelIp('timecodeBackup')
-  ].filter(Boolean));
+  ];
   // As placas dedicadas ficam reservadas para redundância. O QR Code e
   // os apps continuam anunciando Wi-Fi/LAN normal para o celular.
-  const appNetworks = networks.filter((item) => !reservedCableIps.has(item.ip));
-  const preferredIp = String(config?.preferredNetworkIp || '').trim();
-  const preferredName = String(config?.preferredNetworkName || '').trim();
-  const selected = appNetworks.find((item) => preferredIp && item.ip === preferredIp)
-    || appNetworks.find((item) => preferredName && item.name === preferredName)
-    || appNetworks[0]
-    || networks[0]
-    || { name: 'Local', ip: '127.0.0.1', score: 0 };
-  return { selected, networks };
+  return selectAppNetwork(networks, config, reservedCableIps);
+}
+
+function refreshBridgeNetwork({ publish = true } = {}) {
+  bridgeConfig = readBridgeConfig();
+  const snapshot = getSelectedBridgeNetwork(bridgeConfig);
+  const signature = appNetworkSignature(snapshot);
+  const changed = signature !== bridgeNetworkSignature;
+  // Bound to 0.0.0.0: only advertised URLs change, not listening sockets.
+  // Always apply to new instances too, including a restart racing a choice.
+  for (const server of bridgeServers) {
+    if (server.publicBridgeHost !== snapshot.selected.ip) {
+      server.setPublicBridgeHost(snapshot.selected.ip);
+    }
+  }
+  for (const info of bridgeInfos) {
+    info.lanUrl = `http://${snapshot.selected.ip}:${info.port}`;
+    info.publicUrl = info.lanUrl;
+  }
+  // Read-only status refreshes must not consume an update before the watcher
+  // has delivered it to an already-open window.
+  if (publish) bridgeNetworkSignature = signature;
+  if (publish && changed && isValidWindow(mainWindow)) {
+    mainWindow.webContents.send('bridge-status', getBridgeState(snapshot));
+  }
+  return snapshot;
 }
 
 async function selectBridgeNetwork(payload = {}) {
   const requestedIp = String(payload.ip || payload.preferredNetworkIp || '').trim();
-  const networks = typeof getAllLanIps === 'function' ? getAllLanIps() : [];
+  const { networks } = getSelectedBridgeNetwork();
   const selected = networks.find((item) => item.ip === requestedIp);
   if (!selected) {
     throw new Error('A rede escolhida não está mais disponível neste computador.');
@@ -3428,7 +3478,10 @@ async function selectBridgeNetwork(payload = {}) {
     preferredNetworkIp: selected.ip,
     preferredNetworkName: selected.name
   });
-  return startBridgeServers();
+  refreshBridgeNetwork();
+  await ensureBridgeServersRunning();
+  // A concurrent explicit restart may have captured an older configuration.
+  return getBridgeState();
 }
 
 function resolveBridgeScriptsDir(config) {
@@ -3788,9 +3841,9 @@ async function ensureBridgeServersRunning() {
   return startBridgeServers();
 }
 
-function getBridgeState() {
+function getBridgeState(snapshot = refreshBridgeNetwork({ publish: false })) {
   const config = bridgeConfig || readBridgeConfig();
-  const { selected, networks: allLanIps } = getSelectedBridgeNetwork(config);
+  const { selected, networks: allLanIps } = snapshot;
   const lanIp = selected.ip;
   const directorPort = Number(config.directorPort) || 47831;
   const musiciansPort = Number(config.musiciansPort) || 47832;
@@ -3798,6 +3851,8 @@ function getBridgeState() {
   const bridgeAppUrl = `http://${lanIp}:${directorPort}/?qr=1&v=${getBridgeAppCacheVersion()}&chatKey=${encodeURIComponent(chatBootstrapSecret)}`;
   return {
     running: bridgeServers.length > 0,
+    networkAvailable: lanIp !== '127.0.0.1',
+    waitingForSelectedNetwork: selected.waitingForConnection === true,
     lanIp,
     lanIps: allLanIps,
     selectedNetwork: selected,
@@ -3822,6 +3877,7 @@ function getLyricsDefaults() {
   return {
     preset: 'night',
     textColor: '#ffea00',
+    highlightColor: '#00ff55',
     textBoxColor: '#ffea00',
     clockColor: '#00ff55',
     borderColor: '#00ff55',
@@ -4047,6 +4103,7 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   const next = { ...all[id] };
   if (settings.preset === 'day' || settings.preset === 'night') next.preset = settings.preset;
   if (typeof settings.textColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textColor)) next.textColor = settings.textColor;
+  if (typeof settings.highlightColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.highlightColor)) next.highlightColor = settings.highlightColor;
   if (typeof settings.clockColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.clockColor)) next.clockColor = settings.clockColor;
   if (typeof settings.textBoxColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.textBoxColor)) next.textBoxColor = settings.textBoxColor;
   if (typeof settings.borderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.borderColor)) next.borderColor = settings.borderColor;
@@ -5156,9 +5213,7 @@ function getFileIntegrity(filePath) {
   }
   const integrity = {
     size: stat.size,
-    sha256: crypto.createHash('sha256')
-      .update(fs.readFileSync(filePath))
-      .digest('hex')
+    sha256: sha256FileChunked(filePath)
   };
   if (fileIntegrityCache.size >= 128) fileIntegrityCache.clear();
   fileIntegrityCache.set(cacheKey, {
@@ -7400,7 +7455,10 @@ function saveHookMarkerSettings(input = {}) {
     : resolumeOnlyHookMarkerSettings(receivedSettings);
   const settings = normalizeHookMarkerSettings({
     ...storedSettings,
-    ...platformInput
+    ...platformInput,
+    // O Resolume controlado pela ferramenta sempre roda neste computador.
+    // Loopback independe de Wi-Fi e nunca fica preso ao IP de uma rede antiga.
+    resolumeHost: '127.0.0.1'
   });
   const platformSettings = process.platform === 'win32'
     ? settings
@@ -7780,12 +7838,19 @@ async function hookMarkerResolumeApiRequest(
     }
     if (/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(
       String(error?.message || error))) {
-      throw new Error('Não foi possível acessar o Webserver do Resolume. Ative-o nas Preferências e confirme o IP e a porta 8080.');
+      throw new Error('Não foi possível acessar o Webserver local do Resolume. Ative-o nas Preferências e confirme a porta 8080.');
     }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function resolveHookMarkerResolumeApiConnection(inputSettings = {}) {
+  const settings = saveHookMarkerSettings(inputSettings);
+  const product = await hookMarkerResolumeApiRequest(
+    settings, '/product', { timeoutMilliseconds: 5000 });
+  return { settings, product };
 }
 
 async function waitForHookMarkerResolumeComposition(
@@ -8093,12 +8158,14 @@ function hookMarkerResolumeDefaultCompositionFolder(productName = '') {
 
 async function createHookMarkerResolumeProject(input = {}) {
   const project = await requireHookMarkerProject();
-  const settings = saveHookMarkerSettings(input);
-  const product = await hookMarkerResolumeApiRequest(
-    settings, '/product').catch((error) => {
+  let settings = saveHookMarkerSettings(input);
+  const connection = await resolveHookMarkerResolumeApiConnection(
+    settings).catch((error) => {
       throw new Error(error?.message ||
         'Ative o Webserver do Resolume para criar a composição.');
     });
+  settings = connection.settings;
+  const product = connection.product;
   const major = Number(product?.major) || 0;
   const minor = Number(product?.minor) || 0;
   if (!/arena/i.test(String(product?.name || ''))) {
@@ -8256,7 +8323,11 @@ async function createHookMarkerResolumeProject(input = {}) {
       productVersion: [major, minor, Number(product?.micro) || 0].join('.'),
       deckCount: highestDeck,
       totalColumns,
-      includeMarkers: settings.resolumeIncludeMarkers !== false
+      musicCount: regionCues.length,
+      markerCount: compositionMap.cues.filter(
+        (cue) => cue.regionStart !== true).length,
+      includeMarkers: settings.resolumeIncludeMarkers !== false,
+      resolumeHost: settings.resolumeHost
     };
   } catch (error) {
     throw new Error(`${compositionStarted
@@ -8267,12 +8338,14 @@ async function createHookMarkerResolumeProject(input = {}) {
 
 async function addHookMarkerResolumeSongs(input = {}) {
   const project = await requireHookMarkerProject();
-  const settings = saveHookMarkerSettings(input);
-  const product = await hookMarkerResolumeApiRequest(
-    settings, '/product').catch((error) => {
+  let settings = saveHookMarkerSettings(input);
+  const connection = await resolveHookMarkerResolumeApiConnection(
+    settings).catch((error) => {
       throw new Error(error?.message ||
         'Ative o Webserver do Resolume para adicionar as músicas.');
     });
+  settings = connection.settings;
+  const product = connection.product;
   const major = Number(product?.major) || 0;
   const minor = Number(product?.minor) || 0;
   if (!/arena/i.test(String(product?.name || '')) ||
@@ -8320,9 +8393,12 @@ async function addHookMarkerResolumeSongs(input = {}) {
     return {
       ok: true,
       addedDeckCount: 0,
+      addedMusicCount: 0,
+      addedMarkerCount: 0,
       totalDeckCount: initialDeckCount,
       totalColumns: 0,
-      saved: false
+      saved: false,
+      resolumeHost: settings.resolumeHost
     };
   }
 
@@ -8400,11 +8476,17 @@ async function addHookMarkerResolumeSongs(input = {}) {
   return {
     ok: true,
     addedDeckCount: newDecks.length,
+    addedMusicCount: regionCues.filter(
+      (cue) => Number(cue.deck) > initialDeckCount).length,
+    addedMarkerCount: compositionMap.cues.filter(
+      (cue) => cue.regionStart !== true &&
+        Number(cue.deck) > initialDeckCount).length,
     firstAddedDeck: initialDeckCount + 1,
     lastAddedDeck: highestDeck,
     totalDeckCount: highestDeck,
     totalColumns,
-    saved
+    saved,
+    resolumeHost: settings.resolumeHost
   };
 }
 
@@ -8787,7 +8869,24 @@ ipcMain.handle('hook-rename-select-many-folders', async () => {
   };
 });
 
+let hookRenameRemovalPreview = null;
+let hookRenameRemovalRunning = false;
+ipcMain.handle('hook-rename-suggestions', async (_event, payload = {}) => {
+  if (hookRenameRemovalRunning) throw new Error('Aguarde a operação atual terminar.');
+  return auditSuggestions(normalizeHookRenameFolderPaths(payload));
+});
 ipcMain.handle('hook-rename-preview', async (_event, payload = {}) => {
+  if (payload.mode === 'remove') {
+    if (hookRenameRemovalRunning) throw new Error('Aguarde a remoção atual terminar.');
+    const result = await auditRemoval(payload);
+    const auditToken = crypto.randomUUID();
+    hookRenameRemovalPreview = { result, auditToken, senderId: _event.sender.id,
+      createdAt: Date.now(), payload: JSON.stringify({ ...payload, auditToken: undefined }) };
+    return { ...result, auditToken,
+      operations: result.operations.slice(0, HOOK_RENAME_MAX_PREVIEW_ITEMS),
+      skippedSummary: summarizeHookRenameSkipped(result.skipped),
+      skipped: result.skipped.slice(0, HOOK_RENAME_MAX_PREVIEW_ITEMS) };
+  }
   const result = await buildHookRenameOperations(payload);
   return {
     ...result,
@@ -8799,6 +8898,26 @@ ipcMain.handle('hook-rename-preview', async (_event, payload = {}) => {
 });
 
 ipcMain.handle('hook-rename-run', async (event, payload = {}) => {
+  if (payload.mode === 'remove') {
+    if (hookRenameRemovalRunning) throw new Error('Aguarde a remoção atual terminar.');
+    const preview = hookRenameRemovalPreview;
+    if (!preview || preview.auditToken !== payload.auditToken ||
+        preview.senderId !== event.sender.id || Date.now() - preview.createdAt > 15 * 60 * 1000 ||
+        preview.payload !== JSON.stringify({ ...payload, auditToken: undefined })) {
+      throw new Error('Gere uma nova prévia antes de confirmar a remoção.');
+    }
+    hookRenameRemovalPreview = null;
+    hookRenameRemovalRunning = true;
+    try {
+      const result = await executeRemoval(preview.result, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('hook-rename-progress', progress);
+      });
+      return { ...result, suggestedSuffix: result.folderPaths.length > 1
+        ? 'Nome de cada pasta' : getHookRenameSuggestedSuffix(result.folderPaths[0] || '') };
+    } finally {
+      hookRenameRemovalRunning = false;
+    }
+  }
   const result = await buildHookRenameOperations(payload);
   const total = result.operations.length;
   let renamed = 0;
@@ -9537,6 +9656,7 @@ function prepareForAppQuit() {
   }
   if (checkTimer) clearInterval(checkTimer);
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
+  if (bridgeNetworkWatchTimer) clearInterval(bridgeNetworkWatchTimer);
   if (directCableWatchTimer) clearInterval(directCableWatchTimer);
   if (updateReminderTimer) clearInterval(updateReminderTimer);
   if (chatPresenceTimer) clearInterval(chatPresenceTimer);
@@ -9545,6 +9665,7 @@ function prepareForAppQuit() {
   }
   checkTimer = null;
   bridgeWatchTimer = null;
+  bridgeNetworkWatchTimer = null;
   directCableWatchTimer = null;
   updateReminderTimer = null;
   chatPresenceTimer = null;
@@ -9593,9 +9714,8 @@ app.whenReady().then(async () => {
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });
-  // Le somente o mapa ja gravado no RPP. Atribuir colunas novas fica reservado
-  // ao botao Criar mapa da ferramenta Resolume.
-  getHookMarkerState().catch(() => null);
+  // grandMA2 e Resolume leem o projeto somente quando a respectiva ferramenta
+  // é aberta. Evita analisar um RPP grande durante toda inicialização.
 
   // O NSIS/PKG já instala runtime, Teleprompt e temas antes da primeira
   // abertura. A rotina abaixo é apenas uma recuperação assíncrona para uma
@@ -9622,6 +9742,14 @@ app.whenReady().then(async () => {
       console.error('[Hook Center] Tentativa de religar conexão via app falhou:', error?.message || error);
     });
   }, 30000);
+
+  // Lightweight local interface check. No ping, scan, disk write or server
+  // restart while the network remains unchanged. Runs even with UI hidden.
+  bridgeNetworkWatchTimer = setInterval(() => {
+    try { refreshBridgeNetwork(); } catch (error) {
+      console.error('[Hook Center] Não foi possível atualizar a rede dos apps:', error?.message || error);
+    }
+  }, 3000);
 
   // Detecta retirada e retorno do cabo/adaptador sem exigir que o usuário
   // permaneça com a aba Conexão redundante aberta. O relay fica ativo e tenta

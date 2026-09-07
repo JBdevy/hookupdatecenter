@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('hookUpdateCenter', {
   openSupport: () => ipcRenderer.invoke('open-support'),
   selectManyHookRenameFolders: () => ipcRenderer.invoke('hook-rename-select-many-folders'),
   previewHookRename: (payload) => ipcRenderer.invoke('hook-rename-preview', payload),
+  suggestHookRename: (payload) => ipcRenderer.invoke('hook-rename-suggestions', payload),
   runHookRename: (payload) => ipcRenderer.invoke('hook-rename-run', payload),
   selectCreateProjectDestination: () => ipcRenderer.invoke('create-project-select-destination'),
   selectCreateProjectFolders: () => ipcRenderer.invoke('create-project-select-folders'),

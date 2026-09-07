@@ -7563,6 +7563,9 @@ button,
   text-shadow: 0 2px 4px #000, 0 0 9px #000, 0 0 18px rgba(0,0,0,.92);
   -webkit-overflow-scrolling: touch;
 }
+.directorTpText .directorTpHighlight {
+  color: var(--app-tp-highlight-color, #00ff55) !important;
+}
 .directorTpTextOverlay {
   background: rgba(0, 0, 0, .12);
 }

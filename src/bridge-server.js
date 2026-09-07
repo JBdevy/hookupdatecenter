@@ -338,7 +338,7 @@ const NATIVE_BRIDGE_CACHE_TTL_MS =
 const NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS =
   process.platform === 'darwin' ? 300 : 180
 const NATIVE_BRIDGE_BACKGROUND_POLL_MS =
-  process.platform === 'darwin' ? 400 : 250
+  process.platform === 'darwin' ? 1200 : 1000
 let nativeBridgeStateCache = null
 let nativeBridgeStateCacheAt = 0
 let nativeBridgeRefreshInFlight = null
@@ -1335,7 +1335,7 @@ function createBridgeServer(options) {
   const port = Number(options.port)
   const appDir = options.appDir
   const appName = options.appName
-  const publicBridgeHost = options.publicBridgeHost
+  let publicBridgeHost = options.publicBridgeHost
   const sharedDir = options.sharedDir
   const stateFile = path.join(sharedDir, 'vshook_state.json')
   const commandsFile = path.join(sharedDir, 'vshook_commands.json')
@@ -1555,6 +1555,17 @@ function createBridgeServer(options) {
   }
 
   function buildDiscoveryPayload() {
+    const networkAvailable = publicBridgeHost !== '127.0.0.1'
+    const advertisedNetworks = getAllLanIps().filter(item =>
+      !publicBridgeHost || item.ip === publicBridgeHost)
+    if (!networkAvailable) {
+      return { ok: false, app: 'VS Hook', appName, bridgeVersion: 1,
+        connected: false, networkAvailable: false,
+        bridgeMode: 'network_unavailable',
+        host: '', publicBridgeHost: '', lanHost: '', hosts: [], networkInterfaces: [],
+        port, lanUrl: '', lanUrls: [], publicUrl: '', browserUrl: '', browserUrls: [],
+        projects: [], openProjects: [], playing: false }
+    }
     if (!isBridgeLicenseActive()) {
       const ip = publicBridgeHost || getLanIp()
       return {
@@ -1576,15 +1587,15 @@ function createBridgeServer(options) {
         host: ip,
         publicBridgeHost,
         lanHost: ip,
-        hosts: getAllLanIps().map(item => item.ip),
-        networkInterfaces: getAllLanIps(),
+        hosts: advertisedNetworks.map(item => item.ip),
+        networkInterfaces: advertisedNetworks,
         port,
         localUrl: `http://127.0.0.1:${port}`,
         lanUrl: `http://${ip}:${port}`,
-        lanUrls: getAllLanIps().map(item => `http://${item.ip}:${port}`),
+        lanUrls: advertisedNetworks.map(item => `http://${item.ip}:${port}`),
         publicUrl: `http://${publicBridgeHost}:${port}`,
         browserUrl: `http://${ip}:${port}/`,
-        browserUrls: getAllLanIps().map(item => `http://${item.ip}:${port}/`),
+        browserUrls: advertisedNetworks.map(item => `http://${item.ip}:${port}/`),
         playing: false,
         updatedAt: new Date().toISOString(),
         stateUpdatedAt: new Date().toISOString(),
@@ -1604,15 +1615,15 @@ function createBridgeServer(options) {
       host: ip,
       publicBridgeHost,
       lanHost: ip,
-      hosts: getAllLanIps().map(item => item.ip),
-      networkInterfaces: getAllLanIps(),
+      hosts: advertisedNetworks.map(item => item.ip),
+      networkInterfaces: advertisedNetworks,
       port,
       localUrl: `http://127.0.0.1:${port}`,
       lanUrl: `http://${ip}:${port}`,
-      lanUrls: getAllLanIps().map(item => `http://${item.ip}:${port}`),
+      lanUrls: advertisedNetworks.map(item => `http://${item.ip}:${port}`),
       publicUrl: `http://${publicBridgeHost}:${port}`,
       browserUrl: `http://${ip}:${port}/`,
-      browserUrls: getAllLanIps().map(item => `http://${item.ip}:${port}/`),
+      browserUrls: advertisedNetworks.map(item => `http://${item.ip}:${port}/`),
       playing: projectPayload.connected && !!state.playing,
       updatedAt: state.updatedAt || null,
       stateUpdatedAt: state.updatedAt || null,
@@ -2086,7 +2097,10 @@ function createBridgeServer(options) {
     host,
     stateFile,
     commandsFile,
-    publicBridgeHost,
+    get publicBridgeHost() { return publicBridgeHost },
+    setPublicBridgeHost(ip) {
+      publicBridgeHost = String(ip || '127.0.0.1')
+    },
     start() {
       return new Promise((resolve, reject) => {
         server.once('error', reject)
@@ -2100,7 +2114,7 @@ function createBridgeServer(options) {
           if (isBridgeLicenseActive()) {
             refreshNativeBridgeState().catch(() => {})
           }
-          const ip = getLanIp()
+          const ip = publicBridgeHost || getLanIp()
           resolve({
             appName,
             port,

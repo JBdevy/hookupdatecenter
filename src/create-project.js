@@ -304,6 +304,36 @@ const SONG_FOLDER_LABEL_PATTERN = new RegExp(
   'i'
 );
 
+// Shared with Hook Rename suggestions. Track vocabulary and download-source
+// labels are separate taxonomies: removing a provider tag must stay possible.
+const SONG_FOLDER_EMBEDDED_LABEL_PATTERN = new RegExp(
+  `\\b(?:${SONG_FOLDER_SOURCE_LABEL_PATTERN_SOURCE})\\b`, 'gi'
+);
+
+function isCreateProjectSourceLabel(value) {
+  return SONG_FOLDER_LABEL_PATTERN.test(normalizeWords(value));
+}
+
+function isCreateProjectTrackLabel(value) {
+  const normalized = normalizeWords(value);
+  if (!normalized || isCreateProjectSourceLabel(normalized)) return false;
+  return CREATE_PROJECT_TRACK_RULES.some((rule) => {
+    const match = normalized.match(rule.pattern);
+    return match && match[0] === normalized;
+  });
+}
+
+function containsCreateProjectTrackName(value) {
+  const normalized = normalizeWords(value)
+    .replace(SONG_FOLDER_EMBEDDED_LABEL_PATTERN, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  // Check both the phrase (Electric Piano, Hi-Hat...) and its words so that
+  // anchored aliases such as Vocal/Vox also stay out of mixed suggestions.
+  const candidates = [normalized, ...normalized.split(' ')];
+  return candidates.some((candidate) =>
+    CREATE_PROJECT_TRACK_RULES.some((rule) => rule.pattern.test(candidate)));
+}
+
 // Versão para reconhecer as mesmas marcas no começo/fim do texto original,
 // preservando pontos e hífens de domínios como MultiTracks.com.br.
 const SONG_FOLDER_RAW_LABEL_PATTERN_SOURCE = [
@@ -1301,11 +1331,14 @@ module.exports = {
   buildTrackChunk,
   calculatePeakNormalizationGain,
   classifyCreateProjectTrack,
+  containsCreateProjectTrackName,
   compareTracks,
   createGuid,
   createProjectTrackGroups,
   inferSongNameFromFolder,
   isSupportedAudioFile,
+  isCreateProjectSourceLabel,
+  isCreateProjectTrackLabel,
   normalizeTrackKey,
   prepareCreateProjectMedia,
   quoteRpp,

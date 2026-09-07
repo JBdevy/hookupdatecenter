@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.1-safe-area-v46';
+const CACHE_NAME = 'vshook-mobile-1.0.1-safe-area-v47';
 const APP_ASSETS = [
   './',
   './index.html',

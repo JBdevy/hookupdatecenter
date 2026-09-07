@@ -539,6 +539,10 @@
                     <input id="lyricsTextColor1" type="color" value="#ffea00" />
                   </label>
                   <label>
+                    Cor destaque da letra
+                    <input id="lyricsHighlightColor1" type="color" value="#00ff55" />
+                  </label>
+                  <label>
                     Cor contorno letra
                     <input id="lyricsTextBoxColor1" type="color" value="#ffea00" />
                   </label>
@@ -563,6 +567,7 @@
                     <input id="lyricsProgressColor1" type="color" value="#ffea00" />
                   </label>
                 </div>
+                <p class="muted">Na letra, use *palavra* ou *uma frase*, sempre sem espaço entre o asterisco e o texto.</p>
               </section>
 
               <section class="lyrics-group">
@@ -754,6 +759,10 @@
                     <input id="lyricsTextColor2" type="color" value="#ffea00" />
                   </label>
                   <label>
+                    Cor destaque da letra
+                    <input id="lyricsHighlightColor2" type="color" value="#00ff55" />
+                  </label>
+                  <label>
                     Cor contorno letra
                     <input id="lyricsTextBoxColor2" type="color" value="#ffea00" />
                   </label>
@@ -778,6 +787,7 @@
                     <input id="lyricsProgressColor2" type="color" value="#ffea00" />
                   </label>
                 </div>
+                <p class="muted">Na letra, use *palavra* ou *uma frase*, sempre sem espaço entre o asterisco e o texto.</p>
               </section>
 
               <section class="lyrics-group">
@@ -966,11 +976,15 @@
         </nav>
 
         <div id="toolsRenamePanel" class="tools-panel tools-rename-panel active" data-tools-panel-content="rename" role="tabpanel">
+          <div class="hook-rename-modes" role="group" aria-label="Modo do Hook Rename">
+            <button class="secondary-button active" type="button" data-hook-rename-mode="add" aria-pressed="true">Modo Adição</button>
+            <button class="secondary-button" type="button" data-hook-rename-mode="remove" aria-pressed="false">Modo Remoção</button>
+          </div>
           <div class="hero-card tools-hero">
           <div>
             <p class="eyebrow">Ferramentas</p>
             <h1>Hook Rename</h1>
-            <p class="muted">Renomeie arquivos com sufixo, prévia antes de executar e modo em massa por nome de pasta.</p>
+            <p id="hookRenameDescription" class="muted">Renomeie arquivos com sufixo, prévia antes de executar e modo em massa por nome de pasta.</p>
           </div>
           <div class="tools-hero-actions">
             <button id="hookRenameSelectManyFoldersButton" class="primary-button" type="button">Escolher pastas</button>
@@ -982,7 +996,7 @@
             <div class="tool-card-header">
               <div>
                 <p class="eyebrow">Hook Rename</p>
-                <h2>Renomeador de arquivos</h2>
+                <h2 id="hookRenameCardTitle">Renomeador de arquivos</h2>
               </div>
               <span class="badge">Novo</span>
             </div>
@@ -993,6 +1007,7 @@
               <small id="hookRenameFolderPath" class="muted">Escolha uma ou mais pastas para começar.</small>
             </div>
 
+            <div id="hookRenameAdditionFields">
             <div class="form-grid hook-rename-form">
               <label>
                 Sufixo manual
@@ -1014,6 +1029,27 @@
                 <input id="hookRenameBulkModeCheck" type="checkbox" />
                 Renomear em massa
               </label>
+            </div>
+            </div>
+
+            <div id="hookRenameRemovalFields" class="hidden">
+              <div class="hook-rename-options">
+                <label class="settings-check hook-rename-check">
+                  <input id="hookRenameRemoveFoldersCheck" type="checkbox" />
+                  Remover do nome da pasta
+                </label>
+                <label class="settings-check hook-rename-check">
+                  <input id="hookRenameRemoveFilesCheck" type="checkbox" />
+                  Remover do nome do arquivo
+                </label>
+              </div>
+              <label class="hook-rename-remove-label">
+                Palavras ou frases a remover (separe por vírgula)
+                <input id="hookRenameRemoveTextInput" type="text" autocomplete="off" placeholder="Clube do VS, VS Professional, Mario Sena" />
+              </label>
+              <div id="hookRenameSuggestions" class="hook-rename-suggestions" aria-live="polite">
+                <small class="muted">Escolha as pastas para encontrar sugestões.</small>
+              </div>
             </div>
 
             <p id="hookRenameModeHelp" class="muted hook-rename-help">
@@ -1041,7 +1077,7 @@
             <div class="tool-card-header">
               <div>
                 <p class="eyebrow">Prévia</p>
-                <h2>Arquivos que serão renomeados</h2>
+                <h2 id="hookRenamePreviewTitle">Arquivos que serão renomeados</h2>
               </div>
               <span id="hookRenamePreviewBadge" class="badge">0</span>
             </div>
@@ -1592,7 +1628,7 @@
             <section class="card hook-marker-project-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Projeto aberto</p><h2 id="resolumeToolProjectName">Nenhum projeto conectado</h2></div>
-                <span id="resolumeToolCountBadge" class="badge">0 colunas necessárias</span>
+                <span id="resolumeToolCountBadge" class="badge">0 músicas · 0 marcadores</span>
               </div>
               <p id="resolumeToolProjectPath" class="muted hook-marker-project-path">Abra o REAPER e carregue um projeto com marcadores.</p>
             </section>
@@ -1603,7 +1639,6 @@
                 <span class="badge">OSC</span>
               </div>
               <div class="hook-marker-resolume-fields">
-                <label>IP do Resolume<input id="hookMarkerResolumeHost" type="text" value="127.0.0.1" autocomplete="off" /></label>
                 <label>Porta OSC<input id="hookMarkerResolumePort" type="number" min="1" max="65535" value="7000" /></label>
                 <label>Porta Webserver<input id="hookMarkerResolumeWebPort" type="number" min="1" max="65535" value="8080" /></label>
               </div>
@@ -1627,10 +1662,10 @@
             <section class="card hook-marker-preview-card resolume-tool-preview-card">
               <div class="tool-card-header">
                 <div><p class="eyebrow">Mapa Resolume</p><h2>Colunas do projeto</h2></div>
-                <span id="resolumeToolMapCountBadge" class="badge">0 colunas</span>
+                <span id="resolumeToolMapCountBadge" class="badge">0 músicas · 0 marcadores</span>
               </div>
               <div class="hook-marker-preview-head resolume-tool-preview-head" aria-hidden="true">
-                <span>Deck</span><span>Coluna</span><span>Nome</span><span>Tempo</span>
+                <span>Músicas</span><span>Marcadores</span><span>Nome</span><span>Tempo</span>
               </div>
               <div id="resolumeToolPreviewList" class="hook-marker-preview-list">
                 <p class="muted">Conecte o REAPER para visualizar o mapa de colunas.</p>

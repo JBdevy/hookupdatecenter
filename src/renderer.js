@@ -8,6 +8,12 @@ let pendingModalRequest = null;
 let modalLocked = false;
 let hookRenameFolder = null;
 let hookRenameLastPreview = null;
+let hookRenameMode = 'add';
+let hookRenameBusy = false;
+let hookRenameSuggestionsKey = '';
+let hookRenameSuggestionResizeObserver = null;
+let hookRenameSuggestionCandidates = [];
+let hookRenameSuggestionUnreadable = 0;
 let createProjectDestination = null;
 let createProjectFolders = null;
 let createProjectAudit = null;
@@ -408,10 +414,11 @@ async function applyLyricsPreset(slot, preset) {
   const isDay = preset === 'day';
   selectedLyricsPresets[id] = isDay ? 'day' : 'night';
   const colors = isDay
-    ? { text: '#ffffff', textBox: '#ffffff', clock: '#ffffff', border: '#ffffff', song: '#ffffff', queue: '#ffffff', progress: '#ffffff' }
-    : { text: '#ffea00', textBox: '#ffea00', clock: '#00ff55', border: '#00ff55', song: '#00ff55', queue: '#ffea00', progress: '#ffea00' };
+    ? { text: '#ffffff', highlight: '#d97706', textBox: '#ffffff', clock: '#ffffff', border: '#ffffff', song: '#ffffff', queue: '#ffffff', progress: '#ffffff' }
+    : { text: '#ffea00', highlight: '#00ff55', textBox: '#ffea00', clock: '#00ff55', border: '#00ff55', song: '#00ff55', queue: '#ffea00', progress: '#ffea00' };
   const fieldMap = {
     text: `#lyricsTextColor${id}`,
+    highlight: `#lyricsHighlightColor${id}`,
     textBox: `#lyricsTextBoxColor${id}`,
     clock: `#lyricsClockColor${id}`,
     border: `#lyricsBorderColor${id}`,
@@ -1237,12 +1244,20 @@ function getHookRenamePayload() {
   const suggestedSuffix = hookRenameFolder?.suggestedSuffix || $('#hookRenameSuggestedSuffixInput')?.value || '';
   const folderPaths = getHookRenameFolderPaths();
   return {
+    mode: hookRenameMode,
     folderPath: folderPaths[0] || '',
     folderPaths,
+    removeText: $('#hookRenameRemoveTextInput')?.value || '',
+    removeFolders: $('#hookRenameRemoveFoldersCheck')?.checked === true,
+    removeFiles: $('#hookRenameRemoveFilesCheck')?.checked === true,
     suffix: useFolderSuffix ? suggestedSuffix : manualSuffix,
     useFolderSuffix,
     bulkMode
   };
+}
+
+function splitHookRenameRemovalTexts(value) {
+  return [...new Set(String(value || '').split(',').map((text) => text.trim()).filter(Boolean))];
 }
 
 function formatHookRenameSelectedPaths(result) {
@@ -1267,7 +1282,7 @@ function setHookRenameProgress({ percent = 0, current = 0, total = 0, renamed = 
   if (text) text.textContent = `${safePercent}%`;
   if (count) {
     if (phase === 'done') count.textContent = `${renamed} renomeados${failed ? `, ${failed} falharam` : ''}`;
-    else count.textContent = total ? `${current}/${total} arquivos` : 'Preparando...';
+    else count.textContent = total ? `${current}/${total} itens` : 'Preparando...';
   }
 }
 
@@ -1277,6 +1292,23 @@ function resetHookRenameProgress() {
 }
 
 function updateHookRenameControls() {
+  const removal = hookRenameMode === 'remove';
+  $('#hookRenameAdditionFields')?.classList.toggle('hidden', removal);
+  $('#hookRenameRemovalFields')?.classList.toggle('hidden', !removal);
+  $('#hookRenameCardTitle').textContent = removal ? 'Remover texto dos nomes' : 'Renomeador de arquivos';
+  $('#hookRenamePreviewTitle').textContent = removal ? 'Itens que serão renomeados' : 'Arquivos que serão renomeados';
+  $('#hookRenameDescription').textContent = removal
+    ? 'Remova uma palavra ou frase dos nomes de pastas e arquivos, incluindo subpastas.'
+    : 'Renomeie arquivos com sufixo, prévia antes de executar e modo em massa por nome de pasta.';
+  document.querySelectorAll('[data-hook-rename-mode]').forEach((button) => {
+    const active = button.dataset.hookRenameMode === hookRenameMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  document.querySelectorAll('#toolsRenamePanel button, #toolsRenamePanel input').forEach((control) => {
+    control.disabled = hookRenameBusy;
+  });
+  $('#toolsRenamePanel')?.setAttribute('aria-busy', String(hookRenameBusy));
   const folderPaths = getHookRenameFolderPaths();
   const hasFolder = folderPaths.length > 0;
   const isManyFolders = hookRenameFolder?.multiple === true;
@@ -1285,22 +1317,29 @@ function updateHookRenameControls() {
   const suffixInput = $('#hookRenameSuffixInput');
   const suggestedInput = $('#hookRenameSuggestedSuffixInput');
 
-  if (suffixInput) suffixInput.disabled = useFolderSuffix;
+  if (suffixInput) suffixInput.disabled = hookRenameBusy || useFolderSuffix;
   if (suggestedInput) suggestedInput.value = hookRenameFolder?.suggestedSuffix || '';
 
   if (bulkCheck) {
-    bulkCheck.disabled = !useFolderSuffix || !isManyFolders;
+    bulkCheck.disabled = hookRenameBusy || !useFolderSuffix || !isManyFolders;
     if (!useFolderSuffix || !isManyFolders) bulkCheck.checked = false;
   }
 
   const payload = getHookRenamePayload();
   const hasSuffix = !!String(payload.suffix || '').trim();
   const runButton = $('#hookRenameRunButton');
-  if (runButton) runButton.disabled = !hasFolder || !hasSuffix || !hookRenameLastPreview?.totalOperations;
+  if (runButton) {
+    runButton.textContent = removal ? 'Renomear' : 'Renomear arquivos';
+    runButton.disabled = hookRenameBusy || !hasFolder || (removal
+      ? !splitHookRenameRemovalTexts(payload.removeText).length || (!payload.removeFolders && !payload.removeFiles)
+      : !hasSuffix || !hookRenameLastPreview?.totalOperations);
+  }
 
   const help = $('#hookRenameModeHelp');
   if (help) {
-    if (payload.bulkMode) {
+    if (removal) {
+      help.textContent = 'Separe os textos por vírgula para removê-los de uma vez. Inclui as pastas escolhidas e todas as subpastas. Diferencia maiúsculas e minúsculas e preserva as extensões. Sem correspondência, nada muda. Nomes vazios, conflitos e atalhos são ignorados.';
+    } else if (payload.bulkMode) {
       help.textContent = 'Modo em massa ativo: processa as pastas selecionadas uma por uma, sem entrar em subpastas, renomeando somente MP3, WAV e AIFF com o nome da própria pasta como sufixo.';
     } else if (isManyFolders) {
       help.textContent = 'Você selecionou várias pastas. Marque “Usar nome da pasta como sufixo” para liberar o modo Renomear em massa.';
@@ -1332,10 +1371,18 @@ function renderHookRenamePreview(preview = null) {
   const folders = Number(preview.totalFolders || 0);
   const audioText = preview.audioOnly ? ' Somente MP3, WAV e AIFF.' : '';
   const folderText = folders > 1 ? ` ${folders} pasta(s).` : '';
-  summary.textContent = `${total} arquivo(s) prontos para renomear.${folderText} ${scanned} arquivo(s) analisados. ${skipped} ignorado(s).${audioText}`;
+  const itemLabel = preview.mode === 'remove' ? 'item(ns)' : 'arquivo(s)';
+  summary.textContent = `${total} ${itemLabel} prontos para renomear.${folderText} ${scanned} ${itemLabel} analisados. ${skipped} ignorado(s).${audioText}`;
+  if (preview.mode === 'remove' && skipped) {
+    const reasons = { invalid_name: 'nome ficaria vazio ou inválido', target_exists: 'nome de destino já existe', unreadable: 'sem acesso para auditar' };
+    summary.textContent += ' ' + Object.entries(preview.skippedSummary || {})
+      .map(([reason, count]) => `${count}: ${reasons[reason] || reason}`).join('; ') + '.';
+  }
 
   if (!total) {
-    const reason = preview.bulkMode
+    const reason = preview.mode === 'remove'
+      ? 'Nenhuma alteração disponível: o texto não foi encontrado nos nomes escolhidos ou os itens precisam de revisão.'
+      : preview.bulkMode
       ? 'Nenhum arquivo de áudio MP3, WAV ou AIFF foi encontrado diretamente nas pastas selecionadas.'
       : 'Nenhum arquivo foi encontrado para renomear nesta pasta, ou todos já tinham o sufixo/teriam conflito.';
     list.innerHTML = `<p class="muted">${reason}</p>`;
@@ -1348,7 +1395,7 @@ function renderHookRenamePreview(preview = null) {
   const renderPreviewItem = (item, grouped = false) => `
     <div class="hook-rename-preview-item${grouped ? ' grouped' : ''}">
       <div>
-        <span>${escapeHtml(item.fromName || '')}</span>
+        <span>${preview.mode === 'remove' ? (item.directory ? 'Pasta · ' : 'Arquivo · ') : ''}${escapeHtml(item.fromName || '')}</span>
         <strong>${escapeHtml(item.toName || '')}</strong>
       </div>
       ${grouped ? '' : `<small>${escapeHtml(item.relativeFolder || '.')}</small>`}
@@ -1378,12 +1425,13 @@ function renderHookRenamePreview(preview = null) {
 
   list.innerHTML = `
     ${operationsHtml}
-    ${hiddenCount > 0 ? `<p class="muted hook-rename-preview-limit">Mais ${hiddenCount} arquivo(s) não aparecem na lista para manter a tela leve.</p>` : ''}
+    ${hiddenCount > 0 ? `<p class="muted hook-rename-preview-limit">Mais ${hiddenCount} ${itemLabel} não aparecem na lista para manter a tela leve.</p>` : ''}
   `;
   updateHookRenameControls();
 }
 
 function clearHookRename() {
+  if (hookRenameBusy) return;
   hookRenameFolder = null;
   hookRenameLastPreview = null;
   $('#hookRenameFolderLabel').textContent = 'Nenhuma pasta selecionada';
@@ -1392,6 +1440,14 @@ function clearHookRename() {
   $('#hookRenameSuggestedSuffixInput').value = '';
   $('#hookRenameUseFolderSuffixCheck').checked = false;
   $('#hookRenameBulkModeCheck').checked = false;
+  $('#hookRenameRemoveTextInput').value = '';
+  $('#hookRenameRemoveFoldersCheck').checked = false;
+  $('#hookRenameRemoveFilesCheck').checked = false;
+  hookRenameSuggestionsKey = '';
+  hookRenameSuggestionResizeObserver?.disconnect();
+  hookRenameSuggestionCandidates = [];
+  hookRenameSuggestionUnreadable = 0;
+  $('#hookRenameSuggestions').innerHTML = '<small class="muted">Escolha as pastas para encontrar sugestões.</small>';
   resetHookRenameProgress();
   renderHookRenamePreview(null);
 }
@@ -1399,6 +1455,11 @@ function clearHookRename() {
 function applyHookRenameSelection(result) {
   hookRenameFolder = result;
   hookRenameLastPreview = null;
+  hookRenameSuggestionsKey = '';
+  hookRenameSuggestionResizeObserver?.disconnect();
+  hookRenameSuggestionCandidates = [];
+  hookRenameSuggestionUnreadable = 0;
+  $('#hookRenameSuggestions').innerHTML = '<small class="muted">Aguardando auditoria dos nomes...</small>';
   $('#hookRenameFolderLabel').textContent = result.folderName || 'Pasta selecionada';
   $('#hookRenameFolderPath').textContent = formatHookRenameSelectedPaths(result);
   $('#hookRenameSuggestedSuffixInput').value = result.suggestedSuffix || '';
@@ -1409,35 +1470,135 @@ function applyHookRenameSelection(result) {
 }
 
 async function selectManyHookRenameFolders() {
-  const result = await window.hookUpdateCenter.selectManyHookRenameFolders();
-  if (!result?.ok) return;
-  applyHookRenameSelection(result);
+  if (hookRenameBusy) return;
+  hookRenameBusy = true;
+  updateHookRenameControls();
+  try {
+    const result = await window.hookUpdateCenter.selectManyHookRenameFolders();
+    if (result?.ok) applyHookRenameSelection(result);
+  } finally {
+    hookRenameBusy = false;
+    updateHookRenameControls();
+  }
+  await loadHookRenameSuggestions();
+}
+
+function animateHookRenameSuggestions(buttons) {
+  hookRenameSuggestionResizeObserver?.disconnect();
+  const update = () => {
+    for (const { button, viewport, text } of buttons) {
+      const overflow = Math.max(0, text.scrollWidth - viewport.clientWidth);
+      const animate = viewport.clientWidth > 0 && overflow > 1;
+      button.classList.toggle('is-overflowing', animate);
+      text.style.setProperty('--rename-marquee-distance', `${-overflow}px`);
+      text.style.setProperty('--rename-marquee-duration', `${Math.max(6, overflow / 24 + 3)}s`);
+    }
+  };
+  if (typeof ResizeObserver === 'function') {
+    hookRenameSuggestionResizeObserver = new ResizeObserver(update);
+    for (const { viewport } of buttons) hookRenameSuggestionResizeObserver.observe(viewport);
+  }
+  // Also measure once without needing any perpetual polling/timer.
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(update);
+}
+
+function renderHookRenameSuggestions() {
+  const area = $('#hookRenameSuggestions');
+  const chosen = new Set(splitHookRenameRemovalTexts($('#hookRenameRemoveTextInput')?.value));
+  const suggestions = hookRenameSuggestionCandidates.filter((item) => !chosen.has(item.text)).slice(0, 5);
+  const emptyMessage = hookRenameSuggestionCandidates.length
+    ? 'Todas as sugestões disponíveis foram adicionadas.' : 'Nenhum texto repetido foi encontrado.';
+  area.innerHTML = `<small class="muted">${suggestions.length ? 'Textos repetidos — clique para adicionar:' : emptyMessage}${hookRenameSuggestionUnreadable ? ` ${hookRenameSuggestionUnreadable} item(ns) sem acesso.` : ''}</small>`;
+  const marqueeButtons = [];
+  for (const suggestion of suggestions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary-button hook-rename-suggestion';
+    button.disabled = hookRenameBusy;
+    button.title = `${suggestion.text} — encontrado em ${suggestion.count} nomes`;
+    button.setAttribute('aria-label', button.title);
+    const viewport = document.createElement('span');
+    viewport.className = 'hook-rename-suggestion-viewport';
+    const text = document.createElement('span');
+    text.className = 'hook-rename-suggestion-text';
+    text.textContent = suggestion.text;
+    viewport.appendChild(text);
+    const count = document.createElement('span');
+    count.className = 'hook-rename-suggestion-count';
+    count.textContent = `(${suggestion.count})`;
+    button.appendChild(viewport);
+    button.appendChild(count);
+    button.addEventListener('click', () => {
+      if (hookRenameBusy) return;
+      const input = $('#hookRenameRemoveTextInput');
+      const texts = splitHookRenameRemovalTexts(input.value);
+      if (!texts.includes(suggestion.text)) texts.push(suggestion.text);
+      input.value = texts.join(', ');
+      renderHookRenamePreview(null);
+      resetHookRenameProgress();
+      renderHookRenameSuggestions();
+    });
+    area.appendChild(button);
+    marqueeButtons.push({ button, viewport, text });
+  }
+  animateHookRenameSuggestions(marqueeButtons);
+}
+
+async function loadHookRenameSuggestions() {
+  const folderPaths = getHookRenameFolderPaths();
+  if (hookRenameMode !== 'remove' || hookRenameBusy || !folderPaths.length) return;
+  const selectionKey = JSON.stringify(folderPaths);
+  if (hookRenameSuggestionsKey === selectionKey) return;
+  const area = $('#hookRenameSuggestions');
+  hookRenameBusy = true;
+  updateHookRenameControls();
+  hookRenameSuggestionResizeObserver?.disconnect();
+  area.innerHTML = '<small class="muted">Auditando nomes de pastas e arquivos...</small>';
+  try {
+    const result = await window.hookUpdateCenter.suggestHookRename({ folderPaths });
+    hookRenameSuggestionsKey = selectionKey;
+    hookRenameSuggestionCandidates = result?.suggestions || [];
+    hookRenameSuggestionUnreadable = result?.unreadable || 0;
+    renderHookRenameSuggestions();
+  } catch (error) {
+    area.textContent = friendlyError(error, 'Não foi possível auditar as sugestões. Você pode digitar o texto manualmente.');
+  } finally {
+    hookRenameBusy = false;
+    updateHookRenameControls();
+  }
 }
 
 async function generateHookRenamePreview() {
+  if (hookRenameBusy) return;
   const folderPaths = getHookRenameFolderPaths();
   if (!folderPaths.length) {
     showModal({ title: 'Hook Rename', message: 'Escolha uma pasta primeiro.', type: 'error' });
     return;
   }
   const payload = getHookRenamePayload();
-  if (hookRenameFolder?.multiple && !payload.bulkMode) {
+  const removal = payload.mode === 'remove';
+  if (removal && (!splitHookRenameRemovalTexts(payload.removeText).length || (!payload.removeFolders && !payload.removeFiles))) {
+    showModal({ title: 'Hook Rename', message: 'Digite o texto e marque se deseja remover do nome da pasta, do arquivo, ou ambos.', type: 'error' });
+    return;
+  }
+  if (!removal && hookRenameFolder?.multiple && !payload.bulkMode) {
     showModal({ title: 'Hook Rename', message: 'Para várias pastas, marque “Usar nome da pasta como sufixo” e ative “Renomear em massa”.', type: 'error' });
     return;
   }
-  if (payload.bulkMode && !payload.useFolderSuffix) {
+  if (!removal && payload.bulkMode && !payload.useFolderSuffix) {
     showModal({ title: 'Hook Rename', message: 'O modo em massa só funciona usando o nome da pasta como sufixo.', type: 'error' });
     return;
   }
-  if (!String(payload.suffix || '').trim()) {
+  if (!removal && !String(payload.suffix || '').trim()) {
     showModal({ title: 'Hook Rename', message: 'Digite um sufixo ou marque para usar o nome da pasta.', type: 'error' });
     return;
   }
 
   const button = $('#hookRenamePreviewButton');
   try {
-    button.disabled = true;
-    button.textContent = 'Gerando...';
+    hookRenameBusy = true;
+    updateHookRenameControls();
+    button.textContent = 'Auditando...';
     const preview = await window.hookUpdateCenter.previewHookRename(payload);
     renderHookRenamePreview(preview);
   } catch (error) {
@@ -1445,21 +1606,29 @@ async function generateHookRenamePreview() {
     updateHookRenameControls();
     showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível gerar a prévia.'), type: 'error' });
   } finally {
-    button.disabled = false;
+    hookRenameBusy = false;
     button.textContent = 'Gerar prévia';
+    updateHookRenameControls();
   }
 }
 
 async function runHookRename() {
-  if (!hookRenameLastPreview?.totalOperations) {
+  if (hookRenameBusy) return;
+  const removal = hookRenameMode === 'remove';
+  if (!hookRenameLastPreview || (!removal && !hookRenameLastPreview.totalOperations)) {
     await generateHookRenamePreview();
-    if (!hookRenameLastPreview?.totalOperations) return;
+    if (!hookRenameLastPreview || (!removal && !hookRenameLastPreview.totalOperations)) return;
   }
 
   const payload = getHookRenamePayload();
+  if (removal) payload.auditToken = hookRenameLastPreview.auditToken;
+  hookRenameBusy = true;
+  updateHookRenameControls();
   const confirmed = await confirmModal({
-    title: 'Renomear arquivos',
-    message: payload.bulkMode
+    title: removal ? 'Remover texto dos nomes' : 'Renomear arquivos',
+    message: removal
+      ? `Remover “${payload.removeText}” dos nomes auditados? ${hookRenameLastPreview.totalOperations} item(ns) serão renomeados. Inclui as pastas selecionadas e suas subpastas, conforme as opções marcadas. O conteúdo dos arquivos não será apagado. Renomear pode afetar referências em projetos que usam esses arquivos.`
+      : payload.bulkMode
       ? `O Hook Rename vai renomear ${hookRenameLastPreview.totalOperations} arquivo(s) de áudio em ${hookRenameLastPreview.totalFolders || payload.folderPaths.length} pasta(s), sem entrar em subpastas, usando o nome de cada pasta como sufixo.`
       : `O Hook Rename vai renomear ${hookRenameLastPreview.totalOperations} arquivo(s) na pasta selecionada.`,
     type: 'info',
@@ -1467,7 +1636,11 @@ async function runHookRename() {
     cancelText: 'Cancelar'
   });
 
-  if (!confirmed) return;
+  if (!confirmed) {
+    hookRenameBusy = false;
+    updateHookRenameControls();
+    return;
+  }
 
   const runButton = $('#hookRenameRunButton');
   const previewButton = $('#hookRenamePreviewButton');
@@ -1477,20 +1650,56 @@ async function runHookRename() {
     runButton.disabled = true;
     previewButton.disabled = true;
     const result = await window.hookUpdateCenter.runHookRename(payload);
-    const message = `${result.renamed || 0} arquivo(s) renomeado(s). ${result.totalSkipped || 0} ignorado(s).${result.failed ? ` ${result.failed} falharam.` : ''}`;
+    let message = removal
+      ? `${result.renamedFiles || 0} arquivos e ${result.renamedFolders || 0} pastas alteradas.`
+      : `${result.renamed || 0} arquivo(s) renomeado(s). ${result.totalSkipped || 0} ignorado(s).`;
+    if (result.failed) message += ` ${result.failed} item(ns) não puderam ser alterados.`;
+    if (removal && result.totalSkipped) message += ` ${result.totalSkipped} item(ns) ignorados por conflitos, nomes inválidos ou falta de acesso.`;
+    if (result.errors?.length) message += '\n' + result.errors.slice(0, 3).map((error) => `${error.fromName}: ${error.message}`).join('\n');
     showModal({ title: result.failed ? 'Hook Rename concluído com avisos' : 'Hook Rename concluído', message, type: result.failed ? 'info' : 'success' });
     hookRenameLastPreview = null;
-    await generateHookRenamePreview();
+    if (removal) {
+      // Selected root folders may have changed names too; retain their new
+      // paths so a second operation does not target nonexistent old paths.
+      const folderPaths = result.folderPaths || payload.folderPaths;
+      const folderNames = folderPaths.map((value) => value.split(/[\\/]/).filter(Boolean).pop());
+      applyHookRenameSelection({ folderPaths, folderPath: folderPaths[0], folderNames,
+        multiple: folderPaths.length > 1,
+        folderName: folderPaths.length > 1 ? `${folderPaths.length} pastas selecionadas` : folderNames[0],
+        suggestedSuffix: result.suggestedSuffix || (folderPaths.length > 1 ? 'Nome de cada pasta' : `_${folderNames[0]}`) });
+    } else {
+      hookRenameBusy = false;
+      await generateHookRenamePreview();
+    }
   } catch (error) {
+    if (removal) renderHookRenamePreview(null);
     showModal({ title: 'Erro ao renomear', message: friendlyError(error, 'Não foi possível renomear os arquivos.'), type: 'error' });
   } finally {
+    hookRenameBusy = false;
     runButton.disabled = false;
     previewButton.disabled = false;
     updateHookRenameControls();
   }
+  if (removal) await loadHookRenameSuggestions();
 }
 
 function setupHookRename() {
+  document.querySelectorAll('[data-hook-rename-mode]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (hookRenameBusy || hookRenameMode === button.dataset.hookRenameMode) return;
+      hookRenameMode = button.dataset.hookRenameMode;
+      resetHookRenameProgress();
+      renderHookRenamePreview(null);
+      await loadHookRenameSuggestions();
+    });
+  });
+  ['hookRenameRemoveTextInput', 'hookRenameRemoveFoldersCheck', 'hookRenameRemoveFilesCheck'].forEach((id) => {
+    $('#' + id)?.addEventListener(id.endsWith('Input') ? 'input' : 'change', () => {
+      renderHookRenamePreview(null);
+      resetHookRenameProgress();
+      if (id.endsWith('Input') && hookRenameSuggestionsKey) renderHookRenameSuggestions();
+    });
+  });
   $('#hookRenameSelectManyFoldersButton')?.addEventListener('click', async () => {
     try { await selectManyHookRenameFolders(); } catch (error) { showModal({ title: 'Hook Rename', message: friendlyError(error, 'Não foi possível escolher as pastas.'), type: 'error' }); }
   });
@@ -3085,7 +3294,7 @@ function readHookMarkerSettings() {
   const settings = {
     fps: 30,
     offset: '00:00:00:00',
-    resolumeHost: String($('#hookMarkerResolumeHost')?.value || '127.0.0.1').trim(),
+    resolumeHost: '127.0.0.1',
     resolumePort: Number($('#hookMarkerResolumePort')?.value || 7000),
     resolumeWebPort: Number($('#hookMarkerResolumeWebPort')?.value || 8080),
     resolumeIncludeMarkers: $('#hookMarkerResolumeIncludeMarkers')?.checked !== false,
@@ -3105,7 +3314,6 @@ function readHookMarkerSettings() {
 
 function applyHookMarkerSettings(settings = {}) {
   const fields = {
-    hookMarkerResolumeHost: settings.resolumeHost,
     hookMarkerResolumePort: settings.resolumePort,
     hookMarkerResolumeWebPort: settings.resolumeWebPort
   };
@@ -3291,12 +3499,11 @@ function renderResolumeToolPreview() {
     Number(hookMarkerState?.resolumeMap?.pendingCueCount) || 0);
   const cues = Array.isArray(hookMarkerState?.resolumeMap?.cues)
     ? hookMarkerState.resolumeMap.cues : [];
-  const deckCount = Math.max(0,
-    ...cues.map((cue) => Number(cue.deck) || 0));
+  const { musicCount, markerCount } = resolumeMapUserCounts(cues);
   const countLabel = !mapCreated
     ? 'Mapa não criado'
-    : `${deckCount} deck${deckCount === 1 ? '' : 's'} · ${cues.length} coluna${cues.length === 1 ? '' : 's'}${
-        pendingCueCount > 0 ? ` · ${pendingCueCount} novo${pendingCueCount === 1 ? '' : 's'}` : ''}`;
+    : `${musicCount} música${musicCount === 1 ? '' : 's'} · ${markerCount} marcador${markerCount === 1 ? '' : 'es'}${
+        pendingCueCount > 0 ? ` · ${pendingCueCount} ${pendingCueCount === 1 ? 'item novo' : 'itens novos'}` : ''}`;
   const countBadge = $('#resolumeToolMapCountBadge');
   if (countBadge) countBadge.textContent = countLabel;
   if (!connected) {
@@ -3320,12 +3527,30 @@ function renderResolumeToolPreview() {
       cue.markerName || (isRegionStart ? 'Início' : 'Marcador'));
     return `
       <div class="hook-marker-preview-item resolume-tool-preview-item${isRegionStart ? ' is-region-start' : ''}">
-        <strong title="${deckName}">Deck ${Number(cue.deck) || '—'}</strong>
+        <strong title="${deckName}">${deckName}</strong>
         <strong>${Number(cue.column) || '—'}</strong>
         <span title="${columnName}">${columnName}</span>
         <code>${escapeHtml(cue.timecode || hookMarkerTimecode(cue.positionSeconds, 30))}</code>
       </div>`;
   }).join('');
+}
+
+function resolumeMapUserCounts(cues = []) {
+  const mappedCues = Array.isArray(cues) ? cues : [];
+  const musicDecks = new Set();
+  let markerCount = 0;
+  mappedCues.forEach((cue) => {
+    const isRegionStart = cue?.sourceType === 'region_start' ||
+      cue?.regionStart === true;
+    if (isRegionStart) {
+      const deck = Number(cue?.deck);
+      musicDecks.add(Number.isFinite(deck) && deck > 0
+        ? `deck:${deck}` : `song:${cue?.songId || musicDecks.size}`);
+    } else {
+      markerCount += 1;
+    }
+  });
+  return { musicCount: musicDecks.size, markerCount };
 }
 
 function renderHookMarkerRuntimeState(nextState) {
@@ -3371,8 +3596,7 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
     Number(hookMarkerState?.resolumeMap?.pendingCueCount) || 0);
   const resolumeCues = Array.isArray(hookMarkerState?.resolumeMap?.cues)
     ? hookMarkerState.resolumeMap.cues : [];
-  const resolumeDeckCount = Math.max(0,
-    ...resolumeCues.map((cue) => Number(cue.deck) || 0));
+  const resolumeCounts = resolumeMapUserCounts(resolumeCues);
   syncHookMarkerSongSelection(songs);
   const selectedSongCount = selectedHookMarkerSongIds(songs).length;
   const badge = $('#hookMarkerStatusBadge');
@@ -3406,9 +3630,9 @@ function renderHookMarkerState(nextState, { applySettings = false } = {}) {
   if (resolumeCountBadge) {
     resolumeCountBadge.textContent = !resolumeMapCreated
       ? 'Mapa não criado'
-      : `${resolumeDeckCount} deck${resolumeDeckCount === 1 ? '' : 's'} · ${resolumeCues.length} coluna${resolumeCues.length === 1 ? '' : 's'}${
+      : `${resolumeCounts.musicCount} música${resolumeCounts.musicCount === 1 ? '' : 's'} · ${resolumeCounts.markerCount} marcador${resolumeCounts.markerCount === 1 ? '' : 'es'}${
           resolumePendingCueCount > 0
-            ? ` · ${resolumePendingCueCount} novo${resolumePendingCueCount === 1 ? '' : 's'}` : ''}`;
+            ? ` · ${resolumePendingCueCount} ${resolumePendingCueCount === 1 ? 'item novo' : 'itens novos'}` : ''}`;
   }
   const canUseResolume = connected && resolumeMapCreated &&
     resolumeCues.length > 0 && !hookMarkerBusy;
@@ -3527,11 +3751,10 @@ async function createHookMarkerResolumeMapFromUi() {
     renderHookMarkerState(state, { applySettings: false });
     const cues = Array.isArray(state?.resolumeMap?.cues)
       ? state.resolumeMap.cues : [];
-    const decks = Math.max(0,
-      ...cues.map((cue) => Number(cue.deck) || 0));
+    const counts = resolumeMapUserCounts(cues);
     showModal({
       title: 'Mapa Resolume criado',
-      message: `${decks} deck(s) e ${cues.length} coluna(s) no modo ${
+      message: `${counts.musicCount} música${counts.musicCount === 1 ? '' : 's'} e ${counts.markerCount} marcador${counts.markerCount === 1 ? '' : 'es'} no modo ${
         state?.settings?.resolumeIncludeMarkers === false
           ? 'somente regiões' : 'regiões e marcadores'}.
 
@@ -3569,7 +3792,7 @@ Salve essas alterações antes de continuar, caso sejam importantes.`,
   renderHookMarkerState();
   showBlockingModal({
     title: 'Criando projeto no Resolume',
-    message: 'Aguarde enquanto o Arena cria e confirma os decks, as colunas e o arquivo .avc.\n\nNão feche o Resolume nem a Hook Center.'
+    message: 'Aguarde enquanto o Arena prepara as músicas, os marcadores e o arquivo .avc.\n\nNão feche o Resolume nem a Hook Center.'
   });
   try {
     const result = await window.hookUpdateCenter.createHookMarkerResolumeProject(
@@ -3578,12 +3801,12 @@ Salve essas alterações antes de continuar, caso sejam importantes.`,
       closeBlockingModal();
       return;
     }
-    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState(), {
-      applySettings: false
-    });
+    renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState());
+    const musicCount = Number(result.musicCount ?? result.deckCount) || 0;
+    const markerCount = Number(result.markerCount) || 0;
     showModal({
       title: 'Projeto Resolume criado',
-      message: `${result.deckCount} deck(s) e ${result.totalColumns} coluna(s) foram criados e nomeados${
+      message: `${musicCount} música${musicCount === 1 ? '' : 's'} e ${markerCount} marcador${markerCount === 1 ? '' : 'es'} foram preparados${
         result.includeMarkers === false ? ' sem considerar marcadores' : ''}.
 
 Arquivo salvo em:
@@ -3612,25 +3835,28 @@ async function addHookMarkerResolumeSongsFromUi() {
   renderHookMarkerState();
   showBlockingModal({
     title: 'Adicionando músicas ao Resolume',
-    message: 'Aguarde enquanto a Hook Center identifica as regiões novas e prepara somente os decks que ainda não existem.\n\nOs decks atuais e seus vídeos não serão apagados.'
+    message: 'Aguarde enquanto a Hook Center identifica e prepara somente as músicas novas.\n\nAs músicas atuais e seus vídeos não serão apagados.'
   });
   try {
     const result = await window.hookUpdateCenter.addHookMarkerResolumeSongs(
       readHookMarkerSettings());
     renderHookMarkerState(await window.hookUpdateCenter.getHookMarkerState({
       forceRefresh: true
-    }), { applySettings: false });
+    }));
     if (!result?.addedDeckCount) {
       showModal({
         title: 'Adicionar músicas',
-        message: 'Nenhuma música nova foi encontrada. A composição já possui todos os decks deste projeto.',
+        message: 'Nenhuma música nova foi encontrada. A composição já possui todas as músicas deste projeto.',
         type: 'info'
       });
       return;
     }
+    const addedMusicCount = Number(
+      result.addedMusicCount ?? result.addedDeckCount) || 0;
+    const addedMarkerCount = Number(result.addedMarkerCount) || 0;
     showModal({
       title: 'Músicas adicionadas',
-      message: `${result.addedDeckCount} deck(s) novo(s) foram criados, do deck ${result.firstAddedDeck} ao ${result.lastAddedDeck}, com ${result.totalColumns} coluna(s) no total.${
+      message: `${addedMusicCount} música${addedMusicCount === 1 ? ' nova' : 's novas'} e ${addedMarkerCount} marcador${addedMarkerCount === 1 ? '' : 'es'} foram preparados.${
         result.saved === false
           ? '\n\nO Arena não confirmou o salvamento automático. Salve a composição pelo próprio Resolume.'
           : '\n\nA composição aberta foi salva pelo Arena.'}`,
@@ -3839,7 +4065,7 @@ function setupToolsSubmenu() {
       '#hookMarkerSequence', '#hookMarkerExecutorPage', '#hookMarkerExecutor',
       '#hookMarkerTimecodePool', '#hookMarkerTimecodeSlot'
     ] : []),
-    '#hookMarkerResolumeHost', '#hookMarkerResolumePort',
+    '#hookMarkerResolumePort',
     '#hookMarkerResolumeWebPort',
     '#hookMarkerResolumeIncludeMarkers'
   ].forEach((selector) => {
@@ -5175,6 +5401,7 @@ function applyLyricsSettingsToForm(settings = {}) {
       button.classList.toggle('preset-selected', button.dataset.lyricsPreset === selectedLyricsPresets[slot]);
     });
     const textColor = $(`#lyricsTextColor${slot}`);
+    const highlightColor = $(`#lyricsHighlightColor${slot}`);
     const clockColor = $(`#lyricsClockColor${slot}`);
     const textBoxColor = $(`#lyricsTextBoxColor${slot}`);
     const borderColor = $(`#lyricsBorderColor${slot}`);
@@ -5211,6 +5438,7 @@ function applyLyricsSettingsToForm(settings = {}) {
     const alwaysOnTop = $(`#lyricsAlwaysOnTop${slot}`);
     const clearModeButton = $(`#lyricsClearModeButton${slot}`);
     if (textColor) textColor.value = data.textColor || '#ffea00';
+    if (highlightColor) highlightColor.value = data.highlightColor || '#00ff55';
     if (clockColor) clockColor.value = data.clockColor || '#00ff55';
     if (textBoxColor) textBoxColor.value = data.textBoxColor || data.textColor || '#ffea00';
     if (borderColor) borderColor.value = data.borderColor || data.clockColor || '#00ff55';
@@ -5301,6 +5529,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     slot: id,
     preset: selectedLyricsPresets[id] === 'day' ? 'day' : 'night',
     textColor: $(`#lyricsTextColor${id}`)?.value || '#ffea00',
+    highlightColor: $(`#lyricsHighlightColor${id}`)?.value || '#00ff55',
     clockColor: $(`#lyricsClockColor${id}`)?.value || '#00ff55',
     textBoxColor: $(`#lyricsTextBoxColor${id}`)?.value || $(`#lyricsTextColor${id}`)?.value || '#ffea00',
     borderColor: $(`#lyricsBorderColor${id}`)?.value || $(`#lyricsClockColor${id}`)?.value || '#00ff55',
@@ -5474,6 +5703,7 @@ function setupLyricsAutoApply() {
   [1, 2].forEach((slot) => {
     const ids = [
       `lyricsTextColor${slot}`,
+      `lyricsHighlightColor${slot}`,
       `lyricsClockColor${slot}`,
       `lyricsTextBoxColor${slot}`,
       `lyricsBorderColor${slot}`, 
@@ -5543,25 +5773,33 @@ function renderBridgeState(bridge) {
   currentBridgeState = bridge;
   const runningText = $('#bridgeRunningText');
   if (runningText) {
-    runningText.textContent = bridge.running ? 'Conexão ativa. O Hook Center já está funcionando.' : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
-    runningText.classList.toggle('ok-text', !!bridge.running);
+    runningText.textContent = bridge.running
+      ? (bridge.waitingForSelectedNetwork
+          ? `Aguardando conexão do adaptador ${bridge.selectedNetworkName}. Sua escolha foi mantida.`
+          : bridge.networkAvailable === false ? 'Aguardando rede local. A conexão será atualizada automaticamente.' : 'Conexão ativa. O Hook Center já está funcionando.')
+      : (bridge.error ? 'Conexão parada. Clique em Reiniciar conexão e tente novamente.' : 'Conexão parada.');
+    runningText.classList.toggle('ok-text', !!bridge.running && bridge.networkAvailable !== false);
   }
   const bridgeAddressEl = $('#bridgeLanIp');
   if (bridgeAddressEl) {
     const port = bridge.directorPort || 47831;
-    const shortAddress = bridge.lanIp ? `${bridge.lanIp}:${port}` : '';
-    const fullAddress = bridge.directorUrl || (bridge.lanIp ? `http://${bridge.lanIp}:${port}` : '');
+    const shortAddress = bridge.networkAvailable !== false && bridge.lanIp ? `${bridge.lanIp}:${port}` : '';
+    const fullAddress = bridge.networkAvailable === false ? '' : bridge.directorUrl || (bridge.lanIp ? `http://${bridge.lanIp}:${port}` : '');
     bridgeAddressEl.textContent = shortAddress || '--';
     bridgeAddressEl.title = fullAddress || shortAddress || '';
   }
   renderBridgeNetworkOptions(bridge);
   const qrImage = $('#browserQrImage');
   if (qrImage) {
-    if (bridge.qrCodeUrl && bridge.running) {
-      qrImage.src = `${bridge.qrCodeUrl}&t=${Date.now()}`;
+    if (bridge.qrCodeUrl && bridge.running && bridge.networkAvailable !== false) {
+      if (qrImage.dataset.bridgeQrUrl !== bridge.qrCodeUrl) {
+        qrImage.dataset.bridgeQrUrl = bridge.qrCodeUrl;
+        qrImage.src = `${bridge.qrCodeUrl}&t=${Date.now()}`;
+      }
       qrImage.classList.remove('hidden');
     } else {
       qrImage.removeAttribute('src');
+      delete qrImage.dataset.bridgeQrUrl;
       qrImage.classList.add('hidden');
     }
   }
@@ -5578,7 +5816,20 @@ function renderBridgeNetworkOptions(bridge = currentBridgeState) {
   const selectedIp = String(
     bridge.selectedNetworkIp || bridge.lanIp || '');
   container.innerHTML = '';
+  if (bridge.waitingForSelectedNetwork) {
+    const pending = document.createElement('button');
+    pending.type = 'button';
+    pending.disabled = true;
+    pending.className = 'bridge-network-option bridge-network-option-selected';
+    const name = document.createElement('strong');
+    name.textContent = bridge.selectedNetworkName || 'Rede escolhida';
+    const status = document.createElement('span');
+    status.textContent = 'Selecionado · aguardando conexão';
+    pending.append(name, status);
+    container.appendChild(pending);
+  }
   if (!networks.length) {
+    if (bridge.waitingForSelectedNetwork) return;
     const empty = document.createElement('p');
     empty.className = 'muted';
     empty.textContent = 'Nenhuma rede local encontrada.';
@@ -5587,7 +5838,7 @@ function renderBridgeNetworkOptions(bridge = currentBridgeState) {
   }
   networks.forEach((item) => {
     const ip = String(item?.ip || '');
-    const selected = !!ip && ip === selectedIp;
+    const selected = !bridge.waitingForSelectedNetwork && !!ip && ip === selectedIp;
     const button = document.createElement('button');
     button.type = 'button';
     button.className =
@@ -6509,6 +6760,8 @@ async function init() {
   setupHookRename();
   setupCreateProject();
   setupAddProject();
+
+  window.hookUpdateCenter.onBridgeStatus?.(renderBridgeState);
 
   $('#supportNavButton')?.addEventListener('click', openSupport);
   $('#restartBridgeButton')?.addEventListener('click', async () => {
