@@ -8147,22 +8147,18 @@ async function configureHookMarkerResolumeDeck(
       name: columnNames[index]
     }))
     .filter((column) => column.name);
-  composition = await mutateHookMarkerResolumeComposition(
-    settings, '/composition', {
-      method: 'PUT',
-      json: {
-        columns: namedColumns.map((column) => ({
-          id: column.id,
-          name: { value: column.name }
-        }))
-      }
-    },
-    (candidate) => candidate?.decks?.[deckNumber - 1]?.selected?.value === true &&
-      namedColumns.every((column) =>
-        String(candidate?.columns?.[column.index]?.name?.value || '') ===
-          column.name),
-    `O Arena não confirmou os nomes das colunas do deck ${deckNumber}.`,
-    45000);
+  // Arrays no PUT /composition são posicionais. Uma lista filtrada (por
+  // exemplo, marcador sem nome no meio) deslocaria os nomes para a esquerda.
+  for (const column of namedColumns) {
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/columns/${column.index + 1}`, {
+        method: 'PUT', json: { name: { value: column.name } }
+      },
+      (candidate) => candidate?.decks?.[deckNumber - 1]?.selected?.value === true &&
+        String(candidate?.columns?.[column.index]?.name?.value || '') === column.name,
+      `O Arena não confirmou o nome da coluna ${column.index + 1} do deck ${deckNumber}.`,
+      45000);
+  }
   return {
     composition,
     columnCount: definition.requiredColumns,
@@ -8460,24 +8456,17 @@ async function addHookMarkerResolumeSongs(input = {}) {
       number: initialDeckCount + index + 1
     }));
 
-  composition = await mutateHookMarkerResolumeComposition(
-    settings, '/composition', {
-      method: 'PUT',
-      json: {
-        decks: newDecks.map((deck) => ({
-          id: deck.id,
-          name: {
-            value: hookMarkerResolumeDeckDefinition(
-              compositionMap, deck.number).deckName
-          }
-        }))
-      }
-    },
-    (candidate) => newDecks.every((deck) =>
-      String(candidate?.decks?.[deck.number - 1]?.name?.value || '') ===
-        hookMarkerResolumeDeckDefinition(
-          compositionMap, deck.number).deckName),
-    'O Arena não confirmou os nomes dos novos decks.', 45000);
+  // Atualize o recurso de destino diretamente: enviar apenas os novos decks
+  // no array de /composition renomearia os primeiros decks já existentes.
+  for (const deck of newDecks) {
+    const name = hookMarkerResolumeDeckDefinition(compositionMap, deck.number).deckName;
+    composition = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/decks/${deck.number}`, {
+        method: 'PUT', json: { name: { value: name } }
+      },
+      (candidate) => String(candidate?.decks?.[deck.number - 1]?.name?.value || '') === name,
+      `O Arena não confirmou o nome da música no deck ${deck.number}.`, 45000);
+  }
   composition = await waitForHookMarkerResolumeStable(
     settings, 30000, 700);
 

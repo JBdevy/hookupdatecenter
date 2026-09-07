@@ -38,11 +38,14 @@ function scenario(title, names, minor = 22, savedMap = map) {
     mutateHookMarkerResolumeComposition: async (settings, endpoint, options, predicate) => {
       calls.push(endpoint);
       if (endpoint === '/composition/decks/add') {
-        composition.decks.push({ id: 100, name: { value: 'empty' } });
+        composition.decks.push({ id: 100 + composition.decks.length, name: { value: 'empty' } });
       } else if (endpoint === '/composition') {
-        for (const deck of options.json.decks) {
-          composition.decks.find(item => item.id === deck.id).name = deck.name;
+        // O PUT da composição aplica arrays por posição, não pelo campo id.
+        for (const [index, deck] of options.json.decks.entries()) {
+          composition.decks[index].name = deck.name;
         }
+      } else if (/^\/composition\/decks\/\d+$/.test(endpoint)) {
+        composition.decks[Number(endpoint.split('/').at(-1)) - 1].name = options.json.name;
       } else {
         assert.fail(`Unexpected mutation: ${endpoint}`);
       }
@@ -73,6 +76,11 @@ function scenario(title, names, minor = 22, savedMap = map) {
 }
 
 (async () => {
+  const batch = scenario('Outro nome', songNames.slice(0, 1));
+  assert.equal((await batch.run()).addedMusicCount, 2);
+  assert.deepEqual(batch.composition.decks.map(deck => deck.name.value), songNames);
+  assert.deepEqual(batch.calls.filter(endpoint => /^\/composition\/decks\/\d+$/.test(endpoint)),
+    ['/composition/decks/2', '/composition/decks/3']);
   for (const minor of [22, 27]) {
     for (const title of ['Projeto Desmonstracao', 'Meu show salvo com outro nome']) {
       const test = scenario(title, songNames.slice(0, 2), minor);
@@ -81,7 +89,7 @@ function scenario(title, names, minor = 22, savedMap = map) {
       assert.deepEqual(test.composition.decks.map(deck => deck.name.value), songNames);
       assert.equal(test.composition.name.value, title);
       assert.deepEqual(test.calls, [
-        '/composition/decks/add', '/composition', 'configure:3', '/composition/save'
+        '/composition/decks/add', '/composition/decks/3', 'configure:3', '/composition/save'
       ]);
     }
   }
@@ -108,7 +116,7 @@ function scenario(title, names, minor = 22, savedMap = map) {
   assert.equal(renamed.composition.decks[3].name.value, 'Música nova após renomear');
   assert.equal(renamed.readRpp().__vshookDecks[3].sourceKey, 'region:99');
   assert.deepEqual(renamed.calls, [
-    '/composition/decks/add', '/composition', 'configure:4', '/composition/save'
+    '/composition/decks/add', '/composition/decks/4', 'configure:4', '/composition/save'
   ]);
   const replacedMap = structuredClone(renamedMap);
   replacedMap.cues[0].sourceKey = 'region:outra';
@@ -118,5 +126,32 @@ function scenario(title, names, minor = 22, savedMap = map) {
   const reordered = scenario('AVC sem acento', [songNames[1], songNames[0], songNames[2]], 22, renamedMap);
   await assert.rejects(reordered.run(), /não correspondem ao mapa/);
   assert.equal(reordered.calls.length, 0);
+  // Nome vazio na coluna 2 não pode levar o nome do refrão (coluna 3) até ela.
+  const columnsState = {
+    decks: [{ id: 1, selected: { value: true } }],
+    columns: [1, 2, 3].map(id => ({ id, name: { value: `Column ${id}` } }))
+  };
+  const columnCalls = [];
+  const columnsContext = vm.createContext({
+    selectHookMarkerResolumeDeck: async () => columnsState,
+    mutateHookMarkerResolumeComposition: async (settings, endpoint, options, predicate) => {
+      columnCalls.push(endpoint);
+      assert.match(endpoint, /^\/composition\/columns\/\d+$/);
+      const index = Number(endpoint.split('/').at(-1)) - 1;
+      columnsState.columns[index].name = options.json.name;
+      assert(predicate(columnsState));
+      return columnsState;
+    }
+  });
+  vm.runInContext(source.slice(source.indexOf('function hookMarkerResolumeDeckDefinition('),
+    source.indexOf('async function waitForHookMarkerResolumeFile(')), columnsContext);
+  await columnsContext.configureHookMarkerResolumeDeck({}, columnsState, { cues: [
+    { deck: 1, column: 1, regionStart: true, deckName: 'Teste' },
+    { deck: 1, column: 2, columnName: '' },
+    { deck: 1, column: 3, columnName: 'Refrão' }
+  ] }, 1, 1);
+  assert.deepEqual(columnsState.columns.map(column => column.name.value),
+    ['Início', 'Column 2', 'Refrão']);
+  assert.deepEqual(columnCalls, ['/composition/columns/1', '/composition/columns/3']);
   console.log('RESOLUME_ADD_SONGS_OK: rename via persisted region ID, portable RPP, append only, mismatches rejected');
 })().catch(error => { console.error(error); process.exitCode = 1; });
