@@ -212,10 +212,17 @@ function ensureDirectorTabletOrientationOverlay() {
       <h1 class="vshook-shell-title">Vire para horizontal</h1>
       <p class="vshook-shell-subtitle">O modo Tablet continua aberto. Desbloqueie a rotação e vire o dispositivo novamente para a posição horizontal.</p>
       <button class="vshook-mode-button" id="retryTabletRuntimeOrientationBtn">Já virei</button>
+      <button class="vshook-back-button" id="backTabletRuntimeOrientationBtn">Voltar</button>
     </div>
   `
   document.body.appendChild(overlay)
   document.getElementById('retryTabletRuntimeOrientationBtn')?.addEventListener('click', updateDirectorTabletOrientationGuard)
+  document.getElementById('backTabletRuntimeOrientationBtn')?.addEventListener('click', () => {
+    vshookDirectorTabletLandscapeContinuation = null
+    vshookDirectorAppActive = false
+    applyDirectorDeviceMode('phone')
+    renderDirectorDeviceSelection()
+  })
   return overlay
 }
 

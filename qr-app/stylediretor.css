@@ -571,6 +571,7 @@ button, input {
   position: relative;
   z-index: 1001;
 }
+.projectModalButtons { justify-content: space-between; }
 .modalCancelBtn {
   height: 38px;
   min-width: 96px;
