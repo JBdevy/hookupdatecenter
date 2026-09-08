@@ -11,7 +11,7 @@
     "start": "electron .",
     "test:create-project": "node tests/create-project.test.js",
     "test:add-project": "node tests/add-project.test.js",
-    "test:hook-marker": "node tests/hook-marker.test.js && node tests/resolume-add-songs.test.js",
+    "test:hook-marker": "node tests/hook-marker.test.js && node tests/resolume-add-songs.test.js && node tests/resolume-reset.test.js && node tests/resolume-deck-add.test.js && node tests/resolume-mutation-retry.test.js",
     "test:hook-rename": "node tests/hook-rename-removal.test.js && node tests/hook-rename-ui.test.js",
     "test:bridge-network": "node tests/bridge-network.test.js",
     "test:artifact-download": "node tests/artifact-download.test.js",

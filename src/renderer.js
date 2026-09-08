@@ -3778,11 +3778,11 @@ async function createHookMarkerResolumeProjectFromUi() {
       typeof window.hookUpdateCenter.createHookMarkerResolumeProject !== 'function') return;
   const confirmed = await confirmModal({
     title: 'Criar projeto no Resolume',
-    message: `A composição aberta no Resolume será limpa para montar o novo projeto.
+    message: `Antes de continuar, abra uma composição nova e vazia no Resolume.
 
-O arquivo original no disco não será alterado, pois o resultado será salvo em outro arquivo .avc. Porém, alterações que ainda não foram salvas no projeto aberto serão perdidas.
+Os decks vazios existentes serão removidos. A Hook Center criará os decks das músicas e salvará o resultado em outro arquivo .avc.
 
-Salve essas alterações antes de continuar, caso sejam importantes.`,
+Se a composição aberta não estiver nova e vazia, cancele e prepare-a antes de tentar novamente.`,
     type: 'info',
     okText: 'Criar projeto',
     cancelText: 'Cancelar'

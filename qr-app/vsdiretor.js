@@ -3241,7 +3241,7 @@
 
   function getFadeoutTracks(data = state.snapshot) {
     const mixer = data?.mixer && typeof data.mixer === 'object' ? data.mixer : null
-    return Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : [])
+    return getAppVisibleMixerTracks(Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : []))
   }
 
   function getMixerItemIds(item, fallback = '') {

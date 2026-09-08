@@ -7874,8 +7874,11 @@ async function hookMarkerResolumeApiRequest(
       });
     const responseText = await response.text();
     if (!response.ok) {
-      throw new Error(`Resolume respondeu ${response.status}${
+      const error = new Error(`Resolume respondeu ${response.status}${
         responseText ? `: ${responseText.slice(0, 240)}` : ''}`);
+      error.status = response.status;
+      error.endpoint = endpoint;
+      throw error;
     }
     if (!responseText) return null;
     try {
@@ -7914,7 +7917,8 @@ async function waitForHookMarkerResolumeComposition(
   while (Date.now() - startedAt < timeoutMilliseconds) {
     try {
       const composition = await hookMarkerResolumeApiRequest(
-        settings, '/composition', { timeoutMilliseconds: 5000 });
+        settings, `/composition?_v=${Date.now()}`,
+        { timeoutMilliseconds: 5000 });
       if (predicate(composition)) return composition;
       lastError = null;
     } catch (error) {
@@ -7953,7 +7957,8 @@ async function waitForHookMarkerResolumeStable(
   let latest = null;
   while (Date.now() - startedAt < timeoutMilliseconds) {
     latest = await hookMarkerResolumeApiRequest(
-      settings, '/composition', { timeoutMilliseconds: 5000 });
+      settings, `/composition?_v=${Date.now()}`,
+      { timeoutMilliseconds: 5000 });
     const signature = hookMarkerResolumeCompositionSignature(latest);
     if (signature === previousSignature) {
       if (stableSince && Date.now() - stableSince >= stableMilliseconds) {
@@ -7972,27 +7977,192 @@ async function waitForHookMarkerResolumeStable(
 async function mutateHookMarkerResolumeComposition(
   settings, endpoint, requestOptions, predicate, description,
   timeoutMilliseconds = 45000) {
+  const startedAt = Date.now();
   let requestError = null;
-  try {
-    await hookMarkerResolumeApiRequest(settings, endpoint, {
-      ...requestOptions,
-      timeoutMilliseconds: Math.min(8000, timeoutMilliseconds)
-    });
-  } catch (error) {
-    requestError = error;
-    // Algumas versões do Arena aplicam a operação, mas deixam a resposta HTTP
-    // pendurada. Nesse caso, a leitura do estado abaixo é a confirmação real.
-    if (error?.code !== 'RESOLUME_REQUEST_TIMEOUT') throw error;
-  }
-  try {
-    return await waitForHookMarkerResolumeComposition(
-      settings, predicate, description, timeoutMilliseconds);
-  } catch (error) {
-    if (requestError?.code === 'RESOLUME_REQUEST_TIMEOUT') {
-      throw new Error(`${description} O Arena não confirmou a alteração após o tempo limite.`);
+  let attempt = 0;
+  while (Date.now() - startedAt < timeoutMilliseconds) {
+    attempt += 1;
+    try {
+      await hookMarkerResolumeApiRequest(settings, endpoint, {
+        ...requestOptions,
+        timeoutMilliseconds: Math.min(8000, timeoutMilliseconds)
+      });
+      const remaining = Math.max(
+        500, timeoutMilliseconds - (Date.now() - startedAt));
+      return await waitForHookMarkerResolumeComposition(
+        settings, predicate, description, remaining);
+    } catch (error) {
+      requestError = error;
+      const requestTimedOut = error?.code === 'RESOLUME_REQUEST_TIMEOUT';
+      const arenaStillBusy = Number(error?.status) === 412;
+      if (!requestTimedOut && !arenaStillBusy) {
+        const operationError = new Error(
+          `${description} ${error?.message || error}`);
+        operationError.status = error?.status;
+        operationError.endpoint = endpoint;
+        throw operationError;
+      }
+
+      const remaining = timeoutMilliseconds - (Date.now() - startedAt);
+      if (remaining <= 0) break;
+
+      // O 412 significa que o Arena ainda estava bloqueado pela alteração
+      // anterior. Antes de repetir, confira se a operação chegou a ser
+      // aplicada; isso evita duplicar decks/colunas quando a resposta HTTP
+      // falha depois de a interface interna já ter mudado.
+      const confirmationWindow = requestTimedOut
+        ? remaining : Math.min(2500, remaining);
+      try {
+        return await waitForHookMarkerResolumeComposition(
+          settings, predicate, description, confirmationWindow);
+      } catch (_) {
+        if (requestTimedOut) break;
+      }
+
+      // Nas versões 7.22+ as operações consecutivas podem devolver
+      // temporariamente "412: canceled" enquanto o deck anterior termina de
+      // fechar. Aguarde e repita a mesma ação somente depois da conferência.
+      await new Promise((resolve) => setTimeout(
+        resolve, Math.min(900, 180 + attempt * 90)));
     }
-    throw error;
   }
+
+  const operationError = new Error(requestError?.code ===
+    'RESOLUME_REQUEST_TIMEOUT'
+    ? `${description} O Arena não confirmou a alteração após o tempo limite.`
+    : `${description} ${requestError?.message ||
+      'O Arena permaneceu ocupado e cancelou a operação.'}`);
+  operationError.status = requestError?.status;
+  operationError.endpoint = endpoint;
+  throw operationError;
+}
+
+async function addHookMarkerResolumeDeck(
+  settings, currentComposition, description,
+  { acceptRefreshedComposition = false } = {}) {
+  const previousDecks = Array.isArray(currentComposition?.decks)
+    ? currentComposition.decks : [];
+  const expectedDeckCount = previousDecks.length + 1;
+  const previousSignature = hookMarkerResolumeCompositionSignature(
+    currentComposition);
+  const startedAt = Date.now();
+  let lastError = null;
+  const isBlankAddedDeck = (deck) => {
+    if (deck?.id === undefined || deck?.id === null) return false;
+    const name = String(deck?.name?.value || '').trim().toLowerCase();
+    return name === '' || /^empty(?:\s+\d+)?$/.test(name);
+  };
+  const snapshotWithDirectDeck = (deck) => ({
+    ...currentComposition,
+    decks: [...previousDecks, deck]
+  });
+  const keepsPreviousDeckPrefix = (composition) =>
+    previousDecks.every((deck, index) => String(
+      composition?.decks?.[index]?.name?.value || '') ===
+      String(deck?.name?.value || ''));
+
+  // Se a resposta geral ainda estiver uma alteração atrás, o deck do índice
+  // seguinte pode já existir por causa de um POST anterior cujo retorno se
+  // perdeu. Confira-o antes de escrever para manter a inclusão idempotente.
+  // Um deck criado por /decks/add nasce vazio; isso impede confundir o mesmo
+  // índice de uma composição antiga nomeada com a operação pendente atual.
+  if (!acceptRefreshedComposition) {
+    try {
+      const pendingDeck = await hookMarkerResolumeApiRequest(
+        settings, `/composition/decks/${expectedDeckCount}?_v=${Date.now()}`,
+        { timeoutMilliseconds: 5000 });
+      if (isBlankAddedDeck(pendingDeck)) {
+        return snapshotWithDirectDeck(pendingDeck);
+      }
+    } catch (error) {
+      if (Number(error?.status) !== 404) lastError = error;
+    }
+  }
+
+  while (Date.now() - startedAt < 45000) {
+    let requestWasAccepted = false;
+    try {
+      await hookMarkerResolumeApiRequest(
+        settings, '/composition/decks/add', {
+          method: 'POST', timeoutMilliseconds: 8000
+        });
+      requestWasAccepted = true;
+    } catch (error) {
+      lastError = error;
+      if (error?.code === 'RESOLUME_REQUEST_TIMEOUT') {
+        // O Arena 7.27 pode criar o deck e deixar o POST pendurado. A
+        // existência do deck abaixo é a confirmação, não a resposta HTTP.
+        requestWasAccepted = true;
+      } else if (Number(error?.status) !== 412) {
+        throw error;
+      }
+    }
+
+    const confirmationStartedAt = Date.now();
+    let latestComposition = null;
+    let directDeck = null;
+    while (Date.now() - confirmationStartedAt < 12000) {
+      try {
+        latestComposition = await hookMarkerResolumeApiRequest(
+          settings, `/composition?_v=${Date.now()}`,
+          { timeoutMilliseconds: 5000 });
+        if (Array.isArray(latestComposition?.decks) &&
+            latestComposition.decks.length === expectedDeckCount &&
+            keepsPreviousDeckPrefix(latestComposition)) {
+          return latestComposition;
+        }
+        if (acceptRefreshedComposition &&
+            requestWasAccepted &&
+            Array.isArray(latestComposition?.decks) &&
+            latestComposition.decks.length > 0 &&
+            hookMarkerResolumeCompositionSignature(latestComposition) !==
+              previousSignature &&
+            latestComposition.decks.every((deck) => {
+              const name = String(deck?.name?.value || '')
+                .trim().toLowerCase();
+              return name === '' || /^empty(?:\s+\d+)?$/.test(name);
+            })) {
+          // Ao abrir uma composição nova pela interface, Arena 7.22+ pode
+          // continuar devolvendo no GET o snapshot da composição anterior.
+          // O primeiro POST age na composição visível e só então publica a
+          // lista atual. Nesse caso a contagem antiga não pode determinar o
+          // índice esperado; a nova geração e sua contagem confirmam a ação.
+          return latestComposition;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      try {
+        if (acceptRefreshedComposition) {
+          await new Promise((resolve) => setTimeout(resolve, 180));
+          continue;
+        }
+        directDeck = await hookMarkerResolumeApiRequest(
+          settings, `/composition/decks/${expectedDeckCount}?_v=${Date.now()}`,
+          { timeoutMilliseconds: 5000 });
+        if (isBlankAddedDeck(directDeck)) {
+          // Algumas versões só atualizam a lista geral no próximo comando.
+          // O endpoint direto já prova que o deck existe; complete o snapshot
+          // local para que a mesma execução possa selecioná-lo e continuar.
+          // A lista geral pode pertencer à composição anterior. Preserve o
+          // snapshot que originou a ação; misturá-lo com uma lista de outra
+          // geração produziria IDs e nomes de dois projetos diferentes.
+          return snapshotWithDirectDeck(directDeck);
+        }
+      } catch (error) {
+        if (Number(error?.status) !== 404) lastError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+
+    // Se o POST foi aceito ou expirou, repeti-lo poderia criar dois decks.
+    // Só repita quando o próprio Arena respondeu 412 e nenhum deck apareceu.
+    if (requestWasAccepted) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error(`${description}${lastError?.message
+    ? ` ${lastError.message}` : ''}`);
 }
 
 async function selectHookMarkerResolumeDeck(
@@ -8024,62 +8194,97 @@ async function selectHookMarkerResolumeDeck(
     { method: 'POST' }, predicate, description, 45000);
 }
 
-async function resetHookMarkerResolumeComposition(settings) {
-  let composition = await waitForHookMarkerResolumeStable(settings);
-  const initialDeckCount = Array.isArray(composition?.decks)
-    ? composition.decks.length : 0;
-  if (initialDeckCount < 1) {
-    throw new Error('O Arena não informou os decks da composição aberta.');
+async function resetHookMarkerResolumeComposition(
+  settings, firstDeckName = 'Música 1') {
+  // O usuário abre previamente uma composição nova no Arena. A Hook Center
+  // substitui todos os decks vazios por decks reais das músicas, sem criar
+  // outra composição e sem manter qualquer deck temporário no resultado.
+  const composition = await waitForHookMarkerResolumeStable(settings);
+  if (!Array.isArray(composition?.decks) || composition.decks.length < 1) {
+    throw new Error(
+      'O Arena não informou nenhum deck na composição aberta.');
   }
 
-  // /composition/new pode aguardar uma confirmação interna quando existem
-  // alterações abertas em diferentes versões do Arena. Criar um deck vazio
-  // e apagar os anteriores usa somente a API documentada disponível em toda
-  // a faixa suportada (Arena 7.22+), sem depender de diálogo oculto.
-  composition = await mutateHookMarkerResolumeComposition(
-    settings, '/composition/decks/add', { method: 'POST' },
-    (candidate) => Array.isArray(candidate?.decks) &&
-      candidate.decks.length > initialDeckCount,
-    'O Arena não confirmou a criação do deck vazio inicial.', 45000);
+  // Não valide a lista recebida antes deste POST. Ao abrir uma composição
+  // nova pela interface do Arena, o Webserver pode continuar informando os
+  // decks da composição anterior até a primeira alteração. O deck criado
+  // aqui já será a primeira música; acceptRefreshedComposition permite que
+  // a confirmação troque do snapshot antigo para a composição realmente
+  // aberta sem exigir um segundo clique do usuário.
+  let updated = await addHookMarkerResolumeDeck(
+    settings, composition,
+    'O Arena não confirmou a criação da primeira música.',
+    { acceptRefreshedComposition: true });
+  updated = await waitForHookMarkerResolumeStable(settings, 15000, 500);
 
-  // Sem corpo, /decks/add acrescenta o novo deck ao final. Confirmar pela
-  // quantidade e pela posição é compatível com Arena 7.22+ e também cobre
-  // versões que recriam os IDs de todos os decks durante essa operação.
-  const blankDeckIndex = composition.decks.length;
-  const blankDeck = composition.decks[blankDeckIndex - 1];
-  const blankDeckId = blankDeck?.id;
-  if (blankDeckId === undefined || blankDeckId === null) {
-    throw new Error('O Arena criou o deck vazio sem uma identificação válida.');
+  const decksHaveCustomNames = updated.decks.some((deck) => {
+    const name = String(deck?.name?.value || '').trim().toLowerCase();
+    return name !== '' && !/^empty(?:\s+\d+)?$/.test(name);
+  });
+  const selectedDeckHasContent = Array.isArray(updated.layers) &&
+    updated.layers.some((layer) => Array.isArray(layer?.clips) &&
+      layer.clips.some((clip) => clip && (clip.audio !== null ||
+        clip.video !== null || clip.connected?.value !== 'Empty')));
+  if (decksHaveCustomNames || selectedDeckHasContent) {
+    throw new Error(
+      'A composição aberta no Resolume não está vazia. Abra uma composição nova e tente novamente.');
   }
 
-  composition = await selectHookMarkerResolumeDeck(
-    settings, blankDeckId, blankDeckIndex,
-    'O Arena não confirmou a seleção do deck vazio inicial.');
+  const previousDeckCount = updated.decks.length - 1;
+  if (previousDeckCount < 1) {
+    throw new Error(
+      'O Arena não informou os decks vazios anteriores à primeira música.');
+  }
 
-  // O deck novo está no fim. Remover sempre o primeiro elimina apenas os
-  // decks antigos, mesmo se o Arena trocar IDs enquanto recompõe a grade.
-  while (Array.isArray(composition?.decks) &&
-      composition.decks.length > 1) {
-    const previousDeckCount = composition.decks.length;
-    composition = await mutateHookMarkerResolumeComposition(
+  // O Arena não permite uma composição com zero decks (o último DELETE
+  // retorna 412). Por isso, crie primeiro o deck que já será a música 1 e,
+  // em seguida, remova todos os decks vazios originais pelos IDs estáveis.
+  // /decks/add anexa o novo deck no final. Não compare IDs aqui: o Arena
+  // pode recriar os IDs de todos os decks ao adicionar ou remover um deles.
+  let firstDeckIndex = updated.decks.length;
+  let firstDeckId = updated.decks[firstDeckIndex - 1]?.id;
+  if (firstDeckId === undefined || firstDeckId === null) {
+    throw new Error('O Arena criou a primeira música sem informar seu ID.');
+  }
+  updated = await selectHookMarkerResolumeDeck(
+    settings, firstDeckId, firstDeckIndex,
+    'O Arena não confirmou a seleção da primeira música.');
+  firstDeckIndex = updated.decks.length;
+  firstDeckId = updated.decks[firstDeckIndex - 1]?.id;
+  updated = await mutateHookMarkerResolumeComposition(
+    settings, `/composition/decks/${firstDeckIndex}`,
+    { method: 'PUT', json: { name: { value: firstDeckName } } },
+    (candidate) => String(
+      candidate?.decks?.[candidate.decks.length - 1]?.name?.value || '') ===
+      firstDeckName,
+    'O Arena não confirmou o nome da primeira música.', 45000);
+
+  for (let originalIndex = 0;
+      originalIndex < previousDeckCount; originalIndex += 1) {
+    const countBeforeDelete = updated.decks.length;
+    updated = await mutateHookMarkerResolumeComposition(
       settings, '/composition/decks/1',
       { method: 'DELETE' },
       (candidate) => Array.isArray(candidate?.decks) &&
-        candidate.decks.length < previousDeckCount,
-      'O Arena não confirmou a remoção de um deck antigo.');
+        candidate.decks.length === countBeforeDelete - 1,
+      'O Arena não confirmou a remoção de um deck vazio antigo.', 45000);
   }
 
-  while (Array.isArray(composition?.columns) &&
-      composition.columns.length > 1) {
-    const previousColumnCount = composition.columns.length;
-    composition = await mutateHookMarkerResolumeComposition(
-      settings, `/composition/columns/${previousColumnCount}`,
+  firstDeckIndex = 1;
+  firstDeckId = updated.decks[0]?.id;
+  updated = await selectHookMarkerResolumeDeck(
+    settings, firstDeckId, firstDeckIndex,
+    'O Arena não confirmou a primeira música após a limpeza.');
+  while (Array.isArray(updated?.columns) && updated.columns.length > 1) {
+    const columnCount = updated.columns.length;
+    updated = await mutateHookMarkerResolumeComposition(
+      settings, `/composition/columns/${columnCount}`,
       { method: 'DELETE' },
       (candidate) => Array.isArray(candidate?.columns) &&
-        candidate.columns.length < previousColumnCount,
-      'O Arena não confirmou a limpeza das colunas do deck inicial.');
+        candidate.columns.length === columnCount - 1,
+      'O Arena não confirmou a preparação da primeira música.', 45000);
   }
-  return waitForHookMarkerResolumeStable(settings);
+  return waitForHookMarkerResolumeStable(settings, 30000, 700);
 }
 
 function hookMarkerResolumeDeckDefinition(compositionMap, deckNumber) {
@@ -8280,7 +8485,8 @@ async function createHookMarkerResolumeProject(input = {}) {
       deckNames.every((name, index) =>
         String(composition.decks[index]?.name?.value || '') === name);
     if (!canResume) {
-      composition = await resetHookMarkerResolumeComposition(settings);
+      composition = await resetHookMarkerResolumeComposition(
+        settings, deckNames[0]);
     }
     compositionStarted = true;
     const templateDeckId = composition?.decks?.[0]?.id;
@@ -8289,17 +8495,13 @@ async function createHookMarkerResolumeProject(input = {}) {
     }
 
     if (!canResume) {
-      // Duplicar o deck já reduzido para uma coluna evita que cada música
-      // nasça com as nove colunas padrão do Arena.
+      // A primeira música já substituiu todos os decks vazios originais.
+      // Crie aqui somente as demais músicas necessárias.
       while (composition.decks.length < highestDeck) {
-        const previousDeckCount = composition.decks.length;
         const expectedDeck = composition.decks.length + 1;
-        composition = await mutateHookMarkerResolumeComposition(
-          settings, '/composition/decks/1/duplicate',
-          { method: 'POST' },
-          (candidate) => Array.isArray(candidate?.decks) &&
-            candidate.decks.length > previousDeckCount,
-          `O Arena não confirmou a criação do deck ${expectedDeck}.`, 45000);
+        composition = await addHookMarkerResolumeDeck(
+          settings, composition,
+          `O Arena não confirmou a criação do deck ${expectedDeck}.`);
       }
 
       const newDeckEntries = composition.decks.slice(0, highestDeck);
@@ -8435,13 +8637,10 @@ async function addHookMarkerResolumeSongs(input = {}) {
   const selectedDeckIndex = composition.decks.findIndex(
     (deck) => deck?.selected?.value === true);
   while (composition.decks.length < highestDeck) {
-    const previousDeckCount = composition.decks.length;
     const deckNumber = composition.decks.length + 1;
-    composition = await mutateHookMarkerResolumeComposition(
-      settings, '/composition/decks/add', { method: 'POST' },
-      (candidate) => Array.isArray(candidate?.decks) &&
-        candidate.decks.length > previousDeckCount,
-      `O Arena não confirmou a criação do deck ${deckNumber}.`, 45000);
+    composition = await addHookMarkerResolumeDeck(
+      settings, composition,
+      `O Arena não confirmou a criação do deck ${deckNumber}.`);
     if (!composition.decks[composition.decks.length - 1]?.id) {
       throw new Error(`O Arena não informou o ID do deck ${deckNumber}.`);
     }

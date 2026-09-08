@@ -35,11 +35,17 @@ function scenario(title, names, minor = 22, savedMap = map) {
       return true;
     },
     waitForHookMarkerResolumeStable: async () => composition,
+    addHookMarkerResolumeDeck: async () => {
+      calls.push('/composition/decks/add');
+      composition.decks.push({
+        id: 100 + composition.decks.length,
+        name: { value: 'empty' }
+      });
+      return composition;
+    },
     mutateHookMarkerResolumeComposition: async (settings, endpoint, options, predicate) => {
       calls.push(endpoint);
-      if (endpoint === '/composition/decks/add') {
-        composition.decks.push({ id: 100 + composition.decks.length, name: { value: 'empty' } });
-      } else if (endpoint === '/composition') {
+      if (endpoint === '/composition') {
         // O PUT da composição aplica arrays por posição, não pelo campo id.
         for (const [index, deck] of options.json.decks.entries()) {
           composition.decks[index].name = deck.name;
