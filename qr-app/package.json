@@ -5,6 +5,10 @@
   "description": "VS Hook Mobile - Android/iOS",
   "scripts": {
     "test:director-search": "node scripts/test-director-search.js",
+    "test:director-touch-feedback": "node scripts/test-director-touch-feedback.js",
+    "test:director-bar-clock": "node scripts/test-director-bar-clock.js",
+    "test:director-individual-time": "node scripts/test-director-individual-time.js",
+    "test:director-performance": "node scripts/test-director-performance.js",
     "build": "node scripts/check-safe-area.js && node scripts/build-static.js",
     "start": "vite --host 0.0.0.0",
     "sync:android": "npm run build && npx cap sync android",

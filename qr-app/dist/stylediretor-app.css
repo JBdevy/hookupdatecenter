@@ -261,7 +261,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
 }
 .playbackQueueLine {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr) max-content;
   align-items: center;
   gap: 8px;
   min-height: 30px;
@@ -284,7 +284,20 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.playbackQueueTime {
+  justify-self: end;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+}
 .playbackQueueNext .playbackQueueTitle {
+  color: #facc15;
+}
+.playbackQueueNext .playbackQueueTime {
   color: #facc15;
 }
 .playbackQueueMultiLoop {
@@ -591,6 +604,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
   position: relative;
   z-index: 1001;
 }
+.projectModalButtons { justify-content: space-between; }
 .modalCancelBtn {
   height: 38px;
   min-width: 96px;
@@ -7306,6 +7320,14 @@ button,
   color: #0b1118 !important;
   text-shadow: none !important;
 }
+.app[data-theme="light"] .playbackQueueTimeNow {
+  color: #0b1118 !important;
+  text-shadow: none !important;
+}
+.app[data-theme="light"] .playbackQueueTimeNext {
+  color: #854d0e !important;
+  text-shadow: none !important;
+}
 .app[data-theme="light"] .playbackQueueTrack {
   background: #aeb6bf !important;
 }
@@ -7390,11 +7412,12 @@ button,
 
 @media (max-width: 430px) {
   .app[data-theme="light"] .playbackQueueLine {
-    grid-template-columns: 82px minmax(0, 1fr) !important;
+    grid-template-columns: 82px minmax(0, 1fr) max-content !important;
     gap: 6px !important;
   }
   .app[data-theme="light"] .playbackQueueLabel { font-size: 9px !important; }
   .app[data-theme="light"] .playbackQueueTitle { font-size: 11.5px !important; }
+  .app[data-theme="light"] .playbackQueueTime { font-size: 11.5px !important; }
   .timerCountdownInputs { gap: 7px !important; }
   .timerCountdownInputs label { padding: 0 6px !important; }
 }
@@ -7562,6 +7585,9 @@ button,
   line-height: 1.14;
   text-shadow: 0 2px 4px #000, 0 0 9px #000, 0 0 18px rgba(0,0,0,.92);
   -webkit-overflow-scrolling: touch;
+}
+.directorTpText .directorTpHighlight {
+  color: var(--app-tp-highlight-color, #00ff55) !important;
 }
 .directorTpTextOverlay {
   background: rgba(0, 0, 0, .12);
@@ -8031,9 +8057,9 @@ html[data-director-device="tablet"] .directorTpOverlay{
   box-sizing:border-box!important;
 }
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTrack{height:3px!important}
-html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLine{min-height:22px!important;padding:2px 7px!important;gap:7px!important;grid-template-columns:90px minmax(0,1fr)!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLine{min-height:22px!important;padding:2px 7px!important;gap:7px!important;grid-template-columns:90px minmax(0,1fr) max-content!important}
 html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueLabel{font-size:9px!important}
-html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueName,html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTime{font-size:10px!important}
+html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTitle,html[data-director-device="tablet"] .directorTpContent>.playbackQueueHeader .playbackQueueTime{font-size:10px!important}
 .app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink){background:#991b1b!important;border-color:#ef4444!important;box-shadow:inset 0 0 0 1px rgba(248,113,113,.34)!important}
 .app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .leftCol span{color:#fecaca!important;text-decoration:none!important;text-shadow:none!important}
 .app .item.liveExecutedItem:not(.playing):not(.queuedYellow):not(.selectedBlue):not(.selectedPink) .rightCol span{color:#fecaca!important;text-decoration:none!important;text-shadow:none!important}
@@ -9238,7 +9264,8 @@ html[data-director-device="tablet"] .tabletSettingsModalOverlay .modalSpacer {
   box-shadow: 0 0 7px rgba(250,204,21,.52) !important;
 }
 .app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueLabel,
-.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle {
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTitle,
+.app .playbackQueueNext.playbackQueuePrepareOnly .playbackQueueTime {
   color: #050505 !important;
 }
 
@@ -9725,11 +9752,17 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
   text-shadow: none !important;
 }
 .app .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle,
+.app .playbackQueueNow.playbackQueueNowActive .playbackQueueTime,
 .app .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle {
   color: #ffffff !important;
   text-shadow: none !important;
 }
-.app .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+.app .playbackQueueNext.playbackQueueNextActive .playbackQueueTime {
+  color: #facc15 !important;
+  text-shadow: none !important;
+}
+.app .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle,
+.app .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTime {
   color: #050505 !important;
 }
 
@@ -10825,11 +10858,14 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
   color: #94a3b8 !important;
   text-shadow: none !important;
 }
-.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle {
+.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTime {
   color: #22c55e !important;
 }
 .app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle,
-.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTime,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle,
+.app[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTime {
   color: #facc15 !important;
 }
 
@@ -10849,7 +10885,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 }
 
 /* Fila na lista: mesmo laranja do painel de transporte.
-   Amarelo permanece exclusivo da barra de regresso e da seta. */
+   Amarelo permanece exclusivo da barra de regresso, da seta e do tempo. */
 html[data-director-device="tablet"] .app .item.queuedYellow:not(.blockItem):not(.playing),
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.queuedYellow:not(.blockItem):not(.playing),
 .app.musicianMonitor .item.queuedYellow:not(.blockItem):not(.playing) {
@@ -10867,7 +10903,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .item.numberedItem
 /* Tablet: seta curta com cauda duas vezes maior, mantendo o nome alinhado à esquerda. */
 html[data-director-device="tablet"] .app .playbackQueueNow,
 html[data-director-device="tablet"] .app .playbackQueueNext {
-  grid-template-columns: auto minmax(0, 1fr) !important;
+  grid-template-columns: auto minmax(0, 1fr) max-content !important;
   gap: 13px !important;
 }
 html[data-director-device="tablet"] .app .playbackQueueNow .playbackQueueLabel,
@@ -10935,11 +10971,14 @@ html[data-director-device="tablet"] .app .playbackQueueStateArrowNext {
   color: #94a3b8 !important;
   text-shadow: none !important;
 }
-.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle {
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTitle,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNow.playbackQueueNowActive .playbackQueueTime {
   color: #22c55e !important;
 }
 .playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTitle,
-.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle {
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive .playbackQueueTime,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTitle,
+.playbackQueueHeader[data-transport-playback-color-mode="none"] .playbackQueueNext.playbackQueueNextActive.playbackQueuePrepareOnly .playbackQueueTime {
   color: #facc15 !important;
 }
 
@@ -10949,7 +10988,7 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNow,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNext,
 .app.musicianMonitor .playbackQueueNow,
 .app.musicianMonitor .playbackQueueNext {
-  grid-template-columns: auto minmax(0, 1fr) !important;
+  grid-template-columns: auto minmax(0, 1fr) max-content !important;
   gap: 13px !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .playbackQueueNow .playbackQueueLabel,

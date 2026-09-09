@@ -1,7 +1,9 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-cifras-v34'
+  const VERSION = '1.0.1-director-performance-v39'
+  const userAgent = navigator.userAgent || ''
+  const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
   const METER_POLL_MS = 80
   const NOTICE_POLL_MS = 450
@@ -10,12 +12,13 @@
   const POLL_TIMEOUT_MS = 2200
   const RECADO_IMAGE_UPLOAD_TIMEOUT_MS = 60000
   const TAP_DEDUPE_MS = 180
-  const DIRECTOR_VISUAL_FRAME_MS = 25
+  const APP_CONFIG_COLOR_GUARD_MS = 500
+  // Uma unica cadencia para todas as plataformas. Vinte atualizacoes por
+  // segundo mantem barras e relogios fluidos sem disputar o toque com o DOM.
+  const DIRECTOR_VISUAL_FRAME_MS = 50
 
   const root = document.getElementById('app') || document.body
   try {
-    const userAgent = navigator.userAgent || ''
-    const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
     if (/Android/i.test(userAgent)) document.documentElement.dataset.directorPlatform = 'android'
     else if (/iPad|iPhone|iPod/i.test(userAgent) || iPadDesktopMode) document.documentElement.dataset.directorPlatform = 'ios'
   } catch (_) {}
@@ -31,6 +34,12 @@
   let interfaceAccessButtonTimer = 0
   let liveMarkIndexSnapshot = null
   let liveMarkIndex = null
+  const childSongMarkerPositionsCache = new WeakMap()
+  const musicPaneCache = new Map()
+  let musicPaneWarmupHandle = 0
+  let appConfigColorGuardUntil = 0
+  let appConfigColorPointerTarget = null
+  let appConfigColorPointerAt = 0
 
   const state = {
     snapshot: null,
@@ -170,7 +179,6 @@
     bpmOptimisticValues: {},
     hashRegionDrawers: readJsonLocal('vshook_director_hash_drawers', {}),
     hashRegionDrawerChildren: {},
-    hashRegionDrawerPendingId: '',
     showMixerVolume: false,
     mixerVolumeTarget: null,
     mixerRouteTarget: '',
@@ -290,6 +298,9 @@
     playlistSelectionLocalUntil: 0,
     regionSelectionLocalUntil: 0,
     directorSelectionScrollPending: null,
+    directorSongListScrollingUntil: 0,
+    directorListScrollingUntil: 0,
+    directorListDeferredRenderTimer: 0,
   }
 
   // Estados antigos podiam deixar duas colunas restauradas ao mesmo tempo.
@@ -331,6 +342,56 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;')
+  }
+
+  function parseTelepromptHighlightedText(value) {
+    const text = String(value || '')
+    const segments = []
+    const append = (content, highlighted = false) => {
+      if (!content) return
+      const previous = segments[segments.length - 1]
+      if (previous && previous.highlighted === highlighted) previous.text += content
+      else segments.push({ text: content, highlighted })
+    }
+    let cursor = 0
+    while (cursor < text.length) {
+      if (text[cursor] !== '*' || cursor + 1 >= text.length || /\s/.test(text[cursor + 1])) {
+        append(text[cursor])
+        cursor += 1
+        continue
+      }
+      let closing = cursor + 1
+      while (closing < text.length) {
+        if (text[closing] === '*' && closing > cursor + 1 && !/\s/.test(text[closing - 1])) break
+        closing += 1
+      }
+      if (closing >= text.length) {
+        append(text[cursor])
+        cursor += 1
+        continue
+      }
+      append(text.slice(cursor + 1, closing), true)
+      cursor = closing + 1
+    }
+    return segments
+  }
+
+  function renderTelepromptHighlightedText(element, value) {
+    if (!element) return
+    const source = String(value || '')
+    const fragment = document.createDocumentFragment()
+    parseTelepromptHighlightedText(source).forEach((segment) => {
+      if (!segment.highlighted) {
+        fragment.appendChild(document.createTextNode(segment.text))
+        return
+      }
+      const highlight = document.createElement('span')
+      highlight.className = 'directorTpHighlight'
+      highlight.textContent = segment.text
+      fragment.appendChild(highlight)
+    })
+    element.replaceChildren(fragment)
+    element.dataset.highlightSource = source
   }
 
   function upperText(value) {
@@ -479,14 +540,14 @@
     try {
       if (window.vshookUiFeedback) window.vshookUiFeedback.setSoundEnabled(value)
     } catch (error) {}
-    scheduleRender(true)
+    if (state.showSettingsModal) mountSettingsModalInPlace()
   }
 
   function setUiVibrateEnabled(value) {
     try {
       if (window.vshookUiFeedback) window.vshookUiFeedback.setVibrateEnabled(value)
     } catch (error) {}
-    scheduleRender(true)
+    if (state.showSettingsModal) mountSettingsModalInPlace()
   }
 
   // No tema claro o fundo das listas fica branco. A cor que a extensao manda
@@ -688,7 +749,7 @@
     })
     // As cores das listas sao resolvidas na renderizacao, entao a troca de tema
     // precisa redesenhar para o texto claro demais virar preto na hora.
-    scheduleRender(true)
+    scheduleRenderAfterPaint(true)
   }
 
   const TELEPROMPT_FONT_OPTIONS = [
@@ -725,7 +786,7 @@
 
   const APP_TELEPROMPT_DEFAULTS = Object.freeze({
     preset: 'night',
-    textColor: '#ffea00', textBoxColor: '#ffea00',
+    textColor: '#ffea00', highlightColor: '#00ff55', textBoxColor: '#ffea00',
     clockColor: '#00ff55', clockExpiredColor: '#ff3131',
     clockBorderColor: '#00ff55', localClockColor: '#00ff55',
     localClockBorderColor: '#00ff55',
@@ -761,7 +822,7 @@
   })
 
   const APP_TELEPROMPT_DAY_COLORS = Object.freeze({
-    textColor: '#ffffff', textBoxColor: '#ffffff', clockColor: '#ffffff',
+    textColor: '#ffffff', highlightColor: '#d97706', textBoxColor: '#ffffff', clockColor: '#ffffff',
     clockExpiredColor: '#d60000', clockBorderColor: '#ffffff',
     localClockColor: '#ffffff', localClockBorderColor: '#ffffff',
     borderColor: '#ffffff',
@@ -1146,8 +1207,17 @@
     const index = BORDER_COLOR_SEQUENCE.findIndex((item) => item.id === current)
     const next = BORDER_COLOR_SEQUENCE[(Math.max(0, index) + 1) % BORDER_COLOR_SEQUENCE.length].id
     writeLocal(getBorderColorPreferenceKey(), next)
+    const app = directChildByClass(root, 'app')
+    if (app) {
+      app.setAttribute('data-border-mode', next)
+      app.style.setProperty('--app-border-color', getBorderColorValue(next))
+      app.style.setProperty('--app-border-glow', getBorderColorGlow(next))
+    }
+    root.querySelectorAll('[data-action="border-color-mode"]').forEach((button) => {
+      button.textContent = getBorderColorModeLabel(next)
+    })
     showPopup(getBorderColorModeLabel(next), next === 'off' ? 'info' : 'success', 1000)
-    scheduleRender(true)
+    state.lastHtmlSignature = getAppRenderSignature()
   }
 
   function getNumberColumnMode() {
@@ -1163,7 +1233,7 @@
     state.numberOrderConfirmContext = getNumberOrderContext()
     state.numberOrderConfirmUseRegionId = !numberColumnUsesRegionId()
     state.numberOrderConfirmDescending = false
-    scheduleRender(true)
+    if (!mountNumberOrderConfirmInPlace()) scheduleRender(true)
   }
 
   function getNumberOrderContext() {
@@ -1216,7 +1286,7 @@
     state.numberOrderConfirmContext = context
     state.numberOrderConfirmUseRegionId = true
     state.numberOrderConfirmDescending = getNumberOrderState(context) === 'asc'
-    scheduleRender(true)
+    if (!mountNumberOrderConfirmInPlace()) scheduleRender(true)
   }
 
   function closeNumberOrderConfirm() {
@@ -1224,7 +1294,7 @@
     state.numberOrderConfirmContext = 'playlist'
     state.numberOrderConfirmUseRegionId = false
     state.numberOrderConfirmDescending = false
-    scheduleRender(true)
+    if (!mountNumberOrderConfirmInPlace()) scheduleRender(true)
   }
 
   function applyNumberOrderSort(context, descending) {
@@ -1255,14 +1325,18 @@
       if (useRegionId) applyNumberOrderSort(context, false)
       state.numberOrderConfirmKind = ''
       showPopup(useRegionId ? 'NUMBER: ID DA REGIÃO' : 'NUMBER: ORDEM DA LISTA', 'info', 1400)
-      scheduleRender(true)
+      mountNumberOrderConfirmInPlace()
+      if (state.showSettingsModal) mountSettingsModalInPlace()
+      scheduleRenderAfterPaint(true)
       return
     }
     const descending = state.numberOrderConfirmDescending === true
     applyNumberOrderSort(context, descending)
     state.numberOrderConfirmKind = ''
     showPopup(descending ? 'ORDENADO 9-0' : 'ORDENADO 0-9', 'info', 1400)
-    scheduleRender(true)
+    mountNumberOrderConfirmInPlace()
+    if (state.showSettingsModal) mountSettingsModalInPlace()
+    scheduleRenderAfterPaint(true)
   }
 
   function getPlayProtectionEnabled() {
@@ -1291,8 +1365,13 @@
     })
     state.lastProtectedPlayTapAt = 0
     state.lastProtectedPlayMode = ''
+    root.querySelectorAll('[data-action="play-protection"]').forEach((button) => {
+      button.classList.toggle('btnConfigOnGreen', next)
+      button.classList.toggle('btnConfigOffRed', !next)
+      button.setAttribute('aria-pressed', next ? 'true' : 'false')
+    })
     showPopup(next ? 'PLAY PROTECTION ON' : 'PLAY PROTECTION OFF', next ? 'success' : 'info', 1000)
-    scheduleRender(true)
+    state.lastHtmlSignature = getAppRenderSignature()
   }
 
   function allowProtectedPlayTap(mode, options = {}) {
@@ -1339,13 +1418,11 @@
     // No TP o vídeo/imagem não pode ser recriado só para mostrar um aviso de
     // marker. Atualiza o popup isoladamente e preserva o player já carregado.
     syncDirectorPopupDom()
-    scheduleRender(!state.showTelepromptScreen)
     setTimeout(() => {
       if (state.popupUntil === until) {
         state.popupText = ''
         state.popupUntil = 0
         syncDirectorPopupDom()
-        scheduleRender(!state.showTelepromptScreen)
       }
     }, duration + 60)
   }
@@ -1365,9 +1442,8 @@
     return String(item.name || item.label || item.title || item.songName || item.regionName || item.markerName || '').trim()
   }
 
-  // Faixas de serviço do Teleprompt não são controles de mixagem para o
-  // Diretor. O nome é normalizado para também cobrir "TELEPROMPT 1",
-  // "TELEPROMPT-1" e outras variações de espaço/pontuação.
+  // Faixas técnicas não são controles de mixagem para o Diretor. O nome é
+  // normalizado para cobrir variações de espaço, pontuação e acentuação.
   function isAppHiddenMixerTrack(item) {
     const names = [
       item?.trackName,
@@ -1385,6 +1461,7 @@
       return normalizedName === 'TELEPROMPT1'
         || normalizedName === 'TELEPROMPT2'
         || normalizedName === 'CIFRAS'
+        || normalizedName === 'MEDIA'
         || normalizedName === 'TIMECODE'
     })
   }
@@ -1585,6 +1662,11 @@
     }
     const color = type === 'marker' ? '' : themeSafeTextColor(getLuaItemTextColor(item, type))
     return color ? ` style="color:${escapeHtml(color)}!important"` : ''
+  }
+
+  function colorFromInlineStyleFragment(styleFragment) {
+    const match = String(styleFragment || '').match(/color\s*:\s*([^;!"']+)/i)
+    return match ? String(match[1] || '').trim() : ''
   }
 
   function getRegionNumberValue(item) {
@@ -1920,9 +2002,16 @@
     return { ...child, color: parent?.color, colorHex: parent?.colorHex, textColor: parent?.textColor, textColorHex: parent?.textColorHex, finalTextColorHex: parent?.finalTextColorHex, blockColorHex: parent?.blockColorHex, bridgeBlockColorHex: parent?.bridgeBlockColorHex, inheritedBlockColorHex: parent?.inheritedBlockColorHex }
   }
 
-  function itemFamilyContainsPlayingSong(item, data = state.snapshot) {
+  function itemFamilyContainsPlayingSong(
+    item,
+    data = state.snapshot,
+    visualPlayingId = null,
+    visualPlayPosition = null,
+  ) {
     const id = String(getId(item) || '')
-    const playingId = getVisualPlayingId(data)
+    const playingId = visualPlayingId === null
+      ? getVisualPlayingId(data)
+      : String(visualPlayingId || '')
     if (!id || !playingId) return false
     if (id === playingId) return true
     if (isHashChild(item)) return false
@@ -1933,20 +2022,30 @@
     // snapshot/PreMix. Isso evita a marcacao sumir ao trocar de um filho para
     // o seguinte enquanto a gaveta continua fechada.
     if (!isHashParent(item) && !Array.isArray(children)) return false
-    const playPos = getSmoothedCurrentPlaybackPosition(data)
+    const playPos = visualPlayPosition === null
+      ? getSmoothedCurrentPlaybackPosition(data)
+      : visualPlayPosition
     const start = getItemStart(item)
     const end = getItemEnd(item)
     return playPos !== null && start !== null && end !== null &&
       playPos >= start - 0.0005 && playPos < end - 0.0005
   }
 
-  function rowRepresentsPlayingSong(item, data = state.snapshot) {
+  function rowRepresentsPlayingSong(
+    item,
+    data = state.snapshot,
+    visualPlayingId = null,
+    visualPlayPosition = null,
+  ) {
     const id = String(getId(item) || '')
     if (!id) return false
-    const playingId = getVisualPlayingId(data)
+    const playingId = visualPlayingId === null
+      ? getVisualPlayingId(data)
+      : String(visualPlayingId || '')
     if (isHashChild(item)) return id === playingId
     if (state.hashRegionDrawers[id]) return id === playingId
-    return itemFamilyContainsPlayingSong(item, data)
+    return itemFamilyContainsPlayingSong(
+      item, data, playingId, visualPlayPosition)
   }
 
   function getImmediateFamilyPlayingId(parentId, data = state.snapshot) {
@@ -2514,17 +2613,40 @@
     return { item: target.item, start: target.start, end: target.end, id: target.id, source }
   }
 
+  function getChildSongMarkerPositions(data = state.snapshot) {
+    if (!data || typeof data !== 'object') return []
+    const cached = childSongMarkerPositionsCache.get(data)
+    if (cached) return cached
+    const positions = []
+    for (const marker of getMarkers(data)) {
+      const raw = getRawMarkerName(marker)
+      if (!raw || raw.startsWith('$') || raw.startsWith('*') || raw.startsWith('!')) continue
+      const pos = firstFiniteNumber([
+        marker?.pos, marker?.position, marker?.startPos, marker?.start_pos,
+      ])
+      if (pos !== null) positions.push(pos)
+    }
+    positions.sort((a, b) => a - b)
+    childSongMarkerPositionsCache.set(data, positions)
+    return positions
+  }
+
   function itemHasChildSongMarkers(item, data = state.snapshot) {
     if (!item || isBlock(item) || isHashChild(item)) return false
     const start = getItemStart(item)
     const end = getItemEnd(item)
     if (start === null || end === null || end <= start) return false
-    return getMarkers(data).some((marker) => {
-      const pos = firstFiniteNumber([marker?.pos, marker?.position, marker?.startPos, marker?.start_pos])
-      const raw = getRawMarkerName(marker)
-      return pos !== null && pos >= start - 0.0005 && pos < end - 0.0005 &&
-        !!raw && !raw.startsWith('$') && !raw.startsWith('*') && !raw.startsWith('!')
-    })
+    const positions = getChildSongMarkerPositions(data)
+    const minimum = start - 0.0005
+    const maximum = end - 0.0005
+    let low = 0
+    let high = positions.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if (positions[middle] < minimum) low = middle + 1
+      else high = middle
+    }
+    return low < positions.length && positions[low] < maximum
   }
 
   function partsTargetIsParent(data = state.snapshot) {
@@ -2535,7 +2657,16 @@
   }
 
   function renderPartsParentInstruction() {
-    return '<div class="emptyBox partsParentInstruction">ABRA A GAVETA COM UM DUPLO TOQUE SOBRE ESSA REGIÃO E SELECIONE UMA MÚSICA</div>'
+    // A gaveta abre pelo botao Mostrar da propria linha da regiao. O duplo
+    // toque que esta instrucao pedia foi removido do app — tocar duas vezes na
+    // musica nao faz nada — e mandar o operador tentar um gesto morto ao vivo
+    // era o caminho para ele achar que o app tinha travado.
+    //
+    // Sem o VIEW ligado a linha nao tem esse botao, e ai nao existe forma
+    // nenhuma de abrir a gaveta. Nesse caso a instrucao aponta o que destrava.
+    return getFamilyViewControlsEnabled(state.snapshot)
+      ? '<div class="emptyBox partsParentInstruction">TOQUE EM <strong>MOSTRAR</strong> NA LINHA DESSA REGIÃO PARA ABRIR A GAVETA E SELECIONE UMA MÚSICA</div>'
+      : '<div class="emptyBox partsParentInstruction">LIGUE O <strong>VIEW</strong> EM CONFIGURAÇÕES PARA ABRIR A GAVETA DESSA REGIÃO E SELECIONAR UMA MÚSICA</div>'
   }
 
   function resolveSongTabById(id, data = state.snapshot) {
@@ -2632,6 +2763,25 @@
     return null
   }
 
+  // O Grid guarda apenas QUE estava aberto, nunca QUAL musica estava nele: o
+  // alvo vive so na memoria da pagina. Depois de recarregar, ele voltava aberto
+  // e vazio — como se nada estivesse selecionado — enquanto a musica seguia
+  // selecionada ali na lista.
+  //
+  // Assim que o primeiro estado do Bridge chega, o alvo e reconstruido a partir
+  // do que esta valendo agora. Dai em diante o Grid volta a segurar a propria
+  // referencia, que e o comportamento correto com ele aberto: troca de selecao
+  // no meio do culto nao pode mudar a musica que esta sendo representada.
+  function restoreTransportSeekTargetFromSnapshot(data) {
+    if (!state.showTransportSeekModal) return
+    if (String(state.transportSeekSongId || '')) return
+    const target = getLiveTransportSeekTarget(data)
+    if (!target) return
+    storeTransportSeekTarget(target, false)
+    state.transportSeekCursorPos = getTransportSeekCursorPos(target, data)
+    syncTransportSeekModalDom()
+  }
+
   function getStoredTransportSeekTarget() {
     if (!state.transportSeekSongId) return null
     return makeTransportSeekTarget(null, {
@@ -2678,12 +2828,43 @@
     return bridgePlaying
   }
 
+  // Mesmo problema das barras, mesma solucao — mas em segundos da linha do
+  // tempo, que e como o cursor do Grid trabalha. Vale so para o transporte
+  // rodando: arraste do dedo e as retencoes de Play/Pause tem caminho proprio
+  // logo abaixo e nao passam por aqui.
+  const SEEK_CLOCK_SNAP_SEC = 1.2
+  const SEEK_CLOCK_EASE_SEC = 0.25
+
+  let seekClockKey = ''
+  let seekClockPosSec = 0
+  let seekClockAtMs = 0
+
+  function getSmoothSeekPlayPositionSec(data, sampledAt, target) {
+    const bridgePos = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    const running = isPlaying(data) && !isPaused(data)
+    const key = `${getVisualPlayingId(data, sampledAt)}|${target?.id || ''}`
+    if (bridgePos === null || !running || key !== seekClockKey) {
+      seekClockKey = key
+      seekClockPosSec = bridgePos === null ? 0 : bridgePos
+      seekClockAtMs = sampledAt
+      return bridgePos
+    }
+    const elapsedSec = Math.max(0, Number(sampledAt) - seekClockAtMs) / 1000
+    seekClockAtMs = sampledAt
+    let next = seekClockPosSec + elapsedSec
+    const error = bridgePos - next
+    if (Math.abs(error) >= SEEK_CLOCK_SNAP_SEC) next = bridgePos
+    else next += error * Math.min(1, elapsedSec / SEEK_CLOCK_EASE_SEC)
+    seekClockPosSec = next
+    return seekClockPosSec
+  }
+
   function getTransportSeekCursorPos(target = getTransportSeekTarget(), data = state.snapshot, sampledAt = now()) {
     if (!target) return 0
     const start = Number(target.start) || 0
     const end = Number(target.end) || 0
     if (!(end > start)) return start
-    let playPos = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    let playPos = getSmoothSeekPlayPositionSec(data, sampledAt, target)
     const heldPlayPos = Number(state.transportSeekPlayVisualHoldPos)
     const bridgePlaying =
       data?.transportPlaying === true || data?.playing === true
@@ -3191,7 +3372,7 @@
 
   function getFadeoutTracks(data = state.snapshot) {
     const mixer = data?.mixer && typeof data.mixer === 'object' ? data.mixer : null
-    return Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : [])
+    return getAppVisibleMixerTracks(Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : []))
   }
 
   function getMixerItemIds(item, fallback = '') {
@@ -4047,11 +4228,6 @@
   function syncSharedInterfaceState(data = state.snapshot) {
     if (!data || typeof data !== 'object') return
     const currentTime = now()
-    const previousSelectionTarget =
-      getDirectorSelectionScrollTarget()
-    const localSelectionWasPending =
-      currentTime < Number(
-        state.sharedSelectionLocalUntil || 0)
 
     const bridgeQueuedId = String(
       data?.queuedSongId || data?.queueSongId || '')
@@ -4082,11 +4258,9 @@
         String(state.selectedRegionId || '') &&
       bridgeMarkerSelection ===
         String(state.selectedMarkerId || '')
-    let bridgeSelectionApplied = false
     if (selectionMatches ||
         currentTime >= Number(
           state.sharedSelectionLocalUntil || 0)) {
-      bridgeSelectionApplied = true
       state.selectedPlaylistSongId =
         bridgePlaylistSelection
       state.selectedRegionId = bridgeRegionSelection
@@ -4137,15 +4311,9 @@
       state.activeTabLocalUntil = 0
     }
 
-    const nextSelectionTarget =
-      getDirectorSelectionScrollTarget()
-    if (bridgeSelectionApplied &&
-        !localSelectionWasPending &&
-        nextSelectionTarget &&
-        nextSelectionTarget.key !==
-          String(previousSelectionTarget?.key || '')) {
-      queueDirectorSelectionScroll(nextSelectionTarget)
-    }
+    // Confirmar uma selecao muda apenas a cor. A lista nunca segue a musica
+    // automaticamente; somente a lupa usa seu foco dedicado mais abaixo.
+    state.directorSelectionScrollPending = null
 
     if (currentTime >= Number(
           state.sharedControlsLocalUntil || 0)) {
@@ -5479,6 +5647,31 @@
     })
   }
 
+  // Os tres botoes da linha do Premix vivem dentro do painel que estava sendo
+  // remontado a cada toque. Sincronizados aqui, eles trocam de estado na hora,
+  // sem passar pelo render inteiro.
+  function syncPremixSoloButtonsDom() {
+    const rows = root.querySelectorAll('.premixFullRow[data-premix-item-id]')
+    if (!rows.length) return
+    const premixItems = new Map(
+      getPremixAllItemRows().map((item) => [getPremixItemId(item), item]),
+    )
+    rows.forEach((row) => {
+      const id = String(row.getAttribute('data-premix-item-id') || '')
+      const item = premixItems.get(id)
+      if (!item) return
+      const apply = (action, className, active) => {
+        const button = row.querySelector(`[data-action="${action}"]`)
+        if (!button) return
+        button.classList.toggle(className, active)
+        button.setAttribute('aria-pressed', active ? 'true' : 'false')
+      }
+      apply('premix-item-mute', 'premixFullMuteActive', getPremixItemMute(item))
+      apply('premix-item-solo', 'premixFullSoloActive', getPremixItemTrackSolo(item))
+      apply('premix-item-unique', 'premixFullUniqueActive', getPremixItemUniqueSolo(item))
+    })
+  }
+
   function syncPremixVolumeControlsDom() {
     const premixTracks = new Map()
     for (const item of getPremixTracks()) {
@@ -5522,6 +5715,8 @@
       )?.querySelector('.premixFullDb')
       if (label) label.textContent = formatVolumeDb(volumeState.db)
     })
+
+    syncPremixSoloButtonsDom()
   }
 
   function stopTrackMeterPolling() {
@@ -5616,6 +5811,7 @@
       syncVisualTransportState(state.snapshot)
       syncTabletFadeoutFromSnapshot(state.snapshot)
       syncPendingTransportPlaying(state.snapshot)
+      restoreTransportSeekTargetFromSnapshot(state.snapshot)
       syncLocalTimerFromBridge(state.snapshot)
       state.snapshot = applyLocalTimerToSnapshot(state.snapshot)
       syncFamilyDrawersFromBridge(state.snapshot)
@@ -6083,6 +6279,10 @@
     const progress = isPlaying(state.snapshot) ? getVisualPlaybackProgressPercent(state.snapshot) : 0
     const queuedId = getQueuedId(state.snapshot)
     const queueProgress = queuedId ? 100 - progress : 0
+    // Estes dois valores eram recalculados para cada linha. Em listas grandes,
+    // isso fazia uma simples selecao percorrer o projeto centenas de vezes.
+    const visualPlayingId = getVisualPlayingId(state.snapshot)
+    const visualPlayPosition = getSmoothedCurrentPlaybackPosition(state.snapshot)
     const drawerVisual = getDrawerVisualStyle(state.snapshot)
     const blockSymbolVisual = getBlockSymbolVisualStyle(state.snapshot)
     let playingRowAlreadyRendered = false
@@ -6102,7 +6302,8 @@
       const sec = getDurationSec(item)
       const time = sec ? formatTime(sec) : ''
       const rowIsPlaying = !playingRowAlreadyRendered &&
-        rowRepresentsPlayingSong(item, state.snapshot)
+        rowRepresentsPlayingSong(
+          item, state.snapshot, visualPlayingId, visualPlayPosition)
       if (rowIsPlaying) playingRowAlreadyRendered = true
       const cls = rowClass(type, item, rowIsPlaying)
       const tcls = textClass(type, item, rowIsPlaying)
@@ -6126,6 +6327,11 @@
       // Linhas tocando, em fila ou selecionadas continuam com texto preto.
       const forceBlackInLightTheme = getAppTheme() === 'light' &&
         !noBlockTextColor && (type !== 'playlist' || !playlistHasBlocks)
+      const itemBaseColor = colorFromInlineStyleFragment(itemBaseColorStyle)
+      const baseTextColor = forceBlackInLightTheme
+        ? '#050505' : itemBaseColor
+      const baseTimeColor = isBlockRow ? '#22c55e' : baseTextColor
+      const baseNumberColor = itemBaseColor
       const colorStyle = markedBlack
         ? ' style="color:#050505!important"'
         : liveVisual
@@ -6208,14 +6414,14 @@
         : ''
       const armedRegress = markerArmed ? getPartsArmedRegressPercent(state.snapshot) : 0
       const rowProgress = markerArmed
-        ? `<div class="partsArmedRegressTrack"><div class="partsArmedRegressBar" style="width:${armedRegress}%"></div></div>`
+        ? `<div class="partsArmedRegressTrack"><div class="partsArmedRegressBar" style="transform:scaleX(${(armedRegress) / 100})"></div></div>`
         : rowIsPlaying
-          ? `<div class="rowProgressTrack"><div class="progressBar playingRowProgressBar" style="width:${progress}%"></div></div>`
+          ? `<div class="rowProgressTrack"><div class="progressBar playingRowProgressBar" style="transform:scaleX(${(progress) / 100})"></div></div>`
           : rawId && queuedId && rawId === queuedId
-            ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="width:${queueProgress}%"></div></div>`
+            ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="transform:scaleX(${(queueProgress) / 100})"></div></div>`
             : ''
       return `
-        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner || options.tabletBpm ? ' tabletTunerUnifiedItem' : ''}${options.tabletBpm ? ' tabletBpmUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}"${isBlockRow ? ` data-block-color-mode="${blockRowVisual.mode}"` : ''}${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${rowStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
+        <div class="${cls} ${showRowNumber ? 'numberedItem' : ''}${familyDrawerControl ? ' hasFamilyDrawerToggle' : ''}${options.tabletTuner || options.tabletBpm ? ' tabletTunerUnifiedItem' : ''}${options.tabletBpm ? ' tabletBpmUnifiedItem' : ''}${partsSongStartClasses ? ` ${partsSongStartClasses}` : ''}${drawerClasses ? ` ${drawerClasses}` : ''}" ${dataAttr}="${id}" data-item-type="${type}" data-is-block="${isBlockRow ? '1' : '0'}" data-base-text-color="${escapeHtml(baseTextColor)}" data-base-time-color="${escapeHtml(baseTimeColor)}" data-base-number-color="${escapeHtml(baseNumberColor)}"${isBlockRow ? ` data-block-color-mode="${blockRowVisual.mode}"` : ''}${hashParentAttr}${partsSongStartAttrs}${searchFocusAttr}${rowStyleAttr} ${IS_MUSICIAN_MONITOR ? '' : 'data-action="select-item"'}>
           ${drawerFamilyTop || drawerFamilyChild ? '<span class="drawerOutlineSides" aria-hidden="true"></span>' : ''}
           ${drawerFamilyTop ? '<span class="drawerOutlineTop" aria-hidden="true"></span>' : ''}
           ${drawerFamilyBottom ? '<span class="drawerOutlineBottom" aria-hidden="true"></span>' : ''}
@@ -6407,24 +6613,24 @@
     return `<div class="partsSongSwitchRow"><button class="${playingClass}" data-action="parts-song-playing" title="${escapeHtml(playingName)}" ${playingTarget.available ? '' : 'disabled'}>${escapeHtml(playingName)}</button><button class="${queuedClass}" data-action="parts-song-queued" title="${escapeHtml(queuedName)}" ${queuedTarget.available ? '' : 'disabled'}>${escapeHtml(queuedName)}</button></div>`
   }
 
-  function renderControls() {
+  function renderControls(activeTab = state.activeTab) {
     const playing = isPlaying(state.snapshot)
     const playLabel = playing ? 'STOP' : 'PLAY'
     const fadeoutRunning = state.tabletFadeoutRuntimeActive === true
     const fadeoutRemaining = `${Math.max(0, Math.min(100, (1 - getTabletFadeoutVisualProgress()) * 100))}%`
     const fadeoutStyle = fadeoutRunning ? ` style="--fadeout-remaining:${fadeoutRemaining}"` : ''
     const playClass = playing ? `btn btnStopActive${fadeoutRunning ? ' tabletFadeoutStopBlink tabletFadeoutRegress' : ''}` : 'btn btnPlayActive'
-    const autoAvailable = state.activeTab === 'playlist'
+    const autoAvailable = activeTab === 'playlist'
     const auto1Class = !autoAvailable ? 'btn btnAutoUnavailable' : (getAutoplay1Enabled() ? 'btnAutoplayActive' : 'btn')
     const auto2Class = !autoAvailable ? 'btn btnAutoUnavailable' : (getAutoplay2Enabled() ? 'btnAutoplayActive btnAutoplay2Active' : 'btn')
     const cancelClass = state.partsArmedMarkerId ? 'btn btnStopActive partsCancelArmed' : 'btn'
     const loopClass = getLoopActive() ? 'btn btnLoopActive' : 'btn'
-    if (state.activeTab === 'markers') {
+    if (activeTab === 'markers') {
       return `<div class="controlsRowPlaylist controlsRowEqual controlsRowMarkers"><button class="${playClass}" data-action="play"${fadeoutStyle}>${playLabel}</button><button class="${cancelClass}" data-action="marker-cancel">CANCELAR</button><button class="${loopClass}" data-action="loop">LOOP</button></div>`
     }
     const tabletMode = document.documentElement.dataset.directorDevice === 'tablet' && !IS_MUSICIAN_MONITOR
     const stopBreakClass = playing ? `btn btnStopActive tabletStopBreakPlaying${fadeoutRunning ? ' tabletFadeoutRegress' : ''}` : 'btn'
-    if (state.activeTab === 'regions') {
+    if (activeTab === 'regions') {
       if (tabletMode) {
         const liveClass = getLiveEnabled() ? 'btn btnConfigOnGreen tabletLiveButtonActive' : 'btn btnConfigOffRed tabletLiveButton'
         return `<div class="controlsRowPlaylist controlsRowEqual controlsRowMusicMain"><button class="${playClass}" data-action="play"${fadeoutStyle}>${playLabel}</button><button class="${stopBreakClass}" data-action="stop-break"${fadeoutStyle}>STOP BREAK</button><button class="${liveClass}" data-action="live">LIVE</button></div>`
@@ -6599,7 +6805,7 @@
     sampledAt = now(),
   ) {
     const position = getCurrentPlaybackPosition(data)
-    if (position === null || !isPlaying(data) || !state.lastGoodAt) {
+    if (position === null || !isPlaying(data) || isPaused(data) || !state.lastGoodAt) {
       return position
     }
     const sampleTime = Number.isFinite(Number(sampledAt))
@@ -6766,7 +6972,7 @@
     sampledAt = now(),
   ) {
     const base = getPlaybackProgressPercent(data)
-    if (!isPlaying(data) || !state.lastGoodAt) return base
+    if (!isPlaying(data) || isPaused(data) || !state.lastGoodAt) return base
     const duration = firstFiniteNumber([
       data?.playbackDurationSec,
       data?.currentSongDurationSec,
@@ -6801,16 +7007,119 @@
     return getSmoothedPlaybackProgressPercent(data, sampledAt)
   }
 
+  function firstValidIndividualTimeSec(values, minimum = 0) {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') continue
+      const seconds = Number(value)
+      if (Number.isFinite(seconds) && seconds >= minimum) {
+        return seconds
+      }
+    }
+    return null
+  }
+
+  function getVisualPlayingRemainingSec(
+    data = state.snapshot,
+    sampledAt = now(),
+  ) {
+    if (!isPlaying(data) && !isPaused(data)) return null
+    const playingId = getVisualPlayingId(data, sampledAt) || getPlayingId(data)
+    const item = getSongItemById(playingId, data)
+    const position = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    const itemStart = getItemStart(item)
+    const itemEnd = getItemEnd(item)
+    const start = itemStart !== null ? itemStart : firstValidIndividualTimeSec([
+      data?.currentSongStart, data?.playbackStartPos, data?.songStartPos,
+    ], Number.NEGATIVE_INFINITY)
+    const end = itemEnd !== null ? itemEnd : firstValidIndividualTimeSec([
+      data?.currentSongEnd, data?.playbackEndPos, data?.songEndPos,
+    ], Number.NEGATIVE_INFINITY)
+    if (position !== null && end !== null && end > (start ?? -Infinity) &&
+        (start === null || position >= start - 1) && position <= end + 1) {
+      return Math.max(0, end - position)
+    }
+
+    const direct = firstValidIndividualTimeSec([
+      data?.playbackRemainingSec,
+      data?.currentSongRemainingSec,
+      data?.remainingSec,
+      data?.songRemainingSec,
+    ])
+    if (direct !== null) {
+      const ageSec = !isPaused(data) && state.lastGoodAt
+        ? Math.max(0, Number(sampledAt) - state.lastGoodAt) / 1000
+        : 0
+      return Math.max(0, direct - ageSec)
+    }
+
+    const itemDuration = getDurationSec(item)
+    const itemRangeDuration = itemStart !== null && itemEnd !== null && itemEnd > itemStart
+      ? itemEnd - itemStart : null
+    const duration = firstValidIndividualTimeSec([
+      itemDuration,
+      itemRangeDuration,
+      data?.playbackDurationSec,
+      data?.currentSongDurationSec,
+      data?.durationSec,
+      data?.songDurationSec,
+    ], Number.EPSILON)
+    if (duration === null) return null
+    const progress = getVisualPlaybackProgressPercent(data, sampledAt)
+    return Math.max(0, duration * (1 - progress / 100))
+  }
+
+  function getQueuedSongDurationSec(data = state.snapshot) {
+    const queuedId = getQueuedId(data)
+    if (!queuedId) return null
+    const item = getSongItemById(queuedId, data)
+    const itemStart = getItemStart(item)
+    const itemEnd = getItemEnd(item)
+    const itemRangeDuration = itemStart !== null && itemEnd !== null && itemEnd > itemStart
+      ? itemEnd - itemStart : null
+    const queuedStart = firstValidIndividualTimeSec([
+      data?.queuedStartPos, data?.queueStartPos,
+    ], Number.NEGATIVE_INFINITY)
+    const queuedEnd = firstValidIndividualTimeSec([
+      data?.queuedEndPos, data?.queueEndPos,
+    ], Number.NEGATIVE_INFINITY)
+    const queuedRangeDuration = queuedStart !== null && queuedEnd !== null && queuedEnd > queuedStart
+      ? queuedEnd - queuedStart : null
+    return firstValidIndividualTimeSec([
+      getDurationSec(item),
+      data?.queuedSongDurationSec,
+      data?.queuedDurationSec,
+      data?.queueSongDurationSec,
+      data?.queueDurationSec,
+      data?.nextSongDurationSec,
+      itemRangeDuration,
+      queuedRangeDuration,
+    ], Number.EPSILON)
+  }
+
+  function formatIndividualRemainingTime(seconds) {
+    if (seconds === null || seconds === undefined || seconds === '') return ''
+    const value = Number(seconds)
+    if (!Number.isFinite(value)) return ''
+    // Evita que um resíduo de ponto flutuante (por exemplo, 60.0000001)
+    // acrescente um segundo inteiro ao contador regressivo.
+    return formatTime(Math.max(0, Math.ceil(value - 0.0005)))
+  }
+
   function renderPlaybackQueueHeader(data = state.snapshot, holdable = false) {
     const nowRawName = getNowPlayingName(data)
     const queuedRawName = getQueuedSongName(data)
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!nowRawName && isPlaying(data)
+    const hasNowPlaying = !!nowRawName && (isPlaying(data) || isPaused(data))
     const showQueueBar = hasQueue
-    const progress = isPlaying(data) ? getVisualPlaybackProgressPercent(data) : 0
+    const progress = isPlaying(data) || isPaused(data)
+      ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
+    const nowTime = hasNowPlaying
+      ? formatIndividualRemainingTime(getVisualPlayingRemainingSec(data)) : ''
+    const queuedTime = hasQueue
+      ? formatIndividualRemainingTime(getQueuedSongDurationSec(data)) : ''
     const multiLoopStatus = getTransportMultiLoopStatus(data)
     const multiLoopClass = multiLoopStatus.kind === 'bypass'
       ? ' playbackQueueMultiLoopBypass'
@@ -6831,13 +7140,15 @@
         <div class="playbackQueueLine playbackQueueNow${hasNowPlaying ? ' playbackQueueNowActive' : ''}${currentHidden}">
           <span class="playbackQueueLabel">REPRODUZINDO <span class="playbackQueueStateArrow playbackQueueStateArrowNow">→</span></span>
           <span class="playbackQueueTitle">${escapeHtml(nowName)}</span>
+          <span class="playbackQueueTime playbackQueueTimeNow" data-playback-now-time>${escapeHtml(nowTime)}</span>
         </div>
-        <div class="playbackQueueTrack playbackQueueTrackNow${currentHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="width:${progress}%"></div></div>
+        <div class="playbackQueueTrack playbackQueueTrackNow${currentHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="transform:scaleX(${(progress) / 100})"></div></div>
         <div class="playbackQueueLine playbackQueueNext${hasQueue ? ' playbackQueueNextActive' : ''}${auto2QueueClass}${queueHidden}">
           <span class="playbackQueueLabel">PRÓXIMA <span class="playbackQueueStateArrow playbackQueueStateArrowNext">→</span></span>
           <span class="playbackQueueTitle">${escapeHtml(queuedName)}</span>
+          <span class="playbackQueueTime playbackQueueTimeNext" data-playback-next-time>${escapeHtml(queuedTime)}</span>
         </div>
-        <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}${queueHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="width:${queueProgress}%"></div></div>
+        <div class="playbackQueueTrack playbackQueueTrackNext ${showQueueBar ? '' : 'playbackQueueTrackEmpty'}${auto2QueueClass}${queueHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNext" style="transform:scaleX(${(queueProgress) / 100})"></div></div>
         <div class="playbackQueueLine playbackQueueMultiLoop${multiLoopClass}${multiLoopHidden}">
           <span class="playbackQueueLabel">MULTILOOPS</span>
           <span class="playbackQueueTitle">${escapeHtml(multiLoopStatus.text)}</span>
@@ -6846,23 +7157,288 @@
     `
   }
 
-  function renderMainContent() {
-    const data = state.snapshot || {}
-    if (state.activeTab === 'playlist') {
+  function renderMusicPane(activeTab, data = state.snapshot || {}) {
+    if (activeTab === 'playlist') {
       const playlist = getActivePlaylist(data)
       const title = upperText(playlist?.name || data.currentPlaylistName || 'REPERTÓRIO')
-      return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls()}${renderPlaybackQueueHeader(data, true)}<div class="listBox">${renderRows(getPlaylistWithOpenDrawers(data), 'playlist')}</div></div>`
+      return `<div class="contentPanel" data-music-pane-tab="playlist"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}<div class="listBox" data-scroll-key="playlist">${renderRows(getPlaylistWithOpenDrawers(data), 'playlist')}</div></div>`
     }
-    if (state.activeTab === 'regions') {
-      return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls()}${renderPlaybackQueueHeader(data, true)}<div class="listBox">${renderRows(getRegionsWithOpenDrawers(data), 'region')}</div></div>`
+    return `<div class="contentPanel" data-music-pane-tab="regions"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}<div class="listBox" data-scroll-key="regions">${renderRows(getRegionsWithOpenDrawers(data), 'region')}</div></div>`
+  }
+
+  function getMusicPaneStructureSignature(
+    activeTab,
+    data = state.snapshot || {},
+  ) {
+    const items = activeTab === 'playlist'
+      ? getPlaylistWithOpenDrawers(data)
+      : getRegionsWithOpenDrawers(data)
+    const playlist = activeTab === 'playlist' ? getActivePlaylist(data) : null
+    return [
+      activeTab,
+      getProjectName(data),
+      playlist?.id ?? data?.activePlaylistId ?? '',
+      playlist?.name ?? data?.currentPlaylistName ?? '',
+      getListContentRenderSignature(items),
+      getHashDrawersRenderSignature(),
+      getNumberColumnMode(),
+      getNumberSortDirection(),
+      getAppliedNumberSortDirection(),
+      getAppTheme(),
+      getBlockColorMode(),
+      getNoBlockTextColor(data),
+      getFamilyViewControlsEnabled(data) ? 1 : 0,
+      JSON.stringify(getDrawerVisualStyle(data)),
+      JSON.stringify(getBlockSymbolVisualStyle(data)),
+      getLoopActive(data) ? 1 : 0,
+      getAutoBlocoEnabled(data) ? 1 : 0,
+    ].join('|')
+  }
+
+  function createMusicPaneNode(activeTab, data = state.snapshot || {}) {
+    const template = document.createElement('template')
+    template.innerHTML = renderMusicPane(activeTab, data)
+    return template.content.firstElementChild
+  }
+
+  function canSwapMusicPaneDom() {
+    return !IS_MUSICIAN_MONITOR &&
+      !state.tabletPartsSplit && !state.tabletTunerSplit &&
+      !state.tabletBpmSplit && !state.showTelepromptScreen &&
+      !state.showRecadosScreen && !state.showPremixScreen &&
+      !root.querySelector('.tabletSearchOverlay')
+  }
+
+  function rememberActiveMusicPane() {
+    if (!canSwapMusicPaneDom()) return
+    const pane = root.querySelector(
+      '.container > [data-music-pane-tab="playlist"],.container > [data-music-pane-tab="regions"]')
+    if (!pane) return
+    const activeTab = String(pane.getAttribute('data-music-pane-tab') || '')
+    if (activeTab !== 'playlist' && activeTab !== 'regions') return
+    musicPaneCache.set(activeTab, {
+      node: pane,
+      signature: getMusicPaneStructureSignature(activeTab),
+    })
+  }
+
+  function scheduleMusicPaneWarmup() {
+    if (!canSwapMusicPaneDom() || musicPaneWarmupHandle) return
+    const warm = () => {
+      musicPaneWarmupHandle = 0
+      if (!canSwapMusicPaneDom()) return
+      const activeTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
+      const targetTab = activeTab === 'playlist' ? 'regions' : 'playlist'
+      const signature = getMusicPaneStructureSignature(targetTab)
+      const cached = musicPaneCache.get(targetTab)
+      if (cached?.node && cached.signature === signature &&
+          !cached.node.isConnected) return
+      const node = createMusicPaneNode(targetTab)
+      if (node) musicPaneCache.set(targetTab, { node, signature })
     }
-    if (state.activeTab === 'markers') {
+    if (typeof window.requestIdleCallback === 'function') {
+      musicPaneWarmupHandle = window.requestIdleCallback(warm, { timeout: 900 })
+    } else {
+      // Safari antigo nao oferece requestIdleCallback. A espera evita que a
+      // preparacao invisivel concorra com os primeiros toques do usuario.
+      musicPaneWarmupHandle = window.setTimeout(warm, 800)
+    }
+  }
+
+  function syncActiveMusicTabChromeDom(activeTab) {
+    const app = root.querySelector('.app')
+    app?.setAttribute('data-active-tab', activeTab)
+    root.querySelectorAll('.tabRow [data-action="go-playlist"],.tabRow [data-action="go-regions"]').forEach((button) => {
+      const active = button.getAttribute('data-action') ===
+        (activeTab === 'playlist' ? 'go-playlist' : 'go-regions')
+      button.classList.toggle('activeTab', active)
+      button.classList.toggle('tab', !active)
+    })
+    root.querySelectorAll('.tabletTopBarRepertorios').forEach((button) => {
+      button.classList.toggle('tabletTopBarButtonActive', activeTab === 'playlist')
+    })
+    root.querySelectorAll('.tabletTopBarMusicas').forEach((button) => {
+      button.classList.toggle('tabletTopBarButtonActive', activeTab === 'regions')
+    })
+
+    const top = root.querySelector('.container > .topStatusRow')
+    const currentTitle = top?.firstElementChild
+    if (!top || !currentTitle) return
+    const data = state.snapshot || {}
+    const activePlaylist = getActivePlaylist(data)
+    const title = activeTab === 'regions'
+      ? 'LISTA GERAL'
+      : upperText(activePlaylist?.name || data.currentPlaylistName ||
+        getProjectName(data) || 'REPERTÓRIO')
+    const markup = activeTab === 'regions'
+      ? `<div class="topPlaylistButton topPlaylistButtonStatic" aria-label="Lista Geral">${renderTopPlaylistTitle(title)}</div>`
+      : `<button class="topPlaylistButton" data-action="open-playlist-modal">${renderTopPlaylistTitle(title)}</button>`
+    const template = document.createElement('template')
+    template.innerHTML = markup
+    const nextTitle = template.content.firstElementChild
+    if (nextTitle) currentTitle.replaceWith(nextTitle)
+  }
+
+  function swapMusicPaneDom(activeTab, previousTab) {
+    if ((activeTab !== 'playlist' && activeTab !== 'regions') ||
+        (previousTab !== 'playlist' && previousTab !== 'regions') ||
+        !canSwapMusicPaneDom()) return false
+    const current = root.querySelector(
+      `.container > [data-music-pane-tab="${previousTab}"]`)
+    if (!current) return false
+
+    musicPaneCache.set(previousTab, {
+      node: current,
+      signature: getMusicPaneStructureSignature(previousTab),
+    })
+    const signature = getMusicPaneStructureSignature(activeTab)
+    let cached = musicPaneCache.get(activeTab)
+    if (!cached?.node || cached.signature !== signature || cached.node.isConnected) {
+      const node = createMusicPaneNode(activeTab)
+      if (!node) return false
+      cached = { node, signature }
+      musicPaneCache.set(activeTab, cached)
+    }
+
+    current.replaceWith(cached.node)
+    syncActiveMusicTabChromeDom(activeTab)
+    syncSongRowsDom()
+    syncPlaybackQueueHeaderDom()
+    syncPlaybackProgressDom()
+    syncMainControlButtonsDom()
+    musicPaneCache.set(activeTab, { node: cached.node, signature })
+    scheduleMusicPaneWarmup()
+    return true
+  }
+
+  function getMainSurfaceElement() {
+    const container = directChildByClass(root, 'container') ||
+      directChildByClass(directChildByClass(root, 'app'), 'container')
+    if (!container) return null
+    for (const child of Array.from(container.children || [])) {
+      if (child.hasAttribute?.('data-music-pane-tab') ||
+          child.classList?.contains('contentPanel') ||
+          child.classList?.contains('tabletMainSplit')) return child
+    }
+    return null
+  }
+
+  function syncDirectorNavigationChromeDom() {
+    const app = directChildByClass(root, 'app')
+    app?.setAttribute('data-active-tab', state.activeTab)
+    const toggle = (selector, active) => {
+      root.querySelectorAll(selector).forEach((button) =>
+        button.classList.toggle('tabletTopBarButtonActive', !!active))
+    }
+    toggle('.tabletTopBarRepertorios', state.activeTab === 'playlist' && !state.tabletTunerSplit && !state.tabletBpmSplit)
+    toggle('.tabletTopBarMusicas', state.activeTab === 'regions' && !state.tabletTunerSplit && !state.tabletBpmSplit)
+    toggle('.tabletTopBarTuner', state.tabletTunerSplit)
+    toggle('.tabletTopBarBpm', state.tabletBpmSplit)
+    toggle('.tabletTopBarMixer', state.activeTab === 'mixer')
+    toggle('.tabletTopBarParts', state.tabletPartsSplit)
+    root.querySelectorAll('.tabletDirectorSidebar [data-action="settings"]').forEach((button) =>
+      button.classList.toggle('tabletSidebarButtonActive', state.showSettingsModal))
+    if (state.activeTab === 'playlist' || state.activeTab === 'regions') {
+      syncActiveMusicTabChromeDom(state.activeTab)
+    }
+  }
+
+  // Ferramentas que ocupam o painel central trocam somente esse painel. O shell,
+  // as barras laterais e as listas guardadas não passam novamente pelo parser.
+  let mainContentMountFrame = 0
+  let mainContentMountTimer = 0
+
+  function cancelPendingMainContentMount() {
+    if (mainContentMountFrame) window.cancelAnimationFrame(mainContentMountFrame)
+    if (mainContentMountTimer) window.clearTimeout(mainContentMountTimer)
+    mainContentMountFrame = 0
+    mainContentMountTimer = 0
+  }
+
+  // O botao da barra superior e o alvo do dedo; montar o painel central e a
+  // parte cara. Um quadro pinta uma unica vez, no fim da tarefa, entao
+  // enquanto os dois andavam juntos o botao so trocava de estado quando a
+  // lista inteira ja estava pronta — no aparelho antigo isso e o toque
+  // parecendo ignorado por alguns decimos de segundo. A barra acende agora e
+  // o painel entra depois da pintura.
+  function mountMainContentInPlace() {
+    if (!getMainSurfaceElement()) return false
+    syncDirectorNavigationChromeDom()
+    state.lastHtmlSignature = getAppRenderSignature()
+    cancelPendingMainContentMount()
+    mainContentMountFrame = window.requestAnimationFrame(() => {
+      mainContentMountFrame = 0
+      mainContentMountTimer = window.setTimeout(() => {
+        mainContentMountTimer = 0
+        if (!mountMainContentPanelDom()) scheduleRender(true)
+      }, 0)
+    })
+    return true
+  }
+
+  function mountMainContentPanelDom() {
+    const current = getMainSurfaceElement()
+    if (!current) return false
+
+    const currentMusicTab = String(current.getAttribute?.('data-music-pane-tab') || '')
+    if (currentMusicTab === 'playlist' || currentMusicTab === 'regions') {
+      musicPaneCache.set(currentMusicTab, {
+        node: current,
+        signature: getMusicPaneStructureSignature(currentMusicTab),
+      })
+    }
+
+    const plainMusicPane = !IS_MUSICIAN_MONITOR &&
+      (state.activeTab === 'playlist' || state.activeTab === 'regions') &&
+      !state.tabletPartsSplit && !state.tabletTunerSplit && !state.tabletBpmSplit
+    let next = null
+    let musicSignature = ''
+    if (plainMusicPane) {
+      musicSignature = getMusicPaneStructureSignature(state.activeTab)
+      const cached = musicPaneCache.get(state.activeTab)
+      if (cached?.node && !cached.node.isConnected &&
+          cached.signature === musicSignature) next = cached.node
+    }
+    if (!next) {
+      const template = document.createElement('template')
+      template.innerHTML = renderTabletMainContent(state.snapshot || {}).trim()
+      next = template.content.firstElementChild
+    }
+    if (!next) return false
+
+    const scrollState = captureListScrollState()
+    current.replaceWith(next)
+    restoreListScrollState(scrollState)
+    syncDirectorNavigationChromeDom()
+    syncSongRowsDom()
+    syncPlaybackQueueHeaderDom()
+    syncPlaybackProgressDom()
+    syncMainControlButtonsDom()
+    syncTabletTunerRowsDom()
+    syncTrackMeterPolling()
+    if (plainMusicPane) {
+      musicPaneCache.set(state.activeTab, {
+        node: next,
+        signature: musicSignature || getMusicPaneStructureSignature(state.activeTab),
+      })
+      scheduleMusicPaneWarmup()
+    }
+    state.lastHtmlSignature = getAppRenderSignature()
+    return true
+  }
+
+  function renderMainContent(activeTab = state.activeTab) {
+    const data = state.snapshot || {}
+    if (activeTab === 'playlist' || activeTab === 'regions') {
+      return renderMusicPane(activeTab, data)
+    }
+    if (activeTab === 'markers') {
       return partsTargetIsParent(data)
         ? `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">PARTS</div>${renderPartsParentInstruction()}</div>`
         : `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">PARTS</div>${renderControls()}${renderPlaybackQueueHeader(data)}${renderPartsSongSwitch(data)}<div class="listBox markerListBox">${renderRows(getPartsMarkers(data), 'marker')}</div></div>`
     }
-    if (state.activeTab === 'mixer') return renderMixerPage()
-    if (state.activeTab === 'premix') return renderPremixPage()
+    if (activeTab === 'mixer') return renderMixerPage()
+    if (activeTab === 'premix') return renderPremixPage()
     return `<div class="emptyBox">ABA NÃO ENCONTRADA</div>`
   }
 
@@ -6882,7 +7458,7 @@
       const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
       return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><div class="mixerInlineSliderWrap" style="--mixer-zero-position:${zeroPosition};--mixer-zero-offset:${zeroOffset}px"><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><span class="mixerInlineZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('') || `<div class="emptyBox">MIXER SEM DADOS</div>`
-    return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox">${rows}</div></div>`
+    return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox" data-scroll-key="mixer">${rows}</div></div>`
   }
 
   function renderPremixPage() {
@@ -7032,9 +7608,9 @@
       const dataAttr = sourceType === 'playlist' ? 'data-song-id' : 'data-region-id'
       const selectAttrs = `${dataAttr}="${id}" data-item-type="${sourceType}" data-action="select-item"`
       const rowProgress = rowRepresentsPlayingSong(item, data)
-        ? `<div class="rowProgressTrack"><div class="progressBar playingRowProgressBar" style="width:${progress}%"></div></div>`
+        ? `<div class="rowProgressTrack"><div class="progressBar playingRowProgressBar" style="transform:scaleX(${(progress) / 100})"></div></div>`
         : rawId && rawId === queuedId
-          ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="width:${queueProgress}%"></div></div>`
+          ? `<div class="rowProgressTrack queuedRowRegressTrack"><div class="progressBar queuedRowRegressBar" style="transform:scaleX(${(queueProgress) / 100})"></div></div>`
           : ''
 
       if (block) {
@@ -7103,6 +7679,34 @@
         <div class="tunerFullList listBox">${rows}</div>
       </div>
     `
+  }
+
+  function mountTunerScreenInPlace() {
+    const current = root.querySelector('.tunerFullScreen')
+    const html = renderTunerScreen()
+    if (!html) {
+      current?.remove?.()
+      // A lista reaparece agora. E no fechamento que ela precisa estar em dia,
+      // nao enquanto estava coberta.
+      syncSongRowsDom()
+      syncPlaybackProgressDom()
+      state.lastHtmlSignature = getAppRenderSignature()
+      return true
+    }
+    const app = directChildByClass(root, 'app')
+    if (!app) return false
+    const template = document.createElement('template')
+    template.innerHTML = html.trim()
+    const next = template.content.firstElementChild
+    if (!next) return false
+    if (current) current.replaceWith(next)
+    else app.appendChild(next)
+    // Com a tela do Tuner/BPM por cima, percorrer linha por linha da lista e
+    // trabalho que ninguem ve — e era ele que segurava a abertura no aparelho
+    // antigo. A lista e acertada quando a tela sai.
+    syncPlaybackProgressDom()
+    state.lastHtmlSignature = getAppRenderSignature()
+    return true
   }
 
   function adjustTunerFromButton(el, delta, absoluteValue = null) {
@@ -7224,7 +7828,7 @@
       return `<button class="playlistOption ${active ? 'playlistOptionActive' : ''}" data-action="project-select" data-project-id="${id}" data-project-index="${index}"><span class="playlistOptionText">${name}</span></button>`
     }).join('') || `<div class="emptyBox">NENHUMA SESSÃO ABERTA</div>`
     const projectDirty = getProjectDirtyForUi()
-    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons"><button class="modalOkBtnWide projectSaveBtn ${projectDirty ? 'projectSaveBtnDirty' : 'projectSaveBtnSaved'}" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay projectModalOverlay" data-action="modal-close"><div class="modalSpacer"></div><div class="modalBox projectModalBox" data-stop-modal><div class="modalTitle">SESSÃO</div><div class="playlistSelectList">${rows}</div><div class="modalButtons projectModalButtons"><button class="modalOkBtnWide projectSaveBtn ${projectDirty ? 'projectSaveBtnDirty' : 'projectSaveBtnSaved'}" data-action="project-save">SAVE</button><button class="modalOkBtnWide" data-action="project-modal-ok">OK</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderProjectSaveConfirm() {
@@ -7485,6 +8089,55 @@
     return `<div class="modalOverlay tabletCenteredModalOverlay numberOrderConfirmOverlay"><div class="modalSpacer"></div><div class="modalBox numberOrderConfirmModal" data-stop-modal><div class="modalTitle">${title}</div><div class="modalInfoText">${info}</div><div class="modalButtons"><button class="modalCancelBtn" data-action="number-order-cancel">CANCELAR</button><button class="modalOkBtnWide" data-action="number-order-confirm">CONFIRMAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
+  function mountAppLayerInPlace(selector, html) {
+    const matched = root.querySelector(selector)
+    const current = matched?.matches?.('.modalOverlay')
+      ? matched : (matched?.closest?.('.modalOverlay') || matched)
+    if (!html) {
+      current?.remove?.()
+      return true
+    }
+    const app = directChildByClass(root, 'app')
+    if (!app) return false
+    const template = document.createElement('template')
+    template.innerHTML = String(html).trim()
+    const next = template.content.firstElementChild
+    if (!next) return false
+    if (current) current.replaceWith(next)
+    else app.appendChild(next)
+    return true
+  }
+
+  function mountNumberOrderConfirmInPlace() {
+    const mounted = mountAppLayerInPlace(
+      '.numberOrderConfirmOverlay', renderNumberOrderConfirm())
+    if (mounted) state.lastHtmlSignature = getAppRenderSignature()
+    return mounted
+  }
+
+  function mountProjectModalInPlace() {
+    const mounted = mountAppLayerInPlace(
+      '.projectModalOverlay,.projectModalBox', renderProjectModal())
+    if (mounted) state.lastHtmlSignature = getAppRenderSignature()
+    return mounted
+  }
+
+  function mountPlaylistModalInPlace() {
+    const mounted = mountAppLayerInPlace(
+      '.tabletPlaylistModalOverlay,.playlistModalBox', renderPlaylistModal())
+    if (mounted) state.lastHtmlSignature = getAppRenderSignature()
+    return mounted
+  }
+
+  function mountTimerModalInPlace() {
+    const mounted = mountAppLayerInPlace('.timerModalBox', renderTimerModal())
+    if (mounted) {
+      syncTimerModalDom()
+      state.lastHtmlSignature = getAppRenderSignature()
+    }
+    return mounted
+  }
+
   function closeSettingsModalInPlace() {
     state.showSettingsModal = false
     state.settingsSection = 'main'
@@ -7495,6 +8148,28 @@
     else if (box) box.remove()
     root.querySelectorAll('[data-action="settings"]').forEach((button) => {
       button.classList.remove('tabletSidebarButtonActive')
+    })
+  }
+
+  function mountSettingsModalInPlace() {
+    const currentBox = root.querySelector('.settingsModalBox')
+    const currentOverlay = currentBox?.closest?.('.modalOverlay') || currentBox
+    if (!state.showSettingsModal) {
+      currentOverlay?.remove?.()
+      return
+    }
+    const app = directChildByClass(root, 'app')
+    const html = renderSettingsModal()
+    if (!app || !html) return
+    const template = document.createElement('template')
+    template.innerHTML = html.trim()
+    const nextOverlay = template.content.firstElementChild
+    if (!nextOverlay) return
+    if (currentOverlay) currentOverlay.replaceWith(nextOverlay)
+    else app.appendChild(nextOverlay)
+    root.querySelectorAll('[data-action="settings"]').forEach((button) => {
+      button.classList.toggle('tabletSidebarButtonActive',
+        button.classList.contains('tabletSidebarButton'))
     })
   }
 
@@ -7533,6 +8208,26 @@
         ${state.activeTab === 'regions' ? '' : `<button class="${atBlClass}" data-action="atbl-toggle">AT/BL</button>`}
       </div>
     `
+  }
+
+  function mountMenuInPlace() {
+    const current = root.querySelector('.topMenuFlyout')
+    const html = renderMenu()
+    if (!html) {
+      current?.remove?.()
+      state.lastHtmlSignature = getAppRenderSignature()
+      return true
+    }
+    const top = root.querySelector('.container > .topStatusRow')
+    if (!top) return false
+    const template = document.createElement('template')
+    template.innerHTML = html.trim()
+    const next = template.content.firstElementChild
+    if (!next) return false
+    if (current) current.replaceWith(next)
+    else top.insertAdjacentElement('afterend', next)
+    state.lastHtmlSignature = getAppRenderSignature()
+    return true
   }
 
 
@@ -8358,6 +9053,12 @@
     const normalizedSlot = Number(slot) === 2 ? 2 : 1
     const prefix = `tp${normalizedSlot}`
     const nested = data?.[prefix] && typeof data[prefix] === 'object' ? data[prefix] : {}
+    const extensionSettings = data?.telepromptPreviewSettings?.[prefix] ||
+      data?.telepromptSettings?.[prefix] || {}
+    const highlightColor = normalizeHexColor(
+      extensionSettings?.highlightColor,
+      APP_TELEPROMPT_DEFAULTS.highlightColor
+    )
     const mediaPath = String(
       nested.mediaPath
       || nested.path
@@ -8468,6 +9169,7 @@
       mediaPath,
       mediaUrl,
       text,
+      highlightColor,
       songName,
       currentTime,
       mediaOffset,
@@ -8576,7 +9278,7 @@
   function getDirectorTelepromptContentKey(slot = state.telepromptSlot, data = state.snapshot) {
     const tp = getDirectorTelepromptState(slot, data)
     const chord = getDirectorTelepromptChordState(data)
-    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off', chord.text, chord.itemIndex, chord.itemStart, chord.itemEnd, chord.clearMode ? 'chord-clear' : 'chord-on'].join('|')
+    return [tp.slot, tp.type, tp.mediaPath, tp.mediaUrl, tp.text, tp.highlightColor, tp.songName, tp.itemIndex, tp.itemStart, tp.itemEnd, tp.preview.active ? tp.preview.signature : 'preview-off', chord.text, chord.itemIndex, chord.itemStart, chord.itemEnd, chord.clearMode ? 'chord-clear' : 'chord-on'].join('|')
   }
 
   function renderDirectorTelepromptPreviewHtml(preview) {
@@ -8890,12 +9592,14 @@
     if (!state.showTelepromptScreen) return ''
     const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
     const settings = getAppTelepromptSettings(slot)
+    const teleprompt = getDirectorTelepromptState(slot, data)
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const transportPanel = getHideTelepromptTransport(slot)
       ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
     const cssVariables = [
       `--app-tp-text-color:${settings.textColor}`,
+      `--app-tp-highlight-color:${teleprompt.highlightColor}`,
       `--app-tp-text-box-color:${settings.textBoxColor}`,
       `--app-tp-clock-color:${isCountdownOverrun(data) ? settings.clockExpiredColor : settings.clockColor}`,
       `--app-tp-clock-border:${settings.clockBorderColor}`,
@@ -9266,6 +9970,7 @@
     viewport.setAttribute('data-single-side-clock', singleSideClock ? '1' : '0')
     const variables = {
       '--app-tp-text-color': settings.textColor,
+      '--app-tp-highlight-color': tp.highlightColor,
       '--app-tp-text-box-color': settings.textBoxColor,
       '--app-tp-clock-color': isCountdownOverrun(state.snapshot) ? settings.clockExpiredColor : settings.clockColor,
       '--app-tp-clock-border': settings.clockBorderColor,
@@ -9434,7 +10139,9 @@
 
     const showText = hasText
     if (text) {
-      if (text.textContent !== displayText) text.textContent = displayText
+      if (text.dataset.highlightSource !== displayText) {
+        renderTelepromptHighlightedText(text, displayText)
+      }
       text.classList.toggle('directorTpHidden', !showText)
       text.classList.toggle('directorTpTextOverlay', hasMedia)
       text.classList.toggle('directorTpTextOnly', !hasMedia && showText)
@@ -9874,37 +10581,22 @@
     return entries
   }
 
-  function getNativeTabletSearchEntries(data = state.snapshot || {}) {
-    const smartSearch = data?.smartSearch
-    if (!smartSearch || !Array.isArray(smartSearch.results) || !smartSearch.open || smartSearch.ready === false) return null
-    const localQuery = normalizeTabletSearchText(state.tabletSearchQuery).trim()
-    const appliedQuery = normalizeTabletSearchText(smartSearch.appliedQuery).trim()
-    // Enquanto os 120 ms de debounce nativo ainda nao terminaram, conserva a
-    // resposta otimista local. Assim que a extensao aplicar o texto, ela passa
-    // a ser a unica fonte dos resultados e de sua pagina de origem.
-    if (localQuery !== appliedQuery) return null
-    return smartSearch.results.map((item) => ({
-      id: String(item?.id || ''),
-      name: upperText(item?.name || 'MÚSICA'),
-      parentId: String(item?.parentId || ''),
-      parentName: upperText(item?.parentName || ''),
-      isChild: item?.isChild === true,
-      durationSec: Math.max(0, Number(item?.durationSec || 0)),
-      start: Number(item?.start || 0),
-      end: Number(item?.end || 0),
-      regionsPage: item?.regionsPage === true,
-      nativeSmartSearchResult: true,
-    })).filter((item) => !!item.id)
-  }
-
   function getFilteredTabletSearchEntries(data = state.snapshot || {}) {
-    const nativeEntries = getNativeTabletSearchEntries(data)
-    if (nativeEntries) return nativeEntries
-    const query = normalizeTabletSearchText(state.tabletSearchQuery).trim()
-    const entries = getTabletSearchEntries(data)
-    if (!query) return entries
-    const terms = query.split(/\s+/).filter(Boolean)
-    return entries.filter((entry) => terms.every((term) => entry.searchText.indexOf(term) >= 0))
+    const words = normalizeTabletSearchText(state.tabletSearchQuery)
+      .trim().split(/\s+/).filter(Boolean)
+    const matches = getTabletSearchEntries(data).filter((entry) =>
+      !words.length || words.every((word) => entry.searchText.includes(word)))
+    const sourceTab = state.tabletSearchSourceTab || state.activeTab
+    if (sourceTab !== 'playlist') {
+      return matches.map((entry) => ({ ...entry, regionsPage: true }))
+    }
+    const playlistMatches = matches.filter((entry) =>
+      tabletSearchEntryIsInActivePlaylist(entry, data))
+    // Na aba Repertorio a busca comeca pelo repertorio atual. Somente quando
+    // ele nao tem resultado ela oferece as musicas do projeto inteiro.
+    const selected = playlistMatches.length ? playlistMatches : matches
+    const regionsPage = playlistMatches.length === 0
+    return selected.map((entry) => ({ ...entry, regionsPage }))
   }
 
   function tabletSearchEntryIsInActivePlaylist(entry, data = state.snapshot || {}) {
@@ -9917,10 +10609,13 @@
     const entries = getFilteredTabletSearchEntries(data)
     if (!entries.length) return '<div class="tabletSearchEmpty">NENHUMA MÚSICA ENCONTRADA</div>'
     return entries.map((entry) => {
-      const destination = tabletSearchEntryIsInActivePlaylist(entry, data) ? 'REPERTÓRIO' : 'MÚSICAS'
+      const destination = entry.regionsPage ? 'MÚSICAS' : 'REPERTÓRIO'
       const childLabel = entry.isChild ? `<span class="tabletSearchResultParent">FILHO DE ${escapeHtml(entry.parentName || 'REGIÃO')}</span>` : ''
       const duration = entry.durationSec > 0 ? formatTime(entry.durationSec) : ''
-      return `<button type="button" class="tabletSearchResult" data-action="tablet-search-result" data-search-id="${escapeHtml(entry.id)}" data-search-start="${escapeHtml(Number(entry.start || 0))}"><span class="tabletSearchResultMain"><span class="tabletSearchResultName">${escapeHtml(entry.name)}</span>${childLabel}</span><span class="tabletSearchResultSide"><span class="tabletSearchResultDestination">${destination}</span>${duration ? `<span class="tabletSearchResultTime">${escapeHtml(duration)}</span>` : ''}</span></button>`
+      const type = entry.regionsPage ? 'region' : 'playlist'
+      const idAttr = entry.regionsPage ? 'data-region-id' : 'data-song-id'
+      const childClass = entry.isChild ? ' hashChildItem' : ''
+      return `<button type="button" class="tabletSearchResult${childClass}" data-action="tablet-search-result" data-search-id="${escapeHtml(entry.id)}" data-search-start="${escapeHtml(Number(entry.start || 0))}" data-item-type="${type}" ${idAttr}="${escapeHtml(entry.id)}" data-force-select="1"><span class="tabletSearchResultMain"><span class="tabletSearchResultName">${escapeHtml(entry.name)}</span>${childLabel}</span><span class="tabletSearchResultSide"><span class="tabletSearchResultDestination">${destination}</span>${duration ? `<span class="tabletSearchResultTime">${escapeHtml(duration)}</span>` : ''}</span></button>`
     }).join('')
   }
 
@@ -9948,7 +10643,8 @@
     if (!state.showTabletSearch) return
     const results = root.querySelector('[data-tablet-search-results]')
     const count = root.querySelector('[data-tablet-search-count]')
-    if (results) results.innerHTML = renderTabletSearchResults(state.snapshot || {})
+    const html = renderTabletSearchResults(state.snapshot || {})
+    if (results && results.innerHTML !== html) results.innerHTML = html
     if (count) count.textContent = String(getFilteredTabletSearchEntries(state.snapshot || {}).length)
   }
 
@@ -9967,8 +10663,7 @@
         document.documentElement.dataset.directorDevice !== 'tablet' ||
         state.showTelepromptScreen) return ''
     const previewMode = getPreviewMode()
-    const previewPage = state.tabletPreviewPage === 2 || (state.tabletPreviewPage === 0 && previewMode >= 4) ? 2 : 1
-    const previewFirstSlot = previewPage === 2 ? 4 : 1
+    const previewFirstSlot = getTabletPreviewFirstSlot(previewMode)
     const multiLoopBypassActive = getMultiLoopBypassActive(state.snapshot || {})
     return `
       <aside class="tabletDirectorSidebar tabletDirectorSidebarLeft tabletDirectorSidebarSingle" aria-label="Navegação do Diretor Tablet">
@@ -10043,13 +10738,13 @@
   function renderTabletTunerUnifiedContent(data = state.snapshot || {}) {
     const type = state.activeTab === 'regions' ? 'region' : 'playlist'
     const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
-    return `<div class="contentPanel tabletTunerUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList">${renderRows(items, type, { tabletTuner: true })}</div></div>`
+    return `<div class="contentPanel tabletTunerUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletTuner: true })}</div></div>`
   }
 
   function renderTabletBpmUnifiedContent(data = state.snapshot || {}) {
     const type = state.activeTab === 'regions' ? 'region' : 'playlist'
     const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
-    return `<div class="contentPanel tabletTunerUnifiedContent tabletBpmUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList tabletBpmUnifiedList">${renderRows(items, type, { tabletBpm: true })}</div></div>`
+    return `<div class="contentPanel tabletTunerUnifiedContent tabletBpmUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList tabletBpmUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletBpm: true })}</div></div>`
   }
 
   function renderTabletTunerPanel(data = state.snapshot || {}) {
@@ -10078,7 +10773,7 @@
     const source = getEffectivePartsSongSource(data)
     const target = getPartsSongTarget(source, data)
     if (!target?.available) return `<div class="tabletPartsOwner tabletPartsOwnerEmpty">SELECIONE UMA MÚSICA</div>`
-    const sourceLabel = source === 'queued' ? 'EM ESPERA' : source === 'selected' ? 'SELECIONADA' : 'TOCANDO'
+    const sourceLabel = source === 'queued' ? 'EM ESPERA' : source === 'selected' ? 'SELECIONADA' : 'REPRODUZINDO'
     return `
       <div class="tabletPartsOwner" data-parts-owner-source="${source}">
         <div class="tabletPartsOwnerTitle"><strong>${escapeHtml(upperText(target.name || findSongNameById(target.id, data) || 'MÚSICA'))}</strong><span>${sourceLabel}</span></div>
@@ -10521,6 +11216,17 @@
       else button.style.removeProperty('--fadeout-remaining')
     })
 
+    const atBlArmed = getAutoBlocoEnabled()
+    root.querySelectorAll('[data-action="atbl-toggle"]').forEach((button) => {
+      const flyout = button.classList.contains('topMenuFlyoutBtn')
+      button.classList.toggle('topMenuFlyoutBtnActive', flyout && atBlArmed)
+      if (flyout) return
+      button.classList.toggle('btnAutoplayActive', atBlArmed)
+      button.classList.toggle('tabletAtBlArmed', atBlArmed)
+      button.classList.toggle('btn', !atBlArmed)
+      button.setAttribute('aria-pressed', atBlArmed ? 'true' : 'false')
+    })
+
     const autoAvailable = state.activeTab === 'playlist'
     const autoplay1Enabled = autoAvailable && getAutoplay1Enabled()
     const autoplay2Enabled = autoAvailable && getAutoplay2Enabled()
@@ -10550,6 +11256,231 @@
       button.classList.toggle('tabletLiveButton', !menuButton && !liveEnabled)
       button.setAttribute('aria-pressed', liveEnabled ? 'true' : 'false')
     })
+  }
+
+  const SONG_ROW_DYNAMIC_CLASSES = [
+    'playing', 'selectedBlue', 'selectedPink',
+    'queuedYellow', 'queuedGreen',
+  ]
+  const SONG_TEXT_DYNAMIC_CLASSES = [
+    'text', 'playingText', 'selectedBlueText', 'selectedPinkText',
+    'queuedYellowText', 'queuedGreenText',
+  ]
+  const SONG_TIME_DYNAMIC_CLASSES = [
+    'timeText', 'playingTimeText', 'selectedBlueTimeText',
+    'selectedPinkTimeText', 'queuedYellowTimeText', 'queuedGreenTimeText',
+  ]
+
+  function setImportantColor(element, color) {
+    if (!element) return
+    const current = element.style.getPropertyValue('color')
+    const priority = element.style.getPropertyPriority('color')
+    if (color) {
+      if (current !== color || priority !== 'important') {
+        element.style.setProperty('color', color, 'important')
+      }
+    } else if (current) element.style.removeProperty('color')
+  }
+
+  function replaceVisualClass(element, classNames, wanted) {
+    if (!element) return
+    let alreadyCorrect = true
+    for (const className of classNames) {
+      if (element.classList.contains(className) !== (className === wanted)) {
+        alreadyCorrect = false
+        break
+      }
+    }
+    if (alreadyCorrect) return
+    for (const className of classNames) {
+      if (element.classList.contains(className)) element.classList.remove(className)
+    }
+    if (wanted) element.classList.add(wanted)
+  }
+
+  function ensureSongRowProgress(row, kind, width) {
+    let track = null
+    for (const child of Array.from(row.children || [])) {
+      if (child.classList?.contains('rowProgressTrack')) {
+        track = child
+        break
+      }
+    }
+    if (!kind) {
+      track?.remove()
+      return
+    }
+    const queue = kind === 'queued'
+    const currentKind = track?.classList.contains('queuedRowRegressTrack')
+      ? 'queued' : track ? 'playing' : ''
+    if (track && currentKind !== kind) {
+      track.remove()
+      track = null
+    }
+    if (!track) {
+      track = document.createElement('div')
+      track.className = queue
+        ? 'rowProgressTrack queuedRowRegressTrack'
+        : 'rowProgressTrack'
+      const bar = document.createElement('div')
+      bar.className = queue
+        ? 'progressBar queuedRowRegressBar'
+        : 'progressBar playingRowProgressBar'
+      track.appendChild(bar)
+      const anchor = row.querySelector('.rowNumberCol, .leftCol')
+      row.insertBefore(track, anchor || row.firstChild)
+    }
+    const bar = track.querySelector(
+      queue ? '.queuedRowRegressBar' : '.playingRowProgressBar')
+    if (bar) {
+      const nextWidth = `${Math.max(0, Math.min(100, width))}%`
+      if (bar.style.width !== nextWidth) bar.style.width = nextWidth
+    }
+  }
+
+  // Selecao, fila e transporte mudam poucas linhas. Atualiza essas linhas no
+  // mesmo evento do toque, sem recriar a lista ou o restante da aplicacao.
+  function syncSongRowsDom(data = state.snapshot || {}) {
+    const rows = root.querySelectorAll(
+      '.item[data-item-type="playlist"],.item[data-item-type="region"]')
+    if (!rows.length) return
+
+    const renderedTypes = new Set(Array.from(rows, (row) =>
+      String(row.getAttribute('data-item-type') || '')))
+    const itemsByType = {
+      playlist: renderedTypes.has('playlist')
+        ? new Map(getPlaylistWithOpenDrawers(data).map(
+          (item) => [String(getId(item) || ''), item])) : null,
+      region: renderedTypes.has('region')
+        ? new Map(getRegionsWithOpenDrawers(data).map(
+          (item) => [String(getId(item) || ''), item])) : null,
+    }
+    const transportPlaying = isPlaying(data)
+    const selectedByType = {
+      playlist: String(getSelectedPlaylistId(data) || ''),
+      region: String(getSelectedRegionId(data) || ''),
+    }
+    const queuedId = String(getQueuedId(data) || '')
+    const queuedClass = getQueuedRowClass(data)
+    const queuedTextClass = getQueuedTextClass(data)
+    const visualPlayingId = getVisualPlayingId(data)
+    const visualPlayPosition = getSmoothedCurrentPlaybackPosition(data)
+    const progress = transportPlaying || isPaused(data)
+      ? getVisualPlaybackProgressPercent(data) : 0
+    const queueProgress = queuedId ? 100 - progress : 0
+    const playingRemaining = formatIndividualRemainingTime(
+      getVisualPlayingRemainingSec(data))
+    const queuedDuration = queuedId
+      ? formatIndividualRemainingTime(getQueuedSongDurationSec(data)) : ''
+    let playingRowAlreadyApplied = false
+
+    for (const row of rows) {
+      const type = String(row.getAttribute('data-item-type') || '')
+      const idAttr = type === 'playlist' ? 'data-song-id' : 'data-region-id'
+      const id = String(row.getAttribute(idAttr) || '')
+      const item = itemsByType[type]?.get(id) || getSongItemById(id, data)
+      if (!item) continue
+
+      const representsPlaying = !playingRowAlreadyApplied &&
+        rowRepresentsPlayingSong(
+          item, data, visualPlayingId, visualPlayPosition)
+      if (representsPlaying) playingRowAlreadyApplied = true
+      const familySelectedId = isHashChild(item)
+        ? String(state.selectedRegionId || '') : ''
+      const selected = !transportPlaying && !!id &&
+        (id === selectedByType[type] || id === familySelectedId)
+      let visualClass = ''
+      if (representsPlaying) visualClass = 'playing'
+      else if (selected) visualClass = isBlock(item)
+        ? 'selectedPink' : 'selectedBlue'
+      else if (id && id === queuedId) visualClass = queuedClass
+
+      replaceVisualClass(row, SONG_ROW_DYNAMIC_CLASSES, visualClass)
+      row.classList.toggle('liveExecutedItem', itemHasLiveMark(item, data))
+
+      const textClassName = representsPlaying
+        ? 'playingText'
+        : visualClass === 'selectedBlue' ? 'selectedBlueText'
+          : visualClass === 'selectedPink' ? 'selectedPinkText'
+            : visualClass === 'queuedYellow' || visualClass === 'queuedGreen'
+              ? queuedTextClass : 'text'
+      const timeClassName = textClassName === 'text'
+        ? 'timeText' : textClassName.replace('Text', 'TimeText')
+      const nameElements = Array.from(row.querySelectorAll('.leftCol > span'))
+        .filter((element) => !element.classList.contains('blockDesignerOrnament'))
+      const timeElements = Array.from(row.querySelectorAll('.rightCol > span'))
+      for (const element of nameElements) {
+        replaceVisualClass(element, SONG_TEXT_DYNAMIC_CLASSES, textClassName)
+      }
+      for (const element of timeElements) {
+        replaceVisualClass(element, SONG_TIME_DYNAMIC_CLASSES, timeClassName)
+      }
+
+      const darkInk = visualClass === 'playing' ||
+        visualClass === 'selectedBlue' ||
+        visualClass === 'queuedYellow' || visualClass === 'queuedGreen'
+      const liveMarked = !darkInk && row.classList.contains('liveExecutedItem')
+      const baseTextColor = String(
+        row.getAttribute('data-base-text-color') || '')
+      const baseTimeColor = String(
+        row.getAttribute('data-base-time-color') || '')
+      const textColor = darkInk ? '#050505'
+        : liveMarked ? '#ffffff' : baseTextColor
+      const timeColor = isBlock(item) ? '#22c55e'
+        : darkInk ? '#050505'
+          : liveMarked ? '#ffe02e' : baseTimeColor
+      for (const element of nameElements) setImportantColor(element, textColor)
+      for (const element of timeElements) setImportantColor(element, timeColor)
+      const numberColor = liveMarked ? '#ffe02e'
+        : String(row.getAttribute('data-base-number-color') || '')
+      for (const element of row.querySelectorAll('.rowNumberText')) {
+        setImportantColor(element, numberColor)
+      }
+
+      if (representsPlaying) {
+        ensureSongRowProgress(row, 'playing', progress)
+        if (!isBlock(item) && playingRemaining) {
+          for (const element of timeElements) {
+            if (element.textContent !== playingRemaining) element.textContent = playingRemaining
+          }
+        }
+      } else if (id && id === queuedId) {
+        ensureSongRowProgress(row, 'queued', queueProgress)
+        if (!isBlock(item) && queuedDuration) {
+          for (const element of timeElements) {
+            if (element.textContent !== queuedDuration) element.textContent = queuedDuration
+          }
+        }
+      } else {
+        ensureSongRowProgress(row, '', 0)
+        const duration = getDurationSec(item)
+        const durationText = duration ? formatTime(duration) : ''
+        for (const element of timeElements) {
+          if (element.textContent !== durationText) element.textContent = durationText
+        }
+      }
+    }
+
+    const app = root.querySelector('.app')
+    app?.setAttribute('data-visual-playing-id', visualPlayingId)
+    enforceSingleVisualPlayingSongDom()
+  }
+
+  function finishSongInteractionDom(options = {}) {
+    syncSongRowsDom()
+    syncPlaybackQueueHeaderDom()
+    syncPlaybackProgressDom()
+    syncMainControlButtonsDom()
+    syncTransportSeekModalDom()
+    syncDirectorPopupDom()
+    if (options.structural === true || isPartsInterfaceVisible()) {
+      scheduleRender(true)
+      return false
+    }
+    // O DOM agora ja representa exatamente o estado local. Registrar a mesma
+    // assinatura impede o poll seguinte de reconstruir a lista confirmada.
+    state.lastHtmlSignature = getAppRenderSignature()
+    return true
   }
 
   function syncTabletPlayHoldModalDom() {
@@ -10604,7 +11535,7 @@
     return `
       <div class="app vshookNoTextSelect${IS_MUSICIAN_MONITOR ? ' musicianMonitor marqueeEnabled' : (state.marqueeEnabled ? ' marqueeEnabled' : ' marqueeDisabled')}" data-theme="${theme}" data-active-tab="${state.activeTab}" data-border-mode="${borderMode}" data-block-height-mode="${blockHeightMode}" data-live-mark-mode="${liveMarkVisual.mode}" data-visual-playing-id="${escapeHtml(getVisualPlayingId(data))}" data-teleprompt-font="${telepromptFont}" data-teleprompt-color="${telepromptColor}" data-teleprompt-text-alignment="${telepromptTextAlignment}" data-teleprompt-chord-position="${telepromptChordPosition}" data-teleprompt-chord-font="${telepromptChordFont}" data-teleprompt-chord-color="${telepromptChordColor}" style="--app-border-color:${borderColor};--app-border-glow:${borderGlow};--teleprompt-text-color:${telepromptColorValue};--teleprompt-chord-color:${telepromptChordColorValue};--live-mark-background:${liveMarkVisual.background};--live-mark-border:${liveMarkVisual.border};--live-mark-shadow:${liveMarkVisual.shadow};">
         <style>
-          .contentPanel{display:flex;flex-direction:column;flex:1;min-height:0}.controlsRowEqual{grid-template-columns:repeat(3,1fr)!important}.controlsRowTwo{grid-template-columns:repeat(2,1fr)!important}.controlsRowDirectorMain{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important}.controlsRowDirectorMain>button{height:42px!important;min-height:42px!important}.container{padding-top:9px!important}.app:not([data-border-mode^="rgb-"]) .container{border-color:var(--app-border-color)!important;box-shadow:0 0 0 1px var(--app-border-glow),0 0 18px var(--app-border-glow)!important;animation:none!important}.app[data-border-mode^="rgb-"] .container{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45);animation:directorBorderRgb 6s linear infinite!important}.app[data-border-mode="rgb-mid"] .container{animation-duration:3s!important}.app[data-border-mode="rgb-super"] .container{animation-duration:.85s!important}@keyframes directorBorderRgb{0%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}20%{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 0 18px rgba(250,204,21,.45)}40%{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.45)}60%{border-color:#06b6d4;box-shadow:0 0 0 1px rgba(6,182,212,.28),0 0 18px rgba(6,182,212,.45)}80%{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.28),0 0 18px rgba(139,92,246,.45)}100%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}}.app[data-border-mode="off"] .container{border-color:#111827!important;box-shadow:none!important}.topStatusRow{display:grid!important;grid-template-columns:minmax(58px,1fr) 104px 34px 34px!important;align-items:center!important;gap:6px!important;margin-bottom:10px!important}.topPlaylistButton{height:30px;width:100%;max-width:100%;min-width:0;border:1px solid #374151;border-radius:8px;background:#111827;color:#f8fafc!important;font-weight:900;font-size:10.5px;text-align:left;padding:0 8px;white-space:nowrap;overflow:hidden;box-shadow:none;display:flex!important;align-items:center!important}.topPlaylistTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.topPlaylistTickerStatic{text-overflow:ellipsis}.topPlaylistTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.topPlaylistTickerTrack>span{flex:0 0 auto}.topPlaylistTickerAnimated .topPlaylistTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}@keyframes topPlaylistTickerScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-50% - 15px))}}.playlistOption[data-action="playlist-select"]{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:10px!important}.playlistOption[data-action="playlist-select"] .playlistOptionText{min-width:0;overflow:hidden;white-space:nowrap;text-align:left}.playlistOptionTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.playlistOptionTickerStatic{text-overflow:ellipsis}.playlistOptionTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.playlistOptionTickerTrack>span{flex:0 0 auto}.playlistOptionTickerAnimated .playlistOptionTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}.playlistOptionTime{justify-self:end;color:#facc15;font-weight:1000;font-size:12px;white-space:nowrap}.topTimerBtn{height:30px;width:104px;min-width:104px;border:1px solid #facc15;border-radius:8px;background:#16120a;color:#facc15!important;font-weight:900;font-size:12px;text-align:center;padding:0 4px;white-space:nowrap;box-shadow:0 0 0 1px rgba(250,204,21,.14)}.topHeaderTools{display:contents!important}.topMiniBtn{width:34px;height:30px;border:1px solid #475569;border-radius:8px;color:#f8fafc!important;font-weight:900;font-size:21px;line-height:1;display:flex!important;align-items:center!important;justify-content:center!important;padding:0!important;text-align:center!important}.topMenuIcon{display:block;line-height:1;transform:translateY(-2px)}.topMenuBtn{background:#6d28d9!important;border-color:#a78bfa!important}.topSettingsBtn{background:#1f2937!important;border-color:#4b5563!important;color:#f8fafc!important}.topMiniBtn:active,.topPlaylistButton:active,.topTimerBtn:active{transform:translateY(1px);filter:brightness(1.12)}.playingText,.playingTimeText{color:#f8fafc!important}.topRightTools{display:none!important}.bridgeOnline,.bridgeOffline{display:none!important}.headerRow{margin-top:1px!important;margin-bottom:7px!important}.middleInfo{display:flex!important;align-items:center!important;justify-content:center!important;min-height:22px!important;margin-top:4px!important}.middleInfoText{display:block!important;color:#facc15!important;font-size:13px!important;font-weight:1000!important;letter-spacing:.035em!important;text-align:center!important}.tabRow{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important;width:100%!important;padding-right:0!important}.tabRow>.tab,.tabRow>.activeTab{min-width:0!important;width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;padding-left:5px!important;padding-right:5px!important;font-size:11.5px!important}.btnPlayActive{border-color:#22c55e!important;background:#14532d!important}.btnStopActive{border-color:#ef4444!important;background:#991b1b!important}.authGateError{color:#fecaca;font-weight:900;text-align:center}.rowLabelText{font-weight:900}.app .item .text,.app .item .timeText,.app .item .rowLabelText,.app .item .marqueeStatic,.app .item .marqueeTrack,.app .item .marqueeSegment,.app .item.blockItem .text,.app .item.blockItem .timeText,.app .item.blockItem .rowLabelText,.app .item.blockItem .blockText,.app .item.blockItem .blockTimeText{color:#f8fafc!important;text-shadow:none!important}.app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#ffffff!important}.directorPopup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10050;pointer-events:none;min-width:150px;max-width:82vw;padding:14px 20px;border-radius:14px;border:1px solid #facc15;background:rgba(2,6,23,.96);color:#facc15;text-align:center;font-weight:900;font-size:18px;letter-spacing:.04em;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(250,204,21,.18)}.settingsNumberGrid{margin-top:8px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalBox{max-width:430px!important;padding:20px!important}.timerModalPreview{height:74px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:12px;background:#05070a;color:#facc15;font-size:30px;font-weight:900;margin-bottom:16px;letter-spacing:.04em}.timerModeGrid,.settingsThemeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGridThree{grid-template-columns:1fr 1fr 1fr!important}.timerModeGridThree>button{height:44px!important;min-height:44px!important;font-size:11px!important;padding-left:4px!important;padding-right:4px!important}.timerActionButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:14px!important}.timerActionButtons>button{width:100%!important;min-width:0!important;height:44px!important;min-height:44px!important}.settingsWideGrid{display:grid;grid-template-columns:1fr;gap:10px;margin:0 0 12px}.settingsModalBox{max-width:330px}.settingsThemeGrid>button,.settingsWideGrid>button{height:42px!important;min-height:42px!important}.settingsBorderModeButton{background:#111827!important;border-color:#475569!important;color:#f8fafc!important;box-shadow:none!important}.settingsBorderModeButton:active{filter:brightness(1.12);transform:translateY(1px)}.mixerContentPanel{flex:1 1 auto!important;min-height:0!important}.mixerListBox{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;scroll-padding-bottom:8px!important}.mixerRowsBox{display:contents!important;border:0!important;background:transparent!important}.mixerRow{display:grid;grid-template-columns:10px 28px minmax(0,1fr) 72px 38px 38px;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #18212c;min-height:56px}.mixerRow:last-child{border-bottom:0}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:#334155}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:1000;color:#facc15;text-align:right;white-space:nowrap;font-size:11px}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniMute.mixerMiniBtnActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important}.mixerMiniSolo.mixerMiniBtnActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important}.mixerVolumeOverlay{align-items:center!important;justify-content:center!important;padding:0 8px!important}.mixerVolumeModalBoxWide{width:min(96vw,620px)!important;max-width:620px!important;padding:16px!important;box-sizing:border-box!important}.mixerModalHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.mixerVolumeDbDisplay{text-align:center;color:#facc15;font-weight:1000;font-size:30px;margin:12px 0}.mixerVolumeSliderWide{width:100%!important;max-width:none!important;height:78px!important;min-height:78px!important;accent-color:#facc15!important;touch-action:pan-x!important;-webkit-appearance:none;appearance:none;background:transparent!important}.mixerVolumeSliderWide::-webkit-slider-runnable-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important;box-shadow:inset 0 0 0 2px rgba(250,204,21,.12)!important}.mixerVolumeSliderWide::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important;margin-top:-8px!important}.mixerVolumeSliderWide::-moz-range-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important}.mixerVolumeSliderWide::-moz-range-thumb{width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important}.mixerZeroDbBtn{height:46px!important;margin-top:8px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important}.premixInlineSlider{width:108px;min-width:80px;accent-color:#facc15}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}
+          .contentPanel{display:flex;flex-direction:column;flex:1;min-height:0}.controlsRowEqual{grid-template-columns:repeat(3,1fr)!important}.controlsRowTwo{grid-template-columns:repeat(2,1fr)!important}.controlsRowDirectorMain{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important}.controlsRowDirectorMain>button{height:42px!important;min-height:42px!important}.container{padding-top:9px!important}.app:not([data-border-mode^="rgb-"]) .container{border-color:var(--app-border-color)!important;box-shadow:0 0 0 1px var(--app-border-glow),0 0 18px var(--app-border-glow)!important;animation:none!important}.app[data-border-mode^="rgb-"] .container{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45);animation:directorBorderRgb 6s linear infinite!important}.app[data-border-mode="rgb-mid"] .container{animation-duration:3s!important}.app[data-border-mode="rgb-super"] .container{animation-duration:.85s!important}@keyframes directorBorderRgb{0%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}20%{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 0 18px rgba(250,204,21,.45)}40%{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.45)}60%{border-color:#06b6d4;box-shadow:0 0 0 1px rgba(6,182,212,.28),0 0 18px rgba(6,182,212,.45)}80%{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.28),0 0 18px rgba(139,92,246,.45)}100%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}}.app[data-border-mode="off"] .container{border-color:#111827!important;box-shadow:none!important}.topStatusRow{display:grid!important;grid-template-columns:minmax(58px,1fr) 104px 34px 34px!important;align-items:center!important;gap:6px!important;margin-bottom:10px!important}.topPlaylistButton{height:30px;width:100%;max-width:100%;min-width:0;border:1px solid #374151;border-radius:8px;background:#111827;color:#f8fafc!important;font-weight:900;font-size:10.5px;text-align:left;padding:0 8px;white-space:nowrap;overflow:hidden;box-shadow:none;display:flex!important;align-items:center!important}.topPlaylistTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.topPlaylistTickerStatic{text-overflow:ellipsis}.topPlaylistTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.topPlaylistTickerTrack>span{flex:0 0 auto}.topPlaylistTickerAnimated .topPlaylistTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}@keyframes topPlaylistTickerScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-50% - 15px))}}.playlistOption[data-action="playlist-select"]{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:10px!important}.playlistOption[data-action="playlist-select"] .playlistOptionText{min-width:0;overflow:hidden;white-space:nowrap;text-align:left}.playlistOptionTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.playlistOptionTickerStatic{text-overflow:ellipsis}.playlistOptionTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.playlistOptionTickerTrack>span{flex:0 0 auto}.playlistOptionTickerAnimated .playlistOptionTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}.playlistOptionTime{justify-self:end;color:#facc15;font-weight:1000;font-size:12px;white-space:nowrap}.topTimerBtn{height:30px;width:104px;min-width:104px;border:1px solid #facc15;border-radius:8px;background:#16120a;color:#facc15!important;font-weight:900;font-size:12px;text-align:center;padding:0 4px;white-space:nowrap;box-shadow:0 0 0 1px rgba(250,204,21,.14)}.topHeaderTools{display:contents!important}.topMiniBtn{width:34px;height:30px;border:1px solid #475569;border-radius:8px;color:#f8fafc!important;font-weight:900;font-size:21px;line-height:1;display:flex!important;align-items:center!important;justify-content:center!important;padding:0!important;text-align:center!important}.topMenuIcon{display:block;line-height:1;transform:translateY(-2px)}.topMenuBtn{background:#6d28d9!important;border-color:#a78bfa!important}.topSettingsBtn{background:#1f2937!important;border-color:#4b5563!important;color:#f8fafc!important}.topMiniBtn:active,.topPlaylistButton:active,.topTimerBtn:active{transform:translateY(1px);filter:brightness(1.12)}.playingText,.playingTimeText{color:#f8fafc!important}.topRightTools{display:none!important}.bridgeOnline,.bridgeOffline{display:none!important}.headerRow{margin-top:1px!important;margin-bottom:7px!important}.middleInfo{display:flex!important;align-items:center!important;justify-content:center!important;min-height:22px!important;margin-top:4px!important}.middleInfoText{display:block!important;color:#facc15!important;font-size:13px!important;font-weight:1000!important;letter-spacing:.035em!important;text-align:center!important}.tabRow{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important;width:100%!important;padding-right:0!important}.tabRow>.tab,.tabRow>.activeTab{min-width:0!important;width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;padding-left:5px!important;padding-right:5px!important;font-size:11.5px!important}.btnPlayActive{border-color:#22c55e!important;background:#14532d!important}.btnStopActive{border-color:#ef4444!important;background:#991b1b!important}.authGateError{color:#fecaca;font-weight:900;text-align:center}.rowLabelText{font-weight:900}.app .item .text,.app .item .timeText,.app .item .rowLabelText,.app .item .marqueeStatic,.app .item .marqueeTrack,.app .item .marqueeSegment,.app .item.blockItem .text,.app .item.blockItem .timeText,.app .item.blockItem .rowLabelText,.app .item.blockItem .blockText,.app .item.blockItem .blockTimeText{color:#f8fafc!important;text-shadow:none!important}.app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#ffffff!important}.directorPopup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10050;pointer-events:none;min-width:150px;max-width:82vw;padding:14px 20px;border-radius:14px;border:1px solid #facc15;background:rgba(2,6,23,.96);color:#facc15;text-align:center;font-weight:900;font-size:18px;letter-spacing:.04em;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(250,204,21,.18)}.settingsNumberGrid{margin-top:8px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalBox{max-width:430px!important;padding:20px!important}.timerModalPreview{height:74px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:12px;background:#05070a;color:#facc15;font-size:30px;font-weight:900;margin-bottom:16px;letter-spacing:.04em}.timerModeGrid,.settingsThemeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGridThree{grid-template-columns:1fr 1fr 1fr!important}.timerModeGridThree>button{height:44px!important;min-height:44px!important;font-size:11px!important;padding-left:4px!important;padding-right:4px!important}.timerActionButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:14px!important}.timerActionButtons>button{width:100%!important;min-width:0!important;height:44px!important;min-height:44px!important}.settingsWideGrid{display:grid;grid-template-columns:1fr;gap:10px;margin:0 0 12px}.settingsModalBox{max-width:330px}.settingsThemeGrid>button,.settingsWideGrid>button{height:42px!important;min-height:42px!important}.settingsBorderModeButton{background:#111827!important;border-color:#475569!important;color:#f8fafc!important;box-shadow:none!important}.settingsBorderModeButton:active{filter:brightness(1.12);transform:translateY(1px)}.mixerContentPanel{flex:1 1 auto!important;min-height:0!important}.mixerListBox{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;scroll-padding-bottom:8px!important}.mixerRowsBox{display:contents!important;border:0!important;background:transparent!important}.mixerRow{display:grid;grid-template-columns:10px 28px minmax(0,1fr) 72px 38px 38px;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #18212c;min-height:56px}.mixerRow:last-child{border-bottom:0}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:#334155}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:1000;color:#facc15;text-align:right;white-space:nowrap;font-size:11px}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniMute.mixerMiniBtnActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important}.mixerMiniSolo.mixerMiniBtnActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important}.mixerVolumeOverlay{align-items:center!important;justify-content:center!important;padding:0 8px!important}.mixerVolumeModalBoxWide{width:min(96vw,620px)!important;max-width:620px!important;padding:16px!important;box-sizing:border-box!important}.mixerModalHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.mixerVolumeDbDisplay{text-align:center;color:#facc15;font-weight:1000;font-size:30px;margin:12px 0}.mixerVolumeSliderWide{width:100%!important;max-width:none!important;height:78px!important;min-height:78px!important;accent-color:#facc15!important;touch-action:pan-x!important;-webkit-appearance:none;appearance:none;background:transparent!important}.mixerVolumeSliderWide::-webkit-slider-runnable-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important;box-shadow:inset 0 0 0 2px rgba(250,204,21,.12)!important}.mixerVolumeSliderWide::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important;margin-top:-8px!important}.mixerVolumeSliderWide::-moz-range-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important}.mixerVolumeSliderWide::-moz-range-thumb{width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important}.mixerZeroDbBtn{height:46px!important;margin-top:8px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important}.premixInlineSlider{width:108px;min-width:80px;accent-color:#facc15}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-runnable-track,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-runnable-track,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-runnable-track{height:18px!important;border-radius:999px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-moz-range-track,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-moz-range-track,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-moz-range-track{height:18px!important;border-radius:999px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-thumb,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-thumb,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:22px!important;height:30px!important;border-radius:4px!important;background:linear-gradient(180deg,#ffffff 0%,#e2e8f0 46%,#94a3b8 54%,#e2e8f0 100%)!important;border:1px solid #0f172a!important;box-shadow:0 1px 3px rgba(0,0,0,.55),inset 0 0 0 1px rgba(255,255,255,.5)!important;transform:none!important;margin-top:-6px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-moz-range-thumb,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-moz-range-thumb,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-moz-range-thumb{width:22px!important;height:30px!important;border-radius:4px!important;background:linear-gradient(180deg,#ffffff 0%,#e2e8f0 46%,#94a3b8 54%,#e2e8f0 100%)!important;border:1px solid #0f172a!important;box-shadow:0 1px 3px rgba(0,0,0,.55)!important}.playbackQueueFillNow,.playbackQueueFillNext,.playingRowProgressBar,.queuedRowRegressBar,.partsArmedRegressBar{width:100%!important;transform-origin:left center!important;transition:none!important;will-change:transform;backface-visibility:hidden}html[data-director-device="tablet"]{--tablet-bar-w:48px;--tablet-bar-gap:8px;--tablet-topbar-h:42px}html[data-director-device="tablet"] .app:not(.musicianMonitor){padding-left:calc(var(--tablet-bar-w) + var(--tablet-bar-gap) * 2 + var(--tablet-safe-left,var(--vsh-safe-left)))!important;padding-right:calc(var(--tablet-bar-w) + var(--tablet-bar-gap) * 2 + var(--tablet-safe-right,var(--vsh-safe-right)))!important}html[data-director-device="tablet"] .tabletDirectorSidebar{width:var(--tablet-bar-w)!important}html[data-director-device="tablet"] .tabletDirectorSidebar>*,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletSidebarButton,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletSidebarByButton,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletPreviewButtonGroup{width:calc(var(--tablet-bar-w) - 12px)!important;max-width:calc(var(--tablet-bar-w) - 12px)!important}html[data-director-device="tablet"] .tabletDirectorSidebar svg{max-width:calc(var(--tablet-bar-w) - 20px)!important;max-height:calc(var(--tablet-bar-w) - 20px)!important}html[data-director-device="tablet"] .tabletDirectorTopBar{height:var(--tablet-topbar-h)!important;min-height:var(--tablet-topbar-h)!important;flex:0 0 var(--tablet-topbar-h)!important;padding:4px!important;gap:4px!important}html[data-director-device="tablet"] .tabletTopBarButton{height:calc(var(--tablet-topbar-h) - 10px)!important;min-height:calc(var(--tablet-topbar-h) - 10px)!important;font-size:11px!important}
         </style>
         <style>
           html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsRowDirectorMain{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:4px!important;width:100%!important;max-width:100%!important;padding-right:0!important}
@@ -10705,6 +11636,60 @@
     }
   }
 
+  function reuseStableListBoxes(currentApp, nextApp) {
+    if (!currentApp || !nextApp) return
+    const currentLists = Array.from(currentApp.querySelectorAll('.listBox'))
+    const nextLists = Array.from(nextApp.querySelectorAll('.listBox'))
+    const listCount = Math.min(currentLists.length, nextLists.length)
+
+    for (let listIndex = 0; listIndex < listCount; listIndex += 1) {
+      const currentList = currentLists[listIndex]
+      const nextList = nextLists[listIndex]
+      const currentChildren = Array.from(currentList.children || [])
+      const nextChildren = Array.from(nextList.children || [])
+      if (!currentChildren.length ||
+          currentChildren.length !== nextChildren.length ||
+          currentChildren.some((row) => !row.classList?.contains('item')) ||
+          nextChildren.some((row) => !row.classList?.contains('item'))) continue
+
+      let sameRows = true
+      for (let rowIndex = 0; rowIndex < currentChildren.length; rowIndex += 1) {
+        const currentRow = currentChildren[rowIndex]
+        const nextRow = nextChildren[rowIndex]
+        const type = String(currentRow.getAttribute('data-item-type') || '')
+        const nextType = String(nextRow.getAttribute('data-item-type') || '')
+        const idAttribute = type === 'playlist'
+          ? 'data-song-id'
+          : type === 'region' ? 'data-region-id' : type === 'marker' ? 'data-marker-id' : ''
+        const nextIdAttribute = nextType === 'playlist'
+          ? 'data-song-id'
+          : nextType === 'region' ? 'data-region-id' : nextType === 'marker' ? 'data-marker-id' : ''
+        const currentIdentity = idAttribute && currentRow.hasAttribute('data-is-block')
+          ? `${type}\u001f${currentRow.getAttribute(idAttribute) || ''}\u001f${rowIndex}\u001f${currentRow.getAttribute('data-is-block') || ''}`
+          : ''
+        const nextIdentity = nextIdAttribute && nextRow.hasAttribute('data-is-block')
+          ? `${nextType}\u001f${nextRow.getAttribute(nextIdAttribute) || ''}\u001f${rowIndex}\u001f${nextRow.getAttribute('data-is-block') || ''}`
+          : ''
+        if (!currentIdentity || currentIdentity !== nextIdentity) {
+          sameRows = false
+          break
+        }
+      }
+      if (!sameRows || !nextList.parentNode) continue
+
+      copyElementAttributes(currentList, nextList)
+      for (let rowIndex = 0; rowIndex < currentChildren.length; rowIndex += 1) {
+        const currentRow = currentChildren[rowIndex]
+        const nextRow = nextChildren[rowIndex]
+        copyElementAttributes(currentRow, nextRow)
+        if (currentRow.innerHTML !== nextRow.innerHTML) {
+          currentRow.innerHTML = nextRow.innerHTML
+        }
+      }
+      nextList.parentNode.replaceChild(currentList, nextList)
+    }
+  }
+
   function replaceChildrenAround(parent, nextParent, currentAnchor, nextAnchor, keepStyleNodes) {
     if (!parent || !nextParent || !currentAnchor || !nextAnchor) return false
     const currentNodes = Array.from(parent.childNodes || [])
@@ -10737,7 +11722,12 @@
     }
 
     const template = document.createElement('template')
-    template.innerHTML = html
+    // Os estilos da aplicação já existem no DOM e são preservados abaixo.
+    // Não entregar esses mesmos 20+ KB de CSS ao parser em cada alteração
+    // evita uma pausa perceptivel em dispositivos com menos folga de CPU.
+    const htmlWithoutPreservedStyles = html.replace(
+      /<style(?:\s[^>]*)?>[\s\S]*?<\/style>/gi, '')
+    template.innerHTML = htmlWithoutPreservedStyles
     const nextApp = directChildByClass(template.content, 'app')
     const currentContainer = directChildByClass(currentApp, 'container')
     const nextContainer = directChildByClass(nextApp, 'container')
@@ -10757,8 +11747,34 @@
     const sameTitle = !!currentTitle && !!nextTitle && currentTitle.textContent === nextTitle.textContent
     if (!sameTitle) currentTop.innerHTML = nextTop.innerHTML
 
+    reuseStableListBoxes(currentApp, nextApp)
     replaceChildrenAround(currentContainer, nextContainer, currentTop, nextTop, false)
     replaceChildrenAround(currentApp, nextApp, currentContainer, nextContainer, true)
+  }
+
+  function getAppRenderSignature() {
+    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
+  }
+
+  function isDirectorListScrolling(sampledAt = now()) {
+    return sampledAt < Number(state.directorListScrollingUntil || 0)
+  }
+
+  function deferRenderUntilListStops(forceRender) {
+    if (forceRender) state.renderForceRequested = true
+    if (state.directorListDeferredRenderTimer) return
+    const remaining = Math.max(24,
+      Number(state.directorListScrollingUntil || 0) - now() + 32)
+    state.directorListDeferredRenderTimer = window.setTimeout(() => {
+      state.directorListDeferredRenderTimer = 0
+      scheduleRender(state.renderForceRequested === true)
+    }, remaining)
+  }
+
+  function scheduleRenderAfterPaint(force = false) {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => scheduleRender(force), 32)
+    })
   }
 
   function scheduleRender(force = false) {
@@ -10781,6 +11797,16 @@
       syncMixerVolumeModalDom()
       syncPremixVolumeControlsDom()
       syncDirectorPopupDom()
+      // O WebKit antigo perde quadros e chega a revelar áreas ainda não
+      // pintadas quando a árvore da lista é trocada durante a rolagem cinética.
+      // Mantém o mesmo DOM até o gesto parar; relógios e barras seguem pelo
+      // caminho incremental abaixo.
+      if (isDirectorListScrolling()) {
+        deferRenderUntilListStops(forceRender)
+        syncPlaybackProgressDom()
+        syncTimerDom()
+        return
+      }
       if (!forceRender && transportTouchId !== null) {
         syncPlaybackProgressDom()
         syncTimerDom()
@@ -10796,8 +11822,7 @@
         syncTimerDom()
         return
       }
-      const html = renderApp()
-      const sig = `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${state.popupText}|${state.popupUntil}|${JSON.stringify(compactRenderState())}`
+      const sig = getAppRenderSignature()
       // Cursor e progresso do Grid já são sincronizados sem reconstrução pelo
       // loop visual. Uma assinatura nova deve seguir o render normal mesmo com
       // o Grid aberto; caso contrário lista, fila e controles ficam congelados.
@@ -10833,11 +11858,16 @@
           syncTimerDom()
           return
         }
+        // renderApp monta todas as linhas e vários blocos grandes de CSS. Só
+        // faça esse trabalho quando a assinatura confirmar mudança real.
+        const html = renderApp()
         const scrollState = captureListScrollState()
         state.lastHtmlSignature = sig
         updateAppHtmlPreservingTopStatus(html)
         restoreFocusedInput()
         restoreListScrollState(scrollState)
+        rememberActiveMusicPane()
+        scheduleMusicPaneWarmup()
       }
       enforceSingleVisualPlayingSongDom()
       syncPlaybackProgressDom()
@@ -10853,11 +11883,19 @@
       syncMixerVolumeModalDom()
       syncPremixVolumeControlsDom()
       focusPendingTabletSearchResultDom()
-      focusPendingDirectorSelectionDom()
       restoreTabletMultiLoopTracksScrollDom()
-    }
+      }
 
-    window.requestAnimationFrame(runRender)
+    // Um quadro pinta uma unica vez, e o callback de requestAnimationFrame roda
+    // logo ANTES dessa pintura. Enquanto o render pesado entrava direto no
+    // proximo quadro, tudo que a acao ja tinha mudado no DOM — a marca do
+    // toque, a classe do proprio botao — so aparecia junto com o render
+    // pronto. Deixar o render para depois da pintura devolve um quadro
+    // inteiro para o retorno imediato do toque, ao custo de ~16ms no
+    // conteudo. E o que faz o botao acender na hora no aparelho antigo.
+    window.requestAnimationFrame(() => {
+      window.setTimeout(runRender, 0)
+    })
   }
 
   function focusPendingTabletSearchResultDom() {
@@ -11171,6 +12209,7 @@
   function captureListScrollState() {
     return Array.from(root.querySelectorAll('.listBox')).map((el, index) => ({
       index,
+      key: String(el.getAttribute('data-scroll-key') || ''),
       top: el.scrollTop,
       left: el.scrollLeft,
     }))
@@ -11180,7 +12219,9 @@
     if (!Array.isArray(scrollState) || !scrollState.length) return
     const boxes = Array.from(root.querySelectorAll('.listBox'))
     for (const item of scrollState) {
-      const el = boxes[item.index]
+      const el = item.key
+        ? boxes.find((box) => String(box.getAttribute('data-scroll-key') || '') === item.key)
+        : boxes[item.index]
       if (!el) continue
       el.scrollTop = Math.max(0, Number(item.top) || 0)
       el.scrollLeft = Math.max(0, Number(item.left) || 0)
@@ -11193,7 +12234,7 @@
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!nowRawName && isPlaying(data)
+    const hasNowPlaying = !!nowRawName && (isPlaying(data) || isPaused(data))
     const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -11248,28 +12289,184 @@
     }
   }
 
-  function syncPlaybackProgressDom(sampledAt = now()) {
+  // Barra desenhada por transform em vez de largura. Mudar width obriga o
+  // navegador a refazer o layout da lista inteira a cada quadro; scaleX o
+  // compositor resolve sozinho. E isso que permite a barra andar em todo
+  // quadro sem disputar CPU com o toque no aparelho antigo.
+  function setBarScaleDom(selector, percent) {
+    const scale = Math.max(0, Math.min(1, (Number(percent) || 0) / 100))
+    const value = `scaleX(${scale.toFixed(5)})`
+    for (const el of root.querySelectorAll(selector)) {
+      if (el.style.transform !== value) el.style.transform = value
+    }
+  }
+
+  // O que realmente se move entre dois polls e a barra e o cursor. Eles ganham
+  // um tique proprio, todo quadro, porque agora custam quase nada: a barra e
+  // transform (compositor) e o cursor mexe so na sua propria caixa. Textos,
+  // ondas e marcadores continuam na cadencia normal — eles nao se movem.
+  // Relogio local da barra.
+  //
+  // O Bridge chega a cada 300ms e sempre com atraso variavel de rede. Usar a
+  // porcentagem que ele reporta como base fazia a barra saltar para o valor
+  // dele a cada poll — as vezes para tras, e em seguida correndo para
+  // recuperar. Era isso o vai e volta.
+  //
+  // Aqui a barra anda pelo relogio do proprio aparelho sobre a duracao da
+  // musica, que o app ja conhece. O Bridge deixa de ser a fonte e vira so
+  // correcao: de vez quando a diferenca e grande demais para ser rede (seek,
+  // loop, troca de musica), e diluida ao longo de ~250ms quando e a diferenca
+  // normal — nesse caso a barra nunca anda para tras nem da arranco.
+  const BAR_CLOCK_SNAP_SEC = 1.2
+  const BAR_CLOCK_EASE_SEC = 0.25
+
+  let barClockKey = ''
+  let barClockPercent = 0
+  let barClockAtMs = 0
+
+  // Duracao que faz a barra desta musica ir de 0 a 100, seguindo a mesma
+  // escolha que getVisualPlaybackProgressPercent faz.
+  function getVisualPlayingDurationSec(data, sampledAt = now()) {
+    const item = getSongItemById(getVisualPlayingId(data, sampledAt), data)
+    if (isHashChild(item)) {
+      const start = getItemStart(item)
+      const end = getItemEnd(item)
+      if (start !== null && end !== null && end > start + 0.0005) return end - start
+    }
+    const duration = firstFiniteNumber([
+      data?.playbackDurationSec,
+      data?.currentSongDurationSec,
+      data?.durationSec,
+      data?.songDurationSec,
+      getDurationSec(getSongItemById(getPlayingId(data), data)),
+    ])
+    return duration > 0 ? duration : 0
+  }
+
+  function getSmoothBarProgressPercent(data, sampledAt = now()) {
+    const target = isPlaying(data) || isPaused(data)
+      ? clampPercent(getVisualPlaybackProgressPercent(data, sampledAt)) : 0
+    const duration = getVisualPlayingDurationSec(data, sampledAt)
+    const key = `${getVisualPlayingId(data, sampledAt)}|${duration.toFixed(3)}`
+    const running = isPlaying(data) && !isPaused(data) && duration > 0
+
+    // Parado, pausado, sem duracao conhecida ou musica trocada: o relogio nao
+    // tem o que continuar, entao assume o valor do Bridge e reancora.
+    if (!running || key !== barClockKey) {
+      barClockKey = key
+      barClockPercent = target
+      barClockAtMs = sampledAt
+      return barClockPercent
+    }
+
+    const elapsedSec = Math.max(0, Number(sampledAt) - barClockAtMs) / 1000
+    barClockAtMs = sampledAt
+    let next = barClockPercent + (elapsedSec / duration) * 100
+    const error = target - next
+    const snapPercent = (BAR_CLOCK_SNAP_SEC / duration) * 100
+    if (Math.abs(error) >= snapPercent) next = target
+    else next += error * Math.min(1, elapsedSec / BAR_CLOCK_EASE_SEC)
+    barClockPercent = clampPercent(next)
+    return barClockPercent
+  }
+
+  // Posicao suave, derivada do mesmo relogio, para a barra de regresso da aba
+  // Parts — que trabalha em segundos da linha do tempo, nao em porcentagem.
+  function getSmoothBarPlayPositionSec(data, percent, sampledAt = now()) {
+    const item = getSongItemById(getVisualPlayingId(data, sampledAt), data)
+    const start = getItemStart(item)
+    const duration = getVisualPlayingDurationSec(data, sampledAt)
+    if (start === null || !(duration > 0)) {
+      return getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    }
+    return start + (clampPercent(percent) / 100) * duration
+  }
+
+  function syncPlaybackBarsDom(sampledAt = now()) {
     const data = state.snapshot || {}
-    syncPlaybackQueueHeaderDom(data)
-    const progress = isPlaying(data)
+    const progress = getSmoothBarProgressPercent(data, sampledAt)
+    const queueProgress = (getQueuedId(data) || getQueuedSongName(data))
+      ? 100 - progress : 0
+    setBarScaleDom('.playbackQueueFillNow', progress)
+    setBarScaleDom('.playbackQueueFillNext', queueProgress)
+    // Durante a rolagem da lista as linhas nao sao repintadas, para o dedo nao
+    // disputar o quadro com a barra.
+    if (isDirectorListScrolling(sampledAt)) return
+    setBarScaleDom('.playingRowProgressBar', progress)
+    setBarScaleDom('.queuedRowRegressBar', queueProgress)
+    setBarScaleDom('.partsArmedRegressBar', getPartsArmedRegressPercent(
+      data, getSmoothBarPlayPositionSec(data, progress, sampledAt)))
+  }
+
+  function syncTransportSeekCursorDom(sampledAt = now()) {
+    if (!state.showTransportSeekModal) return
+    const line = root.querySelector('[data-transport-seek-cursor-line]')
+    const head = root.querySelector('[data-transport-seek-cursor-head]')
+    if (!line && !head) return
+    const target = getTransportSeekTarget(state.snapshot)
+    if (!target) return
+    const percent = getTransportSeekCursorPercent(
+      target, state.snapshot, sampledAt,
+      getTransportSeekCursorPos(target, state.snapshot, sampledAt))
+    const value = `${percent}%`
+    if (line && line.style.left !== value) line.style.left = value
+    if (head && head.style.left !== value) head.style.left = value
+  }
+
+  function syncPlaybackProgressDom(sampledAt = now(), dynamicOnly = false) {
+    const data = state.snapshot || {}
+    const deferSongRowPaint = isDirectorListScrolling(sampledAt)
+    // Nomes, visibilidade e estados estaticos ja sao sincronizados pelo poll.
+    // No quadro de animacao atualiza somente tempos e barras; reler todo o
+    // cabecalho a cada frame atrasava inclusive o proximo toque.
+    if (!dynamicOnly) syncPlaybackQueueHeaderDom(data)
+    const progress = isPlaying(data) || isPaused(data)
       ? getVisualPlaybackProgressPercent(data, sampledAt) : 0
     const hasQueue = !!(getQueuedId(data) || getQueuedSongName(data))
     // LOOP não apaga a fila. Enquanto houver uma música marcada, mantenha o
     // regresso visível na lista e no painel; apenas a largura segue o progresso.
     const showQueueBar = hasQueue
     const queueProgress = showQueueBar ? 100 - progress : 0
+    const playingRemainingText = formatIndividualRemainingTime(
+      getVisualPlayingRemainingSec(data, sampledAt))
+    const queuedDurationText = hasQueue
+      ? formatIndividualRemainingTime(getQueuedSongDurationSec(data)) : ''
 
-    for (const el of root.querySelectorAll('.playbackQueueFillNow, .playingRowProgressBar')) {
-      el.style.width = `${progress}%`
+    for (const el of root.querySelectorAll('[data-playback-now-time]')) {
+      if (el.textContent !== playingRemainingText) el.textContent = playingRemainingText
     }
-    for (const el of root.querySelectorAll('.playbackQueueFillNext, .queuedRowRegressBar')) {
-      el.style.width = `${queueProgress}%`
+    for (const el of root.querySelectorAll('[data-playback-next-time]')) {
+      if (el.textContent !== queuedDurationText) el.textContent = queuedDurationText
+    }
+    if (!deferSongRowPaint) {
+      for (const el of root.querySelectorAll('.item.playing:not(.blockItem) .playingTimeText')) {
+        if (playingRemainingText && el.textContent !== playingRemainingText) {
+          el.textContent = playingRemainingText
+        }
+      }
+      if (queuedDurationText) {
+        for (const el of root.querySelectorAll('.item.queuedYellow:not(.blockItem) .queuedYellowTimeText, .item.queuedGreen:not(.blockItem) .queuedGreenTimeText')) {
+          if (el.textContent !== queuedDurationText) el.textContent = queuedDurationText
+        }
+      }
+    }
+
+    // As barras seguem o relogio local, nunca o valor cru do Bridge: senao
+    // este tique desfaria a suavizacao a cada 50ms.
+    const barProgress = getSmoothBarProgressPercent(data, sampledAt)
+    const barQueueProgress = showQueueBar ? 100 - barProgress : 0
+    setBarScaleDom('.playbackQueueFillNow', barProgress)
+    setBarScaleDom('.playbackQueueFillNext', barQueueProgress)
+    if (!deferSongRowPaint) {
+      setBarScaleDom('.playingRowProgressBar', barProgress)
+      setBarScaleDom('.queuedRowRegressBar', barQueueProgress)
     }
     const smoothPlayPosition =
       getSmoothedCurrentPlaybackPosition(data, sampledAt)
     const armedRegress = getPartsArmedRegressPercent(data, smoothPlayPosition)
-    for (const el of root.querySelectorAll('.partsArmedRegressBar')) {
-      el.style.width = `${armedRegress}%`
+    if (!deferSongRowPaint) {
+      setBarScaleDom('.partsArmedRegressBar', getPartsArmedRegressPercent(
+        data, getSmoothBarPlayPositionSec(data, barProgress, sampledAt)))
     }
     for (const el of root.querySelectorAll('.playbackQueueTrackNext')) {
       el.classList.toggle('playbackQueueTrackEmpty', !showQueueBar)
@@ -11284,10 +12481,12 @@
     // a faixa vermelha; as pinturas normais continuam incrementais.
     const app = root.querySelector('.app[data-visual-playing-id]')
     const visualPlayingId = getVisualPlayingId(data, sampledAt)
-    if (app &&
+    if (!deferSongRowPaint && app &&
         String(app.getAttribute('data-visual-playing-id') || '') !==
           visualPlayingId) {
-      scheduleRender()
+      syncSongRowsDom(data)
+      syncMainControlButtonsDom()
+      state.lastHtmlSignature = getAppRenderSignature()
     }
   }
 
@@ -11364,8 +12563,42 @@
     ))
   }
 
+  // A parte cara da assinatura visual percorre item por item do repertorio, das
+  // musicas e dos marcadores e ainda serializa as tres listas. Ela depende
+  // somente do snapshot, e o Bridge entrega um objeto novo a cada resposta —
+  // entao dentro de um mesmo toque o resultado ja esta pronto. Sem este cache
+  // cada botao pagava a varredura inteira antes de conseguir pintar o proprio
+  // estado, e era isso que segurava a resposta no aparelho antigo.
+  const snapshotRenderSignatureCache = new WeakMap()
+
+  function getSnapshotRenderSignatureParts(data) {
+    if (!data || typeof data !== 'object') {
+      // Mesmos valores que as tres listas vazias produziam antes do cache, para
+      // a assinatura nao mudar de forma so por causa do caminho sem snapshot.
+      return { counts: [0, 0, 0], listContent: ['[]', '[]', '[]'], projects: '' }
+    }
+    const cached = snapshotRenderSignatureCache.get(data)
+    if (cached) return cached
+    const playlistItems = getPlaylistItems(data)
+    const regions = getRegions(data)
+    const markers = getMarkers(data)
+    const parts = {
+      counts: [playlistItems.length, regions.length, markers.length],
+      listContent: [
+        getListContentRenderSignature(playlistItems),
+        getListContentRenderSignature(regions),
+        getListContentRenderSignature(markers),
+      ],
+      projects: getProjects(data).map((project, index) =>
+        `${getProjectItemId(project, index)}:${getProjectItemName(project, index)}`).join('|'),
+    }
+    snapshotRenderSignatureCache.set(data, parts)
+    return parts
+  }
+
   function compactRenderState() {
     const d = state.snapshot || {}
+    const snapshotParts = getSnapshotRenderSignatureParts(state.snapshot)
     const partsOpen = state.showMarkersOverlay
     return {
       online: state.bridgeOnline,
@@ -11404,15 +12637,10 @@
       previewMode: getPreviewMode(d),
       timerMode: getEffectiveTimerMode(d),
       timerRunning: !!d.timerRunning,
-      counts: [getPlaylistItems(d).length, getRegions(d).length, getMarkers(d).length, getMixerTracks(d).length, getPremixSongs(d).length, getPremixTracks(d).length],
-      listContent: [
-        getListContentRenderSignature(getPlaylistItems(d)),
-        getListContentRenderSignature(getRegions(d)),
-        getListContentRenderSignature(getMarkers(d)),
-      ],
+      counts: [snapshotParts.counts[0], snapshotParts.counts[1], snapshotParts.counts[2], getMixerTracks(d).length, getPremixSongs(d).length, getPremixTracks(d).length],
+      listContent: snapshotParts.listContent,
       totals: [getActivePlaylistTotalText(d, getActivePlaylist(d)), getRegionsTotalText(d)],
-      projects: getProjects(d).map((project, index) =>
-        `${getProjectItemId(project, index)}:${getProjectItemName(project, index)}`).join('|'),
+      projects: snapshotParts.projects,
       activeProject: (() => {
         const active = getEffectiveActiveProjectSelection(d)
         return `${active.id}:${active.index}`
@@ -11821,6 +13049,11 @@
     state.activeTab = tab
     state.showMenu = false
     const page = tab === 'playlist' ? 'playlist' : tab === 'regions' ? 'regions' : tab === 'markers' ? 'markers' : tab
+    // Troca primeiro o painel que ja esta pronto. Os comandos para a extensao
+    // continuam logo abaixo, mas nao seguram a resposta visual do toque.
+    const swappedMusicPane = changingMusicListTab &&
+      swapMusicPaneDom(tab, previousTab)
+    const mountedMainContent = !swappedMusicPane && mountMainContentInPlace()
     if (tab === 'playlist' || tab === 'regions') {
       if (changingMusicListTab && options.keepRemoteSelection !== true) {
         postCommand('clear_selection', {
@@ -11838,6 +13071,10 @@
         page, activeTab: page,
         previousPage: previousTab,
       })
+    }
+    if (swappedMusicPane || mountedMainContent) {
+      state.lastHtmlSignature = getAppRenderSignature()
+      return
     }
     scheduleRender(true)
   }
@@ -12022,12 +13259,11 @@
         if (getPlayingId() === id) {
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(id, 'regions', 'playing')
-          scheduleRender(true)
+          finishSongInteractionDom()
           return
         }
         if (queuedChildConflictsWithPlayingFamily(child)) {
           showPopup('ESSA MÚSICA NÃO PODE ENTRAR NA FILA DE ESPERA', 'error', 1800)
-          scheduleRender(true)
           return
         }
         if (getQueuedId() === id) {
@@ -12050,7 +13286,7 @@
             autoQueue: false,
           })
         }
-        scheduleRender(true)
+        finishSongInteractionDom()
         return
       }
       if (type === 'playlist') {
@@ -12069,7 +13305,7 @@
         state.playlistSelectionClearedUntil = now() + 5000
       }
       postCommand('select_region', childPayload)
-      scheduleRender(true)
+      finishSongInteractionDom()
       return
     }
     if (type === 'marker') {
@@ -12138,7 +13374,7 @@
           }
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(id, 'playlist', 'playing')
-          scheduleRender(true)
+          finishSongInteractionDom()
           return
         }
         if (getQueuedId() === id) {
@@ -12148,7 +13384,7 @@
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
           postCommand('clear_queue', selectedPayload(id, 'playlist'))
-          scheduleRender(true)
+          finishSongInteractionDom()
           return
         }
         if (rejectOpenFamilyParentQueue(selectedItem, id)) return
@@ -12173,7 +13409,7 @@
             clearPlaylistSelection: true,
             clearRegionSelection: true,
           })
-          scheduleRender()
+          finishSongInteractionDom()
           return
         }
         state.selectedPlaylistSongId = id
@@ -12186,7 +13422,7 @@
         state.regionSelectionClearedUntil = now() + 5000
         postCommand('select_playlist_song', selectedPayload(id, 'playlist'))
       }
-      scheduleRender(true)
+      finishSongInteractionDom()
       return
     }
     if (type === 'region') {
@@ -12201,7 +13437,7 @@
           }
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(id, 'regions', 'playing')
-          scheduleRender(true)
+          finishSongInteractionDom()
           return
         }
         if (getQueuedId() === id) {
@@ -12211,7 +13447,7 @@
           focusPartsSongSource('playing')
           focusOpenTabletTransportPanel(getPlayingId(), resolveSongTabById(getPlayingId()), 'playing')
           postCommand('clear_queue', selectedPayload(id, 'regions'))
-          scheduleRender(true)
+          finishSongInteractionDom()
           return
         }
         if (rejectOpenFamilyParentQueue(selectedItem, id)) return
@@ -12236,7 +13472,7 @@
             clearPlaylistSelection: true,
             clearRegionSelection: true,
           })
-          scheduleRender()
+          finishSongInteractionDom()
           return
         }
         state.selectedRegionId = id
@@ -12249,7 +13485,7 @@
         state.playlistSelectionClearedUntil = now() + 5000
         postCommand('select_region', selectedPayload(id, 'regions'))
       }
-      scheduleRender(true)
+      finishSongInteractionDom()
     }
   }
 
@@ -12285,7 +13521,7 @@
         setPendingTransportPlaying(true, 2500)
         postCommand('director_stop_no_seek', stopPayload)
         showPopup('STOP CANCELADO', 'info', 800)
-        scheduleRender(true)
+        finishSongInteractionDom()
         return
       }
 
@@ -12296,7 +13532,7 @@
         state.tabletFadeoutRuntimePendingState = true
         state.tabletFadeoutRuntimePendingUntil = now() + 1800
         postCommand('director_stop_no_seek', stopPayload)
-        scheduleRender(true)
+        finishSongInteractionDom()
         return
       }
 
@@ -12379,7 +13615,7 @@
       if (partsOpen) syncPartsPlayButtonDom(true)
       else showPopup('PLAY', 'success', 700)
     }
-    scheduleRender(true)
+    finishSongInteractionDom()
   }
 
   function handleStopBreak() {
@@ -12426,7 +13662,7 @@
     clearPartsArmedOwner()
     syncMarkerSelectionDom()
     showPopup('STOP BREAK', 'error', 800)
-    scheduleRender(true)
+    finishSongInteractionDom()
   }
 
   function toggleAutoplay(mode = 1) {
@@ -12462,9 +13698,7 @@
       payload.autoPlayEnabled = next
     }
     postCommand(command, payload)
-    syncMainControlButtonsDom()
-    syncPlaybackQueueHeaderDom(state.snapshot || {})
-    scheduleRender()
+    finishSongInteractionDom()
   }
 
   function toggleLive() {
@@ -12473,14 +13707,53 @@
     scheduleRender(true)
   }
 
+  // Qual trio a barra lateral mostra: P1-P3 ou P4-P6.
+  function getTabletPreviewFirstSlot(previewMode = getPreviewMode()) {
+    const page = state.tabletPreviewPage === 2 ||
+      (state.tabletPreviewPage === 0 && previewMode >= 4) ? 2 : 1
+    return page === 2 ? 4 : 1
+  }
+
+  // Os mesmos previews aparecem em dois lugares: o trio da barra lateral do
+  // tablet e a grade de seis dentro do modal de Repertorios. Os dois marcam o
+  // slot ligado com classes proprias, e ambos sao acertados aqui.
+  function syncPreviewButtonsDom() {
+    const previewMode = getPreviewMode()
+    root.querySelectorAll(
+      '[data-action="tablet-preview"],[data-action="playlist-preview-select"]',
+    ).forEach((button) => {
+      const active = (Number(button.getAttribute('data-preview-slot')) || 0) === previewMode
+      if (button.classList.contains('tabletPreviewButton')) {
+        button.classList.toggle('tabletPreviewButtonActive', active)
+      } else {
+        button.classList.toggle('playlistPreviewSlotActive', active)
+      }
+    })
+    root.querySelectorAll('[data-action="playlist-preview-open"]').forEach((button) => {
+      const ligado = previewMode > 0
+      button.classList.toggle('btnConfigOnGreen', ligado)
+      button.classList.toggle('btnConfigOffRed', !ligado)
+      button.setAttribute('aria-pressed', ligado ? 'true' : 'false')
+    })
+  }
+
   function togglePreview(slot) {
     const selected = Math.max(1, Math.min(6, Number(slot) || 1))
+    const firstSlotBefore = getTabletPreviewFirstSlot()
     const next = getPreviewMode() === selected ? 0 : selected
     state.pendingPreviewMode = next
     state.pendingPreviewUntil = now() + 3000
     postCommand('preview_set', { previewIndex: next, previewMode: next, desiredState: next > 0 })
     showPopup(next > 0 ? `PREVIEW ${next}` : 'PREVIEW DESLIGADO', next > 0 ? 'success' : 'info', 750)
-    scheduleRender(true)
+    // Virar a pagina da barra muda QUAIS botoes existem (P1-P3 <-> P4-P6), e so
+    // esse caso precisa reconstruir. Ligar ou desligar um preview do mesmo trio
+    // muda apenas a marca do proprio botao.
+    if (getTabletPreviewFirstSlot(next) !== firstSlotBefore) {
+      scheduleRender(true)
+      return
+    }
+    syncPreviewButtonsDom()
+    state.lastHtmlSignature = getAppRenderSignature()
   }
 
   function focusDirectorPasswordInput() {
@@ -12780,48 +14053,7 @@
     scheduleRender(true)
   }
 
-  function beginNativeTabletSearch() {
-    if (state.tabletSearchNativeQueryTimer) {
-      window.clearTimeout(state.tabletSearchNativeQueryTimer)
-      state.tabletSearchNativeQueryTimer = 0
-    }
-    state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
-    const serial = state.tabletSearchNativeSerial
-    state.tabletSearchNativeOpenPromise = postCommand('smart_search_open', {
-      page: state.activeTab,
-      searchSerial: serial,
-    })
-  }
-
-  function queueNativeTabletSearchQuery(query) {
-    if (state.tabletSearchNativeQueryTimer) window.clearTimeout(state.tabletSearchNativeQueryTimer)
-    const serial = Number(state.tabletSearchNativeSerial || 0)
-    const openPromise = state.tabletSearchNativeOpenPromise
-    state.tabletSearchNativeQueryTimer = window.setTimeout(() => {
-      state.tabletSearchNativeQueryTimer = 0
-      const send = () => {
-        if (!state.showTabletSearch || serial !== Number(state.tabletSearchNativeSerial || 0)) return
-        postCommand('smart_search_query', { query, searchSerial: serial })
-      }
-      Promise.resolve(openPromise).then(send, send)
-    }, 24)
-  }
-
-  function activateNativeTabletSearchResult(payload) {
-    if (state.tabletSearchNativeQueryTimer) {
-      window.clearTimeout(state.tabletSearchNativeQueryTimer)
-      state.tabletSearchNativeQueryTimer = 0
-    }
-    const serial = Number(state.tabletSearchNativeSerial || 0)
-    const openPromise = state.tabletSearchNativeOpenPromise
-    const send = () => postCommand('smart_search_activate', {
-      ...payload,
-      searchSerial: serial,
-    })
-    Promise.resolve(openPromise).then(send, send)
-  }
-
-  function closeTabletSearchState(options = {}) {
+  function closeTabletSearchState() {
     const wasOpen = state.showTabletSearch
     const input = document.getElementById('tabletSearchInput')
     if (input) {
@@ -12829,19 +14061,9 @@
     }
     state.showTabletSearch = false
     state.tabletSearchQuery = ''
-    if (state.tabletSearchNativeQueryTimer) {
-      window.clearTimeout(state.tabletSearchNativeQueryTimer)
-      state.tabletSearchNativeQueryTimer = 0
-    }
     const hadLegacySearchViewport = document.documentElement.classList.contains('directorSearchPortraitMode') ||
       document.documentElement.classList.contains('directorSearchViewportRestoring')
     if (wasOpen || hadLegacySearchViewport) setDirectorSearchPortraitMode(false)
-    if (wasOpen && options.notifyNative !== false) {
-      state.tabletSearchNativeSerial = Number(state.tabletSearchNativeSerial || 0) + 1
-      // Envia antes do eventual comando de troca de aba disparado pelo mesmo
-      // clique, para que o retorno da Lupa nao sobrescreva a navegacao nova.
-      postCommand('smart_search_close')
-    }
   }
 
   function setDirectorSearchPortraitMode(enabled) {
@@ -12866,28 +14088,28 @@
   }
 
   function handleTabletSearchResult(searchId, element = null) {
+    if (!state.showTabletSearch) return
     const id = String(searchId || '')
     const data = state.snapshot || {}
-    const entry = getFilteredTabletSearchEntries(data).find((candidate) => String(candidate.id) === id) ||
-      getTabletSearchEntries(data).find((candidate) => String(candidate.id) === id)
+    const rawStart = element?.getAttribute?.('data-search-start')
+    const attributeStart = rawStart == null ? NaN : Number(rawStart)
+    const entry = getFilteredTabletSearchEntries(data).find((candidate) =>
+      String(candidate.id) === id && (!Number.isFinite(attributeStart) ||
+        Math.abs(Number(candidate.start) - attributeStart) <= 0.003))
     if (!entry) return
-    const attributeStart = Number(element?.getAttribute?.('data-search-start'))
-    const resultStart = Number.isFinite(attributeStart)
-      ? attributeStart : Number(entry.start || 0)
-    activateNativeTabletSearchResult({
-      resultId: entry.id,
-      resultStart,
-      query: state.tabletSearchQuery,
-    })
-
-    // A extensao fecha a propria Lupa e executa selecao/fila/insercao. O app
-    // apenas fecha sua camada visual; nenhuma regra nativa e duplicada aqui.
-    closeTabletSearchState({ notifyNative: false })
-    state.showProjectModal = false
-    state.showPlaylistModal = false
-    state.showSettingsModal = false
-    state.showTelepromptScreen = false
-    state.showRecadosScreen = false
+    // O resultado usa a mesma acao direta das listas. Nenhum caractere da
+    // pesquisa e enviado para a lupa nativa da extensao.
+    const targetTab = entry.regionsPage ? 'regions' : 'playlist'
+    state.tabletSearchPendingFocus = {
+      id: String(entry.id),
+      itemType: entry.regionsPage ? 'region' : 'playlist',
+      destinationTab: targetTab,
+      scheduled: false,
+    }
+    state.activeTab = targetTab
+    state.ignoreTapUntil = now() + 700
+    handleItemSelect(element)
+    closeTabletSearchState()
     scheduleRender(true)
   }
 
@@ -12898,7 +14120,7 @@
     }
     switch (action) {
       case 'menu': break
-      case 'top-menu': state.showMenu = !state.showMenu; scheduleRender(true); break
+      case 'top-menu': state.showMenu = !state.showMenu; if (!mountMenuInPlace()) scheduleRender(true); break
       case 'settings': {
         const opening = !state.showSettingsModal
         closeTabletSearchState()
@@ -12912,9 +14134,13 @@
         if (opening) {
           state.showProjectModal = false
           state.showPlaylistModal = false
+          state.showPlaylistPreviewModal = false
           state.tabletPlaylistPendingId = ''
+          root.querySelector('.projectModalBox')?.closest?.('.modalOverlay')?.remove?.()
+          root.querySelector('.playlistModalBox')?.closest?.('.modalOverlay')?.remove?.()
+          root.querySelector('.playlistPreviewModalOverlay')?.remove?.()
         }
-        scheduleRender(true)
+        mountSettingsModalInPlace()
         break
       }
       case 'project-selector': {
@@ -12927,17 +14153,17 @@
           state.tabletPlaylistPendingId = ''
           state.showSettingsModal = false
         }
-        scheduleRender(true)
+        if (!mountProjectModalInPlace()) scheduleRender(true)
         break
       }
-      case 'open-playlist-modal': closeTabletSearchState(); state.showMenu = false; state.showProjectModal = false; state.showSettingsModal = false; state.tabletPlaylistPendingId = ''; state.showPlaylistModal = true; scheduleRender(true); break
+      case 'open-playlist-modal': closeTabletSearchState(); state.showMenu = false; state.showProjectModal = false; state.showSettingsModal = false; state.tabletPlaylistPendingId = ''; state.showPlaylistModal = true; if (!mountPlaylistModalInPlace()) scheduleRender(true); break
       case 'tablet-search': {
         const opening = !state.showTabletSearch
         closeTabletSearchState()
         state.showMenu = false
         if (opening) {
           state.showTabletSearch = true
-          beginNativeTabletSearch()
+          state.tabletSearchSourceTab = state.activeTab
           setDirectorSearchPortraitMode(true)
           state.showProjectModal = false
           state.showPlaylistModal = false
@@ -12963,7 +14189,6 @@
         state.showTelepromptScreen = false
         if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'playlist'
         setTab('playlist')
-        scheduleRender(true)
         break
       case 'go-regions':
         leavePremixForTabletNavigation()
@@ -12975,7 +14200,6 @@
         state.showTelepromptScreen = false
         if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'regions'
         setTab('regions')
-        scheduleRender(true)
         break
       case 'go-markers': state.showMenu = false; openMarkersOverlay(); break
       case 'open-teleprompt': state.showMenu = false; openDirectorTelepromptScreen(); break
@@ -13014,7 +14238,7 @@
         }
         if (state.tabletPartsSplit && state.activeTab === 'markers') state.activeTab = 'playlist'
         persistDirectorPanelState()
-        scheduleRender(true)
+        if (!mountMainContentInPlace()) scheduleRender(true)
         break
         }
       case 'tablet-tuner-split':
@@ -13036,7 +14260,7 @@
           postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         }
         persistDirectorPanelState()
-        scheduleRender(true)
+        if (!mountMainContentInPlace()) scheduleRender(true)
         break
         }
       case 'tablet-bpm-split':
@@ -13058,7 +14282,7 @@
           postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         }
         persistDirectorPanelState()
-        scheduleRender(true)
+        if (!mountMainContentInPlace()) scheduleRender(true)
         break
         }
       case 'tablet-mixer':
@@ -13069,11 +14293,10 @@
         closeTabletSearchState()
         if (state.activeTab === 'mixer') {
           if (leavingPremix) {
-            scheduleRender(true)
+            if (!mountMainContentInPlace()) scheduleRender(true)
             break
           }
           setTab(state.tabletMixerReturnTab || 'playlist')
-          scheduleRender(true)
           break
         }
         state.tabletMixerReturnTab = state.activeTab || 'playlist'
@@ -13086,7 +14309,6 @@
         state.showRecadosScreen = false
         persistDirectorPanelState()
         setTab('mixer')
-        scheduleRender(true)
         break
         }
       case 'tablet-recados':
@@ -13107,10 +14329,17 @@
         break
       case 'stop-break': handleStopBreak(); break
       case 'tablet-play-hold-close': closeTabletPlayHoldModalDom(); break
-      case 'tablet-song-tool-select':
-        state.tabletSongToolsChoice = String(el.getAttribute('data-song-tool') || 'premix')
-        scheduleRender(true)
+      case 'tablet-song-tool-select': {
+        // A escolha muda somente a marca dentro do proprio grupo de botoes.
+        const choice = String(el.getAttribute('data-song-tool') || 'premix')
+        state.tabletSongToolsChoice = choice
+        root.querySelectorAll('[data-action="tablet-song-tool-select"]').forEach((button) => {
+          button.classList.toggle('tabletSongToolOptionActive',
+            String(button.getAttribute('data-song-tool') || '') === choice)
+        })
+        state.lastHtmlSignature = getAppRenderSignature()
         break
+      }
       case 'tablet-song-tool-reset':
         state.showTabletSongToolsModal = false
         state.showTabletLiveResetConfirm = true
@@ -13295,7 +14524,7 @@
           state.showProjectModal = false
           state.showSettingsModal = false
         }
-        scheduleRender(true)
+        if (!mountPlaylistModalInPlace()) scheduleRender(true)
         break
       case 'transport-seek-set-position': handleTransportSeekSetPosition(el, event); break
       case 'transport-seek-play': handleTransportSeekPlayToggle(); break
@@ -13310,7 +14539,7 @@
         persistDirectorPanelState()
         postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         postCommand(opening ? 'tuner_focus' : 'set_tuner_visibility', { activeTab: state.tunerSourceTab, page: state.tunerSourceTab, visible: opening })
-        scheduleRender(true)
+        if (!mountTunerScreenInPlace()) scheduleRender(true)
         break
       }
       case 'tuner-minus': adjustTunerFromButton(el, -1); break
@@ -13325,7 +14554,7 @@
         persistDirectorPanelState()
         postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         postCommand(opening ? 'bpm_focus' : 'set_bpm_visibility', { visible: opening, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
-        scheduleRender(true)
+        if (!mountTunerScreenInPlace()) scheduleRender(true)
         break
       }
       case 'tone-tools-close':
@@ -13338,7 +14567,7 @@
         persistDirectorPanelState()
         if (tunerWasOpen) postCommand('set_tuner_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
         if (bpmWasOpen) postCommand('set_bpm_visibility', { visible: false, activeTab: state.tunerSourceTab, page: state.tunerSourceTab })
-        scheduleRender(true)
+        if (!mountTunerScreenInPlace()) scheduleRender(true)
         break
       }
       case 'bpm-minus': adjustBpmFromButton(el, -1); break
@@ -13357,12 +14586,17 @@
       case 'atbl-toggle': {
         // O botão AT/BL é independente do Auto. Com Auto desligado ele apenas fica armado.
         const next = !getAutoBlocoEnabled()
+        const menuWasOpen = state.showMenu
         state.showMenu = false
         state.pendingAutoBloco = next
         state.pendingAutoBlocoUntil = now() + 8000
         postCommand('auto_bloco_set', { desiredAutoBloco: next, autoBlocoEnabled: next, desiredState: next ? 'on' : 'off', activeTab: state.activeTab, page: state.activeTab })
         showPopup(next ? 'AT/BL ON' : 'AT/BL OFF', 'success', 750)
-        scheduleRender(true)
+        // O botao troca de estado agora, no proprio DOM. So o fechamento do
+        // menu suspenso e estrutural o bastante para pedir um render inteiro.
+        syncMainControlButtonsDom()
+        if (menuWasOpen) scheduleRender(true)
+        else state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'play': handlePlay(); break
@@ -13372,7 +14606,7 @@
       case 'live': toggleLive(); break
       case 'confirm-live-off': confirmLiveOff(); break
       case 'cancel-live-off': state.showConfirmLiveOff = false; scheduleRender(true); break
-      case 'timer-open': state.showTimerModal = true; scheduleRender(true); break
+      case 'timer-open': state.showTimerModal = true; if (!mountTimerModalInPlace()) scheduleRender(true); break
       case 'timer-toggle': handleTimerToggle(); break
       case 'timer-stop-confirm': confirmTimerStop(); break
       case 'timer-stop-cancel': state.showConfirmTimerStop = false; scheduleRender(true); break
@@ -13384,6 +14618,28 @@
         if (insideModal && isOverlayAction) break
         if (state.showSettingsModal && !!el.closest?.('.settingsModalBox')) {
           closeSettingsModalInPlace()
+          break
+        }
+        if (state.showProjectModal && !!el.closest?.('.projectModalOverlay')) {
+          state.showProjectModal = false
+          state.showProjectSaveConfirm = false
+          mountProjectModalInPlace()
+          root.querySelector('.projectSaveConfirmOverlay')?.remove?.()
+          break
+        }
+        if (state.showPlaylistModal && !!el.closest?.('.tabletPlaylistModalOverlay')) {
+          state.showPlaylistModal = false
+          state.tabletPlaylistPendingId = ''
+          state.showPlaylistPreviewModal = false
+          root.querySelector('.playlistPreviewModalOverlay')?.remove?.()
+          mountPlaylistModalInPlace()
+          break
+        }
+        if (state.showTimerModal && !!el.closest?.('.timerModalBox')) {
+          state.showTimerModal = false
+          state.showConfirmTimerStop = false
+          root.querySelector('[data-action="timer-stop-cancel"]')?.closest?.('.modalOverlay')?.remove?.()
+          mountTimerModalInPlace()
           break
         }
         const tunerWasOpen = state.showTunerScreen
@@ -13438,7 +14694,8 @@
           enabled: next,
           blockInterfaceWhenDirectorConnected: next,
         })
-        scheduleRender(true)
+        mountSettingsModalInPlace()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'interface-access-notification-toggle': {
@@ -13449,7 +14706,8 @@
         if (state.hideInterfaceAccessNotification) {
           dismissInterfaceAccessButton()
         }
-        scheduleRender(true)
+        mountSettingsModalInPlace()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'family-view-toggle': {
@@ -13462,7 +14720,8 @@
           enabled: next,
           familyViewControlsEnabled: next,
         })
-        scheduleRender(true)
+        mountSettingsModalInPlace()
+        scheduleRenderAfterPaint(true)
         break
       }
       case 'family-drawer-toggle': {
@@ -13474,25 +14733,28 @@
       case 'teleprompt-config-hub':
         state.showSettingsModal = true
         state.settingsSection = 'teleprompt-hub'
-        scheduleRender(true)
+        mountSettingsModalInPlace()
         break
       case 'teleprompt-config-main':
         state.settingsSection = 'main'
-        scheduleRender(true)
+        mountSettingsModalInPlace()
         break
       case 'teleprompt-config-tp1':
         state.telepromptSettingsSlot = 1
         state.settingsSection = 'teleprompt-1'
-        scheduleRender(true)
+        armAppConfigColorGuard()
+        mountSettingsModalInPlace()
         break
       case 'teleprompt-config-tp2':
         state.telepromptSettingsSlot = 2
         state.settingsSection = 'teleprompt-2'
-        scheduleRender(true)
+        armAppConfigColorGuard()
+        mountSettingsModalInPlace()
         break
       case 'teleprompt-config-recados':
         state.settingsSection = 'recados'
-        scheduleRender(true)
+        armAppConfigColorGuard()
+        mountSettingsModalInPlace()
         break
       case 'teleprompt-font-set': setTelepromptFont(el.getAttribute('data-value')); break
       case 'teleprompt-color-set': setTelepromptColor(el.getAttribute('data-value')); break
@@ -13633,7 +14895,7 @@
           })
         break
       }
-      case 'project-modal-ok': state.showProjectModal = false; scheduleRender(true); break
+      case 'project-modal-ok': state.showProjectModal = false; if (!mountProjectModalInPlace()) scheduleRender(true); break
       case 'auth-login': login(); break
       case 'toggle-password': state.showPassword = !state.showPassword; scheduleRender(true); break
       case 'marker-cancel': state.selectedMarkerId = ''; state.markerSelectionClearedUntil = now() + 5000; state.partsLocalSelectedMarkerId = ''; state.partsArmedMarkerId = ''; state.partsArmedMarkerUntil = 0; clearPartsArmedOwner(); releasePartsBridgeHold(); syncMarkerSelectionDom(); postCommand('marker_cancel', { key: 'ESC', escapeKey: true, activeTab: 'markers', page: 'markers', cancelArmedMarker: true, clearMarkerSelection: true }); scheduleRender(true); break
@@ -13683,17 +14945,18 @@
         scheduleRender(true)
         break
       }
-      case 'mixer-tracks': state.mixerView = 'tracks'; postCommand('mixer_focus', { view: 'tracks', page: state.activeTab }); scheduleRender(true); break
-      case 'mixer-groups': state.mixerView = 'groups'; postCommand('mixer_focus', { view: 'groups', page: state.activeTab }); scheduleRender(true); break
-      case 'mixer-master': state.mixerView = 'master'; postCommand('mixer_focus', { view: 'master', page: state.activeTab }); scheduleRender(true); break
-      case 'mixer-focus': state.mixerView = 'master'; postCommand('mixer_focus', { view: 'master', page: state.activeTab }); scheduleRender(true); break
+      case 'mixer-tracks': state.mixerView = 'tracks'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab }); break
+      case 'mixer-groups': state.mixerView = 'groups'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'groups', page: state.activeTab }); break
+      case 'mixer-master': state.mixerView = 'master'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab }); break
+      case 'mixer-focus': state.mixerView = 'master'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab }); break
       case 'mixer-mute': {
         const id = el.getAttribute('data-mixer-id') || ''
         const track = findMixerTrackById(id) || { id }
         const next = !getHeldMixerToggle(track, 'mute')
         setHeldMixerToggle(track, 'mute', next)
         postCommand('mixer_toggle_mute', { id, targetId: id, trackId: id, view: state.mixerView, page: state.activeTab })
-        scheduleRender(true)
+        syncMixerRowsDom()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'mixer-solo': {
@@ -13702,7 +14965,8 @@
         const next = !getHeldMixerToggle(track, 'solo')
         setHeldMixerToggle(track, 'solo', next)
         postCommand('mixer_toggle_solo', { id, targetId: id, trackId: id, view: state.mixerView, page: state.activeTab })
-        scheduleRender(true)
+        syncMixerRowsDom()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'mixer-route-close': state.mixerRouteTarget = ''; scheduleRender(true); break
@@ -13747,13 +15011,13 @@
         scheduleRender(true)
         break
       }
-      case 'premix-song': state.selectedPremixSongId = el.getAttribute('data-premix-song-id') || ''; state.selectedPremixTrackId = ''; postCommand('premix_focus_song', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); state.premixView = 'tracks'; scheduleRender(true); break
-      case 'premix-open': state.selectedPremixTrackId = ''; postCommand('premix_item_open', { requestFull: '1', page: state.activeTab }); state.premixView = 'tracks'; scheduleRender(true); break
-      case 'premix-global': state.selectedPremixSongId = '__GLOBAL__'; state.selectedPremixTrackId = ''; postCommand('premix_global_focus', { id: '__GLOBAL__', songId: '__GLOBAL__', global: true, isGlobal: true }); state.premixView = 'tracks'; scheduleRender(true); break
+      case 'premix-song': state.selectedPremixSongId = el.getAttribute('data-premix-song-id') || ''; state.selectedPremixTrackId = ''; state.premixView = 'tracks'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('premix_focus_song', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); break
+      case 'premix-open': state.selectedPremixTrackId = ''; state.premixView = 'tracks'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('premix_item_open', { requestFull: '1', page: state.activeTab }); break
+      case 'premix-global': state.selectedPremixSongId = '__GLOBAL__'; state.selectedPremixTrackId = ''; state.premixView = 'tracks'; if (!mountMainContentInPlace()) scheduleRender(true); postCommand('premix_global_focus', { id: '__GLOBAL__', songId: '__GLOBAL__', global: true, isGlobal: true }); break
       case 'premix-toggle': postCommand('premix_toggle_enabled', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, selectedRegionId: state.selectedPremixSongId }); break
-      case 'premix-back-songs': state.premixView = 'songs'; scheduleRender(true); break
-      case 'premix-tracks': state.premixTrackView = 'tracks'; scheduleRender(true); break
-      case 'premix-groups': state.premixTrackView = 'groups'; scheduleRender(true); break
+      case 'premix-back-songs': state.premixView = 'songs'; if (!mountMainContentInPlace()) scheduleRender(true); break
+      case 'premix-tracks': state.premixTrackView = 'tracks'; if (!mountMainContentInPlace()) scheduleRender(true); break
+      case 'premix-groups': state.premixTrackView = 'groups'; if (!mountMainContentInPlace()) scheduleRender(true); break
       case 'premix-mute': postCommand('premix_toggle_mute', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, targetId: el.getAttribute('data-premix-track-id'), trackId: el.getAttribute('data-premix-track-id'), view: state.premixTrackView }); break
       case 'premix-fx': postCommand('premix_toggle_fx', { id: state.selectedPremixSongId, songId: state.selectedPremixSongId, targetId: el.getAttribute('data-premix-track-id'), trackId: el.getAttribute('data-premix-track-id'), view: state.premixTrackView }); break
       case 'premix-screen-close': closePremixFullScreen(); break
@@ -13833,7 +15097,8 @@
           ...getPremixTargetPayload(), itemId: id, mediaItemId: id,
           targetId: id, trackId, desiredSolo: next, solo: next,
         })
-        scheduleRender(true)
+        syncPremixSoloButtonsDom()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'premix-item-unique': {
@@ -13852,7 +15117,8 @@
           targetId: id, trackId, desiredUniqueSolo: next,
           uniqueSolo: next,
         })
-        scheduleRender(true)
+        syncPremixSoloButtonsDom()
+        state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'exit-app': if (typeof window.vshookExitToProjectSelector === 'function') window.vshookExitToProjectSelector(); else window.location.reload(); break
@@ -14042,20 +15308,112 @@
     return false
   }
 
+  function getAppConfigColorInput(target) {
+    if (!target?.closest) return null
+    const directInput = target.closest('.appTpConfigModal input[type="color"]')
+    if (directInput) return directInput
+    return target.closest('.appTpConfigColor')?.querySelector?.('input[type="color"]') || null
+  }
+
+  function armAppConfigColorGuard() {
+    if (document.documentElement.dataset.directorPlatform !== 'android') return
+    appConfigColorGuardUntil = now() + APP_CONFIG_COLOR_GUARD_MS
+    appConfigColorPointerTarget = null
+    appConfigColorPointerAt = 0
+  }
+
+  function trackAppConfigColorPointerDown(event) {
+    if (document.documentElement.dataset.directorPlatform !== 'android') return
+    const input = getAppConfigColorInput(event.target)
+    if (!input) return
+    appConfigColorPointerTarget = input
+    appConfigColorPointerAt = now()
+  }
+
+  function guardAppConfigColorClick(event) {
+    if (document.documentElement.dataset.directorPlatform !== 'android' ||
+        now() >= appConfigColorGuardUntil) return
+    const input = getAppConfigColorInput(event.target)
+    if (!input) return
+    const intentionalTouch = appConfigColorPointerTarget === input &&
+      (now() - appConfigColorPointerAt) < 1000
+    if (intentionalTouch) return
+    appConfigColorPointerTarget = null
+    appConfigColorPointerAt = 0
+    // O WebView pode entregar um clique sintetico depois que o pointerup do
+    // botao anterior ja abriu esta tela. Sem um novo pointerdown no campo, esse
+    // clique e residual e nao deve abrir sozinho o seletor nativo de cores.
+    event.preventDefault?.()
+    event.stopImmediatePropagation?.()
+  }
+
   function toggleHashFamilyDrawer(parentKey, itemType) {
     if (!parentKey) return
     if (state.hashRegionDrawers[parentKey]) {
       state.hashRegionDrawers[parentKey] = false
-      if (state.hashRegionDrawerPendingId === parentKey) state.hashRegionDrawerPendingId = ''
     } else if (Array.isArray(state.hashRegionDrawerChildren[parentKey])) {
       state.hashRegionDrawers[parentKey] = true
     } else {
       state.hashRegionDrawers[parentKey] = true
-      state.hashRegionDrawerPendingId = ''
       buildHashDrawerChildren(parentKey, itemType, state.snapshot)
     }
     persistDirectorPanelState()
     scheduleRender(true)
+  }
+
+  // Em iPhone/iPad antigos o render que segue o toque ocupa o quadro inteiro,
+  // e ate ele terminar a tela fica exatamente igual a antes. Sem uma marca
+  // imediata o botao parece nao ter recebido o dedo e o operador aperta de
+  // novo no meio do culto. A marca entra no pointerdown, antes de qualquer
+  // estado, e e puramente visual: nenhum gesto depende dela.
+  let pressedFeedbackElement = null
+  let pressedFeedbackReleaseTimer = 0
+
+  // A marca vale em toda tela do app, inclusive nas que o renderApp devolve
+  // antes de montar a interface principal (login e Recados). Por isso ela mora
+  // num no proprio do head, reposicionado no fim para vencer o CSS do modo
+  // carregado antes dele.
+  function ensurePressedFeedbackStylesDom() {
+    try {
+      const previous = document.getElementById('vshookPressedFeedbackStyles')
+      if (previous) previous.remove()
+      const node = document.createElement('style')
+      node.id = 'vshookPressedFeedbackStyles'
+      node.textContent = '.vshookPressed{filter:brightness(1.34)!important}button.vshookPressed,.vshookPressed[role="button"]{transform:translateY(1px)!important}'
+      document.head.appendChild(node)
+    } catch (_) {}
+  }
+
+  function clearPressedFeedbackDom() {
+    if (pressedFeedbackReleaseTimer) {
+      window.clearTimeout(pressedFeedbackReleaseTimer)
+      pressedFeedbackReleaseTimer = 0
+    }
+    if (!pressedFeedbackElement) return
+    try { pressedFeedbackElement.classList.remove('vshookPressed') } catch (_) {}
+    pressedFeedbackElement = null
+  }
+
+  function markPressedFeedbackDom(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    clearPressedFeedbackDom()
+    // A linha da lista fica de fora: encostar nela para rolar nao e apertar,
+    // e acender a linha a cada rolagem atrapalharia a leitura ao vivo.
+    const target = event.target?.closest?.('[data-action]')
+    if (!target || target.closest('.item') || target.disabled === true ||
+        target.getAttribute('aria-disabled') === 'true') return
+    pressedFeedbackElement = target
+    try { target.classList.add('vshookPressed') } catch (_) {}
+  }
+
+  function releasePressedFeedbackDom() {
+    if (!pressedFeedbackElement || pressedFeedbackReleaseTimer) return
+    // O render disparado pelo toque ocupa o proximo quadro. Soltar a marca so
+    // no quadro seguinte mantem o botao aceso ate a tela realmente mudar.
+    pressedFeedbackReleaseTimer = window.setTimeout(clearPressedFeedbackDom, 600)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(clearPressedFeedbackDom)
+    })
   }
 
   function onTap(event) {
@@ -14064,6 +15422,8 @@
     const el = event.target?.closest?.('[data-action]')
     if (!el) return
     const action = el.getAttribute('data-action') || ''
+    if (action === 'select-item' &&
+        now() < Number(state.directorSongListScrollingUntil || 0)) return
 
     const key = `${action}:${el.getAttribute('data-song-id') || el.getAttribute('data-region-id') || el.getAttribute('data-marker-id') || el.getAttribute('data-mixer-id') || el.getAttribute('data-premix-song-id') || el.getAttribute('data-premix-track-id') || el.getAttribute('data-premix-item-id') || el.getAttribute('data-tuner-song-id') || el.getAttribute('data-track-id') || el.getAttribute('data-search-id') || el.getAttribute('data-song-tool') || el.getAttribute('data-preview-slot') || el.getAttribute('data-slot') || ''}`
     const protectedTransportAction = getPlayProtectionEnabled() && (action === 'play' || action === 'stop-break')
@@ -14071,6 +15431,7 @@
     event.preventDefault?.()
     event.stopPropagation?.()
     handleAction(action, el, event)
+    if (!state.showMenu) root.querySelector('.topMenuFlyout')?.remove?.()
   }
 
   let premixHoldTimer = 0
@@ -14258,6 +15619,19 @@
     transportSeekHoldPointerId = null
   }
 
+  // Rede de seguranca do gesto de segurar.
+  //
+  // Quem cancela a espera de 1 segundo e o touchend. Mas quando o toque abre
+  // uma tela, o proprio botao tocado sai do DOM — e o WebKit do iPhone pode
+  // simplesmente nao entregar o touchend de um no removido. A espera sobrevive
+  // ao toque e dispara sozinha um segundo depois, abrindo o Grid por conta
+  // propria. O pointerup chega mesmo nesse caso: dedo levantado e espera
+  // encerrada, sem excecao.
+  function cancelTransportSeekHoldOnPointerUp() {
+    if (!transportSeekHoldTimer) return
+    cancelTransportSeekHold()
+  }
+
   function startTransportSeekHold(origin, inputId, clientX, clientY) {
     if (IS_MUSICIAN_MONITOR) return
     if (root.querySelector('.modalOverlay')) return
@@ -14398,6 +15772,14 @@
     if (directPanel && !direct?.closest?.('button,[data-action]')) {
       return { origin: directPanel, transportPanel: directPanel, premixChild: null }
     }
+
+    // A busca por coordenada abaixo ignora o que esta por cima: ela so olha se
+    // o ponto cai dentro do retangulo do cabecalho da fila. Um botao de menu
+    // desenhado sobre esse retangulo — MIXER, por exemplo — cairia dentro dele
+    // e o dedo parado por um segundo abriria o Grid no lugar de apertar o
+    // botao. Quem esta com o dedo num controle nao esta fazendo o gesto do
+    // transporte, e a regra logo acima ja diz isso para o toque direto.
+    if (direct?.closest?.('button,[data-action]')) return null
 
     const x = Number(clientX)
     const y = Number(clientY)
@@ -14549,21 +15931,25 @@
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest?.('.topMenuFlyout, .topMenuBtn')) return
     state.showMenu = false
-    scheduleRender(true)
+    if (!mountMenuInPlace()) scheduleRender(true)
   }
 
   let playlistScrollPointerId = null
   let playlistScrollStartX = 0
   let playlistScrollStartY = 0
   let playlistScrollMoved = false
+  let playlistScrollIsSongList = false
 
   function handlePlaylistScrollGesture(event) {
     if (event.type === 'pointerdown') {
-      if (!event.target?.closest?.('.playlistModalBox .playlistSelectList, .settingsModalBox, .premixFullList, .premixMixerRow')) return
+      const songRow = event.target?.closest?.('.listBox .item[data-action="select-item"][data-item-type="playlist"], .listBox .item[data-action="select-item"][data-item-type="region"]')
+      const otherScrollable = event.target?.closest?.('.playlistModalBox .playlistSelectList, .settingsModalBox, .premixFullList, .premixMixerRow')
+      if (!songRow && !otherScrollable) return
       playlistScrollPointerId = event.pointerId
       playlistScrollStartX = Number(event.clientX) || 0
       playlistScrollStartY = Number(event.clientY) || 0
       playlistScrollMoved = false
+      playlistScrollIsSongList = !!songRow
       return
     }
     if (playlistScrollPointerId === null || event.pointerId !== playlistScrollPointerId) return
@@ -14572,13 +15958,40 @@
       const dy = (Number(event.clientY) || 0) - playlistScrollStartY
       if (Math.hypot(dx, dy) > 7) {
         playlistScrollMoved = true
-        state.ignoreTapUntil = now() + 500
+        if (playlistScrollIsSongList) {
+          state.directorSongListScrollingUntil = now() + 500
+          state.directorListScrollingUntil = now() + 500
+          state.directorSelectionScrollPending = null
+          state.tabletSearchPendingFocus = null
+        } else {
+          state.ignoreTapUntil = now() + 500
+        }
       }
       return
     }
-    if (playlistScrollMoved) state.ignoreTapUntil = now() + 500
+    if (playlistScrollMoved) {
+      if (playlistScrollIsSongList) {
+        state.directorSongListScrollingUntil = now() + 500
+        state.directorListScrollingUntil = now() + 500
+      } else {
+        state.ignoreTapUntil = now() + 500
+      }
+    }
     playlistScrollPointerId = null
     playlistScrollMoved = false
+    playlistScrollIsSongList = false
+  }
+
+  function handleDirectorSongListScroll(event) {
+    const list = event.target
+    if (!list?.matches?.('.listBox')) return
+    const scrollingUntil = now() + 240
+    state.directorListScrollingUntil = scrollingUntil
+    const scrollKey = String(list.getAttribute('data-scroll-key') || '')
+    if (scrollKey === 'playlist' || scrollKey === 'regions') {
+      state.directorSongListScrollingUntil = scrollingUntil
+      state.directorSelectionScrollPending = null
+    }
   }
 
   let mixerRouteHoldTimer = 0
@@ -14836,6 +16249,8 @@
 
   function installEvents() {
     document.addEventListener('scroll', handleTabletMultiLoopTracksScroll, true)
+    document.addEventListener('scroll', handleDirectorSongListScroll, true)
+    document.addEventListener('scroll', clearPressedFeedbackDom, true)
     document.addEventListener('pointerdown', handleAuthFieldPointerDown, true)
     document.addEventListener('pointerdown', handleTimerCountdownPointerDown, true)
     document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
@@ -14883,9 +16298,17 @@
       document.addEventListener('pointermove', handleMultiLoopAutoHold, { passive: true })
       document.addEventListener('pointerup', handleMultiLoopAutoHold, { passive: true })
       document.addEventListener('pointercancel', handleMultiLoopAutoHold, { passive: true })
+      document.addEventListener('pointerdown', markPressedFeedbackDom, { passive: true, capture: true })
+      document.addEventListener('pointerup', cancelTransportSeekHoldOnPointerUp, { passive: true, capture: true })
+      document.addEventListener('pointercancel', cancelTransportSeekHoldOnPointerUp, { passive: true, capture: true })
       document.addEventListener('pointerup', onTap, { passive: false })
+      document.addEventListener('pointerup', releasePressedFeedbackDom, { passive: true })
+      document.addEventListener('pointercancel', clearPressedFeedbackDom, { passive: true })
       document.addEventListener('pointerup', handleMenuOutsidePointerUp, { passive: true })
     } else {
+      document.addEventListener('touchstart', markPressedFeedbackDom, { passive: true, capture: true })
+      document.addEventListener('touchend', releasePressedFeedbackDom, { passive: true })
+      document.addEventListener('touchcancel', clearPressedFeedbackDom, { passive: true })
       document.addEventListener('click', onTap, false)
       document.addEventListener('click', handleMenuOutsidePointerUp, false)
     }
@@ -14893,6 +16316,8 @@
     document.addEventListener('touchmove', handleTransportTouchMove, { passive: false, capture: true })
     document.addEventListener('touchend', handleTransportTouchEnd, { passive: false, capture: true })
     document.addEventListener('touchcancel', handleTransportTouchCancel, { passive: false, capture: true })
+    document.addEventListener('pointerdown', trackAppConfigColorPointerDown, true)
+    document.addEventListener('click', guardAppConfigColorClick, true)
     document.addEventListener('contextmenu', (event) => {
       if (event.target?.closest?.('.transportSeekHoldTarget,.transportSeekPremixChildTarget,.mixerRow[data-mixer-id],[data-action="tablet-multiloop-track"][data-mode="auto"]')) event.preventDefault()
     }, { passive: false })
@@ -14934,7 +16359,6 @@
       if (event.target?.id === 'tabletSearchInput') {
         state.tabletSearchQuery = event.target.value
         syncTabletSearchResultsDom()
-        queueNativeTabletSearchQuery(state.tabletSearchQuery)
         return
       }
       if (event.target?.matches?.('[data-timer-countdown-input]')) {
@@ -15069,14 +16493,23 @@
   }
 
   function animateDirectorProgress(timestamp) {
-    if (timestamp - directorProgressLastPaintAt >= DIRECTOR_VISUAL_FRAME_MS) {
-      directorProgressLastPaintAt = timestamp
-      if (!document.hidden) {
+    if (!document.hidden) {
+      const transportAnimating =
+        isPlaying(state.snapshot) && !isPaused(state.snapshot)
+      if (transportAnimating) {
+        const frameAt = now()
+        syncPlaybackBarsDom(frameAt)
+        syncTransportSeekCursorDom(frameAt)
+      }
+      if (timestamp - directorProgressLastPaintAt >= DIRECTOR_VISUAL_FRAME_MS) {
+        directorProgressLastPaintAt = timestamp
         const sampledAt = now()
-        syncPlaybackProgressDom(sampledAt)
-        syncDirectorTelepromptProgressDom(sampledAt)
-        if (state.showTransportSeekModal) {
-          syncTransportSeekModalDom(sampledAt)
+        if (transportAnimating) {
+          syncPlaybackProgressDom(sampledAt, true)
+          syncDirectorTelepromptProgressDom(sampledAt)
+          if (state.showTransportSeekModal) {
+            syncTransportSeekModalDom(sampledAt)
+          }
         }
         if (state.tabletFadeoutRuntimeActive) {
           syncTabletFadeoutProgressDom()
@@ -15096,6 +16529,7 @@
 
   function start() {
     updateViewportHeight()
+    ensurePressedFeedbackStylesDom()
     window.addEventListener('message', handleDirectorRecadosMessage)
     installEvents()
     installWakeLock()

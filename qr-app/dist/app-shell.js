@@ -6,7 +6,7 @@ const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '1-0-1-safe-area-v46'
+const VSHOOK_ASSET_VERSION = '1-0-1-director-performance-v53'
 const VSHOOK_CHAT_BOOTSTRAP_KEY = 'vshook_chat_bootstrap_key'
 const VSHOOK_CHAT_MOBILE_SESSION_KEY = 'vshook_chat_mobile_session'
 let vshookDiscoveredProjects = []
@@ -212,10 +212,17 @@ function ensureDirectorTabletOrientationOverlay() {
       <h1 class="vshook-shell-title">Vire para horizontal</h1>
       <p class="vshook-shell-subtitle">O modo Tablet continua aberto. Desbloqueie a rotação e vire o dispositivo novamente para a posição horizontal.</p>
       <button class="vshook-mode-button" id="retryTabletRuntimeOrientationBtn">Já virei</button>
+      <button class="vshook-back-button" id="backTabletRuntimeOrientationBtn">Voltar</button>
     </div>
   `
   document.body.appendChild(overlay)
   document.getElementById('retryTabletRuntimeOrientationBtn')?.addEventListener('click', updateDirectorTabletOrientationGuard)
+  document.getElementById('backTabletRuntimeOrientationBtn')?.addEventListener('click', () => {
+    vshookDirectorTabletLandscapeContinuation = null
+    vshookDirectorAppActive = false
+    applyDirectorDeviceMode('phone')
+    renderDirectorDeviceSelection()
+  })
   return overlay
 }
 
