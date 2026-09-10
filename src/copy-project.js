@@ -399,6 +399,7 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
     receivedPath: '', targetDeviceId: '',
   }
   let httpServer = null
+  let httpReadyPromise = null
   let udpSocket = null
   let udpReadyPromise = null
   let beaconTimer = null
@@ -887,15 +888,29 @@ function createCopyProjectService({ getDeviceName, getDeviceId, getFixedCode, on
   }
 
   async function ensureHttpServer() {
-    if (httpServer) return
-    httpServer = http.createServer((req, res) => { handleHttp(req, res).catch(() => {}) })
-    await new Promise((resolve, reject) => {
-      httpServer.once('error', reject)
-      httpServer.listen(COPY_PROJECT_HTTP_PORT, '0.0.0.0', () => {
-        httpServer.removeListener('error', reject)
+    if (httpServer?.listening) return
+    if (httpReadyPromise) return httpReadyPromise
+    const candidate = http.createServer((req, res) => { handleHttp(req, res).catch(() => {}) })
+    httpReadyPromise = new Promise((resolve, reject) => {
+      const fail = (error) => {
+        candidate.removeListener('listening', ready)
+        try { candidate.close() } catch (_) {}
+        reject(error)
+      }
+      const ready = () => {
+        candidate.removeListener('error', fail)
+        httpServer = candidate
         resolve()
-      })
+      }
+      candidate.once('error', fail)
+      candidate.once('listening', ready)
+      candidate.listen(COPY_PROJECT_HTTP_PORT, '0.0.0.0')
     })
+    try {
+      await httpReadyPromise
+    } finally {
+      httpReadyPromise = null
+    }
   }
 
   async function startReceiver(destinationPath) {

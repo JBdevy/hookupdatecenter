@@ -1,7 +1,7 @@
 {
   "name": "hook-center",
   "hookCenterVariant": "standard",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Hook Center - atualizador, licença e conexão via app do VS Hook",
   "main": "src/main.js",
   "author": "Hook Developer",
@@ -15,6 +15,7 @@
     "test:hook-rename": "node tests/hook-rename-removal.test.js && node tests/hook-rename-ui.test.js",
     "test:bridge-network": "node tests/bridge-network.test.js",
     "test:artifact-download": "node tests/artifact-download.test.js",
+    "test:drop-hook": "node tests/drop-hook-reliability.test.js",
     "build": "node scripts/prepare-windows-midi.js --if-windows && node scripts/prepare-ffmpeg-runtime.js --current && electron-builder --publish never",
     "build:win": "node scripts/prepare-windows-midi.js && node scripts/prepare-ffmpeg-runtime.js --windows && electron-builder --win nsis --publish never",
     "build:mac": "chmod +x build/pkg-scripts/postinstall && electron-builder --mac pkg --universal --publish never",

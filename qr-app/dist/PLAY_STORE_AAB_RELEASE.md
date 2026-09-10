@@ -66,7 +66,7 @@ version_code: 1
 Na próxima atualização para Google Play, aumente o version_code:
 
 ```txt
-version_name: 1.0.1
+version_name: 1.0.2
 version_code: 2
 ```
 

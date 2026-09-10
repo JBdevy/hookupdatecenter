@@ -47,7 +47,7 @@ async function main() {
   console.log('Baixando o instalador oficial do Windows MIDI Services RC4...');
   const response = await fetch(DOWNLOAD_URL, {
     redirect: 'follow',
-    headers: { 'User-Agent': 'VS-Hook-Build/1.0.1', Accept: 'application/octet-stream' }
+    headers: { 'User-Agent': 'VS-Hook-Build/1.0.2', Accept: 'application/octet-stream' }
   });
   if (!response.ok || !response.body) {
     throw new Error(`Falha ao baixar Windows MIDI Services: HTTP ${response.status}`);

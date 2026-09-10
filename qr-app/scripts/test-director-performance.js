@@ -144,6 +144,61 @@ assert.match(swapMusicPaneBlock, /\bcreateMusicPaneNode\s*\(/,
 assert.doesNotMatch(swapMusicPaneBlock,
   /\b(?:renderApp|updateAppHtmlPreservingTopStatus|scheduleRender)\s*\(/,
   'troca do painel central voltou a reconstruir o app inteiro')
+for (const tab of ['mixer', 'premix']) {
+  assert(source.includes(`data-main-pane-tab="${tab}"`),
+    `painel ${tab} deve participar do cache central`)
+}
+const cachedTabBlock = extractFunction('isCachedMainPaneTab')
+for (const tab of ['playlist', 'regions', 'mixer', 'premix']) {
+  assert(cachedTabBlock.includes(`activeTab === '${tab}'`),
+    `cache central perdeu a tela ${tab}`)
+}
+const premixFullRenderBlock = extractFunction('renderPremixFullScreen')
+assert.match(premixFullRenderBlock, /data-premix-screen-cache-placeholder/,
+  'Premix de tela cheia deve reutilizar a superficie pronta')
+assert.match(extractFunction('reuseCachedPremixFullScreen'),
+  /premixFullScreenCache[\s\S]*replaceChild\(cached, placeholder\)/,
+  'Premix de tela cheia deve preservar e recolocar o mesmo DOM')
+
+const renderMusicianMonitorBlock = extractFunction('renderMusicianMonitorContent')
+for (const [name, renderBlock] of [
+  ['Diretor', extractFunction('renderMusicPane')],
+  ['Musicos', renderMusicianMonitorBlock],
+]) {
+  assert.match(renderBlock, /\brenderCachedMusicList\s*\(/,
+    `lista do ${name} deve usar o cache de DOM compartilhado`)
+}
+const reuseListsBlock = extractFunction('reuseStableListBoxes')
+assert.match(reuseListsBlock, /data-music-list-cache-key/,
+  'cache deve reconhecer a arvore de musicas ja montada')
+assert.match(reuseListsBlock, /replaceChild\(currentList, nextList\)/,
+  'cache deve reaproveitar o mesmo DOM da lista')
+const renderCachedListBlock = extractFunction('renderCachedMusicList')
+assert.match(renderCachedListBlock, /const rows = mounted \? '' : renderRows\(items, type\)/,
+  'lista ja montada nao deve ser reconstruida nem fora da tela')
+assert.match(scheduleRenderBlock, /restoreListScrollState\(scrollState\)[\s\S]{0,100}?syncSongRowsDom\(\)/,
+  'estado dinamico deve ser sincronizado depois de recuperar a lista do cache')
+const mountMainBlock = extractFunction('mountMainContentPanelDom')
+assert.match(mountMainBlock, /reuseMatchingCachedMusicList\(current, next\)/,
+  'Parts deve transportar a lista pronta para o painel dividido')
+assert.match(mountMainBlock,
+  /movedMusicList[\s\S]{0,220}?musicPaneCache\.delete\(currentMusicTab\)/,
+  'Parts deve invalidar o painel antigo depois de mover a lista')
+assert.match(mountMainBlock, /isUsableCachedMainPane\(state\.activeTab, cached\.node\)/,
+  'retorno do Parts deve rejeitar um painel em cache sem a lista')
+const usablePaneBlock = extractFunction('isUsableCachedMainPane')
+for (const requiredList of [
+  "activeTab !== 'playlist' && activeTab !== 'regions'",
+  "activeTab === 'playlist' ? 'playlist' : 'region'",
+]) {
+  assert(usablePaneBlock.includes(requiredList),
+    'protecao do Parts deve cobrir Repertorio e Musicas: ' + requiredList)
+}
+
+const stylePath = path.resolve(__dirname, '..', 'stylediretor-app.css')
+const styles = fs.readFileSync(stylePath, 'utf8').replace(/\r\n/g, '\n')
+assert.match(styles, /\.musicListRenderCache\s*\{[\s\S]{0,180}?will-change:\s*scroll-position/,
+  'lista em cache deve manter a superficie de rolagem preparada')
 
 const setTabBlock = extractFunction('setTab')
 const paneSwapAt = setTabBlock.indexOf('swapMusicPaneDom(')
@@ -158,6 +213,19 @@ assert.equal((setTabBlock.match(/scheduleRender\s*\(\s*true\s*\)/g) || []).lengt
 const pathSeparator = setTabBlock.slice(paneSwapAt, structuralFallbackAt)
 assert(/\b(?:else|return)\b/.test(pathSeparator),
   'o caminho local de setTab deve encerrar ou separar o fallback estrutural')
+
+assert.match(swapMusicPaneBlock,
+  /rememberMusicPaneScroll\(previousTab,\s*current\)/,
+  'troca de aba deve guardar a posicao da lista que esta saindo')
+assert.match(swapMusicPaneBlock,
+  /restoreMusicPaneScroll\(activeTab,\s*cached\.node\)/,
+  'troca de aba deve restaurar a posicao propria da lista que esta voltando')
+const songListScrollBlock = extractFunction('handleDirectorSongListScroll')
+assert.match(songListScrollBlock,
+  /rememberMusicPaneScroll\(scrollKey,\s*list\)/,
+  'rolagem deve atualizar a memoria independente de Repertorio e Musicas')
+assert(source.includes('const musicPaneScrollState = new Map()'),
+  'cache deve manter posicao por aba mesmo quando o painel for recriado')
 
 for (const [action, nextAction, tab] of [
   ['go-playlist', 'go-regions', 'playlist'],
@@ -196,6 +264,42 @@ for (const [name, selectionBlock] of [
 }
 assert.equal(countCalls(scheduleRenderBlock, 'focusPendingDirectorSelectionDom'), 0,
   'render geral nao deve executar foco automatico de selecao comum')
+for (const obsoleteSelectionFocus of [
+  'queueDirectorSelectionScroll',
+  'focusPendingDirectorSelectionDom',
+  'directorSelectionScrollPending',
+]) {
+  assert(!source.includes(obsoleteSelectionFocus),
+    'foco automatico de selecao voltou ao codigo: ' + obsoleteSelectionFocus)
+}
+const playlistScrollGestureBlock = extractFunction('handlePlaylistScrollGesture')
+assert.match(playlistScrollGestureBlock,
+  /event\.type\s*===\s*'pointerdown'[\s\S]*?gestureGuardUntil[\s\S]*?directorListScrollingUntil/,
+  'pointerdown da lista deve impedir render antes do primeiro movimento')
+assert.match(styles,
+  /\.musicListRenderCache\s*\{[\s\S]{0,100}?overflow-anchor:\s*none/,
+  'lista musical nao deve ancorar novamente a linha selecionada')
+
+const onTapBlock = extractFunction('onTap')
+assert.doesNotMatch(onTapBlock,
+  /directorSongListScrollingUntil/,
+  'um novo toque na musica nao pode ser bloqueado pela rolagem anterior')
+assert.match(onTapBlock, /playlistScrollSuppressedPointerId/,
+  'somente o gesto que realmente arrastou a lista deve perder o toque')
+
+const partsSnapshotBlock = extractFunction('syncPartsMarkerStateFromSnapshot')
+assert.match(partsSnapshotBlock,
+  /if\s*\(!state\.partsArmedOwnerSongId\s*&&\s*hasReachedPartsArmedTarget\(data\)\)\s*\{\s*clearReachedPartsArmedTarget\(data\)/,
+  'Parts deve limpar o alvo mesmo enquanto o Bridge ainda repete armedMarkerId')
+const clearReachedPartsBlock = extractFunction('clearReachedPartsArmedTarget')
+for (const requiredClear of [
+  "state.partsArmedMarkerId = ''",
+  "state.partsLocalSelectedMarkerId = ''",
+  'syncMarkerSelectionDom()',
+]) {
+  assert(clearReachedPartsBlock.includes(requiredClear),
+    'limpeza visual do alvo Parts incompleta: ' + requiredClear)
+}
 
 // A Lupa e a unica excecao: ela cria um alvo explicito, consumido pelo foco
 // dedicado depois que a tela de busca fecha e a lista de destino reaparece.

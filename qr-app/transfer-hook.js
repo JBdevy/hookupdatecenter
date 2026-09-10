@@ -110,6 +110,42 @@
     await new Promise((resolve) => setTimeout(resolve, 1200))
   }
   const canRetry = (error) => !Number(error?.statusCode) || Number(error.statusCode) === 409 || Number(error.statusCode) >= 500
+  const waitForShareManifest = async () => {
+    while (true) {
+      try {
+        const availability = await readJson(await fetch(
+          `${transferBase}/transfer-hook/share/status`,
+          { cache: 'no-store' }))
+        if (!availability.available) {
+          if (!availability.preparing) {
+            const error = new Error('Nenhum arquivo está disponibilizado nesta Hook Center.')
+            error.statusCode = 404
+            throw error
+          }
+          setStatus('O computador está preparando os arquivos. Aguarde...')
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          continue
+        }
+        const access = String(availability.access || '').trim()
+        if (!/^[a-f0-9]{64}$/i.test(access)) {
+          const error = new Error('A sessão do Drop Hook ainda está sendo preparada.')
+          error.retryShareHandshake = true
+          throw error
+        }
+        const manifest = await readJson(await fetch(
+          `${transferBase}/transfer-hook/share/manifest?access=${encodeURIComponent(access)}`,
+          { cache: 'no-store' }))
+        return { access, manifest }
+      } catch (error) {
+        // Um 403 aqui representa uma sessão substituída entre Status e
+        // Manifesto. Consulta novamente a sessão atual em vez de obrigar o
+        // usuário a escolher o mesmo arquivo outra vez no computador.
+        if (!canRetry(error) && Number(error?.statusCode) !== 403 &&
+            error?.retryShareHandshake !== true) throw error
+        await pauseForReconnect()
+      }
+    }
+  }
   const setSelected = (fileList) => {
     const byName = new Map()
     for (const file of Array.from(fileList || [])) byName.set(safeName(file.name), file)
@@ -191,24 +227,7 @@
     setBusy(true)
     try {
       setStatus('Consultando o computador na rede local...')
-      while (true) {
-        try {
-          const availability = await readJson(await fetch(
-            `${transferBase}/transfer-hook/share/status`,
-            { cache: 'no-store' }))
-          if (availability.available) break
-          if (!availability.preparing) throw new Error('Nenhum arquivo está disponibilizado nesta Hook Center.')
-          setStatus('O computador está preparando os arquivos. Aguarde...')
-          await new Promise((resolve) => setTimeout(resolve, 500))
-        } catch (error) {
-          if (!canRetry(error)) throw error
-          await pauseForReconnect()
-        }
-      }
-      const availability = await readJson(await fetch(`${transferBase}/transfer-hook/share/status`, { cache: 'no-store' }))
-      const access = String(availability.access || '').trim()
-      if (!/^[a-f0-9]{64}$/i.test(access)) throw new Error('Acesso temporário do Drop Hook não foi recebido.')
-      const manifest = await readJson(await fetch(`${transferBase}/transfer-hook/share/manifest?access=${encodeURIComponent(access)}`, { cache: 'no-store' }))
+      const { access, manifest } = await waitForShareManifest()
       const total = Number(manifest.totalBytes) || 0
       let done = 0
       let directoryHandle = null

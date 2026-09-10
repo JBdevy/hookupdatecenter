@@ -5453,6 +5453,12 @@ body.boot-loading {
   -webkit-overflow-scrolling: touch;
 }
 
+/* A selecao muda apenas a pintura da linha. O navegador nao pode usar essa
+   linha como ancora e desfazer uma rolagem manual iniciada logo depois. */
+.musicListRenderCache {
+  overflow-anchor: none;
+}
+
 [data-action] {
   touch-action: manipulation;
 }
@@ -11237,4 +11243,19 @@ html[data-director-device="phone"] .app .item.blockItem[data-region-id],
 html[data-director-device="phone"] .app .item.blockItem[data-item-id] {
   margin-top: 0 !important;
   margin-bottom: 0 !important;
+}
+
+/* Mantém a lista de músicas como uma superfície de rolagem já preparada pelo
+   compositor. O DOM é reaproveitado pelo cache em vsdiretor.js; esta pista
+   evita o efeito de linhas sendo pintadas tarde em iPads e Androids lentos. */
+.musicListRenderCache {
+  contain: paint;
+  will-change: scroll-position;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Mixer e Premix permanecem como superficies prontas entre as trocas. */
+.cachedMainSurface,
+.cachedPremixSurface {
+  contain: layout paint;
 }

@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.1-director-performance-v39'
+  const VERSION = '1.0.2-director-performance-v43'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
@@ -36,6 +36,8 @@
   let liveMarkIndex = null
   const childSongMarkerPositionsCache = new WeakMap()
   const musicPaneCache = new Map()
+  const musicPaneScrollState = new Map()
+  const premixFullScreenCache = new Map()
   let musicPaneWarmupHandle = 0
   let appConfigColorGuardUntil = 0
   let appConfigColorPointerTarget = null
@@ -297,7 +299,6 @@
     regionSelectionClearedUntil: 0,
     playlistSelectionLocalUntil: 0,
     regionSelectionLocalUntil: 0,
-    directorSelectionScrollPending: null,
     directorSongListScrollingUntil: 0,
     directorListScrollingUntil: 0,
     directorListDeferredRenderTimer: 0,
@@ -3221,6 +3222,36 @@
     state.partsArmedLastPlayPos = null
   }
 
+  function hasReachedPartsArmedTarget(data = state.snapshot) {
+    const armedPos = getMarkerPositionById(state.partsArmedMarkerId, data)
+    const playPos = firstFiniteNumber([data?.playPosition, data?.currentPlayPosition, data?.position])
+    const previousPlayPos = state.partsArmedLastPlayPos
+    if (playPos !== null) state.partsArmedLastPlayPos = playPos
+    if (armedPos === null || playPos === null) return false
+    return state.partsArmedBackward
+      ? previousPlayPos !== null && playPos < previousPlayPos - 0.25 &&
+        playPos >= armedPos - 0.35 && playPos <= armedPos + 1.5
+      : playPos >= armedPos - 0.08
+  }
+
+  function clearReachedPartsArmedTarget(data = state.snapshot) {
+    const completedId = String(state.partsArmedMarkerId || '')
+    if (completedId) {
+      // Algumas versoes da extensao repetem armedMarkerId por mais snapshots
+      // mesmo depois do salto. Ignora somente esse eco ate o Bridge mudar de
+      // alvo; um novo toque local no mesmo marker substitui esta protecao.
+      state.partsLocalIgnoreBridgeArmedId = completedId
+      state.partsLocalIgnoreBridgeUntil = Number.MAX_SAFE_INTEGER
+    }
+    state.partsArmedMarkerId = ''
+    state.partsArmedMarkerUntil = 0
+    state.partsArmedBridgeHoldUntil = 0
+    state.partsArmedMissingSince = 0
+    state.partsLocalSelectedMarkerId = ''
+    clearPartsArmedOwner()
+    syncMarkerSelectionDom()
+  }
+
   function clearPartsArmedOwner() {
     state.partsArmedOwnerSongId = ''
     state.partsArmedOwnerTab = ''
@@ -4202,29 +4233,6 @@
       ? page : ''
   }
 
-  function getDirectorSelectionScrollTarget() {
-    const tab = state.activeTab === 'regions'
-      ? 'regions'
-      : state.activeTab === 'playlist' ? 'playlist' : ''
-    if (!tab) return null
-    const id = String((tab === 'regions'
-      ? state.selectedRegionId
-      : state.selectedPlaylistSongId) || '')
-    return id ? { tab, id, key: `${tab}:${id}` } : null
-  }
-
-  function queueDirectorSelectionScroll(target) {
-    if (!target?.id ||
-        (IS_MUSICIAN_MONITOR && isPlaying(state.snapshot))) return
-    state.directorSelectionScrollPending = {
-      tab: target.tab,
-      id: String(target.id),
-      key: String(target.key || `${target.tab}:${target.id}`),
-      expiresAt: now() + 1800,
-      retryTimer: 0,
-    }
-  }
-
   function syncSharedInterfaceState(data = state.snapshot) {
     if (!data || typeof data !== 'object') return
     const currentTime = now()
@@ -4310,10 +4318,6 @@
       }
       state.activeTabLocalUntil = 0
     }
-
-    // Confirmar uma selecao muda apenas a cor. A lista nunca segue a musica
-    // automaticamente; somente a lupa usa seu foco dedicado mais abaixo.
-    state.directorSelectionScrollPending = null
 
     if (currentTime >= Number(
           state.sharedControlsLocalUntil || 0)) {
@@ -5719,6 +5723,26 @@
     syncPremixSoloButtonsDom()
   }
 
+  function syncPremixFullScreenDom(data = state.snapshot || {}) {
+    const screen = root.querySelector('.premixFullScreen')
+    if (!screen) return
+    const transportPlaying = isPlaying(data)
+    const target = getPremixEffectiveTarget(data)
+    const playingTarget = transportPlaying &&
+      getPlayingId(data) === String(target?.id || '')
+    const button = screen.querySelector('[data-action="premix-screen-transport"]')
+    if (button) {
+      button.textContent = transportPlaying ? 'PAUSE' : 'PLAY'
+      button.classList.toggle('btnStopActive', transportPlaying)
+      button.classList.toggle('btnPlayActive', !transportPlaying)
+      button.classList.toggle('premixTransportCurrent', playingTarget)
+    }
+    const name = screen.querySelector('.premixFullSongName')
+    const nextName = upperText(
+      state.premixSongName || data?.premix?.selectedSongName || 'MÚSICA')
+    if (name && name.textContent !== nextName) name.textContent = nextName
+  }
+
   function stopTrackMeterPolling() {
     if (meterPollTimer) window.clearTimeout(meterPollTimer)
     meterPollTimer = 0
@@ -6435,6 +6459,39 @@
         </div>
       `
     }).join('')
+  }
+
+  function getMusicListDomCacheKey(items, type, data = state.snapshot || {}) {
+    const signature = [
+      IS_MUSICIAN_MONITOR ? 'musician' : 'director',
+      type,
+      getListContentRenderSignature(items),
+      (Array.isArray(items) ? items : []).map((item) =>
+        itemHasChildSongMarkers(item, data) ? 1 : 0).join(''),
+      getHashDrawersRenderSignature(),
+      getNumberColumnMode(),
+      getNumberSortDirection(),
+      getAppliedNumberSortDirection(),
+      getAppTheme(),
+      getBlockColorMode(),
+      getNoBlockTextColor(data),
+      getFamilyViewControlsEnabled(data) ? 1 : 0,
+      JSON.stringify(getDrawerVisualStyle(data)),
+      JSON.stringify(getBlockSymbolVisualStyle(data)),
+    ].join('|')
+    return `${signature.length}-${simpleHash(signature)}`
+  }
+
+  function renderCachedMusicList(items, type, data = state.snapshot || {}) {
+    const cacheKey = getMusicListDomCacheKey(items, type, data)
+    const mounted = Array.from(root.querySelectorAll('.musicListRenderCache'))
+      .some((list) => String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
+    // Durante atualizações de controles, fila ou transporte, a lista atual já
+    // está pronta no DOM. Entrega só um marcador leve ao parser; a árvore
+    // montada é recolocada por reuseStableListBoxes. A montagem completa
+    // acontece apenas na primeira carga ou quando o conteúdo realmente muda.
+    const rows = mounted ? '' : renderRows(items, type)
+    return `<div class="listBox musicListRenderCache" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}" data-music-list-cache-key="${cacheKey}">${rows}</div>`
   }
 
   function getLoopActive(data = state.snapshot) {
@@ -7158,18 +7215,48 @@
   }
 
   function renderMusicPane(activeTab, data = state.snapshot || {}) {
+    const cacheKey = getMainPaneCacheKey(activeTab, data)
     if (activeTab === 'playlist') {
       const playlist = getActivePlaylist(data)
       const title = upperText(playlist?.name || data.currentPlaylistName || 'REPERTÓRIO')
-      return `<div class="contentPanel" data-music-pane-tab="playlist"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}<div class="listBox" data-scroll-key="playlist">${renderRows(getPlaylistWithOpenDrawers(data), 'playlist')}</div></div>`
+      return `<div class="contentPanel" data-music-pane-tab="playlist" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}${renderCachedMusicList(getPlaylistWithOpenDrawers(data), 'playlist', data)}</div>`
     }
-    return `<div class="contentPanel" data-music-pane-tab="regions"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}<div class="listBox" data-scroll-key="regions">${renderRows(getRegionsWithOpenDrawers(data), 'region')}</div></div>`
+    return `<div class="contentPanel" data-music-pane-tab="regions" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}${renderCachedMusicList(getRegionsWithOpenDrawers(data), 'region', data)}</div>`
   }
 
   function getMusicPaneStructureSignature(
     activeTab,
     data = state.snapshot || {},
   ) {
+    if (activeTab === 'mixer') {
+      return [
+        activeTab,
+        state.mixerView,
+        getAppTheme(),
+        getMixerTracks().map((item) => [
+          getMixerPrimaryId(item, getId(item)),
+          getName(item),
+          getMixerTrackColor(item),
+        ].join('\u001f')).join('\u001e'),
+      ].join('|')
+    }
+    if (activeTab === 'premix') {
+      const items = state.premixView === 'tracks'
+        ? getPremixTracks() : getPremixSongs()
+      return [
+        activeTab,
+        state.premixView,
+        state.premixTrackView,
+        state.selectedPremixSongId,
+        getAppTheme(),
+        items.map((item) => [
+          getId(item),
+          getName(item),
+          getMixerTrackColor(item),
+          item?.premixEnabled === true || item?.preMixEnabled === true || item?.enabled === true ? 1 : 0,
+        ].join('\u001f')).join('\u001e'),
+      ].join('|')
+    }
     const items = activeTab === 'playlist'
       ? getPlaylistWithOpenDrawers(data)
       : getRegionsWithOpenDrawers(data)
@@ -7195,9 +7282,62 @@
     ].join('|')
   }
 
+  function getMainPaneCacheKey(activeTab, data = state.snapshot || {}) {
+    const signature = getMusicPaneStructureSignature(activeTab, data)
+    return `${signature.length}-${simpleHash(signature)}`
+  }
+
+  function isCachedMainPaneTab(activeTab) {
+    return activeTab === 'playlist' || activeTab === 'regions' ||
+      activeTab === 'mixer' || activeTab === 'premix'
+  }
+
+  function getCachedMainPaneTab(pane) {
+    return String(pane?.getAttribute?.('data-music-pane-tab') ||
+      pane?.getAttribute?.('data-main-pane-tab') || '')
+  }
+
+  function rememberMusicPaneScroll(activeTab, surface = root) {
+    if (activeTab !== 'playlist' && activeTab !== 'regions') return
+    const list = surface?.matches?.(`[data-scroll-key="${activeTab}"]`)
+      ? surface
+      : surface?.querySelector?.(`[data-scroll-key="${activeTab}"]`)
+    if (!list) return
+    musicPaneScrollState.set(activeTab, {
+      top: Math.max(0, Number(list.scrollTop) || 0),
+      left: Math.max(0, Number(list.scrollLeft) || 0),
+    })
+  }
+
+  function restoreMusicPaneScroll(activeTab, surface = root) {
+    if (activeTab !== 'playlist' && activeTab !== 'regions') return
+    const saved = musicPaneScrollState.get(activeTab)
+    if (!saved) return
+    const list = surface?.matches?.(`[data-scroll-key="${activeTab}"]`)
+      ? surface
+      : surface?.querySelector?.(`[data-scroll-key="${activeTab}"]`)
+    if (!list) return
+    list.scrollTop = Math.max(0, Number(saved.top) || 0)
+    list.scrollLeft = Math.max(0, Number(saved.left) || 0)
+  }
+
+  function isUsableCachedMainPane(activeTab, node, data = state.snapshot || {}) {
+    if (!node) return false
+    if (activeTab !== 'playlist' && activeTab !== 'regions') return true
+    const list = node.querySelector('[data-music-list-cache-key]')
+    if (!list) return false
+    const expectedItems = activeTab === 'playlist'
+      ? getPlaylistWithOpenDrawers(data) : getRegionsWithOpenDrawers(data)
+    if (!expectedItems.length) return true
+    const itemType = activeTab === 'playlist' ? 'playlist' : 'region'
+    return !!list.querySelector(`.item[data-item-type="${itemType}"]`)
+  }
+
   function createMusicPaneNode(activeTab, data = state.snapshot || {}) {
     const template = document.createElement('template')
-    template.innerHTML = renderMusicPane(activeTab, data)
+    template.innerHTML = activeTab === 'playlist' || activeTab === 'regions'
+      ? renderMusicPane(activeTab, data)
+      : renderMainContent(activeTab)
     return template.content.firstElementChild
   }
 
@@ -7212,13 +7352,13 @@
   function rememberActiveMusicPane() {
     if (!canSwapMusicPaneDom()) return
     const pane = root.querySelector(
-      '.container > [data-music-pane-tab="playlist"],.container > [data-music-pane-tab="regions"]')
+      '.container > [data-music-pane-tab],.container > [data-main-pane-tab]')
     if (!pane) return
-    const activeTab = String(pane.getAttribute('data-music-pane-tab') || '')
-    if (activeTab !== 'playlist' && activeTab !== 'regions') return
+    const activeTab = getCachedMainPaneTab(pane)
+    if (!isCachedMainPaneTab(activeTab)) return
     musicPaneCache.set(activeTab, {
       node: pane,
-      signature: getMusicPaneStructureSignature(activeTab),
+      signature: String(pane.getAttribute('data-main-pane-cache-key') || ''),
     })
   }
 
@@ -7227,14 +7367,18 @@
     const warm = () => {
       musicPaneWarmupHandle = 0
       if (!canSwapMusicPaneDom()) return
-      const activeTab = state.activeTab === 'regions' ? 'regions' : 'playlist'
-      const targetTab = activeTab === 'playlist' ? 'regions' : 'playlist'
-      const signature = getMusicPaneStructureSignature(targetTab)
-      const cached = musicPaneCache.get(targetTab)
-      if (cached?.node && cached.signature === signature &&
-          !cached.node.isConnected) return
+      const targetTab = ['playlist', 'regions', 'mixer', 'premix'].find((tab) => {
+        if (tab === state.activeTab) return false
+        const signature = getMainPaneCacheKey(tab)
+        const cached = musicPaneCache.get(tab)
+        return !cached?.node || cached.signature !== signature || cached.node.isConnected ||
+          !isUsableCachedMainPane(tab, cached.node)
+      })
+      if (!targetTab) return
+      const signature = getMainPaneCacheKey(targetTab)
       const node = createMusicPaneNode(targetTab)
       if (node) musicPaneCache.set(targetTab, { node, signature })
+      scheduleMusicPaneWarmup()
     }
     if (typeof window.requestIdleCallback === 'function') {
       musicPaneWarmupHandle = window.requestIdleCallback(warm, { timeout: 900 })
@@ -7280,20 +7424,22 @@
   }
 
   function swapMusicPaneDom(activeTab, previousTab) {
-    if ((activeTab !== 'playlist' && activeTab !== 'regions') ||
-        (previousTab !== 'playlist' && previousTab !== 'regions') ||
+    if (!isCachedMainPaneTab(activeTab) ||
+        !isCachedMainPaneTab(previousTab) ||
         !canSwapMusicPaneDom()) return false
-    const current = root.querySelector(
-      `.container > [data-music-pane-tab="${previousTab}"]`)
+    const current = getMainSurfaceElement()
+    if (getCachedMainPaneTab(current) !== previousTab) return false
     if (!current) return false
 
+    rememberMusicPaneScroll(previousTab, current)
     musicPaneCache.set(previousTab, {
       node: current,
-      signature: getMusicPaneStructureSignature(previousTab),
+      signature: String(current.getAttribute('data-main-pane-cache-key') || ''),
     })
-    const signature = getMusicPaneStructureSignature(activeTab)
+    const signature = getMainPaneCacheKey(activeTab)
     let cached = musicPaneCache.get(activeTab)
-    if (!cached?.node || cached.signature !== signature || cached.node.isConnected) {
+    if (!cached?.node || cached.signature !== signature || cached.node.isConnected ||
+        !isUsableCachedMainPane(activeTab, cached.node)) {
       const node = createMusicPaneNode(activeTab)
       if (!node) return false
       cached = { node, signature }
@@ -7301,11 +7447,16 @@
     }
 
     current.replaceWith(cached.node)
-    syncActiveMusicTabChromeDom(activeTab)
+    restoreMusicPaneScroll(activeTab, cached.node)
+    syncDirectorNavigationChromeDom()
     syncSongRowsDom()
     syncPlaybackQueueHeaderDom()
     syncPlaybackProgressDom()
     syncMainControlButtonsDom()
+    syncMixerRowsDom()
+    syncPremixVolumeControlsDom()
+    syncTrackMetersDom()
+    syncTrackMeterPolling()
     musicPaneCache.set(activeTab, { node: cached.node, signature })
     scheduleMusicPaneWarmup()
     return true
@@ -7321,6 +7472,25 @@
           child.classList?.contains('tabletMainSplit')) return child
     }
     return null
+  }
+
+  function reuseMatchingCachedMusicList(currentSurface, nextSurface) {
+    if (!currentSurface || !nextSurface) return false
+    const currentLists = Array.from(
+      currentSurface.querySelectorAll('[data-music-list-cache-key]'))
+    if (!currentLists.length) return false
+    let reused = false
+    nextSurface.querySelectorAll('[data-music-list-cache-key]').forEach((placeholder) => {
+      const cacheKey = String(
+        placeholder.getAttribute('data-music-list-cache-key') || '')
+      const mounted = currentLists.find((list) =>
+        String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
+      if (!mounted || !placeholder.parentNode) return
+      copyElementAttributes(mounted, placeholder)
+      placeholder.parentNode.replaceChild(mounted, placeholder)
+      reused = true
+    })
+    return reused
   }
 
   function syncDirectorNavigationChromeDom() {
@@ -7380,23 +7550,26 @@
     const current = getMainSurfaceElement()
     if (!current) return false
 
-    const currentMusicTab = String(current.getAttribute?.('data-music-pane-tab') || '')
-    if (currentMusicTab === 'playlist' || currentMusicTab === 'regions') {
+    const currentMusicTab = getCachedMainPaneTab(current)
+    rememberMusicPaneScroll(currentMusicTab, current)
+    if (isCachedMainPaneTab(currentMusicTab) &&
+        !current.classList.contains('tabletMainSplit')) {
       musicPaneCache.set(currentMusicTab, {
         node: current,
-        signature: getMusicPaneStructureSignature(currentMusicTab),
+        signature: String(current.getAttribute('data-main-pane-cache-key') || ''),
       })
     }
 
     const plainMusicPane = !IS_MUSICIAN_MONITOR &&
-      (state.activeTab === 'playlist' || state.activeTab === 'regions') &&
+      isCachedMainPaneTab(state.activeTab) &&
       !state.tabletPartsSplit && !state.tabletTunerSplit && !state.tabletBpmSplit
     let next = null
     let musicSignature = ''
     if (plainMusicPane) {
-      musicSignature = getMusicPaneStructureSignature(state.activeTab)
+      musicSignature = getMainPaneCacheKey(state.activeTab)
       const cached = musicPaneCache.get(state.activeTab)
       if (cached?.node && !cached.node.isConnected &&
+          isUsableCachedMainPane(state.activeTab, cached.node) &&
           cached.signature === musicSignature) next = cached.node
     }
     if (!next) {
@@ -7407,19 +7580,32 @@
     if (!next) return false
 
     const scrollState = captureListScrollState()
+    // Ao abrir/fechar Parts, renderCachedMusicList entrega um marcador leve
+    // porque a lista completa ja esta montada. Move essa mesma arvore para o
+    // painel dividido antes de retirar a superficie antiga do DOM.
+    const movedMusicList = reuseMatchingCachedMusicList(current, next)
+    if (movedMusicList && isCachedMainPaneTab(currentMusicTab)) {
+      // A lista deixou o painel antigo para entrar no split do Parts. Esse
+      // painel agora esta incompleto e nunca pode continuar como cache.
+      musicPaneCache.delete(currentMusicTab)
+    }
     current.replaceWith(next)
     restoreListScrollState(scrollState)
+    restoreMusicPaneScroll(state.activeTab, next)
     syncDirectorNavigationChromeDom()
     syncSongRowsDom()
     syncPlaybackQueueHeaderDom()
     syncPlaybackProgressDom()
     syncMainControlButtonsDom()
     syncTabletTunerRowsDom()
+    syncMixerRowsDom()
+    syncPremixVolumeControlsDom()
+    syncTrackMetersDom()
     syncTrackMeterPolling()
     if (plainMusicPane) {
       musicPaneCache.set(state.activeTab, {
         node: next,
-        signature: musicSignature || getMusicPaneStructureSignature(state.activeTab),
+        signature: musicSignature || getMainPaneCacheKey(state.activeTab),
       })
       scheduleMusicPaneWarmup()
     }
@@ -7443,6 +7629,7 @@
   }
 
   function renderMixerPage() {
+    const cacheKey = getMainPaneCacheKey('mixer')
     const rows = getMixerTracks().map((item) => {
       const rawId = getMixerPrimaryId(item, getId(item))
       const id = escapeHtml(rawId)
@@ -7458,10 +7645,11 @@
       const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
       return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(db)}</div><div class="mixerInlineSliderWrap" style="--mixer-zero-position:${zeroPosition};--mixer-zero-offset:${zeroOffset}px"><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><span class="mixerInlineZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('') || `<div class="emptyBox">MIXER SEM DADOS</div>`
-    return `<div class="contentPanel mixerContentPanel"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox" data-scroll-key="mixer">${rows}</div></div>`
+    return `<div class="contentPanel mixerContentPanel cachedMainSurface" data-main-pane-tab="mixer" data-main-pane-cache-key="${cacheKey}"><div class="controlsRowPlaylist mixerTopControls"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div><div class="listBox mixerListBox" data-scroll-key="mixer">${rows}</div></div>`
   }
 
   function renderPremixPage() {
+    const cacheKey = getMainPaneCacheKey('premix')
     if (state.premixView === 'tracks') {
       const rows = getPremixTracks().map((item) => {
         const rawId = getId(item)
@@ -7475,7 +7663,7 @@
         const zeroOffset = ((0.5 - getMixerZeroDbRatio()) * 16).toFixed(2)
         return `<div class="mixerRow premixMixerRow" data-premix-track-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowIndex">•</div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(dbText)}</div>${renderTrackMeter(item)}</div><div class="mixerRowDb">${escapeHtml(dbText)}</div><div class="premixInlineSliderWrap" style="--premix-zero-position:${zeroPosition};--premix-zero-offset:${zeroOffset}px"><input class="premixInlineSlider" data-action="premix-volume" data-premix-track-id="${id}" type="range" min="0" max="1" step="0.001" value="${volumeState.ratio}"><span class="premixZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn ${muted ? 'mixerMiniBtnActive' : ''}" data-action="premix-mute" data-premix-track-id="${id}">M</button><button class="mixerMiniBtn" data-action="premix-fx" data-premix-track-id="${id}">F</button></div>`
       }).join('') || `<div class="emptyBox">SELECIONE UMA MÚSICA NO PREMIX</div>`
-      return `<div class="contentPanel"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-back-songs">MÚSICAS</button><button class="${state.premixTrackView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-tracks">TRACKS</button><button class="${state.premixTrackView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-groups">GRUPOS</button></div><div class="listBox"><div class="mixerRowsBox">${rows}</div></div></div>`
+      return `<div class="contentPanel cachedMainSurface" data-main-pane-tab="premix" data-main-pane-cache-key="${cacheKey}"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-back-songs">MÚSICAS</button><button class="${state.premixTrackView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-tracks">TRACKS</button><button class="${state.premixTrackView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="premix-groups">GRUPOS</button></div><div class="listBox"><div class="mixerRowsBox">${rows}</div></div></div>`
     }
     const rows = getPremixSongs().map((item) => {
       const id = escapeHtml(getId(item))
@@ -7483,7 +7671,7 @@
       const enabled = item.premixEnabled === true || item.preMixEnabled === true || item.enabled === true
       return `<div class="item ${active ? 'selectedBlue' : ''}" data-action="premix-song" data-premix-song-id="${id}"><div class="leftCol"><span class="${active ? 'selectedBlueText' : 'text'}">${escapeHtml(upperText(getName(item) || 'MÚSICA'))}</span></div><div class="rightCol"><span class="premixSongStatus ${enabled ? 'premixSongStatusOn' : 'premixSongStatusOff'}">${enabled ? 'ON' : 'OFF'}</span></div></div>`
     }).join('') || `<div class="emptyBox">SEM MÚSICAS PARA PREMIX</div>`
-    return `<div class="contentPanel"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-global">GLOBAL</button><button class="btn" data-action="premix-open">ABRIR</button><button class="btn" data-action="premix-toggle">ON/OFF</button></div><div class="listBox">${rows}</div></div>`
+    return `<div class="contentPanel cachedMainSurface" data-main-pane-tab="premix" data-main-pane-cache-key="${cacheKey}"><div class="controlsRowPlaylist"><button class="btn" data-action="premix-global">GLOBAL</button><button class="btn" data-action="premix-open">ABRIR</button><button class="btn" data-action="premix-toggle">ON/OFF</button></div><div class="listBox">${rows}</div></div>`
   }
 
   function renderPremixItemRow(item, index) {
@@ -7511,8 +7699,56 @@
     </div>`
   }
 
+  function getPremixFullScreenCacheKey(data = state.snapshot || {}) {
+    const scopeId = String(state.premixSongId || '')
+    const snapshotId = getPremixSnapshotSongId(data)
+    const ready = !!scopeId && snapshotId === scopeId
+    const target = getPremixEffectiveTarget(data)
+    const sections = ready ? getPremixSongSections(data) : []
+    const structure = sections.length
+      ? sections.map((section) => {
+          const sectionTarget = getPremixSectionTarget(section)
+          return [
+            sectionTarget?.id,
+            sectionTarget?.name,
+            sectionTarget?.start,
+            sectionTarget?.end,
+            getPremixSectionItems(section).map((item) => [
+              getPremixItemId(item),
+              getPremixItemTrackId(item),
+              getName(item),
+              item?.trackName || item?.track || '',
+            ].join('\u001f')).join('\u001e'),
+          ].join('\u001d')
+        }).join('\u001c')
+      : (ready ? getPremixItemRows(data) : []).map((item) => [
+          getPremixItemId(item),
+          getPremixItemTrackId(item),
+          getName(item),
+          item?.trackName || item?.track || '',
+        ].join('\u001f')).join('\u001e')
+    const signature = [
+      scopeId,
+      snapshotId,
+      ready ? 1 : 0,
+      state.premixSongName,
+      target?.id || '',
+      target?.start || 0,
+      getAppTheme(),
+      structure,
+    ].join('|')
+    return `${signature.length}-${simpleHash(signature)}`
+  }
+
   function renderPremixFullScreen(data = state.snapshot || {}) {
     if (!state.showPremixScreen) return ''
+    const cacheKey = getPremixFullScreenCacheKey(data)
+    const cached = premixFullScreenCache.get(cacheKey)?.node
+    const mounted = root.querySelector(
+      `.premixFullScreen[data-premix-screen-cache-key="${cacheKey}"]`)
+    if ((cached && !cached.isConnected) || mounted) {
+      return `<div data-premix-screen-cache-placeholder="${cacheKey}"></div>`
+    }
     const scopeId = String(state.premixSongId || '')
     const snapshotId = getPremixSnapshotSongId(data)
     const ready = !!scopeId && snapshotId === scopeId
@@ -7549,7 +7785,7 @@
         || `<div class="emptyBox premixFullEmpty">NENHUM ITEM COMEÇA DENTRO DESTA MÚSICA</div>`
     }
 
-    return `<div class="premixFullScreen">
+    return `<div class="premixFullScreen cachedPremixSurface" data-premix-screen-cache-key="${cacheKey}">
       <div class="premixFullPanel">
         ${renderPlaybackQueueHeader(data, true)}
         <div class="premixFullControls">
@@ -10496,7 +10732,7 @@
     const rowType = regionsPage ? 'region' : 'playlist'
     // A tela principal do Músico usa a mesma lista ativa da extensão/Diretor.
     // A única diferença é o controle TP, sem comandos de transporte ou seleção.
-    return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div><div class="controlsRowPlaylist controlsRowMusicianTp"><button class="btn musicianTpOnlyButton" data-action="open-teleprompt">TP</button></div>${renderPlaybackQueueHeader(data, false)}<div class="listBox">${renderRows(rows, rowType)}</div></div>`
+    return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div><div class="controlsRowPlaylist controlsRowMusicianTp"><button class="btn musicianTpOnlyButton" data-action="open-teleprompt">TP</button></div>${renderPlaybackQueueHeader(data, false)}${renderCachedMusicList(rows, rowType, data)}</div>`
   }
 
   function normalizeTabletSearchText(value) {
@@ -11636,6 +11872,47 @@
     }
   }
 
+  function rememberPremixFullScreenNode(node) {
+    const cacheKey = String(
+      node?.getAttribute?.('data-premix-screen-cache-key') || '')
+    if (!node || !cacheKey) return
+    if (premixFullScreenCache.has(cacheKey)) {
+      premixFullScreenCache.delete(cacheKey)
+    }
+    premixFullScreenCache.set(cacheKey, { node })
+    while (premixFullScreenCache.size > 3) {
+      const oldestKey = premixFullScreenCache.keys().next().value
+      if (!oldestKey) break
+      premixFullScreenCache.delete(oldestKey)
+    }
+  }
+
+  function reuseCachedPremixFullScreen(currentApp, nextApp) {
+    if (!currentApp || !nextApp) return
+    const current = currentApp.querySelector(
+      '.premixFullScreen[data-premix-screen-cache-key]')
+    if (current) {
+      current.remove()
+      rememberPremixFullScreenNode(current)
+    }
+    const placeholder = nextApp.querySelector(
+      '[data-premix-screen-cache-placeholder]')
+    if (placeholder) {
+      const cacheKey = String(
+        placeholder.getAttribute('data-premix-screen-cache-placeholder') || '')
+      const cached = premixFullScreenCache.get(cacheKey)?.node
+      if (cached && placeholder.parentNode) {
+        placeholder.parentNode.replaceChild(cached, placeholder)
+      } else {
+        placeholder.remove()
+      }
+      return
+    }
+    const next = nextApp.querySelector(
+      '.premixFullScreen[data-premix-screen-cache-key]')
+    if (next) rememberPremixFullScreenNode(next)
+  }
+
   function reuseStableListBoxes(currentApp, nextApp) {
     if (!currentApp || !nextApp) return
     const currentLists = Array.from(currentApp.querySelectorAll('.listBox'))
@@ -11645,6 +11922,17 @@
     for (let listIndex = 0; listIndex < listCount; listIndex += 1) {
       const currentList = currentLists[listIndex]
       const nextList = nextLists[listIndex]
+      const currentMusicCacheKey = String(currentList.getAttribute('data-music-list-cache-key') || '')
+      const nextMusicCacheKey = String(nextList.getAttribute('data-music-list-cache-key') || '')
+      if (currentMusicCacheKey && currentMusicCacheKey === nextMusicCacheKey &&
+          nextList.parentNode) {
+        // A árvore completa das músicas já está montada e pintada. Reutilizar
+        // a mesma lista evita que WebKit/Android reconstruam linhas durante a
+        // rolagem; seleção, fila e progresso são sincronizados logo depois.
+        copyElementAttributes(currentList, nextList)
+        nextList.parentNode.replaceChild(currentList, nextList)
+        continue
+      }
       const currentChildren = Array.from(currentList.children || [])
       const nextChildren = Array.from(nextList.children || [])
       if (!currentChildren.length ||
@@ -11748,6 +12036,7 @@
     if (!sameTitle) currentTop.innerHTML = nextTop.innerHTML
 
     reuseStableListBoxes(currentApp, nextApp)
+    reuseCachedPremixFullScreen(currentApp, nextApp)
     replaceChildrenAround(currentContainer, nextContainer, currentTop, nextTop, false)
     replaceChildrenAround(currentApp, nextApp, currentContainer, nextContainer, true)
   }
@@ -11796,6 +12085,7 @@
       syncMixerRowsDom()
       syncMixerVolumeModalDom()
       syncPremixVolumeControlsDom()
+      syncPremixFullScreenDom()
       syncDirectorPopupDom()
       // O WebKit antigo perde quadros e chega a revelar áreas ainda não
       // pintadas quando a árvore da lista é trocada durante a rolagem cinética.
@@ -11866,6 +12156,8 @@
         updateAppHtmlPreservingTopStatus(html)
         restoreFocusedInput()
         restoreListScrollState(scrollState)
+        restoreMusicPaneScroll(state.activeTab)
+        syncSongRowsDom()
         rememberActiveMusicPane()
         scheduleMusicPaneWarmup()
       }
@@ -11882,6 +12174,7 @@
       syncMixerRowsDom()
       syncMixerVolumeModalDom()
       syncPremixVolumeControlsDom()
+      syncPremixFullScreenDom()
       focusPendingTabletSearchResultDom()
       restoreTabletMultiLoopTracksScrollDom()
       }
@@ -12008,92 +12301,6 @@
       retry(90)
     }
     window.setTimeout(applyFocus, 40)
-  }
-
-  function focusPendingDirectorSelectionDom() {
-    const pending = state.directorSelectionScrollPending
-    if (!pending) return
-    if (IS_MUSICIAN_MONITOR && isPlaying(state.snapshot)) {
-      state.directorSelectionScrollPending = null
-      return
-    }
-    if (now() >= Number(pending.expiresAt || 0)) {
-      state.directorSelectionScrollPending = null
-      return
-    }
-
-    const currentTarget = getDirectorSelectionScrollTarget()
-    if (!currentTarget || currentTarget.key !== pending.key) {
-      state.directorSelectionScrollPending = null
-      return
-    }
-
-    const retry = () => {
-      if (state.directorSelectionScrollPending !== pending ||
-          pending.retryTimer) return
-      pending.retryTimer = window.setTimeout(() => {
-        pending.retryTimer = 0
-        if (state.directorSelectionScrollPending === pending) {
-          focusPendingDirectorSelectionDom()
-        }
-      }, 70)
-    }
-
-    // A busca já possui seu próprio posicionamento. Espera ela terminar para
-    // que os dois focos não disputem o scroll da lista.
-    if (state.tabletSearchPendingFocus) {
-      retry()
-      return
-    }
-
-    const scope =
-      root.querySelector('.tabletMainSplitPrimary') ||
-      root.querySelector('.container') || root
-    const expectedType =
-      pending.tab === 'regions' ? 'region' : 'playlist'
-    let wantedRow = null
-    for (const row of scope.querySelectorAll(
-      '.listBox [data-action="select-item"]')) {
-      if (String(row.getAttribute('data-item-type') || '') !==
-          expectedType) continue
-      const id = String(row.getAttribute(
-        expectedType === 'playlist'
-          ? 'data-song-id' : 'data-region-id') || '')
-      if (id === pending.id) {
-        wantedRow = row
-        break
-      }
-    }
-
-    const list = wantedRow?.closest?.('.listBox')
-    if (!wantedRow || !list ||
-        list.clientHeight <= 0) {
-      retry()
-      return
-    }
-
-    const listRect = list.getBoundingClientRect()
-    const rowRect = wantedRow.getBoundingClientRect()
-    const measuredScale =
-      list.offsetHeight > 0
-        ? listRect.height / list.offsetHeight : 1
-    const scale =
-      Number.isFinite(measuredScale) &&
-      measuredScale > 0.05 ? measuredScale : 1
-    let targetTop = list.scrollTop
-    if (rowRect.top < listRect.top) {
-      targetTop -= (listRect.top - rowRect.top) / scale
-    } else if (rowRect.bottom > listRect.bottom) {
-      targetTop += (rowRect.bottom - listRect.bottom) / scale
-    }
-    const maximum =
-      Math.max(0, list.scrollHeight - list.clientHeight)
-    targetTop =
-      Math.max(0, Math.min(maximum, targetTop))
-    if (Math.abs(list.scrollTop - targetTop) > 1) {
-      list.scrollTop = targetTop
-    }
-    state.directorSelectionScrollPending = null
   }
 
   function syncTabletTunerRowsDom() {
@@ -12811,6 +13018,10 @@
       state.partsArmedMarkerUntil = Number.MAX_SAFE_INTEGER
       state.partsArmedBridgeHoldUntil = now() + 1000
       state.partsArmedMissingSince = 0
+      if (!state.partsArmedOwnerSongId && hasReachedPartsArmedTarget(data)) {
+        clearReachedPartsArmedTarget(data)
+        return
+      }
       syncMarkerSelectionDom()
       return
     }
@@ -12818,19 +13029,10 @@
       syncPartsCancelButtonDom()
       return
     }
-    const armedPos = getMarkerPositionById(state.partsArmedMarkerId, data)
-    const playPos = firstFiniteNumber([data?.playPosition, data?.currentPlayPosition, data?.position])
-    const previousPlayPos = state.partsArmedLastPlayPos
-    if (playPos !== null) state.partsArmedLastPlayPos = playPos
     // Alvo na frente: o salto aconteceu quando o cursor chegou nele. Alvo atras
     // (o INICIO da propria musica): so quando o cursor VOLTOU para la, senao o
     // engatilhamento morreria no primeiro snapshot, que e o sumico relatado.
-    const reachedTarget = state.partsArmedBackward
-      ? previousPlayPos !== null && playPos !== null &&
-        playPos < previousPlayPos - 0.25 &&
-        playPos >= armedPos - 0.35 && playPos <= armedPos + 1.5
-      : playPos !== null && playPos >= armedPos - 0.08
-    const crossed = !state.partsArmedOwnerSongId && armedPos !== null && !!reachedTarget
+    const crossed = !state.partsArmedOwnerSongId && hasReachedPartsArmedTarget(data)
     if (!crossed && !isPlaying(data)) {
       const sampledAt = now()
       if (sampledAt < Number(state.partsArmedBridgeHoldUntil || 0)) {
@@ -12846,13 +13048,15 @@
       state.partsArmedMissingSince = 0
     }
     if (!isPlaying(data) || crossed) {
-      state.partsArmedMarkerId = ''
-      state.partsArmedMarkerUntil = 0
-      state.partsArmedBridgeHoldUntil = 0
-      state.partsArmedMissingSince = 0
-      if (crossed) state.partsLocalSelectedMarkerId = ''
-      clearPartsArmedOwner()
-      syncMarkerSelectionDom()
+      if (crossed) clearReachedPartsArmedTarget(data)
+      else {
+        state.partsArmedMarkerId = ''
+        state.partsArmedMarkerUntil = 0
+        state.partsArmedBridgeHoldUntil = 0
+        state.partsArmedMissingSince = 0
+        clearPartsArmedOwner()
+        syncMarkerSelectionDom()
+      }
     }
   }
 
@@ -13051,8 +13255,8 @@
     const page = tab === 'playlist' ? 'playlist' : tab === 'regions' ? 'regions' : tab === 'markers' ? 'markers' : tab
     // Troca primeiro o painel que ja esta pronto. Os comandos para a extensao
     // continuam logo abaixo, mas nao seguram a resposta visual do toque.
-    const swappedMusicPane = changingMusicListTab &&
-      swapMusicPaneDom(tab, previousTab)
+    const swappedMusicPane = isCachedMainPaneTab(tab) &&
+      isCachedMainPaneTab(previousTab) && swapMusicPaneDom(tab, previousTab)
     const mountedMainContent = !swappedMusicPane && mountMainContentInPlace()
     if (tab === 'playlist' || tab === 'regions') {
       if (changingMusicListTab && options.keepRemoteSelection !== true) {
@@ -15422,8 +15626,13 @@
     const el = event.target?.closest?.('[data-action]')
     if (!el) return
     const action = el.getAttribute('data-action') || ''
-    if (action === 'select-item' &&
-        now() < Number(state.directorSongListScrollingUntil || 0)) return
+    if (action === 'select-item') {
+      const sameDraggedPointer = event.type === 'pointerup' &&
+        event.pointerId === playlistScrollSuppressedPointerId
+      const syntheticClickFromDrag = event.type === 'click' &&
+        now() < playlistScrollSuppressClickUntil
+      if (sameDraggedPointer || syntheticClickFromDrag) return
+    }
 
     const key = `${action}:${el.getAttribute('data-song-id') || el.getAttribute('data-region-id') || el.getAttribute('data-marker-id') || el.getAttribute('data-mixer-id') || el.getAttribute('data-premix-song-id') || el.getAttribute('data-premix-track-id') || el.getAttribute('data-premix-item-id') || el.getAttribute('data-tuner-song-id') || el.getAttribute('data-track-id') || el.getAttribute('data-search-id') || el.getAttribute('data-song-tool') || el.getAttribute('data-preview-slot') || el.getAttribute('data-slot') || ''}`
     const protectedTransportAction = getPlayProtectionEnabled() && (action === 'play' || action === 'stop-break')
@@ -15939,6 +16148,8 @@
   let playlistScrollStartY = 0
   let playlistScrollMoved = false
   let playlistScrollIsSongList = false
+  let playlistScrollSuppressedPointerId = null
+  let playlistScrollSuppressClickUntil = 0
 
   function handlePlaylistScrollGesture(event) {
     if (event.type === 'pointerdown') {
@@ -15950,6 +16161,23 @@
       playlistScrollStartY = Number(event.clientY) || 0
       playlistScrollMoved = false
       playlistScrollIsSongList = !!songRow
+      if (playlistScrollIsSongList) {
+        // Desde o primeiro contato, nenhum retorno do Bridge pode reconstruir
+        // a lista entre o pointerdown e o primeiro movimento. Era essa janela
+        // curta que devolvia a rolagem para a musica recém-selecionada.
+        const gestureGuardUntil = now() + 320
+        state.directorSongListScrollingUntil = Math.max(
+          Number(state.directorSongListScrollingUntil || 0),
+          gestureGuardUntil)
+        state.directorListScrollingUntil = Math.max(
+          Number(state.directorListScrollingUntil || 0),
+          gestureGuardUntil)
+        state.tabletSearchPendingFocus = null
+      }
+      // Um novo dedo e uma nova decisao do usuario, mesmo que a rolagem
+      // cinetica anterior ainda esteja terminando no WebKit.
+      playlistScrollSuppressedPointerId = null
+      playlistScrollSuppressClickUntil = 0
       return
     }
     if (playlistScrollPointerId === null || event.pointerId !== playlistScrollPointerId) return
@@ -15961,7 +16189,6 @@
         if (playlistScrollIsSongList) {
           state.directorSongListScrollingUntil = now() + 500
           state.directorListScrollingUntil = now() + 500
-          state.directorSelectionScrollPending = null
           state.tabletSearchPendingFocus = null
         } else {
           state.ignoreTapUntil = now() + 500
@@ -15973,6 +16200,8 @@
       if (playlistScrollIsSongList) {
         state.directorSongListScrollingUntil = now() + 500
         state.directorListScrollingUntil = now() + 500
+        playlistScrollSuppressedPointerId = event.pointerId
+        playlistScrollSuppressClickUntil = now() + 450
       } else {
         state.ignoreTapUntil = now() + 500
       }
@@ -15989,8 +16218,8 @@
     state.directorListScrollingUntil = scrollingUntil
     const scrollKey = String(list.getAttribute('data-scroll-key') || '')
     if (scrollKey === 'playlist' || scrollKey === 'regions') {
+      rememberMusicPaneScroll(scrollKey, list)
       state.directorSongListScrollingUntil = scrollingUntil
-      state.directorSelectionScrollPending = null
     }
   }
 

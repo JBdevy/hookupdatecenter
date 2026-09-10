@@ -474,7 +474,7 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseChatHookBtn">Entrar no Chat Hook</button>
       <button class="vshook-mode-button" id="chooseTransferHookBtn">Entrar no Drop Hook</button>
     </div>
-    <div class="vshook-app-version">Versão 1.0.1 app</div>
+    <div class="vshook-app-version">Versão 1.0.2 app</div>
   `)
 
   document.getElementById('chooseDirectorBtn')?.addEventListener('click', () => {
