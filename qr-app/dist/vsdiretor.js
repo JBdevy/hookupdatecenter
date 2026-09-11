@@ -15572,6 +15572,7 @@
   // estado, e e puramente visual: nenhum gesto depende dela.
   let pressedFeedbackElement = null
   let pressedFeedbackReleaseTimer = 0
+  const pendingActionPointers = new Map()
 
   // A marca vale em toda tela do app, inclusive nas que o renderApp devolve
   // antes de montar a interface principal (login e Recados). Por isso ela mora
@@ -15620,10 +15621,50 @@
     })
   }
 
+  // Guarda o controle desde o primeiro contato. O polling do Bridge pode
+  // reconstruir a tela entre pointerdown e pointerup; nesse caso o WebView
+  // entrega a soltura em outro no e o click original desapareceria.
+  function captureActionPointer(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    const element = event.target?.closest?.('[data-action]')
+    if (!element || element.disabled === true ||
+        element.getAttribute('aria-disabled') === 'true') return
+    // Uma janela de bloqueio pertence ao gesto anterior. Um pointerdown novo
+    // e intencional deve responder já no primeiro toque; cliques sinteticos
+    // não possuem este novo pointerdown e continuam protegidos.
+    if (now() < state.ignoreTapUntil) state.ignoreTapUntil = 0
+    pendingActionPointers.set(event.pointerId, {
+      element,
+      startX: Number(event.clientX) || 0,
+      startY: Number(event.clientY) || 0,
+      moved: false,
+    })
+  }
+
+  function moveActionPointer(event) {
+    const pending = pendingActionPointers.get(event.pointerId)
+    if (!pending || pending.moved) return
+    const dx = (Number(event.clientX) || 0) - pending.startX
+    const dy = (Number(event.clientY) || 0) - pending.startY
+    if (Math.hypot(dx, dy) > 12) pending.moved = true
+  }
+
+  function cancelActionPointer(event) {
+    pendingActionPointers.delete(event.pointerId)
+  }
+
+  function resolveTapElement(event) {
+    if (event.type !== 'pointerup') return event.target?.closest?.('[data-action]') || null
+    const pending = pendingActionPointers.get(event.pointerId)
+    pendingActionPointers.delete(event.pointerId)
+    if (pending && !pending.moved) return pending.element
+    return null
+  }
+
   function onTap(event) {
     if (transportHoldConsumesTouch) return
     if (now() < state.ignoreTapUntil) return
-    const el = event.target?.closest?.('[data-action]')
+    const el = resolveTapElement(event)
     if (!el) return
     const action = el.getAttribute('data-action') || ''
     if (action === 'select-item') {
@@ -16488,6 +16529,9 @@
     document.addEventListener('focusout', handleTimerCountdownBlur, true)
     document.addEventListener('dblclick', handleMixerInlineSliderDoubleClick, true)
     if (window.PointerEvent) {
+      document.addEventListener('pointerdown', captureActionPointer, { passive: true, capture: true })
+      document.addEventListener('pointermove', moveActionPointer, { passive: true, capture: true })
+      document.addEventListener('pointercancel', cancelActionPointer, { passive: true, capture: true })
       document.addEventListener('pointerdown', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointermove', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointerup', handleTabletPlayHold, { passive: true })

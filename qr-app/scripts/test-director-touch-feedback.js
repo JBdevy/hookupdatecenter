@@ -95,4 +95,21 @@ assert.match(source,
   /document\.addEventListener\('scroll', clearPressedFeedbackDom, true\)/,
   'a rolagem deve apagar a marca')
 
+// O alvo funcional tambem precisa sobreviver a um render entre a descida e a
+// soltura do dedo. Sem isso o retorno aparece, mas a acao so entra no segundo
+// toque em botoes como SAIR, MODO CLARO e MUSÍCAS.
+const captureBlock = extractFunction('captureActionPointer')
+assert.match(captureBlock, /pendingActionPointers\.set\(event\.pointerId/,
+  'o alvo da acao precisa ser guardado no pointerdown')
+assert.match(captureBlock, /state\.ignoreTapUntil\s*=\s*0/,
+  'um toque novo precisa liberar o bloqueio pertencente ao gesto anterior')
+assert.match(extractFunction('moveActionPointer'), /Math\.hypot\(dx, dy\) > 12/,
+  'um arraste nao pode ser confundido com toque')
+assert.match(extractFunction('resolveTapElement'), /return pending\.element/,
+  'a soltura deve recuperar o controle original mesmo apos um render')
+assert.match(extractFunction('onTap'), /const el = resolveTapElement\(event\)/,
+  'onTap deve usar o alvo preservado do gesto')
+assert(source.indexOf("document.addEventListener('pointerdown', captureActionPointer") < tapAt,
+  'o alvo funcional deve ser capturado antes do pointerup')
+
 console.log(`DIRECTOR_TOUCH_FEEDBACK_OK: ${sourcePath}`)
