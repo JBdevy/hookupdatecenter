@@ -3629,6 +3629,7 @@ function buildBridgeServers(config) {
   return [
     createBridgeServer({
       appName: 'Diretor',
+      getDeviceName: getStoredDeviceName,
       host: '0.0.0.0',
       port: Number(config.directorPort) || 47831,
       publicBridgeHost: selected.ip,
@@ -3668,6 +3669,7 @@ function buildBridgeServers(config) {
     }),
     createBridgeServer({
       appName: 'Músicos',
+      getDeviceName: getStoredDeviceName,
       host: '0.0.0.0',
       port: Number(config.musiciansPort) || 47832,
       publicBridgeHost: selected.ip,

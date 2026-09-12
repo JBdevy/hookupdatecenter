@@ -325,7 +325,7 @@ assert(countCalls(scheduleRenderBlock, 'focusPendingTabletSearchResultDom') >= 1
 // CONFIG ABA TP controla somente a presença dos botões e começa toda
 // desligada. A ordem declarada é também a ordem do rodapé.
 assert.match(source,
-  /\{ id: 'list'[\s\S]*?\{ id: 'play'[\s\S]*?\{ id: 'auto1'[\s\S]*?\{ id: 'auto2'[\s\S]*?\{ id: 'loop'[\s\S]*?\{ id: 'parts'[\s\S]*?\{ id: 'stopBreak'/,
+  /\{ id: 'play'[\s\S]*?\{ id: 'list'[\s\S]*?\{ id: 'auto1'[\s\S]*?\{ id: 'auto2'[\s\S]*?\{ id: 'loop'[\s\S]*?\{ id: 'parts'[\s\S]*?\{ id: 'stopBreak'/,
   'ordem do rodapé do Teleprompt foi alterada')
 const compactTpControls = extractFunction('getAvailableTelepromptTabControls')
 for (const id of ['play', 'auto1', 'loop']) {
@@ -342,8 +342,17 @@ assert.match(extractFunction('getTelepromptTabControls'),
   /saved\?\.\[control\.id\]\s*===\s*true/,
   'controles do rodapé devem iniciar desligados')
 
-// LIST e PARTS podem coexistir: 20% em cada lateral e 60% para o TP.
+// LIST e PARTS podem coexistir: 40% em cada lateral e 20% para o TP.
 const telepromptRenderBlock = extractFunction('renderDirectorTelepromptScreen')
+assert(telepromptRenderBlock.indexOf('<div class="directorTpControls">') <
+  telepromptRenderBlock.indexOf('<div class="directorTpWorkspace"'),
+  'barra superior do TP deve ficar fixa acima de LIST/TP/PARTS')
+assert.match(telepromptRenderBlock,
+  /getHideTelepromptTransport\(slot\)\s*\|\|\s*listOpen/,
+  'abrir LIST deve ocultar temporariamente o transporte do TP')
+assert(telepromptRenderBlock.indexOf('renderTelepromptTabFooterControls(data)') >
+  telepromptRenderBlock.lastIndexOf('renderTelepromptPartsSide(data)'),
+  'rodape do TP deve ficar abaixo de LIST/TP/PARTS, ocupando a largura total')
 for (const requiredPart of [
   'renderTelepromptPlaylistSide(data)',
   'renderTelepromptPartsSide(data)',
@@ -354,14 +363,138 @@ for (const requiredPart of [
     'layout lateral do TP perdeu: ' + requiredPart)
 }
 assert.match(styles,
-  /\.directorTpWorkspace\[data-list-open="1"\]\[data-parts-open="1"\]\s*\{[^}]*grid-template-columns:\s*20%\s+minmax\(0,\s*60%\)\s+20%/,
-  'LIST + TP + PARTS devem ocupar exatamente 20/60/20')
+  /\.directorTpWorkspace\[data-list-open="1"\]\[data-parts-open="1"\]\s*\{[^}]*grid-template-columns:\s*40%\s+minmax\(0,\s*20%\)\s+40%/,
+  'LIST + TP + PARTS devem ocupar exatamente 40/20/40')
+assert.match(styles,
+  /\.directorTpPanel\s*>\s*\.directorTpFooterControls\s*\{[^}]*margin:\s*0\s+10px\s+10px/,
+  'rodape do TP deve permanecer abaixo das colunas')
+assert.match(styles,
+  /\.directorTpPanel\s*>\s*\.directorTpControls\s*\{[^}]*margin:\s*10px\s+10px\s+0/,
+  'barra superior do TP deve respeitar o contorno como o rodape')
+assert.match(styles,
+  /\.directorTpPanel\s*>\s*\.directorTpControls\s*>\s*\.directorTpTab\s*\{[^}]*height:\s*30px\s*!important[^}]*max-height:\s*30px\s*!important/,
+  'botoes CONFIG/TP, TP/1, TP/2 e VOLTAR devem permanecer compactos')
+assert.match(styles,
+  /\.directorTpWorkspace\[data-list-open="1"\]\[data-parts-open="1"\]\s+\.directorTpClock,[\s\S]{0,300}?width:\s*calc\(50%\s*-\s*7px\)\s*!important[\s\S]{0,120}?height:\s*30px\s*!important[\s\S]{0,120}?max-height:\s*30px\s*!important/,
+  'cronometro e horario local devem dividir o TP com o mesmo tamanho quando LIST e PARTS abrirem juntos')
+assert.match(styles,
+  /\.directorTpContent\s*>\s*\.playbackQueueHeader\s+\.playbackQueueNow,[\s\S]{0,260}?grid-template-columns:\s*max-content\s+22px\s+minmax\(0,\s*1fr\)\s+max-content\s*!important/,
+  'rotulo, seta, nome e tempo do transporte do TP devem ocupar colunas independentes')
+assert.match(source,
+  /playbackQueueLabel">REPRODUZINDO<\/span>\s*<span class="playbackQueueStateArrow/,
+  'seta do transporte deve ser irma do rotulo, nunca ficar sobre o nome')
+const telepromptPartsSyncBlock = extractFunction('syncTelepromptPartsSideDom')
+assert.match(telepromptPartsSyncBlock, /\brenderTelepromptPartsSide\s*\(/,
+  'PARTS do TP deve ser remontado com a musica selecionada')
+assert.match(telepromptPartsSyncBlock, /\bcurrent\.replaceWith\(next\)/,
+  'PARTS do TP deve trocar somente sua lateral')
+assert(!extractFunction('renderTelepromptPartsSide').includes('directorTpSideTitle">PARTS'),
+  'lateral PARTS do TP nao deve manter cabecalho sem utilidade')
+assert.match(source,
+  /state\.showTelepromptScreen\s*&&\s*root\.querySelector\('\.directorTpOverlay'\)[\s\S]{0,420}?syncTelepromptPartsSideDom\(\)/,
+  'snapshot de reproducao/fila deve atualizar imediatamente a lateral PARTS do TP')
+assert.match(source,
+  /case 'parts-song-playing':[\s\S]{0,420}?syncTelepromptPartsSideDom\(\)/,
+  'botao da musica tocando deve atualizar a cor e a lista PARTS no proprio toque')
+assert.match(source,
+  /case 'parts-song-queued':[\s\S]{0,420}?syncTelepromptPartsSideDom\(\)/,
+  'botao da musica na fila deve atualizar a cor e a lista PARTS no proprio toque')
+assert.match(finishSongInteractionBlock, /\bsyncTelepromptPartsSideDom\s*\(/,
+  'selecao na LIST deve sincronizar PARTS imediatamente')
+assert.match(finishSongInteractionBlock, /isPartsInterfaceVisible\(\)\s*&&\s*!telepromptPartsSynced/,
+  'PARTS lateral sincronizado nao deve provocar render geral do TP')
+assert.match(extractFunction('isPartsInterfaceVisible'), /\bisTelepromptPartsSideVisible\s*\(/,
+  'PARTS aberto dentro do TP deve contar como interface visivel')
 assert.match(styles,
   /\.directorTpFooterControls\s*>\s*\.btnConfigOffRed\s*\{[^}]*#dc2626/,
   'LIST/PARTS fechados devem aparecer em vermelho')
 assert.match(styles,
   /\.directorTpFooterControls\s*>\s*\.btnConfigOnGreen\s*\{[^}]*#22c55e/,
   'LIST/PARTS abertos devem aparecer em verde')
+assert.match(styles,
+  /\.directorTpSidePane \.item\.numberedItem\s*\{[^}]*grid-template-columns:\s*38px/,
+  'lista lateral de 40% deve usar proporcoes completas de linha e numeracao')
+const tpControlsConfigBlock = extractFunction('renderTelepromptTabControlsConfig')
+assert.match(tpControlsConfigBlock,
+  /telepromptTransportVisibilityButton[\s\S]*?teleprompt-transport-visibility-toggle/,
+  'opcao de ocultar transporte deve ficar dentro de CONFIG ABA TP')
+assert.match(extractFunction('renderSettingsModal'),
+  /settingsMainTransportVisibilityButton[\s\S]*?main-transport-visibility-toggle/,
+  'Config deve oferecer ocultacao independente do transporte da tela principal')
+for (const mainScreenBlock of [
+  extractFunction('renderMusicPane'),
+  extractFunction('renderMusicianMonitorContent'),
+  extractFunction('renderTabletTunerUnifiedContent'),
+  extractFunction('renderTabletBpmUnifiedContent'),
+]) {
+  assert.match(mainScreenBlock, /renderMainPlaybackQueueHeader\s*\(/,
+    'telas principais devem respeitar sua preferencia independente de transporte')
+}
+const autoBlockVisualBlock = extractFunction('isAutoBlocoBoundaryVisualTarget')
+assert.doesNotMatch(autoBlockVisualBlock, /queuedManual|manualQueue/,
+  'AT/BL ligado nao pode manter tarja laranja manual na primeira musica do proximo bloco')
+assert.match(autoBlockVisualBlock, /nextBlockIndex[\s\S]*?isPlayable\(item\)/,
+  'AT/BL deve esconder somente a primeira musica tocavel do proximo bloco')
+const atBlToggleBlock = extractCase('atbl-toggle', 'play')
+for (const syncCall of [
+  'syncSongRowsDom()',
+  'syncPlaybackQueueHeaderDom()',
+  'syncPlaybackProgressDom()',
+]) {
+  assert(atBlToggleBlock.includes(syncCall),
+    'AT/BL deve sincronizar localmente no mesmo toque: ' + syncCall)
+}
+const syncSongRowsBlock = extractFunction('syncSongRowsDom')
+assert.match(syncSongRowsBlock, /const playingRowAppliedByList = new Set\(\)/,
+  'cada lista visivel deve conservar sua propria tarja de reproducao')
+assert.match(syncSongRowsBlock, /row\.closest\('\.listBox'\)/,
+  'tarja tocando deve ser limitada por lista, nao pela interface inteira')
+assert.match(extractFunction('syncSharedInterfaceState'),
+  /localQueueHeld[\s\S]*?if\s*\(!localQueueHeld\)/,
+  'fila local deve permanecer autoritativa enquanto o Bridge confirma')
+const optimisticPositionBlock = extractFunction('getOptimisticPlayingVisualPosition')
+assert.match(optimisticPositionBlock, /optimisticPlayingAnchorPos/,
+  'inicio local da musica deve possuir ancora propria')
+assert.match(optimisticPositionBlock, /locallyPaused/,
+  'progresso local nao pode herdar o pausado antigo do Bridge')
+assert(source.includes("showPopup('APENAS COM A MÚSICA PARADA'"),
+  'aviso do Grid deve informar que a operacao exige musica parada')
+const stoppedTransportBlock = extractFunction('bridgeExplicitlyStopped')
+assert.match(stoppedTransportBlock, /hasStoppedFlag/,
+  'flags booleanas de STOP devem vencer IDs antigos de reproducao')
+assert.doesNotMatch(stoppedTransportBlock,
+  /!data\.(?:playingId|playingSongId|currentSongId)/,
+  'STOP nao pode depender da limpeza tardia dos IDs da musica anterior')
+const initializeSeekBlock = extractFunction('initializeTransportSeekTargetCursor')
+assert.match(initializeSeekBlock,
+  /const stopped\s*=\s*!getTransportSeekPlaying[\s\S]*?!isPaused/,
+  'Grid deve distinguir selecao parada de Play e Pause')
+assert.match(initializeSeekBlock,
+  /transportSeekCursorPos\s*=\s*start[\s\S]*?transportSeekPauseVisualHoldPos\s*=\s*start/,
+  'nova selecao parada deve nascer e permanecer no inicio da musica')
+assert.match(extractFunction('focusOpenTabletTransportPanel'),
+  /initializeTransportSeekTargetCursor\(target, state\.snapshot\)/,
+  'troca de selecao com o Grid aberto deve zerar seu cursor localmente')
+for (const headerBlock of [
+  extractFunction('renderPlaybackQueueHeader'),
+  extractFunction('syncPlaybackQueueHeaderDom'),
+]) {
+  assert.match(headerBlock,
+    /const playbackActive\s*=\s*isPlaying\(data\)\s*\|\|\s*isPaused\(data\)/,
+    'barra de transporte deve depender do estado ativo, nao do ID antigo')
+}
+
+// O horário local vem sempre do relógio do aparelho e possui um tique próprio,
+// independente dos snapshots e do estado de reprodução do Bridge.
+const localClockBlock = extractFunction('syncDirectorLocalClockDom')
+assert.match(localClockBlock, /deviceDate\.getTime\(\)/,
+  'horario local deve usar a data do proprio aparelho')
+assert.doesNotMatch(localClockBlock, /state\.snapshot|Bridge/,
+  'horario local nao pode depender do snapshot do Bridge')
+const animateBlock = extractFunction('animateDirectorProgress')
+assert(animateBlock.indexOf('syncDirectorLocalClockDom(new Date())') <
+  animateBlock.indexOf('const transportAnimating ='),
+  'horario local deve atualizar mesmo com transporte parado ou Bridge offline')
 
 // A pinça amplia somente a área do TP e a pinça inversa devolve o layout.
 const pinchMoveBlock = extractFunction('handleTelepromptPinchMove')
@@ -371,6 +504,16 @@ assert.match(pinchMoveBlock, /ratio\s*<=\s*0\.86/,
   'pinça inversa para sair do TP cheio perdeu o limiar')
 assert.match(pinchMoveBlock, /state\.telepromptFullscreen\s*=\s*shouldEnter/,
   'pinça não atualiza mais o modo de tela cheia')
+const mouseDoubleClickBlock = extractFunction('handleTelepromptMouseDoubleClick')
+assert.match(mouseDoubleClickBlock, /\[data-director-tp-viewport\]/,
+  'duplo clique deve agir somente dentro da area de leitura do TP')
+assert.match(mouseDoubleClickBlock, /any-hover:\s*hover[\s\S]*?any-pointer:\s*fine/,
+  'duplo clique do TP deve ficar restrito a dispositivos com mouse')
+assert.match(mouseDoubleClickBlock, /state\.telepromptFullscreen\s*=\s*!state\.telepromptFullscreen/,
+  'duplo clique do mouse deve alternar a tela cheia do TP')
+assert.match(source,
+  /document\.addEventListener\('dblclick', handleTelepromptMouseDoubleClick, true\)/,
+  'evento de duplo clique do TP nao foi instalado')
 assert.match(styles,
   /\.directorTpFullscreen[\s\S]*?\.directorTpContent\s*>\s*\.playbackQueueHeader[\s\S]*?display:\s*none\s*!important/,
   'tela cheia do TP deve ocultar transporte e controles')

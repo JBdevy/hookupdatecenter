@@ -95,7 +95,7 @@ async function testHttp() {
   await new Promise((resolve) => probe.close(resolve));
   const bridge = createBridgeServer({ host: '127.0.0.1', port, appName: 'Test',
     sharedDir: temporary, appDir: temporary, publicBridgeHost: '10.0.0.20',
-    isLicenseActive: () => false });
+    getDeviceName: () => 'PC PALCO A', isLicenseActive: () => false });
   const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
   const sockets = [];
   const request = (route) => new Promise((resolve, reject) => {
@@ -110,7 +110,11 @@ async function testHttp() {
   });
   try {
     await bridge.start();
-    assert.equal(JSON.parse(await request('/discovery')).host, '10.0.0.20');
+    const initialDiscovery = JSON.parse(await request('/discovery'));
+    assert.equal(initialDiscovery.host, '10.0.0.20');
+    assert.equal(initialDiscovery.deviceName, 'PC PALCO A');
+    assert.equal(initialDiscovery.computerName, 'PC PALCO A');
+    assert.equal(initialDiscovery.reaperOnline, false);
     const firstQr = await request('/qr.svg');
     os.networkInterfaces = () => ({ 'Wi-Fi': [{ family: 'IPv4', internal: false, address: '192.168.8.12' }] });
     bridge.setPublicBridgeHost('192.168.8.12');

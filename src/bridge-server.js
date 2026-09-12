@@ -341,6 +341,9 @@ const NATIVE_BRIDGE_BACKGROUND_POLL_MS =
   process.platform === 'darwin' ? 1200 : 1000
 let nativeBridgeStateCache = null
 let nativeBridgeStateCacheAt = 0
+let nativeBridgeLastProbeAt = 0
+let nativeBridgeLastProbeOk = false
+let nativeBridgeConsecutiveFailures = 0
 let nativeBridgeRefreshInFlight = null
 let nativeBridgeBackgroundPollTimer = null
 const nativeBridgeLicenseChecks = new Set()
@@ -647,11 +650,15 @@ async function refreshNativeBridgeState(force = false) {
     // uma resposta válida ainda em trânsito como "REAPER fechado".
     const result = await requestNativeBridgeJson(
       '/state', { timeoutMs: 3000 })
+    nativeBridgeLastProbeAt = Date.now()
+    nativeBridgeLastProbeOk = !!(result.ok && result.data && result.data.connected)
     if (result.ok && result.data && result.data.connected) {
+      nativeBridgeConsecutiveFailures = 0
       nativeBridgeStateCache = result.data
       nativeBridgeStateCacheAt = Date.now()
       return nativeBridgeStateCache
     }
+    nativeBridgeConsecutiveFailures += 1
     return null
   })()
   nativeBridgeRefreshInFlight = refreshPromise
@@ -661,6 +668,24 @@ async function refreshNativeBridgeState(force = false) {
     if (nativeBridgeRefreshInFlight === refreshPromise) {
       nativeBridgeRefreshInFlight = null
     }
+  }
+}
+
+function getNativeBridgeRealtimeStatus() {
+  const checkedAt = Number(nativeBridgeLastProbeAt || 0)
+  const ageMs = checkedAt ? Math.max(0, Date.now() - checkedAt) : Number.POSITIVE_INFINITY
+  const cacheAgeMs = nativeBridgeStateCacheAt
+    ? Math.max(0, Date.now() - nativeBridgeStateCacheAt)
+    : Number.POSITIVE_INFINITY
+  const online = checkedAt
+    ? nativeBridgeConsecutiveFailures < 2 &&
+      (nativeBridgeLastProbeOk || !!nativeBridgeStateCache) &&
+      ageMs <= Math.max(4500, NATIVE_BRIDGE_BACKGROUND_POLL_MS * 4)
+    : !!nativeBridgeStateCache && cacheAgeMs <= 4500
+  return {
+    online,
+    checkedAt: checkedAt ? new Date(checkedAt).toISOString() : null,
+    consecutiveFailures: nativeBridgeConsecutiveFailures,
   }
 }
 
@@ -1335,6 +1360,9 @@ function createBridgeServer(options) {
   const port = Number(options.port)
   const appDir = options.appDir
   const appName = options.appName
+  const getDeviceName = typeof options.getDeviceName === 'function'
+    ? options.getDeviceName
+    : () => ''
   let publicBridgeHost = options.publicBridgeHost
   const sharedDir = options.sharedDir
   const stateFile = path.join(sharedDir, 'vshook_state.json')
@@ -1354,6 +1382,14 @@ function createBridgeServer(options) {
       return getLicenseActive() === true
     } catch (_) {
       return false
+    }
+  }
+
+  function bridgeDeviceName() {
+    try {
+      return String(getDeviceName() || os.hostname() || 'Hook Center').trim().slice(0, 120)
+    } catch (_) {
+      return String(os.hostname() || 'Hook Center').trim().slice(0, 120)
     }
   }
 
@@ -1528,6 +1564,40 @@ function createBridgeServer(options) {
       return mergeTelepromptTp1State(nativeState, sharedDir)
     }
 
+    // Duas falhas locais consecutivas confirmam que o REAPER/extensão saiu.
+    // Nesse caso não mantém a lista antiga por minutos: o único PC volta ao
+    // estado desconectado, enquanto o app pode oferecer outro Hook Center.
+    const nativeRealtime = getNativeBridgeRealtimeStatus()
+    if (nativeBridgeLastProbeAt && !nativeRealtime.online &&
+        nativeRealtime.consecutiveFailures >= 2) {
+      return mergeTelepromptTp1State({
+        ...fallbackState,
+        connected: false,
+        nativeBridge: false,
+        nativeBridgeRequired: true,
+        bridgeMode: 'native_unavailable',
+        updatedAt: new Date().toISOString(),
+        currentPlaylistName: '',
+        activePlaylistId: null,
+        projectName: '',
+        currentProjectName: '',
+        projectPath: '',
+        activeProject: null,
+        playing: false,
+        playingId: null,
+        queuedSongId: null,
+        selectedRegionId: null,
+        selectedPlaylistSongId: null,
+        selectedMarkerId: null,
+        projects: [],
+        openProjects: [],
+        projectTabs: [],
+        regions: [],
+        playlists: [],
+        markers: [],
+      }, sharedDir)
+    }
+
     // Não some com repertório/app enquanto uma leitura do /state estoura timeout.
     // Mantém o último snapshot bom por alguns minutos e marca como stale,
     // evitando lista piscando/sumindo no Diretor e Músicos.
@@ -1556,11 +1626,14 @@ function createBridgeServer(options) {
 
   function buildDiscoveryPayload() {
     const networkAvailable = publicBridgeHost !== '127.0.0.1'
+    const deviceName = bridgeDeviceName()
+    const nativeRealtime = getNativeBridgeRealtimeStatus()
     const advertisedNetworks = getAllLanIps().filter(item =>
       !publicBridgeHost || item.ip === publicBridgeHost)
     if (!networkAvailable) {
-      return { ok: false, app: 'VS Hook', appName, bridgeVersion: 1,
+      return { ok: false, app: 'VS Hook', appName, deviceName, computerName: deviceName, bridgeVersion: 1,
         connected: false, networkAvailable: false,
+        reaperOnline: false, reaperCheckedAt: nativeRealtime.checkedAt,
         bridgeMode: 'network_unavailable',
         host: '', publicBridgeHost: '', lanHost: '', hosts: [], networkInterfaces: [],
         port, lanUrl: '', lanUrls: [], publicUrl: '', browserUrl: '', browserUrls: [],
@@ -1572,6 +1645,8 @@ function createBridgeServer(options) {
         ok: false,
         app: 'VS Hook',
         appName,
+        deviceName,
+        computerName: deviceName,
         bridgeVersion: 1,
         connected: false,
         nativeBridge: false,
@@ -1579,6 +1654,8 @@ function createBridgeServer(options) {
         licenseRequired: true,
         licenseActive: false,
         bridgeMode: 'license_required',
+        reaperOnline: false,
+        reaperCheckedAt: nativeRealtime.checkedAt,
         projects: [],
         openProjects: [],
         activeProject: null,
@@ -1611,6 +1688,10 @@ function createBridgeServer(options) {
       app: 'VS Hook',
       bridgeVersion: Number(state.bridgeVersion || 1),
       appName,
+      deviceName,
+      computerName: deviceName,
+      reaperOnline: nativeRealtime.online,
+      reaperCheckedAt: nativeRealtime.checkedAt,
       ...projectPayload,
       host: ip,
       publicBridgeHost,
@@ -1726,10 +1807,15 @@ function createBridgeServer(options) {
     }
 
     if (req.method === 'GET' && (parsedUrl.pathname === '/health' || parsedUrl.pathname === '/ping')) {
+      const nativeRealtime = getNativeBridgeRealtimeStatus()
       sendJson(res, 200, {
         ok: true,
         app: 'VS Hook',
         appName,
+        deviceName: bridgeDeviceName(),
+        computerName: bridgeDeviceName(),
+        reaperOnline: nativeRealtime.online,
+        reaperCheckedAt: nativeRealtime.checkedAt,
         port,
         now: new Date().toISOString(),
         uptimeSec: Math.floor(process.uptime()),
@@ -1784,6 +1870,8 @@ function createBridgeServer(options) {
         sendJson(res, 200, {
         ok: false,
         appName,
+        deviceName: bridgeDeviceName(),
+        computerName: bridgeDeviceName(),
         licenseRequired: true,
         licenseActive: false,
         ...buildPublicProjectPayload(state),
@@ -1796,6 +1884,8 @@ function createBridgeServer(options) {
         sendJson(res, 200, {
         ok: true,
         appName,
+        deviceName: bridgeDeviceName(),
+        computerName: bridgeDeviceName(),
         ...buildPublicProjectPayload(state),
         updatedAt: state.updatedAt || null,
         })

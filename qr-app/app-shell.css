@@ -1,5 +1,6 @@
 @import url("./button-gradients.css");
 @import url("./safe-area.css");
+@import url("./scrollbars.css");
 
 * { box-sizing: border-box; }
 html, body, #app {

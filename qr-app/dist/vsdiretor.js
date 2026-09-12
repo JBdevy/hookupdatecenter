@@ -29,6 +29,7 @@
   let technicalNoticeTimer = 0
   let directorProgressAnimationFrame = 0
   let directorProgressLastPaintAt = 0
+  let directorLocalClockLastSecond = -1
   const directorTpMediaWarmups = new Map()
   const directorTpVideoSyncStates = new WeakMap()
   let interfaceAccessButtonTimer = 0
@@ -38,6 +39,7 @@
   const musicPaneCache = new Map()
   const musicPaneScrollState = new Map()
   const premixFullScreenCache = new Map()
+  const bridgeControlStability = new Map()
   let musicPaneWarmupHandle = 0
   let appConfigColorGuardUntil = 0
   let appConfigColorPointerTarget = null
@@ -76,6 +78,7 @@
     optimisticPlayingUntil: 0,
     optimisticPlayingStartedAt: 0,
     optimisticPlayingConfirmations: 0,
+    optimisticPlayingAnchorPos: null,
     optimisticStoppedId: '',
     optimisticStoppedTab: '',
     optimisticStoppedUntil: 0,
@@ -120,6 +123,7 @@
     optimisticActivePlaylistName: '',
     optimisticActivePlaylistUntil: 0,
     pendingMultiProjectPlaylists: null,
+    pendingMultiProjectPlaylistsUntil: 0,
     marqueeEnabled: readLocal('vshook_director_marquee_enabled', '0') === '1',
     showMenu: false,
     showTimerModal: false,
@@ -127,6 +131,9 @@
     settingsSection: 'main',
     telepromptSettingsSlot: 1,
     pendingInterfaceBlocking: null,
+    pendingInterfaceBlockingUntil: 0,
+    pendingFamilyViewControls: null,
+    pendingFamilyViewControlsUntil: 0,
     interfaceAccessAllowed: readLocal('vshook_local_interface_access_allowed', '0') === '1',
     hideInterfaceAccessNotification: readLocal('vshook_hide_interface_access_notification', '0') === '1',
     lastBlockedInterfaceAttemptRevision: null,
@@ -220,6 +227,10 @@
       signature: '',
     },
     timerLocalIgnoreBridgeUntil: 0,
+    pendingTimerInitAuto: null,
+    pendingTimerInitAutoUntil: 0,
+    timerKeyboardField: 'timerCountdownHours',
+    timerKeyboardDigits: 0,
     partsLocalSelectedMarkerId: '',
     partsArmedMarkerId: '',
     partsArmedMarkerUntil: 0,
@@ -338,6 +349,37 @@
   let nativeFamilyDrawersLastAppliedRevision = ''
 
   function now() { return Date.now() }
+
+  function armBridgeControlStability(key) {
+    bridgeControlStability.set(String(key), {
+      confirmations: 0,
+      firstMatchAt: 0,
+    })
+  }
+
+  function bridgeControlStateSettled(key, matches, until) {
+    const id = String(key)
+    const currentTime = now()
+    if (currentTime >= Number(until || 0)) {
+      bridgeControlStability.delete(id)
+      return true
+    }
+    if (!matches) {
+      armBridgeControlStability(id)
+      return false
+    }
+    const current = bridgeControlStability.get(id) || {
+      confirmations: 0,
+      firstMatchAt: currentTime,
+    }
+    current.confirmations += 1
+    if (!current.firstMatchAt) current.firstMatchAt = currentTime
+    bridgeControlStability.set(id, current)
+    if (current.confirmations < 3 ||
+        currentTime - current.firstMatchAt < 500) return false
+    bridgeControlStability.delete(id)
+    return true
+  }
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -731,6 +773,10 @@
   }
 
   function getFamilyViewControlsEnabled(data = state.snapshot) {
+    if (state.pendingFamilyViewControls !== null &&
+        now() < Number(state.pendingFamilyViewControlsUntil || 0)) {
+      return !!state.pendingFamilyViewControls
+    }
     if (typeof data?.familyViewControlsEnabled === 'boolean') {
       return data.familyViewControlsEnabled
     }
@@ -849,8 +895,8 @@
   }
 
   const TELEPROMPT_TAB_CONTROLS = Object.freeze([
-    { id: 'list', label: 'LIST', action: 'teleprompt-list-toggle' },
     { id: 'play', label: 'PLAY', action: 'play' },
+    { id: 'list', label: 'LIST', action: 'teleprompt-list-toggle' },
     { id: 'auto1', label: 'AUTO 1', action: 'autoplay' },
     { id: 'auto2', label: 'AUTO 2', action: 'autoplay2' },
     { id: 'loop', label: 'LOOP', action: 'loop' },
@@ -868,7 +914,8 @@
       return TELEPROMPT_TAB_CONTROLS.filter((control) =>
         control.id === 'play' || control.id === 'auto1' || control.id === 'loop')
     }
-    // No Tablet, LIST entra antes do PLAY e PARTS ocupa o lugar do LOOP.
+    // No Tablet, PLAY abre a faixa, LIST fica antes do AUTO 1 e PARTS ocupa o
+    // lugar do LOOP.
     return TELEPROMPT_TAB_CONTROLS.filter((control) => control.id !== 'loop')
   }
 
@@ -1132,13 +1179,35 @@
   }
 
   function getHideTelepromptTransport(slot = state.telepromptSlot) {
-    return getAppTelepromptSettings(slot).hideTransport
+    const saved = readLocal(
+      `vshook_${getTelepromptRolePrefix()}_teleprompt_hide_transport_v1`, '')
+    if (saved === '1' || saved === '0') return saved === '1'
+    // Migra a preferência antiga, que ficava escondida dentro do preset de
+    // aparência do TP, para a configuração geral da aba.
+    return getAppTelepromptSettings(slot).hideTransport === true
   }
 
   function toggleHideTelepromptTransport() {
-    const hidden = !getHideTelepromptTransport(state.telepromptSettingsSlot)
-    saveAppTelepromptSetting(state.telepromptSettingsSlot, 'hideTransport', hidden)
+    const hidden = !getHideTelepromptTransport()
+    writeLocal(
+      `vshook_${getTelepromptRolePrefix()}_teleprompt_hide_transport_v1`,
+      hidden ? '1' : '0')
     scheduleRender(true)
+  }
+
+  function getHideMainTransport() {
+    return readLocal(
+      `vshook_${getTelepromptRolePrefix()}_main_hide_transport_v1`,
+      '0') === '1'
+  }
+
+  function toggleHideMainTransport() {
+    const hidden = !getHideMainTransport()
+    writeLocal(
+      `vshook_${getTelepromptRolePrefix()}_main_hide_transport_v1`,
+      hidden ? '1' : '0')
+    mountSettingsModalInPlace()
+    scheduleRenderAfterPaint(true)
   }
 
   function getTelepromptColorValue(value = getTelepromptColor()) {
@@ -2480,7 +2549,8 @@
   }
 
   function getMultiProjectPlaylistsEnabled(data = state.snapshot) {
-    const requested = typeof state.pendingMultiProjectPlaylists === 'boolean'
+    const requested = typeof state.pendingMultiProjectPlaylists === 'boolean' &&
+      now() < Number(state.pendingMultiProjectPlaylistsUntil || 0)
       ? state.pendingMultiProjectPlaylists
       : data?.multiProjectPlaylistsEnabled === true ||
         data?.showAllProjectPlaylists === true
@@ -2830,7 +2900,7 @@
     const target = getLiveTransportSeekTarget(data)
     if (!target) return
     storeTransportSeekTarget(target, false)
-    state.transportSeekCursorPos = getTransportSeekCursorPos(target, data)
+    initializeTransportSeekTargetCursor(target, data)
     syncTransportSeekModalDom()
   }
 
@@ -2868,7 +2938,11 @@
     const bridgePlaying = data?.transportPlaying === true || data?.playing === true
     if (state.transportSeekPendingPlaying !== null && sampledAt < Number(state.transportSeekPendingPlayingUntil || 0)) {
       const desired = state.transportSeekPendingPlaying === true
-      if (bridgePlaying === desired) {
+      if (bridgeControlStateSettled(
+        'transport-seek-playing',
+        bridgePlaying === desired,
+        state.transportSeekPendingPlayingUntil,
+      )) {
         state.transportSeekPendingPlaying = null
         state.transportSeekPendingPlayingUntil = 0
         return bridgePlaying
@@ -2890,6 +2964,36 @@
   let seekClockKey = ''
   let seekClockPosSec = 0
   let seekClockAtMs = 0
+
+  function initializeTransportSeekTargetCursor(
+    target,
+    data = state.snapshot,
+  ) {
+    if (!target) return
+    const sampledAt = now()
+    const stopped = !getTransportSeekPlaying(data, sampledAt) &&
+      !isPaused(data)
+    if (!stopped) {
+      state.transportSeekCursorPos = getTransportSeekCursorPos(
+        target, data, sampledAt)
+      return
+    }
+
+    // O Bridge ainda pode publicar o fim da musica anterior durante a nova
+    // selecao. Parado, o Grid nasce no inicio e segura esse ponto ate o Bridge
+    // confirma-lo (ou ate o usuario arrastar o cursor).
+    const start = Number(target.start) || 0
+    state.transportSeekCursorPos = start
+    state.transportSeekDragging = false
+    state.transportSeekPlayVisualHoldPos = null
+    state.transportSeekPlayVisualHoldAt = 0
+    state.transportSeekPlayVisualHoldUntil = 0
+    state.transportSeekPauseVisualHoldPos = start
+    state.transportSeekPauseVisualHoldUntil = sampledAt + 8000
+    seekClockKey = ''
+    seekClockPosSec = start
+    seekClockAtMs = sampledAt
+  }
 
   function getSmoothSeekPlayPositionSec(data, sampledAt, target) {
     const bridgePos = getSmoothedCurrentPlaybackPosition(data, sampledAt)
@@ -3077,7 +3181,7 @@
     state.showTransportSeekModal = true
     persistDirectorPanelState()
     if (!wasOpen && document.documentElement.dataset.directorDevice === 'tablet') state.tabletTransportOpening = true
-    state.transportSeekCursorPos = getTransportSeekCursorPos(target, state.snapshot)
+    initializeTransportSeekTargetCursor(target, state.snapshot)
     if (shouldRender) scheduleRender(true)
     return true
   }
@@ -3138,7 +3242,7 @@
 
   function handleTransportSeekSetPosition(el, event) {
     if (getTransportSeekPlaying(state.snapshot)) {
-      showPopup('PARE A MÚSICA', 'error', 900)
+      showPopup('APENAS COM A MÚSICA PARADA', 'error', 1100)
       return
     }
     const rect = el?.getBoundingClientRect?.()
@@ -3197,6 +3301,7 @@
       state.transportSeekPauseVisualHoldUntil = now() + 3000
       state.transportSeekPendingPlaying = false
       state.transportSeekPendingPlayingUntil = now() + 3000
+      armBridgeControlStability('transport-seek-playing')
       postCommand('director_pause', { preserveCursor: true, transportOnly: true })
       syncTransportSeekModalDom()
       return
@@ -3219,13 +3324,14 @@
       state.playlistSelectionClearedUntil = 0
       state.regionSelectionClearedUntil = now() + 5000
     }
-    setOptimisticPlayingTarget(target.id)
     const cursorPos = getTransportSeekCursorPos(target, data)
+    setOptimisticPlayingTarget(target.id, 4000, cursorPos)
     state.transportSeekPlayVisualHoldPos = cursorPos
     state.transportSeekPlayVisualHoldAt = now()
     state.transportSeekPlayVisualHoldUntil = now() + 5000
     state.transportSeekPendingPlaying = true
     state.transportSeekPendingPlayingUntil = now() + 3000
+    armBridgeControlStability('transport-seek-playing')
     postCommand('director_play_no_seek', {
       activeTab: target.tab,
       page: target.tab,
@@ -3346,7 +3452,10 @@
     state.partsTakeoverPreviousPlayingId = String(data?.playingId || '')
     state.partsMarkerSongSource = 'playing'
     state.queuedSongId = ''
-    state.optimisticQueueClearedUntil = now() + 5000
+    const queueHoldUntil = now() + 5000
+    state.queuedSongLocalUntil = Math.max(
+      Number(state.queuedSongLocalUntil || 0), queueHoldUntil)
+    state.optimisticQueueClearedUntil = queueHoldUntil
     clearPartsArmedOwner()
   }
 
@@ -4221,12 +4330,20 @@
     return data?.playingId != null ? String(data.playingId) : ''
   }
 
-  function setOptimisticPlayingTarget(id, holdMs = 4000) {
+  function setOptimisticPlayingTarget(id, holdMs = 4000, anchorPos = null) {
     const targetId = String(id || '')
+    const startedAt = now()
+    const targetItem = getSongItemById(targetId, state.snapshot)
+    const itemStart = getItemStart(targetItem)
+    const requestedAnchor = anchorPos === null || anchorPos === ''
+      ? NaN : Number(anchorPos)
     state.optimisticPlayingId = targetId
-    state.optimisticPlayingUntil = targetId ? now() + Math.max(1200, Number(holdMs) || 4000) : 0
-    state.optimisticPlayingStartedAt = targetId ? now() : 0
+    state.optimisticPlayingUntil = targetId ? startedAt + Math.max(1200, Number(holdMs) || 4000) : 0
+    state.optimisticPlayingStartedAt = targetId ? startedAt : 0
     state.optimisticPlayingConfirmations = 0
+    state.optimisticPlayingAnchorPos = targetId
+      ? (Number.isFinite(requestedAnchor) ? requestedAnchor : (itemStart ?? 0))
+      : null
   }
 
   function clearOptimisticPlayingTarget() {
@@ -4234,6 +4351,33 @@
     state.optimisticPlayingUntil = 0
     state.optimisticPlayingStartedAt = 0
     state.optimisticPlayingConfirmations = 0
+    state.optimisticPlayingAnchorPos = null
+  }
+
+  function getOptimisticPlayingVisualPosition(
+    data = state.snapshot,
+    sampledAt = now(),
+  ) {
+    if (!state.optimisticPlayingId ||
+        Number(sampledAt) >= Number(state.optimisticPlayingUntil || 0)) return null
+    const anchor = Number(state.optimisticPlayingAnchorPos)
+    if (!Number.isFinite(anchor)) return null
+    const elapsedSec = Math.max(
+      0,
+      Number(sampledAt) - Number(state.optimisticPlayingStartedAt || sampledAt),
+    ) / 1000
+    const locallyPaused = (
+      state.pendingTransportPlaying === false &&
+      Number(sampledAt) < Number(state.pendingTransportPlayingUntil || 0)
+    ) || (
+      state.transportSeekPendingPlaying === false &&
+      Number(sampledAt) < Number(state.transportSeekPendingPlayingUntil || 0)
+    )
+    let position = anchor + (locallyPaused ? 0 : elapsedSec)
+    const item = getSongItemById(state.optimisticPlayingId, data)
+    const end = getItemEnd(item)
+    if (end !== null) position = Math.min(position, end)
+    return position
   }
 
   function isPlaying(data = state.snapshot) {
@@ -4248,12 +4392,12 @@
   function bridgeExplicitlyStopped(data = state.snapshot) {
     if (!data || typeof data !== 'object') return false
     if (data.paused === true || data.transportPaused === true) return false
-    return data.playing === false &&
-      data.transportPlaying !== true &&
-      data.isPlaying !== true &&
-      !data.playingId &&
-      !data.playingSongId &&
-      !data.currentSongId
+    // IDs da ultima musica podem permanecer no snapshot depois do STOP.
+    // Quando existe flag booleana explicita, ela e a fonte mais nova.
+    const hasStoppedFlag = data.playing === false ||
+      data.transportPlaying === false || data.isPlaying === false
+    return hasStoppedFlag && data.playing !== true &&
+      data.transportPlaying !== true && data.isPlaying !== true
   }
 
   function syncVisualTransportState(data = state.snapshot) {
@@ -4291,8 +4435,9 @@
     const bridgeQueuedId = String(
       data?.queuedSongId || data?.queueSongId || '')
     const localQueuedId = String(state.queuedSongId || '')
-    if (bridgeQueuedId === localQueuedId ||
-        currentTime >= Number(state.queuedSongLocalUntil || 0)) {
+    const localQueueHeld = currentTime < Number(
+      state.queuedSongLocalUntil || 0)
+    if (!localQueueHeld) {
       state.queuedSongId = bridgeQueuedId
       state.queuedManualVisualId =
         bridgeQueuedId && data?.queuedManual === true
@@ -4302,6 +4447,9 @@
       else if (bridgeQueuedId === localQueuedId) {
         state.optimisticQueueClearedUntil = 0
       }
+    } else if (bridgeQueuedId === localQueuedId &&
+        bridgeQueuedId && data?.queuedManual === true) {
+      state.queuedManualVisualId = bridgeQueuedId
     }
 
     const bridgePlaylistSelection = String(
@@ -4408,18 +4556,18 @@
   function setPendingTransportPlaying(value, holdMs = 4000) {
     state.pendingTransportPlaying = !!value
     state.pendingTransportPlayingUntil = now() + Math.max(500, Number(holdMs) || 4000)
+    armBridgeControlStability('transport-playing')
     syncMainControlButtonsDom()
   }
 
   function syncPendingTransportPlaying(data = state.snapshot) {
     if (state.pendingTransportPlaying === null) return
-    if (now() >= Number(state.pendingTransportPlayingUntil || 0)) {
-      state.pendingTransportPlaying = null
-      state.pendingTransportPlayingUntil = 0
-      return
-    }
     const bridgePlaying = data?.playing === true || !!data?.playingId
-    if (bridgePlaying === !!state.pendingTransportPlaying) {
+    if (bridgeControlStateSettled(
+      'transport-playing',
+      bridgePlaying === !!state.pendingTransportPlaying,
+      state.pendingTransportPlayingUntil,
+    )) {
       state.pendingTransportPlaying = null
       state.pendingTransportPlayingUntil = 0
     }
@@ -4448,15 +4596,6 @@
     const targetId = String(queuedId || '')
     if (!targetId || !getAutoBlocoEnabled(data) || !isPlaying(data)) return false
 
-    // O AT/BL esconde somente o alvo automatico da virada de bloco. Uma fila
-    // escolhida manualmente pelo usuario continua amarela, inclusive quando a
-    // musica clicada esta dentro do proximo bloco.
-    const localQueueActive = String(state.queuedSongId || '') === targetId
-    const manualQueue = localQueueActive
-      ? String(state.queuedManualVisualId || '') === targetId
-      : data?.queuedManual === true
-    if (manualQueue) return false
-
     const items = getPlaylistItems(data)
     if (!Array.isArray(items) || !items.length) return false
 
@@ -4467,11 +4606,25 @@
       const parentId = getHashFamilyParentId(playingChild)
       if (parentId) playingIndex = items.findIndex((item) => String(getId(item) || '') === String(parentId))
     }
-    const queuedIndex = items.findIndex((item) => String(getId(item) || '') === targetId)
-    if (playingIndex < 0 || queuedIndex <= playingIndex) return false
+    if (playingIndex < 0) return false
 
-    for (let index = playingIndex + 1; index <= queuedIndex; index += 1) {
-      if (isBlock(items[index])) return true
+    // Ao ligar AT/BL, a primeira música do bloco seguinte vira o alvo natural
+    // da passagem. Mesmo que ela já estivesse na fila antes do botão ser
+    // ligado, não mostre a tarja laranja. A fila real é preservada e, ao
+    // desligar AT/BL, getQueuedId volta a expô-la imediatamente.
+    let nextBlockIndex = -1
+    for (let index = playingIndex + 1; index < items.length; index += 1) {
+      if (isBlock(items[index])) {
+        nextBlockIndex = index
+        break
+      }
+    }
+    if (nextBlockIndex < 0) return false
+    for (let index = nextBlockIndex + 1; index < items.length; index += 1) {
+      const item = items[index]
+      if (isBlock(item)) return false
+      if (!isPlayable(item) || isHashChild(item)) continue
+      return String(getId(item) || '') === targetId
     }
     return false
   }
@@ -4509,8 +4662,11 @@
     const desiredMode = state.pendingAutoplay
       ? (Number(state.pendingAutoplayMode) === 2 ? 2 : 1)
       : 0
-    if (getBridgeAutoplayMode(data) === desiredMode ||
-        now() >= Number(state.pendingAutoplayUntil || 0)) {
+    if (bridgeControlStateSettled(
+      'autoplay',
+      getBridgeAutoplayMode(data) === desiredMode,
+      state.pendingAutoplayUntil,
+    )) {
       state.pendingAutoplay = null
       state.pendingAutoplayMode = null
       state.pendingAutoplayUntil = 0
@@ -4999,6 +5155,35 @@
     const data = state.snapshot || {}
     const preview = document.querySelector('.timerModalPreview')
     if (preview) preview.textContent = getTimerDisplayText(data)
+    const initAuto = getTimerInitAutoEnabled(data)
+    root.querySelectorAll('[data-action="timer-init-auto"]').forEach((button) => {
+      button.classList.toggle('btnConfigOnGreen', initAuto)
+      button.classList.toggle('btnConfigOffRed', !initAuto)
+      button.setAttribute('aria-pressed', initAuto ? 'true' : 'false')
+    })
+  }
+
+  function getTimerInitAutoEnabled(data = state.snapshot) {
+    const bridgeValue = typeof data?.timerInitAutoEnabled === 'boolean'
+      ? data.timerInitAutoEnabled : data?.timer?.initAutoEnabled === true
+    if (typeof state.pendingTimerInitAuto === 'boolean') {
+      if (!bridgeControlStateSettled('timer-init-auto',
+          bridgeValue === state.pendingTimerInitAuto, state.pendingTimerInitAutoUntil)) {
+        return state.pendingTimerInitAuto
+      }
+      state.pendingTimerInitAuto = null
+      state.pendingTimerInitAutoUntil = 0
+    }
+    return bridgeValue
+  }
+
+  function toggleTimerInitAuto() {
+    const enabled = !getTimerInitAutoEnabled()
+    state.pendingTimerInitAuto = enabled
+    state.pendingTimerInitAutoUntil = now() + 8000
+    armBridgeControlStability('timer-init-auto')
+    postCommand('timer_set_init_auto', { initAutoEnabled: enabled })
+    syncTimerModalDom()
   }
 
   function syncTimerDom() {
@@ -5340,6 +5525,7 @@
       })
     }
     const optimisticHoldUntil = now() + 700
+    const queueOptimisticHoldUntil = now() + 5000
     state.sharedControlsLocalUntil = Math.max(
       Number(state.sharedControlsLocalUntil || 0),
       optimisticHoldUntil)
@@ -5349,7 +5535,7 @@
         commandType === 'autoplay2_set') {
       state.queuedSongLocalUntil = Math.max(
         Number(state.queuedSongLocalUntil || 0),
-        optimisticHoldUntil)
+        queueOptimisticHoldUntil)
     }
     if (commandType.includes('select') ||
         commandType.includes('stop') ||
@@ -5413,7 +5599,8 @@
   }
 
   function getInterfaceBlockingEnabled(data = state.snapshot) {
-    if (typeof state.pendingInterfaceBlocking === 'boolean') {
+    if (typeof state.pendingInterfaceBlocking === 'boolean' &&
+        now() < Number(state.pendingInterfaceBlockingUntil || 0)) {
       return state.pendingInterfaceBlocking
     }
     return data?.blockInterfaceWhenDirectorConnected === true
@@ -5439,6 +5626,8 @@
     writeLocal('vshook_local_interface_access_allowed', '1')
     state.interfaceAccessAllowed = true
     state.pendingInterfaceBlocking = false
+    state.pendingInterfaceBlockingUntil = now() + 5000
+    armBridgeControlStability('interface-blocking')
     state.snapshot = {
       ...(state.snapshot || {}),
       blockInterfaceWhenDirectorConnected: false,
@@ -5570,21 +5759,47 @@
     if (typeof state.pendingMultiProjectPlaylists !== 'boolean') return
     if (!getMultiProjectPlaylistsAvailable(data)) {
       state.pendingMultiProjectPlaylists = null
+      state.pendingMultiProjectPlaylistsUntil = 0
+      bridgeControlStability.delete('multi-project-playlists')
       return
     }
     const remote =
       data?.multiProjectPlaylistsEnabled === true ||
       data?.showAllProjectPlaylists === true
-    if (remote === state.pendingMultiProjectPlaylists) {
+    if (bridgeControlStateSettled(
+      'multi-project-playlists',
+      remote === state.pendingMultiProjectPlaylists,
+      state.pendingMultiProjectPlaylistsUntil,
+    )) {
       state.pendingMultiProjectPlaylists = null
+      state.pendingMultiProjectPlaylistsUntil = 0
     }
   }
 
   function syncInterfaceBlockingPreference(data = state.snapshot) {
     if (typeof state.pendingInterfaceBlocking !== 'boolean') return
     const remote = data?.blockInterfaceWhenDirectorConnected === true
-    if (remote === state.pendingInterfaceBlocking) {
+    if (bridgeControlStateSettled(
+      'interface-blocking',
+      remote === state.pendingInterfaceBlocking,
+      state.pendingInterfaceBlockingUntil,
+    )) {
       state.pendingInterfaceBlocking = null
+      state.pendingInterfaceBlockingUntil = 0
+    }
+  }
+
+  function syncFamilyViewControlsPreference(data = state.snapshot) {
+    if (state.pendingFamilyViewControls === null) return
+    const hasRemoteValue = typeof data?.familyViewControlsEnabled === 'boolean'
+    const remote = data?.familyViewControlsEnabled === true
+    if (bridgeControlStateSettled(
+      'family-view-controls',
+      hasRemoteValue && remote === state.pendingFamilyViewControls,
+      state.pendingFamilyViewControlsUntil,
+    )) {
+      state.pendingFamilyViewControls = null
+      state.pendingFamilyViewControlsUntil = 0
     }
   }
 
@@ -5879,6 +6094,7 @@
       // otimista quando o modo desejado for confirmado ou expirar.
       syncPendingAutoplayFromBridge(state.snapshot)
       syncInterfaceBlockingPreference(state.snapshot)
+      syncFamilyViewControlsPreference(state.snapshot)
       syncBlockedInterfaceAttempt(state.snapshot)
       syncPcBatteryWarning(state.snapshot)
       syncProjectPlaylistSwitchBlocked(state.snapshot)
@@ -5918,38 +6134,66 @@
         state.showMixerVolume = false
       } else {
         const forcedDirectorLogout = handleDirectorLogoutRequest(state.snapshot)
-        if (state.pendingAutoBloco !== null && state.snapshot?.autoBlocoEnabled === state.pendingAutoBloco) state.pendingAutoBloco = null
+        if (state.pendingAutoBloco !== null) {
+          const bridgeAutoBloco =
+            state.snapshot?.autoBlocoArmed === true ||
+            state.snapshot?.autoBlocoEnabled === true ||
+            state.snapshot?.autoblockEnabled === true
+          if (bridgeControlStateSettled(
+            'auto-bloco',
+            bridgeAutoBloco === state.pendingAutoBloco,
+            state.pendingAutoBlocoUntil,
+          )) state.pendingAutoBloco = null
+        }
         if (state.pendingAutoStop !== null) {
           const bridgeAutoStop = state.snapshot?.autoStopEnabled !== false && state.snapshot?.autostopEnabled !== false
-          if (bridgeAutoStop === state.pendingAutoStop) state.pendingAutoStop = null
+          if (bridgeControlStateSettled(
+            'auto-stop',
+            bridgeAutoStop === state.pendingAutoStop,
+            state.pendingAutoStopUntil,
+          )) state.pendingAutoStop = null
         }
         if (state.pendingStopPauseMode !== null) {
           const hasBridgeStopPause = typeof state.snapshot?.stopPauseModeEnabled === 'boolean' ||
             typeof state.snapshot?.editModeStopPauseEnabled === 'boolean'
           const bridgeStopPause = state.snapshot?.stopPauseModeEnabled === true || state.snapshot?.editModeStopPauseEnabled === true
-          if (hasBridgeStopPause && bridgeStopPause === state.pendingStopPauseMode) {
+          const stopPauseSettled = bridgeControlStateSettled(
+            'stop-pause',
+            hasBridgeStopPause && bridgeStopPause === state.pendingStopPauseMode,
+            state.pendingStopPauseModeUntil,
+          )
+          if (stopPauseSettled) {
+            const expiredWithoutConfirmation =
+              now() >= Number(state.pendingStopPauseModeUntil || 0) &&
+              (!hasBridgeStopPause || bridgeStopPause !== state.pendingStopPauseMode)
             state.pendingStopPauseMode = null
             state.pendingStopPauseModeUntil = 0
             state.pendingStopPauseModeRequestToken += 1
-          } else if (now() >= Number(state.pendingStopPauseModeUntil || 0)) {
-            state.pendingStopPauseMode = null
-            state.pendingStopPauseModeUntil = 0
-            state.pendingStopPauseModeRequestToken += 1
-            showPopup('STOP/PAUSE NÃO SINCRONIZADO', 'error', 1600)
+            if (expiredWithoutConfirmation) {
+              showPopup('STOP/PAUSE NÃO SINCRONIZADO', 'error', 1600)
+            }
           }
         }
         if (state.pendingLoop !== null) {
           const bridgeLoop = state.snapshot?.loopActive === true ||
             state.snapshot?.repeatEnabled === true ||
             state.snapshot?.loopEnabled === true
-          if (bridgeLoop === state.pendingLoop) {
+          if (bridgeControlStateSettled(
+            'loop',
+            bridgeLoop === state.pendingLoop,
+            state.pendingLoopUntil,
+          )) {
             state.pendingLoop = null
             state.pendingLoopUntil = 0
           }
         }
         if (state.pendingMultiLoopBypass !== null) {
           const bridgeBypass = state.snapshot?.multiloops?.bypassActive === true
-          if (bridgeBypass === state.pendingMultiLoopBypass || now() >= Number(state.pendingMultiLoopBypassUntil || 0)) {
+          if (bridgeControlStateSettled(
+            'multiloop-bypass',
+            bridgeBypass === state.pendingMultiLoopBypass,
+            state.pendingMultiLoopBypassUntil,
+          )) {
             state.pendingMultiLoopBypass = null
             state.pendingMultiLoopBypassUntil = 0
           }
@@ -6081,7 +6325,10 @@
     const queuedId = getQueuedId()
     if (!playingId || !queuedId || playingId !== queuedId || getAutoplayEnabled()) return
     state.queuedSongId = ''
-    state.optimisticQueueClearedUntil = now() + 5000
+    const queueHoldUntil = now() + 5000
+    state.queuedSongLocalUntil = Math.max(
+      Number(state.queuedSongLocalUntil || 0), queueHoldUntil)
+    state.optimisticQueueClearedUntil = queueHoldUntil
   }
 
   function sendHeartbeat() {
@@ -6842,7 +7089,10 @@
     // para o app nao reapresentar a propria musica como fila entre snapshots.
     state.queuedSongId = ''
     state.queuedManualVisualId = ''
-    state.optimisticQueueClearedUntil = now() + 1500
+    const queueHoldUntil = now() + 5000
+    state.queuedSongLocalUntil = Math.max(
+      Number(state.queuedSongLocalUntil || 0), queueHoldUntil)
+    state.optimisticQueueClearedUntil = queueHoldUntil
     return true
   }
 
@@ -6912,6 +7162,9 @@
     data = state.snapshot,
     sampledAt = now(),
   ) {
+    const optimisticPosition = getOptimisticPlayingVisualPosition(
+      data, sampledAt)
+    if (optimisticPosition !== null) return optimisticPosition
     const position = getCurrentPlaybackPosition(data)
     if (position === null || !isPlaying(data) || isPaused(data) || !state.lastGoodAt) {
       return position
@@ -7105,6 +7358,22 @@
     const playingId = getVisualPlayingId(data, sampledAt)
     const item = getSongItemById(playingId, data)
     const position = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+    if (state.optimisticPlayingId &&
+        playingId === String(state.optimisticPlayingId) &&
+        Number(sampledAt) < Number(state.optimisticPlayingUntil || 0)) {
+      const start = getItemStart(item)
+      const end = getItemEnd(item)
+      if (position !== null && start !== null && end !== null && end > start + 0.0005) {
+        return clampPercent(((position - start) / (end - start)) * 100)
+      }
+      const duration = getDurationSec(item)
+      if (duration > 0 && position !== null) {
+        const anchor = Number(state.optimisticPlayingAnchorPos)
+        const base = Number.isFinite(anchor) ? anchor : 0
+        return clampPercent(((position - base) / duration) * 100)
+      }
+      return 0
+    }
     if (isHashChild(item) && position !== null) {
       const start = getItemStart(item)
       const end = getItemEnd(item)
@@ -7214,14 +7483,15 @@
   }
 
   function renderPlaybackQueueHeader(data = state.snapshot, holdable = false) {
-    const nowRawName = getNowPlayingName(data)
+    const playbackActive = isPlaying(data) || isPaused(data)
+    const nowRawName = playbackActive ? getNowPlayingName(data) : ''
     const queuedRawName = getQueuedSongName(data)
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!nowRawName && (isPlaying(data) || isPaused(data))
+    const hasNowPlaying = !!nowRawName
     const showQueueBar = hasQueue
-    const progress = isPlaying(data) || isPaused(data)
+    const progress = playbackActive
       ? getVisualPlaybackProgressPercent(data) : 0
     const queueProgress = showQueueBar ? 100 - progress : 0
     const nowTime = hasNowPlaying
@@ -7246,13 +7516,15 @@
     return `
       <div class="playbackQueueHeader${holdable ? ' transportSeekHoldTarget' : ''}" data-transport-playback-color-mode="${playbackColorMode}">
         <div class="playbackQueueLine playbackQueueNow${hasNowPlaying ? ' playbackQueueNowActive' : ''}${currentHidden}">
-          <span class="playbackQueueLabel">REPRODUZINDO <span class="playbackQueueStateArrow playbackQueueStateArrowNow">→</span></span>
+          <span class="playbackQueueLabel">REPRODUZINDO</span>
+          <span class="playbackQueueStateArrow playbackQueueStateArrowNow" aria-hidden="true">→</span>
           <span class="playbackQueueTitle">${escapeHtml(nowName)}</span>
           <span class="playbackQueueTime playbackQueueTimeNow" data-playback-now-time>${escapeHtml(nowTime)}</span>
         </div>
         <div class="playbackQueueTrack playbackQueueTrackNow${currentHidden}" aria-hidden="true"><div class="playbackQueueFill playbackQueueFillNow" style="transform:scaleX(${(progress) / 100})"></div></div>
         <div class="playbackQueueLine playbackQueueNext${hasQueue ? ' playbackQueueNextActive' : ''}${auto2QueueClass}${queueHidden}">
-          <span class="playbackQueueLabel">PRÓXIMA <span class="playbackQueueStateArrow playbackQueueStateArrowNext">→</span></span>
+          <span class="playbackQueueLabel">PRÓXIMA</span>
+          <span class="playbackQueueStateArrow playbackQueueStateArrowNext" aria-hidden="true">→</span>
           <span class="playbackQueueTitle">${escapeHtml(queuedName)}</span>
           <span class="playbackQueueTime playbackQueueTimeNext" data-playback-next-time>${escapeHtml(queuedTime)}</span>
         </div>
@@ -7265,14 +7537,22 @@
     `
   }
 
+  function renderMainPlaybackQueueHeader(
+    data = state.snapshot,
+    holdable = false,
+  ) {
+    return getHideMainTransport()
+      ? '' : renderPlaybackQueueHeader(data, holdable)
+  }
+
   function renderMusicPane(activeTab, data = state.snapshot || {}) {
     const cacheKey = getMainPaneCacheKey(activeTab, data)
     if (activeTab === 'playlist') {
       const playlist = getActivePlaylist(data)
       const title = upperText(playlist?.name || data.currentPlaylistName || 'REPERTÓRIO')
-      return `<div class="contentPanel" data-music-pane-tab="playlist" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}${renderCachedMusicList(getPlaylistWithOpenDrawers(data), 'playlist', data)}</div>`
+      return `<div class="contentPanel" data-music-pane-tab="playlist" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div>${renderControls(activeTab)}${renderMainPlaybackQueueHeader(data, true)}${renderCachedMusicList(getPlaylistWithOpenDrawers(data), 'playlist', data)}</div>`
     }
-    return `<div class="contentPanel" data-music-pane-tab="regions" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls(activeTab)}${renderPlaybackQueueHeader(data, true)}${renderCachedMusicList(getRegionsWithOpenDrawers(data), 'region', data)}</div>`
+    return `<div class="contentPanel" data-music-pane-tab="regions" data-main-pane-cache-key="${cacheKey}"><div class="sectionLabel sectionLabelSticky">LISTA GERAL</div>${renderControls(activeTab)}${renderMainPlaybackQueueHeader(data, true)}${renderCachedMusicList(getRegionsWithOpenDrawers(data), 'region', data)}</div>`
   }
 
   function getMusicPaneStructureSignature(
@@ -7672,7 +7952,7 @@
     if (activeTab === 'markers') {
       return partsTargetIsParent(data)
         ? `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">PARTS</div>${renderPartsParentInstruction()}</div>`
-        : `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">PARTS</div>${renderControls()}${renderPlaybackQueueHeader(data)}${renderPartsSongSwitch(data)}<div class="listBox markerListBox">${renderRows(getPartsMarkers(data), 'marker')}</div></div>`
+        : `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">PARTS</div>${renderControls()}${renderMainPlaybackQueueHeader(data)}${renderPartsSongSwitch(data)}<div class="listBox markerListBox">${renderRows(getPartsMarkers(data), 'marker')}</div></div>`
     }
     if (activeTab === 'mixer') return renderMixerPage()
     if (activeTab === 'premix') return renderPremixPage()
@@ -8165,11 +8445,65 @@
     const running = !!data.timerRunning
     const toggleLabel = running ? 'PARAR' : 'INICIAR'
     const countdown = splitCountdownSec(getCountdownTargetSec(data))
+    const ownKeyboard = useTabletSearchKeyboard()
+    const initAuto = getTimerInitAutoEnabled(data)
+    const fields = [
+      ['timerCountdownHours', 'H', 99, countdown.hours],
+      ['timerCountdownMinutes', 'M', 59, countdown.minutes],
+      ['timerCountdownSeconds', 'S', 59, countdown.seconds],
+    ]
     const countdownInputs = mode === 'countdown'
-      ? `<div class="timerCountdownInputs"><label><span>H</span><input id="timerCountdownHours" data-timer-countdown-input data-timer-max="99" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.hours).padStart(2, '0')}"></label><label><span>M</span><input id="timerCountdownMinutes" data-timer-countdown-input data-timer-max="59" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.minutes).padStart(2, '0')}"></label><label><span>S</span><input id="timerCountdownSeconds" data-timer-countdown-input data-timer-max="59" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="${String(countdown.seconds).padStart(2, '0')}"></label></div>`
+      ? `<div class="timerCountdownInputs">${fields.map(([id, label, max, value]) => `<label data-timer-selected="${ownKeyboard && state.timerKeyboardField === id ? '1' : '0'}"><span>${label}</span><input id="${id}" aria-label="${label === 'H' ? 'Horas' : label === 'M' ? 'Minutos' : 'Segundos'}" data-timer-countdown-input data-timer-max="${max}" type="text" inputmode="${ownKeyboard ? 'none' : 'numeric'}" pattern="[0-9]*" autocomplete="off" value="${String(value).padStart(2, '0')}"${ownKeyboard ? ' readonly aria-readonly="true"' : ''}></label>`).join('')}</div>`
       : ''
-    const actionButtons = `<div class="modalButtons timerActionButtons"><button class="${running ? 'btnStopActive' : 'modalOkBtnWide'}" data-action="timer-toggle">${toggleLabel}</button><button class="modalCancelBtn" data-action="modal-close">FECHAR</button></div>`
-    return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox timerModalBox" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview ${isCountdownOverrun(data) ? 'timerOverrunBlink' : ''}">${escapeHtml(getTimerDisplayText(data))}</div>${countdownInputs}<div class="timerModeGrid"><button class="${mode === 'progressive' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${mode === 'countdown' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-countdown">REGRESSIVO</button></div>${actionButtons}</div><div class="modalBottomSpace"></div></div>`
+    const keyboard = ownKeyboard && mode === 'countdown' ? renderTimerKeyboard() : ''
+    const actionButtons = `<div class="modalButtons timerActionButtons"><button class="${running ? 'btnStopActive' : 'modalOkBtnWide'}" data-action="timer-toggle">${toggleLabel}</button><button class="${initAuto ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="timer-init-auto" aria-pressed="${initAuto ? 'true' : 'false'}">INIT AUTO</button><button class="modalCancelBtn" data-action="modal-close">FECHAR</button></div>`
+    return `<div class="modalOverlay timerModalOverlay"><div class="modalSpacer"></div><div class="modalBox timerModalBox${ownKeyboard ? ' timerModalOwnKeyboard' : ''}" data-stop-modal><div class="modalTitle">CRONÔMETRO</div><div class="timerModalPreview ${isCountdownOverrun(data) ? 'timerOverrunBlink' : ''}">${escapeHtml(getTimerDisplayText(data))}</div>${countdownInputs}<div class="timerModeGrid"><button class="${mode === 'progressive' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-progressive">PROGRESSIVO</button><button class="${mode === 'countdown' ? 'btnAutoplayActive' : 'btn'}" data-action="timer-mode-countdown">REGRESSIVO</button></div>${keyboard}${actionButtons}</div><div class="modalBottomSpace"></div></div>`
+
+  }
+
+  function renderTimerKeyboard() {
+    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'backspace']
+    return `<div class="timerKeyboard" aria-label="Teclado numérico do cronômetro">${keys.map((key) => `<button type="button" class="tabletSearchKey" data-action="timer-key" data-timer-key="${key}" aria-label="${key === 'clear' ? 'Limpar campo' : key === 'backspace' ? 'Apagar dígito' : key}">${key === 'clear' ? 'LIMPAR' : key === 'backspace' ? '⌫' : key}</button>`).join('')}</div>`
+  }
+
+  function selectTimerKeyboardField(input) {
+    if (!input?.matches?.('[data-timer-countdown-input]')) return
+    state.timerKeyboardField = input.id
+    state.timerKeyboardDigits = 0
+    syncTimerKeyboardFieldDom()
+  }
+
+  function syncTimerKeyboardFieldDom() {
+    root.querySelectorAll('[data-timer-countdown-input]').forEach((input) => {
+      input.closest('label')?.setAttribute('data-timer-selected', state.timerKeyboardField === input.id ? '1' : '0')
+    })
+  }
+
+  function applyTimerKeyboardKey(keyValue) {
+    if (!state.showTimerModal || !useTabletSearchKeyboard()) return
+    const input = document.getElementById(state.timerKeyboardField)
+    if (!input?.matches?.('[data-timer-countdown-input]')) return
+    const key = String(keyValue || '')
+    if (key === 'clear') {
+      input.value = '00'
+      state.timerKeyboardDigits = 0
+    } else if (key === 'backspace') {
+      input.value = String(input.value || '').replace(/\D/g, '').slice(0, -1).padStart(2, '0')
+      state.timerKeyboardDigits = 0
+    } else if (/^\d$/.test(key)) {
+      input.value = state.timerKeyboardDigits === 0 ? key : (String(input.value) + key).slice(-2)
+      state.timerKeyboardDigits += 1
+    } else return
+    normalizeTimerCountdownInput(input, { commit: true })
+    applyCountdownTarget(readCountdownInputs(), { render: false })
+    if (state.timerKeyboardDigits >= 2) {
+      const ids = ['timerCountdownHours', 'timerCountdownMinutes', 'timerCountdownSeconds']
+      const next = ids[Math.min(2, ids.indexOf(input.id) + 1)]
+      state.timerKeyboardField = next
+      state.timerKeyboardDigits = 0
+      try { document.getElementById(next)?.focus({ preventScroll: true }) } catch (_) {}
+    }
+    syncTimerKeyboardFieldDom()
   }
 
   function renderTimerStopConfirm() {
@@ -8193,8 +8527,7 @@
     const extraColors = `<div class="telepromptExtraColorsGrid${state.showTelepromptColorPalette ? '' : ' telepromptExtraColorsGridHidden'}" data-teleprompt-extra-colors>${TELEPROMPT_COLOR_OPTIONS.slice(4).map((option) => renderColorButton(option, true)).join('')}</div>`
     const chordFontButtons = TELEPROMPT_FONT_OPTIONS.map((option) => `<button class="btn telepromptSettingsOption telepromptFontPreview telepromptFontPreview-${option.id}${chordFont === option.id ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-font-set" data-value="${option.id}">${option.label}</button>`).join('')
     const chordColorButtons = TELEPROMPT_COLOR_OPTIONS.map((option) => renderChordColorButton(option)).join('')
-    const hideTransport = getHideTelepromptTransport()
-    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">ALINHAMENTO DAS LETRAS</div><div class="telepromptSettingsGrid">${alignmentButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — POSIÇÃO</div><div class="telepromptSettingsGrid telepromptChordPositionGrid"><button class="btn telepromptSettingsOption${chordPosition === 'top' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="top">EM CIMA</button><button class="btn telepromptSettingsOption${chordPosition === 'bottom' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="bottom">EM BAIXO</button><button class="btn telepromptSettingsOption" data-action="teleprompt-chord-scale-minus" aria-label="Diminuir escala da cifra">−</button><button class="btn telepromptSettingsOption telepromptChordScaleValue" data-action="teleprompt-chord-scale-plus" aria-label="Aumentar escala da cifra">${chordScale}% +</button></div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${chordFontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — COR DA LETRA</div><div class="telepromptExtraColorsGrid telepromptChordColorsGrid">${chordColorButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — VISUALIZAÇÃO</div><div class="settingsWideGrid"><button class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? '[x]' : '[ ]'} Ocultar painel transporte da área do teleprompt</button></div></div>`
+    return `<div class="settingsCategory settingsTelepromptCategory"><div class="settingsCategoryTitle">TELEPROMPT — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${fontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">ALINHAMENTO DAS LETRAS</div><div class="telepromptSettingsGrid">${alignmentButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">TELEPROMPT — COR DA LETRA</div><div class="telepromptSettingsGrid telepromptColorSettingsGrid">${colorButtons}</div><button class="btn telepromptMoreColorsButton${state.showTelepromptColorPalette ? ' telepromptMoreColorsButtonActive' : ''}" data-action="teleprompt-colors-more" aria-expanded="${state.showTelepromptColorPalette ? 'true' : 'false'}">Mais+</button>${extraColors}<div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — POSIÇÃO</div><div class="telepromptSettingsGrid telepromptChordPositionGrid"><button class="btn telepromptSettingsOption${chordPosition === 'top' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="top">EM CIMA</button><button class="btn telepromptSettingsOption${chordPosition === 'bottom' ? ' telepromptSettingsOptionActive' : ''}" data-action="teleprompt-chord-position-set" data-value="bottom">EM BAIXO</button><button class="btn telepromptSettingsOption" data-action="teleprompt-chord-scale-minus" aria-label="Diminuir escala da cifra">−</button><button class="btn telepromptSettingsOption telepromptChordScaleValue" data-action="teleprompt-chord-scale-plus" aria-label="Aumentar escala da cifra">${chordScale}% +</button></div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — FONTE</div><div class="telepromptSettingsGrid telepromptFontSettingsGrid">${chordFontButtons}</div><div class="settingsCategoryTitle telepromptColorSettingsTitle">CIFRA — COR DA LETRA</div><div class="telepromptExtraColorsGrid telepromptChordColorsGrid">${chordColorButtons}</div></div>`
   }
 
   function renderAppConfigSelect(slot, settings, name, label, options) {
@@ -8287,7 +8620,6 @@
         ${renderAppConfigToggle(slot, settings, 'previewUnderlineEnabled', 'Sublinhar nomes do preview')}
         ${renderAppConfigToggle(slot, settings, 'progressEnabled', 'Mostrar barra de progresso')}
         ${renderAppConfigToggle(slot, settings, 'clearMode', 'Modo Clear')}
-        ${renderAppConfigToggle(slot, settings, 'hideTransport', 'Ocultar painel de transporte')}
       </div></section>
     </div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-config-hub">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
@@ -8317,13 +8649,14 @@
   function renderTelepromptTabControlsConfig() {
     const enabled = getTelepromptTabControls()
     const controls = getAvailableTelepromptTabControls()
+    const hideTransport = getHideTelepromptTransport()
     const compactClass = useCompactTelepromptTabControls()
       ? ' telepromptTabControlsGridCompact' : ''
     const buttons = controls.map((control) => {
       const active = enabled[control.id] === true
       return `<button type="button" class="${active ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-tab-control-toggle" data-teleprompt-tab-control="${control.id}" aria-pressed="${active ? 'true' : 'false'}">${control.label}</button>`
     }).join('')
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox telepromptTabControlsModal" data-stop-modal><div class="modalTitle">CONFIG ABA TP</div><div class="telepromptTabControlsInfo">ESCOLHA OS BOTÕES QUE SERÃO MOSTRADOS NO RODAPÉ DO TELEPROMPT</div><div class="telepromptTabControlsGrid${compactClass}">${buttons}</div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-tab-controls-back">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox telepromptTabControlsModal" data-stop-modal><div class="modalTitle">CONFIG ABA TP</div><button type="button" class="${hideTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'} telepromptTransportVisibilityButton" data-action="teleprompt-transport-visibility-toggle" aria-pressed="${hideTransport ? 'true' : 'false'}">${hideTransport ? 'PAINEL TRANSPORTE OCULTO' : 'OCULTAR PAINEL TRANSPORTE'}</button><div class="telepromptTabControlsInfo">ESCOLHA OS BOTÕES QUE SERÃO MOSTRADOS NO RODAPÉ DO TELEPROMPT</div><div class="telepromptTabControlsGrid${compactClass}">${buttons}</div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-tab-controls-back">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderSettingsModal() {
@@ -8350,7 +8683,8 @@
     const soundOn = uiSoundEnabled()
     const vibrateOn = uiVibrateEnabled()
     const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM E VIBRAÇÃO</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div><div class="settingsThemeGrid"><button class="${vibrateOn ? 'btnAutoplayActive' : 'btn'}" data-action="vibrate-on">VIBRAR LIGADO</button><button class="${vibrateOn ? 'btn' : 'btnAutoplayActive'}" data-action="vibrate-off">VIBRAR DESLIGADO</button></div></div>`
-    const telepromptTabCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">TELEPROMPT</div><div class="settingsWideGrid"><button class="btn settingsTelepromptTabButton" data-action="teleprompt-tab-controls">CONFIG ABA TP</button></div></div>`
+    const hideMainTransport = getHideMainTransport()
+    const telepromptTabCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">TELEPROMPT</div><div class="settingsWideGrid"><button class="btn settingsTelepromptTabButton" data-action="teleprompt-tab-controls">CONFIG ABA TP</button><button class="${hideMainTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsMainTransportVisibilityButton" data-action="main-transport-visibility-toggle" aria-pressed="${hideMainTransport ? 'true' : 'false'}">${hideMainTransport ? '[x] PAINEL TRANSPORTE PRINCIPAL OCULTO' : '[ ] OCULTAR PAINEL TRANSPORTE DA TELA PRINCIPAL'}</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
       return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}${telepromptTabCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
@@ -9949,7 +10283,6 @@
     if (!isTabletTelepromptLayout() || !state.telepromptPartsOpen) return ''
     const parentInstruction = partsTargetIsParent(data)
     return `<aside class="directorTpSidePane directorTpPartsPane" aria-label="Parts">
-      <div class="sectionLabel sectionLabelSticky directorTpSideTitle">PARTS</div>
       ${parentInstruction
         ? `${renderPartsSongSwitch(data)}${renderPartsParentInstruction()}`
         : `<div class="controlsRowPlaylist tabletPartsControls directorTpPartsControls">
@@ -9964,6 +10297,23 @@
     </aside>`
   }
 
+  function isTelepromptPartsSideVisible() {
+    return state.showTelepromptScreen && state.telepromptPartsOpen && isTabletTelepromptLayout()
+  }
+
+  function syncTelepromptPartsSideDom(data = state.snapshot || {}) {
+    if (!isTelepromptPartsSideVisible()) return false
+    const current = root.querySelector('.directorTpWorkspace > .directorTpPartsPane')
+    if (!current) return false
+    const template = document.createElement('template')
+    template.innerHTML = renderTelepromptPartsSide(data).trim()
+    const next = template.content.firstElementChild
+    if (!next) return false
+    current.replaceWith(next)
+    syncMarkerSelectionDom()
+    return true
+  }
+
   function renderDirectorTelepromptScreen(data = state.snapshot || {}) {
     if (!state.showTelepromptScreen) return ''
     const slot = Number(state.telepromptSlot) === 2 ? 2 : 1
@@ -9971,11 +10321,13 @@
     const teleprompt = getDirectorTelepromptState(slot, data)
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
-    const transportPanel = getHideTelepromptTransport(slot)
-      ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
     const tabletLayout = isTabletTelepromptLayout()
     const listOpen = tabletLayout && state.telepromptListOpen
     const partsOpen = tabletLayout && state.telepromptPartsOpen
+    // LIST usa a área de operação ao vivo: enquanto estiver aberta, o painel
+    // de transporte some sem modificar a preferência permanente do usuário.
+    const transportPanel = getHideTelepromptTransport(slot) || listOpen
+      ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
     const cssVariables = [
       `--app-tp-text-color:${settings.textColor}`,
       `--app-tp-highlight-color:${teleprompt.highlightColor}`,
@@ -10005,16 +10357,16 @@
     return `
       <div class="directorTpOverlay${state.telepromptFullscreen ? ' directorTpFullscreen' : ''}" data-teleprompt-slot="${slot}" data-teleprompt-fullscreen="${state.telepromptFullscreen ? '1' : '0'}">
         <div class="directorTpPanel">
+          <div class="directorTpControls">
+            <button class="directorTpTab directorTpConfig" data-action="teleprompt-config-hub">CONFIG/TP</button>
+            <button class="${tp1Class}" data-action="teleprompt-slot-1">TP/1</button>
+            <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
+            <button class="directorTpTab directorTpBack" data-action="teleprompt-back">VOLTAR</button>
+          </div>
           <div class="directorTpWorkspace" data-list-open="${listOpen ? '1' : '0'}" data-parts-open="${partsOpen ? '1' : '0'}">
           ${renderTelepromptPlaylistSide(data)}
           <div class="directorTpContent">
             ${transportPanel}
-            <div class="directorTpControls">
-              <button class="directorTpTab directorTpConfig" data-action="teleprompt-config-hub">CONFIG/TP</button>
-              <button class="${tp1Class}" data-action="teleprompt-slot-1">TP/1</button>
-              <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
-              <button class="directorTpTab directorTpBack" data-action="teleprompt-back">VOLTAR</button>
-            </div>
             <div class="directorTpViewport" data-director-tp-viewport data-window-border="${settings.windowBorderEnabled ? '1' : '0'}" data-window-rgb="${settings.rgbWindowBorderEnabled ? '1' : '0'}" data-text-box="${settings.textBoxEnabled ? '1' : '0'}" data-text-box-rgb="${settings.rgbTextBoxBorderEnabled ? '1' : '0'}" data-text-case="${settings.textCase}" data-text-alignment="${settings.textAlignment}" data-clear-mode="${settings.clearMode ? '1' : '0'}" style="${escapeHtml(cssVariables)}">
               <img class="directorTpImage directorTpHidden" alt="Conteúdo do Teleprompt" />
               <video class="directorTpVideo directorTpHidden" muted playsinline preload="auto"></video>
@@ -10022,17 +10374,17 @@
               <div class="directorTpPreview directorTpHidden" data-director-tp-preview aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpChord directorTpHidden" data-director-tp-chord data-rgb="${settings.rgbChordBorderEnabled ? '1' : '0'}" aria-live="polite" aria-hidden="true"></div>
               <div class="directorTpClock${settings.clockEnabled ? '' : ' directorTpHidden'}" data-director-tp-clock data-position="${settings.clockPosition}" data-border="${settings.clockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}">${escapeHtml(getTimerDisplayText(data))}</div>
-              <div class="directorTpLocalClock${settings.localClockEnabled ? '' : ' directorTpHidden'}" data-director-tp-local-clock data-position="${settings.localClockPosition}" data-border="${settings.localClockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}"></div>
+              <div class="directorTpLocalClock${settings.localClockEnabled ? '' : ' directorTpHidden'}" data-director-tp-local-clock data-position="${settings.localClockPosition}" data-border="${settings.localClockBorderEnabled ? '1' : '0'}" data-rgb="${settings.rgbClockBorderEnabled ? '1' : '0'}">${escapeHtml(getDeviceLocalClockText())}</div>
               <div class="directorTpSongName${settings.songNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-song data-position="${settings.songNamePosition}"></div>
               <div class="directorTpQueueName${settings.queueNameEnabled ? '' : ' directorTpHidden'}" data-director-tp-queue data-position="${settings.queueNamePosition}"></div>
               <div class="directorTpProgress${settings.progressEnabled ? '' : ' directorTpHidden'}" data-director-tp-progress data-position="${settings.progressPosition}"><span></span></div>
               <div class="directorTpEmpty">SEM CONTEÚDO NO TP/${slot}</div>
               ${renderDirectorTechnicalNotice(data)}
             </div>
-            ${renderTelepromptTabFooterControls(data)}
           </div>
           ${renderTelepromptPartsSide(data)}
           </div>
+          ${renderTelepromptTabFooterControls(data)}
         </div>
       </div>
     `
@@ -10401,8 +10753,7 @@
     const localClockHost = viewport.querySelector('[data-director-tp-local-clock]')
     if (localClockHost) {
       const show = settings.localClockEnabled && !clearMode
-      const clockText = new Date().toLocaleTimeString('pt-BR', { hour12: false })
-      if (localClockHost.textContent !== clockText) localClockHost.textContent = clockText
+      syncDirectorLocalClockDom(new Date(), true)
       localClockHost.dataset.position = singleSideClock && settings.localClockEnabled
         ? (settings.clockPosition.endsWith('bottom') ? 'center-bottom' : 'center-top')
         : settings.localClockPosition
@@ -10880,7 +11231,7 @@
     const rowType = regionsPage ? 'region' : 'playlist'
     // A tela principal do Músico usa a mesma lista ativa da extensão/Diretor.
     // A única diferença é o controle TP, sem comandos de transporte ou seleção.
-    return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div><div class="controlsRowPlaylist controlsRowMusicianTp"><button class="btn musicianTpOnlyButton" data-action="open-teleprompt">TP</button></div>${renderPlaybackQueueHeader(data, false)}${renderCachedMusicList(rows, rowType, data)}</div>`
+    return `<div class="contentPanel"><div class="sectionLabel sectionLabelSticky">${escapeHtml(title)}</div><div class="controlsRowPlaylist controlsRowMusicianTp"><button class="btn musicianTpOnlyButton" data-action="open-teleprompt">TP</button></div>${renderMainPlaybackQueueHeader(data, false)}${renderCachedMusicList(rows, rowType, data)}</div>`
   }
 
   function normalizeTabletSearchText(value) {
@@ -11162,13 +11513,13 @@
   function renderTabletTunerUnifiedContent(data = state.snapshot || {}) {
     const type = state.activeTab === 'regions' ? 'region' : 'playlist'
     const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
-    return `<div class="contentPanel tabletTunerUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletTuner: true })}</div></div>`
+    return `<div class="contentPanel tabletTunerUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderMainPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletTuner: true })}</div></div>`
   }
 
   function renderTabletBpmUnifiedContent(data = state.snapshot || {}) {
     const type = state.activeTab === 'regions' ? 'region' : 'playlist'
     const items = type === 'region' ? getRegionsWithOpenDrawers(data) : getPlaylistWithOpenDrawers(data)
-    return `<div class="contentPanel tabletTunerUnifiedContent tabletBpmUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList tabletBpmUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletBpm: true })}</div></div>`
+    return `<div class="contentPanel tabletTunerUnifiedContent tabletBpmUnifiedContent"><div class="tabletTunerUnifiedTop">${renderControls()}${renderMainPlaybackQueueHeader(data, true)}</div><div class="listBox tabletTunerUnifiedList tabletBpmUnifiedList" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}">${renderRows(items, type, { tabletBpm: true })}</div></div>`
   }
 
   function renderTabletTunerPanel(data = state.snapshot || {}) {
@@ -11796,7 +12147,7 @@
       getVisualPlayingRemainingSec(data))
     const queuedDuration = queuedId
       ? formatIndividualRemainingTime(getQueuedSongDurationSec(data)) : ''
-    let playingRowAlreadyApplied = false
+    const playingRowAppliedByList = new Set()
 
     for (const row of rows) {
       const type = String(row.getAttribute('data-item-type') || '')
@@ -11805,10 +12156,14 @@
       const item = itemsByType[type]?.get(id) || getSongItemById(id, data)
       if (!item) continue
 
-      const representsPlaying = !playingRowAlreadyApplied &&
+      // A tela principal e a coluna LIST do Teleprompt podem mostrar a mesma
+      // música ao mesmo tempo. Cada lista precisa conservar sua própria tarja
+      // de reprodução e sua própria barra de progresso.
+      const rowList = row.closest('.listBox') || row.parentElement || root
+      const representsPlaying = !playingRowAppliedByList.has(rowList) &&
         rowRepresentsPlayingSong(
           item, data, visualPlayingId, visualPlayPosition)
-      if (representsPlaying) playingRowAlreadyApplied = true
+      if (representsPlaying) playingRowAppliedByList.add(rowList)
       const familySelectedId = isHashChild(item)
         ? String(state.selectedRegionId || '') : ''
       const selected = !transportPlaying && !!id &&
@@ -11897,7 +12252,11 @@
     syncMainControlButtonsDom()
     syncTransportSeekModalDom()
     syncDirectorPopupDom()
-    if (options.structural === true || isPartsInterfaceVisible()) {
+    // Quando LIST e PARTS estao abertas no Teleprompt, a musica selecionada
+    // precisa trocar a lista de Parts imediatamente. Atualiza somente a lateral
+    // para nao desmontar a LIST nem interromper o gesto/scroll em andamento.
+    const telepromptPartsSynced = options.structural !== true && syncTelepromptPartsSideDom()
+    if (options.structural === true || (isPartsInterfaceVisible() && !telepromptPartsSynced)) {
       scheduleRender(true)
       return false
     }
@@ -12307,6 +12666,12 @@
       if (sig !== state.lastHtmlSignature) {
         if (!forceRender && state.showTelepromptScreen && root.querySelector('.directorTpOverlay')) {
           state.lastHtmlSignature = sig
+          // A lateral PARTS depende da música tocando, da fila e da origem
+          // escolhida localmente. Sincronize-a sem precisar que outra ação,
+          // como LOOP, force uma reconstrução completa do Teleprompt.
+          syncTelepromptPartsSideDom()
+          syncSongRowsDom()
+          syncPlaybackQueueHeaderDom()
           syncPlaybackProgressDom()
           syncTimerDom()
           syncDirectorTelepromptDom()
@@ -12624,12 +12989,13 @@
   }
 
   function syncPlaybackQueueHeaderDom(data = state.snapshot || {}) {
-    const nowRawName = getNowPlayingName(data)
+    const playbackActive = isPlaying(data) || isPaused(data)
+    const nowRawName = playbackActive ? getNowPlayingName(data) : ''
     const queuedRawName = getQueuedSongName(data)
     const nowName = nowRawName || 'NENHUMA MÚSICA EM REPRODUÇÃO'
     const queuedName = queuedRawName || 'FILA DE ESPERA VAZIA'
     const hasQueue = !!(getQueuedId(data) || queuedRawName)
-    const hasNowPlaying = !!nowRawName && (isPlaying(data) || isPaused(data))
+    const hasNowPlaying = !!nowRawName
     const showQueueBar = hasQueue
     const prepareOnly = showQueueBar && getAutoplay2Enabled(data)
     const multiLoopStatus = getTransportMultiLoopStatus(data)
@@ -12889,10 +13255,11 @@
     const rows = root.querySelectorAll(
       '.item.playing[data-item-type="playlist"],.item.playing[data-item-type="region"]',
     )
-    let kept = false
+    const keptByList = new Set()
     for (const row of rows) {
-      if (!kept) {
-        kept = true
+      const rowList = row.closest('.listBox') || row.parentElement || root
+      if (!keptByList.has(rowList)) {
+        keptByList.add(rowList)
         continue
       }
       row.classList.remove('playing')
@@ -13089,7 +13456,7 @@
   }
 
   function isPartsInterfaceVisible() {
-    return state.showMarkersOverlay || state.activeTab === 'markers' || state.tabletPartsSplit
+    return state.showMarkersOverlay || state.activeTab === 'markers' || state.tabletPartsSplit || isTelepromptPartsSideVisible()
   }
 
   function syncMarkerSelectionDom() {
@@ -13576,10 +13943,12 @@
       state.transportSeekSongEnd = 0
       state.transportSeekDisplayDuration = 0
       state.transportSeekCursorPos = 0
+      state.transportSeekPauseVisualHoldPos = null
+      state.transportSeekPauseVisualHoldUntil = 0
       return
     }
     storeTransportSeekTarget(target, true)
-    state.transportSeekCursorPos = getTransportSeekCursorPos(target, state.snapshot)
+    initializeTransportSeekTargetCursor(target, state.snapshot)
   }
 
   function isOpenFamilyParent(item, id) {
@@ -13696,6 +14065,7 @@
         state.regionSelectionClearedUntil = 0
         state.playlistSelectionClearedUntil = now() + 5000
       }
+      focusOpenTabletTransportPanel(id, 'regions', 'selected')
       postCommand('select_region', childPayload)
       finishSongInteractionDom()
       return
@@ -14068,6 +14438,7 @@
     state.pendingAutoplay = next
     state.pendingAutoplayMode = next ? desiredMode : 0
     state.pendingAutoplayUntil = now() + 8000
+    armBridgeControlStability('autoplay')
     // O clique é a fonte imediata do front. Botão, cor e alvo da fila mudam
     // agora; o Bridge apenas confirma o estado depois.
     applyImmediateAutoplayQueueVisual(
@@ -14511,7 +14882,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'vibrate-on', 'vibrate-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-tab-controls', 'teleprompt-tab-control-toggle', 'teleprompt-tab-controls-back', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle', 'play', 'autoplay', 'loop'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'vibrate-on', 'vibrate-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-tab-controls', 'teleprompt-tab-control-toggle', 'teleprompt-tab-controls-back', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'main-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle', 'play', 'autoplay', 'loop'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -14999,11 +15370,16 @@
         state.showMenu = false
         state.pendingAutoBloco = next
         state.pendingAutoBlocoUntil = now() + 8000
+        armBridgeControlStability('auto-bloco')
         postCommand('auto_bloco_set', { desiredAutoBloco: next, autoBlocoEnabled: next, desiredState: next ? 'on' : 'off', activeTab: state.activeTab, page: state.activeTab })
         showPopup(next ? 'AT/BL ON' : 'AT/BL OFF', 'success', 750)
-        // O botao troca de estado agora, no proprio DOM. So o fechamento do
-        // menu suspenso e estrutural o bastante para pedir um render inteiro.
+        // Botão, fila do transporte, barra regressiva e tarja da lista usam o
+        // mesmo estado local no próprio toque. Nenhuma parte visual espera o
+        // Bridge para esconder ou restaurar a primeira música do próximo bloco.
         syncMainControlButtonsDom()
+        syncSongRowsDom()
+        syncPlaybackQueueHeaderDom()
+        syncPlaybackProgressDom()
         if (menuWasOpen) scheduleRender(true)
         else state.lastHtmlSignature = getAppRenderSignature()
         break
@@ -15017,6 +15393,8 @@
       case 'cancel-live-off': state.showConfirmLiveOff = false; scheduleRender(true); break
       case 'timer-open': state.showTimerModal = true; if (!mountTimerModalInPlace()) scheduleRender(true); break
       case 'timer-toggle': handleTimerToggle(); break
+      case 'timer-init-auto': toggleTimerInitAuto(); break
+      case 'timer-key': applyTimerKeyboardKey(el.getAttribute('data-timer-key')); break
       case 'timer-stop-confirm': confirmTimerStop(); break
       case 'timer-stop-cancel': state.showConfirmTimerStop = false; scheduleRender(true); break
       case 'timer-mode-countdown': setTimerModeOptimistic('countdown'); postCommand('timer_set_mode', getTimerCommandPayload({ mode: 'countdown', timerMode: 'countdown', timerTargetSec: getCountdownTargetSec(state.snapshot), timerDisplaySec: getCountdownTargetSec(state.snapshot), timerAccumulatedSec: getCountdownTargetSec(state.snapshot) })); break
@@ -15094,6 +15472,8 @@
           dismissInterfaceAccessButton()
         }
         state.pendingInterfaceBlocking = next
+        state.pendingInterfaceBlockingUntil = now() + 5000
+        armBridgeControlStability('interface-blocking')
         state.snapshot = {
           ...(state.snapshot || {}),
           blockInterfaceWhenDirectorConnected: next,
@@ -15121,10 +15501,9 @@
       }
       case 'family-view-toggle': {
         const next = !getFamilyViewControlsEnabled()
-        state.snapshot = {
-          ...(state.snapshot || {}),
-          familyViewControlsEnabled: next,
-        }
+        state.pendingFamilyViewControls = next
+        state.pendingFamilyViewControlsUntil = now() + 5000
+        armBridgeControlStability('family-view-controls')
         postCommand('director_family_view_set', {
           enabled: next,
           familyViewControlsEnabled: next,
@@ -15187,6 +15566,7 @@
       case 'teleprompt-chord-font-set': setTelepromptChordFont(el.getAttribute('data-value')); break
       case 'teleprompt-chord-color-set': setTelepromptChordColor(el.getAttribute('data-value')); break
       case 'teleprompt-transport-visibility-toggle': toggleHideTelepromptTransport(); break
+      case 'main-transport-visibility-toggle': toggleHideMainTransport(); break
       case 'number-label': toggleNumberColumnMode(); break
       case 'number-sort': toggleNumberSortDirection(); break
       case 'number-order-confirm': confirmNumberOrderChange(); break
@@ -15197,6 +15577,7 @@
         const next = !getAutoStopEnabled()
         state.pendingAutoStop = next
         state.pendingAutoStopUntil = now() + 8000
+        armBridgeControlStability('auto-stop')
         postCommand('auto_stop_set', { desiredAutoStop: next, autoStopEnabled: next, autostopEnabled: next, enabled: next, desiredState: next ? 'on' : 'off', activeTab: state.activeTab, page: state.activeTab })
         showPopup(next ? 'AUTO STOP ON' : 'AUTO STOP OFF', 'success', 850)
         scheduleRender(true)
@@ -15206,6 +15587,7 @@
         const next = !getStopPauseModeEnabled()
         state.pendingStopPauseMode = next
         state.pendingStopPauseModeUntil = now() + 8000
+        armBridgeControlStability('stop-pause')
         state.pendingStopPauseModeRequestToken += 1
         commitStopPauseModeToBridge(next, state.pendingStopPauseModeRequestToken, 0)
         scheduleRender(true)
@@ -15235,6 +15617,8 @@
       case 'playlist-multi-toggle': {
         if (!getMultiProjectPlaylistsAvailable()) {
           state.pendingMultiProjectPlaylists = null
+          state.pendingMultiProjectPlaylistsUntil = 0
+          bridgeControlStability.delete('multi-project-playlists')
           showPopup(
             'ABRA OUTRA SESSÃO COM PELO MENOS UM REPERTÓRIO',
             'error', 1500)
@@ -15243,6 +15627,8 @@
         }
         const next = !getMultiProjectPlaylistsEnabled()
         state.pendingMultiProjectPlaylists = next
+        state.pendingMultiProjectPlaylistsUntil = now() + 5000
+        armBridgeControlStability('multi-project-playlists')
         postCommand('multi_project_playlists_set', {
           enabled: next,
           desiredState: next,
@@ -15327,7 +15713,8 @@
         state.partsArmedMarkerId = ''
         state.partsArmedMarkerUntil = 0
         clearPartsArmedOwner()
-        scheduleRender(true)
+        if (!syncTelepromptPartsSideDom()) scheduleRender(true)
+        else state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'parts-song-queued': {
@@ -15337,13 +15724,15 @@
         state.partsArmedMarkerId = ''
         state.partsArmedMarkerUntil = 0
         clearPartsArmedOwner()
-        scheduleRender(true)
+        if (!syncTelepromptPartsSideDom()) scheduleRender(true)
+        else state.lastHtmlSignature = getAppRenderSignature()
         break
       }
       case 'loop': {
         const next = !getLoopActive()
         state.pendingLoop = next
         state.pendingLoopUntil = now() + 5000
+        armBridgeControlStability('loop')
         postCommand('loop_toggle', { activeTab: state.activeTab, page: state.activeTab, desiredState: next ? 'on' : 'off', enabled: next, active: next })
         scheduleRender(true)
         break
@@ -15352,6 +15741,7 @@
         const next = !getMultiLoopBypassActive()
         state.pendingMultiLoopBypass = next
         state.pendingMultiLoopBypassUntil = now() + 5000
+        armBridgeControlStability('multiloop-bypass')
         if (!next) {
           state.tabletMultiLoopBypassWarningKey = ''
           state.tabletMultiLoopBypassWarningLastPosition = null
@@ -15865,6 +16255,7 @@
   function getActionElementKey(element) {
     if (!element) return ''
     const action = element.getAttribute('data-action') || ''
+    if (action === 'timer-key') return `${action}:${element.getAttribute('data-timer-key') || ''}`
     return `${action}:${element.getAttribute('data-song-id') || element.getAttribute('data-region-id') || element.getAttribute('data-marker-id') || element.getAttribute('data-mixer-id') || element.getAttribute('data-premix-song-id') || element.getAttribute('data-premix-track-id') || element.getAttribute('data-premix-item-id') || element.getAttribute('data-tuner-song-id') || element.getAttribute('data-track-id') || element.getAttribute('data-search-id') || element.getAttribute('data-search-key') || element.getAttribute('data-teleprompt-tab-control') || element.getAttribute('data-song-tool') || element.getAttribute('data-preview-slot') || element.getAttribute('data-slot') || ''}`
   }
 
@@ -15941,7 +16332,7 @@
         lastPointerDispatchedAction.key === key &&
         now() - lastPointerDispatchedAction.at < 900) return
     const protectedTransportAction = getPlayProtectionEnabled() && (action === 'play' || action === 'stop-break')
-    const repeatableKeyboardAction = action === 'tablet-search-key'
+    const repeatableKeyboardAction = action === 'tablet-search-key' || action === 'timer-key'
     if (!protectedTransportAction && !repeatableKeyboardAction && isDuplicateTap(key)) return
     event.preventDefault?.()
     event.stopPropagation?.()
@@ -16447,6 +16838,34 @@
     telepromptPinchHandled = false
   }
 
+  function handleTelepromptMouseDoubleClick(event) {
+    if (!state.showTelepromptScreen || Number(event?.button || 0) !== 0) return
+    if (event.sourceCapabilities?.firesTouchEvents === true) return
+    const mouseAvailable = typeof window.matchMedia !== 'function' ||
+      window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches
+    if (!mouseAvailable) return
+    const viewport = event.target?.closest?.('[data-director-tp-viewport]')
+    if (!viewport?.closest?.('.directorTpOverlay')) return
+    if (event.target?.closest?.('button, a, input, textarea, select, [contenteditable="true"]')) return
+    event.preventDefault?.()
+    state.telepromptFullscreen = !state.telepromptFullscreen
+    scheduleRender(true)
+  }
+
+  function handleDesktopTransportSpace(event) {
+    if (event.code !== 'Space' && event.key !== ' ' && event.key !== 'Spacebar') return
+    if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+    if (!state.authAuthenticated || !state.bridgeOnline || !state.snapshot) return
+    if (state.showTabletSearch || state.showRecadosScreen || state.showMenu) return
+    const editable = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]'
+    if (event.target?.closest?.(editable) || document.activeElement?.closest?.(editable)) return
+    if (root.querySelector('.modalOverlay, [role="dialog"]')) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    if (event.repeat) return
+    handlePlay()
+  }
+
   function preventAppZoom() {
     const viewport = document.querySelector('meta[name="viewport"]')
     if (viewport) {
@@ -16783,6 +17202,14 @@
   function handleTimerCountdownKeyDown(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (useTabletSearchKeyboard()) {
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      const key = String(event.key || '')
+      if (!/^\d$/.test(key) && key !== 'Backspace' && key !== 'Delete') return
+      event.preventDefault()
+      applyTimerKeyboardKey(key === 'Backspace' ? 'backspace' : key === 'Delete' ? 'clear' : key)
+      return
+    }
     if (!/^\d$/.test(String(event.key || '')) || event.ctrlKey || event.metaKey || event.altKey) return
     const current = String(input.value || '').replace(/\D/g, '')
     if (current.length < 2) return
@@ -16797,6 +17224,10 @@
   function handleTimerCountdownFocus(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (useTabletSearchKeyboard()) {
+      selectTimerKeyboardField(input)
+      return
+    }
     if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
       window.setDirectorTabletKeyboardOpen(true)
     }
@@ -16808,8 +17239,17 @@
   }
 
   function handleTimerCountdownPointerDown(event) {
+    if (useTabletSearchKeyboard() && event.target?.closest?.('[data-action="timer-key"]')) {
+      event.preventDefault()
+      return
+    }
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
+    if (useTabletSearchKeyboard()) {
+      selectTimerKeyboardField(input)
+      try { input.focus({ preventScroll: true }) } catch (_) {}
+      return
+    }
     if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
       window.setDirectorTabletKeyboardOpen(true)
     }
@@ -16826,6 +17266,7 @@
     if (!input?.matches?.('[data-timer-countdown-input]')) return
     normalizeTimerCountdownInput(input, { commit: true })
     applyCountdownTarget(readCountdownInputs(), { render: false })
+    if (useTabletSearchKeyboard()) return
     window.setTimeout(() => {
       if (isCountdownInputFocused()) return
       if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
@@ -16842,9 +17283,11 @@
     document.addEventListener('pointerdown', handleTimerCountdownPointerDown, true)
     document.addEventListener('beforeinput', handleTimerCountdownBeforeInput, true)
     document.addEventListener('keydown', handleTimerCountdownKeyDown, true)
+    document.addEventListener('keydown', handleDesktopTransportSpace, true)
     document.addEventListener('focusin', handleTimerCountdownFocus, true)
     document.addEventListener('focusout', handleTimerCountdownBlur, true)
     document.addEventListener('dblclick', handleMixerInlineSliderDoubleClick, true)
+    document.addEventListener('dblclick', handleTelepromptMouseDoubleClick, true)
     if (window.PointerEvent) {
       document.addEventListener('pointerdown', captureActionPointer, { passive: true, capture: true })
       document.addEventListener('pointercancel', cancelActionPointer, { passive: true, capture: true })
@@ -17103,10 +17546,35 @@
     technicalNoticeTimer = 0
     directorProgressAnimationFrame = 0
     directorProgressLastPaintAt = 0
+    directorLocalClockLastSecond = -1
+  }
+
+  // O horario local pertence ao aparelho que esta exibindo o Teleprompt. Ele
+  // nao faz parte do snapshot do Bridge e continua correndo mesmo se a conexao
+  // com o computador cair. A escrita no DOM e limitada a uma vez por segundo.
+  function getDeviceLocalClockText(deviceDate = new Date()) {
+    return deviceDate.toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+  }
+
+  function syncDirectorLocalClockDom(deviceDate = new Date(), force = false) {
+    if (!state.showTelepromptScreen) return
+    const localSecond = Math.floor(deviceDate.getTime() / 1000)
+    if (!force && localSecond === directorLocalClockLastSecond) return
+    directorLocalClockLastSecond = localSecond
+    const localClockHost = root.querySelector('[data-director-tp-local-clock]')
+    if (!localClockHost) return
+    const clockText = getDeviceLocalClockText(deviceDate)
+    if (localClockHost.textContent !== clockText) localClockHost.textContent = clockText
   }
 
   function animateDirectorProgress(timestamp) {
     if (!document.hidden) {
+      syncDirectorLocalClockDom(new Date())
       const transportAnimating =
         isPlaying(state.snapshot) && !isPaused(state.snapshot)
       if (transportAnimating) {
