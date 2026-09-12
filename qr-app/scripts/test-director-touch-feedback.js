@@ -103,13 +103,39 @@ assert.match(captureBlock, /pendingActionPointers\.set\(event\.pointerId/,
   'o alvo da acao precisa ser guardado no pointerdown')
 assert.match(captureBlock, /state\.ignoreTapUntil\s*=\s*0/,
   'um toque novo precisa liberar o bloqueio pertencente ao gesto anterior')
-assert.match(extractFunction('moveActionPointer'), /Math\.hypot\(dx, dy\) > 12/,
-  'um arraste nao pode ser confundido com toque')
-assert.match(extractFunction('resolveTapElement'), /return pending\.element/,
-  'a soltura deve recuperar o controle original mesmo apos um render')
+assert(!source.includes('function moveActionPointer('),
+  'botoes nao devem cancelar a acao por uma distancia fixa de arrasto')
+const resolveTapBlock = extractFunction('resolveTapElement')
+assert.match(resolveTapBlock,
+  /document\.elementFromPoint\(clientX, clientY\)\?\.closest\?\.\('\[data-action\]'\)/,
+  'a soltura precisa conferir qual controle realmente ficou sob o dedo')
+assert.match(resolveTapBlock,
+  /releasedElement === pending\.element\) return releasedElement/,
+  'o arrasto que termina dentro do mesmo botao deve executar a acao')
+assert.match(resolveTapBlock,
+  /clientX >= rect\.left[\s\S]*?clientX <= rect\.right[\s\S]*?clientY >= rect\.top[\s\S]*?clientY <= rect\.bottom/,
+  'o fallback deve validar os limites reais do controle')
+assert.match(resolveTapBlock,
+  /!pending\.element\?\.isConnected[\s\S]*?getActionElementKey\(releasedElement\) === getActionElementKey\(pending\.element\)/,
+  'o controle equivalente deve sobreviver a um render durante o gesto')
+assert.doesNotMatch(resolveTapBlock, /pending\.moved|TOLERANCE/,
+  'a decisao dos botoes deve depender da area final, nao da distancia percorrida')
 assert.match(extractFunction('onTap'), /const el = resolveTapElement\(event\)/,
   'onTap deve usar o alvo preservado do gesto')
 assert(source.indexOf("document.addEventListener('pointerdown', captureActionPointer") < tapAt,
   'o alvo funcional deve ser capturado antes do pointerup')
+
+// Alguns WebViews emitem o retorno visual do pointerdown, mas perdem a rota de
+// pointerup. O click delegado fica sempre instalado como segunda rota e a marca
+// do pointerup impede que o mesmo gesto execute a acao duas vezes.
+assert(source.includes("document.addEventListener('click', onTap, false)"),
+  'o click de seguranca precisa existir tambem quando PointerEvent esta disponivel')
+const onTapBlock = extractFunction('onTap')
+assert.match(onTapBlock,
+  /event\.type === 'click'[\s\S]*?lastPointerDispatchedAction[\s\S]*?return/,
+  'o click sintetico precisa ser deduplicado depois do pointerup')
+assert.match(onTapBlock,
+  /event\.type === 'pointerup'[\s\S]*?lastPointerDispatchedAction\s*=\s*\{ key, at: now\(\) \}/,
+  'o pointerup precisa registrar a acao executada para proteger o fallback')
 
 console.log(`DIRECTOR_TOUCH_FEEDBACK_OK: ${sourcePath}`)

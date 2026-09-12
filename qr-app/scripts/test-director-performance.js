@@ -74,6 +74,8 @@ for (const parte of [
 const renderSignatureBlock = extractFunction('getAppRenderSignature')
 for (const requiredPart of [
   'state.activeTab',
+  'state.telepromptListOpen',
+  'state.telepromptPartsOpen',
   'getHashDrawersRenderSignature()',
   'compactRenderState()',
 ]) {
@@ -284,8 +286,14 @@ const onTapBlock = extractFunction('onTap')
 assert.doesNotMatch(onTapBlock,
   /directorSongListScrollingUntil/,
   'um novo toque na musica nao pode ser bloqueado pela rolagem anterior')
-assert.match(onTapBlock, /playlistScrollSuppressedPointerId/,
-  'somente o gesto que realmente arrastou a lista deve perder o toque')
+assert.match(onTapBlock, /event\.type === 'click'[\s\S]*?playlistScrollSuppressClickUntil/,
+  'somente o click sintetico posterior a rolagem deve ser bloqueado')
+assert.match(onTapBlock, /event\.pointerId === playlistScrollSuppressedPointerId/,
+  'uma linha musical arrastada deve continuar sendo tratada como scroll')
+assert.match(playlistScrollGestureBlock, /Math\.hypot\(dx, dy\) > 10/,
+  'a lista musical deve usar touch slop antes de assumir que o gesto e scroll')
+assert.doesNotMatch(playlistScrollGestureBlock, /state\.ignoreTapUntil\s*=/,
+  'o scroll da lista nao pode bloquear globalmente os demais botoes')
 
 const partsSnapshotBlock = extractFunction('syncPartsMarkerStateFromSnapshot')
 assert.match(partsSnapshotBlock,
@@ -317,20 +325,43 @@ assert(countCalls(scheduleRenderBlock, 'focusPendingTabletSearchResultDom') >= 1
 // CONFIG ABA TP controla somente a presença dos botões e começa toda
 // desligada. A ordem declarada é também a ordem do rodapé.
 assert.match(source,
-  /\{ id: 'play'[\s\S]*?\{ id: 'auto1'[\s\S]*?\{ id: 'auto2'[\s\S]*?\{ id: 'loop'[\s\S]*?\{ id: 'stopBreak'/,
+  /\{ id: 'list'[\s\S]*?\{ id: 'play'[\s\S]*?\{ id: 'auto1'[\s\S]*?\{ id: 'auto2'[\s\S]*?\{ id: 'loop'[\s\S]*?\{ id: 'parts'[\s\S]*?\{ id: 'stopBreak'/,
   'ordem do rodapé do Teleprompt foi alterada')
 const compactTpControls = extractFunction('getAvailableTelepromptTabControls')
 for (const id of ['play', 'auto1', 'loop']) {
   assert(compactTpControls.includes(`control.id === '${id}'`),
     'modo compacto perdeu o controle ' + id)
 }
-for (const id of ['auto2', 'stopBreak']) {
+for (const id of ['list', 'auto2', 'parts', 'stopBreak']) {
   assert(!compactTpControls.includes(`control.id === '${id}'`),
     'modo compacto não pode mostrar ' + id)
 }
+assert.match(compactTpControls, /filter\(\(control\) => control\.id !== 'loop'\)/,
+  'no Tablet o PARTS deve ocupar o lugar do LOOP')
 assert.match(extractFunction('getTelepromptTabControls'),
   /saved\?\.\[control\.id\]\s*===\s*true/,
   'controles do rodapé devem iniciar desligados')
+
+// LIST e PARTS podem coexistir: 20% em cada lateral e 60% para o TP.
+const telepromptRenderBlock = extractFunction('renderDirectorTelepromptScreen')
+for (const requiredPart of [
+  'renderTelepromptPlaylistSide(data)',
+  'renderTelepromptPartsSide(data)',
+  'data-list-open=',
+  'data-parts-open=',
+]) {
+  assert(telepromptRenderBlock.includes(requiredPart),
+    'layout lateral do TP perdeu: ' + requiredPart)
+}
+assert.match(styles,
+  /\.directorTpWorkspace\[data-list-open="1"\]\[data-parts-open="1"\]\s*\{[^}]*grid-template-columns:\s*20%\s+minmax\(0,\s*60%\)\s+20%/,
+  'LIST + TP + PARTS devem ocupar exatamente 20/60/20')
+assert.match(styles,
+  /\.directorTpFooterControls\s*>\s*\.btnConfigOffRed\s*\{[^}]*#dc2626/,
+  'LIST/PARTS fechados devem aparecer em vermelho')
+assert.match(styles,
+  /\.directorTpFooterControls\s*>\s*\.btnConfigOnGreen\s*\{[^}]*#22c55e/,
+  'LIST/PARTS abertos devem aparecer em verde')
 
 // A pinça amplia somente a área do TP e a pinça inversa devolve o layout.
 const pinchMoveBlock = extractFunction('handleTelepromptPinchMove')
@@ -343,6 +374,9 @@ assert.match(pinchMoveBlock, /state\.telepromptFullscreen\s*=\s*shouldEnter/,
 assert.match(styles,
   /\.directorTpFullscreen[\s\S]*?\.directorTpContent\s*>\s*\.playbackQueueHeader[\s\S]*?display:\s*none\s*!important/,
   'tela cheia do TP deve ocultar transporte e controles')
+assert.match(styles,
+  /\.directorTpFullscreen \.directorTpSidePane\s*\{[^}]*display:\s*none\s*!important/,
+  'tela cheia do TP deve ocultar LIST e PARTS')
 
 // No Tablet a busca usa uma entrada somente de leitura e o teclado do app.
 const tabletSearchRenderBlock = extractFunction('renderTabletSearchScreen')

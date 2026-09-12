@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.2-director-performance-v44'
+  const VERSION = '1.0.2-director-performance-v46'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
@@ -141,6 +141,8 @@
     showBpmScreen: readLocal('vshook_director_bpm_open', '0') === '1',
     showTelepromptScreen: false,
     telepromptFullscreen: false,
+    telepromptListOpen: false,
+    telepromptPartsOpen: false,
     showRecadosScreen: false,
     recadosDraft: '',
     recadosGlobalDraft: '',
@@ -847,10 +849,12 @@
   }
 
   const TELEPROMPT_TAB_CONTROLS = Object.freeze([
+    { id: 'list', label: 'LIST', action: 'teleprompt-list-toggle' },
     { id: 'play', label: 'PLAY', action: 'play' },
     { id: 'auto1', label: 'AUTO 1', action: 'autoplay' },
     { id: 'auto2', label: 'AUTO 2', action: 'autoplay2' },
     { id: 'loop', label: 'LOOP', action: 'loop' },
+    { id: 'parts', label: 'PARTS', action: 'teleprompt-parts-toggle' },
     { id: 'stopBreak', label: 'STOP BREAK', action: 'stop-break' },
   ])
 
@@ -860,9 +864,12 @@
   }
 
   function getAvailableTelepromptTabControls() {
-    if (!useCompactTelepromptTabControls()) return TELEPROMPT_TAB_CONTROLS
-    return TELEPROMPT_TAB_CONTROLS.filter((control) =>
-      control.id === 'play' || control.id === 'auto1' || control.id === 'loop')
+    if (useCompactTelepromptTabControls()) {
+      return TELEPROMPT_TAB_CONTROLS.filter((control) =>
+        control.id === 'play' || control.id === 'auto1' || control.id === 'loop')
+    }
+    // No Tablet, LIST entra antes do PLAY e PARTS ocupa o lugar do LOOP.
+    return TELEPROMPT_TAB_CONTROLS.filter((control) => control.id !== 'loop')
   }
 
   function getTelepromptTabControlsKey() {
@@ -884,6 +891,8 @@
     const settings = getTelepromptTabControls()
     settings[id] = !settings[id]
     writeLocal(getTelepromptTabControlsKey(), JSON.stringify(settings))
+    if (!settings[id] && id === 'list') state.telepromptListOpen = false
+    if (!settings[id] && id === 'parts') state.telepromptPartsOpen = false
     mountSettingsModalInPlace()
   }
 
@@ -9857,6 +9866,8 @@
     if (state.activeTab === 'mixer') setTab(state.tabletMixerReturnTab || 'playlist')
     state.showTelepromptScreen = true
     state.telepromptFullscreen = false
+    state.telepromptListOpen = false
+    state.telepromptPartsOpen = false
     if (Number(slot) === 1 || Number(slot) === 2) {
       setDirectorTelepromptSlot(slot, false)
     } else {
@@ -9869,6 +9880,8 @@
     if (!state.showTelepromptScreen) return
     state.showTelepromptScreen = false
     state.telepromptFullscreen = false
+    state.telepromptListOpen = false
+    state.telepromptPartsOpen = false
     if (state.settingsSection === 'teleprompt-hub' ||
         state.settingsSection === 'teleprompt-1' ||
         state.settingsSection === 'teleprompt-2' ||
@@ -9891,6 +9904,9 @@
     const playing = isPlaying(data)
     const autoAvailable = state.activeTab === 'playlist'
     const buttons = controls.map((control) => {
+      if (control.id === 'list') {
+        return `<button class="${state.telepromptListOpen ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-list-toggle" aria-pressed="${state.telepromptListOpen ? 'true' : 'false'}">LIST</button>`
+      }
       if (control.id === 'play') {
         return `<button class="btn ${playing ? 'btnStopActive' : 'btnPlayActive'}" data-action="play">${playing ? 'STOP' : 'PLAY'}</button>`
       }
@@ -9905,9 +9921,47 @@
       if (control.id === 'loop') {
         return `<button class="${getLoopActive(data) ? 'btn btnLoopActive' : 'btn'}" data-action="loop" aria-pressed="${getLoopActive(data) ? 'true' : 'false'}">LOOP</button>`
       }
+      if (control.id === 'parts') {
+        return `<button class="${state.telepromptPartsOpen ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-parts-toggle" aria-pressed="${state.telepromptPartsOpen ? 'true' : 'false'}">PARTS</button>`
+      }
       return `<button class="btn${playing ? ' btnStopActive tabletStopBreakPlaying' : ''}" data-action="stop-break">STOP BREAK</button>`
     }).join('')
     return `<div class="directorTpFooterControls" data-control-count="${controls.length}">${buttons}</div>`
+  }
+
+  function isTabletTelepromptLayout() {
+    return !IS_MUSICIAN_MONITOR &&
+      document.documentElement.dataset.directorDevice === 'tablet'
+  }
+
+  function renderTelepromptPlaylistSide(data = state.snapshot || {}) {
+    if (!isTabletTelepromptLayout() || !state.telepromptListOpen) return ''
+    const playlist = getActivePlaylist(data)
+    const title = upperText(playlist?.name || data.currentPlaylistName || 'REPERTÓRIO')
+    const items = getPlaylistWithOpenDrawers(data)
+    return `<aside class="directorTpSidePane directorTpListPane" aria-label="Repertório selecionado">
+      <button class="topPlaylistButton directorTpPlaylistTitle" data-action="open-playlist-modal">${renderTopPlaylistTitle(title)}</button>
+      <div class="listBox directorTpSideList" data-scroll-tick>${renderRows(items, 'playlist')}</div>
+    </aside>`
+  }
+
+  function renderTelepromptPartsSide(data = state.snapshot || {}) {
+    if (!isTabletTelepromptLayout() || !state.telepromptPartsOpen) return ''
+    const parentInstruction = partsTargetIsParent(data)
+    return `<aside class="directorTpSidePane directorTpPartsPane" aria-label="Parts">
+      <div class="sectionLabel sectionLabelSticky directorTpSideTitle">PARTS</div>
+      ${parentInstruction
+        ? `${renderPartsSongSwitch(data)}${renderPartsParentInstruction()}`
+        : `<div class="controlsRowPlaylist tabletPartsControls directorTpPartsControls">
+            <button class="${state.partsArmedMarkerId ? 'btn btnStopActive partsCancelArmed' : 'btn'}" data-action="marker-cancel">CANCELAR</button>
+            <button class="${getLoopActive(data) ? 'btn btnLoopActive' : 'btn'}" data-action="loop">LOOP</button>
+          </div>
+          ${renderPartsSongSwitch(data)}
+          <div class="tabletPartsListFrame directorTpPartsListFrame">
+            ${renderTabletPartsOwner(data)}
+            <div class="listBox markerListBox directorTpSideList" data-scroll-tick>${renderRows(getPartsMarkers(data), 'marker')}</div>
+          </div>`}
+    </aside>`
   }
 
   function renderDirectorTelepromptScreen(data = state.snapshot || {}) {
@@ -9919,6 +9973,9 @@
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const transportPanel = getHideTelepromptTransport(slot)
       ? '' : renderPlaybackQueueHeader(data, !IS_MUSICIAN_MONITOR)
+    const tabletLayout = isTabletTelepromptLayout()
+    const listOpen = tabletLayout && state.telepromptListOpen
+    const partsOpen = tabletLayout && state.telepromptPartsOpen
     const cssVariables = [
       `--app-tp-text-color:${settings.textColor}`,
       `--app-tp-highlight-color:${teleprompt.highlightColor}`,
@@ -9948,6 +10005,8 @@
     return `
       <div class="directorTpOverlay${state.telepromptFullscreen ? ' directorTpFullscreen' : ''}" data-teleprompt-slot="${slot}" data-teleprompt-fullscreen="${state.telepromptFullscreen ? '1' : '0'}">
         <div class="directorTpPanel">
+          <div class="directorTpWorkspace" data-list-open="${listOpen ? '1' : '0'}" data-parts-open="${partsOpen ? '1' : '0'}">
+          ${renderTelepromptPlaylistSide(data)}
           <div class="directorTpContent">
             ${transportPanel}
             <div class="directorTpControls">
@@ -9971,6 +10030,8 @@
               ${renderDirectorTechnicalNotice(data)}
             </div>
             ${renderTelepromptTabFooterControls(data)}
+          </div>
+          ${renderTelepromptPartsSide(data)}
           </div>
         </div>
       </div>
@@ -12169,7 +12230,7 @@
   }
 
   function getAppRenderSignature() {
-    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.telepromptFullscreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
+    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.telepromptFullscreen}|${state.telepromptListOpen}|${state.telepromptPartsOpen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
   }
 
   function isDirectorListScrolling(sampledAt = now()) {
@@ -14541,6 +14602,18 @@
       case 'open-teleprompt': state.showMenu = false; openDirectorTelepromptScreen(); break
       case 'teleprompt-slot-1': setDirectorTelepromptSlot(1); break
       case 'teleprompt-slot-2': setDirectorTelepromptSlot(2); break
+      case 'teleprompt-list-toggle': {
+        if (!isTabletTelepromptLayout() || !state.showTelepromptScreen) break
+        state.telepromptListOpen = !state.telepromptListOpen
+        scheduleRender(true)
+        break
+      }
+      case 'teleprompt-parts-toggle': {
+        if (!isTabletTelepromptLayout() || !state.showTelepromptScreen) break
+        state.telepromptPartsOpen = !state.telepromptPartsOpen
+        scheduleRender(true)
+        break
+      }
       case 'teleprompt-back': closeDirectorTelepromptScreen(); break
       case 'close-markers-overlay': closeMarkersOverlay(); break
       case 'close-transport-seek-modal': closeTransportSeekModal(); break
@@ -15717,6 +15790,8 @@
   let pressedFeedbackElement = null
   let pressedFeedbackReleaseTimer = 0
   const pendingActionPointers = new Map()
+  let lastPointerDispatchedAction = null
+  let lastPointerRejectedAction = null
 
   // A marca vale em toda tela do app, inclusive nas que o renderApp devolve
   // antes de montar a interface principal (login e Recados). Por isso ela mora
@@ -15777,37 +15852,75 @@
     // e intencional deve responder já no primeiro toque; cliques sinteticos
     // não possuem este novo pointerdown e continuam protegidos.
     if (now() < state.ignoreTapUntil) state.ignoreTapUntil = 0
+    lastPointerRejectedAction = null
     pendingActionPointers.set(event.pointerId, {
       element,
-      startX: Number(event.clientX) || 0,
-      startY: Number(event.clientY) || 0,
-      moved: false,
     })
-  }
-
-  function moveActionPointer(event) {
-    const pending = pendingActionPointers.get(event.pointerId)
-    if (!pending || pending.moved) return
-    const dx = (Number(event.clientX) || 0) - pending.startX
-    const dy = (Number(event.clientY) || 0) - pending.startY
-    if (Math.hypot(dx, dy) > 12) pending.moved = true
   }
 
   function cancelActionPointer(event) {
     pendingActionPointers.delete(event.pointerId)
   }
 
+  function getActionElementKey(element) {
+    if (!element) return ''
+    const action = element.getAttribute('data-action') || ''
+    return `${action}:${element.getAttribute('data-song-id') || element.getAttribute('data-region-id') || element.getAttribute('data-marker-id') || element.getAttribute('data-mixer-id') || element.getAttribute('data-premix-song-id') || element.getAttribute('data-premix-track-id') || element.getAttribute('data-premix-item-id') || element.getAttribute('data-tuner-song-id') || element.getAttribute('data-track-id') || element.getAttribute('data-search-id') || element.getAttribute('data-search-key') || element.getAttribute('data-teleprompt-tab-control') || element.getAttribute('data-song-tool') || element.getAttribute('data-preview-slot') || element.getAttribute('data-slot') || ''}`
+  }
+
   function resolveTapElement(event) {
     if (event.type !== 'pointerup') return event.target?.closest?.('[data-action]') || null
     const pending = pendingActionPointers.get(event.pointerId)
     pendingActionPointers.delete(event.pointerId)
-    if (pending && !pending.moved) return pending.element
+    if (!pending) return null
+
+    // Em telas de toque existe captura implícita do ponteiro: event.target pode
+    // continuar apontando para o botão inicial mesmo depois de o dedo sair dele.
+    // elementFromPoint informa o controle que realmente está sob a soltura.
+    let releasedElement = null
+    const clientX = Number(event.clientX)
+    const clientY = Number(event.clientY)
+    if (Number.isFinite(clientX) && Number.isFinite(clientY) &&
+        typeof document.elementFromPoint === 'function') {
+      try {
+        releasedElement = document.elementFromPoint(clientX, clientY)?.closest?.('[data-action]') || null
+      } catch (_) {}
+    }
+    if (!releasedElement && Number.isFinite(clientX) && Number.isFinite(clientY) &&
+        pending.element?.isConnected) {
+      const rect = pending.element.getBoundingClientRect?.()
+      if (rect && clientX >= rect.left && clientX <= rect.right &&
+          clientY >= rect.top && clientY <= rect.bottom) {
+        releasedElement = pending.element
+      }
+    }
+    if (!releasedElement && (!Number.isFinite(clientX) || !Number.isFinite(clientY))) {
+      releasedElement = event.target?.closest?.('[data-action]') || null
+    }
+
+    // Um arrasto, curto ou longo, continua sendo um clique quando termina no
+    // mesmo botão/linha. Se o polling remontou esse controle durante o gesto,
+    // aceitamos a nova instância somente quando a original saiu do documento.
+    if (releasedElement === pending.element) return releasedElement
+    if (!pending.element?.isConnected && releasedElement &&
+        getActionElementKey(releasedElement) === getActionElementKey(pending.element)) {
+      return releasedElement
+    }
+    lastPointerRejectedAction = {
+      key: getActionElementKey(pending.element),
+      at: now(),
+    }
     return null
   }
 
   function onTap(event) {
     if (transportHoldConsumesTouch) return
     if (now() < state.ignoreTapUntil) return
+    if (event.type === 'click' && lastPointerRejectedAction) {
+      const clickedElement = event.target?.closest?.('[data-action]') || null
+      if (getActionElementKey(clickedElement) === lastPointerRejectedAction.key &&
+          now() - lastPointerRejectedAction.at < 900) return
+    }
     const el = resolveTapElement(event)
     if (!el) return
     const action = el.getAttribute('data-action') || ''
@@ -15819,12 +15932,22 @@
       if (sameDraggedPointer || syntheticClickFromDrag) return
     }
 
-    const key = `${action}:${el.getAttribute('data-song-id') || el.getAttribute('data-region-id') || el.getAttribute('data-marker-id') || el.getAttribute('data-mixer-id') || el.getAttribute('data-premix-song-id') || el.getAttribute('data-premix-track-id') || el.getAttribute('data-premix-item-id') || el.getAttribute('data-tuner-song-id') || el.getAttribute('data-track-id') || el.getAttribute('data-search-id') || el.getAttribute('data-search-key') || el.getAttribute('data-teleprompt-tab-control') || el.getAttribute('data-song-tool') || el.getAttribute('data-preview-slot') || el.getAttribute('data-slot') || ''}`
+    const key = getActionElementKey(el)
+    // Pointerup é a rota principal. O click fica instalado também como rede de
+    // segurança para WebViews que perdem/cancelam a soltura. Quando os dois
+    // chegam para o mesmo gesto, esta marca impede qualquer ação duplicada —
+    // inclusive PLAY/STOP, que deliberadamente não usa o dedupe comum.
+    if (event.type === 'click' && lastPointerDispatchedAction &&
+        lastPointerDispatchedAction.key === key &&
+        now() - lastPointerDispatchedAction.at < 900) return
     const protectedTransportAction = getPlayProtectionEnabled() && (action === 'play' || action === 'stop-break')
     const repeatableKeyboardAction = action === 'tablet-search-key'
     if (!protectedTransportAction && !repeatableKeyboardAction && isDuplicateTap(key)) return
     event.preventDefault?.()
     event.stopPropagation?.()
+    if (event.type === 'pointerup') {
+      lastPointerDispatchedAction = { key, at: now() }
+    }
     handleAction(action, el, event)
     if (!state.showMenu) root.querySelector('.topMenuFlyout')?.remove?.()
   }
@@ -16413,14 +16536,20 @@
     if (event.type === 'pointermove') {
       const dx = (Number(event.clientX) || 0) - playlistScrollStartX
       const dy = (Number(event.clientY) || 0) - playlistScrollStartY
-      if (Math.hypot(dx, dy) > 7) {
+      // Touch slop de lista: acima de 10 px o gesto passa a ser rolagem e a
+      // linha não é selecionada, mesmo que o dedo termine sobre ela.
+      if (Math.hypot(dx, dy) > 10) {
         playlistScrollMoved = true
         if (playlistScrollIsSongList) {
           state.directorSongListScrollingUntil = now() + 500
           state.directorListScrollingUntil = now() + 500
           state.tabletSearchPendingFocus = null
+          playlistScrollSuppressClickUntil = now() + 450
         } else {
-          state.ignoreTapUntil = now() + 500
+          // Não bloqueia o pointerup: se o dedo terminar dentro do mesmo botão,
+          // resolveTapElement ainda deve executar a ação. Só o click sintético
+          // posterior à rolagem fica protegido.
+          playlistScrollSuppressClickUntil = now() + 450
         }
       }
       return
@@ -16432,7 +16561,7 @@
         playlistScrollSuppressedPointerId = event.pointerId
         playlistScrollSuppressClickUntil = now() + 450
       } else {
-        state.ignoreTapUntil = now() + 500
+        playlistScrollSuppressClickUntil = now() + 450
       }
     }
     playlistScrollPointerId = null
@@ -16718,7 +16847,6 @@
     document.addEventListener('dblclick', handleMixerInlineSliderDoubleClick, true)
     if (window.PointerEvent) {
       document.addEventListener('pointerdown', captureActionPointer, { passive: true, capture: true })
-      document.addEventListener('pointermove', moveActionPointer, { passive: true, capture: true })
       document.addEventListener('pointercancel', cancelActionPointer, { passive: true, capture: true })
       document.addEventListener('pointerdown', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointermove', handleTabletPlayHold, { passive: true })
@@ -16770,9 +16898,12 @@
       document.addEventListener('touchstart', markPressedFeedbackDom, { passive: true, capture: true })
       document.addEventListener('touchend', releasePressedFeedbackDom, { passive: true })
       document.addEventListener('touchcancel', clearPressedFeedbackDom, { passive: true })
-      document.addEventListener('click', onTap, false)
       document.addEventListener('click', handleMenuOutsidePointerUp, false)
     }
+    // Mesmo em aparelhos com Pointer Events, o click é necessário como
+    // fallback quando o WebView não conclui o pointerup. onTap deduplica o
+    // click sintético quando o pointerup normal já executou a ação.
+    document.addEventListener('click', onTap, false)
     document.addEventListener('touchstart', handleTransportTouchStart, { passive: true, capture: true })
     document.addEventListener('touchmove', handleTransportTouchMove, { passive: false, capture: true })
     document.addEventListener('touchend', handleTransportTouchEnd, { passive: false, capture: true })
