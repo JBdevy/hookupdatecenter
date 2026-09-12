@@ -230,7 +230,7 @@
     pendingTimerInitAuto: null,
     pendingTimerInitAutoUntil: 0,
     timerKeyboardField: 'timerCountdownHours',
-    timerKeyboardDigits: 0,
+    timerKeyboardCaret: 0,
     partsLocalSelectedMarkerId: '',
     partsArmedMarkerId: '',
     partsArmedMarkerUntil: 0,
@@ -8438,6 +8438,12 @@
     return `<div class="modalOverlay mixerRouteOverlay" data-action="mixer-route-close"><div class="modalBox mixerRouteModalBox" data-stop-modal><div class="mixerModalHeader"><div><div class="modalTitle">ROUTE</div><div class="mixerRouteTrackName">${name}</div></div><button class="modalCancelBtn" data-action="mixer-route-close">FECHAR</button></div><div class="mixerRouteList">${rows}</div></div></div>`
   }
 
+  function useTimerKeyboard() {
+    // O cronometro usa o mesmo editor em celular, tablet e monitor dos musicos.
+    // A politica do teclado da lupa continua independente.
+    return state.showTimerModal === true
+  }
+
   function renderTimerModal() {
     if (!state.showTimerModal) return ''
     const data = state.snapshot || {}
@@ -8445,7 +8451,7 @@
     const running = !!data.timerRunning
     const toggleLabel = running ? 'PARAR' : 'INICIAR'
     const countdown = splitCountdownSec(getCountdownTargetSec(data))
-    const ownKeyboard = useTabletSearchKeyboard()
+    const ownKeyboard = useTimerKeyboard()
     const initAuto = getTimerInitAutoEnabled(data)
     const fields = [
       ['timerCountdownHours', 'H', 99, countdown.hours],
@@ -8453,7 +8459,7 @@
       ['timerCountdownSeconds', 'S', 59, countdown.seconds],
     ]
     const countdownInputs = mode === 'countdown'
-      ? `<div class="timerCountdownInputs">${fields.map(([id, label, max, value]) => `<label data-timer-selected="${ownKeyboard && state.timerKeyboardField === id ? '1' : '0'}"><span>${label}</span><input id="${id}" aria-label="${label === 'H' ? 'Horas' : label === 'M' ? 'Minutos' : 'Segundos'}" data-timer-countdown-input data-timer-max="${max}" type="text" inputmode="${ownKeyboard ? 'none' : 'numeric'}" pattern="[0-9]*" autocomplete="off" value="${String(value).padStart(2, '0')}"${ownKeyboard ? ' readonly aria-readonly="true"' : ''}></label>`).join('')}</div>`
+      ? `<div class="timerCountdownInputs">${fields.map(([id, label, max, value]) => `<label data-timer-selected="${ownKeyboard && state.timerKeyboardField === id ? '1' : '0'}"><span>${label}</span>${ownKeyboard ? `<span class="timerCountdownEditSurface" style="--timer-caret-position:${state.timerKeyboardField === id ? Number(state.timerKeyboardCaret) || 0 : 0}">` : ''}<input id="${id}" aria-label="${label === 'H' ? 'Horas' : label === 'M' ? 'Minutos' : 'Segundos'}" data-timer-countdown-input data-timer-max="${max}" type="text" inputmode="${ownKeyboard ? 'none' : 'numeric'}" pattern="[0-9]*" autocomplete="off" value="${String(value).padStart(2, '0')}"${ownKeyboard ? ' readonly aria-readonly="true"' : ''}>${ownKeyboard ? '<span class="timerCountdownMeasure" aria-hidden="true">00</span><span class="timerCountdownCaret" aria-hidden="true"></span></span>' : ''}</label>`).join('')}</div>`
       : ''
     const keyboard = ownKeyboard && mode === 'countdown' ? renderTimerKeyboard() : ''
     const actionButtons = `<div class="modalButtons timerActionButtons"><button class="${running ? 'btnStopActive' : 'modalOkBtnWide'}" data-action="timer-toggle">${toggleLabel}</button><button class="${initAuto ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="timer-init-auto" aria-pressed="${initAuto ? 'true' : 'false'}">INIT AUTO</button><button class="modalCancelBtn" data-action="modal-close">FECHAR</button></div>`
@@ -8466,43 +8472,52 @@
     return `<div class="timerKeyboard" aria-label="Teclado numérico do cronômetro">${keys.map((key) => `<button type="button" class="tabletSearchKey" data-action="timer-key" data-timer-key="${key}" aria-label="${key === 'clear' ? 'Limpar campo' : key === 'backspace' ? 'Apagar dígito' : key}">${key === 'clear' ? 'LIMPAR' : key === 'backspace' ? '⌫' : key}</button>`).join('')}</div>`
   }
 
-  function selectTimerKeyboardField(input) {
+  function selectTimerKeyboardField(input, caret = null) {
     if (!input?.matches?.('[data-timer-countdown-input]')) return
+    const sameField = state.timerKeyboardField === input.id
     state.timerKeyboardField = input.id
-    state.timerKeyboardDigits = 0
+    state.timerKeyboardCaret = Math.max(0, Math.min(2, caret === null ? (sameField ? Number(state.timerKeyboardCaret) || 0 : 0) : Number(caret) || 0))
+    try { input.setSelectionRange(state.timerKeyboardCaret, state.timerKeyboardCaret) } catch (_) {}
     syncTimerKeyboardFieldDom()
   }
 
   function syncTimerKeyboardFieldDom() {
     root.querySelectorAll('[data-timer-countdown-input]').forEach((input) => {
       input.closest('label')?.setAttribute('data-timer-selected', state.timerKeyboardField === input.id ? '1' : '0')
+      input.closest('.timerCountdownEditSurface')?.style.setProperty('--timer-caret-position', state.timerKeyboardField === input.id ? state.timerKeyboardCaret : 0)
     })
   }
 
+  function editTimerCountdownDigits(value, key, caret) {
+    const digits = String(value || '').replace(/\D/g, '').slice(-2).padStart(2, '0')
+    const position = Math.max(0, Math.min(2, Number(caret) || 0))
+    if (key === 'clear') return { value: '00', caret: 0 }
+    if (key === 'backspace') {
+      if (position === 0) return { value: digits, caret: 0 }
+      const index = position - 1
+      return { value: digits.slice(0, index) + '0' + digits.slice(index + 1), caret: index }
+    }
+    if (key === 'delete') {
+      if (position === 2) return { value: digits, caret: position }
+      return { value: digits.slice(0, position) + '0' + digits.slice(position + 1), caret: position }
+    }
+    if (!/^\d$/.test(key)) return null
+    if (position === 2) return { value: (digits + key).slice(-2), caret: 2 }
+    return { value: digits.slice(0, position) + key + digits.slice(position + 1), caret: position + 1 }
+  }
+
   function applyTimerKeyboardKey(keyValue) {
-    if (!state.showTimerModal || !useTabletSearchKeyboard()) return
+    if (!useTimerKeyboard()) return
     const input = document.getElementById(state.timerKeyboardField)
     if (!input?.matches?.('[data-timer-countdown-input]')) return
     const key = String(keyValue || '')
-    if (key === 'clear') {
-      input.value = '00'
-      state.timerKeyboardDigits = 0
-    } else if (key === 'backspace') {
-      input.value = String(input.value || '').replace(/\D/g, '').slice(0, -1).padStart(2, '0')
-      state.timerKeyboardDigits = 0
-    } else if (/^\d$/.test(key)) {
-      input.value = state.timerKeyboardDigits === 0 ? key : (String(input.value) + key).slice(-2)
-      state.timerKeyboardDigits += 1
-    } else return
+    const edit = editTimerCountdownDigits(input.value, key, state.timerKeyboardCaret)
+    if (!edit) return
+    input.value = edit.value
+    state.timerKeyboardCaret = edit.caret
     normalizeTimerCountdownInput(input, { commit: true })
     applyCountdownTarget(readCountdownInputs(), { render: false })
-    if (state.timerKeyboardDigits >= 2) {
-      const ids = ['timerCountdownHours', 'timerCountdownMinutes', 'timerCountdownSeconds']
-      const next = ids[Math.min(2, ids.indexOf(input.id) + 1)]
-      state.timerKeyboardField = next
-      state.timerKeyboardDigits = 0
-      try { document.getElementById(next)?.focus({ preventScroll: true }) } catch (_) {}
-    }
+    try { input.setSelectionRange(state.timerKeyboardCaret, state.timerKeyboardCaret) } catch (_) {}
     syncTimerKeyboardFieldDom()
   }
 
@@ -17195,58 +17210,64 @@
     const hasSelection = Number.isFinite(start) && Number.isFinite(end) && start !== end
     if (current.length < 2 || hasSelection) return
     event.preventDefault()
-    input.value = (current + String(event.data)).slice(-2)
+    const edit = editTimerCountdownDigits(current, String(event.data), start)
+    input.value = edit.value
     input.dispatchEvent(new Event('input', { bubbles: true }))
+    try { input.setSelectionRange(edit.caret, edit.caret) } catch (_) {}
   }
 
   function handleTimerCountdownKeyDown(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
-    if (useTabletSearchKeyboard()) {
+    if (useTimerKeyboard()) {
       if (event.ctrlKey || event.metaKey || event.altKey) return
       const key = String(event.key || '')
+      const caret = Number(state.timerKeyboardCaret) || 0
+      const positions = { ArrowLeft: caret - 1, ArrowRight: caret + 1, Home: 0, End: 2 }
+      if (Object.prototype.hasOwnProperty.call(positions, key)) {
+        event.preventDefault()
+        selectTimerKeyboardField(input, positions[key])
+        return
+      }
       if (!/^\d$/.test(key) && key !== 'Backspace' && key !== 'Delete') return
       event.preventDefault()
-      applyTimerKeyboardKey(key === 'Backspace' ? 'backspace' : key === 'Delete' ? 'clear' : key)
+      applyTimerKeyboardKey(key === 'Backspace' ? 'backspace' : key === 'Delete' ? 'delete' : key)
       return
     }
-    if (!/^\d$/.test(String(event.key || '')) || event.ctrlKey || event.metaKey || event.altKey) return
-    const current = String(input.value || '').replace(/\D/g, '')
-    if (current.length < 2) return
-    event.preventDefault()
-    input.value = (current + String(event.key)).slice(-2)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-    try {
-      input.setSelectionRange(input.value.length, input.value.length)
-    } catch (_) {}
+    // No celular, o teclado nativo e beforeinput respeitam a seleção real.
   }
 
   function handleTimerCountdownFocus(event) {
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
-    if (useTabletSearchKeyboard()) {
+    if (useTimerKeyboard()) {
       selectTimerKeyboardField(input)
       return
     }
     if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
       window.setDirectorTabletKeyboardOpen(true)
     }
-    requestAnimationFrame(() => {
-      try {
-        input.select()
-      } catch (_) {}
-    })
+  }
+
+  function getTimerKeyboardPointerCaret(input, event) {
+    const metrics = input.closest('.timerCountdownEditSurface')?.querySelector('.timerCountdownMeasure')
+    const bounds = input.getBoundingClientRect()
+    const textWidth = metrics?.getBoundingClientRect().width || 0
+    if (!textWidth || !Number.isFinite(event.clientX)) return Number(state.timerKeyboardCaret) || 0
+    const textLeft = bounds.left + (bounds.width - textWidth) / 2
+    return Math.max(0, Math.min(2, Math.round((event.clientX - textLeft) / (textWidth / 2))))
   }
 
   function handleTimerCountdownPointerDown(event) {
-    if (useTabletSearchKeyboard() && event.target?.closest?.('[data-action="timer-key"]')) {
+    if (useTimerKeyboard() && event.target?.closest?.('[data-action="timer-key"]')) {
       event.preventDefault()
       return
     }
     const input = event.target
     if (!input?.matches?.('[data-timer-countdown-input]')) return
-    if (useTabletSearchKeyboard()) {
-      selectTimerKeyboardField(input)
+    if (useTimerKeyboard()) {
+      event.preventDefault()
+      selectTimerKeyboardField(input, getTimerKeyboardPointerCaret(input, event))
       try { input.focus({ preventScroll: true }) } catch (_) {}
       return
     }
@@ -17266,7 +17287,7 @@
     if (!input?.matches?.('[data-timer-countdown-input]')) return
     normalizeTimerCountdownInput(input, { commit: true })
     applyCountdownTarget(readCountdownInputs(), { render: false })
-    if (useTabletSearchKeyboard()) return
+    if (useTimerKeyboard()) return
     window.setTimeout(() => {
       if (isCountdownInputFocused()) return
       if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
