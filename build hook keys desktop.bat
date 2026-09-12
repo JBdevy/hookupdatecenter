@@ -55,10 +55,32 @@ set "CUSTOM_MSG="
 set /p "CUSTOM_MSG=Mensagem do commit [%COMMIT_MSG%]: "
 if defined CUSTOM_MSG set "COMMIT_MSG=%CUSTOM_MSG%"
 
+rem O workflow desktop mora neste repositorio, mas compila o codigo mantido no
+rem repositorio vshookapploja. Envia primeiro a fonte local para impedir que a
+rem Action baixe e compile uma revisao antiga do Hook Keys.
+set "HOOK_KEYS_SOURCE_REPO=%~dp0..\apploja"
+git -C "%HOOK_KEYS_SOURCE_REPO%" rev-parse --is-inside-work-tree >nul 2>&1
+if errorlevel 1 goto erro_fonte_ausente
+
+set "HOOK_KEYS_SOURCE_BRANCH="
+for /f "delims=" %%B in ('git -C "%HOOK_KEYS_SOURCE_REPO%" branch --show-current') do set "HOOK_KEYS_SOURCE_BRANCH=%%B"
+if not defined HOOK_KEYS_SOURCE_BRANCH goto erro_fonte_branch
+
+echo Enviando o codigo atualizado do Hook Keys para %HOOK_KEYS_SOURCE_BRANCH%...
+git -C "%HOOK_KEYS_SOURCE_REPO%" add -- "Hook Keys"
+if errorlevel 1 goto erro_fonte
+git -C "%HOOK_KEYS_SOURCE_REPO%" diff --cached --quiet
+if errorlevel 1 git -C "%HOOK_KEYS_SOURCE_REPO%" commit -m "%COMMIT_MSG%"
+if errorlevel 1 goto erro_fonte
+git -C "%HOOK_KEYS_SOURCE_REPO%" push origin "%HOOK_KEYS_SOURCE_BRANCH%"
+if errorlevel 1 goto erro_fonte
+
 git add -- ".github/workflows/hook-keys-desktop-release.yml" "build hook keys desktop.bat"
 if errorlevel 1 goto erro
-git diff --cached --quiet
-if errorlevel 1 git commit -m "%COMMIT_MSG%" || goto erro
+rem Sempre cria um commit proprio para este disparo. Sem --allow-empty, quando
+rem nao havia mudanca no workflow o nome digitado era ignorado e a tag ficava
+rem apontando para o ultimo commit da Hook Center (por exemplo, Hook Center 1.0.2).
+git commit --allow-empty -m "%COMMIT_MSG%" || goto erro
 
 echo Enviando o workflow para a branch %BRANCH%...
 git push origin "%BRANCH%" || goto erro
@@ -75,6 +97,23 @@ exit /b 0
 
 :erro_tag
 git tag -d "%HOOK_KEYS_TAG%" >nul 2>&1
+goto erro
+
+:erro_fonte_ausente
+echo.
+echo A pasta do repositorio do app nao foi encontrada em:
+echo %HOOK_KEYS_SOURCE_REPO%
+goto erro
+
+:erro_fonte_branch
+echo.
+echo Nao foi possivel detectar a branch do repositorio do Hook Keys.
+goto erro
+
+:erro_fonte
+echo.
+echo Falha ao enviar o codigo do Hook Keys para o repositorio do app.
+goto erro
 
 :erro
 echo.
