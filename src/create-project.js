@@ -10,8 +10,12 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Click', pattern: /\b(click|metronomo|metronome)\b/ },
   { name: 'Regência', pattern: /\b(regencia|maestro|gps|contagem|count in|countin)\b/ },
   { name: 'Backing Vocal', pattern: /\b(back(?:ing)?(?: vocals?| vocais| vozes?| voz)?|backs?|bk|bgv)\b/ },
-  { name: 'Vocal', pattern: /^vocals?(?: \d+)?$/ },
-  { name: 'Vox', pattern: /^vox(?: \d+)?$/ },
+  // O nome da pista pode vir acompanhado pelo título da música, pelo artista
+  // ou por uma seção. A correspondência deve funcionar em qualquer parte
+  // do nome, assim como já acontece com as demais pistas.
+  { name: 'Vox Synth', pattern: /\b(synth vox|syn ?vox|air vox|space voices?|vocal airy|vox synth|d ?50 voices?|vocal oohz|spaced voxx?|wavox)\b/ },
+  { name: 'Vocal', pattern: /\bvocals?\b/ },
+  { name: 'Vox', pattern: /\bvox\b/ },
   { name: 'Guia', pattern: /\b(guia|guide|voz|vz)\b/ },
   { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion)\b/ },
   { name: 'Ukulele', pattern: /\b(ukulele|ukelele|uke)\b/ },
@@ -118,7 +122,6 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Square', pattern: /\b(square|square wave)\b/ },
   { name: 'Pulse', pattern: /\b(pulse|pulse wave)\b/ },
   { name: 'Pad', pattern: /\b(pads?|d ?50 heaven|d ?50 stack pad|(?:sft|brt|choir|syn|str|bell|vox|jup ?8|jp ?8) ?pd)\b/ },
-  { name: 'Vox Synth', pattern: /\b(synth vox|syn ?vox|air vox|space voices?|vocal airy|vox synth|d ?50 voices?|vocal oohz|spaced voxx?|wavox)\b/ },
   { name: 'Synth', pattern: /\b(synth|synthesizer|sintetizador|fast synth|slow synth|motion synth|poly ?synth|pulsating)\b/ },
   { name: 'Lead', pattern: /\b(leads?|(?:sft|syn|synth|saw|square|sqr|mono|jp ?6|jp ?8|juno) ?ld)\b/ },
   { name: 'Pluck', pattern: /\b(pluck|plucked)\b/ },

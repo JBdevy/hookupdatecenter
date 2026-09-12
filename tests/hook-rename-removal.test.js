@@ -15,11 +15,14 @@ const { containsCreateProjectTrackName, isCreateProjectSourceLabel } = require('
   };
   try {
     assert.equal(removalName('song.wav', 'wav', false), null);
-    assert.equal(removalName('song.wav', 'Song', false), null);
+    assert.equal(removalName('song.wav', 'Song', false).invalid, true);
     assert.equal(removalName('TAG.wav', 'TAG', false).invalid, true);
     assert.equal(removalName('TAGcon.wav', 'TAG', false).invalid, true);
     assert.equal(removalName('Mix [Hook] [Hook].mp3', '[Hook]', false).name, 'Mix.mp3');
     assert.equal(removalName('Minha música.wav', 'música', false).name, 'Minha.wav');
+    assert.equal(removalName('Minha MÚSICA.wav', 'música', false).name, 'Minha.wav');
+    assert.equal(removalName('Minha mu\u0301sica.wav', 'Música', false).name, 'Minha.wav');
+    assert.equal(removalName('VS-Hook Minha Música.wav', 'vs hook', false).name, 'Minha Música.wav');
 
     const root = path.join(temporary, 'TAG Album');
     await file('TAG Album/TAG Faixa/TAG Voz.wav', 'audio');

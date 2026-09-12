@@ -120,6 +120,15 @@ function main() {
   assert.strictEqual(secondAudit.reusedTrackCount, 3);
   assert.strictEqual(secondAudit.newTrackCount, 0);
 
+  const namedTrackRpp = buildCreateProjectRpp(makeAudit('Base', [
+    makeFile('Vocal', 2), makeFile('Pandeirola', 2)
+  ]), { platform: 'win32' });
+  const namedTrackIncoming = auditAddProjectRpp(namedTrackRpp, makeAudit('Música nova', [
+    makeFile('Vocal - Silva Santos', 2), makeFile('Pandeirola - Silva Santos', 2)
+  ]));
+  assert.strictEqual(namedTrackIncoming.reusedTrackCount, 2);
+  assert.strictEqual(namedTrackIncoming.newTrackCount, 0);
+
   const guideOnlyRpp = buildCreateProjectRpp(makeAudit('Guia existente', [makeFile('Guia', 2)]), { platform: 'win32' });
   const internalIncoming = auditAddProjectRpp(guideOnlyRpp, makeAudit('Internos novos', [makeFile('Click', 2), makeFile('Regência', 2)]));
   const orderedInternalRpp = buildAddProjectRpp(guideOnlyRpp, internalIncoming);

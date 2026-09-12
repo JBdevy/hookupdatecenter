@@ -1338,7 +1338,7 @@ function updateHookRenameControls() {
   const help = $('#hookRenameModeHelp');
   if (help) {
     if (removal) {
-      help.textContent = 'Separe os textos por vírgula para removê-los de uma vez. Inclui as pastas escolhidas e todas as subpastas. Diferencia maiúsculas e minúsculas e preserva as extensões. Sem correspondência, nada muda. Nomes vazios, conflitos e atalhos são ignorados.';
+      help.textContent = 'Separe os textos por vírgula para removê-los de uma vez. Inclui as pastas escolhidas e todas as subpastas. Ignora diferenças de maiúsculas, acentos e separadores, preservando as extensões. Sem correspondência, nada muda. Nomes vazios, conflitos e atalhos são ignorados.';
     } else if (payload.bulkMode) {
       help.textContent = 'Modo em massa ativo: processa as pastas selecionadas uma por uma, sem entrar em subpastas, renomeando somente MP3, WAV e AIFF com o nome da própria pasta como sufixo.';
     } else if (isManyFolders) {

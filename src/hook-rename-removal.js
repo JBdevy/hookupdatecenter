@@ -13,17 +13,68 @@ function splitRemovalTexts(value) {
   return [...new Set(String(value || '').split(',').map((text) => text.trim()).filter(Boolean))];
 }
 
+function foldRemovalValue(value) {
+  let text = '';
+  const map = [];
+  let offset = 0;
+  for (const character of String(value || '')) {
+    const start = offset;
+    offset += character.length;
+    const folded = character.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (!folded) {
+      if (map.length) map[map.length - 1].end = offset;
+      continue;
+    }
+    for (const foldedCharacter of folded) {
+      const separator = /[\s._\-–—]/u.test(foldedCharacter);
+      if (separator && text.endsWith(' ')) {
+        map[map.length - 1].end = offset;
+        continue;
+      }
+      text += separator ? ' ' : foldedCharacter;
+      map.push({ start, end: offset });
+    }
+  }
+  return { text, map };
+}
+
 function removalName(name, text, directory) {
-  // Literal, case-sensitive text, not a regex. File extensions stay intact.
+  // Literal text, without sensitivity to case, accents or common separators.
+  // File extensions stay intact.
   const extension = directory ? '' : path.extname(name);
   const stem = extension ? name.slice(0, -extension.length) : name;
   const texts = Array.isArray(text) ? text : splitRemovalTexts(text);
-  if (!texts.length || !texts.some((item) => stem.includes(item))) return null;
-  // One literal pass, longest terms first. Text created by removing one term
-  // must not accidentally become a second match that was absent originally.
-  const pattern = new RegExp([...texts].sort((a, b) => b.length - a.length)
-    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
-  const nextStem = stem.replace(pattern, '').trim();
+  const foldedStem = foldRemovalValue(stem);
+  const foldedTexts = [...new Set(texts.map((item) => foldRemovalValue(item).text.trim()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length);
+  if (!foldedTexts.length) return null;
+
+  // Uma única leitura do nome original, priorizando os termos mais longos.
+  // Assim, remover um termo não cria por acidente uma nova correspondência.
+  const ranges = [];
+  for (let index = 0; index < foldedStem.text.length;) {
+    const match = foldedTexts.find((item) => foldedStem.text.startsWith(item, index));
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    const first = foldedStem.map[index];
+    const last = foldedStem.map[index + match.length - 1];
+    if (first && last) ranges.push({ start: first.start, end: last.end });
+    index += match.length;
+  }
+  if (!ranges.length) return null;
+
+  let cursor = 0;
+  let nextStem = '';
+  for (const range of ranges) {
+    nextStem += stem.slice(cursor, range.start);
+    cursor = range.end;
+  }
+  nextStem = `${nextStem}${stem.slice(cursor)}`
+    .replace(/^[\s._\-–—]+|[\s._\-–—]+$/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
   const nextName = nextStem + extension;
   if (!nextStem || nextStem === '.' || nextStem === '..' ||
       /[<>:"/\\|?*\u0000-\u001f]/.test(nextName) || /[. ]$/.test(nextName) ||

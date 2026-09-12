@@ -126,10 +126,15 @@ async function main() {
   assert.strictEqual(classifyCreateProjectTrack('JamBlock.wav', 'Música').name, 'Jamblock');
   assert.strictEqual(classifyCreateProjectTrack('Bacurinha.wav', 'Música').name, 'Bacurinha');
   assert.strictEqual(classifyCreateProjectTrack('Pandeirola.wav', 'Música').name, 'Pandeirola');
+  assert.strictEqual(classifyCreateProjectTrack('Pandeirola - Silva Santos.wav', 'Música').name, 'Pandeirola');
   assert.strictEqual(classifyCreateProjectTrack('Solo.wav', 'Música').name, 'Solo');
   assert.strictEqual(classifyCreateProjectTrack('Key.wav', 'Música').name, 'Teclado');
   assert.strictEqual(classifyCreateProjectTrack('Vocal.wav', 'Música').name, 'Vocal');
+  assert.strictEqual(classifyCreateProjectTrack('Vocal - Silva Santos.wav', 'Música').name, 'Vocal');
   assert.strictEqual(classifyCreateProjectTrack('Vox.wav', 'Música').name, 'Vox');
+  assert.strictEqual(classifyCreateProjectTrack('Vox - Silva Santos.wav', 'Música').name, 'Vox');
+  assert.strictEqual(classifyCreateProjectTrack('Vox Synth - Silva Santos.wav', 'Música').name, 'Vox Synth');
+  assert.strictEqual(classifyCreateProjectTrack('Vocal Airy - Silva Santos.wav', 'Música').name, 'Vox Synth');
   assert.strictEqual(classifyCreateProjectTrack('VL Nylon.wav', 'Música').name, 'Violão Nylon');
   assert.strictEqual(classifyCreateProjectTrack('Vinheta.wav', 'Música').name, 'Vinheta');
   assert.strictEqual(classifyCreateProjectTrack('Fantasy.wav', 'Música').name, 'Fantasia');
