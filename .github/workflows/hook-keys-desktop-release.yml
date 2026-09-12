@@ -141,10 +141,12 @@ jobs:
           # que o productsign abra um pedido de acesso invisível no runner CI.
           security import "$INSTALLER_CERT" -k "$KEYCHAIN_PATH" -P "$INSTALLER_CERT_PASSWORD" -A
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '"')"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
-          APP_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep 'Developer ID Application' | head -n 1 | sed -E 's/.*"(.*)"/\1/')"
-          INSTALLER_IDENTITY="$(security find-identity -v "$KEYCHAIN_PATH" | grep 'Developer ID Installer' | head -n 1 | sed -E 's/.*"(.*)"/\1/')"
+          # Isole o keychain do job. Havia certificados da Hook Center com o
+          # mesmo nome no runner, então productsign podia escolher uma chave
+          # fora deste keychain e ficar esperando uma autorização invisível.
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          APP_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/Developer ID Application/ {print $2; exit}')"
+          INSTALLER_IDENTITY="$(security find-identity -v "$KEYCHAIN_PATH" | awk '/Developer ID Installer/ {print $2; exit}')"
           test -n "$APP_IDENTITY"
           test -n "$INSTALLER_IDENTITY"
           echo "HOOK_KEYS_APP_IDENTITY=$APP_IDENTITY" >> "$GITHUB_ENV"
@@ -200,6 +202,7 @@ jobs:
           # por padrão quando --sign é usado.
           productsign \
             --sign "$HOOK_KEYS_INSTALLER_IDENTITY" \
+            --keychain "$HOOK_KEYS_KEYCHAIN_PATH" \
             "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg" \
             'build/release/Hook Keys macOS.pkg'
           PKG_SIGNATURE="$(pkgutil --check-signature 'build/release/Hook Keys macOS.pkg')"
