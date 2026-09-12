@@ -314,6 +314,46 @@ for (const field of ['id', 'itemType', 'destinationTab', 'scheduled']) {
 assert(countCalls(scheduleRenderBlock, 'focusPendingTabletSearchResultDom') >= 1,
   'render deve continuar consumindo o foco explicito criado pela Lupa')
 
+// CONFIG ABA TP controla somente a presença dos botões e começa toda
+// desligada. A ordem declarada é também a ordem do rodapé.
+assert.match(source,
+  /\{ id: 'play'[\s\S]*?\{ id: 'auto1'[\s\S]*?\{ id: 'auto2'[\s\S]*?\{ id: 'loop'[\s\S]*?\{ id: 'stopBreak'/,
+  'ordem do rodapé do Teleprompt foi alterada')
+const compactTpControls = extractFunction('getAvailableTelepromptTabControls')
+for (const id of ['play', 'auto1', 'loop']) {
+  assert(compactTpControls.includes(`control.id === '${id}'`),
+    'modo compacto perdeu o controle ' + id)
+}
+for (const id of ['auto2', 'stopBreak']) {
+  assert(!compactTpControls.includes(`control.id === '${id}'`),
+    'modo compacto não pode mostrar ' + id)
+}
+assert.match(extractFunction('getTelepromptTabControls'),
+  /saved\?\.\[control\.id\]\s*===\s*true/,
+  'controles do rodapé devem iniciar desligados')
+
+// A pinça amplia somente a área do TP e a pinça inversa devolve o layout.
+const pinchMoveBlock = extractFunction('handleTelepromptPinchMove')
+assert.match(pinchMoveBlock, /ratio\s*>=\s*1\.16/,
+  'pinça para ampliar o TP perdeu o limiar')
+assert.match(pinchMoveBlock, /ratio\s*<=\s*0\.86/,
+  'pinça inversa para sair do TP cheio perdeu o limiar')
+assert.match(pinchMoveBlock, /state\.telepromptFullscreen\s*=\s*shouldEnter/,
+  'pinça não atualiza mais o modo de tela cheia')
+assert.match(styles,
+  /\.directorTpFullscreen[\s\S]*?\.directorTpContent\s*>\s*\.playbackQueueHeader[\s\S]*?display:\s*none\s*!important/,
+  'tela cheia do TP deve ocultar transporte e controles')
+
+// No Tablet a busca usa uma entrada somente de leitura e o teclado do app.
+const tabletSearchRenderBlock = extractFunction('renderTabletSearchScreen')
+assert.match(tabletSearchRenderBlock, /inputmode="\$\{ownKeyboard \? 'none' : 'search'\}"/,
+  'Lupa do Tablet voltou a chamar o teclado nativo')
+assert.match(tabletSearchRenderBlock, /readonly aria-readonly="true"/,
+  'entrada da Lupa do Tablet deve permanecer somente de leitura')
+assert.match(styles,
+  /directorSearchPortraitMode \.tabletSearchScreen\s*\{[\s\S]{0,500}?inset:\s*0\s*!important/,
+  'Lupa do Tablet deve ocupar a tela inteira do app')
+
 
 // Um quadro pinta uma unica vez e o rAF roda antes dessa pintura. Se o render
 // pesado voltar a entrar direto no rAF, tudo que a acao mudou no DOM (a marca

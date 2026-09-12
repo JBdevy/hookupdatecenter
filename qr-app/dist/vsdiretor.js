@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.2-director-performance-v43'
+  const VERSION = '1.0.2-director-performance-v44'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
@@ -140,6 +140,7 @@
     showTunerScreen: readLocal('vshook_director_tuner_open', '0') === '1',
     showBpmScreen: readLocal('vshook_director_bpm_open', '0') === '1',
     showTelepromptScreen: false,
+    telepromptFullscreen: false,
     showRecadosScreen: false,
     recadosDraft: '',
     recadosGlobalDraft: '',
@@ -843,6 +844,47 @@
 
   function getTelepromptRolePrefix() {
     return IS_MUSICIAN_MONITOR ? 'musician' : 'director'
+  }
+
+  const TELEPROMPT_TAB_CONTROLS = Object.freeze([
+    { id: 'play', label: 'PLAY', action: 'play' },
+    { id: 'auto1', label: 'AUTO 1', action: 'autoplay' },
+    { id: 'auto2', label: 'AUTO 2', action: 'autoplay2' },
+    { id: 'loop', label: 'LOOP', action: 'loop' },
+    { id: 'stopBreak', label: 'STOP BREAK', action: 'stop-break' },
+  ])
+
+  function useCompactTelepromptTabControls() {
+    return IS_MUSICIAN_MONITOR ||
+      document.documentElement.dataset.directorDevice === 'phone'
+  }
+
+  function getAvailableTelepromptTabControls() {
+    if (!useCompactTelepromptTabControls()) return TELEPROMPT_TAB_CONTROLS
+    return TELEPROMPT_TAB_CONTROLS.filter((control) =>
+      control.id === 'play' || control.id === 'auto1' || control.id === 'loop')
+  }
+
+  function getTelepromptTabControlsKey() {
+    const layout = useCompactTelepromptTabControls() ? 'compact' : 'full'
+    return `vshook_${getTelepromptRolePrefix()}_teleprompt_tab_controls_${layout}_v1`
+  }
+
+  function getTelepromptTabControls() {
+    const saved = readJsonLocal(getTelepromptTabControlsKey(), {})
+    return Object.fromEntries(getAvailableTelepromptTabControls().map((control) => [
+      control.id,
+      saved?.[control.id] === true,
+    ]))
+  }
+
+  function toggleTelepromptTabControl(controlId) {
+    const id = String(controlId || '')
+    if (!getAvailableTelepromptTabControls().some((control) => control.id === id)) return
+    const settings = getTelepromptTabControls()
+    settings[id] = !settings[id]
+    writeLocal(getTelepromptTabControlsKey(), JSON.stringify(settings))
+    mountSettingsModalInPlace()
   }
 
   function getTelepromptPreferenceKey(name, slot = state.telepromptSlot) {
@@ -8263,6 +8305,18 @@
     return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox appTpConfigHub" data-stop-modal><div class="modalTitle">CONFIG TELEPROMPT</div><div class="appTpConfigHubGrid"><button class="btn" data-action="teleprompt-config-tp1">CONFIG TELEPROMPT 1</button><button class="btn" data-action="teleprompt-config-tp2">CONFIG TELEPROMPT 2</button><button class="btn" data-action="teleprompt-config-recados">CONFIG RECADOS</button></div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="modal-close">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
+  function renderTelepromptTabControlsConfig() {
+    const enabled = getTelepromptTabControls()
+    const controls = getAvailableTelepromptTabControls()
+    const compactClass = useCompactTelepromptTabControls()
+      ? ' telepromptTabControlsGridCompact' : ''
+    const buttons = controls.map((control) => {
+      const active = enabled[control.id] === true
+      return `<button type="button" class="${active ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="teleprompt-tab-control-toggle" data-teleprompt-tab-control="${control.id}" aria-pressed="${active ? 'true' : 'false'}">${control.label}</button>`
+    }).join('')
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox telepromptTabControlsModal" data-stop-modal><div class="modalTitle">CONFIG ABA TP</div><div class="telepromptTabControlsInfo">ESCOLHA OS BOTÕES QUE SERÃO MOSTRADOS NO RODAPÉ DO TELEPROMPT</div><div class="telepromptTabControlsGrid${compactClass}">${buttons}</div><div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide" data-action="teleprompt-tab-controls-back">VOLTAR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+  }
+
   function renderSettingsModal() {
     if (!state.showSettingsModal) return ''
     const isTelepromptSettings = state.settingsSection === 'teleprompt-hub' ||
@@ -8280,14 +8334,16 @@
     if (state.settingsSection === 'teleprompt-1') return renderAppTelepromptConfig(1)
     if (state.settingsSection === 'teleprompt-2') return renderAppTelepromptConfig(2)
     if (state.settingsSection === 'recados') return renderAppRecadosConfig()
+    if (state.settingsSection === 'teleprompt-tab-controls') return renderTelepromptTabControlsConfig()
     const theme = getAppTheme()
     const borderMode = getBorderColorMode()
     const borderModeLabel = getBorderColorModeLabel(borderMode)
     const soundOn = uiSoundEnabled()
     const vibrateOn = uiVibrateEnabled()
     const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM E VIBRAÇÃO</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div><div class="settingsThemeGrid"><button class="${vibrateOn ? 'btnAutoplayActive' : 'btn'}" data-action="vibrate-on">VIBRAR LIGADO</button><button class="${vibrateOn ? 'btn' : 'btnAutoplayActive'}" data-action="vibrate-off">VIBRAR DESLIGADO</button></div></div>`
+    const telepromptTabCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">TELEPROMPT</div><div class="settingsWideGrid"><button class="btn settingsTelepromptTabButton" data-action="teleprompt-tab-controls">CONFIG ABA TP</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
-      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+      return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}${telepromptTabCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
     const sortContext = state.showTunerScreen
       ? (state.tunerSourceTab === 'regions' ? 'regions' : 'playlist')
@@ -8299,7 +8355,7 @@
     const familyViewControls = getFamilyViewControlsEnabled()
     const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">${interfaceBlocking ? '[x]' : '[ ]'} Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">${hideAccessNotification ? '[x]' : '[ ]'} Bloquear notificação de acesso da interface</button></div></div>`
     const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">${familyViewControls ? '[x]' : '[ ]'} VIEW — Mostrar/Ocultar</button></div></div>`
-    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}<div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
+    return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}${telepromptTabCategory}<div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
   function renderNumberOrderConfirm() {
@@ -9800,6 +9856,7 @@
     state.showBpmScreen = false
     if (state.activeTab === 'mixer') setTab(state.tabletMixerReturnTab || 'playlist')
     state.showTelepromptScreen = true
+    state.telepromptFullscreen = false
     if (Number(slot) === 1 || Number(slot) === 2) {
       setDirectorTelepromptSlot(slot, false)
     } else {
@@ -9811,6 +9868,7 @@
   function closeDirectorTelepromptScreen() {
     if (!state.showTelepromptScreen) return
     state.showTelepromptScreen = false
+    state.telepromptFullscreen = false
     if (state.settingsSection === 'teleprompt-hub' ||
         state.settingsSection === 'teleprompt-1' ||
         state.settingsSection === 'teleprompt-2' ||
@@ -9822,6 +9880,34 @@
     // TP volta para a pagina que estava por baixo dele. No celular, sair do TP
     // pela aba Musicas nao deve mais redirecionar para Repertorio.
     scheduleRender(true)
+  }
+
+  function renderTelepromptTabFooterControls(data = state.snapshot || {}) {
+    const enabled = getTelepromptTabControls()
+    const controls = getAvailableTelepromptTabControls().filter((control) =>
+      enabled[control.id] === true)
+    if (!controls.length) return ''
+
+    const playing = isPlaying(data)
+    const autoAvailable = state.activeTab === 'playlist'
+    const buttons = controls.map((control) => {
+      if (control.id === 'play') {
+        return `<button class="btn ${playing ? 'btnStopActive' : 'btnPlayActive'}" data-action="play">${playing ? 'STOP' : 'PLAY'}</button>`
+      }
+      if (control.id === 'auto1') {
+        const active = autoAvailable && getAutoplay1Enabled(data)
+        return `<button class="${active ? 'btnAutoplayActive' : 'btn'}${autoAvailable ? '' : ' btnAutoUnavailable'}" data-action="autoplay" aria-pressed="${active ? 'true' : 'false'}">AUTO 1</button>`
+      }
+      if (control.id === 'auto2') {
+        const active = autoAvailable && getAutoplay2Enabled(data)
+        return `<button class="${active ? 'btnAutoplayActive btnAutoplay2Active' : 'btn'}${autoAvailable ? '' : ' btnAutoUnavailable'}" data-action="autoplay2" aria-pressed="${active ? 'true' : 'false'}">AUTO 2</button>`
+      }
+      if (control.id === 'loop') {
+        return `<button class="${getLoopActive(data) ? 'btn btnLoopActive' : 'btn'}" data-action="loop" aria-pressed="${getLoopActive(data) ? 'true' : 'false'}">LOOP</button>`
+      }
+      return `<button class="btn${playing ? ' btnStopActive tabletStopBreakPlaying' : ''}" data-action="stop-break">STOP BREAK</button>`
+    }).join('')
+    return `<div class="directorTpFooterControls" data-control-count="${controls.length}">${buttons}</div>`
   }
 
   function renderDirectorTelepromptScreen(data = state.snapshot || {}) {
@@ -9860,7 +9946,7 @@
       `--app-tp-preview-scale:${settings.previewScale / 100}`,
     ].join(';')
     return `
-      <div class="directorTpOverlay" data-teleprompt-slot="${slot}">
+      <div class="directorTpOverlay${state.telepromptFullscreen ? ' directorTpFullscreen' : ''}" data-teleprompt-slot="${slot}" data-teleprompt-fullscreen="${state.telepromptFullscreen ? '1' : '0'}">
         <div class="directorTpPanel">
           <div class="directorTpContent">
             ${transportPanel}
@@ -9884,6 +9970,7 @@
               <div class="directorTpEmpty">SEM CONTEÚDO NO TP/${slot}</div>
               ${renderDirectorTechnicalNotice(data)}
             </div>
+            ${renderTelepromptTabFooterControls(data)}
           </div>
         </div>
       </div>
@@ -10855,21 +10942,55 @@
     }).join('')
   }
 
+  function useTabletSearchKeyboard() {
+    return !IS_MUSICIAN_MONITOR &&
+      document.documentElement.dataset.directorDevice === 'tablet'
+  }
+
+  function renderTabletSearchKeyboard() {
+    if (!useTabletSearchKeyboard()) return ''
+    const rows = [
+      ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+      ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
+      ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
+      ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
+    ]
+    const keys = rows.map((row, index) => `<div class="tabletSearchKeyboardRow tabletSearchKeyboardRow${index + 1}">${row.map((key) => `<button type="button" class="tabletSearchKey" data-action="tablet-search-key" data-search-key="${key}">${key}</button>`).join('')}</div>`).join('')
+    return `<div class="tabletSearchKeyboard" tabindex="-1" aria-label="Teclado de pesquisa">${keys}<div class="tabletSearchKeyboardActions"><button type="button" class="tabletSearchKey tabletSearchKeyClear" data-action="tablet-search-key" data-search-key="clear">LIMPAR</button><button type="button" class="tabletSearchKey tabletSearchKeySpace" data-action="tablet-search-key" data-search-key="space">ESPAÇO</button><button type="button" class="tabletSearchKey tabletSearchKeyBackspace" data-action="tablet-search-key" data-search-key="backspace" aria-label="Apagar último caractere">⌫</button></div></div>`
+  }
+
+  function applyTabletSearchKey(keyValue) {
+    if (!state.showTabletSearch || !useTabletSearchKeyboard()) return
+    const key = String(keyValue || '')
+    let value = String(state.tabletSearchQuery || '')
+    if (key === 'clear') value = ''
+    else if (key === 'backspace') value = Array.from(value).slice(0, -1).join('')
+    else if (key === 'space') {
+      if (value && !value.endsWith(' ')) value += ' '
+    } else if (key.length === 1 && value.length < 80) value += key
+    state.tabletSearchQuery = value
+    const input = document.getElementById('tabletSearchInput')
+    if (input) input.value = value
+    syncTabletSearchResultsDom()
+  }
+
   function renderTabletSearchScreen(data = state.snapshot || {}) {
     if (!state.showTabletSearch || IS_MUSICIAN_MONITOR) return ''
     const count = getFilteredTabletSearchEntries(data).length
+    const ownKeyboard = useTabletSearchKeyboard()
     return `
-      <section class="tabletSearchScreen" aria-label="Pesquisar músicas">
+      <section class="tabletSearchScreen${ownKeyboard ? ' tabletSearchScreenOwnKeyboard' : ''}" aria-label="Pesquisar músicas">
         <div class="tabletSearchPanel">
           <div class="tabletSearchHeader">
             <div class="tabletSearchTitle">LUPA</div>
             <button type="button" class="btn tabletSearchClose" data-action="tablet-search-close">FECHAR</button>
           </div>
           <div class="tabletSearchInputRow">
-            <input id="tabletSearchInput" class="tabletSearchInput" type="search" inputmode="search" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PESQUISAR MÚSICA" value="${escapeHtml(state.tabletSearchQuery)}">
+            <input id="tabletSearchInput" class="tabletSearchInput" type="search" inputmode="${ownKeyboard ? 'none' : 'search'}" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="PESQUISAR MÚSICA" value="${escapeHtml(state.tabletSearchQuery)}"${ownKeyboard ? ' readonly aria-readonly="true"' : ''}>
             <span class="tabletSearchCount" data-tablet-search-count>${count}</span>
           </div>
           <div class="tabletSearchResults" data-tablet-search-results>${renderTabletSearchResults(data)}</div>
+          ${renderTabletSearchKeyboard()}
         </div>
       </section>
     `
@@ -10887,6 +11008,12 @@
   function focusTabletSearchInput() {
     const input = document.getElementById('tabletSearchInput')
     if (!input) return
+    if (useTabletSearchKeyboard()) {
+      try { input.blur() } catch (_) {}
+      const keyboard = root.querySelector('.tabletSearchKeyboard')
+      try { keyboard?.focus?.({ preventScroll: true }) } catch (_) { keyboard?.focus?.() }
+      return
+    }
     try { input.focus({ preventScroll: true }) } catch (_) { input.focus() }
     try {
       const end = String(input.value || '').length
@@ -12042,7 +12169,7 @@
   }
 
   function getAppRenderSignature() {
-    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
+    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.telepromptFullscreen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
   }
 
   function isDirectorListScrolling(sampledAt = now()) {
@@ -14277,18 +14404,22 @@
       window.clearTimeout(state.tabletSearchViewportRestoreTimer)
       state.tabletSearchViewportRestoreTimer = 0
     }
-    // A Lupa permanece na mesma prancheta escalada do modo tablet. A antiga
-    // troca para um viewport fisico separado podia deixar o #app fora da tela
-    // durante a abertura/fechamento do teclado, resultando em fundo preto.
-    rootElement.classList.remove('directorSearchPortraitMode', 'directorSearchViewportRestoring')
-    try { document.body.classList.remove('directorSearchPortraitMode') } catch (_) {}
+    rootElement.classList.remove('directorSearchViewportRestoring',
+      'directorTabletKeyboardOpen', 'directorTabletViewportRestoring')
     state.tabletSearchViewportSnapshot = null
-    if (!tabletMode) return
-    try {
-      if (typeof window.setDirectorTabletKeyboardOpen === 'function') {
-        window.setDirectorTabletKeyboardOpen(!!enabled)
-      }
-    } catch (_) {}
+    if (!tabletMode) {
+      rootElement.classList.remove('directorSearchPortraitMode')
+      try { document.body.classList.remove('directorSearchPortraitMode') } catch (_) {}
+      return
+    }
+    // No Tablet, a Lupa é uma tela do app e usa o teclado próprio. Como nenhum
+    // input editável ganha foco, o teclado nativo não altera o Visual Viewport.
+    rootElement.classList.toggle('directorSearchPortraitMode', !!enabled)
+    try { document.body.classList.toggle('directorSearchPortraitMode', !!enabled) } catch (_) {}
+    if (!enabled) {
+      try { window.updateDirectorTabletWebViewport?.() } catch (_) {}
+      updateViewportHeight()
+    }
   }
 
   function handleTabletSearchResult(searchId, element = null) {
@@ -14319,7 +14450,7 @@
 
   function handleAction(action, el, event) {
     if (IS_MUSICIAN_MONITOR) {
-      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'vibrate-on', 'vibrate-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle'])
+      const allowed = new Set(['settings', 'theme-light', 'theme-dark', 'sound-on', 'sound-off', 'vibrate-on', 'vibrate-off', 'border-color-mode', 'teleprompt-config-hub', 'teleprompt-config-main', 'teleprompt-config-tp1', 'teleprompt-config-tp2', 'teleprompt-config-recados', 'teleprompt-tab-controls', 'teleprompt-tab-control-toggle', 'teleprompt-tab-controls-back', 'teleprompt-font-set', 'teleprompt-color-set', 'teleprompt-colors-more', 'teleprompt-text-alignment-set', 'teleprompt-chord-position-set', 'teleprompt-chord-scale-minus', 'teleprompt-chord-scale-plus', 'teleprompt-chord-font-set', 'teleprompt-chord-color-set', 'teleprompt-transport-visibility-toggle', 'modal-close', 'exit-app', 'open-teleprompt', 'teleprompt-slot-1', 'teleprompt-slot-2', 'teleprompt-back', 'family-drawer-toggle', 'play', 'autoplay', 'loop'])
       if (!allowed.has(String(action || ''))) return
     }
     switch (action) {
@@ -14381,6 +14512,7 @@
         break
       }
       case 'tablet-search-close': closeTabletSearchState(); scheduleRender(true); break
+      case 'tablet-search-key': applyTabletSearchKey(el.getAttribute('data-search-key')); break
       case 'tablet-search-result': handleTabletSearchResult(el.getAttribute('data-search-id'), el); break
       case 'go-playlist':
         leavePremixForTabletNavigation()
@@ -14958,6 +15090,18 @@
       case 'teleprompt-config-recados':
         state.settingsSection = 'recados'
         armAppConfigColorGuard()
+        mountSettingsModalInPlace()
+        break
+      case 'teleprompt-tab-controls':
+        state.showSettingsModal = true
+        state.settingsSection = 'teleprompt-tab-controls'
+        mountSettingsModalInPlace()
+        break
+      case 'teleprompt-tab-control-toggle':
+        toggleTelepromptTabControl(el.getAttribute('data-teleprompt-tab-control'))
+        break
+      case 'teleprompt-tab-controls-back':
+        state.settingsSection = 'main'
         mountSettingsModalInPlace()
         break
       case 'teleprompt-font-set': setTelepromptFont(el.getAttribute('data-value')); break
@@ -15675,9 +15819,10 @@
       if (sameDraggedPointer || syntheticClickFromDrag) return
     }
 
-    const key = `${action}:${el.getAttribute('data-song-id') || el.getAttribute('data-region-id') || el.getAttribute('data-marker-id') || el.getAttribute('data-mixer-id') || el.getAttribute('data-premix-song-id') || el.getAttribute('data-premix-track-id') || el.getAttribute('data-premix-item-id') || el.getAttribute('data-tuner-song-id') || el.getAttribute('data-track-id') || el.getAttribute('data-search-id') || el.getAttribute('data-song-tool') || el.getAttribute('data-preview-slot') || el.getAttribute('data-slot') || ''}`
+    const key = `${action}:${el.getAttribute('data-song-id') || el.getAttribute('data-region-id') || el.getAttribute('data-marker-id') || el.getAttribute('data-mixer-id') || el.getAttribute('data-premix-song-id') || el.getAttribute('data-premix-track-id') || el.getAttribute('data-premix-item-id') || el.getAttribute('data-tuner-song-id') || el.getAttribute('data-track-id') || el.getAttribute('data-search-id') || el.getAttribute('data-search-key') || el.getAttribute('data-teleprompt-tab-control') || el.getAttribute('data-song-tool') || el.getAttribute('data-preview-slot') || el.getAttribute('data-slot') || ''}`
     const protectedTransportAction = getPlayProtectionEnabled() && (action === 'play' || action === 'stop-break')
-    if (!protectedTransportAction && isDuplicateTap(key)) return
+    const repeatableKeyboardAction = action === 'tablet-search-key'
+    if (!protectedTransportAction && !repeatableKeyboardAction && isDuplicateTap(key)) return
     event.preventDefault?.()
     event.stopPropagation?.()
     handleAction(action, el, event)
@@ -16136,6 +16281,49 @@
     finishTransportTouch(event, false)
   }
 
+  let telepromptPinchStartDistance = 0
+  let telepromptPinchHandled = false
+
+  function getTelepromptPinchDistance(touches) {
+    if (!touches || touches.length < 2) return 0
+    const first = touches[0]
+    const second = touches[1]
+    return Math.hypot(
+      (Number(second.clientX) || 0) - (Number(first.clientX) || 0),
+      (Number(second.clientY) || 0) - (Number(first.clientY) || 0),
+    )
+  }
+
+  function handleTelepromptPinchStart(event) {
+    if (!state.showTelepromptScreen || event.touches?.length !== 2 ||
+        !event.target?.closest?.('.directorTpOverlay')) return
+    telepromptPinchStartDistance = getTelepromptPinchDistance(event.touches)
+    telepromptPinchHandled = false
+  }
+
+  function handleTelepromptPinchMove(event) {
+    if (!telepromptPinchStartDistance || telepromptPinchHandled ||
+        event.touches?.length !== 2 || !state.showTelepromptScreen) return
+    const currentDistance = getTelepromptPinchDistance(event.touches)
+    if (!currentDistance) return
+    const ratio = currentDistance / telepromptPinchStartDistance
+    const shouldEnter = !state.telepromptFullscreen && ratio >= 1.16
+    const shouldExit = state.telepromptFullscreen && ratio <= 0.86
+    event.preventDefault?.()
+    if (!shouldEnter && !shouldExit) return
+    telepromptPinchHandled = true
+    telepromptPinchStartDistance = 0
+    state.telepromptFullscreen = shouldEnter
+    try { navigator.vibrate?.(28) } catch (_) {}
+    scheduleRender(true)
+  }
+
+  function handleTelepromptPinchEnd(event) {
+    if (event.touches?.length >= 2) return
+    telepromptPinchStartDistance = 0
+    telepromptPinchHandled = false
+  }
+
   function preventAppZoom() {
     const viewport = document.querySelector('meta[name="viewport"]')
     if (viewport) {
@@ -16589,6 +16777,10 @@
     document.addEventListener('touchmove', handleTransportTouchMove, { passive: false, capture: true })
     document.addEventListener('touchend', handleTransportTouchEnd, { passive: false, capture: true })
     document.addEventListener('touchcancel', handleTransportTouchCancel, { passive: false, capture: true })
+    document.addEventListener('touchstart', handleTelepromptPinchStart, { passive: true, capture: true })
+    document.addEventListener('touchmove', handleTelepromptPinchMove, { passive: false, capture: true })
+    document.addEventListener('touchend', handleTelepromptPinchEnd, { passive: true, capture: true })
+    document.addEventListener('touchcancel', handleTelepromptPinchEnd, { passive: true, capture: true })
     document.addEventListener('pointerdown', trackAppConfigColorPointerDown, true)
     document.addEventListener('click', guardAppConfigColorClick, true)
     document.addEventListener('contextmenu', (event) => {
@@ -16672,6 +16864,23 @@
       if (event.key === 'Escape' && state.showTabletSearch) {
         closeTabletSearchState()
         scheduleRender(true)
+        return
+      }
+      if (state.showTabletSearch && useTabletSearchKeyboard() &&
+          !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (event.key === 'Backspace') {
+          event.preventDefault()
+          applyTabletSearchKey('backspace')
+        } else if (event.key === 'Delete') {
+          event.preventDefault()
+          applyTabletSearchKey('clear')
+        } else if (event.key === ' ' || event.key === 'Spacebar') {
+          event.preventDefault()
+          applyTabletSearchKey('space')
+        } else if (/^[\p{L}\p{N}]$/u.test(String(event.key || ''))) {
+          event.preventDefault()
+          applyTabletSearchKey(String(event.key).toUpperCase())
+        }
       }
     })
     window.addEventListener('resize', () => updateViewportHeight())
