@@ -107,7 +107,6 @@ const store = new Store({
     deviceLoginName: '',
     deviceLoginAt: null,
     deviceLoggedOut: false,
-    licenseActivationSession: null,
     transferHookCode: '',
     dropHookDestinationPath: '',
     autoStart: true,
@@ -895,44 +894,32 @@ function assertCurrentLicenseSession(revision) {
   }
 }
 
-function getStoredActivationSessionToken(email) {
-  const session = store.get('licenseActivationSession') || {};
-  const token = String(session.token || '').trim();
-  const expiresAt = Date.parse(session.expiresAt || '') || 0;
-  if (!/^[0-9a-f]{64}$/i.test(token) || expiresAt <= Date.now() ||
-      normalizeEmail(session.email) !== normalizeEmail(email)) {
-    store.set('licenseActivationSession', null);
-    return '';
-  }
-  return token;
-}
-
 async function loginLicenseDevices(payload = {}) {
   const revision = ++licenseSessionRevision;
   const license = store.get('license') || {}
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const request = typeof payload === 'string' ? { email:payload } : (payload || {})
   const cleanEmail = normalizeEmail(request.email || license.email || store.get('deviceLoginEmail'))
+  const loginDocument = splitDocument(request.document || request.cpf || request.cnpj)
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.')
+  if (!loginDocument.cpf && !loginDocument.cnpj) throw new Error('Digite o CPF ou CNPJ usado na compra.')
   const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/login`, {
     method: 'POST',
     body: JSON.stringify({
       email:cleanEmail,
+      document:loginDocument.document,
+      cpf:loginDocument.cpf,
+      cnpj:loginDocument.cnpj,
       machineId,
       deviceFingerprint,
       platform:process.platform,
       computerName:getStoredDeviceName(),
-      challengeId:String(request.challengeId || ''),
-      verificationCode:String(request.verificationCode || ''),
       licenseToken:readSignedLicenseToken(),
       clockStateVersion:1
     })
   })
   assertCurrentLicenseSession(revision);
-  if (result.verificationRequired === true) {
-    return { ok:true, verificationRequired:true, result, state:getAppState() }
-  }
   if (result.ok !== true) throw new Error(result.message || 'Não foi possível entrar.');
   licenseSessionRevision += 1;
   const accountChanged = normalizeEmail(license.email) !== normalizeEmail(result.email || cleanEmail);
@@ -941,9 +928,9 @@ async function loginLicenseDevices(payload = {}) {
   if (result.active) saveSignedLicenseToken(result.licenseToken)
   const nextLicense = {
     ...accountLicense,
-    cpf: accountLicense.cpf || '',
-    cnpj: accountLicense.cnpj || '',
-    document: accountLicense.document || '',
+    cpf: result.cpf || loginDocument.cpf,
+    cnpj: result.cnpj || loginDocument.cnpj,
+    document: result.document || loginDocument.document,
     email: result.email || cleanEmail,
     machineId,
     active: !!result.active,
@@ -965,17 +952,12 @@ async function loginLicenseDevices(payload = {}) {
   store.set('deviceLoginName', String(result.name || '').trim())
   store.set('deviceLoginAt', new Date().toISOString())
   store.set('deviceLoggedOut', false)
-  store.set('licenseActivationSession', result.activationSessionToken ? {
-    token:String(result.activationSessionToken),
-    expiresAt:result.activationSessionExpiresAt || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    email:result.email || cleanEmail
-  } : null)
   store.set('license', nextLicense)
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
   return { ok:true, result, state:getAppState() }
 }
 
-function logoutLicenseDevices() {
+async function logoutLicenseDevices() {
   licenseSessionRevision += 1;
   // Logout da conta e ativacao da maquina sao estados independentes. Mantemos
   // a licenca local intacta para que sair da interface nao desative o VS Hook.
@@ -983,7 +965,6 @@ function logoutLicenseDevices() {
   store.set('deviceLoginName', '')
   store.set('deviceLoginAt', null)
   store.set('deviceLoggedOut', true)
-  store.set('licenseActivationSession', null)
   const nextState = getAppState()
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', nextState)
   return { ok: true, state: nextState }
@@ -999,26 +980,26 @@ async function removeLicenseDevice(payload = {}, emailOverride = '') {
   const machineId = normalizeMachineId(license.machineId || await getMachineId())
   const cleanEmail = normalizeEmail(request.email || emailOverride || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
+  const loginDocument = splitDocument(license.document || license.cpf || license.cnpj || '')
+  if (!loginDocument.cpf && !loginDocument.cnpj) throw new Error('Entre com seu e-mail e CPF ou CNPJ para continuar.')
   if (!removeMachineId) throw new Error('Dispositivo inválido.')
   const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/remove-device`, {
     method: 'POST',
     body: JSON.stringify({
       email:cleanEmail,
+      document:loginDocument.document,
+      cpf:loginDocument.cpf,
+      cnpj:loginDocument.cnpj,
       machineId,
       removeMachineId,
       deviceFingerprint,
       platform:process.platform,
       computerName:getStoredDeviceName(),
-      challengeId:String(request.challengeId || ''),
-      verificationCode:String(request.verificationCode || ''),
       clockStateVersion:1
     })
   })
   assertCurrentLicenseSession(revision);
-  if (result.verificationRequired === true) {
-    return { ok:true, verificationRequired:true, result, state:getAppState() }
-  }
   if (result.ok !== true) throw new Error(result.message || 'Não foi possível remover o dispositivo.')
   const nextLicense = {
     ...license,
@@ -1232,10 +1213,6 @@ async function fetchJson(url, options = {}) {
   try { data = text ? JSON.parse(text) : null; } catch (_) { data = { raw: text }; }
 
   if (!response.ok) {
-    // A confirmação por e-mail pode usar 200, 400 ou 401 conforme a versão do
-    // backend. Entregue essa resposta ao fluxo do modal para que um código
-    // incorreto não vire um erro genérico e não descarte o desafio atual.
-    if (data?.verificationRequired === true) return data;
     const message = data?.message || data?.error || `HTTP ${response.status}`;
     const error = new Error(message);
     error.status = response.status;
@@ -5014,9 +4991,11 @@ function getAppState() {
   const license = store.get('license') || {};
   const storedDeviceLoginEmail = String(store.get('deviceLoginEmail') || '').trim();
   const explicitlyLoggedOut = store.get('deviceLoggedOut') === true;
-  // A compatibilidade com versoes anteriores considera quem ja tinha um
-  // e-mail de licenca salvo como logado, exceto depois de um logout explicito.
-  const deviceLoggedIn = !explicitlyLoggedOut && Boolean(storedDeviceLoginEmail || license.email);
+  // Compatibilidade com versões anteriores: quem já possuía o e-mail salvo
+  // continua logado após atualizar. Novos logins também salvam o documento, que é
+  // reutilizado silenciosamente na ativação e na remoção de dispositivos.
+  const hasStoredLogin = Boolean(storedDeviceLoginEmail || license.email);
+  const deviceLoggedIn = !explicitlyLoggedOut && hasStoredLogin;
   return {
     // A versão binária continua separada e é a única usada para decidir se o
     // instalador da Hook Center precisa ser baixado novamente.
@@ -9781,20 +9760,14 @@ ipcMain.handle('logout-license-devices', () => logoutLicenseDevices());
 ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload || {}));
 ipcMain.handle('activate-license', async (_event, payload) => {
   const revision = ++licenseSessionRevision;
-  const docParts = splitDocument(payload?.cpf || payload?.document || payload?.cnpj);
-  const cpf = docParts.cpf;
-  const cnpj = docParts.cnpj;
-  const document = docParts.document;
-  const email = normalizeEmail(payload?.email);
+  const currentLicense = store.get('license') || {};
+  const email = normalizeEmail(currentLicense.email || store.get('deviceLoginEmail'));
+  const loginDocument = splitDocument(currentLicense.document || currentLicense.cpf || currentLicense.cnpj || '');
   const machineId = await getMachineId();
   const deviceFingerprint = await getDeviceFingerprint();
   const computerName = getStoredDeviceName();
-
-  if (document && document.length !== 11 && document.length !== 14) {
-    throw new Error('Digite um CPF ou CNPJ válido.');
-  }
-  if (!email || !email.includes('@')) {
-    throw new Error('Digite o e-mail usado na compra.');
+  if (!email || (!loginDocument.cpf && !loginDocument.cnpj)) {
+    throw new Error('Entre com seu e-mail e CPF ou CNPJ para continuar.');
   }
   if (!computerName) {
     throw new Error('Digite o nome deste dispositivo antes de ativar a licença.');
@@ -9803,30 +9776,27 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   const result = await fetchJson(`${BACKEND_URL}/api/license/activate`, {
     method: 'POST',
     body: JSON.stringify({
-      cpf,
-      cnpj,
-      document,
       email,
+      document:loginDocument.document,
+      cpf:loginDocument.cpf,
+      cnpj:loginDocument.cnpj,
       machineId,
       deviceFingerprint,
       platform:process.platform,
       computerName:getStoredDeviceName(),
-      challengeId:String(payload?.challengeId || ''),
-      verificationCode:String(payload?.verificationCode || ''),
-      licenseToken:readSignedLicenseToken(),
-      activationSessionToken:getStoredActivationSessionToken(email),
       clockStateVersion:1
     })
   });
 
   assertCurrentLicenseSession(revision);
-  if (result.verificationRequired === true) {
-    return { ok:true, verificationRequired:true, result, state:getAppState() };
-  }
   if (result.ok !== true || result.active !== true) throw new Error(result.message || 'A licença não foi ativada.');
   licenseSessionRevision += 1;
   saveSignedLicenseToken(result.licenseToken, { required: true });
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
+  const docParts = splitDocument(result.document || result.cpf || result.cnpj || currentLicense.document || currentLicense.cpf || currentLicense.cnpj);
+  const cpf = docParts.cpf;
+  const cnpj = docParts.cnpj;
+  const document = docParts.document;
   let activationPersistenceWarning = '';
   try {
     saveLocalLicense({ cpf, cnpj, document, email, machineId, licenseKey, payload: result });

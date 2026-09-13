@@ -7479,6 +7479,32 @@ button,
 .directorTpWorkspace[data-list-open="1"][data-parts-open="1"] {
   grid-template-columns: 40% minmax(0, 20%) 40%;
 }
+/* No celular, LIST/PARTS substituem só o centro; as duas barras não rolam. */
+.directorTpWorkspace[data-panel-layout="single"][data-list-open][data-parts-open] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.directorTpOverlay:not(.directorTpFullscreen) .directorTpWorkspace[data-panel-layout="single"][data-list-open="1"] > .directorTpContent,
+.directorTpOverlay:not(.directorTpFullscreen) .directorTpWorkspace[data-panel-layout="single"][data-parts-open="1"] > .directorTpContent {
+  display: none;
+}
+.directorTpWorkspace[data-panel-layout="single"] > .directorTpSidePane {
+  box-sizing: border-box;
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+}
+.directorTpWorkspace[data-panel-layout="single"] .directorTpSideList {
+  overscroll-behavior-y: contain;
+}
+html[data-director-device="phone"] .directorTpPanel > .directorTpFooterControls {
+  gap: 4px;
+}
+html[data-director-device="phone"] .directorTpFooterControls > button {
+  padding: 0 2px;
+  font-size: 10px;
+  letter-spacing: 0;
+}
 .directorTpSidePane {
   min-width: 0;
   min-height: 0;

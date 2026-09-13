@@ -4,6 +4,7 @@
   "private": true,
   "description": "VS Hook Mobile - Android/iOS",
   "scripts": {
+    "test:teleprompt-phone-panels": "node scripts/test-teleprompt-phone-panels.js",
     "test:director-search": "node scripts/test-director-search.js",
     "test:director-touch-feedback": "node scripts/test-director-touch-feedback.js",
     "test:director-bar-clock": "node scripts/test-director-bar-clock.js",

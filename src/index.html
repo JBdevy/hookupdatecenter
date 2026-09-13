@@ -25,7 +25,9 @@
       <form id="accountLoginForm" class="account-login-form" novalidate>
         <label for="accountLoginEmail">E-mail</label>
         <input id="accountLoginEmail" type="email" inputmode="email" placeholder="cliente@email.com" autocomplete="email" spellcheck="false" />
-        <p class="account-login-hint">Entre com o mesmo e-mail da compra.</p>
+        <label for="accountLoginDocument">CPF ou CNPJ</label>
+        <input id="accountLoginDocument" type="password" inputmode="numeric" maxlength="18" placeholder="CPF ou CNPJ" autocomplete="off" />
+        <p class="account-login-hint">Use o mesmo e-mail e CPF ou CNPJ informados na compra.</p>
         <button id="accountLoginButton" class="primary-button" type="submit">Entrar</button>
         <p id="accountLoginMessage" class="account-login-message" role="alert" aria-live="polite"></p>
       </form>
@@ -236,26 +238,6 @@
 
           <div class="form-grid">
             <label>
-              CPF ou CNPJ usado na compra
-              <span class="purchase-field">
-                <input id="cpfInput" type="password" placeholder="CPF ou CNPJ" autocomplete="off" />
-                <button class="purchase-field-toggle" type="button" data-sensitive-input="cpfInput" data-visible-type="text" aria-label="Mostrar CPF ou CNPJ" aria-pressed="false" title="Mostrar CPF ou CNPJ">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
-                </button>
-              </span>
-            </label>
-
-            <label>
-              E-mail usado na compra
-              <span class="purchase-field">
-                <input id="emailInput" type="password" placeholder="cliente@email.com" autocomplete="off" />
-                <button class="purchase-field-toggle" type="button" data-sensitive-input="emailInput" data-visible-type="email" aria-label="Mostrar e-mail" aria-pressed="false" title="Mostrar e-mail">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
-                </button>
-              </span>
-            </label>
-
-            <label>
               Nome deste dispositivo
               <input id="deviceNameInlineInput" type="text" placeholder="Ex.: Notebook palco, PC estúdio" autocomplete="off" />
             </label>
@@ -297,7 +279,7 @@
           <div>
             <p class="eyebrow">Licença VS Hook</p>
             <h1>Dispositivos</h1>
-            <p class="muted">Entre com o e-mail usado na compra para ver e remover computadores ativados.</p>
+            <p class="muted">O acesso usa o e-mail e o CPF ou CNPJ informados na compra.</p>
           </div>
         </div>
 
@@ -309,6 +291,15 @@
               <span class="purchase-field">
                 <input id="devicesEmailInput" type="password" placeholder="cliente@email.com" autocomplete="off" />
                 <button class="purchase-field-toggle" type="button" data-sensitive-input="devicesEmailInput" data-visible-type="email" aria-label="Mostrar e-mail" aria-pressed="false" title="Mostrar e-mail">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
+                </button>
+              </span>
+            </label>
+            <label>
+              CPF ou CNPJ usado na compra
+              <span class="purchase-field">
+                <input id="devicesDocumentInput" type="password" inputmode="numeric" maxlength="18" placeholder="CPF ou CNPJ" autocomplete="off" />
+                <button class="purchase-field-toggle" type="button" data-sensitive-input="devicesDocumentInput" data-visible-type="text" aria-label="Mostrar CPF ou CNPJ" aria-pressed="false" title="Mostrar CPF ou CNPJ">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
                 </button>
               </span>
@@ -1892,23 +1883,6 @@
       <div class="modal-actions">
         <button id="deviceNameModalCancel" class="secondary-button modal-button" type="button">Cancelar</button>
         <button id="deviceNameModalSave" class="primary-button modal-button" type="button">Salvar</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="licenseEmailCodeModal" class="modal-backdrop license-email-code-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="licenseEmailCodeTitle">
-    <div class="hook-modal license-email-code-modal">
-      <div class="license-email-code-icon" aria-hidden="true">✦</div>
-      <p class="eyebrow">Confirmação de segurança</p>
-      <h2 id="licenseEmailCodeTitle">Digite o código</h2>
-      <p id="licenseEmailCodeMessage">Enviamos um código de 6 dígitos para o e-mail da compra.</p>
-      <strong id="licenseEmailCodeAddress" class="license-email-code-address"></strong>
-      <input id="licenseEmailCodeInput" class="license-email-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-label="Código de 6 dígitos" />
-      <div id="licenseEmailCodeError" class="device-modal-error" role="alert" aria-live="polite"></div>
-      <div class="modal-actions license-email-code-actions">
-        <button id="licenseEmailCodeCancel" class="secondary-button modal-button" type="button">Cancelar</button>
-        <button id="licenseEmailCodeResend" class="secondary-button modal-button" type="button">Reenviar</button>
-        <button id="licenseEmailCodeConfirm" class="primary-button modal-button" type="button">Confirmar</button>
       </div>
     </div>
   </div>

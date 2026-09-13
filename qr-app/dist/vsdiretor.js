@@ -912,7 +912,8 @@
   function getAvailableTelepromptTabControls() {
     if (useCompactTelepromptTabControls()) {
       return TELEPROMPT_TAB_CONTROLS.filter((control) =>
-        control.id === 'play' || control.id === 'auto1' || control.id === 'loop')
+        control.id === 'play' || control.id === 'auto1' || control.id === 'loop' ||
+        (!IS_MUSICIAN_MONITOR && (control.id === 'list' || control.id === 'parts')))
     }
     // No Tablet, PLAY abre a faixa, LIST fica antes do AUTO 1 e PARTS ocupa o
     // lugar do LOOP.
@@ -10284,7 +10285,7 @@
   }
 
   function renderTelepromptPlaylistSide(data = state.snapshot || {}) {
-    if (!isTabletTelepromptLayout() || !state.telepromptListOpen) return ''
+    if (!canShowTelepromptPanels() || !state.telepromptListOpen) return ''
     const playlist = getActivePlaylist(data)
     const title = upperText(playlist?.name || data.currentPlaylistName || 'REPERTÓRIO')
     const items = getPlaylistWithOpenDrawers(data)
@@ -10295,7 +10296,7 @@
   }
 
   function renderTelepromptPartsSide(data = state.snapshot || {}) {
-    if (!isTabletTelepromptLayout() || !state.telepromptPartsOpen) return ''
+    if (!canShowTelepromptPanels() || !state.telepromptPartsOpen) return ''
     const parentInstruction = partsTargetIsParent(data)
     return `<aside class="directorTpSidePane directorTpPartsPane" aria-label="Parts">
       ${parentInstruction
@@ -10313,7 +10314,23 @@
   }
 
   function isTelepromptPartsSideVisible() {
-    return state.showTelepromptScreen && state.telepromptPartsOpen && isTabletTelepromptLayout()
+    return state.showTelepromptScreen && state.telepromptPartsOpen && canShowTelepromptPanels()
+  }
+
+  function canShowTelepromptPanels() {
+    return !IS_MUSICIAN_MONITOR && (isTabletTelepromptLayout() ||
+      document.documentElement.dataset.directorDevice === 'phone')
+  }
+
+  function toggleTelepromptPanel(panel) {
+    if (!state.showTelepromptScreen || !canShowTelepromptPanels()) return
+    if (panel !== 'list' && panel !== 'parts') return
+    const key = panel === 'list' ? 'telepromptListOpen' : 'telepromptPartsOpen'
+    state[key] = !state[key]
+    if (state[key] && !isTabletTelepromptLayout()) {
+      state[panel === 'list' ? 'telepromptPartsOpen' : 'telepromptListOpen'] = false
+    }
+    scheduleRender(true)
   }
 
   function syncTelepromptPartsSideDom(data = state.snapshot || {}) {
@@ -10337,8 +10354,10 @@
     const tp1Class = slot === 1 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tp2Class = slot === 2 ? 'directorTpTab directorTpTabActive' : 'directorTpTab'
     const tabletLayout = isTabletTelepromptLayout()
-    const listOpen = tabletLayout && state.telepromptListOpen
-    const partsOpen = tabletLayout && state.telepromptPartsOpen
+    // Ao trocar de tablet para celular, nunca deixar os dois painéis abertos.
+    if (!tabletLayout && state.telepromptListOpen) state.telepromptPartsOpen = false
+    const listOpen = canShowTelepromptPanels() && state.telepromptListOpen
+    const partsOpen = canShowTelepromptPanels() && state.telepromptPartsOpen
     // LIST usa a área de operação ao vivo: enquanto estiver aberta, o painel
     // de transporte some sem modificar a preferência permanente do usuário.
     const transportPanel = getHideTelepromptTransport(slot) || listOpen
@@ -10378,7 +10397,7 @@
             <button class="${tp2Class}" data-action="teleprompt-slot-2">TP/2</button>
             <button class="directorTpTab directorTpBack" data-action="teleprompt-back">VOLTAR</button>
           </div>
-          <div class="directorTpWorkspace" data-list-open="${listOpen ? '1' : '0'}" data-parts-open="${partsOpen ? '1' : '0'}">
+          <div class="directorTpWorkspace" data-panel-layout="${tabletLayout ? 'columns' : 'single'}" data-list-open="${listOpen ? '1' : '0'}" data-parts-open="${partsOpen ? '1' : '0'}">
           ${renderTelepromptPlaylistSide(data)}
           <div class="directorTpContent">
             ${transportPanel}
@@ -14989,15 +15008,11 @@
       case 'teleprompt-slot-1': setDirectorTelepromptSlot(1); break
       case 'teleprompt-slot-2': setDirectorTelepromptSlot(2); break
       case 'teleprompt-list-toggle': {
-        if (!isTabletTelepromptLayout() || !state.showTelepromptScreen) break
-        state.telepromptListOpen = !state.telepromptListOpen
-        scheduleRender(true)
+        toggleTelepromptPanel('list')
         break
       }
       case 'teleprompt-parts-toggle': {
-        if (!isTabletTelepromptLayout() || !state.showTelepromptScreen) break
-        state.telepromptPartsOpen = !state.telepromptPartsOpen
-        scheduleRender(true)
+        toggleTelepromptPanel('parts')
         break
       }
       case 'teleprompt-back': closeDirectorTelepromptScreen(); break

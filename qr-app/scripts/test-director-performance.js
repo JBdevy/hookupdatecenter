@@ -332,7 +332,7 @@ for (const id of ['play', 'auto1', 'loop']) {
   assert(compactTpControls.includes(`control.id === '${id}'`),
     'modo compacto perdeu o controle ' + id)
 }
-for (const id of ['list', 'auto2', 'parts', 'stopBreak']) {
+for (const id of ['auto2', 'stopBreak']) {
   assert(!compactTpControls.includes(`control.id === '${id}'`),
     'modo compacto não pode mostrar ' + id)
 }

@@ -91,147 +91,30 @@ let accountWelcomeTimer = 0;
 let accountAccessRevision = 0;
 const chatHookMessagesById = new Map();
 
-function emailVerificationPayload(response) {
-  const candidate = response?.result?.verificationRequired === true ? response.result : response;
-  return candidate?.verificationRequired === true ? candidate : null;
+function loginDocumentDigits(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 14);
 }
 
-function promptLicenseEmailCode({ title, verification, errorMessage = '', resendAt = 0, retryAt = 0 }) {
-  return new Promise((resolve) => {
-    const backdrop = $('#licenseEmailCodeModal');
-    const input = $('#licenseEmailCodeInput');
-    const confirmButton = $('#licenseEmailCodeConfirm');
-    const cancelButton = $('#licenseEmailCodeCancel');
-    const resendButton = $('#licenseEmailCodeResend');
-    const error = $('#licenseEmailCodeError');
-    if (!backdrop || !input || !confirmButton || !cancelButton || !resendButton) {
-      resolve({ action:'cancel' });
-      return;
-    }
-
-    $('#licenseEmailCodeTitle').textContent = title || 'Digite o código';
-    $('#licenseEmailCodeMessage').textContent = verification?.ok === false
-      ? 'Digite o código de 6 dígitos enviado para o e-mail da compra.'
-      : (verification?.message || 'Enviamos um código de 6 dígitos para o e-mail da compra.');
-    $('#licenseEmailCodeAddress').textContent = verification?.maskedEmail || '';
-    error.textContent = errorMessage || '';
-    input.value = '';
-    backdrop.classList.remove('hidden');
-
-    let countdownTimer = 0;
-    let retryFinished = false;
-    const hadRetryCooldown = retryAt > Date.now();
-    const updateCountdowns = () => {
-      const resendSeconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
-      const retrySeconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
-      resendButton.disabled = resendSeconds > 0;
-      resendButton.textContent = resendSeconds > 0 ? `Reenviar (${resendSeconds}s)` : 'Reenviar';
-      input.disabled = retrySeconds > 0;
-      confirmButton.disabled = retrySeconds > 0;
-      confirmButton.textContent = retrySeconds > 0 ? `Aguarde (${retrySeconds}s)` : 'Confirmar';
-      if (retrySeconds > 0) {
-        error.textContent = `Muitas tentativas. Aguarde ${retrySeconds}s para tentar novamente.`;
-      } else if (hadRetryCooldown && !retryFinished) {
-        retryFinished = true;
-        error.textContent = 'Você já pode tentar novamente.';
-        setTimeout(() => input.focus(), 40);
-      }
-      if (!resendSeconds && !retrySeconds && countdownTimer) {
-        clearInterval(countdownTimer);
-        countdownTimer = 0;
-      }
-    };
-    updateCountdowns();
-    if (resendAt > Date.now() || retryAt > Date.now()) {
-      countdownTimer = setInterval(updateCountdowns, 250);
-    }
-
-    const finish = (value) => {
-      if (countdownTimer) clearInterval(countdownTimer);
-      backdrop.classList.add('hidden');
-      input.oninput = null;
-      input.onkeydown = null;
-      confirmButton.onclick = null;
-      cancelButton.onclick = null;
-      resendButton.onclick = null;
-      resolve(value);
-    };
-    const confirm = () => {
-      if (retryAt > Date.now()) return;
-      const code = String(input.value || '').replace(/\D/g, '').slice(0, 6);
-      if (code.length !== 6) {
-        error.textContent = 'Digite os 6 números enviados por e-mail.';
-        input.focus();
-        return;
-      }
-      finish({ action:'confirm', code });
-    };
-    input.oninput = () => {
-      input.value = String(input.value || '').replace(/\D/g, '').slice(0, 6);
-      error.textContent = '';
-    };
-    input.onkeydown = (event) => {
-      if (event.key === 'Enter') confirm();
-      if (event.key === 'Escape') finish({ action:'cancel' });
-    };
-    confirmButton.onclick = confirm;
-    cancelButton.onclick = () => finish({ action:'cancel' });
-    resendButton.onclick = () => {
-      if (!resendButton.disabled) finish({ action:'resend' });
-    };
-    if (!input.disabled) setTimeout(() => input.focus(), 40);
-  });
-}
-
-async function runEmailVerifiedLicenseAction(operation, title) {
-  let response = await operation({});
-  let verification = emailVerificationPayload(response);
-  let resendAt = verification
-    ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
-    : 0;
-  let retryAt = verification?.reason === 'code_cooldown'
-    ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
-    : 0;
-  let errorMessage = verification?.ok === false ? verification.message || '' : '';
-
-  while (verification) {
-    const answer = await promptLicenseEmailCode({ title, verification, errorMessage, resendAt, retryAt });
-    if (answer.action === 'cancel') return null;
-    if (answer.action === 'resend') {
-      try {
-        response = await operation({});
-        verification = emailVerificationPayload(response);
-        resendAt = verification
-          ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
-          : 0;
-        retryAt = verification?.reason === 'code_cooldown'
-          ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
-          : 0;
-        errorMessage = verification?.ok === false ? verification.message || '' : '';
-      } catch (error) {
-        errorMessage = cleanErrorMessage(error);
-      }
-      continue;
-    }
-    try {
-      response = await operation({
-        challengeId:verification.challengeId,
-        verificationCode:answer.code
-      });
-      verification = emailVerificationPayload(response);
-      retryAt = verification?.reason === 'code_cooldown'
-        ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
-        : 0;
-      errorMessage = verification?.ok === false ? verification.message || 'Código inválido.' : '';
-    } catch (error) {
-      // Preserve o challenge e reabra o mesmo modal. Assim um erro de código
-      // não encerra o login nem obriga o usuário a aguardar outro envio.
-      errorMessage = cleanErrorMessage(error);
-      const retryMatch = errorMessage.match(/aguarde\s+(\d+)s/i);
-      retryAt = retryMatch ? Date.now() + Math.max(1, Number(retryMatch[1]) || 60) * 1000 : 0;
-    }
+function formatLoginDocument(value) {
+  const digits = loginDocumentDigits(value);
+  if (digits.length > 11) {
+    return digits
+      .replace(/^(\d{2})(\d)/, '$1.$2')
+      .replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3')
+      .replace(/^(\d{2})\.(\d{3})\.(\d{3})(\d)/, '$1.$2.$3/$4')
+      .replace(/(\d{4})(\d{1,2})$/, '$1-$2');
   }
-  return response;
+  return digits
+    .replace(/^(\d{3})(\d)/, '$1.$2')
+    .replace(/^(\d{3})\.(\d{3})(\d)/, '$1.$2.$3')
+    .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+}
+
+function setupLoginDocumentInput(input) {
+  if (!input) return;
+  input.addEventListener('input', () => {
+    input.value = formatLoginDocument(input.value);
+  });
 }
 
 function isAccountLoggedIn(nextState = state) {
@@ -312,10 +195,14 @@ function showAccountWelcome(name, email) {
   });
 }
 
-async function performAccountLogin(email) {
+async function performAccountLogin(email, document) {
   const cleanEmail = String(email || '').trim();
+  const cleanDocument = loginDocumentDigits(document);
   if (!cleanEmail || !cleanEmail.includes('@')) {
     throw new Error('Digite o e-mail usado na compra.');
+  }
+  if (![11, 14].includes(cleanDocument.length)) {
+    throw new Error('Digite o CPF ou CNPJ usado na compra.');
   }
   if (accountLoginBusy) return null;
 
@@ -323,15 +210,7 @@ async function performAccountLogin(email) {
   setAccountLoginBusy(true);
   accountLoginTransitionActive = true;
   try {
-    const result = await runEmailVerifiedLicenseAction(
-      (verification) => window.hookUpdateCenter.loginLicenseDevices({ email:cleanEmail, ...verification }),
-      'Confirmar login'
-    );
-    if (!result) {
-      accountLoginTransitionActive = false;
-      syncAccountAccessState(state);
-      return null;
-    }
+    const result = await window.hookUpdateCenter.loginLicenseDevices({ email:cleanEmail, document:cleanDocument });
     const nextState = result.state || await window.hookUpdateCenter.getState();
     if (revision !== accountAccessRevision) return null;
     renderState(nextState);
@@ -351,13 +230,15 @@ async function performAccountLogin(email) {
 }
 
 function setupAccountAccess() {
+  setupLoginDocumentInput($('#accountLoginDocument'));
+  setupLoginDocumentInput($('#devicesDocumentInput'));
   $('#accountLoginForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const message = $('#accountLoginMessage');
     const input = $('#accountLoginEmail');
     if (message) message.textContent = '';
     try {
-      const result = await performAccountLogin(input?.value || '');
+      const result = await performAccountLogin(input?.value || '', $('#accountLoginDocument')?.value || '');
       if (!result) return;
       if (result?.result?.reason === 'device_limit') {
         setView('devices');
@@ -381,6 +262,8 @@ function setupAccountAccess() {
       const result = await window.hookUpdateCenter.logoutLicenseDevices();
       const loginInput = $('#accountLoginEmail');
       if (loginInput) loginInput.value = '';
+      if ($('#accountLoginDocument')) $('#accountLoginDocument').value = '';
+      if ($('#devicesDocumentInput')) $('#devicesDocumentInput').value = '';
       if ($('#accountLoginMessage')) $('#accountLoginMessage').textContent = '';
       setView('home');
       renderState(result.state || await window.hookUpdateCenter.getState());
@@ -887,7 +770,7 @@ async function ensureLicenseActiveForDownload() {
 
   if (shouldActivate) {
     setView('license');
-    $('#cpfInput')?.focus();
+    $('#deviceNameInlineInput')?.focus();
   }
 
   return false;
@@ -5957,15 +5840,7 @@ function renderDevices() {
       })
       if (!ok) return
       try {
-        const result = await runEmailVerifiedLicenseAction(
-          (verification) => window.hookUpdateCenter.removeLicenseDevice({
-            machineId,
-            email:$('#devicesEmailInput')?.value || email,
-            ...verification
-          }),
-          'Confirmar remoção'
-        )
-        if (!result) return
+        const result = await window.hookUpdateCenter.removeLicenseDevice({ machineId })
         renderState(result.state || await window.hookUpdateCenter.getState())
         $('#devicesMessage').textContent = isCurrentDevice ? 'Este computador foi removido da licença.' : 'Dispositivo removido.'
         if (isCurrentDevice) {
@@ -6257,8 +6132,6 @@ function renderState(nextState) {
   renderBridgeState(state.bridge);
 
   const license = state.license || {};
-  $('#cpfInput').value = license.document || license.cpf || license.cnpj || $('#cpfInput').value || '';
-  $('#emailInput').value = license.email || $('#emailInput').value || '';
   $('#licenseActive').textContent = license.active ? 'Ativa' : 'Pendente';
   $('#licenseActive').classList.toggle('ok-text', !!license.active);
   $('#licenseDevices').textContent = `${license.devicesUsed || 0} de ${license.maxDevices || 0}`;
@@ -6950,18 +6823,7 @@ async function init() {
       $('#activateButton').textContent = 'Ativando...';
       $('#licenseMessage').textContent = 'Verificando dados...';
 
-      const result = await runEmailVerifiedLicenseAction(
-        (verification) => window.hookUpdateCenter.activateLicense({
-          cpf:$('#cpfInput').value,
-          email:$('#emailInput').value,
-          ...verification
-        }),
-        'Confirmar ativação'
-      );
-      if (!result) {
-        $('#licenseMessage').textContent = 'Ativação cancelada.';
-        return;
-      }
+      const result = await window.hookUpdateCenter.activateLicense({});
 
       renderState(result.state || await window.hookUpdateCenter.getState());
       const msg = result?.result?.message || result?.result?.warning || 'Licença ativada com sucesso.';
@@ -7031,7 +6893,10 @@ async function init() {
 
   $('#devicesLoginButton')?.addEventListener('click', async () => {
     try {
-      const result = await performAccountLogin($('#devicesEmailInput')?.value || $('#emailInput')?.value || '')
+      const result = await performAccountLogin(
+        $('#devicesEmailInput')?.value || '',
+        $('#devicesDocumentInput')?.value || ''
+      )
       if (!result) return
       const msg = result?.result?.message || 'Login realizado.'
       $('#devicesMessage').textContent = msg
