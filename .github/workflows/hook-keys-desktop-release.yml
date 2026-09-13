@@ -129,6 +129,7 @@ jobs:
           done
           KEYCHAIN_PATH="$RUNNER_TEMP/hook-keys-desktop.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
           APP_CERT="$RUNNER_TEMP/hook-keys-application.p12"
           INSTALLER_CERT="$RUNNER_TEMP/hook-keys-installer.p12"
           printf '%s' "$APP_CERT_BASE64" | tr -d '\r\n\t ' | base64 --decode > "$APP_CERT"
@@ -137,15 +138,28 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$APP_CERT" -k "$KEYCHAIN_PATH" -P "$APP_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          # Autorize explicitamente as ferramentas que usam a chave do
-          # certificado Installer. Isso evita um pedido de acesso invisível no
-          # runner, que faz o productsign ficar parado até o timeout do job.
+          # Inclui todas as ferramentas Apple de empacotamento, não somente
+          # productbuild. A chave permanece no keychain descartável do job.
           security import "$INSTALLER_CERT" \
             -k "$KEYCHAIN_PATH" \
             -P "$INSTALLER_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/pkgbuild \
             -T /usr/bin/productbuild \
+            -T /usr/bin/productsign \
             -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Tauri não instala o keychain de certificados intermediários que
+          # electron-builder instala na Hook Center. Carregue G1/G2 oficiais
+          # localmente; não altera a confiança das raízes do macOS.
+          for CERT_NAME in DeveloperIDCA DeveloperIDG2CA; do
+            INTERMEDIATE="$RUNNER_TEMP/$CERT_NAME.cer"
+            curl --fail --location --silent --show-error \
+              --proto '=https' --connect-timeout 10 --max-time 30 \
+              "https://www.apple.com/certificateauthority/$CERT_NAME.cer" \
+              --output "$INTERMEDIATE"
+            security import "$INTERMEDIATE" -k "$KEYCHAIN_PATH"
+          done
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
           # Preserve os keychains do macOS para que a cadeia intermediária da
           # Apple continue disponível. --keychain, usado na assinatura, limita
           # a escolha da identidade ao keychain descartável deste job.
@@ -155,10 +169,30 @@ jobs:
           INSTALLER_IDENTITY="$(security find-identity -v "$KEYCHAIN_PATH" | sed -n 's/.*"\(Developer ID Installer:[^"]*\)".*/\1/p' | head -n 1)"
           test -n "$APP_IDENTITY"
           test -n "$INSTALLER_IDENTITY"
+          INSTALLER_LEAF="$RUNNER_TEMP/hook-keys-installer-leaf.pem"
+          security find-certificate -c "$INSTALLER_IDENTITY" -p "$KEYCHAIN_PATH" > "$INSTALLER_LEAF"
+          openssl x509 -in "$INSTALLER_LEAF" -noout -subject -issuer -dates -fingerprint -sha256
+          security verify-cert -L -p basic -c "$INSTALLER_LEAF" -k "$KEYCHAIN_PATH"
+          rm -f "$APP_CERT" "$INSTALLER_CERT"
           echo "HOOK_KEYS_APP_IDENTITY=$APP_IDENTITY" >> "$GITHUB_ENV"
           echo "HOOK_KEYS_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
           echo "HOOK_KEYS_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "HOOK_KEYS_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Testar assinatura Installer antes de compilar
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:macos-pkg-sign
+          security unlock-keychain -p "$HOOK_KEYS_KEYCHAIN_PASSWORD" "$HOOK_KEYS_KEYCHAIN_PATH"
+          pkgbuild --nopayload --identifier com.hookdeveloper.hookkeys.signing-probe \
+            --version 1.0 "$RUNNER_TEMP/hook-keys-installer-probe-unsigned.pkg"
+          node scripts/macos-pkg-sign.mjs probe \
+            "$RUNNER_TEMP/hook-keys-installer-probe-unsigned.pkg" \
+            "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg"
+          pkgutil --check-signature "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg" | grep -q 'Developer ID Installer'
+          rm -f "$RUNNER_TEMP/hook-keys-installer-probe-unsigned.pkg" "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg"
 
       - name: Gerar aplicativo universal macOS
         run: npm run desktop:build -- --target universal-apple-darwin --bundles app
@@ -201,58 +235,19 @@ jobs:
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$HOOK_KEYS_KEYCHAIN_PASSWORD" \
-            "$HOOK_KEYS_KEYCHAIN_PATH"
+            "$HOOK_KEYS_KEYCHAIN_PATH" > /dev/null
           echo "Assinando o PKG com $HOOK_KEYS_INSTALLER_IDENTITY"
           date -u
-          curl --connect-timeout 10 --max-time 20 -sS -o /dev/null \
-            -w 'Servidor de timestamp Apple: HTTP %{http_code}\n' \
-            http://timestamp.apple.com/ts01 || true
-
-          # Use productbuild, a mesma ferramenta usada pelo empacotamento da
-          # Hook Center. O certificado Installer foi autorizado explicitamente
-          # para ela durante a importação.
-          python3 - "$HOOK_KEYS_INSTALLER_IDENTITY" "$HOOK_KEYS_KEYCHAIN_PATH" \
-            "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg" \
-            "$RUNNER_TEMP/Hook Keys macOS key-test.pkg" <<'PY'
-          import subprocess
-          import sys
-
-          command = [
-              'productbuild', '--timestamp=none', '--sign', sys.argv[1],
-              '--keychain', sys.argv[2], '--package', sys.argv[3], sys.argv[4]
-          ]
-          try:
-              result = subprocess.run(command, timeout=60)
-          except subprocess.TimeoutExpired as error:
-              raise SystemExit('A chave Installer ficou bloqueada no keychain por mais de 60 segundos.') from error
-          raise SystemExit(result.returncode)
-          PY
-          pkgutil --check-signature "$RUNNER_TEMP/Hook Keys macOS key-test.pkg" | grep -q 'Developer ID Installer'
-          rm -f "$RUNNER_TEMP/Hook Keys macOS key-test.pkg"
-
-          # O pacote distribuído mantém o timestamp seguro obrigatório. Cada
-          # tentativa tem watchdog próprio porque a assinatura pode ficar presa
-          # indefinidamente quando o serviço de timestamp da Apple oscila.
+          # O teste da chave já ocorreu com um PKG mínimo, antes do build.
+          # Este pacote final nunca é assinado sem timestamp. O watchdog
+          # também encerra os helpers, evitando tentativas órfãs concorrentes.
           SIGNED_PKG='build/release/Hook Keys macOS.pkg'
           SIGNED=false
           for ATTEMPT in 1 2 3; do
             echo "Tentativa $ATTEMPT de 3 com timestamp seguro..."
             rm -f "$SIGNED_PKG"
-            if python3 - "$HOOK_KEYS_INSTALLER_IDENTITY" "$HOOK_KEYS_KEYCHAIN_PATH" \
-              "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg" "$SIGNED_PKG" <<'PY'
-          import subprocess
-          import sys
-
-          command = [
-              'productbuild', '--timestamp', '--sign', sys.argv[1],
-              '--keychain', sys.argv[2], '--package', sys.argv[3], sys.argv[4]
-          ]
-          try:
-              result = subprocess.run(command, timeout=120)
-          except subprocess.TimeoutExpired:
-              raise SystemExit(124)
-          raise SystemExit(result.returncode)
-          PY
+            if node scripts/macos-pkg-sign.mjs release \
+              "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg" "$SIGNED_PKG"
             then
               SIGNED=true
               break
@@ -260,11 +255,19 @@ jobs:
             echo "A tentativa $ATTEMPT não concluiu; o productbuild será executado novamente."
             sleep 10
           done
-          test "$SIGNED" = true || { echo 'Não foi possível obter o timestamp seguro da Apple após 3 tentativas.'; exit 1; }
+          test "$SIGNED" = true || { echo 'Não foi possível assinar o PKG com timestamp seguro após 3 tentativas. Confira a saída do productbuild e o diagnóstico.'; exit 1; }
           PKG_SIGNATURE="$(pkgutil --check-signature 'build/release/Hook Keys macOS.pkg')"
           printf '%s\n' "$PKG_SIGNATURE"
           grep -q 'Developer ID Installer' <<< "$PKG_SIGNATURE"
           grep -q 'Signed with a trusted timestamp' <<< "$PKG_SIGNATURE"
+
+      - name: Guardar diagnóstico de assinatura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Signing-Diagnostics-Hook-Keys-macOS
+          path: ${{ runner.temp }}/hook-keys-signing-diagnostics/
+          if-no-files-found: ignore
 
       - name: Notarizar PKG
         timeout-minutes: 30
