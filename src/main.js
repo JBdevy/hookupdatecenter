@@ -894,6 +894,47 @@ function assertCurrentLicenseSession(revision) {
   }
 }
 
+function persistLicenseDeviceLogin({ revision, result, email, fallbackDocument = '', previousLicense = {} }) {
+  assertCurrentLicenseSession(revision);
+  if (result?.ok !== true) throw new Error(result?.message || 'Não foi possível entrar.');
+  licenseSessionRevision += 1;
+  const cleanEmail = normalizeEmail(result.email || email);
+  const resultDocument = splitDocument(result.document || result.cpf || result.cnpj || fallbackDocument);
+  const accountChanged = normalizeEmail(previousLicense.email) !== cleanEmail;
+  const accountLicense = accountChanged ? {} : previousLicense;
+  if (accountChanged || !result.active) removeLocalLicense();
+  if (result.active) saveSignedLicenseToken(result.licenseToken);
+  const nextLicense = {
+    ...accountLicense,
+    cpf:resultDocument.cpf,
+    cnpj:resultDocument.cnpj,
+    document:resultDocument.document,
+    email:cleanEmail,
+    machineId:result.machineId || accountLicense.machineId || '',
+    active:!!result.active,
+    devicesUsed:result.devicesUsed ?? accountLicense.devicesUsed ?? 0,
+    maxDevices:result.maxDevices ?? accountLicense.maxDevices ?? 0,
+    devices:Array.isArray(result.devices) ? result.devices : [],
+    planType:result.planType || accountLicense.planType || 'none',
+    planLabel:result.planLabel || accountLicense.planLabel || '',
+    billingPeriod:result.billingPeriod || accountLicense.billingPeriod || '',
+    subscriptionOverdue:result.subscriptionOverdue === true,
+    subscriptionStatus:result.subscriptionStatus || '',
+    subscriptionGraceUntil:result.subscriptionGraceUntil || '',
+    message:result.message || '',
+    warning:result.warning || '',
+    reason:result.reason || '',
+    lastStatusAt:new Date().toISOString()
+  };
+  store.set('deviceLoginEmail', cleanEmail);
+  store.set('deviceLoginName', String(result.name || '').trim());
+  store.set('deviceLoginAt', new Date().toISOString());
+  store.set('deviceLoggedOut', false);
+  store.set('license', nextLicense);
+  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
+  return { ok:true, result, state:getAppState() };
+}
+
 async function loginLicenseDevices(payload = {}) {
   const revision = ++licenseSessionRevision;
   const license = store.get('license') || {}
@@ -919,42 +960,65 @@ async function loginLicenseDevices(payload = {}) {
       clockStateVersion:1
     })
   })
+  return persistLicenseDeviceLogin({
+    revision,
+    result:{ ...result, machineId:result.machineId || machineId },
+    email:cleanEmail,
+    fallbackDocument:loginDocument.document,
+    previousLicense:license
+  });
+}
+
+async function requestLicenseLoginCode(payload = {}) {
+  const revision = licenseSessionRevision;
+  const cleanEmail = normalizeEmail(payload?.email);
+  if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.');
+  const machineId = normalizeMachineId((store.get('license') || {}).machineId || await getMachineId());
+  const deviceFingerprint = await getDeviceFingerprint();
+  const result = await fetchJson(`${BACKEND_URL}/api/license/login/code/request`, {
+    method:'POST',
+    body:JSON.stringify({
+      email:cleanEmail,
+      machineId,
+      deviceFingerprint,
+      platform:process.platform,
+      computerName:getStoredDeviceName()
+    })
+  });
   assertCurrentLicenseSession(revision);
-  if (result.ok !== true) throw new Error(result.message || 'Não foi possível entrar.');
-  licenseSessionRevision += 1;
-  const accountChanged = normalizeEmail(license.email) !== normalizeEmail(result.email || cleanEmail);
-  const accountLicense = accountChanged ? {} : license;
-  if (accountChanged || !result.active) removeLocalLicense();
-  if (result.active) saveSignedLicenseToken(result.licenseToken)
-  const nextLicense = {
-    ...accountLicense,
-    cpf: result.cpf || loginDocument.cpf,
-    cnpj: result.cnpj || loginDocument.cnpj,
-    document: result.document || loginDocument.document,
-    email: result.email || cleanEmail,
-    machineId,
-    active: !!result.active,
-    devicesUsed: result.devicesUsed ?? accountLicense.devicesUsed ?? 0,
-    maxDevices: result.maxDevices ?? accountLicense.maxDevices ?? 0,
-    devices: Array.isArray(result.devices) ? result.devices : [],
-    planType: result.planType || accountLicense.planType || 'none',
-    planLabel: result.planLabel || accountLicense.planLabel || '',
-    billingPeriod: result.billingPeriod || accountLicense.billingPeriod || '',
-    subscriptionOverdue: result.subscriptionOverdue === true,
-    subscriptionStatus: result.subscriptionStatus || '',
-    subscriptionGraceUntil: result.subscriptionGraceUntil || '',
-    message: result.message || '',
-    warning: result.warning || '',
-    reason: result.reason || '',
-    lastStatusAt: new Date().toISOString()
-  }
-  store.set('deviceLoginEmail', result.email || cleanEmail)
-  store.set('deviceLoginName', String(result.name || '').trim())
-  store.set('deviceLoginAt', new Date().toISOString())
-  store.set('deviceLoggedOut', false)
-  store.set('license', nextLicense)
-  if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState())
-  return { ok:true, result, state:getAppState() }
+  return result;
+}
+
+async function verifyLicenseLoginCode(payload = {}) {
+  const revision = ++licenseSessionRevision;
+  const license = store.get('license') || {};
+  const cleanEmail = normalizeEmail(payload?.email);
+  const challengeId = String(payload?.challengeId || '').trim();
+  const verificationCode = String(payload?.verificationCode || payload?.code || '').replace(/\D/g, '').slice(0, 6);
+  if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.');
+  if (!challengeId || verificationCode.length !== 6) throw new Error('Digite o código de 6 dígitos enviado por e-mail.');
+  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const deviceFingerprint = await getDeviceFingerprint();
+  const result = await fetchJson(`${BACKEND_URL}/api/license/login/code/verify`, {
+    method:'POST',
+    body:JSON.stringify({
+      email:cleanEmail,
+      challengeId,
+      verificationCode,
+      machineId,
+      deviceFingerprint,
+      platform:process.platform,
+      computerName:getStoredDeviceName(),
+      licenseToken:readSignedLicenseToken(),
+      clockStateVersion:1
+    })
+  });
+  return persistLicenseDeviceLogin({
+    revision,
+    result:{ ...result, machineId:result.machineId || machineId },
+    email:cleanEmail,
+    previousLicense:license
+  });
 }
 
 async function logoutLicenseDevices() {
@@ -9756,6 +9820,8 @@ ipcMain.handle('set-device-name', (_event, payload) => {
   return { ok: true, deviceName, state: getAppState() }
 });
 ipcMain.handle('login-license-devices', async (_event, payload) => loginLicenseDevices(payload || {}));
+ipcMain.handle('request-license-login-code', async (_event, payload) => requestLicenseLoginCode(payload || {}));
+ipcMain.handle('verify-license-login-code', async (_event, payload) => verifyLicenseLoginCode(payload || {}));
 ipcMain.handle('logout-license-devices', () => logoutLicenseDevices());
 ipcMain.handle('remove-license-device', async (_event, payload) => removeLicenseDevice(payload || {}));
 ipcMain.handle('activate-license', async (_event, payload) => {

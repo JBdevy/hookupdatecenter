@@ -25,10 +25,23 @@
       <form id="accountLoginForm" class="account-login-form" novalidate>
         <label for="accountLoginEmail">E-mail</label>
         <input id="accountLoginEmail" type="email" inputmode="email" placeholder="cliente@email.com" autocomplete="email" spellcheck="false" />
-        <label for="accountLoginDocument">CPF ou CNPJ</label>
-        <input id="accountLoginDocument" type="password" inputmode="numeric" maxlength="18" placeholder="CPF ou CNPJ" autocomplete="off" />
-        <p class="account-login-hint">Use o mesmo e-mail e CPF ou CNPJ informados na compra.</p>
-        <button id="accountLoginButton" class="primary-button" type="submit">Entrar</button>
+        <div id="accountDocumentLoginFields" class="account-document-login-fields">
+          <label for="accountLoginDocument">CPF ou CNPJ</label>
+          <input id="accountLoginDocument" type="password" inputmode="numeric" maxlength="18" placeholder="CPF ou CNPJ" autocomplete="off" />
+          <p class="account-login-hint">Use o mesmo e-mail e CPF ou CNPJ informados na compra.</p>
+          <button id="accountLoginButton" class="primary-button" type="submit">Entrar</button>
+          <button id="accountLoginCodeButton" class="secondary-button account-login-code-button" type="button">Entrar com código</button>
+        </div>
+        <div id="accountLoginCodeStep" class="account-login-code-step hidden" aria-hidden="true">
+          <label for="accountLoginCode">Código recebido no e-mail</label>
+          <input id="accountLoginCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />
+          <p id="accountLoginCodeHint" class="account-login-hint">Digite o código de 6 dígitos.</p>
+          <button id="accountLoginCodeConfirmButton" class="primary-button" type="button">Confirmar código</button>
+          <div class="account-login-code-actions">
+            <button id="accountLoginCodeResendButton" class="secondary-button" type="button">Reenviar código</button>
+            <button id="accountLoginCodeBackButton" class="secondary-button" type="button">Voltar</button>
+          </div>
+        </div>
         <p id="accountLoginMessage" class="account-login-message" role="alert" aria-live="polite"></p>
       </form>
     </div>
@@ -279,31 +292,14 @@
           <div>
             <p class="eyebrow">Licença VS Hook</p>
             <h1>Dispositivos</h1>
-            <p class="muted">O acesso usa o e-mail e o CPF ou CNPJ informados na compra.</p>
+            <p class="muted">Gerencie os computadores da conta que já está conectada.</p>
           </div>
         </div>
 
         <div class="device-layout-grid">
           <div class="card">
-            <h2>Login da compra</h2>
-            <label>
-              E-mail usado na compra
-              <span class="purchase-field">
-                <input id="devicesEmailInput" type="password" placeholder="cliente@email.com" autocomplete="off" />
-                <button class="purchase-field-toggle" type="button" data-sensitive-input="devicesEmailInput" data-visible-type="email" aria-label="Mostrar e-mail" aria-pressed="false" title="Mostrar e-mail">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
-                </button>
-              </span>
-            </label>
-            <label>
-              CPF ou CNPJ usado na compra
-              <span class="purchase-field">
-                <input id="devicesDocumentInput" type="password" inputmode="numeric" maxlength="18" placeholder="CPF ou CNPJ" autocomplete="off" />
-                <button class="purchase-field-toggle" type="button" data-sensitive-input="devicesDocumentInput" data-visible-type="text" aria-label="Mostrar CPF ou CNPJ" aria-pressed="false" title="Mostrar CPF ou CNPJ">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.8"/><path class="purchase-field-eye-slash" d="M4 4 20 20"/></svg>
-                </button>
-              </span>
-            </label>
+            <h2>Conta conectada</h2>
+            <p id="devicesAccountEmail" class="muted">--</p>
             <label>
               Nome deste dispositivo
               <input id="devicesNameInput" type="text" placeholder="Ex.: Notebook palco" autocomplete="off" />
@@ -317,7 +313,6 @@
               <div id="chatCustomerNameMessage" class="license-message muted"></div>
             </div>
             <div class="actions">
-              <button id="devicesLoginButton" class="primary-button" type="button">Entrar</button>
               <button id="devicesLogoutButton" class="secondary-button account-logout-button" type="button">Sair</button>
               <button id="saveDeviceNameButton" class="secondary-button" type="button">Salvar nome</button>
             </div>

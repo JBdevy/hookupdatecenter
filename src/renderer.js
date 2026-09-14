@@ -89,6 +89,8 @@ let accountLoginBusy = false;
 let accountLoginTransitionActive = false;
 let accountWelcomeTimer = 0;
 let accountAccessRevision = 0;
+let accountLoginCodeChallengeId = '';
+let accountLoginCodeEmail = '';
 const chatHookMessagesById = new Map();
 
 function loginDocumentDigits(value) {
@@ -128,15 +130,47 @@ function accountWelcomeName(value) {
 function setAccountLoginBusy(busy) {
   accountLoginBusy = busy;
   const gateButton = $('#accountLoginButton');
-  const devicesButton = $('#devicesLoginButton');
+  const codeEntryButton = $('#accountLoginCodeButton');
+  const codeConfirmButton = $('#accountLoginCodeConfirmButton');
+  const codeResendButton = $('#accountLoginCodeResendButton');
+  const codeBackButton = $('#accountLoginCodeBackButton');
   if (gateButton) {
     gateButton.disabled = busy;
     gateButton.textContent = busy ? 'Entrando...' : 'Entrar';
   }
-  if (devicesButton) {
-    devicesButton.disabled = busy;
-    devicesButton.textContent = busy ? 'Entrando...' : 'Entrar';
+  if (codeEntryButton) codeEntryButton.disabled = busy;
+  if (codeConfirmButton) {
+    codeConfirmButton.disabled = busy;
+    codeConfirmButton.textContent = busy ? 'Confirmando...' : 'Confirmar código';
   }
+  if (codeResendButton) codeResendButton.disabled = busy;
+  if (codeBackButton) codeBackButton.disabled = busy;
+}
+
+function setAccountLoginCodeMode(active, details = {}) {
+  const documentFields = $('#accountDocumentLoginFields');
+  const codeStep = $('#accountLoginCodeStep');
+  const emailInput = $('#accountLoginEmail');
+  const codeInput = $('#accountLoginCode');
+  const codeHint = $('#accountLoginCodeHint');
+  documentFields?.classList.toggle('hidden', active);
+  codeStep?.classList.toggle('hidden', !active);
+  codeStep?.setAttribute('aria-hidden', String(!active));
+  if (emailInput) emailInput.readOnly = active;
+  if (!active) {
+    accountLoginCodeChallengeId = '';
+    accountLoginCodeEmail = '';
+    if (codeInput) codeInput.value = '';
+    return;
+  }
+  if (details.challengeId) {
+    const nextChallengeId = String(details.challengeId);
+    if (nextChallengeId !== accountLoginCodeChallengeId && codeInput) codeInput.value = '';
+    accountLoginCodeChallengeId = nextChallengeId;
+  }
+  if (details.email) accountLoginCodeEmail = String(details.email).trim();
+  if (codeHint) codeHint.textContent = details.message || 'Digite o código de 6 dígitos enviado ao seu e-mail.';
+  setTimeout(() => codeInput?.focus(), 50);
 }
 
 function syncAccountAccessState(nextState = state) {
@@ -229,11 +263,52 @@ async function performAccountLogin(email, document) {
   }
 }
 
+async function performAccountCodeLogin(email, challengeId, code) {
+  const cleanEmail = String(email || '').trim();
+  const cleanCode = String(code || '').replace(/\D/g, '').slice(0, 6);
+  if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.');
+  if (!challengeId || cleanCode.length !== 6) throw new Error('Digite o código de 6 dígitos enviado por e-mail.');
+  if (accountLoginBusy) return null;
+
+  const revision = ++accountAccessRevision;
+  setAccountLoginBusy(true);
+  accountLoginTransitionActive = true;
+  try {
+    const result = await window.hookUpdateCenter.verifyLicenseLoginCode({
+      email:cleanEmail,
+      challengeId,
+      verificationCode:cleanCode
+    });
+    const nextState = result.state || await window.hookUpdateCenter.getState();
+    if (revision !== accountAccessRevision) return null;
+    renderState(nextState);
+    await showAccountWelcome(result?.result?.name || nextState?.deviceLoginName, result?.result?.email || cleanEmail);
+    if (revision !== accountAccessRevision) return null;
+    setAccountLoginCodeMode(false);
+    accountLoginTransitionActive = false;
+    syncAccountAccessState(state);
+    return result;
+  } catch (error) {
+    if (revision !== accountAccessRevision) return null;
+    accountLoginTransitionActive = false;
+    syncAccountAccessState(state);
+    throw error;
+  } finally {
+    setAccountLoginBusy(false);
+  }
+}
+
 function setupAccountAccess() {
   setupLoginDocumentInput($('#accountLoginDocument'));
-  setupLoginDocumentInput($('#devicesDocumentInput'));
+  $('#accountLoginCode')?.addEventListener('input', (event) => {
+    event.currentTarget.value = String(event.currentTarget.value || '').replace(/\D/g, '').slice(0, 6);
+  });
   $('#accountLoginForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (accountLoginCodeChallengeId) {
+      $('#accountLoginCodeConfirmButton')?.click();
+      return;
+    }
     const message = $('#accountLoginMessage');
     const input = $('#accountLoginEmail');
     if (message) message.textContent = '';
@@ -250,6 +325,62 @@ function setupAccountAccess() {
     }
   });
 
+  const requestCode = async () => {
+    if (accountLoginBusy) return;
+    const message = $('#accountLoginMessage');
+    const emailInput = $('#accountLoginEmail');
+    const email = String(emailInput?.value || accountLoginCodeEmail || '').trim();
+    if (!email || !email.includes('@')) {
+      if (message) message.textContent = 'Digite o e-mail usado na compra.';
+      emailInput?.focus();
+      return;
+    }
+    if (message) message.textContent = 'Enviando código...';
+    setAccountLoginBusy(true);
+    try {
+      const result = await window.hookUpdateCenter.requestLicenseLoginCode({ email });
+      setAccountLoginCodeMode(true, {
+        challengeId:result.challengeId,
+        email,
+        message:result.message || `Enviamos um código para ${result.maskedEmail || 'seu e-mail'}.`
+      });
+      if (message) message.textContent = '';
+    } catch (error) {
+      if (message) message.textContent = friendlyError(error, 'Não foi possível enviar o código. Tente novamente.');
+      if (!accountLoginCodeChallengeId) emailInput?.focus();
+    } finally {
+      setAccountLoginBusy(false);
+    }
+  };
+
+  $('#accountLoginCodeButton')?.addEventListener('click', requestCode);
+  $('#accountLoginCodeResendButton')?.addEventListener('click', requestCode);
+  $('#accountLoginCodeBackButton')?.addEventListener('click', () => {
+    if (accountLoginBusy) return;
+    setAccountLoginCodeMode(false);
+    if ($('#accountLoginMessage')) $('#accountLoginMessage').textContent = '';
+    setTimeout(() => $('#accountLoginDocument')?.focus(), 30);
+  });
+  $('#accountLoginCodeConfirmButton')?.addEventListener('click', async () => {
+    const message = $('#accountLoginMessage');
+    if (message) message.textContent = '';
+    try {
+      const result = await performAccountCodeLogin(
+        accountLoginCodeEmail || $('#accountLoginEmail')?.value || '',
+        accountLoginCodeChallengeId,
+        $('#accountLoginCode')?.value || ''
+      );
+      if (!result) return;
+      if (result?.result?.reason === 'device_limit') {
+        setView('devices');
+        showModal({ title:'Remova 1 dispositivo', message:result.result.message || 'Remova 1 dispositivo primeiro.', type:'error' });
+      }
+    } catch (error) {
+      if (message) message.textContent = friendlyError(error, 'Não foi possível confirmar o código.');
+      $('#accountLoginCode')?.focus();
+    }
+  });
+
   $('#devicesLogoutButton')?.addEventListener('click', async () => {
     accountAccessRevision += 1;
     accountLoginTransitionActive = false;
@@ -263,7 +394,7 @@ function setupAccountAccess() {
       const loginInput = $('#accountLoginEmail');
       if (loginInput) loginInput.value = '';
       if ($('#accountLoginDocument')) $('#accountLoginDocument').value = '';
-      if ($('#devicesDocumentInput')) $('#devicesDocumentInput').value = '';
+      setAccountLoginCodeMode(false);
       if ($('#accountLoginMessage')) $('#accountLoginMessage').textContent = '';
       setView('home');
       renderState(result.state || await window.hookUpdateCenter.getState());
@@ -472,6 +603,18 @@ function friendlyError(error, fallback) {
     'codigo expirou',
     'código bloqueado',
     'codigo bloqueado',
+    'digite o código de 6 dígitos',
+    'digite o codigo de 6 digitos',
+    'não encontramos uma compra para este e-mail',
+    'nao encontramos uma compra para este e-mail',
+    'o envio do código',
+    'o envio do codigo',
+    'não foi possível enviar o código',
+    'nao foi possivel enviar o codigo',
+    'muitos códigos',
+    'muitos codigos',
+    'não pertence a este computador',
+    'nao pertence a este computador',
     'escolha uma imagem',
     'a imagem deve ter no máximo',
     'a imagem deve ter no maximo',
@@ -5802,10 +5945,9 @@ function renderDevices() {
   const devices = getLicenseDevices()
   const email = license.email || state.deviceLoginEmail || ''
   const deviceName = state.deviceName || ''
-  const devicesEmailInput = $('#devicesEmailInput')
   const devicesNameInput = $('#devicesNameInput')
   const deviceNameInlineInput = $('#deviceNameInlineInput')
-  if (devicesEmailInput && !devicesEmailInput.value) devicesEmailInput.value = email
+  if ($('#devicesAccountEmail')) $('#devicesAccountEmail').textContent = email || 'Conta autenticada'
   if (devicesNameInput) devicesNameInput.value = deviceName
   if (deviceNameInlineInput) deviceNameInlineInput.value = deviceName
   if ($('#devicesUsedText')) $('#devicesUsedText').textContent = String(license.devicesUsed ?? devices.length ?? '--')
@@ -6886,21 +7028,6 @@ async function init() {
       const result = await window.hookUpdateCenter.setDeviceName({ deviceName: value })
       renderState(result.state || await window.hookUpdateCenter.getState())
       $('#devicesMessage').textContent = 'Nome do dispositivo salvo.'
-    } catch (error) {
-      showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
-    }
-  });
-
-  $('#devicesLoginButton')?.addEventListener('click', async () => {
-    try {
-      const result = await performAccountLogin(
-        $('#devicesEmailInput')?.value || '',
-        $('#devicesDocumentInput')?.value || ''
-      )
-      if (!result) return
-      const msg = result?.result?.message || 'Login realizado.'
-      $('#devicesMessage').textContent = msg
-      if (result?.result?.reason === 'device_limit') showModal({ title:'Remova 1 dispositivo', message:msg, type:'error' })
     } catch (error) {
       showModal({ title:'Dispositivos', message:friendlyError(error, 'Ocorreu um erro. Contate o suporte.'), type:'error' })
     }

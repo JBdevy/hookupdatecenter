@@ -10642,6 +10642,12 @@ body.account-locked .app-shell {
   text-align: left;
 }
 
+.account-document-login-fields,
+.account-login-code-step {
+  display: grid;
+  gap: 10px;
+}
+
 .account-login-form label {
   color: rgba(255,255,255,.72);
   font-size: 12px;
@@ -10691,6 +10697,33 @@ body.account-locked .app-shell {
 .account-login-form .primary-button:hover:not(:disabled) {
   filter: brightness(1.08);
   transform: translateY(-1px);
+}
+
+.account-login-code-button {
+  width: 100%;
+  min-height: 43px;
+  border-color: rgba(255, 145, 42, .42);
+  color: #fff;
+  background: rgba(255, 128, 29, .08);
+}
+
+.account-login-code-step input {
+  text-align: center;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: .22em;
+}
+
+.account-login-code-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.account-login-code-actions .secondary-button {
+  min-height: 40px;
+  padding: 8px 10px;
 }
 
 .account-login-message {
