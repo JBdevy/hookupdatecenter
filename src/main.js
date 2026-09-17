@@ -1045,7 +1045,6 @@ async function removeLicenseDevice(payload = {}, emailOverride = '') {
   const cleanEmail = normalizeEmail(request.email || emailOverride || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
   const loginDocument = splitDocument(license.document || license.cpf || license.cnpj || '')
-  if (!loginDocument.cpf && !loginDocument.cnpj) throw new Error('Entre com seu e-mail e CPF ou CNPJ para continuar.')
   if (!removeMachineId) throw new Error('Dispositivo inválido.')
   const deviceFingerprint = await getDeviceFingerprint()
   const result = await fetchJson(`${BACKEND_URL}/api/license/remove-device`, {
@@ -1060,13 +1059,22 @@ async function removeLicenseDevice(payload = {}, emailOverride = '') {
       deviceFingerprint,
       platform:process.platform,
       computerName:getStoredDeviceName(),
+      challengeId:String(request.challengeId || ''),
+      verificationCode:String(request.verificationCode || ''),
       clockStateVersion:1
     })
   })
   assertCurrentLicenseSession(revision);
+  if (result.verificationRequired === true) {
+    return { ok:true, verificationRequired:true, result, state:getAppState() }
+  }
   if (result.ok !== true) throw new Error(result.message || 'Não foi possível remover o dispositivo.')
+  const resultDocument = splitDocument(result.document || result.cpf || result.cnpj || loginDocument.document)
   const nextLicense = {
     ...license,
+    cpf:resultDocument.cpf,
+    cnpj:resultDocument.cnpj,
+    document:resultDocument.document,
     email: result.email || cleanEmail,
     machineId,
     active: !!result.active,

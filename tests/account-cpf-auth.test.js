@@ -15,12 +15,16 @@ assert.match(html, /id="accountLoginDocument"/);
 assert.match(html, /id="accountLoginCodeButton"[^>]*>Entrar com código</);
 assert.match(html, /id="accountLoginCode"[^>]*autocomplete="one-time-code"/);
 assert.match(html, /id="accountLoginCodeConfirmButton"/);
+assert.match(html, /id="licenseEmailCodeModal"/);
+assert.match(html, /id="licenseEmailCodeInput"[^>]*autocomplete="one-time-code"/);
 assert.doesNotMatch(html, /id="devicesDocumentInput"|id="devicesLoginButton"/);
 assert.match(html, /id="devicesAccountEmail"/);
 assert.match(renderer, /performAccountLogin\(email, document\)/);
 assert.match(renderer, /performAccountCodeLogin\(email, challengeId, code\)/);
 assert.match(renderer, /requestLicenseLoginCode\(\{ email \}\)/);
 assert.match(renderer, /verifyLicenseLoginCode\(\{/);
+assert.match(renderer, /runEmailVerifiedLicenseAction/);
+assert.match(renderer, /removeLicenseDevice\(\{ machineId, \.\.\.verification \}\)/);
 assert.match(renderer, /!\[11, 14\]\.includes\(cleanDocument\.length\)/);
 assert.doesNotMatch(renderer, /devicesDocumentInput|devicesLoginButton/);
 assert.match(preload, /requestLicenseLoginCode:.*request-license-login-code/);
@@ -41,7 +45,12 @@ const removalStart = main.indexOf('async function removeLicenseDevice');
 const removalEnd = main.indexOf('const LICENSE_SHARD_FILES', removalStart);
 assert.notEqual(removalStart, -1);
 assert.notEqual(removalEnd, -1);
-assert.doesNotMatch(main.slice(removalStart, removalEnd), /verificationCode|challengeId/);
+const removal = main.slice(removalStart, removalEnd);
+assert.match(removal, /challengeId:String\(request\.challengeId \|\| ''\)/);
+assert.match(removal, /verificationCode:String\(request\.verificationCode \|\| ''\)/);
+assert.match(removal, /result\.verificationRequired === true/);
+assert.match(removal, /result\.document \|\| result\.cpf \|\| result\.cnpj/);
+assert.doesNotMatch(removal, /if \(!loginDocument\.cpf && !loginDocument\.cnpj\) throw/);
 
 const formatterStart = renderer.indexOf('function loginDocumentDigits');
 const formatterEnd = renderer.indexOf('function setupLoginDocumentInput', formatterStart);
@@ -52,4 +61,4 @@ vm.runInNewContext(`${renderer.slice(formatterStart, formatterEnd)}\nthis.format
 assert.equal(formatterContext.formatLoginDocument('07843249567'), '078.432.495-67');
 assert.equal(formatterContext.formatLoginDocument('04252011000110'), '04.252.011/0001-10');
 
-console.log('HOOK_CENTER_ACCOUNT_AUTH_OK: login principal usa e-mail + CPF/CNPJ, código é alternativo e ativação/remoção não pedem nova confirmação.');
+console.log('HOOK_CENTER_ACCOUNT_AUTH_OK: login novo usa CPF/CNPJ; contas antigas removem dispositivos com confirmação por código.');

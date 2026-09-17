@@ -173,6 +173,145 @@ function setAccountLoginCodeMode(active, details = {}) {
   setTimeout(() => codeInput?.focus(), 50);
 }
 
+function emailVerificationPayload(response) {
+  const candidate = response?.result?.verificationRequired === true ? response.result : response;
+  return candidate?.verificationRequired === true ? candidate : null;
+}
+
+function promptLicenseEmailCode({ title, verification, errorMessage = '', resendAt = 0, retryAt = 0 }) {
+  return new Promise((resolve) => {
+    const backdrop = $('#licenseEmailCodeModal');
+    const input = $('#licenseEmailCodeInput');
+    const confirmButton = $('#licenseEmailCodeConfirm');
+    const cancelButton = $('#licenseEmailCodeCancel');
+    const resendButton = $('#licenseEmailCodeResend');
+    const error = $('#licenseEmailCodeError');
+    if (!backdrop || !input || !confirmButton || !cancelButton || !resendButton || !error) {
+      resolve({ action:'cancel' });
+      return;
+    }
+
+    $('#licenseEmailCodeTitle').textContent = title || 'Digite o código';
+    $('#licenseEmailCodeMessage').textContent = verification?.ok === false
+      ? 'Digite o código de 6 dígitos enviado para o e-mail da compra.'
+      : (verification?.message || 'Enviamos um código de 6 dígitos para o e-mail da compra.');
+    $('#licenseEmailCodeAddress').textContent = verification?.maskedEmail || '';
+    error.textContent = errorMessage || '';
+    input.value = '';
+    backdrop.classList.remove('hidden');
+
+    let countdownTimer = 0;
+    let retryFinished = false;
+    const hadRetryCooldown = retryAt > Date.now();
+    const updateCountdowns = () => {
+      const resendSeconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
+      const retrySeconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+      resendButton.disabled = resendSeconds > 0;
+      resendButton.textContent = resendSeconds > 0 ? `Reenviar (${resendSeconds}s)` : 'Reenviar';
+      input.disabled = retrySeconds > 0;
+      confirmButton.disabled = retrySeconds > 0;
+      confirmButton.textContent = retrySeconds > 0 ? `Aguarde (${retrySeconds}s)` : 'Confirmar';
+      if (retrySeconds > 0) {
+        error.textContent = `Muitas tentativas. Aguarde ${retrySeconds}s para tentar novamente.`;
+      } else if (hadRetryCooldown && !retryFinished) {
+        retryFinished = true;
+        error.textContent = 'Você já pode tentar novamente.';
+        setTimeout(() => input.focus(), 40);
+      }
+      if (!resendSeconds && !retrySeconds && countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = 0;
+      }
+    };
+    updateCountdowns();
+    if (resendAt > Date.now() || retryAt > Date.now()) countdownTimer = setInterval(updateCountdowns, 250);
+
+    const finish = (value) => {
+      if (countdownTimer) clearInterval(countdownTimer);
+      backdrop.classList.add('hidden');
+      input.oninput = null;
+      input.onkeydown = null;
+      confirmButton.onclick = null;
+      cancelButton.onclick = null;
+      resendButton.onclick = null;
+      resolve(value);
+    };
+    const confirm = () => {
+      if (retryAt > Date.now()) return;
+      const code = String(input.value || '').replace(/\D/g, '').slice(0, 6);
+      if (code.length !== 6) {
+        error.textContent = 'Digite os 6 números enviados por e-mail.';
+        input.focus();
+        return;
+      }
+      finish({ action:'confirm', code });
+    };
+    input.oninput = () => {
+      input.value = String(input.value || '').replace(/\D/g, '').slice(0, 6);
+      error.textContent = '';
+    };
+    input.onkeydown = (event) => {
+      if (event.key === 'Enter') confirm();
+      if (event.key === 'Escape') finish({ action:'cancel' });
+    };
+    confirmButton.onclick = confirm;
+    cancelButton.onclick = () => finish({ action:'cancel' });
+    resendButton.onclick = () => {
+      if (!resendButton.disabled) finish({ action:'resend' });
+    };
+    if (!input.disabled) setTimeout(() => input.focus(), 40);
+  });
+}
+
+async function runEmailVerifiedLicenseAction(operation, title) {
+  let response = await operation({});
+  let verification = emailVerificationPayload(response);
+  let resendAt = verification
+    ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
+    : 0;
+  let retryAt = verification?.reason === 'code_cooldown'
+    ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+    : 0;
+  let errorMessage = verification?.ok === false ? verification.message || '' : '';
+
+  while (verification) {
+    const answer = await promptLicenseEmailCode({ title, verification, errorMessage, resendAt, retryAt });
+    if (answer.action === 'cancel') return null;
+    if (answer.action === 'resend') {
+      try {
+        response = await operation({});
+        verification = emailVerificationPayload(response);
+        resendAt = verification
+          ? Date.now() + Math.max(0, Number(verification.resendAfterSeconds ?? 60)) * 1000
+          : 0;
+        retryAt = verification?.reason === 'code_cooldown'
+          ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+          : 0;
+        errorMessage = verification?.ok === false ? verification.message || '' : '';
+      } catch (error) {
+        errorMessage = cleanErrorMessage(error);
+      }
+      continue;
+    }
+    try {
+      response = await operation({
+        challengeId:verification.challengeId,
+        verificationCode:answer.code
+      });
+      verification = emailVerificationPayload(response);
+      retryAt = verification?.reason === 'code_cooldown'
+        ? Date.now() + Math.max(1, Number(verification.retryAfterSeconds) || 60) * 1000
+        : 0;
+      errorMessage = verification?.ok === false ? verification.message || 'Código inválido.' : '';
+    } catch (error) {
+      errorMessage = cleanErrorMessage(error);
+      const retryMatch = errorMessage.match(/aguarde\s+(\d+)s/i);
+      retryAt = retryMatch ? Date.now() + Math.max(1, Number(retryMatch[1]) || 60) * 1000 : 0;
+    }
+  }
+  return response;
+}
+
 function syncAccountAccessState(nextState = state) {
   const gate = $('#accountLoginGate');
   const welcome = $('#accountWelcomeScreen');
@@ -5982,7 +6121,13 @@ function renderDevices() {
       })
       if (!ok) return
       try {
-        const result = await window.hookUpdateCenter.removeLicenseDevice({ machineId })
+        button.disabled = true
+        button.textContent = 'Removendo...'
+        const result = await runEmailVerifiedLicenseAction(
+          (verification) => window.hookUpdateCenter.removeLicenseDevice({ machineId, ...verification }),
+          'Confirmar remoção'
+        )
+        if (!result) return
         renderState(result.state || await window.hookUpdateCenter.getState())
         $('#devicesMessage').textContent = isCurrentDevice ? 'Este computador foi removido da licença.' : 'Dispositivo removido.'
         if (isCurrentDevice) {
@@ -5990,6 +6135,11 @@ function renderDevices() {
         }
       } catch (error) {
         showModal({ title:'Dispositivos', message:friendlyError(error, 'Não foi possível remover o dispositivo. Tente novamente.'), type:'error' })
+      } finally {
+        if (button.isConnected) {
+          button.disabled = false
+          button.textContent = 'Remover'
+        }
       }
     })
   })

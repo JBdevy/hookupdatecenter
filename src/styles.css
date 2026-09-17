@@ -536,6 +536,66 @@ input:focus {
   justify-content: center;
 }
 
+.license-email-code-backdrop {
+  z-index: 13000;
+}
+
+.license-email-code-modal {
+  width: min(470px, 92vw);
+  text-align: center;
+}
+
+.license-email-code-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 12px;
+  place-items: center;
+  border: 1px solid rgba(251, 146, 60, .48);
+  border-radius: 18px;
+  background: radial-gradient(circle at 35% 30%, rgba(251, 146, 60, .34), rgba(124, 58, 237, .12));
+  color: #ffad55;
+  font-size: 27px;
+  box-shadow: 0 0 30px rgba(249, 115, 22, .18);
+}
+
+.license-email-code-modal .eyebrow {
+  margin-bottom: 5px;
+}
+
+.license-email-code-modal > p:not(.eyebrow) {
+  margin: 8px 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.license-email-code-address {
+  display: block;
+  margin: 10px 0 15px;
+  color: #ffad55;
+  font-size: 14px;
+}
+
+.license-email-code-input {
+  display: block;
+  width: min(270px, 100%);
+  height: 58px;
+  margin: 0 auto;
+  text-align: center;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: .28em;
+}
+
+.license-email-code-actions {
+  flex-wrap: wrap;
+}
+
+.license-email-code-actions .modal-button {
+  min-width: 112px;
+}
+
 .support-nav {
   border-color: rgba(255,138,42,.18);
 }
