@@ -33,6 +33,7 @@ assert.match(main, /async function requestLicenseLoginCode/);
 assert.match(main, /async function verifyLicenseLoginCode/);
 assert.match(main, /persistLicenseDeviceLogin/);
 assert.match(main, /result\.document \|\| result\.cpf \|\| result\.cnpj/);
+assert.match(main, /activationSessionToken:String\(result\.activationSessionToken \|\| ''\)\.trim\(\)/);
 assert.match(main, /const hasStoredLogin = Boolean\(storedDeviceLoginEmail \|\| license\.email\)/);
 assert.match(main, /const deviceLoggedIn = !explicitlyLoggedOut && hasStoredLogin/);
 assert.doesNotMatch(main, /accountSessionToken|ensureStoredAccountSession/);
@@ -41,6 +42,9 @@ const activationEnd = main.indexOf('function prepareForAppQuit', activationStart
 assert.notEqual(activationStart, -1);
 assert.notEqual(activationEnd, -1);
 assert.doesNotMatch(main.slice(activationStart, activationEnd), /verificationCode|challengeId/);
+assert.match(main.slice(activationStart, activationEnd), /const activationSessionToken = String\(currentLicense\.activationSessionToken \|\| ''\)\.trim\(\)/);
+assert.match(main.slice(activationStart, activationEnd), /\(!loginDocument\.cpf && !loginDocument\.cnpj\) && !activationSessionToken/);
+assert.match(main.slice(activationStart, activationEnd), /activationSessionToken,/);
 const removalStart = main.indexOf('async function removeLicenseDevice');
 const removalEnd = main.indexOf('const LICENSE_SHARD_FILES', removalStart);
 assert.notEqual(removalStart, -1);

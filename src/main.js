@@ -911,6 +911,8 @@ function persistLicenseDeviceLogin({ revision, result, email, fallbackDocument =
     document:resultDocument.document,
     email:cleanEmail,
     machineId:result.machineId || accountLicense.machineId || '',
+    activationSessionToken:String(result.activationSessionToken || '').trim(),
+    activationSessionExpiresAt:String(result.activationSessionExpiresAt || '').trim(),
     active:!!result.active,
     devicesUsed:result.devicesUsed ?? accountLicense.devicesUsed ?? 0,
     maxDevices:result.maxDevices ?? accountLicense.maxDevices ?? 0,
@@ -9840,7 +9842,8 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   const machineId = await getMachineId();
   const deviceFingerprint = await getDeviceFingerprint();
   const computerName = getStoredDeviceName();
-  if (!email || (!loginDocument.cpf && !loginDocument.cnpj)) {
+  const activationSessionToken = String(currentLicense.activationSessionToken || '').trim();
+  if (!email || ((!loginDocument.cpf && !loginDocument.cnpj) && !activationSessionToken)) {
     throw new Error('Entre com seu e-mail e CPF ou CNPJ para continuar.');
   }
   if (!computerName) {
@@ -9858,6 +9861,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
       deviceFingerprint,
       platform:process.platform,
       computerName:getStoredDeviceName(),
+      activationSessionToken,
       clockStateVersion:1
     })
   });
