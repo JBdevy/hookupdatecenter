@@ -8972,52 +8972,6 @@ html[data-director-device="tablet"] .settingsModalBox .telepromptSettingsOption 
   font-size: 11px !important;
 }
 
-/* Meters vivos: alimentados somente enquanto Mixer ou Premix estiver visível. */
-.trackMeter {
-  display: grid;
-  grid-template-rows: repeat(2, 3px);
-  gap: 2px;
-  width: 100%;
-  min-width: 48px;
-  margin-top: 5px;
-  pointer-events: none;
-}
-
-.trackMeterLane {
-  display: block;
-  width: 100%;
-  height: 3px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #020617;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, .22);
-}
-
-.trackMeterBar {
-  display: block;
-  width: 0;
-  height: 100%;
-  border-radius: inherit;
-  background: #22c55e;
-  box-shadow: 0 0 5px rgba(34, 197, 94, .46);
-  transition: width 70ms linear, background-color 70ms linear;
-}
-
-.trackMeterWarn .trackMeterBar {
-  background: #facc15;
-  box-shadow: 0 0 5px rgba(250, 204, 21, .5);
-}
-
-.trackMeterOver .trackMeterBar {
-  background: #ef4444;
-  box-shadow: 0 0 7px rgba(239, 68, 68, .68);
-}
-
-.app[data-theme="light"] .trackMeterLane {
-  background: #cbd5e1;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .24);
-}
-
 /* VS Hook - gaveta visual sincronizada pelo Lua */
 .item.drawerFamilyMember > .drawerOutlineSides,
 .item.drawerFamilyMember > .drawerOutlineTop,
@@ -11987,4 +11941,52 @@ html[data-director-device="phone"] .timerKeyboard .tabletSearchKey,
 .directorTpWorkspace[data-list-open="1"][data-parts-open="1"] .directorTpLocalClock {
   left: auto !important;
   right: 4px !important;
+}
+
+/* Editor flutuante do item aberto por long press ou clique direito no Grid. */
+.mixerItemModalOverlay {
+  align-items: center !important;
+  justify-content: center !important;
+  padding: max(12px, var(--vsh-safe-top)) max(12px, var(--vsh-safe-right)) max(12px, var(--vsh-safe-bottom)) max(12px, var(--vsh-safe-left)) !important;
+}
+.mixerItemModalBox {
+  width: min(92vw, 520px) !important;
+  max-width: 520px !important;
+  padding: 16px !important;
+  box-sizing: border-box !important;
+}
+.mixerItemModalTitle {
+  max-width: 360px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mixerItemModalTrack {
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 900;
+}
+.mixerItemModalControls {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+.mixerItemModalMute {
+  width: 56px !important;
+  height: 56px !important;
+  font-size: 22px !important;
+}
+.mixerItemModalSliderWrap {
+  width: 100%;
+}
+
+/* Blocos retos em todas as listas do Diretor e do modo Músicos. */
+.app .item.blockItem,
+.app .item.blockItem[data-song-id],
+.app .item.blockItem[data-region-id],
+.app .item.blockItem[data-item-id] {
+  border-radius: 0 !important;
 }

@@ -6253,6 +6253,7 @@ body.boot-loading {
 .app .item.blockItem[data-song-id],
 .app .item.blockItem[data-region-id],
 .app .item.blockItem[data-item-id]{
+  border-radius:3px!important;
   border-color:var(--block-outline-color, rgba(148,163,184,.72))!important;
   box-shadow:0 0 0 1px var(--block-outline-color, rgba(148,163,184,.72)),0 0 14px var(--block-outline-glow, rgba(148,163,184,.22)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
 }
@@ -10999,4 +11000,12 @@ html[data-director-device="phone"] .timerKeyboard .tabletSearchKey,
 .directorTpWorkspace[data-list-open="1"][data-parts-open="1"] .directorTpLocalClock {
   left: auto !important;
   right: 4px !important;
+}
+
+/* Blocos retos em todas as listas do Diretor e do modo Músicos. */
+.app .item.blockItem,
+.app .item.blockItem[data-song-id],
+.app .item.blockItem[data-region-id],
+.app .item.blockItem[data-item-id] {
+  border-radius: 0 !important;
 }
