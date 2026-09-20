@@ -14487,6 +14487,19 @@
         preserveSelection: previousTab === 'mixer',
       })
     }
+    if (tab === 'mixer') {
+      // O endpoint pesado é cacheado separadamente do snapshot. Força uma
+      // reconstrução para a seleção atual ao abrir o Mixer; uma revisão
+      // anterior vazia não pode manter o grid sem itens indefinidamente.
+      state.mixerTimelineItems = []
+      state.mixerTimelineLoaded = false
+      state.mixerTimelineLoadedRevision = ''
+      postCommand('mixer_focus', {
+        view: state.mixerView,
+        page: 'mixer',
+        selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '',
+      })
+    }
     if (swappedMusicPane || mountedMainContent) {
       if (tab !== 'mixer' && previousTab !== 'mixer') {
         state.lastHtmlSignature = getAppRenderSignature()
@@ -16413,10 +16426,10 @@
         scheduleRender(true)
         break
       }
-      case 'mixer-tracks': state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab }); break
-      case 'mixer-groups': state.mixerView = 'groups'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'groups', page: state.activeTab }); break
-      case 'mixer-master': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab }); break
-      case 'mixer-focus': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab }); break
+      case 'mixer-tracks': state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
+      case 'mixer-groups': state.mixerView = 'groups'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'groups', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
+      case 'mixer-master': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
+      case 'mixer-focus': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-list-toggle': {
         state.mixerListOpen = !state.mixerListOpen
         if (!mountMainContentInPlace()) scheduleRender(true)
@@ -17497,8 +17510,7 @@
 
   function getMixerViewportSyncPayload(viewport) {
     const grid = viewport?.querySelector?.('.mixerTabletGrid[data-mixer-timeline-start]')
-    const list = viewport?.closest?.('.mixerListBox')
-    if (!viewport || !grid || !list) return null
+    if (!viewport || !grid) return null
     const timelineStart = Number(grid.getAttribute('data-mixer-timeline-start'))
     const timelineEnd = Number(grid.getAttribute('data-mixer-timeline-end'))
     const timelineWidth = Math.max(1, grid.getBoundingClientRect().width, grid.scrollWidth)
@@ -17508,26 +17520,10 @@
       getMixerTimelineVisibleWidth(viewport) / timelineWidth))
     const arrangeStart = Math.max(timelineStart, Math.min(timelineEnd - visibleDuration,
       timelineStart + duration * (getMixerTimelineScrollLeft(viewport) / timelineWidth)))
-    const verticalScroller = getMixerTimelineScroller(viewport)
-    const payload = {
+    return {
       arrangeStart: Number(arrangeStart.toFixed(6)),
       arrangeEnd: Number(Math.min(timelineEnd, arrangeStart + visibleDuration).toFixed(6)),
-      verticalRatio: Number(((Number(verticalScroller?.scrollTop) || 0) /
-        Math.max(1, (Number(verticalScroller?.scrollHeight) || 0) -
-          (Number(verticalScroller?.clientHeight) || 0))).toFixed(6)),
     }
-    const rows = Array.from(list.querySelectorAll('.mixerTabletTrackRows > .mixerRow[data-mixer-id]'))
-    if (rows.length) {
-      let anchor = rows[0]
-      for (const row of rows) {
-        if (row.offsetTop > (Number(verticalScroller?.scrollTop) || 0) + 1) break
-        anchor = row
-      }
-      payload.anchorTrackId = String(anchor.getAttribute('data-mixer-id') || '')
-      payload.anchorOffsetRatio = Number((Math.max(0, (Number(verticalScroller?.scrollTop) || 0) - anchor.offsetTop) /
-        Math.max(1, anchor.offsetHeight)).toFixed(5))
-    }
-    return payload
   }
 
   function flushMixerViewportSync() {
