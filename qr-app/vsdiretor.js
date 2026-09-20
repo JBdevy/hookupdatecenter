@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.2-director-performance-v46'
+  const VERSION = '1.0.2-director-performance-v47'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
@@ -37,11 +37,15 @@
   const musicPaneCache = new Map()
   const musicPaneScrollState = new Map()
   const premixFullScreenCache = new Map()
+  const mixerTimelineProjectCache = new Map()
+  let mixerTimelineCatalogLoading = false
+  let mixerTimelineCatalogRetryAt = 0
   const bridgeControlStability = new Map()
   let musicPaneWarmupHandle = 0
   let appConfigColorGuardUntil = 0
   let appConfigColorPointerTarget = null
   let appConfigColorPointerAt = 0
+  let directorResumeRefreshAt = 0
 
   const state = {
     snapshot: null,
@@ -195,9 +199,17 @@
     mixerTimelineLoaded: false,
     mixerTimelineLoadedRevision: '',
     mixerTimelineLoading: false,
+    mixerTimelineCatalogLoadedRevision: '',
+    mixerTimelineCatalogEntryKey: '',
     showMixerItemModal: false,
     mixerItemTarget: '',
-    mixerListOpen: false,
+    mixerListOpen: readLocal('vshook_director_mixer_list_open', '0') === '1',
+    mixerListScrollTop: 0,
+    mixerTrackScrollTop: 0,
+    mixerTrackWidthPercent: Math.max(25, Math.min(100,
+      Number(readLocal('vshook_director_mixer_track_width', '30')) || 30)),
+    mixerListWidthPercent: Math.max(34, Math.min(75,
+      Number(readLocal('vshook_director_mixer_list_width', '34')) || 34)),
     showPremixVolume: false,
     premixVolumeTarget: null,
     showConfirmLiveOff: false,
@@ -254,11 +266,13 @@
     partsArmedOwnerTab: '',
     partsArmedOwnerStart: null,
     partsArmedOwnerEnd: null,
+    partsStableTarget: null,
     partsTakeoverSongId: '',
     partsTakeoverTab: '',
     partsTakeoverPreviousPlayingId: '',
     partsLastPlayingId: '',
     showTransportSeekModal: readLocal('vshook_director_grid_open', '0') === '1',
+    transportSeekHiddenByMixer: false,
     tabletTransportOpening: false,
     tabletPlaylistPendingId: '',
     tabletPartsSplit: readLocal('vshook_director_tablet_parts_open', '0') === '1',
@@ -302,6 +316,7 @@
     transportSeekPendingPlayingUntil: 0,
     transportSeekPauseVisualHoldPos: null,
     transportSeekPauseVisualHoldUntil: 0,
+    transportSeekLocalCursorHeld: false,
     topPlaylistTickerTitle: '',
     topPlaylistTickerStartedAt: 0,
     pendingLoop: null,
@@ -335,18 +350,27 @@
   const mixerVolumeHold = new Map()
   let mixerInlineSliderTap = null
   let mixerInlineSliderLastZeroAt = 0
+  let mixerTrackResizePointerId = null
+  let mixerTrackResizeFrame = 0
+  let mixerListResizePointerId = null
   const premixTrackVolumeHold = new Map()
   const premixItemMuteHold = new Map()
   const premixTrackSoloHold = new Map()
   const premixUniqueSoloHold = new Map()
   const premixUniqueSoloVisualRestore = new Map()
   const premixItemVolumeHold = new Map()
+  const premixItemVolumeVisualCache = new Map()
+  const premixItemVolumeLocalUntil = new Map()
   const latestVolumeCommands = new Map()
   const MIXER_MIN_DB = -90
   const MIXER_MAX_DB = 12
   const PREMIX_ITEM_MAX_DB = 24
   const MIXER_ZERO_DB_RATIO = 0.76
   const MIXER_NEGATIVE_CURVE = 1.35
+  const MIXER_TRACK_WIDTH_MIN = 25
+  const MIXER_TRACK_WIDTH_MAX = 100
+  const MIXER_LIST_WIDTH_MIN = 34
+  const MIXER_LIST_WIDTH_MAX = 75
   const VOLUME_RATIO_CONFIRM_EPSILON = 0.0015
   let nativeFamilyDrawersLastSignature = null
   let nativeFamilyDrawersLastAppliedRevision = ''
@@ -512,7 +536,7 @@
       if (state.hashRegionDrawers[key]) openDrawers[key] = true
     }
     writeLocal('vshook_director_hash_drawers', JSON.stringify(openDrawers))
-    writeLocal('vshook_director_grid_open', state.showTransportSeekModal ? '1' : '0')
+    writeLocal('vshook_director_grid_open', (state.showTransportSeekModal || state.transportSeekHiddenByMixer) ? '1' : '0')
     writeLocal('vshook_director_parts_open', state.showMarkersOverlay ? '1' : '0')
     writeLocal('vshook_director_tuner_open', state.showTunerScreen ? '1' : '0')
     writeLocal('vshook_director_bpm_open', state.showBpmScreen ? '1' : '0')
@@ -1536,6 +1560,7 @@
 
   async function loadMixerTimeline() {
     if (state.mixerTimelineLoading || state.activeTab !== 'mixer' || state.mixerView === 'master') return
+    if (applyCachedMixerTimelineProject()) return
     const requestedRevision = String(state.snapshot?.mixerTimelineRevision ?? '')
     if (!requestedRevision || requestedRevision === '0') return
     if (state.mixerTimelineLoaded &&
@@ -1561,6 +1586,91 @@
     } finally {
       abort.done()
       state.mixerTimelineLoading = false
+    }
+  }
+
+  function getActiveMixerTimelineProjectKeys(data = state.snapshot || {}) {
+    const selection = getSnapshotActiveProjectSelection(data)
+    const project = selection?.project || getActiveProject(data) || {}
+    const id = String(selection?.id || getProjectItemId(project, selection?.index || 0) || '')
+    const index = Number(selection?.index ?? project?.index ?? project?.projectIndex ?? data?.activeProjectTabIndex)
+    const path = String(project?.projectPath || data?.projectPath || '')
+    return [
+      id ? `id:${id}` : '',
+      Number.isFinite(index) ? `index:${index}` : '',
+      path ? `path:${path}` : '',
+    ].filter(Boolean)
+  }
+
+  function applyCachedMixerTimelineProject(data = state.snapshot || {}) {
+    let entry = null
+    let matchedKey = ''
+    for (const key of getActiveMixerTimelineProjectKeys(data)) {
+      const candidate = mixerTimelineProjectCache.get(key)
+      if (candidate) {
+        entry = candidate
+        matchedKey = key
+        break
+      }
+    }
+    if (!entry || !Array.isArray(entry.items)) return false
+    const entryKey = `${state.mixerTimelineCatalogLoadedRevision}:${matchedKey}:${entry.changeCount ?? ''}`
+    if (state.mixerTimelineCatalogEntryKey !== entryKey) {
+      state.mixerTimelineItems = entry.items
+      state.mixerTimelineLoaded = true
+      state.mixerTimelineLoadedRevision = `catalog:${entryKey}`
+      state.mixerTimelineCatalogEntryKey = entryKey
+      if (state.activeTab === 'mixer') {
+        state.lastHtmlSignature = ''
+        scheduleRender(true)
+      }
+    }
+    return true
+  }
+
+  async function loadMixerTimelineCatalog() {
+    const requestedRevision = String(state.snapshot?.mixerTimelineCatalogRevision ?? '')
+    if (!requestedRevision || requestedRevision === '0' || mixerTimelineCatalogLoading) return
+    if (requestedRevision === state.mixerTimelineCatalogLoadedRevision) {
+      applyCachedMixerTimelineProject()
+      return
+    }
+    if (now() < mixerTimelineCatalogRetryAt) return
+    mixerTimelineCatalogLoading = true
+    const requestBridgeRevision = bridgeTargetRevision
+    const abort = withTimeout(Math.max(POLL_TIMEOUT_MS, 6000))
+    try {
+      const response = await fetch(bridgeUrl('/mixer-timeline-cache'), {
+        cache: 'no-store', signal: abort.signal,
+      })
+      if (!response.ok) throw new Error(`mixer timeline cache ${response.status}`)
+      const payload = await response.json()
+      if (requestBridgeRevision !== bridgeTargetRevision ||
+          payload?.ok !== true || !Array.isArray(payload.projects)) return
+      mixerTimelineProjectCache.clear()
+      payload.projects.forEach((project, fallbackIndex) => {
+        if (!project || !Array.isArray(project.items)) return
+        const entry = {
+          items: project.items,
+          changeCount: project.changeCount,
+        }
+        const id = String(project.id || project.projectId || '')
+        const index = Number(project.index ?? project.projectIndex ?? fallbackIndex)
+        const path = String(project.projectPath || '')
+        if (id) mixerTimelineProjectCache.set(`id:${id}`, entry)
+        if (Number.isFinite(index)) mixerTimelineProjectCache.set(`index:${index}`, entry)
+        if (path) mixerTimelineProjectCache.set(`path:${path}`, entry)
+      })
+      state.mixerTimelineCatalogLoadedRevision = String(payload.revision ?? requestedRevision)
+      state.mixerTimelineCatalogEntryKey = ''
+      applyCachedMixerTimelineProject()
+    } catch (_) {
+      // Compatibilidade com extensões anteriores e nova tentativa em cadência
+      // baixa; nunca disputa o polling vivo do transporte.
+      mixerTimelineCatalogRetryAt = now() + 5000
+    } finally {
+      abort.done()
+      mixerTimelineCatalogLoading = false
     }
   }
 
@@ -2765,8 +2875,26 @@
   function getActivePartsRegion(data = state.snapshot) {
     const source = getEffectivePartsSongSource(data)
     const target = getPartsSongTarget(source, data)
-    if (!target.available) return null
-    return { item: target.item, start: target.start, end: target.end, id: target.id, source }
+    if (target.available) {
+      const stable = {
+        item: target.item,
+        start: target.start,
+        end: target.end,
+        id: target.id,
+        name: target.name,
+        source,
+        savedAt: now(),
+      }
+      state.partsStableTarget = stable
+      return stable
+    }
+    // No primeiro snapshot do Play, a seleção já pode ter sido limpa antes
+    // de o Bridge publicar os limites da música tocando. Mantém o mesmo alvo
+    // por essa curta transição para a lista de Parts não desaparecer e voltar.
+    const stable = state.partsStableTarget
+    if (isPartsInterfaceVisible() && isPlaying(data) && stable?.id &&
+        now() - Number(stable.savedAt || 0) <= 3000) return stable
+    return null
   }
 
   function getChildSongMarkerPositions(data = state.snapshot) {
@@ -2998,6 +3126,7 @@
   let seekClockKey = ''
   let seekClockPosSec = 0
   let seekClockAtMs = 0
+  let seekClockAwaitingBoundsKey = ''
 
   function initializeTransportSeekTargetCursor(
     target,
@@ -3024,6 +3153,7 @@
     state.transportSeekPlayVisualHoldUntil = 0
     state.transportSeekPauseVisualHoldPos = start
     state.transportSeekPauseVisualHoldUntil = sampledAt + 8000
+    state.transportSeekLocalCursorHeld = true
     seekClockKey = ''
     seekClockPosSec = start
     seekClockAtMs = sampledAt
@@ -3033,18 +3163,62 @@
     const bridgePos = getSmoothedCurrentPlaybackPosition(data, sampledAt)
     const running = isPlaying(data) && !isPaused(data)
     const key = `${getVisualPlayingId(data, sampledAt)}|${target?.id || ''}`
-    if (bridgePos === null || !running || key !== seekClockKey) {
+    const targetStartSec = Number(target?.start)
+    const targetEndSec = Number(target?.end)
+    const hasTargetBounds = Number.isFinite(targetStartSec) &&
+      Number.isFinite(targetEndSec) && targetEndSec > targetStartSec
+    const bridgeInsideTarget = !hasTargetBounds || (
+      Number(bridgePos) >= targetStartSec - 0.02 &&
+      Number(bridgePos) < targetEndSec - 0.001
+    )
+    if (bridgePos === null || !running) {
       seekClockKey = key
+      seekClockAwaitingBoundsKey = ''
       seekClockPosSec = bridgePos === null ? 0 : bridgePos
       seekClockAtMs = sampledAt
       return bridgePos
     }
+    if (key !== seekClockKey) {
+      seekClockKey = key
+      seekClockAtMs = sampledAt
+      // O ID novo pode chegar antes da posição nova. Se usarmos a posição da
+      // música anterior, ela é limitada no fim do alvo e a agulha vai e volta.
+      if (hasTargetBounds && !bridgeInsideTarget) {
+        seekClockAwaitingBoundsKey = key
+        seekClockPosSec = targetStartSec
+        return targetStartSec
+      }
+      seekClockAwaitingBoundsKey = ''
+      seekClockPosSec = bridgePos
+      return bridgePos
+    }
+    if (seekClockAwaitingBoundsKey === key) {
+      seekClockAtMs = sampledAt
+      if (hasTargetBounds && !bridgeInsideTarget) {
+        seekClockPosSec = targetStartSec
+        return targetStartSec
+      }
+      seekClockAwaitingBoundsKey = ''
+      seekClockPosSec = bridgePos
+      return bridgePos
+    }
     const elapsedSec = Math.max(0, Number(sampledAt) - seekClockAtMs) / 1000
     seekClockAtMs = sampledAt
-    let next = seekClockPosSec + elapsedSec
+    const previous = seekClockPosSec
+    let next = previous + elapsedSec
     const error = bridgePos - next
-    if (Math.abs(error) >= SEEK_CLOCK_SNAP_SEC) next = bridgePos
-    else next += error * Math.min(1, elapsedSec / SEEK_CLOCK_EASE_SEC)
+    const targetStart = Number(target?.start)
+    const targetEnd = Number(target?.end)
+    const targetDuration = targetEnd - targetStart
+    const loopWrapped = Number.isFinite(targetStart) && Number.isFinite(targetEnd) && targetDuration > 0 &&
+      previous >= targetEnd - Math.min(1, targetDuration * .08) &&
+      bridgePos <= targetStart + Math.min(1, targetDuration * .08)
+    if (loopWrapped) next = bridgePos
+    else if (error >= SEEK_CLOCK_SNAP_SEC) next = bridgePos
+    else if (error > 0) next += error * Math.min(1, elapsedSec / SEEK_CLOCK_EASE_SEC)
+    // Um snapshot atrasado nunca pode empurrar a agulha para trás durante a
+    // mesma reprodução. A única exceção é a volta real de um loop.
+    if (!loopWrapped) next = Math.max(previous, next)
     seekClockPosSec = next
     return seekClockPosSec
   }
@@ -3084,13 +3258,11 @@
         ? state.transportSeekCursorPos
         : (() => {
             const bridgeCursor = firstFiniteNumber([data?.editCursorPosition, data?.cursorPosition, data?.currentPosition, data?.position])
-            const pauseHold = Number(state.transportSeekPauseVisualHoldPos)
-            if (Number.isFinite(pauseHold) && sampledAt < Number(state.transportSeekPauseVisualHoldUntil || 0)) {
-              if (Number.isFinite(Number(bridgeCursor)) && Math.abs(Number(bridgeCursor) - pauseHold) <= 0.25) {
-                state.transportSeekPauseVisualHoldPos = null
-                state.transportSeekPauseVisualHoldUntil = 0
-                return bridgeCursor
-              }
+            const hasPauseHold = state.transportSeekPauseVisualHoldPos !== null &&
+              Number.isFinite(Number(state.transportSeekPauseVisualHoldPos))
+            const pauseHold = hasPauseHold ? Number(state.transportSeekPauseVisualHoldPos) : null
+            if (state.transportSeekLocalCursorHeld && pauseHold !== null) return pauseHold
+            if (pauseHold !== null && sampledAt < Number(state.transportSeekPauseVisualHoldUntil || 0)) {
               return pauseHold
             }
             state.transportSeekPauseVisualHoldPos = null
@@ -3203,6 +3375,7 @@
         state.transportSeekExplicitTarget = false
         state.transportSeekCursorPos = 0
         state.showTransportSeekModal = true
+        state.transportSeekHiddenByMixer = false
         persistDirectorPanelState()
         if (!wasOpen) state.tabletTransportOpening = true
         if (shouldRender) scheduleRender(true)
@@ -3213,6 +3386,7 @@
     }
     storeTransportSeekTarget(target, !!explicitTarget)
     state.showTransportSeekModal = true
+    state.transportSeekHiddenByMixer = false
     persistDirectorPanelState()
     if (!wasOpen && document.documentElement.dataset.directorDevice === 'tablet') state.tabletTransportOpening = true
     initializeTransportSeekTargetCursor(target, state.snapshot)
@@ -3223,6 +3397,7 @@
   function closeTransportSeekModal(shouldRender = true) {
     if (!state.showTransportSeekModal) return
     state.showTransportSeekModal = false
+    state.transportSeekHiddenByMixer = false
     persistDirectorPanelState()
     state.transportSeekExplicitTarget = false
     state.tabletTransportOpening = false
@@ -3259,6 +3434,7 @@
     // velho por um ciclo e causar o "vai e volta" apenas visual.
     state.transportSeekPauseVisualHoldPos = pos
     state.transportSeekPauseVisualHoldUntil = now() + 8000
+    state.transportSeekLocalCursorHeld = true
 
     state.transportSeekCommandSeq = Math.max(Number(state.transportSeekCommandSeq) + 1 || 1, Date.now() * 1000)
     postCommand('edit_cursor_move', {
@@ -3332,6 +3508,7 @@
       state.transportSeekCursorPos = pausedAt
       state.transportSeekPauseVisualHoldPos = pausedAt
       state.transportSeekPauseVisualHoldUntil = now() + 3000
+      state.transportSeekLocalCursorHeld = true
       state.transportSeekPendingPlaying = false
       state.transportSeekPendingPlayingUntil = now() + 3000
       armBridgeControlStability('transport-seek-playing')
@@ -3358,6 +3535,7 @@
       state.regionSelectionClearedUntil = now() + 5000
     }
     const cursorPos = getTransportSeekCursorPos(target, data)
+    state.transportSeekLocalCursorHeld = false
     setOptimisticPlayingTarget(target.id, 4000, cursorPos)
     state.transportSeekPlayVisualHoldPos = cursorPos
     state.transportSeekPlayVisualHoldAt = now()
@@ -3543,14 +3721,14 @@
     if (partsTargetIsParent(data)) return []
     const region = getActivePartsRegion(data)
     if (!region) return []
-    const songName = getPartsSongTarget(region.source, data).name
+    const songName = region.name || getPartsSongTarget(region.source, data).name
       || findSongNameById(region.id, data)
       || getName(region.item)
       || 'MÚSICA'
     const songStart = {
       id: `__parts_song_start__:${region.id}`,
       partsSongStart: true,
-      partsDisplayName: `${songName} - INÍCIO`,
+      partsDisplayName: songName,
       pos: region.start,
       position: region.start,
       startPos: region.start,
@@ -3588,9 +3766,9 @@
       const master = data?.mixerMaster || mixer?.master || data?.masterTrack || null
       return master && typeof master === 'object' ? [master] : []
     }
-    if (state.mixerView === 'groups') {
-      return getAppVisibleMixerTracks(Array.isArray(data?.mixerGroups) ? data.mixerGroups : (Array.isArray(mixer?.groups) ? mixer.groups : []))
-    }
+    // A visão MIXER usa a lista completa do REAPER. Ela já contém as pistas
+    // de grupo na posição correta; mixerGroups é apenas o subconjunto antigo
+    // usado pela aba GRUPOS que não existe mais.
     return getAppVisibleMixerTracks(Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : []))
   }
 
@@ -3776,7 +3954,7 @@
         holdMap.delete(key)
         continue
       }
-      if (remote.known &&
+      if (remote.known && now() >= Number(hold.confirmAfter || 0) &&
           Math.abs(remote.ratio - clampRatio(hold.ratio)) <=
             VOLUME_RATIO_CONFIRM_EPSILON) {
         holdMap.delete(key)
@@ -3874,6 +4052,142 @@
 
   function getMixerZeroDbRatio() {
     return MIXER_ZERO_DB_RATIO
+  }
+
+  function getMixerTrackWidthPercent() {
+    return Math.max(MIXER_TRACK_WIDTH_MIN, Math.min(
+      MIXER_TRACK_WIDTH_MAX,
+      Number(state.mixerTrackWidthPercent) || 30,
+    ))
+  }
+
+  function syncMixerTrackWidthDom() {
+    const panel = root.querySelector('.mixerContentPanel')
+    if (!panel) return
+    const percent = getMixerTrackWidthPercent()
+    const header = panel.querySelector('.mixerTimelineUnifiedHeader')
+    const panelWidth = Number(panel.getBoundingClientRect?.().width) || 0
+    const headerWidth = Number(header?.getBoundingClientRect?.().width) || panelWidth
+    // A escolha sempre representa uma parcela do TCP inteiro. Quando LIST
+    // ocupa a direita, converte para o percentual do espaço restante: a pista
+    // conserva os mesmos pixels e somente o grid perde largura.
+    const desiredTrackWidth = panelWidth * (percent / 100)
+    const effectivePercent = headerWidth > 0
+      ? Math.max(0, Math.min(100, (desiredTrackWidth / headerWidth) * 100))
+      : percent
+    panel.style.setProperty('--mixer-track-width', `${effectivePercent}%`)
+    const handle = panel.querySelector('.mixerTrackWidthHandle')
+    if (handle) {
+      handle.setAttribute('aria-valuenow', String(Math.round(percent)))
+      const panelRect = panel.getBoundingClientRect?.()
+      const handleRect = handle.getBoundingClientRect?.()
+      const availableHeight = Number(panelRect?.bottom) - Number(handleRect?.top)
+      if (Number.isFinite(availableHeight) && availableHeight > 0) {
+        // Compensa a borda inferior do painel sem deixar a alça curta demais.
+        handle.style.setProperty('height', `${Math.max(1, Math.floor(availableHeight) - 1)}px`, 'important')
+      }
+    }
+    if (state.mixerListOpen) {
+      const listPercent = getMixerListWidthPercent()
+      panel.style.setProperty('--mixer-list-width', `${listPercent}%`)
+      const listHandle = panel.querySelector('.mixerListWidthHandle')
+      if (listHandle) {
+        listHandle.setAttribute('aria-valuenow', String(Math.round(listPercent)))
+        listHandle.setAttribute('aria-valuemax', String(Math.round(getMixerListWidthMaxPercent())))
+      }
+    }
+    if (mixerTrackResizeFrame) window.cancelAnimationFrame(mixerTrackResizeFrame)
+    mixerTrackResizeFrame = window.requestAnimationFrame(() => {
+      mixerTrackResizeFrame = 0
+      const viewport = panel.querySelector('.mixerTabletGridViewport')
+      if (!viewport) return
+      setMixerTimelineWidth(viewport, getMixerTimelineVisibleWidth(viewport))
+      syncMixerTimelineCursorDom()
+    })
+  }
+
+  function handleMixerTrackWidthResize(event) {
+    const handle = event.target?.closest?.('.mixerTrackWidthHandle')
+    if (event.type === 'pointerdown') {
+      if (!handle || state.activeTab !== 'mixer') return
+      mixerTrackResizePointerId = event.pointerId
+      try { handle.setPointerCapture?.(event.pointerId) } catch (_) {}
+      document.documentElement.classList.add('mixerTrackWidthResizing')
+    } else if (mixerTrackResizePointerId === null ||
+        event.pointerId !== mixerTrackResizePointerId) return
+
+    const activeHandle = handle || root.querySelector('.mixerTrackWidthHandle')
+    const panel = activeHandle?.closest?.('.mixerContentPanel')
+    const rect = panel?.getBoundingClientRect?.()
+    if (rect && rect.width > 0 && Number.isFinite(Number(event.clientX))) {
+      const rawPercent = ((Number(event.clientX) - rect.left) / rect.width) * 100
+      state.mixerTrackWidthPercent = Math.max(
+        MIXER_TRACK_WIDTH_MIN,
+        Math.min(MIXER_TRACK_WIDTH_MAX, rawPercent),
+      )
+      syncMixerTrackWidthDom()
+    }
+    if (event.cancelable) event.preventDefault()
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      writeLocal('vshook_director_mixer_track_width', getMixerTrackWidthPercent().toFixed(2))
+      document.documentElement.classList.remove('mixerTrackWidthResizing')
+      try { activeHandle?.releasePointerCapture?.(event.pointerId) } catch (_) {}
+      mixerTrackResizePointerId = null
+    }
+  }
+
+  function getMixerListWidthMaxPercent() {
+    return Math.max(
+      MIXER_LIST_WIDTH_MIN,
+      Math.min(MIXER_LIST_WIDTH_MAX, 100 - getMixerTrackWidthPercent()),
+    )
+  }
+
+  function getMixerListWidthPercent() {
+    return Math.max(MIXER_LIST_WIDTH_MIN, Math.min(
+      getMixerListWidthMaxPercent(),
+      Number(state.mixerListWidthPercent) || 34,
+    ))
+  }
+
+  function syncMixerListWidthDom() {
+    const panel = root.querySelector('.mixerContentPanel')
+    if (!panel) return
+    const percent = getMixerListWidthPercent()
+    panel.style.setProperty('--mixer-list-width', `${percent}%`)
+    const handle = panel.querySelector('.mixerListWidthHandle')
+    if (handle) handle.setAttribute('aria-valuenow', String(Math.round(percent)))
+    syncMixerTrackWidthDom()
+  }
+
+  function handleMixerListWidthResize(event) {
+    const handle = event.target?.closest?.('.mixerListWidthHandle')
+    if (event.type === 'pointerdown') {
+      if (!handle || state.activeTab !== 'mixer' || !state.mixerListOpen) return
+      mixerListResizePointerId = event.pointerId
+      try { handle.setPointerCapture?.(event.pointerId) } catch (_) {}
+      document.documentElement.classList.add('mixerListWidthResizing')
+    } else if (mixerListResizePointerId === null ||
+        event.pointerId !== mixerListResizePointerId) return
+
+    const activeHandle = handle || root.querySelector('.mixerListWidthHandle')
+    const panel = activeHandle?.closest?.('.mixerContentPanel')
+    const rect = panel?.getBoundingClientRect?.()
+    if (rect && rect.width > 0 && Number.isFinite(Number(event.clientX))) {
+      const rawPercent = ((rect.right - Number(event.clientX)) / rect.width) * 100
+      state.mixerListWidthPercent = Math.max(
+        MIXER_LIST_WIDTH_MIN,
+        Math.min(getMixerListWidthMaxPercent(), rawPercent),
+      )
+      syncMixerListWidthDom()
+    }
+    if (event.cancelable) event.preventDefault()
+    if (event.type === 'pointerup' || event.type === 'pointercancel') {
+      writeLocal('vshook_director_mixer_list_width', getMixerListWidthPercent().toFixed(2))
+      document.documentElement.classList.remove('mixerListWidthResizing')
+      try { activeHandle?.releasePointerCapture?.(event.pointerId) } catch (_) {}
+      mixerListResizePointerId = null
+    }
   }
 
   function getPremixSongs(data = state.snapshot) {
@@ -4121,13 +4435,40 @@
 
   function getPremixItemVolumeState(item) {
     const id = getPremixItemId(item)
-    return resolveVolumeControlState(
-      item,
-      premixItemVolumeHold,
-      id ? [id] : [],
-      MIXER_ZERO_DB_RATIO,
-      PREMIX_ITEM_MAX_DB,
-    )
+    const cachedRatio = id ? Number(premixItemVolumeVisualCache.get(id)) : NaN
+    const fallback = Number.isFinite(cachedRatio)
+      ? cachedRatio
+      : MIXER_ZERO_DB_RATIO
+    // Item de timeline também pode possuir um `ratio` geométrico. Volume de
+    // item aceita somente os campos explícitos de volume, evitando que uma
+    // cópia parcial faça fader e waveform voltarem ao tamanho padrão.
+    const explicitRatio = firstFiniteVolumeValue([
+      item?.volumeRatio,
+      item?.volume_ratio,
+    ])
+    const directDb = getDirectVolumeDb(item)
+    const remote = explicitRatio !== null
+      ? { known: true, ratio: clampRatio(explicitRatio, fallback) }
+      : directDb !== null
+        ? { known: true, ratio: mixerDbToRatio(directDb, PREMIX_ITEM_MAX_DB) }
+        : { known: false, ratio: fallback }
+    const hold = getActiveVolumeHold(premixItemVolumeHold, id ? [id] : [], remote)
+    const localUntil = id ? Number(premixItemVolumeLocalUntil.get(id) || 0) : 0
+    const protectCached = Number.isFinite(cachedRatio) && now() < localUntil &&
+      (!remote.known || Math.abs(remote.ratio - cachedRatio) > VOLUME_RATIO_CONFIRM_EPSILON)
+    const ratio = hold
+      ? clampRatio(hold.ratio, fallback)
+      : protectCached ? cachedRatio : remote.ratio
+    const volumeState = {
+      db: ratio <= 0 ? Number.NEGATIVE_INFINITY : mixerRatioToDb(ratio, PREMIX_ITEM_MAX_DB),
+      hold,
+      ratio,
+      remote,
+    }
+    if (id && (volumeState.hold || volumeState.remote.known)) {
+      premixItemVolumeVisualCache.set(id, volumeState.ratio)
+    }
+    return volumeState
   }
 
   function getPremixItemRatio(item) {
@@ -4166,10 +4507,32 @@
 
   function setPremixItemRatio(id, ratio) {
     if (!id) return
+    const nextRatio = clampRatio(ratio, MIXER_ZERO_DB_RATIO)
     premixItemVolumeHold.set(String(id), {
-      ratio: clampRatio(ratio, MIXER_ZERO_DB_RATIO),
-      until: now() + 5000,
+      ratio: nextRatio,
+      confirmAfter: now() + 1500,
+      until: now() + 10000,
     })
+    premixItemVolumeVisualCache.set(String(id), nextRatio)
+    premixItemVolumeLocalUntil.set(String(id), now() + 8000)
+    syncMixerItemWaveformVolumeDom(id, nextRatio)
+  }
+
+  function holdPremixItemVolumeDuringStateChange(id, item) {
+    const key = String(id || '')
+    if (!key) return
+    const cachedRatio = Number(premixItemVolumeVisualCache.get(key))
+    const ratio = Number.isFinite(cachedRatio)
+      ? clampRatio(cachedRatio, MIXER_ZERO_DB_RATIO)
+      : getPremixItemRatio(item || { id: key })
+    premixItemVolumeVisualCache.set(key, ratio)
+    premixItemVolumeLocalUntil.set(key, now() + 5000)
+    premixItemVolumeHold.set(key, {
+      ratio,
+      confirmAfter: now() + 1200,
+      until: now() + 4000,
+    })
+    syncMixerItemWaveformVolumeDom(key, ratio)
   }
 
   function setPremixTrackRatio(id, ratio) {
@@ -5874,7 +6237,7 @@
       }
     })
     const premixItems = new Map(
-      [...getPremixAllItemRows(), ...(Array.isArray(state.mixerTimelineItems) ? state.mixerTimelineItems : [])]
+      [...(Array.isArray(state.mixerTimelineItems) ? state.mixerTimelineItems : []), ...getPremixAllItemRows()]
         .map((item) => [getPremixItemId(item), item]),
     )
     root.querySelectorAll('.mixerContentPanel [data-action="mixer-item-mute"]').forEach((button) => {
@@ -5889,6 +6252,14 @@
       const muted = getPremixItemMute(item)
       gridItem.classList.toggle('mixerTabletGridItemMuted', muted)
       gridItem.setAttribute('aria-label', `${muted ? 'Mute, ' : ''}${upperText(getName(item) || 'ITEM')}`)
+    })
+    root.querySelectorAll('.mixerContentPanel [data-mixer-wave-item-id]').forEach((waveform) => {
+      const item = premixItems.get(String(waveform.getAttribute('data-mixer-wave-item-id') || ''))
+      if (!item) return
+      waveform.style.setProperty(
+        '--mixer-wave-volume-scale',
+        getMixerWaveformVolumeScale(item).toFixed(4),
+      )
     })
   }
 
@@ -5920,7 +6291,7 @@
     const rows = root.querySelectorAll('.premixFullRow[data-premix-item-id]')
     if (!rows.length) return
     const premixItems = new Map(
-      [...getPremixAllItemRows(), ...(Array.isArray(state.mixerTimelineItems) ? state.mixerTimelineItems : [])]
+      [...(Array.isArray(state.mixerTimelineItems) ? state.mixerTimelineItems : []), ...getPremixAllItemRows()]
         .map((item) => [getPremixItemId(item), item]),
     )
     rows.forEach((row) => {
@@ -5953,7 +6324,8 @@
       const item = premixTracks.get(id)
       if (!item) return
       const volumeState = getPremixTrackVolumeState(item)
-      if (Math.abs(Number(input.value) - volumeState.ratio) > 0.0005) {
+      if (document.activeElement !== input &&
+          Math.abs(Number(input.value) - volumeState.ratio) > 0.0005) {
         input.value = String(volumeState.ratio)
       }
       const dbText = formatVolumeDb(volumeState.db)
@@ -5974,7 +6346,8 @@
       const item = premixItems.get(id)
       if (!item) return
       const volumeState = getPremixItemVolumeState(item)
-      if (Math.abs(Number(input.value) - volumeState.ratio) > 0.0005) {
+      if (document.activeElement !== input &&
+          Math.abs(Number(input.value) - volumeState.ratio) > 0.0005) {
         input.value = String(volumeState.ratio)
       }
       const label = input.closest(
@@ -6035,7 +6408,10 @@
       const response = await fetch(bridgeUrl('/state'), { cache: 'no-store', signal: abort.signal })
       if (!response.ok) throw new Error(`state ${response.status}`)
       const data = await response.json()
+      const hadRenderableListContent = hasRenderableListContent(state.snapshot || {})
       state.snapshot = mergeWithLastGoodSnapshot(data && typeof data === 'object' ? data : {}, state.snapshot)
+      const gainedRenderableListContent = !hadRenderableListContent &&
+        hasRenderableListContent(state.snapshot)
       syncOptimisticMixerRoutesFromBridge(data, state.snapshot)
       syncBlockHeightModeDom(state.snapshot)
       syncTransportPlaybackColorModeDom(state.snapshot)
@@ -6070,6 +6446,7 @@
       if (!bridgeWasOnline) nativeFamilyDrawersLastSignature = null
       state.lastGoodAt = now()
       state.lastPollAt = now()
+      if (!IS_MUSICIAN_MONITOR) loadMixerTimelineCatalog()
       if (state.activeTab === 'mixer') loadMixerTimeline()
 
       if (IS_MUSICIAN_MONITOR) {
@@ -6168,7 +6545,16 @@
         processTabletMultiLoopBypassWarning(state.snapshot)
         syncDirectorRecadosFromSnapshot(state.snapshot)
       }
-      scheduleRender()
+      if (gainedRenderableListContent) {
+        // Ao abrir durante a reprodução, o loop visual pode rodar entre o
+        // snapshot completo e o próximo frame. A lista ainda está vazia nesse
+        // instante; força uma montagem única e descarta painéis vazios aquecidos.
+        musicPaneCache.clear()
+        state.lastHtmlSignature = ''
+        scheduleRender(true)
+      } else {
+        scheduleRender()
+      }
     } catch (_) {
       // Uma leitura perdida no Wi-Fi não apaga a interface nem força um
       // redesenho completo. Só assume offline após perder o estado nativo por
@@ -6533,7 +6919,8 @@
     const sourceList = Array.isArray(items) ? items : []
     if (!sourceList.length) return `<div class="emptyBox">NENHUM ITEM ENCONTRADO</div>`
     const playlistHasBlocks = type === 'playlist' && sourceList.some((item) => isBlock(item))
-    const showRowNumber = !IS_MUSICIAN_MONITOR && (type === 'playlist' || type === 'region')
+    const showRowNumber = options.hideRowNumber !== true &&
+      !IS_MUSICIAN_MONITOR && (type === 'playlist' || type === 'region')
     const displayList = getNumberSortedItems(sourceList, type)
     let sourceBlockNumber = 0
     let sourceSongNumber = 0
@@ -6630,6 +7017,9 @@
       const partsSongStartAttrs = item?.partsSongStart
         ? ` data-parts-song-start="1" data-parts-song-source="${escapeHtml(item.partsSongSource || '')}"`
         : ''
+      const partsSongStartBadge = item?.partsSongStart
+        ? '<span class="partsSongStartBadge">INÍCIO</span>'
+        : ''
       let tabletTunerControls = ''
       if (options.tabletTuner && (type === 'playlist' || type === 'region')) {
         const knownFamilyParent = isHashParent(item) || Array.isArray(state.hashRegionDrawerChildren[String(rawId || '')])
@@ -6704,6 +7094,7 @@
           ${drawerFamilyBottom ? '<span class="drawerOutlineBottom" aria-hidden="true"></span>' : ''}
           ${drawerFamilyChild ? '<span class="drawerChildSymbol" aria-hidden="true"></span>' : ''}
           ${rowProgress}
+          ${partsSongStartBadge}
           ${showRowNumber ? `<div class="rowNumberCol"><span class="rowNumberText"${numberColorStyle}>${rowNumber}</span></div>` : ''}
           ${blockLabel}
           ${familyDrawerControl}
@@ -6738,12 +7129,16 @@
   function renderCachedMusicList(items, type, data = state.snapshot || {}) {
     const cacheKey = getMusicListDomCacheKey(items, type, data)
     const mounted = Array.from(root.querySelectorAll('.musicListRenderCache'))
-      .some((list) => String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
+      .find((list) => String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
+    const canReuseMounted = !!mounted && (
+      !Array.isArray(items) || !items.length ||
+      !!mounted.querySelector('.item')
+    )
     // Durante atualizações de controles, fila ou transporte, a lista atual já
     // está pronta no DOM. Entrega só um marcador leve ao parser; a árvore
     // montada é recolocada por reuseStableListBoxes. A montagem completa
     // acontece apenas na primeira carga ou quando o conteúdo realmente muda.
-    const rows = mounted ? '' : renderRows(items, type)
+    const rows = canReuseMounted ? '' : renderRows(items, type)
     return `<div class="listBox musicListRenderCache" data-scroll-key="${type === 'region' ? 'regions' : 'playlist'}" data-music-list-cache-key="${cacheKey}">${rows}</div>`
   }
 
@@ -7779,6 +8174,34 @@
     return null
   }
 
+  function getMixerFocusItem(data = state.snapshot, sampledAt = now()) {
+    const activePlayback = isPlaying(data) || isPaused(data)
+    const candidateIds = activePlayback
+      ? [getVisualPlayingId(data, sampledAt), getPlayingId(data), state.selectedRegionId, state.selectedPlaylistSongId]
+      : [state.selectedRegionId, state.selectedPlaylistSongId, data?.selectedRegionId, data?.selectedPlaylistSongId, getPlayingId(data)]
+    for (const id of candidateIds) {
+      const item = getSongItemById(id, data)
+      const start = getItemStart(item)
+      const end = getItemEnd(item)
+      if (item && !isBlock(item) && start !== null && end !== null && end > start + .0005) return item
+    }
+
+    if (activePlayback) {
+      const position = getSmoothedCurrentPlaybackPosition(data, sampledAt)
+      if (position !== null) {
+        return getRegions(data)
+          .filter((item) => {
+            const start = getItemStart(item)
+            const end = getItemEnd(item)
+            return !isBlock(item) && start !== null && end !== null &&
+              position >= start - .0005 && position < end - .0005
+          })
+          .sort((a, b) => (getItemEnd(a) - getItemStart(a)) - (getItemEnd(b) - getItemStart(b)))[0] || null
+      }
+    }
+    return null
+  }
+
   function reuseMatchingCachedMusicList(currentSurface, nextSurface) {
     if (!currentSurface || !nextSurface) return false
     const currentLists = Array.from(
@@ -7791,6 +8214,7 @@
       const mounted = currentLists.find((list) =>
         String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
       if (!mounted || !placeholder.parentNode) return
+      if (!mounted.children.length && placeholder.children.length) return
       copyElementAttributes(mounted, placeholder)
       placeholder.parentNode.replaceChild(mounted, placeholder)
       reused = true
@@ -7904,6 +8328,7 @@
     syncMainControlButtonsDom()
     syncTabletTunerRowsDom()
     syncMixerRowsDom()
+    if (state.activeTab === 'mixer') syncMixerTrackWidthDom()
     syncPremixVolumeControlsDom()
     if (plainMusicPane) {
       musicPaneCache.set(state.activeTab, {
@@ -7995,7 +8420,9 @@
     const start = Math.max(rawStart, bounds.start)
     const end = Math.min(rawEnd, bounds.end)
     if (end <= start) return { left: 0, width: 0 }
-    const inset = 1.5
+    // A regiao selecionada ocupa toda a largura do grid. A borda esquerda da
+    // guia continua visivel em 0%, sem criar uma coluna vazia antes dela.
+    const inset = 0
     const usableWidth = 100 - (inset * 2)
     const left = inset + Math.max(0, Math.min(1, (start - bounds.start) / duration)) * usableWidth
     const naturalWidth = ((end - start) / duration) * usableWidth
@@ -8031,6 +8458,26 @@
     })
   }
 
+  function getMixerWaveformVolumeScale(itemOrRatio) {
+    const ratio = typeof itemOrRatio === 'number'
+      ? clampRatio(itemOrRatio, MIXER_ZERO_DB_RATIO)
+      : getPremixItemRatio(itemOrRatio)
+    if (ratio <= MIXER_ZERO_DB_RATIO) {
+      return Math.max(.04, ratio / MIXER_ZERO_DB_RATIO)
+    }
+    return 1 + (((ratio - MIXER_ZERO_DB_RATIO) / (1 - MIXER_ZERO_DB_RATIO)) * .35)
+  }
+
+  function syncMixerItemWaveformVolumeDom(id, ratio) {
+    const wanted = String(id || '')
+    if (!wanted) return
+    const scale = getMixerWaveformVolumeScale(Number(ratio)).toFixed(4)
+    root.querySelectorAll('[data-mixer-wave-item-id]').forEach((waveform) => {
+      if (String(waveform.getAttribute('data-mixer-wave-item-id') || '') !== wanted) return
+      waveform.style.setProperty('--mixer-wave-volume-scale', scale)
+    })
+  }
+
   function renderMixerPremixWaveform(item) {
     const seedText = `${getPremixItemId(item)}|${getName(item)}`
     let seed = 17
@@ -8045,12 +8492,12 @@
     }).join('')
   }
 
-  function renderMixerTabletGridRow(track, premixItems, bounds, visualTrackIndex = 0) {
+  function getMixerItemsForTrack(track, premixItems, visualTrackIndex = 0) {
     const trackId = getMixerPrimaryId(track, getId(track))
     const trackIds = new Set(getMixerItemIds(track))
     const trackIndex = Number(track?.trackIndex ?? track?.index)
     const trackName = upperText(getName(track) || '').trim()
-    const items = premixItems.filter((item) => {
+    return premixItems.filter((item) => {
       const itemTrackId = getPremixItemTrackId(item)
       if (itemTrackId && trackIds.has(itemTrackId)) return true
       const itemTrackIndex = Number(item?.trackIndex ?? item?.track_index)
@@ -8062,8 +8509,33 @@
       const itemTrackName = upperText(item?.trackName || item?.track_name || item?.track || '').trim()
       return !!trackName && itemTrackName === trackName
     })
+  }
+
+  function getMixerGroupShadowItems(track, tracks, premixItems, visualTrackIndex) {
+    const folderDelta = Math.trunc(Number(track?.folderDepth ?? track?.folder_depth) || 0)
+    if (!(track?.group === true || folderDelta > 0)) return []
+    let remainingDepth = Math.max(1, folderDelta)
+    const shadowItems = []
+    for (let index = visualTrackIndex + 1; index < tracks.length && remainingDepth > 0; index += 1) {
+      const childTrack = tracks[index]
+      shadowItems.push(...getMixerItemsForTrack(childTrack, premixItems, index))
+      remainingDepth += Math.trunc(Number(childTrack?.folderDepth ?? childTrack?.folder_depth) || 0)
+    }
+    return shadowItems
+  }
+
+  function renderMixerTabletGridRow(track, premixItems, bounds, visualTrackIndex = 0, tracks = []) {
+    const trackId = getMixerPrimaryId(track, getId(track))
+    const items = getMixerItemsForTrack(track, premixItems, visualTrackIndex)
     if (!items.length) {
-      return `<div class="mixerTabletGridRow" data-mixer-grid-track-id="${escapeHtml(trackId)}"></div>`
+      const shadowHtml = getMixerGroupShadowItems(track, tracks, premixItems, visualTrackIndex).map((item) => {
+        const geometry = getMixerPremixItemGeometry(item, bounds)
+        if (geometry.width <= 0) return ''
+        const itemId = getPremixItemId(item)
+        const volumeScale = getMixerWaveformVolumeScale(item).toFixed(4)
+        return `<span class="mixerTabletGroupWaveShadow" style="--mixer-grid-left:${geometry.left.toFixed(3)}%;--mixer-grid-width:${geometry.width.toFixed(3)}%" aria-hidden="true"><span class="mixerTabletGridWaveform" data-mixer-wave-item-id="${escapeHtml(itemId)}" style="--mixer-wave-volume-scale:${volumeScale}">${renderMixerPremixWaveform(item)}</span></span>`
+      }).join('')
+      return `<div class="mixerTabletGridRow mixerTabletGroupGridRow" data-mixer-grid-track-id="${escapeHtml(trackId)}">${shadowHtml}</div>`
     }
     const color = getMixerTrackColor(track)
     const itemHtml = items.map((item) => {
@@ -8072,7 +8544,8 @@
       const itemName = upperText(getName(item) || getName(track) || 'ITEM')
       const geometry = getMixerPremixItemGeometry(item, bounds)
       if (geometry.width <= 0) return ''
-      return `<div class="mixerTabletGridItem${muted ? ' mixerTabletGridItemMuted' : ''}" data-premix-item-id="${escapeHtml(itemId)}" style="--mixer-grid-left:${geometry.left.toFixed(3)}%;--mixer-grid-width:${geometry.width.toFixed(3)}%;--mixer-grid-color:${escapeHtml(color)}" aria-label="${escapeHtml(`${muted ? 'Mute, ' : ''}${itemName}`)}"><span class="mixerTabletGridHeader"><span class="mixerTabletGridItemName">${escapeHtml(itemName)}</span><span class="mixerTabletGridMuteLabel">Mute</span></span><span class="mixerTabletGridWaveform" aria-hidden="true">${renderMixerPremixWaveform(item)}</span></div>`
+      const volumeScale = getMixerWaveformVolumeScale(item).toFixed(4)
+      return `<div class="mixerTabletGridItem${muted ? ' mixerTabletGridItemMuted' : ''}" data-premix-item-id="${escapeHtml(itemId)}" style="--mixer-grid-left:${geometry.left.toFixed(3)}%;--mixer-grid-width:${geometry.width.toFixed(3)}%;--mixer-grid-color:${escapeHtml(color)}" aria-label="${escapeHtml(`${muted ? 'Mute, ' : ''}${itemName}`)}"><span class="mixerTabletGridHeader"><span class="mixerTabletGridItemName">${escapeHtml(itemName)}</span><span class="mixerTabletGridMuteLabel">Mute</span></span><span class="mixerTabletGridWaveform" data-mixer-wave-item-id="${escapeHtml(itemId)}" style="--mixer-wave-volume-scale:${volumeScale}" aria-hidden="true">${renderMixerPremixWaveform(item)}</span></div>`
     }).join('')
     return `<div class="mixerTabletGridRow" data-mixer-grid-track-id="${escapeHtml(trackId)}">${itemHtml}</div>`
   }
@@ -8151,7 +8624,7 @@
 
   function renderMixerTimelineRegions(bounds, data = state.snapshot || {}, focusedRegion = null) {
     const duration = Math.max(0.0005, bounds.end - bounds.start)
-    const inset = focusedRegion ? 1.5 : 0
+    const inset = 0
     const usableWidth = 100 - (inset * 2)
     const { parentRegions, childRegions } = focusedRegion
       ? getMixerFocusedRegionBands(focusedRegion, data)
@@ -8176,7 +8649,7 @@
 
   function renderMixerTimelineRegionGuides(bounds, data = state.snapshot || {}, focusedRegion = null) {
     const duration = Math.max(0.0005, bounds.end - bounds.start)
-    const inset = focusedRegion ? 1.5 : 0
+    const inset = 0
     const usableWidth = 100 - (inset * 2)
     const { parentRegions, childRegions } = focusedRegion
       ? getMixerFocusedRegionBands(focusedRegion, data)
@@ -8203,13 +8676,12 @@
   }
 
   function renderMixerViewButtons(className = '') {
-    return `<div class="mixerViewControls${className ? ` ${className}` : ''}"><button class="${state.mixerView === 'tracks' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">TRACKS</button><button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div>`
+    return `<div class="mixerViewControls${className ? ` ${className}` : ''}"><button class="${state.mixerView !== 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">MIXER</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div>`
   }
 
   function syncMixerViewButtonsDom() {
-    const activeAction = state.mixerView === 'groups'
-      ? 'mixer-groups' : state.mixerView === 'master' ? 'mixer-master' : 'mixer-tracks'
-    root.querySelectorAll('[data-action="mixer-tracks"],[data-action="mixer-groups"],[data-action="mixer-master"]').forEach((button) => {
+    const activeAction = state.mixerView === 'master' ? 'mixer-master' : 'mixer-tracks'
+    root.querySelectorAll('[data-action="mixer-tracks"],[data-action="mixer-master"]').forEach((button) => {
       const active = button.getAttribute('data-action') === activeAction
       button.classList.toggle('btnAutoplayActive', active)
       button.classList.toggle('btn', !active)
@@ -8235,15 +8707,17 @@
   function renderMixerPlaylistSide(data = state.snapshot || {}) {
     if (!state.mixerListOpen) return ''
     const items = getPlaylistWithOpenDrawers(data)
-    const cacheKey = getMusicListDomCacheKey(items, 'playlist', data)
+    const cacheKey = `${getMusicListDomCacheKey(items, 'playlist', data)}|mixer-no-number`
     const mounted = Array.from(root.querySelectorAll('.mixerPlaylistRows'))
-      .some((list) => String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
-    return `<aside class="directorTpSidePane directorTpListPane mixerPlaylistSide" aria-label="Repertório selecionado"><div class="listBox directorTpSideList mixerPlaylistRows musicListRenderCache" data-music-list-cache-key="${cacheKey}" data-scroll-tick>${mounted ? '' : renderRows(items, 'playlist')}</div></aside>`
+      .find((list) => String(list.getAttribute('data-music-list-cache-key') || '') === cacheKey)
+    const canReuseMounted = !!mounted && (!items.length || !!mounted.querySelector('.item'))
+    return `<aside class="directorTpSidePane directorTpListPane mixerPlaylistSide" aria-label="Repertório selecionado"><span class="mixerListWidthHandle" role="separator" aria-orientation="vertical" aria-label="Ajustar largura da lista" aria-valuemin="34" aria-valuemax="${Math.round(getMixerListWidthMaxPercent())}" aria-valuenow="${Math.round(getMixerListWidthPercent())}"></span><div class="listBox directorTpSideList mixerPlaylistRows musicListRenderCache" data-music-list-cache-key="${cacheKey}" data-scroll-tick>${canReuseMounted ? '' : renderRows(items, 'playlist', { hideRowNumber: true })}</div></aside>`
   }
 
   function renderMixerPage() {
     const data = state.snapshot || {}
     const cacheKey = getMainPaneCacheKey('mixer', data)
+    const trackWidthPercent = getMixerTrackWidthPercent()
     const tracks = getMixerTracks(data)
     const showTimelineGrid = state.mixerView !== 'master'
     const allPremixItems = showTimelineGrid
@@ -8252,7 +8726,7 @@
           ...getPremixAllItemRows(data),
         ].map((item, index) => [getPremixItemId(item) || `premix-${index}`, item])).values())
       : []
-    const focusItem = getSongItemById(state.selectedRegionId || state.selectedPlaylistSongId || getPlayingId(data), data)
+    const focusItem = getMixerFocusItem(data)
     const focusStart = getItemStart(focusItem)
     const focusEnd = getItemEnd(focusItem)
     const hasFocusedRegion = !!focusItem && !isBlock(focusItem) &&
@@ -8313,13 +8787,13 @@
       return `<div class="mixerRow mixerInlineRow" data-mixer-id="${id}" style="--mixer-color:${trackColor}"><span class="appScrollLane" aria-hidden="true"></span><div class="mixerRowColor" style="background:${trackColor}"></div><div class="mixerRowMain"><div class="mixerRowName">${name}</div><div class="mixerRowGroupName">${escapeHtml(db)}</div></div><div class="mixerRowDb">${escapeHtml(db)}</div><div class="mixerInlineSliderWrap" style="--mixer-zero-position:${zeroPosition};--mixer-zero-offset:${zeroOffset}px"><input class="mixerInlineSlider" data-action="mixer-volume" data-mixer-id="${id}" type="range" min="0" max="1" step="0.001" value="${ratio}" aria-label="Volume de ${name}"><span class="mixerInlineZeroDbMark" aria-hidden="true"></span></div><button class="mixerMiniBtn mixerMiniMute ${muted ? 'mixerMiniBtnActive' : ''}" data-action="mixer-mute" data-mixer-id="${id}" aria-pressed="${muted ? 'true' : 'false'}">M</button><button class="mixerMiniBtn mixerMiniSolo ${solo ? 'mixerMiniBtnActive' : ''}" data-action="mixer-solo" data-mixer-id="${id}" aria-pressed="${solo ? 'true' : 'false'}">S</button></div>`
     }).join('')
     const gridRows = showTimelineGrid ? tracks.map((track, trackIndex) =>
-      renderMixerTabletGridRow(track, premixItems, premixBounds, trackIndex)).join('') : ''
-    const timelineHeader = tracks.length && showTimelineGrid && hasFocusedRegion
-      ? `<div class="mixerTimelineFixedHeader mixerTimelineUnifiedHeader" style="--mixer-timeline-width:${timelineWidth}px"><div class="mixerTimelineFixedTrackCap" aria-hidden="true"></div><div class="mixerTimelineHeaderViewport"><div class="mixerTimelineHeaderCanvas" style="width:${timelineWidth}px">${renderMixerTimelineRegions(premixBounds, data, focusItem)}</div></div></div>`
+      renderMixerTabletGridRow(track, premixItems, premixBounds, trackIndex, tracks)).join('') : ''
+    const timelineHeader = tracks.length && showTimelineGrid
+      ? `<div class="mixerTimelineFixedHeader mixerTimelineUnifiedHeader" style="--mixer-timeline-width:${timelineWidth}px"><div class="mixerTimelineFixedTrackCap"><span class="mixerTimelineTrackCapLane">Músicas/Blocos</span><span class="mixerTimelineTrackCapLane">Músicas/Filhos</span><span class="mixerTrackWidthHandle" role="separator" aria-orientation="vertical" aria-label="Ajustar largura das pistas" aria-valuemin="25" aria-valuemax="100" aria-valuenow="${Math.round(trackWidthPercent)}"></span></div><div class="mixerTimelineHeaderViewport"><div class="mixerTimelineHeaderCanvas" style="width:${timelineWidth}px">${hasFocusedRegion ? renderMixerTimelineRegions(premixBounds, data, focusItem) : ''}</div></div></div>`
       : ''
     const playlistSide = listOpen ? renderMixerPlaylistSide(data) : ''
     const trackGrid = showTimelineGrid
-      ? `<div class="mixerTabletTimeline mixerTabletTimelineUnified${listOpen ? ' mixerTabletTimelineCompact' : ''}" style="--mixer-timeline-width:${timelineWidth}px"><div class="mixerTabletTrackRows">${rows}</div><div class="mixerTabletGridViewport"${hasFocusedRegion ? ' data-action="mixer-grid-seek"' : ''} data-mixer-focus-ratio="${focusRatio.toFixed(6)}"><div class="mixerTabletGrid" style="width:${timelineWidth}px" data-mixer-timeline-start="${premixBounds.start}" data-mixer-timeline-end="${premixBounds.end}" aria-label="Itens do Pre-Mix por pista">${hasFocusedRegion ? `${renderMixerTimelineRegionGuides(premixBounds, data, focusItem)}<div class="mixerTimelineCursor" aria-hidden="true"></div>` : ''}${gridRows}</div></div></div>`
+      ? `<div class="mixerTabletTimeline mixerTabletTimelineUnified" style="--mixer-timeline-width:${timelineWidth}px"><div class="mixerTabletTrackRows">${rows}</div><div class="mixerTabletGridViewport"${hasFocusedRegion ? ' data-action="mixer-grid-seek"' : ''} data-mixer-focus-ratio="${focusRatio.toFixed(6)}"><div class="mixerTabletGrid" style="width:${timelineWidth}px" data-mixer-focus-id="${escapeHtml(getId(focusItem) || '')}" data-mixer-timeline-start="${premixBounds.start}" data-mixer-timeline-end="${premixBounds.end}" aria-label="Itens do Pre-Mix por pista">${hasFocusedRegion ? `${renderMixerTimelineRegionGuides(premixBounds, data, focusItem)}<div class="mixerTimelineCursor" aria-hidden="true"></div>` : ''}${gridRows}</div></div></div>`
       : ''
     const timeline = tracks.length
       ? (showTimelineGrid
@@ -8329,10 +8803,10 @@
           : (listOpen
               ? `<div class="mixerTabletTimeline mixerTabletTimelineListOpen mixerTabletMasterListOpen"><div class="mixerRowsBox mixerMasterOnlyRows">${rows}</div>${playlistSide}</div>`
               : `<div class="mixerRowsBox mixerMasterOnlyRows">${rows}</div>`))
-      : `<div class="emptyBox">MIXER SEM DADOS</div>`
+      : `<div class="emptyBox">TCP SEM DADOS</div>`
     const viewControls = tabletLayout ? '' : renderMixerViewButtons('mixerTopControls')
     const actionControls = tabletLayout ? renderMixerActionControls(data) : ''
-    return `<div class="contentPanel mixerContentPanel cachedMainSurface${listOpen ? ' mixerContentListOpen' : ''}" data-main-pane-tab="mixer" data-main-pane-cache-key="${cacheKey}">${viewControls}${actionControls}<div class="listBox mixerListBox${listOpen ? ' mixerListMode' : ' mixerUnifiedScroll'}" data-scroll-key="mixer" data-mixer-timeline-cache-key="${mixerTimelineCacheKey}">${listOpen ? '' : timelineHeader}${timeline}</div></div>`
+    return `<div class="contentPanel mixerContentPanel cachedMainSurface${listOpen ? ' mixerContentListOpen' : ''}" style="--mixer-track-width:${trackWidthPercent}%;--mixer-list-width:${getMixerListWidthPercent()}%" data-main-pane-tab="mixer" data-main-pane-cache-key="${cacheKey}">${viewControls}${actionControls}<div class="listBox mixerListBox${listOpen ? ' mixerListMode' : ' mixerUnifiedScroll'}" data-scroll-key="mixer" data-mixer-timeline-cache-key="${mixerTimelineCacheKey}">${listOpen ? '' : timelineHeader}${timeline}</div></div>`
   }
 
   function renderPremixPage() {
@@ -9179,6 +9653,31 @@
     })
   }
 
+  function closeNavigationModalsInPlace(except = '') {
+    if (except !== 'settings') closeSettingsModalInPlace()
+    if (except !== 'project') {
+      state.showProjectModal = false
+      state.showProjectSaveConfirm = false
+      root.querySelector('.projectModalOverlay')?.remove?.()
+      root.querySelector('.projectSaveConfirmOverlay')?.remove?.()
+    }
+    if (except !== 'playlist') {
+      state.showPlaylistModal = false
+      state.showPlaylistPreviewModal = false
+      state.tabletPlaylistPendingId = ''
+      root.querySelector('.tabletPlaylistModalOverlay')?.remove?.()
+      root.querySelector('.playlistPreviewModalOverlay')?.remove?.()
+    }
+    if (except !== 'timer') {
+      state.showTimerModal = false
+      state.showConfirmTimerStop = false
+      root.querySelector('.timerModalBox')?.closest?.('.modalOverlay')?.remove?.()
+      root.querySelector('[data-action="timer-stop-cancel"]')?.closest?.('.modalOverlay')?.remove?.()
+    }
+    state.showMenu = false
+    root.querySelector('.topMenuFlyout')?.remove?.()
+  }
+
   function mountSettingsModalInPlace() {
     const currentBox = root.querySelector('.settingsModalBox')
     const currentOverlay = currentBox?.closest?.('.modalOverlay') || currentBox
@@ -9227,7 +9726,7 @@
       <div class="topMenuFlyout" data-stop-menu>
         <button class="topMenuFlyoutBtn" data-action="tablet-search">LUPA</button>
         <button class="topMenuFlyoutBtn" data-action="project-selector">SESSÃO</button>
-        <button class="topMenuFlyoutBtn" data-action="go-mixer">MIXER</button>
+        <button class="topMenuFlyoutBtn" data-action="go-mixer">TCP</button>
         <button class="topMenuFlyoutBtn topMenuFlyoutBtnTuner" data-action="tuner-focus">TUNER</button>
         <button class="topMenuFlyoutBtn topMenuFlyoutBtnBpm" data-action="bpm-focus">BPM</button>
         <button class="topMenuFlyoutBtn topMenuFlyoutBtnRecados" data-action="toggle-notice">RECADOS</button>
@@ -10668,7 +11167,7 @@
     const items = getPlaylistWithOpenDrawers(data)
     return `<aside class="directorTpSidePane directorTpListPane" aria-label="Repertório selecionado">
       <button class="topPlaylistButton directorTpPlaylistTitle" data-action="open-playlist-modal">${renderTopPlaylistTitle(title)}</button>
-      <div class="listBox directorTpSideList" data-scroll-tick>${renderRows(items, 'playlist')}</div>
+      <div class="listBox directorTpSideList" data-scroll-tick>${renderRows(items, 'playlist', { hideRowNumber: true })}</div>
     </aside>`
   }
 
@@ -11546,7 +12045,7 @@
 
 
   function renderTransportSeekModal(data = state.snapshot || {}) {
-    if (!state.showTransportSeekModal) return ''
+    if (!state.showTransportSeekModal || state.activeTab === 'mixer') return ''
     const tabletMode = document.documentElement.dataset.directorDevice === 'tablet' && !IS_MUSICIAN_MONITOR
     const tabletOpeningClass = tabletMode && state.tabletTransportOpening ? ' tabletTransportPanelOpening' : ''
     if (tabletMode && state.tabletTransportOpening) state.tabletTransportOpening = false
@@ -11878,7 +12377,9 @@
         <button class="tabletTopBarButton tabletTopBarMusicas${state.activeTab === 'regions' && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="go-regions">MÚSICAS</button>
         <button class="tabletTopBarButton tabletTopBarTuner${state.tabletTunerSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-tuner-split">TUNER</button>
         <button class="tabletTopBarButton tabletTopBarBpm${state.tabletBpmSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-bpm-split">BPM</button>
-        <button class="tabletTopBarButton tabletTopBarMixer${state.activeTab === 'mixer' && !state.showRecadosScreen && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-mixer">MIXER</button>
+        <button class="tabletTopBarButton tabletTopBarTcpShortcut tabletTopBarTcpRpts${state.showPlaylistModal ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-playlists">RPTS</button>
+        <button class="tabletTopBarButton tabletTopBarTcpShortcut tabletTopBarTcpSearch${state.showTabletSearch ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-search">LUPA</button>
+        <button class="tabletTopBarButton tabletTopBarMixer${state.activeTab === 'mixer' && !state.showRecadosScreen && !state.showTelepromptScreen ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-mixer">TCP</button>
         <button class="tabletTopBarButton tabletTopBarParts${state.tabletPartsSplit ? ' tabletTopBarButtonActive' : ''}" data-action="tablet-parts-split">PARTS</button>
       </nav>
     `
@@ -12706,7 +13207,7 @@
     if (!IS_MUSICIAN_MONITOR && state.showRecadosScreen) return renderDirectorRecadosScreen(data)
     const online = state.bridgeOnline || (now() - state.lastGoodAt < 4000)
     const activePlaylist = getActivePlaylist(data)
-    const title = state.activeTab === 'playlist' ? upperText(activePlaylist?.name || data.currentPlaylistName || 'REPERTÓRIO') : state.activeTab === 'regions' ? 'MÚSICAS' : state.activeTab === 'markers' ? 'PARTS' : state.activeTab === 'mixer' ? 'MIXER' : 'PREMIX'
+    const title = state.activeTab === 'playlist' ? upperText(activePlaylist?.name || data.currentPlaylistName || 'REPERTÓRIO') : state.activeTab === 'regions' ? 'MÚSICAS' : state.activeTab === 'markers' ? 'PARTS' : state.activeTab === 'mixer' ? 'TCP' : 'PREMIX'
     const topPlaylistTitle = state.activeTab === 'regions'
       ? (IS_MUSICIAN_MONITOR ? 'ABA MÚSICAS' : 'LISTA GERAL')
       : upperText(activePlaylist?.name || data.currentPlaylistName || getProjectName(data) || 'REPERTÓRIO')
@@ -12730,6 +13231,12 @@
           .contentPanel{display:flex;flex-direction:column;flex:1;min-height:0}.controlsRowEqual{grid-template-columns:repeat(3,1fr)!important}.controlsRowTwo{grid-template-columns:repeat(2,1fr)!important}.controlsRowDirectorMain{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important}.controlsRowDirectorMain>button{height:42px!important;min-height:42px!important}.container{padding-top:9px!important}.app:not([data-border-mode^="rgb-"]) .container{border-color:var(--app-border-color)!important;box-shadow:0 0 0 1px var(--app-border-glow),0 0 18px var(--app-border-glow)!important;animation:none!important}.app[data-border-mode^="rgb-"] .container{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45);animation:directorBorderRgb 6s linear infinite!important}.app[data-border-mode="rgb-mid"] .container{animation-duration:3s!important}.app[data-border-mode="rgb-super"] .container{animation-duration:.85s!important}@keyframes directorBorderRgb{0%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}20%{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 0 18px rgba(250,204,21,.45)}40%{border-color:#22c55e;box-shadow:0 0 0 1px rgba(34,197,94,.28),0 0 18px rgba(34,197,94,.45)}60%{border-color:#06b6d4;box-shadow:0 0 0 1px rgba(6,182,212,.28),0 0 18px rgba(6,182,212,.45)}80%{border-color:#8b5cf6;box-shadow:0 0 0 1px rgba(139,92,246,.28),0 0 18px rgba(139,92,246,.45)}100%{border-color:#ef4444;box-shadow:0 0 0 1px rgba(239,68,68,.28),0 0 18px rgba(239,68,68,.45)}}.app[data-border-mode="off"] .container{border-color:#111827!important;box-shadow:none!important}.topStatusRow{display:grid!important;grid-template-columns:minmax(58px,1fr) 104px 34px 34px!important;align-items:center!important;gap:6px!important;margin-bottom:10px!important}.topPlaylistButton{height:30px;width:100%;max-width:100%;min-width:0;border:1px solid #374151;border-radius:8px;background:#111827;color:#f8fafc!important;font-weight:900;font-size:10.5px;text-align:left;padding:0 8px;white-space:nowrap;overflow:hidden;box-shadow:none;display:flex!important;align-items:center!important}.topPlaylistTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.topPlaylistTickerStatic{text-overflow:ellipsis}.topPlaylistTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.topPlaylistTickerTrack>span{flex:0 0 auto}.topPlaylistTickerAnimated .topPlaylistTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}@keyframes topPlaylistTickerScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-50% - 15px))}}.playlistOption[data-action="playlist-select"]{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:10px!important}.playlistOption[data-action="playlist-select"] .playlistOptionText{min-width:0;overflow:hidden;white-space:nowrap;text-align:left}.playlistOptionTicker{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:#f8fafc!important}.playlistOptionTickerStatic{text-overflow:ellipsis}.playlistOptionTickerTrack{display:inline-flex;align-items:center;gap:30px;min-width:max-content;will-change:transform}.playlistOptionTickerTrack>span{flex:0 0 auto}.playlistOptionTickerAnimated .playlistOptionTickerTrack{animation:topPlaylistTickerScroll 9s linear infinite}.playlistOptionTime{justify-self:end;color:#facc15;font-weight:1000;font-size:12px;white-space:nowrap}.topTimerBtn{height:30px;width:104px;min-width:104px;border:1px solid #facc15;border-radius:8px;background:#16120a;color:#facc15!important;font-weight:900;font-size:12px;text-align:center;padding:0 4px;white-space:nowrap;box-shadow:0 0 0 1px rgba(250,204,21,.14)}.topHeaderTools{display:contents!important}.topMiniBtn{width:34px;height:30px;border:1px solid #475569;border-radius:8px;color:#f8fafc!important;font-weight:900;font-size:21px;line-height:1;display:flex!important;align-items:center!important;justify-content:center!important;padding:0!important;text-align:center!important}.topMenuIcon{display:block;line-height:1;transform:translateY(-2px)}.topMenuBtn{background:#6d28d9!important;border-color:#a78bfa!important}.topSettingsBtn{background:#1f2937!important;border-color:#4b5563!important;color:#f8fafc!important}.topMiniBtn:active,.topPlaylistButton:active,.topTimerBtn:active{transform:translateY(1px);filter:brightness(1.12)}.playingText,.playingTimeText{color:#f8fafc!important}.topRightTools{display:none!important}.bridgeOnline,.bridgeOffline{display:none!important}.headerRow{margin-top:1px!important;margin-bottom:7px!important}.middleInfo{display:flex!important;align-items:center!important;justify-content:center!important;min-height:22px!important;margin-top:4px!important}.middleInfoText{display:block!important;color:#facc15!important;font-size:13px!important;font-weight:1000!important;letter-spacing:.035em!important;text-align:center!important}.tabRow{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(70px,.72fr)!important;gap:6px!important;width:100%!important;padding-right:0!important}.tabRow>.tab,.tabRow>.activeTab{min-width:0!important;width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:clip!important;padding-left:5px!important;padding-right:5px!important;font-size:11.5px!important}.btnPlayActive{border-color:#22c55e!important;background:#14532d!important}.btnStopActive{border-color:#ef4444!important;background:#991b1b!important}.authGateError{color:#fecaca;font-weight:900;text-align:center}.rowLabelText{font-weight:900}.app .item .text,.app .item .timeText,.app .item .rowLabelText,.app .item .marqueeStatic,.app .item .marqueeTrack,.app .item .marqueeSegment,.app .item.blockItem .text,.app .item.blockItem .timeText,.app .item.blockItem .rowLabelText,.app .item.blockItem .blockText,.app .item.blockItem .blockTimeText{color:#f8fafc!important;text-shadow:none!important}.app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.playing .playingText,.app .item.playing .playingTimeText{color:#ffffff!important}.directorPopup{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10050;pointer-events:none;min-width:150px;max-width:82vw;padding:14px 20px;border-radius:14px;border:1px solid #facc15;background:rgba(2,6,23,.96);color:#facc15;text-align:center;font-weight:900;font-size:18px;letter-spacing:.04em;box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 0 1px rgba(250,204,21,.18)}.settingsNumberGrid{margin-top:8px!important}.modalInfoText{color:#e5e7eb;text-align:center;font-weight:800;line-height:1.35;margin:12px 0 16px}.timerModalBox{max-width:430px!important;padding:20px!important}.timerModalPreview{height:74px;display:flex;align-items:center;justify-content:center;border:1px solid #374151;border-radius:12px;background:#05070a;color:#facc15;font-size:30px;font-weight:900;margin-bottom:16px;letter-spacing:.04em}.timerModeGrid,.settingsThemeGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.timerModeGridThree{grid-template-columns:1fr 1fr 1fr!important}.timerModeGridThree>button{height:44px!important;min-height:44px!important;font-size:11px!important;padding-left:4px!important;padding-right:4px!important}.timerActionButtons{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-top:14px!important}.timerActionButtons>button{width:100%!important;min-width:0!important;height:44px!important;min-height:44px!important}.settingsWideGrid{display:grid;grid-template-columns:1fr;gap:10px;margin:0 0 12px}.settingsModalBox{max-width:330px}.settingsThemeGrid>button,.settingsWideGrid>button{height:42px!important;min-height:42px!important}.settingsBorderModeButton{background:#111827!important;border-color:#475569!important;color:#f8fafc!important;box-shadow:none!important}.settingsBorderModeButton:active{filter:brightness(1.12);transform:translateY(1px)}.mixerContentPanel{flex:1 1 auto!important;min-height:0!important}.mixerListBox{flex:1 1 auto!important;min-height:0!important;height:auto!important;padding:0!important;scroll-padding-bottom:8px!important}.mixerRowsBox{display:contents!important;border:0!important;background:transparent!important}.mixerRow{display:grid;grid-template-columns:10px 28px minmax(0,1fr) 72px 38px 38px;align-items:center;gap:7px;padding:10px;border-bottom:1px solid #18212c;min-height:56px}.mixerRow:last-child{border-bottom:0}.mixerRowColor{width:8px;height:36px;border-radius:999px;background:#334155}.mixerRowIndex{font-weight:900;color:#cbd5e1;text-align:center}.mixerRowMain{min-width:0}.mixerRowName{font-weight:900;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowGroupName{font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mixerRowDb{font-weight:1000;color:#facc15;text-align:right;white-space:nowrap;font-size:11px}.mixerMiniBtn{height:34px;width:34px;border-radius:8px;border:1px solid #475569;background:#111827;color:#f8fafc;font-weight:900}.mixerMiniMute.mixerMiniBtnActive{background:#dc2626!important;border-color:#f87171!important;color:#fff!important}.mixerMiniSolo.mixerMiniBtnActive{background:#facc15!important;border-color:#fde047!important;color:#111827!important}.mixerVolumeOverlay{align-items:center!important;justify-content:center!important;padding:0 8px!important}.mixerVolumeModalBoxWide{width:min(96vw,620px)!important;max-width:620px!important;padding:16px!important;box-sizing:border-box!important}.mixerModalHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.mixerVolumeDbDisplay{text-align:center;color:#facc15;font-weight:1000;font-size:30px;margin:12px 0}.mixerVolumeSliderWide{width:100%!important;max-width:none!important;height:78px!important;min-height:78px!important;accent-color:#facc15!important;touch-action:pan-x!important;-webkit-appearance:none;appearance:none;background:transparent!important}.mixerVolumeSliderWide::-webkit-slider-runnable-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important;box-shadow:inset 0 0 0 2px rgba(250,204,21,.12)!important}.mixerVolumeSliderWide::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important;margin-top:-8px!important}.mixerVolumeSliderWide::-moz-range-track{height:28px!important;border-radius:999px!important;background:#1f2937!important;border:1px solid #facc15!important}.mixerVolumeSliderWide::-moz-range-thumb{width:42px!important;height:42px!important;border-radius:50%!important;background:#facc15!important;border:3px solid #fff7cc!important;box-shadow:0 0 0 5px rgba(250,204,21,.18)!important}.mixerZeroDbBtn{height:46px!important;margin-top:8px!important;background:#facc15!important;color:#111827!important;border-color:#facc15!important}.premixInlineSlider{width:108px;min-width:80px;accent-color:#facc15}.premixSongStatus{display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:24px;border-radius:999px;font-weight:900;font-size:12px;border:1px solid #475569}.premixSongStatusOn{background:#14532d;color:#bbf7d0;border-color:#22c55e}.premixSongStatusOff{background:#3f1d1d;color:#fecaca;border-color:#ef4444}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-runnable-track,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-runnable-track,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-runnable-track{height:18px!important;border-radius:999px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-moz-range-track,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-moz-range-track,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-moz-range-track{height:18px!important;border-radius:999px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-webkit-slider-thumb,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-webkit-slider-thumb,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:22px!important;height:30px!important;border-radius:4px!important;background:linear-gradient(180deg,#ffffff 0%,#e2e8f0 46%,#94a3b8 54%,#e2e8f0 100%)!important;border:1px solid #0f172a!important;box-shadow:0 1px 3px rgba(0,0,0,.55),inset 0 0 0 1px rgba(255,255,255,.5)!important;transform:none!important;margin-top:-6px!important}.app:not(.musicianMonitor) .mixerInlineSliderWrap .mixerInlineSlider::-moz-range-thumb,.app:not(.musicianMonitor) .premixInlineSliderWrap .premixInlineSlider::-moz-range-thumb,.app:not(.musicianMonitor) .premixFullSliderTrack .premixFullSlider::-moz-range-thumb{width:22px!important;height:30px!important;border-radius:4px!important;background:linear-gradient(180deg,#ffffff 0%,#e2e8f0 46%,#94a3b8 54%,#e2e8f0 100%)!important;border:1px solid #0f172a!important;box-shadow:0 1px 3px rgba(0,0,0,.55)!important}.playbackQueueFillNow,.playbackQueueFillNext,.playingRowProgressBar,.queuedRowRegressBar,.partsArmedRegressBar{width:100%!important;transform-origin:left center!important;transition:none!important;will-change:transform;backface-visibility:hidden}html[data-director-device="tablet"]{--tablet-bar-w:48px;--tablet-bar-gap:8px;--tablet-topbar-h:42px}html[data-director-device="tablet"] .app:not(.musicianMonitor){padding-left:calc(var(--tablet-bar-w) + var(--tablet-bar-gap) * 2 + var(--tablet-safe-left,var(--vsh-safe-left)))!important;padding-right:calc(var(--tablet-bar-w) + var(--tablet-bar-gap) * 2 + var(--tablet-safe-right,var(--vsh-safe-right)))!important}html[data-director-device="tablet"] .tabletDirectorSidebar{width:var(--tablet-bar-w)!important}html[data-director-device="tablet"] .tabletDirectorSidebar>*,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletSidebarButton,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletSidebarByButton,html[data-director-device="tablet"] .tabletDirectorSidebar .tabletPreviewButtonGroup{width:calc(var(--tablet-bar-w) - 12px)!important;max-width:calc(var(--tablet-bar-w) - 12px)!important}html[data-director-device="tablet"] .tabletDirectorSidebar svg{max-width:calc(var(--tablet-bar-w) - 20px)!important;max-height:calc(var(--tablet-bar-w) - 20px)!important}html[data-director-device="tablet"] .tabletDirectorTopBar{height:var(--tablet-topbar-h)!important;min-height:var(--tablet-topbar-h)!important;flex:0 0 var(--tablet-topbar-h)!important;padding:4px!important;gap:4px!important}html[data-director-device="tablet"] .tabletTopBarButton{height:calc(var(--tablet-topbar-h) - 10px)!important;min-height:calc(var(--tablet-topbar-h) - 10px)!important;font-size:11px!important}
         </style>
         <style>
+          html[data-director-device="tablet"] .tabletTopBarTcpShortcut{display:none!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .tabletDirectorTopBar .tabletTopBarTuner,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .tabletDirectorTopBar .tabletTopBarBpm{display:none!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .tabletDirectorTopBar .tabletTopBarTcpShortcut{display:flex!important}
+          html[data-director-device="tablet"] .tabletTopBarTcpRpts{align-items:center!important;justify-content:center!important;text-align:center!important;line-height:1!important;background:linear-gradient(180deg,#fde047,#d9a600)!important;border-color:#facc15!important;color:#111827!important}
+          html[data-director-device="tablet"] .tabletTopBarTcpSearch{align-items:center!important;justify-content:center!important;text-align:center!important;line-height:1!important;background:linear-gradient(180deg,#9333ea,#6d28d9)!important;border-color:#c084fc!important;color:#fff!important}
+          html[data-director-device="tablet"] .app:not(.musicianMonitor)>.container,html[data-director-device="phone"] .app:not(.musicianMonitor)>.container,.app.musicianMonitor>.container{padding:4px!important}
           html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsRowDirectorMain{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:4px!important;width:100%!important;max-width:100%!important;padding-right:0!important}
           html[data-director-device="phone"] .app:not(.musicianMonitor) .tabRow{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important;width:100%!important;max-width:100%!important;padding-right:0!important}
           html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsRowDirectorMain>button,
@@ -12778,36 +13285,41 @@
           html[data-director-device="tablet"] .app[data-active-tab="mixer"]:not(.musicianMonitor){padding-left:max(8px,var(--tablet-safe-left,var(--vsh-safe-left)))!important;padding-right:max(8px,var(--tablet-safe-right,var(--vsh-safe-right)))!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"]>.tabletDirectorSidebar{display:none!important}
           html[data-director-device="phone"] .app .mixerListBox,html[data-director-device="tablet"] .app .mixerListBox,html[data-director-device="phone"] .app .premixFullList,html[data-director-device="tablet"] .app .premixFullList,html[data-director-device="phone"] .app [data-main-pane-tab="premix"] .listBox,html[data-director-device="tablet"] .app [data-main-pane-tab="premix"] .listBox{overscroll-behavior:none!important;overscroll-behavior-y:none!important;-webkit-overflow-scrolling:auto!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox{overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;background:#080b10!important;border:1px solid #25303d!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox{overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;background:#080b10!important;border:1px solid #25303d!important;padding-bottom:0!important;scroll-padding-bottom:0!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerListMode{overflow:hidden!important;-webkit-overflow-scrolling:auto!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerListMode{position:relative!important;padding:0!important;margin:0!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerListMode>.mixerTabletListWorkspace,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerListMode>.mixerTabletMasterListOpen{position:absolute!important;inset:0!important;width:auto!important;height:auto!important;min-height:0!important;margin:0!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerUnifiedScroll{overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:none!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimeline{display:grid!important;grid-template-columns:clamp(320px,42%,430px) minmax(0,1fr)!important;align-items:start!important;min-width:0!important;min-height:100%!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified{grid-template-columns:clamp(320px,42vw,430px) minmax(0,1fr)!important;width:100%!important;min-width:0!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineCompact{grid-template-columns:clamp(150px,20vw,210px) minmax(0,1fr)!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified>.mixerTabletTrackRows{position:sticky!important;left:0!important;z-index:14!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified>.mixerTabletGridViewport{overflow:hidden!important;width:auto!important;touch-action:pan-y!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified .mixerTabletGrid{width:100%!important;min-width:0!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineListOpen{grid-template-columns:clamp(150px,20vw,210px) minmax(0,1fr) clamp(270px,34%,380px)!important;height:100%!important;min-height:0!important;align-items:start!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListBox.mixerUnifiedScroll{display:flex!important;flex-direction:column!important;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:none!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimeline{display:grid!important;grid-template-columns:var(--mixer-track-width,30%) minmax(0,1fr)!important;align-items:stretch!important;min-width:0!important;min-height:0!important;background:#11151b!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified{flex:1 0 auto!important;grid-template-columns:var(--mixer-track-width,30%) minmax(0,1fr)!important;width:100%!important;min-width:0!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified>.mixerTabletTrackRows{position:sticky!important;left:0!important;z-index:14!important;align-self:stretch!important;min-height:100%!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified>.mixerTabletGridViewport{overflow:hidden!important;width:auto!important;align-self:stretch!important;min-height:100%!important;touch-action:pan-y!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineUnified .mixerTabletGrid{width:100%!important;height:100%!important;min-width:0!important;min-height:100%!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineListOpen{grid-template-columns:clamp(140px,18vw,190px) minmax(0,1fr) clamp(270px,34%,380px)!important;height:100%!important;min-height:0!important;align-items:start!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTimelineListOpen>.mixerTabletGridViewport{overflow:auto!important;touch-action:pan-x pan-y!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletMasterListOpen{grid-template-columns:clamp(320px,42%,430px) minmax(0,1fr)!important;align-items:stretch!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletMasterListOpen{grid-template-columns:minmax(320px,1fr) clamp(220px,var(--mixer-list-width,34%),75%)!important;align-items:stretch!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletMasterListOpen>.mixerMasterOnlyRows{display:block!important;min-width:0!important;overflow-y:auto!important;border-right:2px solid #66717f!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedHeader{display:grid!important;grid-template-columns:clamp(320px,42%,430px) minmax(0,1fr)!important;flex:0 0 36px!important;height:36px!important;min-height:36px!important;overflow:hidden!important;border:0!important;border-bottom:1px solid #25303d!important;box-sizing:border-box!important;background:#070a0f!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineUnifiedHeader{position:sticky!important;top:0!important;z-index:20!important;grid-template-columns:clamp(320px,42vw,430px) minmax(0,1fr)!important;width:100%!important;min-width:0!important;overflow:visible!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTimelineUnifiedHeader{grid-template-columns:clamp(150px,20vw,210px) minmax(0,1fr)!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedHeader{display:grid!important;grid-template-columns:var(--mixer-track-width,30%) minmax(0,1fr)!important;flex:0 0 36px!important;height:36px!important;min-height:36px!important;overflow:hidden!important;border:0!important;border-bottom:1px solid #25303d!important;box-sizing:border-box!important;background:#070a0f!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineUnifiedHeader{position:sticky!important;top:0!important;z-index:20!important;grid-template-columns:var(--mixer-track-width,30%) minmax(0,1fr)!important;width:100%!important;min-width:0!important;overflow:visible!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineUnifiedHeader>.mixerTimelineFixedTrackCap{position:sticky!important;left:0!important;z-index:21!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineUnifiedHeader>.mixerTimelineHeaderViewport{overflow:hidden!important;width:auto!important;touch-action:pan-y!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineUnifiedHeader .mixerTimelineHeaderCanvas{width:100%!important;min-width:0!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedHeaderListOpen{grid-template-columns:clamp(150px,20vw,210px) minmax(0,1fr) clamp(270px,34%,380px)!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedHeaderListOpen{grid-template-columns:clamp(140px,18vw,190px) minmax(0,1fr) clamp(270px,34%,380px)!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelinePlaylistCap{display:flex!important;align-items:center!important;justify-content:center!important;border-left:2px solid #66717f!important;background:#0b1017!important;color:#f8fafc!important;font-size:11px!important;font-weight:1000!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedTrackCap{border-right:2px solid #66717f!important;background:#0b1017!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineFixedTrackCap{position:relative!important;display:grid!important;grid-template-rows:18px 18px!important;border-right:0!important;background:#0b1017!important;overflow:visible!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineTrackCapLane{position:relative!important;display:flex!important;align-items:center!important;min-width:0!important;height:18px!important;padding:0 40px 0 8px!important;box-sizing:border-box!important;overflow:hidden!important;color:#f02ee6!important;font-size:9px!important;font-weight:1000!important;line-height:17px!important;white-space:nowrap!important;text-overflow:ellipsis!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineTrackCapLane+ .mixerTimelineTrackCapLane{border-top:1px solid #263241!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineTrackCapLane::after{content:""!important;position:absolute!important;right:27px!important;top:50%!important;width:0!important;height:0!important;border-top:4px solid transparent!important;border-bottom:4px solid transparent!important;border-left:6px solid #f02ee6!important;transform:translateY(-50%)!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTrackWidthHandle{position:absolute!important;z-index:30!important;right:0!important;top:0!important;width:24px!important;height:100%!important;cursor:ew-resize!important;touch-action:none!important;user-select:none!important;background:transparent!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTrackWidthHandle::before{content:""!important;position:absolute!important;left:7px!important;top:0!important;bottom:0!important;width:14px!important;box-sizing:border-box!important;border:1px solid #9ca3af!important;border-radius:0!important;background:repeating-linear-gradient(90deg,#9ca3af 0 2px,transparent 2px 5px)!important;background-color:#1f2937!important;box-shadow:0 0 5px rgba(107,114,128,.72)!important;pointer-events:none!important}
+          html.mixerTrackWidthResizing,html.mixerTrackWidthResizing body,html.mixerListWidthResizing,html.mixerListWidthResizing body{cursor:ew-resize!important;user-select:none!important}
+          html.mixerTrackWidthResizing .mixerTrackWidthHandle::before,html.mixerListWidthResizing .mixerListWidthHandle::before{border-color:#fde047!important;background:repeating-linear-gradient(90deg,#facc15 0 2px,transparent 2px 5px)!important;background-color:#713f12!important;box-shadow:0 0 12px rgba(250,204,21,.98)!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineHeaderViewport{min-width:0!important;overflow:hidden!important;overscroll-behavior-x:none!important;touch-action:pan-y!important;scrollbar-width:none!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineHeaderCanvas{position:relative!important;min-width:100%!important;height:36px!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTrackRows{display:block!important;min-width:0!important;border-right:2px solid #66717f!important;background:#0b1017!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTrackRows{display:block!important;min-width:0!important;border-right:0!important;background:#0b1017!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTrackHeaderSpacer{position:relative!important;z-index:11!important;height:36px!important;border-bottom:1px solid #66717f!important;background:#0b1017!important;will-change:transform!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridViewport{display:block!important;min-width:0!important;overflow-x:auto!important;overflow-y:hidden!important;overscroll-behavior-x:none!important;-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important;background:#11151b!important;touch-action:pan-y!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGrid{display:block!important;position:relative!important;min-width:100%!important;background-color:#11151b!important;background-image:linear-gradient(to right,rgba(148,163,184,.16) 1px,transparent 1px),linear-gradient(to right,rgba(148,163,184,.07) 1px,transparent 1px)!important;background-size:96px 100%,24px 100%!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGrid{display:block!important;position:relative!important;min-width:100%!important;background-color:#11151b!important;background-image:none!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineRegionLanes{position:relative!important;z-index:10!important;height:36px!important;border-bottom:1px solid #66717f!important;background:#070a0f!important;overflow:hidden!important;will-change:transform!important;box-shadow:0 2px 4px rgba(0,0,0,.42)!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineRegionLane{position:relative!important;height:18px!important;overflow:hidden!important}.mixerTimelineChildLane{border-top:1px solid #263241!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineRegion{position:absolute!important;top:1px!important;height:16px!important;box-sizing:border-box!important;overflow:hidden!important;padding:1px 4px!important;border:1px solid color-mix(in srgb,var(--mixer-region-color) 70%,#fff 30%)!important;background:var(--mixer-region-color)!important;color:#fff!important;font-size:8px!important;font-weight:1000!important;line-height:12px!important;text-overflow:ellipsis!important;white-space:nowrap!important;text-shadow:0 1px 1px #000!important}.mixerTimelineChildRegion{filter:brightness(1.12)!important}
@@ -12816,8 +13328,8 @@
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletTrackRows,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow::before,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow::after{border-radius:0!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineRegionGuides{position:absolute!important;z-index:5!important;inset:0!important;pointer-events:none!important;overflow:hidden!important}html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineHeaderCanvas>.mixerTimelineRegionGuides{z-index:12!important}.mixerTimelineRegionGuideSpan{position:absolute!important;top:0!important;bottom:0!important;box-sizing:border-box!important;border-left:1px solid var(--mixer-region-guide-color)!important;border-right:1px solid var(--mixer-region-guide-color)!important;opacity:.88!important}.mixerTimelineChildGuideSpan{opacity:.62!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTimelineHeaderCanvas>.mixerTimelineRegionGuides>.mixerTimelineChildGuideSpan{top:18px!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow{box-sizing:border-box!important;height:72px!important;min-height:72px!important;max-height:72px!important;grid-template-columns:5px minmax(52px,1fr) 32px 32px!important;grid-template-rows:30px 28px!important;grid-template-areas:"color main mute solo" "color slider slider slider"!important;column-gap:4px!important;row-gap:2px!important;padding:5px 5px 5px 44px!important;border-bottom:1px solid #3b4654!important;contain:layout paint style!important;content-visibility:visible!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow::after{left:0!important;right:0!important;bottom:0!important;background:#3b4654!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow{box-sizing:border-box!important;height:72px!important;min-height:72px!important;max-height:72px!important;grid-template-columns:5px minmax(52px,1fr) 32px 32px!important;grid-template-rows:30px 28px!important;grid-template-areas:"color main mute solo" "color slider slider slider"!important;column-gap:4px!important;row-gap:2px!important;padding:5px 19px 5px 44px!important;border-bottom:1px solid #7c3aed!important;contain:layout paint style!important;content-visibility:visible!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow::after{display:none!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .appScrollLane{left:0!important;width:38px!important;min-width:38px!important;max-width:38px!important;font-size:14px!important;gap:2px!important;background:rgba(15,23,42,.78)!important;border-right:1px solid #334155!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRowColor{width:5px!important;height:56px!important;border-radius:2px!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRowDb{display:none!important}
@@ -12825,32 +13337,34 @@
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRowGroupName{font-size:9px!important;line-height:12px!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerInlineSliderWrap{height:28px!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow .mixerMiniBtn{width:30px!important;height:28px!important;min-height:28px!important;border-radius:5px!important;font-size:12px!important;padding:0!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridRow{position:relative!important;box-sizing:border-box!important;height:72px!important;min-height:72px!important;border-bottom:1px solid #3b4654!important;overflow:hidden!important;contain:layout paint style!important;content-visibility:visible!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridRow{position:relative!important;box-sizing:border-box!important;height:72px!important;min-height:72px!important;border-bottom:1px solid #7c3aed!important;overflow:hidden!important;contain:layout paint style!important;content-visibility:visible!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItem{position:absolute!important;left:var(--mixer-grid-left)!important;top:0!important;width:var(--mixer-grid-width)!important;height:72px!important;min-width:1px!important;box-sizing:border-box!important;overflow:hidden!important;border:1px solid var(--mixer-grid-color)!important;border:1px solid color-mix(in srgb,var(--mixer-grid-color) 72%,#fff 28%)!important;border-radius:2px!important;background:var(--mixer-grid-color)!important;background:color-mix(in srgb,var(--mixer-grid-color) 78%,#111827 22%)!important;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14)!important;color:#fff!important;contain:layout paint style!important;content-visibility:visible!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemMuted{background:#5b6169!important;border-color:#d1d5db!important;color:#f8fafc!important}.mixerTabletGridItemMuted .mixerTabletGridHeader{background:#343a43!important;color:#f8fafc!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemMuted{background:#050505!important;border-color:#374151!important;color:#6b7280!important}.mixerTabletGridItemMuted .mixerTabletGridHeader{background:#050505!important;color:#ef4444!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridHeader{position:absolute;left:0;right:0;top:0;z-index:2;height:13px;display:flex;align-items:center;gap:4px;padding:0 3px;box-sizing:border-box;overflow:hidden;border-bottom:1px solid rgba(255,255,255,.5);background:var(--mixer-grid-color);background:color-mix(in srgb,var(--mixer-grid-color) 78%,#020617 22%);color:#fff}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridMuteLabel{display:none;flex:0 0 auto;height:10px;padding:0 3px;border:1px solid rgba(255,255,255,.76);border-radius:2px;background:#111827;color:#fff;font-size:7px;font-weight:1000;line-height:9px;letter-spacing:.03em;text-transform:uppercase;white-space:nowrap}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemMuted .mixerTabletGridMuteLabel{display:block}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemName{min-width:0;flex:1 1 auto;overflow:hidden;color:inherit;font-size:8px;font-weight:1000;line-height:11px;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.88)}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemMuted .mixerTabletGridMuteLabel{display:block;background:#dc2626!important;border-color:#f87171!important;color:#fff!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemName{min-width:0;flex:1 1 auto;overflow:hidden;color:#050505!important;font-size:8px;font-weight:1000;line-height:11px;text-overflow:ellipsis;white-space:nowrap;text-shadow:none!important}html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridItemMuted .mixerTabletGridItemName{color:#ef4444!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridWaveform{position:absolute;left:4px;right:4px;top:16px;bottom:3px;display:flex;align-items:center;gap:1px;overflow:hidden;opacity:.9}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridWaveform>i{display:block;flex:1 1 0;min-width:1px;height:var(--mixer-wave-height);border-radius:1px;background:currentColor;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGridWaveform>i{display:block;flex:1 1 0;min-width:1px;height:var(--mixer-wave-height);border-radius:999px!important;background:#6b7280!important;box-shadow:0 0 0 1px rgba(0,0,0,.08);transform:scaleY(var(--mixer-wave-volume-scale,1));transform-origin:center;transition:transform 60ms linear;will-change:transform}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGroupWaveShadow{position:absolute!important;left:var(--mixer-grid-left)!important;top:4px!important;width:var(--mixer-grid-width)!important;height:63px!important;min-width:1px!important;overflow:hidden!important;pointer-events:none!important;opacity:.52!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGroupWaveShadow .mixerTabletGridWaveform{inset:0!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletGroupWaveShadow .mixerTabletGridWaveform>i{background:#737b86!important;box-shadow:none!important}
           html[data-director-device="tablet"] .app[data-theme="light"][data-active-tab="mixer"] .mixerListBox{background:#dbe2ea!important}
           html[data-director-device="tablet"] .app[data-theme="light"][data-active-tab="mixer"] .mixerTabletTrackRows{background:#eef2f7!important}
-          html[data-director-device="tablet"] .app[data-theme="light"][data-active-tab="mixer"] .mixerTabletGrid{background-color:#d7dee7!important;background-image:linear-gradient(to right,rgba(51,65,85,.2) 1px,transparent 1px),linear-gradient(to right,rgba(51,65,85,.09) 1px,transparent 1px)!important}
+          html[data-director-device="tablet"] .app[data-theme="light"][data-active-tab="mixer"] .mixerTabletGrid{background-color:#d7dee7!important;background-image:none!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerActionControls{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:0 0 7px!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerActionControls>button{height:38px!important;min-height:38px!important;min-width:0!important;font-size:11px!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .topStatusRow.mixerTopStatusRow{grid-template-columns:minmax(0,1fr)!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .topStatusRow.mixerTopStatusRow>.topHeaderTools{display:none!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerHeaderViewControls{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important;min-width:0!important;width:100%!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerHeaderViewControls{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important;min-width:0!important;width:100%!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerHeaderViewControls>button{height:30px!important;min-height:30px!important;min-width:0!important;padding:0 5px!important;font-size:10.5px!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerPlaylistSide{display:flex!important;flex-direction:column!important;width:100%!important;max-width:none!important;min-width:0!important;min-height:0!important;height:100%!important;border-left:2px solid #66717f!important;background:#0b1017!important;padding:5px!important;box-sizing:border-box!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerPlaylistSide{position:relative!important;display:flex!important;flex-direction:column!important;width:100%!important;max-width:none!important;min-width:0!important;min-height:0!important;height:100%!important;border-left:2px solid #66717f!important;background:#0b1017!important;padding:5px!important;box-sizing:border-box!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListWidthHandle{position:absolute!important;z-index:35!important;left:0!important;top:0!important;width:24px!important;height:100%!important;cursor:ew-resize!important;touch-action:none!important;user-select:none!important;background:transparent!important;transform:translateX(-2px)!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerListWidthHandle::before{content:""!important;position:absolute!important;left:2px!important;top:0!important;bottom:0!important;width:14px!important;box-sizing:border-box!important;border:1px solid #9ca3af!important;border-radius:0!important;background:repeating-linear-gradient(90deg,#9ca3af 0 2px,transparent 2px 5px)!important;background-color:#1f2937!important;box-shadow:0 0 5px rgba(107,114,128,.72)!important;pointer-events:none!important}
           html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerPlaylistTitle{flex:0 0 30px!important;height:30px!important;margin-bottom:5px!important;justify-content:center!important;text-align:center!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerPlaylistRows{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;overscroll-behavior:none!important;-webkit-overflow-scrolling:touch!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletListWorkspace{display:grid!important;grid-template-columns:minmax(0,1fr) clamp(270px,34%,380px)!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;overflow:hidden!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTrackGridPane{min-width:0!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:none!important;-webkit-overflow-scrolling:touch!important;touch-action:pan-y!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerRow.mixerInlineRow{grid-template-columns:minmax(0,1fr) 30px 30px!important;grid-template-rows:1fr!important;grid-template-areas:"main mute solo"!important;gap:4px!important;padding:7px 5px!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerRowColor,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerRowGroupName,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerRowDb,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerInlineSliderWrap,html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .appScrollLane{display:none!important}
-          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerContentListOpen .mixerTabletTrackRows .mixerRowName{font-size:10px!important;line-height:13px!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerPlaylistRows{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;overscroll-behavior:none!important;-webkit-overflow-scrolling:touch!important;box-sizing:border-box!important;padding-left:16px!important;padding-bottom:0!important;scroll-padding-bottom:0!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTabletListWorkspace{display:grid!important;grid-template-columns:minmax(0,1fr) clamp(220px,var(--mixer-list-width,34%),75%)!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;overflow:hidden!important}
+          html[data-director-device="tablet"] .app[data-active-tab="mixer"] .mixerTrackGridPane{display:flex!important;flex-direction:column!important;min-width:0!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:none!important;-webkit-overflow-scrolling:touch!important;touch-action:pan-y!important}
         </style>
         <style>
           .app .item.selectedBlue .selectedBlueText,.app .item.selectedBlue .selectedBlueTimeText,.app .item.selectedPink .selectedPinkText,.app .item.selectedPink .selectedPinkTimeText,.app .item.queuedYellow .queuedYellowText,.app .item.queuedYellow .queuedYellowTimeText,.app .item.queuedGreen .queuedGreenText,.app .item.queuedGreen .queuedGreenTimeText,.app .item.queuedYellow .leftCol span,.app .item.queuedYellow .rightCol span,.app .item.queuedGreen .leftCol span,.app .item.queuedGreen .rightCol span,.app .item.queuedYellow .marqueeStatic,.app .item.queuedYellow .marqueeTrack,.app .item.queuedYellow .marqueeSegment,.app .item.queuedGreen .marqueeStatic,.app .item.queuedGreen .marqueeTrack,.app .item.queuedGreen .marqueeSegment,.app .item.playing .playingText,.app .item.playing .playingTimeText,.app .item.playing .leftCol span,.app .item.playing .rightCol span,.app .item.playing .marqueeStatic,.app .item.playing .marqueeTrack,.app .item.playing .marqueeSegment{color:#050505!important;text-shadow:none!important}
@@ -12976,6 +13490,7 @@
       const nextMusicCacheKey = String(nextList.getAttribute('data-music-list-cache-key') || '')
       if (currentMusicCacheKey && currentMusicCacheKey === nextMusicCacheKey &&
           nextList.parentNode) {
+        if (!currentList.children.length && nextList.children.length) continue
         // A árvore completa das músicas já está montada e pintada. Reutilizar
         // a mesma lista evita que WebKit/Android reconstruam linhas durante a
         // rolagem; seleção, fila e progresso são sincronizados logo depois.
@@ -13137,6 +13652,7 @@
       syncMainControlButtonsDom()
       syncTabletMultiLoopBypassDom()
       syncMixerRowsDom()
+      if (state.activeTab === 'mixer') syncMixerTrackWidthDom()
       syncMixerVolumeModalDom()
       syncMixerItemModalDom()
       syncPremixVolumeControlsDom()
@@ -13480,7 +13996,51 @@
     dbDisplay.textContent = formatVolumeDb(volumeState.db)
   }
 
+  function rememberMixerVerticalScrollDom(surface = root) {
+    const list = surface?.matches?.('.mixerListBox')
+      ? surface : surface?.querySelector?.('.mixerListBox')
+    const trackPane = surface?.matches?.('.mixerTrackGridPane')
+      ? surface : surface?.querySelector?.('.mixerTrackGridPane')
+    // Com o LIST aberto, quem realmente rola e o painel interno. O listBox
+    // externo fica em zero e nao pode apagar a posicao antes da remontagem.
+    if (trackPane) {
+      const top = Math.max(0, Number(trackPane.scrollTop) || 0)
+      state.mixerTrackScrollTop = top
+      state.mixerListScrollTop = top
+    } else if (list) {
+      const top = Math.max(0, Number(list.scrollTop) || 0)
+      state.mixerListScrollTop = top
+      state.mixerTrackScrollTop = top
+    }
+  }
+
+  function restoreMixerVerticalScrollDom(surface = root) {
+    const listTop = Math.max(0, Number(state.mixerListScrollTop) || 0)
+    const trackTop = Math.max(0, Number(state.mixerTrackScrollTop) || 0)
+    const apply = () => {
+      if (state.activeTab !== 'mixer') return
+      const list = surface?.matches?.('.mixerListBox')
+        ? surface : surface?.querySelector?.('.mixerListBox')
+      const trackPane = surface?.matches?.('.mixerTrackGridPane')
+        ? surface : surface?.querySelector?.('.mixerTrackGridPane')
+      if (list && Math.abs((Number(list.scrollTop) || 0) - listTop) > .5) list.scrollTop = listTop
+      if (trackPane && Math.abs((Number(trackPane.scrollTop) || 0) - trackTop) > .5) trackPane.scrollTop = trackTop
+    }
+    apply()
+    window.requestAnimationFrame(apply)
+  }
+
+  function carryMixerVerticalScrollAcrossListLayout() {
+    const activeScroller = state.mixerListOpen
+      ? root.querySelector('.mixerTrackGridPane,.mixerMasterOnlyRows')
+      : root.querySelector('.mixerListBox')
+    const top = Math.max(0, Number(activeScroller?.scrollTop) || 0)
+    state.mixerListScrollTop = top
+    state.mixerTrackScrollTop = top
+  }
+
   function captureListScrollState() {
+    rememberMixerVerticalScrollDom()
     return Array.from(root.querySelectorAll('.listBox')).map((el, index) => ({
       index,
       key: String(el.getAttribute('data-scroll-key') || ''),
@@ -13490,16 +14050,19 @@
   }
 
   function restoreListScrollState(scrollState) {
-    if (!Array.isArray(scrollState) || !scrollState.length) return
-    const boxes = Array.from(root.querySelectorAll('.listBox'))
-    for (const item of scrollState) {
-      const el = item.key
-        ? boxes.find((box) => String(box.getAttribute('data-scroll-key') || '') === item.key)
-        : boxes[item.index]
-      if (!el) continue
-      el.scrollTop = Math.max(0, Number(item.top) || 0)
-      el.scrollLeft = Math.max(0, Number(item.left) || 0)
+    if (Array.isArray(scrollState) && scrollState.length) {
+      const boxes = Array.from(root.querySelectorAll('.listBox'))
+      for (const item of scrollState) {
+        const el = item.key
+          ? boxes.find((box) => String(box.getAttribute('data-scroll-key') || '') === item.key)
+          : boxes[item.index]
+        if (!el) continue
+        el.scrollTop = Math.max(0, Number(item.top) || 0)
+        el.scrollLeft = Math.max(0, Number(item.left) || 0)
+      }
     }
+    restoreMixerVerticalScrollDom()
+    if (state.activeTab === 'mixer') syncMixerTrackWidthDom()
   }
 
   function syncPlaybackQueueHeaderDom(data = state.snapshot || {}) {
@@ -13761,7 +14324,20 @@
           visualPlayingId) {
       syncSongRowsDom(data)
       syncMainControlButtonsDom()
-      state.lastHtmlSignature = getAppRenderSignature()
+      const expectedRows = state.activeTab === 'playlist'
+        ? getPlaylistWithOpenDrawers(data)
+        : state.activeTab === 'regions' ? getRegionsWithOpenDrawers(data) : []
+      const expectedType = state.activeTab === 'playlist' ? 'playlist' : 'region'
+      const mountedListReady = !expectedRows.length || !!root.querySelector(
+        `.musicListRenderCache .item[data-item-type="${expectedType}"]`)
+      if (mountedListReady || (state.activeTab !== 'playlist' && state.activeTab !== 'regions')) {
+        state.lastHtmlSignature = getAppRenderSignature()
+      } else {
+        // Nunca confirme a assinatura de um snapshot completo em cima do DOM
+        // vazio da tela inicial. O render agendado precisa criar as linhas.
+        state.lastHtmlSignature = ''
+        scheduleRender(true)
+      }
     }
   }
 
@@ -13985,8 +14561,32 @@
     const start = Number(grid.getAttribute('data-mixer-timeline-start'))
     const end = Number(grid.getAttribute('data-mixer-timeline-end'))
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return
+    const focusItem = getMixerFocusItem(state.snapshot, sampledAt)
+    const focusId = String(getId(focusItem) || '')
+    const focusStart = getItemStart(focusItem)
+    const focusEnd = getItemEnd(focusItem)
+    const renderedFocusId = String(grid.getAttribute('data-mixer-focus-id') || '')
+    const staleGrid = !!focusId && (
+      renderedFocusId !== focusId ||
+      focusStart === null || focusEnd === null ||
+      Math.abs(Number(focusStart) - start) > 0.001 ||
+      Math.abs(Number(focusEnd) - end) > 0.001
+    )
+    if (staleGrid) {
+      // O snapshot da música nova chegou, mas este DOM ainda representa a
+      // anterior. Esconde a agulha antes de qualquer cálculo para ela nunca
+      // aparecer no fim dos limites antigos; o próximo frame monta o grid novo.
+      cursor.style.display = 'none'
+      seekClockKey = ''
+      seekClockAwaitingBoundsKey = ''
+      state.lastHtmlSignature = ''
+      scheduleRender(true)
+      return
+    }
     const position = isPlaying(state.snapshot)
-      ? getSmoothedCurrentPlaybackPosition(state.snapshot, sampledAt)
+      ? getSmoothSeekPlayPositionSec(state.snapshot, sampledAt, {
+          id: getId(focusItem) || getPlayingId(state.snapshot), start, end,
+        })
       : getTransportSeekCursorPos({ start, end }, state.snapshot, sampledAt)
     const ratio = position === null ? -1 : Math.max(0, Math.min(1, (position - start) / (end - start)))
     cursor.style.display = ratio < 0 ? 'none' : 'block'
@@ -14024,6 +14624,7 @@
     state.transportSeekCursorPos = position
     state.transportSeekPauseVisualHoldPos = position
     state.transportSeekPauseVisualHoldUntil = now() + 8000
+    state.transportSeekLocalCursorHeld = true
     state.transportSeekCommandSeq = Math.max(Number(state.transportSeekCommandSeq) + 1 || 1, Date.now() * 1000)
     postCommand('edit_cursor_move', {
       position, minPos: start, maxPos: end,
@@ -14090,7 +14691,7 @@
     if (!viewport || !grid) return
     const start = Number(grid.getAttribute('data-mixer-timeline-start'))
     const end = Number(grid.getAttribute('data-mixer-timeline-end'))
-    const item = getSongItemById(state.selectedRegionId || state.selectedPlaylistSongId || getPlayingId(), state.snapshot)
+    const item = getMixerFocusItem(state.snapshot)
     const itemStart = getItemStart(item)
     const itemEnd = getItemEnd(item)
     const position = itemStart !== null && itemEnd !== null && itemEnd > itemStart
@@ -14437,8 +15038,16 @@
   }
 
   function setTab(tab, options = {}) {
+    closeNavigationModalsInPlace()
     if (state.activeTab === tab) return
     const previousTab = state.activeTab
+    if (tab === 'mixer' && previousTab !== 'mixer' && state.showTransportSeekModal) {
+      state.transportSeekHiddenByMixer = true
+      state.showTransportSeekModal = false
+    } else if (previousTab === 'mixer' && tab !== 'mixer' && state.transportSeekHiddenByMixer) {
+      state.showTransportSeekModal = true
+      state.transportSeekHiddenByMixer = false
+    }
     if (previousTab === 'mixer' && tab !== 'mixer') {
       stopMixerGridMomentum()
       mixerViewportSyncPending = null
@@ -14446,7 +15055,6 @@
       mixerViewportSyncTimer = 0
       state.showMixerItemModal = false
       state.mixerItemTarget = ''
-      state.mixerListOpen = false
     }
     const changingMusicListTab = (previousTab === 'playlist' && tab === 'regions') || (previousTab === 'regions' && tab === 'playlist')
     if (changingMusicListTab) {
@@ -14488,17 +15096,15 @@
       })
     }
     if (tab === 'mixer') {
-      // O endpoint pesado é cacheado separadamente do snapshot. Força uma
-      // reconstrução para a seleção atual ao abrir o Mixer; uma revisão
-      // anterior vazia não pode manter o grid sem itens indefinidamente.
-      state.mixerTimelineItems = []
-      state.mixerTimelineLoaded = false
-      state.mixerTimelineLoadedRevision = ''
+      // O catálogo de todos os projetos é carregado ao conectar. Reaproveita-o
+      // imediatamente; o endpoint antigo permanece apenas como fallback.
+      applyCachedMixerTimelineProject()
       postCommand('mixer_focus', {
         view: state.mixerView,
         page: 'mixer',
         selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '',
       })
+      loadMixerTimelineCatalog()
     }
     if (swappedMusicPane || mountedMainContent) {
       if (tab !== 'mixer' && previousTab !== 'mixer') {
@@ -14616,6 +15222,7 @@
       state.transportSeekCursorPos = 0
       state.transportSeekPauseVisualHoldPos = null
       state.transportSeekPauseVisualHoldUntil = 0
+      state.transportSeekLocalCursorHeld = false
       return
     }
     storeTransportSeekTarget(target, true)
@@ -15560,6 +16167,7 @@
       case 'menu': break
       case 'top-menu': state.showMenu = !state.showMenu; if (!mountMenuInPlace()) scheduleRender(true); break
       case 'settings': {
+        closeNavigationModalsInPlace('settings')
         const opening = !state.showSettingsModal
         closeTabletSearchState()
         state.showMenu = false
@@ -15582,6 +16190,7 @@
         break
       }
       case 'project-selector': {
+        closeNavigationModalsInPlace('project')
         const opening = !state.showProjectModal
         closeTabletSearchState()
         state.showMenu = false
@@ -15594,8 +16203,9 @@
         if (!mountProjectModalInPlace()) scheduleRender(true)
         break
       }
-      case 'open-playlist-modal': closeTabletSearchState(); state.showMenu = false; state.showProjectModal = false; state.showSettingsModal = false; state.tabletPlaylistPendingId = ''; state.showPlaylistModal = true; if (!mountPlaylistModalInPlace()) scheduleRender(true); break
+      case 'open-playlist-modal': closeNavigationModalsInPlace('playlist'); closeTabletSearchState(); state.showPlaylistModal = true; if (!mountPlaylistModalInPlace()) scheduleRender(true); break
       case 'tablet-search': {
+        closeNavigationModalsInPlace()
         const opening = !state.showTabletSearch
         closeTabletSearchState()
         state.showMenu = false
@@ -15640,8 +16250,8 @@
         if (state.tabletTunerSplit || state.tabletBpmSplit) state.tunerSourceTab = 'regions'
         setTab('regions')
         break
-      case 'go-markers': state.showMenu = false; openMarkersOverlay(); break
-      case 'open-teleprompt': state.showMenu = false; openDirectorTelepromptScreen(); break
+      case 'go-markers': closeNavigationModalsInPlace(); openMarkersOverlay(); break
+      case 'open-teleprompt': closeNavigationModalsInPlace(); openDirectorTelepromptScreen(); break
       case 'teleprompt-slot-1': setDirectorTelepromptSlot(1); break
       case 'teleprompt-slot-2': setDirectorTelepromptSlot(2); break
       case 'teleprompt-list-toggle': {
@@ -15658,6 +16268,7 @@
       case 'tablet-transport-panel': state.showTransportSeekModal ? closeTransportSeekModal() : openTransportSeekModal(); break
       case 'tablet-teleprompt':
         {
+        closeNavigationModalsInPlace()
         const leavingPremix = leavePremixForTabletNavigation()
         closeTabletSearchState()
         state.showProjectModal = false
@@ -15669,6 +16280,7 @@
       case 'tablet-preview': togglePreview(el.getAttribute('data-preview-slot')); break
       case 'tablet-parts-split':
         {
+        closeNavigationModalsInPlace()
         const leavingPremix = leavePremixForTabletNavigation()
         const tunerWasOpen = state.tabletTunerSplit
         const bpmWasOpen = state.tabletBpmSplit
@@ -15690,6 +16302,7 @@
         }
       case 'tablet-tuner-split':
         {
+        closeNavigationModalsInPlace()
         const leavingPremix = leavePremixForTabletNavigation()
         const bpmWasOpen = state.tabletBpmSplit
         closeTabletSearchState()
@@ -15712,6 +16325,7 @@
         }
       case 'tablet-bpm-split':
         {
+        closeNavigationModalsInPlace()
         const leavingPremix = leavePremixForTabletNavigation()
         const tunerWasOpen = state.tabletTunerSplit
         closeTabletSearchState()
@@ -15734,6 +16348,7 @@
         }
       case 'tablet-mixer':
         {
+        closeNavigationModalsInPlace()
         const leavingPremix = leavePremixForTabletNavigation()
         const tunerWasOpen = state.tabletTunerSplit
         const bpmWasOpen = state.tabletBpmSplit
@@ -15759,6 +16374,7 @@
         break
         }
       case 'tablet-recados':
+        closeNavigationModalsInPlace()
         closeTabletSearchState()
         if (state.showRecadosScreen) closeDirectorRecadosScreen()
         else {
@@ -15960,6 +16576,7 @@
         break
       }
       case 'tablet-playlists':
+        closeNavigationModalsInPlace('playlist')
         closeTabletSearchState()
         state.showMenu = false
         if (state.showPlaylistModal) {
@@ -16059,7 +16676,7 @@
       case 'live': toggleLive(); break
       case 'confirm-live-off': confirmLiveOff(); break
       case 'cancel-live-off': state.showConfirmLiveOff = false; scheduleRender(true); break
-      case 'timer-open': state.showTimerModal = true; if (!mountTimerModalInPlace()) scheduleRender(true); break
+      case 'timer-open': closeNavigationModalsInPlace('timer'); state.showTimerModal = true; if (!mountTimerModalInPlace()) scheduleRender(true); break
       case 'timer-toggle': handleTimerToggle(); break
       case 'timer-init-auto': toggleTimerInitAuto(); break
       case 'timer-key': applyTimerKeyboardKey(el.getAttribute('data-timer-key')); break
@@ -16427,11 +17044,14 @@
         break
       }
       case 'mixer-tracks': state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
-      case 'mixer-groups': state.mixerView = 'groups'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'groups', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
+      case 'mixer-groups': // Compatibilidade com uma tela antiga ainda montada durante atualização.
+        state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-master': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-focus': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-list-toggle': {
+        carryMixerVerticalScrollAcrossListLayout()
         state.mixerListOpen = !state.mixerListOpen
+        writeLocal('vshook_director_mixer_list_open', state.mixerListOpen ? '1' : '0')
         if (!mountMainContentInPlace()) scheduleRender(true)
         break
       }
@@ -16440,6 +17060,7 @@
         if (!id) break
         const item = getPremixAllItemRows().find(
           (candidate) => getPremixItemId(candidate) === id) || { id }
+        holdPremixItemVolumeDuringStateChange(id, item)
         const next = !getPremixItemMute(item)
         setPremixItemMute(id, next)
         const uniqueRestore = premixUniqueSoloVisualRestore.get(id)
@@ -16575,6 +17196,7 @@
         const id = String(el.getAttribute('data-premix-item-id') || '')
         if (!id) break
         const item = findMixerTimelineItemById(id) || { id }
+        holdPremixItemVolumeDuringStateChange(id, item)
         const next = !getPremixItemMute(item)
         setPremixItemMute(id, next)
         const uniqueRestore = premixUniqueSoloVisualRestore.get(id)
@@ -16910,7 +17532,8 @@
     // e acender a linha a cada rolagem atrapalharia a leitura ao vivo.
     const target = event.target?.closest?.('[data-action]')
     if (!target || target.closest('.item') || target.disabled === true ||
-        target.getAttribute('aria-disabled') === 'true') return
+        target.getAttribute('aria-disabled') === 'true' ||
+        target.getAttribute('data-action') === 'mixer-grid-seek') return
     pressedFeedbackElement = target
     try { target.classList.add('vshookPressed') } catch (_) {}
   }
@@ -17010,6 +17633,14 @@
     const el = resolveTapElement(event)
     if (!el) return
     const action = el.getAttribute('data-action') || ''
+    // Botões de modal podem fechar ou reconstruir o overlay durante o
+    // pointerup. Alguns WebViews então geram um click sintético já sobre o
+    // controle que ficou exposto atrás do modal. Identificamos o gesto antes
+    // de alterar o DOM e, depois de executar a ação correta, mantemos uma
+    // janela curta que consome somente esse click residual. Um pointerdown
+    // novo e intencional continua liberando a janela em captureActionPointer.
+    const modalPointerAction = event.type === 'pointerup' &&
+      !!el.closest?.('.modalOverlay,[data-stop-modal]')
     if (action === 'select-item') {
       const sameDraggedPointer = event.type === 'pointerup' &&
         event.pointerId === playlistScrollSuppressedPointerId
@@ -17035,6 +17666,7 @@
       lastPointerDispatchedAction = { key, at: now() }
     }
     handleAction(action, el, event)
+    if (modalPointerAction) state.ignoreTapUntil = Math.max(state.ignoreTapUntil, now() + 700)
     if (!state.showMenu) root.querySelector('.topMenuFlyout')?.remove?.()
   }
 
@@ -18053,6 +18685,7 @@
   function handleDirectorSongListScroll(event) {
     const list = event.target
     if (list?.matches?.('.mixerTrackGridPane')) {
+      state.mixerTrackScrollTop = Math.max(0, Number(list.scrollTop) || 0)
       const viewport = list.querySelector('.mixerTabletGridViewport')
       if (viewport) queueMixerViewportSync(viewport)
       return
@@ -18072,10 +18705,13 @@
     if (scrollKey === 'playlist' || scrollKey === 'regions') {
       rememberMusicPaneScroll(scrollKey, list)
       state.directorSongListScrollingUntil = scrollingUntil
-    } else if (scrollKey === 'mixer' && now() <= mixerViewportUserActiveUntil) {
-      mixerViewportUserActiveUntil = now() + 350
-      const viewport = list.querySelector('.mixerTabletGridViewport')
-      if (viewport) queueMixerViewportSync(viewport)
+    } else if (scrollKey === 'mixer') {
+      state.mixerListScrollTop = Math.max(0, Number(list.scrollTop) || 0)
+      if (now() <= mixerViewportUserActiveUntil) {
+        mixerViewportUserActiveUntil = now() + 350
+        const viewport = list.querySelector('.mixerTabletGridViewport')
+        if (viewport) queueMixerViewportSync(viewport)
+      }
     }
   }
 
@@ -18379,6 +19015,14 @@
     if (window.PointerEvent) {
       document.addEventListener('pointerdown', captureActionPointer, { passive: true, capture: true })
       document.addEventListener('pointercancel', cancelActionPointer, { passive: true, capture: true })
+      document.addEventListener('pointerdown', handleMixerTrackWidthResize, { passive: false })
+      document.addEventListener('pointermove', handleMixerTrackWidthResize, { passive: false })
+      document.addEventListener('pointerup', handleMixerTrackWidthResize, { passive: false })
+      document.addEventListener('pointercancel', handleMixerTrackWidthResize, { passive: false })
+      document.addEventListener('pointerdown', handleMixerListWidthResize, { passive: false })
+      document.addEventListener('pointermove', handleMixerListWidthResize, { passive: false })
+      document.addEventListener('pointerup', handleMixerListWidthResize, { passive: false })
+      document.addEventListener('pointercancel', handleMixerListWidthResize, { passive: false })
       document.addEventListener('pointerdown', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointermove', handleTabletPlayHold, { passive: true })
       document.addEventListener('pointerup', handleTabletPlayHold, { passive: true })
@@ -18616,11 +19260,27 @@
   }
 
   function refreshDirectorContentAfterResume() {
-    musicPaneCache.clear()
-    premixFullScreenCache.clear()
-    root.querySelectorAll('.musicListRenderCache').forEach((list) => list.setAttribute('data-music-list-cache-key', ''))
-    state.lastHtmlSignature = ''
-    scheduleRender(true)
+    const sampledAt = now()
+    if (sampledAt - directorResumeRefreshAt < 500) {
+      pollBridge()
+      return
+    }
+    directorResumeRefreshAt = sampledAt
+    const mountedListReady = Array.from(root.querySelectorAll('.musicListRenderCache'))
+      .some((list) => !!list.querySelector('.item'))
+    if (!mountedListReady || !hasRenderableListContent(state.snapshot || {})) {
+      musicPaneCache.clear()
+      premixFullScreenCache.clear()
+      root.querySelectorAll('.musicListRenderCache').forEach((list) => {
+        list.setAttribute('data-music-list-cache-key', '')
+      })
+      state.lastHtmlSignature = ''
+      scheduleRender(true)
+    } else {
+      syncSongRowsDom()
+      syncPlaybackProgressDom()
+      syncTimerDom()
+    }
     pollBridge()
   }
 

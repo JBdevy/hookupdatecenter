@@ -176,8 +176,10 @@ assert.match(reuseListsBlock, /data-music-list-cache-key/,
 assert.match(reuseListsBlock, /replaceChild\(currentList, nextList\)/,
   'cache deve reaproveitar o mesmo DOM da lista')
 const renderCachedListBlock = extractFunction('renderCachedMusicList')
-assert.match(renderCachedListBlock, /const rows = mounted \? '' : renderRows\(items, type\)/,
+assert.match(renderCachedListBlock, /const rows = canReuseMounted \? '' : renderRows\(items, type\)/,
   'lista ja montada nao deve ser reconstruida nem fora da tela')
+assert.match(renderCachedListBlock, /mounted\.querySelector\('\.item'\)/,
+  'marcador vazio de cache nunca deve ocultar uma lista que possui itens')
 assert.match(scheduleRenderBlock, /restoreListScrollState\(scrollState\)[\s\S]{0,100}?syncSongRowsDom\(\)/,
   'estado dinamico deve ser sincronizado depois de recuperar a lista do cache')
 const mountMainBlock = extractFunction('mountMainContentPanelDom')

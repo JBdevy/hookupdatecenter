@@ -11019,3 +11019,42 @@ html body #app .app .item[data-block-color-mode]::after,
 html body #app .app .tunerFullBlockRow::after {
   border-radius: 3px !important;
 }
+
+/* Modais flutuam sem escurecer a interface que permanece por baixo. */
+html body #app .app .modalOverlay,
+html body #app .app[data-theme="light"] .modalOverlay {
+  background: transparent !important;
+}
+
+/* O item fixo de início em Parts segue os mesmos cantos dos blocos. */
+html body #app .app .item.partsSongStartPart,
+html body #app .app .item.partsSongStartPart::before,
+html body #app .app .item.partsSongStartPart::after {
+  border-radius: 3px !important;
+}
+
+/* O início é identificado somente pelo selo; não recebe contorno especial. */
+html body #app .app .item.partsSongStartPart::after {
+  content: none !important;
+  display: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+/* A Part verde confirmada pisca até o engatilhamento ser consumido. */
+@keyframes partsArmedConfirmedBlink {
+  0%, 49% { opacity: 1; filter: brightness(1.18); }
+  50%, 100% { opacity: .48; filter: brightness(.72); }
+}
+html body #app .app .markerListBox [data-marker-id].partsMarkerArmed,
+html body #app .app .markerListBox [data-marker-id].partsMarkerArmed.markerBlink {
+  animation: partsArmedConfirmedBlink .8s steps(1, end) infinite !important;
+}
+
+/* O editor do item não bloqueia a rolagem das pistas atrás dele. */
+html body #app .app .mixerItemModalOverlay {
+  pointer-events: none !important;
+}
+html body #app .app .mixerItemModalBox {
+  pointer-events: auto !important;
+}

@@ -1850,6 +1850,52 @@ function createBridgeServer(options) {
       return
     }
 
+    if (req.method === 'GET' && (parsedUrl.pathname === '/mixer-timeline' || parsedUrl.pathname === '/mixer-timeline.json')) {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 200, {
+          ok: false,
+          licenseRequired: true,
+          revision: 0,
+          scopeId: '',
+          scopeStart: 0,
+          scopeEnd: 0,
+          items: [],
+        })
+        return
+      }
+      proxyNativeJson('/mixer-timeline')
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch(() => sendJson(res, 503, {
+          ok: false,
+          revision: 0,
+          scopeId: '',
+          scopeStart: 0,
+          scopeEnd: 0,
+          items: [],
+        }))
+      return
+    }
+
+    if (req.method === 'GET' && (parsedUrl.pathname === '/mixer-timeline-cache' || parsedUrl.pathname === '/mixer-timeline-cache.json')) {
+      if (!isBridgeLicenseActive()) {
+        sendJson(res, 200, {
+          ok: false,
+          licenseRequired: true,
+          revision: 0,
+          projects: [],
+        })
+        return
+      }
+      proxyNativeJson('/mixer-timeline-cache')
+        .then((result) => sendJson(res, result.status, result.data))
+        .catch(() => sendJson(res, 503, {
+          ok: false,
+          revision: 0,
+          projects: [],
+        }))
+      return
+    }
+
     if (req.method === 'GET' && (parsedUrl.pathname === '/state' || parsedUrl.pathname === '/state.json')) {
       if (!isBridgeLicenseActive()) {
         const state = mergeHookCenterRecadosAuth(readEffectiveState())

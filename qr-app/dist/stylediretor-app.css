@@ -8255,6 +8255,12 @@ html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn,htm
 html[data-director-device="tablet"] .tabletTunerInlineControls .tunerStepBtn{font-size:17px}
 html[data-director-device="tablet"] .tabletTunerInlineControls .tabletTunerZero{font-size:11px;background:#111827;color:#f8fafc}
 html[data-director-platform="ios"][data-director-device="tablet"] .container .contentPanel>.listBox{padding-bottom:76px!important;scroll-padding-bottom:76px!important;-webkit-overflow-scrolling:touch!important}
+/* O Mixer ja fica dentro da area segura do tablet. A reserva generica de 76 px
+   criava uma faixa preta depois da ultima pista e encurtava o grid. */
+html[data-director-platform="ios"][data-director-device="tablet"] .app[data-active-tab="mixer"]>.container .mixerContentPanel>.mixerListBox{
+  padding-bottom:0!important;
+  scroll-padding-bottom:0!important;
+}
 html[data-director-device="tablet"] .tabletPartsControls{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important;margin-bottom:8px}
 html[data-director-device="tablet"] .tabletPartsListFrame{position:relative;flex:1 1 auto;min-height:0;padding:0 5px 5px;border-left:2px solid #7c3aed;border-right:2px solid #7c3aed;border-bottom:2px solid #7c3aed;border-radius:9px;display:flex;flex-direction:column;overflow:hidden;background:rgba(11,18,32,.42);box-shadow:0 6px 16px rgba(0,0,0,.3)}
 html[data-director-device="tablet"] .tabletPartsListFrame:has(.tabletPartsOwner[data-parts-owner-source="queued"]){border-color:#facc15}
@@ -8802,6 +8808,24 @@ body.directorRecadosTouchMode #app {
 [data-marker-id].partsSongStartStopped::after {
   border-color: rgba(196, 181, 253, 0.94);
   box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.16), 0 0 10px rgba(139, 92, 246, 0.22);
+}
+
+[data-marker-id].partsSongStartPart .partsSongStartBadge {
+  position: absolute;
+  z-index: 10;
+  top: 4px;
+  right: 5px;
+  height: 14px;
+  padding: 0 5px;
+  border: 1px solid #c4b5fd;
+  border-radius: 3px;
+  background: #6d28d9;
+  color: #ffffff !important;
+  font-size: 7px;
+  font-weight: 1000;
+  line-height: 12px;
+  letter-spacing: .04em;
+  pointer-events: none;
 }
 
 /* Aparência do texto recebido pelo Teleprompt. A preferência é independente
@@ -11954,12 +11978,17 @@ html[data-director-device="phone"] .timerKeyboard .tabletSearchKey,
   align-items: center !important;
   justify-content: center !important;
   padding: max(12px, var(--vsh-safe-top)) max(12px, var(--vsh-safe-right)) max(12px, var(--vsh-safe-bottom)) max(12px, var(--vsh-safe-left)) !important;
+  background: transparent !important;
+}
+.app[data-theme="light"] .mixerItemModalOverlay {
+  background: transparent !important;
 }
 .mixerItemModalBox {
   width: min(92vw, 520px) !important;
   max-width: 520px !important;
   padding: 16px !important;
   box-sizing: border-box !important;
+  box-shadow: none !important;
 }
 .mixerItemModalTitle {
   max-width: 360px;
@@ -12005,4 +12034,43 @@ html body #app .app .item[data-is-block="1"]::after,
 html body #app .app .item[data-block-color-mode]::after,
 html body #app .app .tunerFullBlockRow::after {
   border-radius: 3px !important;
+}
+
+/* Modais flutuam sem escurecer a interface que permanece por baixo. */
+html body #app .app .modalOverlay,
+html body #app .app[data-theme="light"] .modalOverlay {
+  background: transparent !important;
+}
+
+/* O item fixo de início em Parts segue os mesmos cantos dos blocos. */
+html body #app .app .item.partsSongStartPart,
+html body #app .app .item.partsSongStartPart::before,
+html body #app .app .item.partsSongStartPart::after {
+  border-radius: 3px !important;
+}
+
+/* O início é identificado somente pelo selo; não recebe contorno especial. */
+html body #app .app .item.partsSongStartPart::after {
+  content: none !important;
+  display: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+/* A Part verde confirmada pisca até o engatilhamento ser consumido. */
+@keyframes partsArmedConfirmedBlink {
+  0%, 49% { opacity: 1; filter: brightness(1.18); }
+  50%, 100% { opacity: .48; filter: brightness(.72); }
+}
+html body #app .app .markerListBox [data-marker-id].partsMarkerArmed,
+html body #app .app .markerListBox [data-marker-id].partsMarkerArmed.markerBlink {
+  animation: partsArmedConfirmedBlink .8s steps(1, end) infinite !important;
+}
+
+/* O editor do item não bloqueia a rolagem das pistas atrás dele. */
+html body #app .app .mixerItemModalOverlay {
+  pointer-events: none !important;
+}
+html body #app .app .mixerItemModalBox {
+  pointer-events: auto !important;
 }

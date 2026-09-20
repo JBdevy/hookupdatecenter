@@ -30,6 +30,7 @@ let writes = 0;
 const server = { publicBridgeHost: '192.168.1.10',
   setPublicBridgeHost(ip) { this.publicBridgeHost = ip; setters += 1; } };
 const context = vm.createContext({
+  process: { platform: process.platform },
   selectAppNetwork, appNetworkSignature,
   readBridgeConfig: () => ({ ...config }),
   saveBridgeConfig: (next) => { config = { ...config, ...next }; writes += 1; },
@@ -39,9 +40,12 @@ const context = vm.createContext({
   mainWindow: { webContents: { send: (name, payload) => notifications.push({ name, payload }) } },
   getChatMobileBootstrapSecret: () => 'fixture-only', getBridgeAppCacheVersion: () => 'fixture',
   resolveBridgeScriptsDir: () => 'fixture-only',
+  startApplePeerBridge: async () => {},
   startBridgeServers: async () => { restarts += 1; },
   bridgeConfig: null, bridgeNetworkSignature: '', bridgeServers: [server],
-  bridgeInfos: [{ port: 47831 }], bridgeLastError: ''
+  bridgeInfos: [{ port: 47831 }], bridgeLastError: '',
+  applePeerBridgeProcess: null, applePeerBridgeReady: false,
+  applePeerBridgeLastError: ''
 });
 vm.runInContext(source.slice(source.indexOf('function getSelectedBridgeNetwork('),
   source.indexOf('function resolveBridgeScriptsDir(')), context);
@@ -196,6 +200,11 @@ function testUi() {
   await testHttp();
   testUi();
   assert(source.includes('bridgeNetworkWatchTimer = setInterval('));
+  const bridgeServerSource = fs.readFileSync(path.join(__dirname, '../src/bridge-server.js'), 'utf8');
+  assert.match(bridgeServerSource, /parsedUrl\.pathname === '\/mixer-timeline'/);
+  assert.match(bridgeServerSource, /proxyNativeJson\('\/mixer-timeline'\)/);
+  assert.match(bridgeServerSource, /parsedUrl\.pathname === '\/mixer-timeline-cache'/);
+  assert.match(bridgeServerSource, /proxyNativeJson\('\/mixer-timeline-cache'\)/);
   const renderer = fs.readFileSync(path.join(__dirname, '../src/renderer.js'), 'utf8');
   assert(renderer.includes('onBridgeStatus?.(renderBridgeState)'));
   console.log('BRIDGE_NETWORK_OK: Wi-Fi/en0 DHCP, absent adapter waits, manual choice, idle no writes/restarts/events, discovery + QR updated on same HTTP socket');
