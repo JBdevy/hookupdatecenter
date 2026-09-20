@@ -14,6 +14,8 @@ for (const token of [
 ]) {
   assert(helper.includes(token), `Auxiliar macOS sem ${token}`)
 }
+assert(helper.includes('private let configuration = Configuration.read()'),
+  'Configuração global do auxiliar expõe um tipo Swift privado e quebra a compilação')
 for (const token of [
   'startApplePeerBridge', 'stopApplePeerBridge', 'applePeerBridgeProcess',
   "path.join(process.resourcesPath, 'apple-peer-bridge'"

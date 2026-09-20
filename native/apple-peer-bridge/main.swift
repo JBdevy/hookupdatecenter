@@ -191,7 +191,7 @@ private final class PeerBridgeServer {
     }
 }
 
-let configuration = Configuration.read()
+private let configuration = Configuration.read()
 do {
     let server = try PeerBridgeServer(config: configuration)
     signal(SIGTERM, SIG_IGN)
