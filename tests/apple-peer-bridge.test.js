@@ -1,6 +1,7 @@
 const assert = require('assert')
 const fs = require('fs')
 const path = require('path')
+const minimatch = require('minimatch')
 
 const root = path.resolve(__dirname, '..')
 const helper = fs.readFileSync(path.join(root, 'native', 'apple-peer-bridge', 'main.swift'), 'utf8')
@@ -25,6 +26,17 @@ for (const token of [
 const resources = packageJson.build.mac.extraResources || []
 assert(resources.some((entry) => entry.to === 'apple-peer-bridge'),
   'Auxiliar Apple não está no pacote macOS')
+const universalArchFiles = packageJson.build.mac.x64ArchFiles
+assert(minimatch(
+  'Contents/Resources/apple-peer-bridge/vshook-apple-peer-bridge',
+  universalArchFiles,
+  { matchBase: true }
+), 'Binário universal do auxiliar Apple não está coberto por x64ArchFiles')
+assert(minimatch(
+  'Contents/Resources/vshook-companion/VS Hook Teleprompt Settings.app/Contents/MacOS/VS Hook Teleprompt Settings',
+  universalArchFiles,
+  { matchBase: true }
+), 'A regra nova não pode retirar o companion de x64ArchFiles')
 assert(workflow.includes('scripts/build-apple-peer-bridge.sh'), 'Workflow não compila o auxiliar Apple')
 assert(workflow.includes('lipo -verify_arch arm64 x86_64'), 'Workflow não valida binário universal')
 

@@ -108,7 +108,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "forceCodeSigning": true,
-      "x64ArchFiles": "Contents/Resources/vshook-companion/**",
+      "x64ArchFiles": "Contents/Resources/{vshook-companion,apple-peer-bridge}/**",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
