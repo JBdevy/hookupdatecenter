@@ -38,6 +38,9 @@ assert(minimatch(
   { matchBase: true }
 ), 'A regra nova não pode retirar o companion de x64ArchFiles')
 assert(workflow.includes('scripts/build-apple-peer-bridge.sh'), 'Workflow não compila o auxiliar Apple')
-assert(workflow.includes('lipo -verify_arch arm64 x86_64'), 'Workflow não valida binário universal')
+assert(workflow.includes('lipo "$PEER_HELPER" -verify_arch arm64 x86_64'),
+  'Workflow não valida o binário universal com a sintaxe aceita pelo lipo')
+assert(!workflow.includes('lipo -verify_arch arm64 x86_64 "$PEER_HELPER"'),
+  'O lipo interpreta o caminho como arquitetura quando ele vem depois de -verify_arch')
 
 console.log('Conexão direta Apple da Hook Center validada.')

@@ -242,7 +242,7 @@ jobs:
           node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
           PEER_HELPER="$APP/Contents/Resources/apple-peer-bridge/vshook-apple-peer-bridge"
           test -x "$PEER_HELPER" || (echo "Pacote final sem o auxiliar Apple peer-to-peer." && exit 1)
-          lipo -verify_arch arm64 x86_64 "$PEER_HELPER"
+          lipo "$PEER_HELPER" -verify_arch arm64 x86_64
           codesign --verify --strict "$PEER_HELPER"
           test ! -e "$APP/Contents/Resources/windows-midi-services" || (echo "Pacote macOS inclui indevidamente o instalador Windows MIDI Services." && exit 1)
 
