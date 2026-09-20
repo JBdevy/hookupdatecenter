@@ -65,8 +65,10 @@ function fixture(device) {
 
 for (const device of ['tablet', 'phone']) {
   let f = fixture(device)
-  assert.equal(f.run('getFilteredTabletSearchEntries().length'), 1)
+  assert.equal(f.run('getFilteredTabletSearchEntries().length'), 2,
+    'search opened from Repertório must remain global')
   assert.equal(f.run('getFilteredTabletSearchEntries()[0].regionsPage'), false)
+  assert.equal(f.run('getFilteredTabletSearchEntries()[1].regionsPage'), true)
   assert(f.run('renderTabletSearchResults()').includes('REPERTÓRIO'))
 
   f.state.tabletSearchQuery = 'cancao fora'
@@ -98,9 +100,10 @@ for (const device of ['tablet', 'phone']) {
   f = fixture(device)
   f.state.activeTab = 'regions'
   f.state.tabletSearchSourceTab = 'regions'
-  f.state.tabletSearchQuery = 'música'
-  assert.equal(f.run('getFilteredTabletSearchEntries().length'), 1)
-  assert.equal(f.run('getFilteredTabletSearchEntries()[0].regionsPage'), true)
+  assert.equal(f.run('getFilteredTabletSearchEntries().length'), 2,
+    'search result set must not depend on the source tab')
+  assert.equal(f.run('getFilteredTabletSearchEntries()[0].regionsPage'), false)
+  assert.equal(f.run('getFilteredTabletSearchEntries()[1].regionsPage'), true)
 }
 
 for (const forbidden of [
@@ -109,4 +112,4 @@ for (const forbidden of [
 ]) assert(!source.includes(forbidden), `director search must not use ${forbidden}`)
 
 console.log('DIRECTOR_SEARCH_OK:', sourceFile,
-  'local tablet/phone search, direct selection, destination, DOM stability and ghost-tap guard')
+  'global tablet/phone search, direct selection, destination, DOM stability and ghost-tap guard')

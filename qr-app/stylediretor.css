@@ -6093,7 +6093,7 @@ body.boot-loading {
 .app .item.blockItem[data-song-id]{
   position:relative!important;
   border:1px solid var(--app-border-color,#facc15)!important;
-  border-radius:10px!important;
+  border-radius:3px!important;
   background:linear-gradient(180deg,rgba(15,23,42,.76),rgba(2,6,23,.86))!important;
   box-shadow:0 0 0 1px var(--app-border-color,#facc15),0 0 14px var(--app-border-glow,rgba(250,204,21,.32)),inset 0 0 0 1px rgba(255,255,255,.04)!important;
   margin-top:4px!important;
@@ -11002,10 +11002,20 @@ html[data-director-device="phone"] .timerKeyboard .tabletSearchKey,
   right: 4px !important;
 }
 
-/* Blocos retos em todas as listas do Diretor e do modo Músicos. */
-.app .item.blockItem,
-.app .item.blockItem[data-song-id],
-.app .item.blockItem[data-region-id],
-.app .item.blockItem[data-item-id] {
-  border-radius: 0 !important;
+/* Arredondamento leve global: Diretor celular/tablet, TP e modo Músicos. */
+html body #app .app .item.blockItem,
+html body #app .app .item[data-is-block="1"],
+html body #app .app .item[data-block-color-mode],
+html body #app .app .tunerFullBlockRow {
+  border-radius: 3px !important;
+}
+html body #app .app .item.blockItem::before,
+html body #app .app .item[data-is-block="1"]::before,
+html body #app .app .item[data-block-color-mode]::before,
+html body #app .app .tunerFullBlockRow::before,
+html body #app .app .item.blockItem::after,
+html body #app .app .item[data-is-block="1"]::after,
+html body #app .app .item[data-block-color-mode]::after,
+html body #app .app .tunerFullBlockRow::after {
+  border-radius: 3px !important;
 }

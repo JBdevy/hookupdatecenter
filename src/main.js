@@ -162,6 +162,9 @@ let bridgeServers = [];
 let bridgeInfos = [];
 let bridgeConfig = null;
 let bridgeLastError = '';
+let applePeerBridgeProcess = null;
+let applePeerBridgeReady = false;
+let applePeerBridgeLastError = '';
 let bridgeWatchTimer = null;
 let bridgeNetworkWatchTimer = null;
 let bridgeNetworkSignature = '';
@@ -301,8 +304,15 @@ const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CHAT_PRESENCE_HEARTBEAT_MS = 20 * 1000;
 const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
-const LICENSE_OFFLINE_GRACE_MS = 12 * 24 * 60 * 60 * 1000;
+const LICENSE_OFFLINE_GRACE_MS = 15 * 24 * 60 * 60 * 1000;
 const LICENSE_OFFLINE_WARNING_MS = 3 * 24 * 60 * 60 * 1000;
+const LICENSE_OFFLINE_WARNING_MESSAGE =
+  'É necessário conectar à internet para validar sua licença. Não fique muito tempo sem conexão com a internet.';
+
+function formatLicenseOfflineWarningMessage(number) {
+  const safeNumber = Math.max(1, Math.min(3, Number(number) || 1));
+  return `AVISO ${safeNumber} DE 3\n\n${LICENSE_OFFLINE_WARNING_MESSAGE}`;
+}
 const LICENSE_CLOCK_ROLLBACK_TOLERANCE_MS = 10 * 60 * 1000;
 
 const LICENSE_PRODUCT = 'VSLIVE';
@@ -887,6 +897,7 @@ function saveStoredDeviceName(name) {
 }
 
 let licenseSessionRevision = 0;
+let licenseOfflineWarningShownThisSession = 0;
 
 function assertCurrentLicenseSession(revision) {
   if (revision !== licenseSessionRevision) {
@@ -3339,7 +3350,9 @@ async function checkLicenseStatus(manual = false) {
       active: false,
       message: 'Licença removida porque a data ou hora deste computador foi retrocedida.',
       reason: 'clock_rollback',
-      offlineWarningStartedAt: ''
+      offlineWarningStartedAt: '',
+      offlineWarningCount: 0,
+      offlineLastWarningAt: ''
     };
     store.set('license', revoked);
     publishLicenseOfflineStatus(revoked);
@@ -3393,10 +3406,13 @@ async function checkLicenseStatus(manual = false) {
       lastStatusAt: new Date().toISOString(),
       lastOnlineValidationAt: new Date().toISOString(),
       offlineWarningStartedAt: '',
+      offlineWarningCount: 0,
+      offlineLastWarningAt: '',
       lastLocalClockAt: new Date().toISOString()
     };
 
     store.set('license', nextLicense);
+    licenseOfflineWarningShownThisSession = 0;
     publishLicenseOfflineStatus(nextLicense);
 
     if (active) {
@@ -3431,20 +3447,45 @@ async function checkLicenseStatus(manual = false) {
     const currentLicense = store.get('license') || {};
     if (currentLicense.active === true) {
       const lastOnlineAt = Date.parse(currentLicense.lastOnlineValidationAt || currentLicense.lastStatusAt || '') || Date.now();
-      const warningStartedAt = Date.parse(currentLicense.offlineWarningStartedAt || '') || 0;
+      const nowMs = Date.now();
+      let warningStartedAt = Date.parse(currentLicense.offlineWarningStartedAt || '') || 0;
+      let warningCount = Math.max(0, Math.min(3,
+        Number(currentLicense.offlineWarningCount || (warningStartedAt ? 1 : 0)) || 0));
+      let lastWarningAt = Date.parse(currentLicense.offlineLastWarningAt || '') || warningStartedAt;
       let nextLicense = currentLicense;
-      if ((Date.now() - lastOnlineAt) >= LICENSE_OFFLINE_GRACE_MS && !warningStartedAt) {
-        nextLicense = { ...currentLicense, offlineWarningStartedAt: new Date().toISOString() };
+      if ((nowMs - lastOnlineAt) >= LICENSE_OFFLINE_GRACE_MS) {
+        if (!warningStartedAt) {
+          warningStartedAt = nowMs;
+          warningCount = 1;
+          lastWarningAt = nowMs;
+        } else if (warningCount < 3 &&
+                   nowMs >= lastWarningAt + (24 * 60 * 60 * 1000)) {
+          warningCount += 1;
+          lastWarningAt = nowMs;
+        }
+        nextLicense = {
+          ...currentLicense,
+          offlineWarningStartedAt: new Date(warningStartedAt).toISOString(),
+          offlineWarningCount: warningCount,
+          offlineLastWarningAt: new Date(lastWarningAt).toISOString()
+        };
         store.set('license', nextLicense);
-        notifyLicense('Conecte-se à internet para verificar a licença. Sem validação, o acesso ao VS Hook será removido em 3 dias.');
       }
       const status = publishLicenseOfflineStatus(nextLicense);
+      if (!status.expired && warningCount > 0 &&
+          licenseOfflineWarningShownThisSession !== warningCount) {
+        licenseOfflineWarningShownThisSession = warningCount;
+        notifyLicense(formatLicenseOfflineWarningMessage(warningCount));
+      }
       if (status.expired) {
-        removeLocalLicense();
-        const revoked = { ...nextLicense, active: false, message: 'Licença removida após 3 dias sem validação online.', offlineWarningStartedAt: '' };
-        store.set('license', revoked);
-        publishLicenseOfflineStatus(revoked);
-        notifyLicense('A licença foi removida porque não houve validação online no prazo. Conecte-se à internet e ative novamente.');
+        // A Hook Center nunca apaga o token offline por conta própria. A
+        // extensão é a autoridade desta sequência porque somente ela sabe
+        // quais aberturas realmente exibiram AVISO 1/3, 2/3 e 3/3. Isso evita
+        // saltar avisos e também impede qualquer interrupção durante um show.
+        if (licenseOfflineWarningShownThisSession !== 3) {
+          licenseOfflineWarningShownThisSession = 3;
+          notifyLicense(formatLicenseOfflineWarningMessage(3));
+        }
       }
     }
     if (manual) dialog.showErrorBox('Erro ao verificar licença', error.message);
@@ -3553,16 +3594,25 @@ function getLicenseOfflineStatus(license = store.get('license') || {}) {
   const active = license.active === true;
   const lastOnlineAt = Date.parse(license.lastOnlineValidationAt || license.lastStatusAt || '') || 0;
   const warningStartedAt = Date.parse(license.offlineWarningStartedAt || '') || 0;
+  const warningCount = Math.max(0, Math.min(3,
+    Number(license.offlineWarningCount || (warningStartedAt ? 1 : 0)) || 0));
+  const lastWarningAt = Date.parse(license.offlineLastWarningAt || '') || warningStartedAt;
   const graceElapsed = active && lastOnlineAt > 0 && (now - lastOnlineAt) >= LICENSE_OFFLINE_GRACE_MS;
-  const deadlineAt = warningStartedAt ? warningStartedAt + LICENSE_OFFLINE_WARNING_MS : 0;
+  const deadlineAt = warningStartedAt
+    ? Math.max(
+      warningStartedAt + LICENSE_OFFLINE_WARNING_MS,
+      warningCount >= 3 ? lastWarningAt + (24 * 60 * 60 * 1000) : 0)
+    : 0;
   return {
     active,
     warning: active && graceElapsed,
-    expired: active && warningStartedAt > 0 && now >= deadlineAt,
+    expired: active && warningStartedAt > 0 && warningCount >= 3 && now >= deadlineAt,
+    warningNumber: warningCount,
     lastOnlineValidationAt: lastOnlineAt ? new Date(lastOnlineAt).toISOString() : null,
     warningStartedAt: warningStartedAt ? new Date(warningStartedAt).toISOString() : null,
+    lastWarningAt: lastWarningAt ? new Date(lastWarningAt).toISOString() : null,
     deadlineAt: deadlineAt ? new Date(deadlineAt).toISOString() : null,
-    message: 'Conecte-se à internet para verificar a licença. Sem validação, o acesso ao VS Hook será removido em 3 dias.'
+    message: LICENSE_OFFLINE_WARNING_MESSAGE
   };
 }
 
@@ -3745,6 +3795,7 @@ function buildBridgeServers(config) {
 }
 
 async function stopBridgeServers() {
+  stopApplePeerBridge();
   const running = [...bridgeServers];
   const runningTimecodeRelay = timecodeLanRelay;
   const runningParallelTimecodeRelay = parallelTimecodeLanRelay;
@@ -3760,6 +3811,77 @@ async function stopBridgeServers() {
     ...(runningParallelTimecodeRelay
       ? [runningParallelTimecodeRelay.stop()] : []),
   ]);
+}
+
+function getApplePeerBridgeExecutable() {
+  const fileName = 'vshook-apple-peer-bridge';
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'apple-peer-bridge', fileName);
+  }
+  return path.join(__dirname, '..', 'build', 'apple-peer-bridge', fileName);
+}
+
+function stopApplePeerBridge() {
+  const child = applePeerBridgeProcess;
+  applePeerBridgeProcess = null;
+  applePeerBridgeReady = false;
+  if (!child) return;
+  child.removeAllListeners('error');
+  child.removeAllListeners('exit');
+  try { child.kill('SIGTERM'); } catch (_) {}
+}
+
+async function startApplePeerBridge(config = bridgeConfig || readBridgeConfig()) {
+  if (process.platform !== 'darwin') return false;
+  if (applePeerBridgeProcess && !applePeerBridgeProcess.killed) return true;
+  stopApplePeerBridge();
+  const executable = getApplePeerBridgeExecutable();
+  if (!fs.existsSync(executable)) {
+    applePeerBridgeLastError = 'Auxiliar de conexão direta Apple não encontrado.';
+    return false;
+  }
+  const child = spawn(executable, [
+    '--director-port', String(Number(config?.directorPort) || 47831),
+    '--musicians-port', String(Number(config?.musiciansPort) || 47832),
+    '--name', String(getStoredDeviceName() || 'Hook Center')
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true
+  });
+  applePeerBridgeProcess = child;
+  applePeerBridgeReady = false;
+  applePeerBridgeLastError = '';
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => {
+    stdout = `${stdout}${chunk}`.slice(-4096);
+    if (stdout.includes('READY')) {
+      applePeerBridgeReady = true;
+      applePeerBridgeLastError = '';
+      if (isValidWindow(mainWindow)) {
+        mainWindow.webContents.send('bridge-status', getBridgeState());
+      }
+    }
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr = `${stderr}${chunk}`.slice(-4096);
+  });
+  child.once('error', (error) => {
+    if (applePeerBridgeProcess !== child) return;
+    applePeerBridgeProcess = null;
+    applePeerBridgeReady = false;
+    applePeerBridgeLastError = error?.message || 'Falha ao iniciar a conexão direta Apple.';
+  });
+  child.once('exit', (code, signal) => {
+    if (applePeerBridgeProcess !== child) return;
+    applePeerBridgeProcess = null;
+    applePeerBridgeReady = false;
+    applePeerBridgeLastError = stderr.trim() ||
+      `Conexão direta Apple encerrada (${signal || code || 0}).`;
+  });
+  return true;
 }
 
 async function restartBridgeServersNow() {
@@ -3852,6 +3974,7 @@ async function restartBridgeServersNow() {
     bridgeServers = nextServers;
     bridgeInfos = nextInfos;
     bridgeLastError = '';
+    await startApplePeerBridge(bridgeConfig);
     rebuildTrayMenu();
     if (isValidWindow(mainWindow)) mainWindow.webContents.send('bridge-status', getBridgeState());
     return getBridgeState();
@@ -3890,7 +4013,10 @@ async function startBridgeServers() {
 }
 
 async function ensureBridgeServersRunning() {
-  if (bridgeServers.length > 0) return getBridgeState();
+  if (bridgeServers.length > 0) {
+    await startApplePeerBridge(bridgeConfig || readBridgeConfig());
+    return getBridgeState();
+  }
   return startBridgeServers();
 }
 
@@ -3921,6 +4047,12 @@ function getBridgeState(snapshot = refreshBridgeNetwork({ publish: false })) {
     directorUrls: allLanIps.map((item) => `http://${item.ip}:${directorPort}`),
     musiciansUrls: allLanIps.map((item) => `http://${item.ip}:${musiciansPort}`),
     infos: bridgeInfos,
+    applePeerBridge: {
+      supported: process.platform === 'darwin',
+      running: !!applePeerBridgeProcess,
+      ready: applePeerBridgeReady,
+      error: applePeerBridgeLastError
+    },
     error: bridgeLastError
   };
 }
@@ -9901,11 +10033,21 @@ ipcMain.handle('activate-license', async (_event, payload) => {
     message: result.message || result.warning || activationPersistenceWarning || 'Licença ativada com sucesso.',
     warning: result.warning || '',
     reason: result.reason || 'active',
-    lastStatusAt: new Date().toISOString()
+    lastStatusAt: new Date().toISOString(),
+    lastOnlineValidationAt: new Date().toISOString(),
+    offlineWarningStartedAt: '',
+    offlineWarningCount: 0,
+    offlineLastWarningAt: ''
   };
 
   store.set('license', nextLicense);
-  publishLicenseOfflineStatus({ ...nextLicense, lastOnlineValidationAt: new Date().toISOString(), offlineWarningStartedAt: '' });
+  publishLicenseOfflineStatus({
+    ...nextLicense,
+    lastOnlineValidationAt: new Date().toISOString(),
+    offlineWarningStartedAt: '',
+    offlineWarningCount: 0,
+    offlineLastWarningAt: ''
+  });
   rebuildTrayMenu();
 
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());

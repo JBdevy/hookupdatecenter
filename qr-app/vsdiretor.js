@@ -3258,8 +3258,7 @@
     // Sem esta retenção, um snapshot anterior podia desenhar o cursor no ponto
     // velho por um ciclo e causar o "vai e volta" apenas visual.
     state.transportSeekPauseVisualHoldPos = pos
-    state.transportSeekPauseVisualHoldUntil = now() + 3000
-    state.snapshot = { ...(state.snapshot || {}), editCursorPosition: pos, cursorPosition: pos }
+    state.transportSeekPauseVisualHoldUntil = now() + 8000
 
     state.transportSeekCommandSeq = Math.max(Number(state.transportSeekCommandSeq) + 1 || 1, Date.now() * 1000)
     postCommand('edit_cursor_move', {
@@ -9078,7 +9077,7 @@
     const vibrateOn = uiVibrateEnabled()
     const soundCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">SOM E VIBRAÇÃO</div><div class="settingsThemeGrid"><button class="${soundOn ? 'btnAutoplayActive' : 'btn'}" data-action="sound-on">SOM LIGADO</button><button class="${soundOn ? 'btn' : 'btnAutoplayActive'}" data-action="sound-off">SOM DESLIGADO</button></div><div class="settingsThemeGrid"><button class="${vibrateOn ? 'btnAutoplayActive' : 'btn'}" data-action="vibrate-on">VIBRAR LIGADO</button><button class="${vibrateOn ? 'btn' : 'btnAutoplayActive'}" data-action="vibrate-off">VIBRAR DESLIGADO</button></div></div>`
     const hideMainTransport = getHideMainTransport()
-    const telepromptTabCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">TELEPROMPT</div><div class="settingsWideGrid"><button class="btn settingsTelepromptTabButton" data-action="teleprompt-tab-controls">CONFIG ABA TP</button><button class="${hideMainTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsMainTransportVisibilityButton" data-action="main-transport-visibility-toggle" aria-pressed="${hideMainTransport ? 'true' : 'false'}">${hideMainTransport ? '[x] PAINEL TRANSPORTE PRINCIPAL OCULTO' : '[ ] OCULTAR PAINEL TRANSPORTE DA TELA PRINCIPAL'}</button></div></div>`
+    const telepromptTabCategory = `<div class="settingsCategory"><div class="settingsCategoryTitle">TELEPROMPT</div><div class="settingsWideGrid"><button class="btn settingsTelepromptTabButton" data-action="teleprompt-tab-controls">CONFIG ABA TP</button><button class="${hideMainTransport ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsMainTransportVisibilityButton" data-action="main-transport-visibility-toggle" aria-pressed="${hideMainTransport ? 'true' : 'false'}">${hideMainTransport ? 'PAINEL TRANSPORTE PRINCIPAL OCULTO' : 'OCULTAR PAINEL TRANSPORTE DA TELA PRINCIPAL'}</button></div></div>`
     if (IS_MUSICIAN_MONITOR) {
       return `<div class="modalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox musicianSettingsModal" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}${telepromptTabCategory}<div class="modalButtons settingsExitButtons musicianSettingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
     }
@@ -9090,8 +9089,8 @@
     const interfaceBlocking = getInterfaceBlockingEnabled()
     const hideAccessNotification = state.hideInterfaceAccessNotification
     const familyViewControls = getFamilyViewControlsEnabled()
-    const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">${interfaceBlocking ? '[x]' : '[ ]'} Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">${hideAccessNotification ? '[x]' : '[ ]'} Bloquear notificação de acesso da interface</button></div></div>`
-    const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">${familyViewControls ? '[x]' : '[ ]'} VIEW — Mostrar/Ocultar</button></div></div>`
+    const accessControl = `<div class="settingsCategory settingsAccessCategory"><div class="settingsCategoryTitle">ACESSO DA INTERFACE</div><div class="settingsAccessGrid"><button class="${interfaceBlocking ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-blocking-toggle">Bloquear o uso da interface quando estiver conectado ao app do Diretor</button><button class="${hideAccessNotification ? 'btnConfigOnGreen' : 'btnConfigOffRed'} settingsAccessControlButton" data-action="interface-access-notification-toggle">Bloquear notificação de acesso da interface</button></div></div>`
+    const drawerControl = `<div class="settingsCategory settingsDrawerCategory"><div class="settingsCategoryTitle">GAVETAS</div><div class="settingsWideGrid"><button class="${familyViewControls ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="family-view-toggle">VIEW — Mostrar/Ocultar</button></div></div>`
     return `<div class="modalOverlay tabletCenteredModalOverlay tabletSettingsModalOverlay"><div class="modalSpacer"></div><div class="modalBox settingsModalBox" data-stop-modal><div class="modalTitle">CONFIGURAÇÕES</div><div class="settingsCategory"><div class="settingsCategoryTitle">TEMA</div><div class="settingsThemeGrid"><button class="${theme === 'dark' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-dark">MODO ESCURO</button><button class="${theme === 'light' ? 'btnAutoplayActive' : 'btn'}" data-action="theme-light">MODO CLARO</button></div><div class="settingsWideGrid"><button class="btn settingsBorderModeButton" data-action="border-color-mode">${borderModeLabel}</button></div></div>${soundCategory}${telepromptTabCategory}<div class="settingsCategory"><div class="settingsCategoryTitle">ORDENS</div><div class="settingsThemeGrid settingsNumberGrid"><button class="${numberMode === 'region' ? 'btnConfigOnGreen' : 'btnConfigOffRed'}" data-action="number-label">NUMBER</button><button class="btn" data-action="number-sort" aria-disabled="${numberSortEnabled ? 'false' : 'true'}"${numberSortEnabled ? '' : ' disabled'}>0-9</button></div></div>${drawerControl}${accessControl}<div class="modalButtons settingsExitButtons"><button class="modalOkBtnWide btnStopActive settingsExitButton" data-action="exit-app">SAIR</button><button class="modalCancelBtn settingsCloseButton" data-action="modal-close">FECHAR</button></div></div><div class="modalBottomSpace"></div></div>`
   }
 
@@ -11733,17 +11732,12 @@
       .trim().split(/\s+/).filter(Boolean)
     const matches = getTabletSearchEntries(data).filter((entry) =>
       !words.length || words.every((word) => entry.searchText.includes(word)))
-    const sourceTab = state.tabletSearchSourceTab || state.activeTab
-    if (sourceTab !== 'playlist') {
-      return matches.map((entry) => ({ ...entry, regionsPage: true }))
-    }
-    const playlistMatches = matches.filter((entry) =>
-      tabletSearchEntryIsInActivePlaylist(entry, data))
-    // Na aba Repertorio a busca comeca pelo repertorio atual. Somente quando
-    // ele nao tem resultado ela oferece as musicas do projeto inteiro.
-    const selected = playlistMatches.length ? playlistMatches : matches
-    const regionsPage = playlistMatches.length === 0
-    return selected.map((entry) => ({ ...entry, regionsPage }))
+    // A lupa é global: a aba de onde ela foi aberta nunca limita resultados.
+    // O destino serve apenas para abrir o resultado no lugar certo.
+    return matches.map((entry) => ({
+      ...entry,
+      regionsPage: !tabletSearchEntryIsInActivePlaylist(entry, data),
+    }))
   }
 
   function tabletSearchEntryIsInActivePlaylist(entry, data = state.snapshot || {}) {
@@ -12961,15 +12955,21 @@
     const currentLists = Array.from(currentApp.querySelectorAll('.listBox'))
     const nextLists = Array.from(nextApp.querySelectorAll('.listBox'))
     const listCount = Math.min(currentLists.length, nextLists.length)
+    const movedListRoots = []
 
     for (let listIndex = 0; listIndex < listCount; listIndex += 1) {
       const currentList = currentLists[listIndex]
       const nextList = nextLists[listIndex]
+      // O painel externo do Mixer contém a LIST como uma listBox interna.
+      // Depois de mover o painel inteiro, nunca mova novamente seus filhos:
+      // isso retirava a LIST do painel já visível e deixava a coluna preta.
+      if (movedListRoots.some((rootList) => rootList.contains(currentList))) continue
       const currentMixerCacheKey = String(currentList.getAttribute('data-mixer-timeline-cache-key') || '')
       const nextMixerCacheKey = String(nextList.getAttribute('data-mixer-timeline-cache-key') || '')
       if (currentMixerCacheKey && currentMixerCacheKey === nextMixerCacheKey && nextList.parentNode) {
         copyElementAttributes(currentList, nextList)
         nextList.parentNode.replaceChild(currentList, nextList)
+        movedListRoots.push(currentList)
         continue
       }
       const currentMusicCacheKey = String(currentList.getAttribute('data-music-list-cache-key') || '')
@@ -12981,6 +12981,7 @@
         // rolagem; seleção, fila e progresso são sincronizados logo depois.
         copyElementAttributes(currentList, nextList)
         nextList.parentNode.replaceChild(currentList, nextList)
+        movedListRoots.push(currentList)
         continue
       }
       const currentChildren = Array.from(currentList.children || [])
@@ -13025,6 +13026,7 @@
         }
       }
       nextList.parentNode.replaceChild(currentList, nextList)
+      movedListRoots.push(currentList)
     }
   }
 
@@ -14021,8 +14023,7 @@
     const position = start + ((end - start) * ratio)
     state.transportSeekCursorPos = position
     state.transportSeekPauseVisualHoldPos = position
-    state.transportSeekPauseVisualHoldUntil = now() + 3000
-    state.snapshot = { ...(state.snapshot || {}), editCursorPosition: position, cursorPosition: position }
+    state.transportSeekPauseVisualHoldUntil = now() + 8000
     state.transportSeekCommandSeq = Math.max(Number(state.transportSeekCommandSeq) + 1 || 1, Date.now() * 1000)
     postCommand('edit_cursor_move', {
       position, minPos: start, maxPos: end,

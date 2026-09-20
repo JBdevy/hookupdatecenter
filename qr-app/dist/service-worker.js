@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.2-director-performance-v58';
+const CACHE_NAME = 'vshook-mobile-1.0.2-director-performance-v62';
 const APP_ASSETS = [
   './',
   './index.html',

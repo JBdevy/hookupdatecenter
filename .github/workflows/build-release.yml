@@ -25,6 +25,11 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Validate Apple direct connection and offline license policy
+        run: |
+          npm run test:apple-peer
+          npm run test:license-offline
+
       - name: Build Teleprompt Settings companion
         shell: pwsh
         env:
@@ -211,6 +216,11 @@ jobs:
           codesign --verify --deep --strict "build/vshook-companion/VS Hook Teleprompt Settings.app"
           node -e "const asar=require('@electron/asar'); const html=asar.extractFile(process.argv[1],'settings.html').toString(); for (const key of ['previewSongDurationEnabled','previewBlockDurationEnabled','previewUnderlineEnabled','clearModeButton']) { if (!html.includes(key)) throw new Error('Teleprompt Settings sem a opção '+key); }" "$APP/Contents/Resources/app.asar"
 
+      - name: Build Apple peer-to-peer bridge
+        run: |
+          chmod +x scripts/build-apple-peer-bridge.sh
+          scripts/build-apple-peer-bridge.sh
+
       - name: Build macOS signed universal
         env:
           CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
@@ -230,6 +240,10 @@ jobs:
           ASAR="$APP/Contents/Resources/app.asar"
           test -f "$ASAR" || (echo "Pacote final da Hook Center sem resources/app.asar." && exit 1)
           node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
+          PEER_HELPER="$APP/Contents/Resources/apple-peer-bridge/vshook-apple-peer-bridge"
+          test -x "$PEER_HELPER" || (echo "Pacote final sem o auxiliar Apple peer-to-peer." && exit 1)
+          lipo -verify_arch arm64 x86_64 "$PEER_HELPER"
+          codesign --verify --strict "$PEER_HELPER"
           test ! -e "$APP/Contents/Resources/windows-midi-services" || (echo "Pacote macOS inclui indevidamente o instalador Windows MIDI Services." && exit 1)
 
       - name: Validate macOS theme payload
