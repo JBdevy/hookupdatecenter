@@ -130,7 +130,11 @@
         sync()
       })
       ;['loadedmetadata', 'durationchange', 'timeupdate'].forEach((type) => audio.addEventListener(type, sync))
-      ;['pause', 'ended', 'emptied'].forEach((type) => audio.addEventListener(type, stopSmoothSync))
+      ;['pause', 'emptied'].forEach((type) => audio.addEventListener(type, stopSmoothSync))
+      audio.addEventListener('ended', () => {
+        audio.currentTime = 0
+        stopSmoothSync()
+      })
       seek.addEventListener('input', () => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) audio.currentTime = (Number(seek.value) / 100) * audio.duration
         sync()
@@ -570,7 +574,7 @@
   async function chooseMedia(file) {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = 'Preparando imagem...'
+      if (status) status.textContent = ''
       selectedMedia = await prepareImage(file)
       const imagePreview = document.getElementById('chatMobilePreviewImage')
       const audioPreview = document.getElementById('chatMobilePreviewAudio')
@@ -955,11 +959,11 @@
   async function uploadMobileAvatar(file) {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = 'Preparando foto...'
+      if (status) status.textContent = ''
       const image = await prepareImage(file, 3 * 1024 * 1024)
       const result = await post('/chat/avatar', { image: { mimeType: image.mimeType, base64: image.base64 } })
       applyState(result, true)
-      if (status) status.textContent = 'Foto atualizada.'
+      if (status) status.textContent = ''
     } catch (error) {
       if (status) status.textContent = error.message
     }
@@ -968,10 +972,10 @@
   async function removeMobileAvatar() {
     const status = document.getElementById('chatMobileStatus')
     try {
-      if (status) status.textContent = 'Removendo foto...'
+      if (status) status.textContent = ''
       const result = await post('/chat/avatar', { remove: true })
       applyState(result, true)
-      if (status) status.textContent = 'Foto removida.'
+      if (status) status.textContent = ''
     } catch (error) {
       if (status) status.textContent = error.message
     }
@@ -1011,7 +1015,11 @@
     })
     document.getElementById('chatMobileAvatarInput')?.addEventListener('change', async (event) => {
       if (avatarMenu) avatarMenu.hidden = true
-      await uploadMobileAvatar(event.target.files?.[0])
+      if (event.target.files?.length !== 1) {
+        event.target.value = ''
+        return
+      }
+      await uploadMobileAvatar(event.target.files[0])
       event.target.value = ''
     })
     const picker = document.getElementById('chatMobileEmojiPicker')
