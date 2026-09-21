@@ -299,3 +299,8 @@ html[data-director-device="tablet"].directorLoginPortraitMode .vshook-shell-card
   .vshook-project-shell-card .vshook-project-actions { gap:8px; margin-top:7px; }
   .vshook-project-shell-card .vshook-project-actions button { min-height:38px; padding:7px 12px; border-radius:12px; font-size:14px; }
 }
+
+/* Telas de entrada e seleção: todos os botões seguem o padrão de 6 px. */
+#app .vshook-shell button {
+  border-radius: 6px !important;
+}

@@ -7755,6 +7755,17 @@ html[data-director-device="phone"] .directorTpFooterControls > button {
 .directorTpText .directorTpHighlight {
   color: var(--app-tp-highlight-color, #00ff55) !important;
 }
+.directorTpTextContent {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  white-space: inherit;
+  overflow-wrap: inherit;
+  text-align: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+}
 .directorTpTextOverlay {
   background: rgba(0, 0, 0, .12);
 }
@@ -10661,27 +10672,27 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) {
     linear-gradient(160deg, #020617 0%, #07111f 52%, #0d0a1d 100%) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) > .container {
-  border-radius: 24px !important;
+  border-radius: 6px !important;
   background: linear-gradient(165deg, rgba(15, 23, 42, .94), rgba(5, 10, 22, .96)) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .topPlaylistButton,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .topTimerBtn,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .topMiniBtn {
   border-color: rgba(103, 232, 249, .38) !important;
-  border-radius: 14px !important;
+  border-radius: 6px !important;
   background: linear-gradient(145deg, rgba(24, 38, 61, .96), rgba(11, 18, 33, .96)) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 6px 14px rgba(0, 0, 0, .24) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .headerRow,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .controlsStickyPanel {
   border-color: rgba(139, 92, 246, .28) !important;
-  border-radius: 16px !important;
+  border-radius: 6px !important;
   background: linear-gradient(145deg, rgba(18, 27, 46, .96), rgba(9, 14, 27, .98)) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .tab,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .activeTab,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .btn {
-  border-radius: 12px !important;
+  border-radius: 6px !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .045), 0 4px 10px rgba(0, 0, 0, .2) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .activeTab {
@@ -10692,12 +10703,13 @@ html[data-director-device="phone"] .app:not(.musicianMonitor) .activeTab {
 html[data-director-device="phone"] .app:not(.musicianMonitor) .contentPanel,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .listBox {
   border-color: rgba(100, 116, 139, .38) !important;
-  border-radius: 18px !important;
+  border-radius: 6px !important;
   background: linear-gradient(180deg, rgba(7, 14, 27, .96), rgba(3, 8, 18, .98)) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item,
 html[data-director-device="phone"] .app:not(.musicianMonitor) .mixerRow {
   border-color: rgba(71, 85, 105, .5) !important;
+  border-radius: 6px !important;
   background: linear-gradient(100deg, rgba(20, 30, 49, .94), rgba(10, 17, 31, .96)) !important;
 }
 html[data-director-device="phone"] .app:not(.musicianMonitor) .item.selectedBlue,
@@ -12073,4 +12085,157 @@ html body #app .app .mixerItemModalOverlay {
 }
 html body #app .app .mixerItemModalBox {
   pointer-events: auto !important;
+}
+
+/* TCP no celular: abas ocupam toda a faixa e M/S ficam junto à borda direita. */
+html[data-director-device="phone"] .app[data-active-tab="mixer"] > .container {
+  padding-bottom: 2px !important;
+  padding-right: 2px !important;
+}
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerContentPanel,
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerListBox {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  margin-bottom: 0 !important;
+}
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerTopControls {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 6px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  flex: 0 0 auto !important;
+}
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerTopControls > button {
+  width: 100% !important;
+  min-width: 0 !important;
+  text-align: center !important;
+  border-radius: 6px !important;
+}
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow {
+  grid-template-columns: 6px minmax(0, 1fr) 34px 34px !important;
+  column-gap: 2px !important;
+  padding-right: 0 !important;
+}
+html[data-director-device="phone"] .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow .mixerMiniBtn {
+  width: 34px !important;
+  justify-self: end !important;
+}
+
+/* Contornos do Diretor no celular: um raio único para superfícies e controles.
+   Indicadores circulares, knobs e trilhos não entram nesta regra. */
+html[data-director-device="phone"] body #app .app:not(.musicianMonitor) :is(
+  .container, .headerRow, .controlsStickyPanel, .contentPanel, .listBox,
+  .item, .mixerRow, .modalBox, .playlistOption, .playlistOptionActive,
+  .tab, .activeTab, .btn, .btnAutoplayActive, .btnConfigOnGreen,
+  .btnConfigOffRed, .mixerMiniBtn, .topPlaylistButton, .topTimerBtn, .topMiniBtn
+) {
+  border-radius: 6px !important;
+}
+html[data-director-device="phone"] body #app .app:not(.musicianMonitor) :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::before,
+html[data-director-device="phone"] body #app .app:not(.musicianMonitor) :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::after {
+  border-radius: 6px !important;
+}
+
+/* Tablet do Diretor e app dos músicos seguem o mesmo raio de 6 px.
+   Linhas contínuas do TCP, trilhos e indicadores redondos mantêm sua geometria. */
+html[data-director-device="tablet"] body #app .app:not(.musicianMonitor) :is(
+  .container, .headerRow, .controlsStickyPanel, .contentPanel, .listBox,
+  .item, .modalBox, .playlistOption, .playlistOptionActive,
+  .tab, .activeTab, .btn, .btnAutoplayActive, .btnConfigOnGreen,
+  .btnConfigOffRed, .mixerMiniBtn, .topPlaylistButton, .topTimerBtn, .topMiniBtn,
+  .tabletDirectorSidebar, .tabletDirectorTopBar, .tabletSidebarButton,
+  .tabletTopBarButton, .tabletPartsListFrame, .tabletPartsOwner
+),
+body #app .app.musicianMonitor :is(
+  .container, .headerRow, .controlsStickyPanel, .contentPanel, .listBox,
+  .item, .modalBox, .playlistOption, .playlistOptionActive,
+  .tab, .activeTab, .btn, .btnAutoplayActive, .btnConfigOnGreen,
+  .btnConfigOffRed, .topPlaylistButton, .topTimerBtn, .topMiniBtn
+) {
+  border-radius: 6px !important;
+}
+html[data-director-device="tablet"] body #app .app:not(.musicianMonitor) :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::before,
+html[data-director-device="tablet"] body #app .app:not(.musicianMonitor) :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::after,
+body #app .app.musicianMonitor :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::before,
+body #app .app.musicianMonitor :is(
+  .item.blockItem, .item[data-is-block="1"], .item[data-block-color-mode],
+  .tunerFullBlockRow, .item.partsSongStartPart
+)::after {
+  border-radius: 6px !important;
+}
+
+/* Inclui Config e demais botões do Diretor e dos músicos. */
+html body #app .app button {
+  border-radius: 6px !important;
+}
+
+/* O TCP monta todos os itens antes do scroll. Evita superfícies de pintura
+   isoladas que o WebView só rasterizava quando entravam na tela. */
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerContentPanel,
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerContentPanel .mixerRow.mixerInlineRow,
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerTabletGridRow,
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerTabletGridItem {
+  contain: layout style !important;
+  content-visibility: visible !important;
+}
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerTabletGridWaveform > i {
+  will-change: auto !important;
+  transition: none !important;
+}
+
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] .mixerPlaylistRows {
+  contain: none !important;
+  will-change: auto !important;
+}
+
+/* LIST do TCP e do teleprompt não têm coluna numérica: progresso e fila
+   ficam sobrepostos no rodapé, sem empurrar nome e tempo. */
+html body #app .app .directorTpListPane .directorTpSideList .item:not(.numberedItem) > .rowProgressTrack {
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0 !important;
+  width: auto !important;
+  height: 6px !important;
+  min-height: 6px !important;
+  z-index: 2 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+}
+html body #app .app .directorTpListPane .directorTpSideList .item:not(.numberedItem) > .rowProgressTrack > .progressBar {
+  position: absolute !important;
+  left: 0 !important;
+  right: auto !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  transform-origin: left center !important;
+  pointer-events: none !important;
+}
+
+/* A alça selecionada fica amarela até o próximo toque fora dela. */
+html[data-director-device="tablet"] body #app .app[data-active-tab="mixer"] :is(.mixerTrackWidthHandle,.mixerListWidthHandle).mixerHandleSelected::before {
+  border-color: #fde047 !important;
+  background: repeating-linear-gradient(90deg, #facc15 0 2px, transparent 2px 5px) !important;
+  background-color: #713f12 !important;
+  box-shadow: 0 0 12px rgba(250, 204, 21, .98) !important;
 }

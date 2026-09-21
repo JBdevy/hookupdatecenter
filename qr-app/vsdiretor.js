@@ -452,18 +452,21 @@
   function renderTelepromptHighlightedText(element, value) {
     if (!element) return
     const source = String(value || '')
-    const fragment = document.createDocumentFragment()
+    // O texto e um container flex. Mantem todos os segmentos dentro de um
+    // unico flex-item para *trecho* mudar somente de cor, sem deslocar a frase.
+    const content = document.createElement('span')
+    content.className = 'directorTpTextContent'
     parseTelepromptHighlightedText(source).forEach((segment) => {
       if (!segment.highlighted) {
-        fragment.appendChild(document.createTextNode(segment.text))
+        content.appendChild(document.createTextNode(segment.text))
         return
       }
       const highlight = document.createElement('span')
       highlight.className = 'directorTpHighlight'
       highlight.textContent = segment.text
-      fragment.appendChild(highlight)
+      content.appendChild(highlight)
     })
-    element.replaceChildren(fragment)
+    element.replaceChildren(content)
     element.dataset.highlightSource = source
   }
 
@@ -1625,7 +1628,9 @@
         scheduleRender(true)
       }
     }
-    return true
+    // Um catalogo vazio pode ser o primeiro estado publicado antes da coleta.
+    // Nao o trata como definitivo: o endpoint vivo ainda deve ser consultado.
+    return entry.items.length > 0
   }
 
   async function loadMixerTimelineCatalog() {
@@ -3766,9 +3771,11 @@
       const master = data?.mixerMaster || mixer?.master || data?.masterTrack || null
       return master && typeof master === 'object' ? [master] : []
     }
-    // A visão MIXER usa a lista completa do REAPER. Ela já contém as pistas
-    // de grupo na posição correta; mixerGroups é apenas o subconjunto antigo
-    // usado pela aba GRUPOS que não existe mais.
+    if (!isTabletMixerLayout() && state.mixerView === 'groups') {
+      return getAppVisibleMixerTracks(Array.isArray(data?.mixerGroups) ? data.mixerGroups : (Array.isArray(mixer?.groups) ? mixer.groups : []))
+    }
+    // O tablet mantem grupos junto das demais pistas; no celular, a aba
+    // GRUPOS usa a lista separada como antes.
     return getAppVisibleMixerTracks(Array.isArray(data?.mixerTracks) ? data.mixerTracks : (Array.isArray(mixer?.tracks) ? mixer.tracks : []))
   }
 
@@ -4134,6 +4141,13 @@
       try { activeHandle?.releasePointerCapture?.(event.pointerId) } catch (_) {}
       mixerTrackResizePointerId = null
     }
+  }
+
+  function selectMixerWidthHandle(event) {
+    const selected = event.target?.closest?.('.mixerTrackWidthHandle,.mixerListWidthHandle')
+    root.querySelectorAll('.mixerTrackWidthHandle,.mixerListWidthHandle').forEach((handle) => {
+      handle.classList.toggle('mixerHandleSelected', handle === selected)
+    })
   }
 
   function getMixerListWidthMaxPercent() {
@@ -7911,11 +7925,14 @@
   ) {
     if (activeTab === 'mixer') {
       const premixItems = getPremixAllItemRows(data)
+      const focus = getMixerFocusItem(data)
       return [
         activeTab,
         state.mixerView,
         state.mixerListOpen ? 1 : 0,
         getAppTheme(),
+        getId(focus), getItemStart(focus), getItemEnd(focus),
+        state.mixerTimelineLoadedRevision,
         getMixerTracks().map((item) => [
           getMixerPrimaryId(item, getId(item)),
           getName(item),
@@ -8433,12 +8450,19 @@
   function getMixerTimelinePremixItems(data = state.snapshot || {}) {
     const premix = data?.premix && typeof data.premix === 'object' ? data.premix : null
     const hasCachedTimeline = state.mixerTimelineLoaded && Array.isArray(state.mixerTimelineItems)
-    const timelineItems = hasCachedTimeline
+    const cachedTimelineItems = hasCachedTimeline
       ? getAppVisibleMixerTracks(state.mixerTimelineItems)
-      : (Array.isArray(premix?.timelineItems) ? getAppVisibleMixerTracks(premix.timelineItems) : (Array.isArray(data?.premixTimelineItems) ? getAppVisibleMixerTracks(data.premixTimelineItems) : []))
-    if (hasCachedTimeline && !timelineItems.length) return []
+      : []
+    const compactTimelineItems = Array.isArray(premix?.timelineItems)
+      ? getAppVisibleMixerTracks(premix.timelineItems)
+      : (Array.isArray(data?.premixTimelineItems)
+          ? getAppVisibleMixerTracks(data.premixTimelineItems) : [])
+    // Enquanto o catalogo ainda esta vazio, preserva os itens compactos e as
+    // secoes do snapshot em vez de apagar todas as waveforms do TCP.
+    const timelineItems = cachedTimelineItems.length
+      ? cachedTimelineItems : compactTimelineItems
     if (timelineItems.length) {
-      if (hasCachedTimeline) return timelineItems
+      if (cachedTimelineItems.length) return timelineItems
       const regions = getRegions(data).filter((item) => !isBlock(item) && getItemStart(item) !== null && getItemEnd(item) !== null)
       return timelineItems.flatMap((item) => {
         const itemStart = getItemStart(item)
@@ -8676,12 +8700,16 @@
   }
 
   function renderMixerViewButtons(className = '') {
-    return `<div class="mixerViewControls${className ? ` ${className}` : ''}"><button class="${state.mixerView !== 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">MIXER</button><button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div>`
+    const tablet = isTabletMixerLayout()
+    const tracksLabel = tablet ? 'MIXER' : 'TRACKS'
+    const groupsButton = tablet ? '' : `<button class="${state.mixerView === 'groups' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-groups">GRUPOS</button>`
+    return `<div class="mixerViewControls${className ? ` ${className}` : ''}"><button class="${state.mixerView === 'tracks' || (tablet && state.mixerView === 'groups') ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-tracks">${tracksLabel}</button>${groupsButton}<button class="${state.mixerView === 'master' ? 'btnAutoplayActive' : 'btn'}" data-action="mixer-master">MASTER</button></div>`
   }
 
   function syncMixerViewButtonsDom() {
-    const activeAction = state.mixerView === 'master' ? 'mixer-master' : 'mixer-tracks'
-    root.querySelectorAll('[data-action="mixer-tracks"],[data-action="mixer-master"]').forEach((button) => {
+    const activeAction = state.mixerView === 'master' ? 'mixer-master' :
+      !isTabletMixerLayout() && state.mixerView === 'groups' ? 'mixer-groups' : 'mixer-tracks'
+    root.querySelectorAll('[data-action="mixer-tracks"],[data-action="mixer-groups"],[data-action="mixer-master"]').forEach((button) => {
       const active = button.getAttribute('data-action') === activeAction
       button.classList.toggle('btnAutoplayActive', active)
       button.classList.toggle('btn', !active)
@@ -13015,8 +13043,12 @@
     const bar = track.querySelector(
       queue ? '.queuedRowRegressBar' : '.playingRowProgressBar')
     if (bar) {
-      const nextWidth = `${Math.max(0, Math.min(100, width))}%`
-      if (bar.style.width !== nextWidth) bar.style.width = nextWidth
+      // O CSS mantém a barra com largura de 100% e anima pelo compositor.
+      // Ao criar uma barra em uma lista já montada, aplique a escala neste
+      // mesmo turno; definir width era ignorado pelo !important do CSS e
+      // revelava uma barra cheia até o próximo quadro.
+      const nextScale = `scaleX(${(clampPercent(width) / 100).toFixed(5)})`
+      if (bar.style.transform !== nextScale) bar.style.transform = nextScale
     }
   }
 
@@ -17044,8 +17076,8 @@
         break
       }
       case 'mixer-tracks': state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
-      case 'mixer-groups': // Compatibilidade com uma tela antiga ainda montada durante atualização.
-        state.mixerView = 'tracks'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: 'tracks', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
+      case 'mixer-groups':
+        state.mixerView = isTabletMixerLayout() ? 'tracks' : 'groups'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); loadMixerTimeline(); postCommand('mixer_focus', { view: state.mixerView, page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-master': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-focus': state.mixerView = 'master'; syncMixerViewButtonsDom(); if (!mountMainContentInPlace()) scheduleRender(true); postCommand('mixer_focus', { view: 'master', page: state.activeTab, selectedId: state.selectedRegionId || state.selectedPlaylistSongId || '' }); break
       case 'mixer-list-toggle': {
@@ -19015,6 +19047,7 @@
     if (window.PointerEvent) {
       document.addEventListener('pointerdown', captureActionPointer, { passive: true, capture: true })
       document.addEventListener('pointercancel', cancelActionPointer, { passive: true, capture: true })
+      document.addEventListener('pointerdown', selectMixerWidthHandle, { passive: true })
       document.addEventListener('pointerdown', handleMixerTrackWidthResize, { passive: false })
       document.addEventListener('pointermove', handleMixerTrackWidthResize, { passive: false })
       document.addEventListener('pointerup', handleMixerTrackWidthResize, { passive: false })

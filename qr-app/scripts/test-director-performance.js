@@ -72,6 +72,24 @@ for (const parte of [
 }
 
 const renderSignatureBlock = extractFunction('getAppRenderSignature')
+assert.match(extractFunction('renderMixerViewButtons'),
+  /tablet \? 'MIXER' : 'TRACKS'[\s\S]*?tablet \? '' : `[\s\S]*?data-action="mixer-groups">GRUPOS<\/button>`/,
+  'celular deve manter TRACKS, GRUPOS e MASTER; tablet deve manter MIXER e MASTER')
+assert.match(extractFunction('getMixerTracks'),
+  /!isTabletMixerLayout\(\) && state\.mixerView === 'groups'[\s\S]*?data\?\.mixerGroups/,
+  'GRUPOS do celular deve usar a lista separada sem alterar o tablet')
+assert.match(extractFunction('getMusicPaneStructureSignature'),
+  /getMixerFocusItem\(data\)[\s\S]*?state\.mixerTimelineLoadedRevision/,
+  'cache do TCP deve atualizar quando a musica ou o catalogo de itens muda')
+assert.match(extractFunction('applyCachedMixerTimelineProject'),
+  /return entry\.items\.length > 0/,
+  'catalogo vazio nao pode impedir a consulta viva dos itens')
+assert.doesNotMatch(extractFunction('getMixerTimelinePremixItems'),
+  /if \(hasCachedTimeline && !timelineItems\.length\) return \[\]/,
+  'catalogo vazio nao pode ocultar itens compactos do TCP')
+assert.match(extractFunction('renderTelepromptHighlightedText'),
+  /directorTpTextContent[\s\S]*?content\.appendChild\(highlight\)[\s\S]*?element\.replaceChildren\(content\)/,
+  'trecho colorido do teleprompt deve permanecer no mesmo bloco de texto')
 for (const requiredPart of [
   'state.activeTab',
   'state.telepromptListOpen',
@@ -459,6 +477,11 @@ assert.match(optimisticPositionBlock, /optimisticPlayingAnchorPos/,
   'inicio local da musica deve possuir ancora propria')
 assert.match(optimisticPositionBlock, /locallyPaused/,
   'progresso local nao pode herdar o pausado antigo do Bridge')
+const ensureSongRowProgressBlock = extractFunction('ensureSongRowProgress')
+assert.match(ensureSongRowProgressBlock, /bar\.style\.transform\s*=\s*nextScale/,
+  'barra nova deve nascer na escala correta, sem piscar cheia')
+assert.doesNotMatch(ensureSongRowProgressBlock, /bar\.style\.width\s*=/,
+  'largura inline era ignorada pelo CSS e fazia a barra aparecer cheia')
 assert(source.includes("showPopup('APENAS COM A MÚSICA PARADA'"),
   'aviso do Grid deve informar que a operacao exige musica parada')
 const stoppedTransportBlock = extractFunction('bridgeExplicitlyStopped')

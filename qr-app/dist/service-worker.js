@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.2-chat-account-isolation-v64';
+const CACHE_NAME = 'vshook-mobile-1.0.2-teleprompt-inline-v1';
 const APP_ASSETS = [
   './',
   './index.html',

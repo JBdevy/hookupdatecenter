@@ -7743,6 +7743,17 @@ html[data-director-device="tablet"] .directorTpOverlay {
 .directorTpText .directorTpHighlight {
   color: var(--app-tp-highlight-color, #00ff55) !important;
 }
+.directorTpTextContent {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  white-space: inherit;
+  overflow-wrap: inherit;
+  text-align: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+}
 .directorTpTextOverlay {
   background: rgba(0, 0, 0, .12);
 }
