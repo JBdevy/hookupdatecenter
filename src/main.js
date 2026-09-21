@@ -1311,10 +1311,19 @@ async function fetchJson(url, options = {}) {
 
 async function getChatAuthPayload() {
   const license = store.get('license') || {};
+  const deviceLoggedOut = store.get('deviceLoggedOut') === true;
+  const signedInEmail = normalizeEmail(store.get('deviceLoginEmail') || '');
+  if (deviceLoggedOut || !signedInEmail) {
+    throw new Error('Entre na sua conta para acessar o Chat Hook.');
+  }
   if (license.active !== true) throw new Error('Ative sua licença para acessar o Chat Hook.');
+  const licenseEmail = normalizeEmail(license.email || '');
+  if (!licenseEmail || licenseEmail !== signedInEmail) {
+    throw new Error('A conta mudou. Entre novamente para acessar o Chat Hook.');
+  }
   const document = normalizeDocument(license.document || license.cpf || license.cnpj || '');
   const parts = splitDocument(document);
-  const email = normalizeEmail(license.email || store.get('deviceLoginEmail') || '');
+  const email = signedInEmail;
   const machineId = normalizeMachineId(license.machineId || await getMachineId());
   if ((!parts.cpf && !parts.cnpj && !email) || !machineId) {
     throw new Error('Ative sua licença para acessar o Chat Hook.');

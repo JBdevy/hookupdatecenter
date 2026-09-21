@@ -9,6 +9,7 @@
   const bootstrapKeyStorageKey = 'vshook_chat_bootstrap_key'
   const messages = new Map()
   let chatState = null
+  let chatSessionRevision = 0
   let lastMessageId = 0
   let revision = 0
   let polling = false
@@ -49,6 +50,19 @@
     mobileSession = null
     try { localStorage.removeItem(mobileSessionStorageKey) } catch (_) {}
   }
+
+  function resetChatForCurrentSession() {
+    chatSessionRevision += 1
+    mobileSession = readMobileSession()
+    chatState = null
+    messages.clear()
+    lastMessageId = 0
+    revision = 0
+    renderMessages(true)
+    updateHeaderAndControls()
+  }
+
+  window.addEventListener('vshook-chat-session-changed', resetChatForCurrentSession)
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -173,8 +187,14 @@
   }
 
   async function ensureMobileSession() {
-    const current = mobileSession || readMobileSession()
-    if (current) return current
+    // A sessão persistida é a fonte de verdade. Uma troca de conta não pode
+    // continuar usando o token antigo que ficou nesta variável em memória.
+    const stored = readMobileSession()
+    if (stored) {
+      mobileSession = stored
+      return stored
+    }
+    mobileSession = null
     const bootstrapKey = (() => {
       try { return String(localStorage.getItem(bootstrapKeyStorageKey) || '').trim() }
       catch (_) { return '' }
@@ -223,7 +243,7 @@
       <main class="chatMobileShell">
         <header class="chatMobileHeader">
           <button id="chatMobileBack" class="chatMobileBack" type="button" aria-label="Voltar">‹</button>
-          <button id="chatMobileCurrentAvatar" class="chatMobileAvatar chatMobileCurrentAvatar" type="button" aria-label="Abrir foto do perfil">H</button>
+          <button id="chatMobileCurrentAvatar" class="chatMobileAvatar chatMobileCurrentAvatar" type="button" aria-label="Alterar foto do perfil">H</button>
           <div class="chatMobileHeading">
             <h1>Chat Hook</h1>
             <span id="chatMobileConnection">Conectando...</span>
@@ -231,11 +251,13 @@
           <div class="chatMobileHeaderActions">
             <button id="chatMobileAdminMenu" class="chatMobileHeaderButton" type="button" aria-label="Configurar chat" hidden>☰</button>
             <button id="chatMobileAvatarButton" class="chatMobileHeaderButton" type="button" hidden>Foto</button>
-            <input id="chatMobileAvatarInput" type="file" accept="image/*" hidden />
           </div>
         </header>
         <div id="chatMobileAvatarMenu" class="chatMobileCameraMenu chatMobileProfileMenu" hidden>
-          <button type="button" data-avatar-action="change">Alterar foto</button>
+          <label class="chatMobileCameraMenuAction" data-avatar-action="change">
+            Alterar foto
+            <input id="chatMobileAvatarInput" class="chatMobileNativeFileInput" type="file" accept="image/*" />
+          </label>
           <button id="chatMobileRemoveAvatar" type="button" data-avatar-action="remove">Remover foto</button>
         </div>
 
@@ -393,8 +415,7 @@
     const avatar = document.getElementById('chatMobileCurrentAvatar')
     if (avatar) {
       avatar.innerHTML = avatarHtml(user.name || 'Hook', user.avatarUrl || '')
-      avatar.dataset.openImage = String(user.avatarUrl || '')
-      avatar.disabled = !user.avatarUrl
+      avatar.disabled = !user.id
     }
     const connection = document.getElementById('chatMobileConnection')
     const onlineCount = Math.max(0, Number(chatState?.presence?.onlineCount || 0))
@@ -467,9 +488,11 @@
 
   async function refresh(full = false) {
     if (polling || document.visibilityState === 'hidden') return
+    const sessionRevision = chatSessionRevision
     polling = true
     try {
       const result = await post('/chat/state', { afterId: full ? 0 : lastMessageId })
+      if (sessionRevision !== chatSessionRevision) return
       const serverRevision = Math.max(0, Number(result?.chat?.revision || 0))
       if (!full && revision && serverRevision !== revision) {
         polling = false
@@ -478,6 +501,7 @@
       }
       applyState(result, full || !chatState)
     } catch (error) {
+      if (sessionRevision !== chatSessionRevision) return
       const status = document.getElementById('chatMobileStatus')
       if (status) {
         status.dataset.connection = '1'
@@ -955,8 +979,9 @@
 
   function bindEvents() {
     document.getElementById('chatMobileCurrentAvatar')?.addEventListener('click', (event) => {
-      const url = String(event.currentTarget?.dataset.openImage || '')
-      if (url) window.open(url, '_blank', 'noopener')
+      event.stopPropagation()
+      const avatarMenu = document.getElementById('chatMobileAvatarMenu')
+      if (avatarMenu && chatState?.user?.id) avatarMenu.hidden = !avatarMenu.hidden
     })
     document.getElementById('chatMobileBack')?.addEventListener('click', () => {
       if (voiceRecorder?.active) cancelVoiceRecording()
@@ -976,16 +1001,17 @@
     avatarMenu?.addEventListener('click', (event) => {
       const action = event.target.closest('[data-avatar-action]')?.dataset.avatarAction
       if (!action) return
+      if (action === 'change') return
       avatarMenu.hidden = true
-      if (action === 'change') document.getElementById('chatMobileAvatarInput')?.click()
-      else if (action === 'remove') removeMobileAvatar()
+      if (action === 'remove') removeMobileAvatar()
     })
     document.addEventListener('pointerdown', (event) => {
       if (!avatarMenu || avatarMenu.hidden || event.target === avatarMenuButton || avatarMenu.contains(event.target)) return
       avatarMenu.hidden = true
     })
-    document.getElementById('chatMobileAvatarInput')?.addEventListener('change', (event) => {
-      uploadMobileAvatar(event.target.files?.[0])
+    document.getElementById('chatMobileAvatarInput')?.addEventListener('change', async (event) => {
+      if (avatarMenu) avatarMenu.hidden = true
+      await uploadMobileAvatar(event.target.files?.[0])
       event.target.value = ''
     })
     const picker = document.getElementById('chatMobileEmojiPicker')

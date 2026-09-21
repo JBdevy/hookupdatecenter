@@ -11,6 +11,7 @@
     "test:director-individual-time": "node scripts/test-director-individual-time.js",
     "test:director-performance": "node scripts/test-director-performance.js",
     "test:director-desktop-controls": "node scripts/test-director-desktop-controls.js",
+    "test:chat-mobile-avatar": "node scripts/test-chat-mobile-avatar.js",
     "build": "node scripts/check-safe-area.js && node scripts/build-static.js",
     "start": "vite --host 0.0.0.0",
     "sync:android": "npm run build && npx cap sync android",

@@ -6,7 +6,7 @@ const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '1-0-1-director-performance-v67'
+const VSHOOK_ASSET_VERSION = '1-0-1-chat-account-isolation-v69'
 const VSHOOK_CHAT_BOOTSTRAP_KEY = 'vshook_chat_bootstrap_key'
 const VSHOOK_CHAT_MOBILE_SESSION_KEY = 'vshook_chat_mobile_session'
 const VSHOOK_CHAT_NOTIFICATION_TARGET_KEY = 'vshook_chat_notification_target'
@@ -102,6 +102,7 @@ async function bootstrapChatMobileSessionFromQr() {
       expiresAt: String(created.expiresAt || ''),
       bridgeBaseUrl: String(window.location.origin || '').replace(/\/+$/, ''),
     }))
+    try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: created })) } catch (error) {}
     localStorage.removeItem(VSHOOK_CHAT_BOOTSTRAP_KEY)
     return true
   } catch (error) {
@@ -178,6 +179,21 @@ async function postChatPushUnregister(session, pushToken) {
   const result = await response.json().catch(() => ({}))
   if (!response.ok || result.ok === false) throw new Error(result.error || 'Não foi possível silenciar as notificações do Chat Hook.')
   return true
+}
+
+async function revokeChatMobileSession(session) {
+  if (!session?.accessToken || !session?.backendUrl) return false
+  try {
+    await fetch(`${String(session.backendUrl).replace(/\/+$/, '')}/api/chat/mobile/logout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatMobileToken: session.accessToken }),
+      cache: 'no-store',
+    })
+    return true
+  } catch (error) {
+    return false
+  }
 }
 
 async function reportChatPushDiagnostic(session, stage, detail = '') {
@@ -420,10 +436,12 @@ window.vshookLogoutChat = async function () {
   if (session && storedToken) {
     try { await postChatPushUnregister(session, storedToken) } catch (error) {}
   }
+  await revokeChatMobileSession(session)
   try {
     localStorage.removeItem(VSHOOK_CHAT_MOBILE_SESSION_KEY)
     localStorage.removeItem(VSHOOK_CHAT_BOOTSTRAP_KEY)
   } catch (error) {}
+  try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: null })) } catch (error) {}
   return true
 }
 
@@ -471,6 +489,7 @@ function renderChatLogin() {
         accessToken: String(created.accessToken), backendUrl: VSHOOK_CHAT_BACKEND_URL,
         expiresAt: String(created.expiresAt || ''), bridgeBaseUrl: VSHOOK_CHAT_BACKEND_URL
       }))
+      try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: created })) } catch (error) {}
       enterStoredChat()
     } catch (error) {
       if (status) status.textContent = error.message || 'Não foi possível entrar no Chat Hook.'

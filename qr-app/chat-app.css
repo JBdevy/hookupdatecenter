@@ -358,7 +358,8 @@ button { -webkit-tap-highlight-color: transparent; }
   box-shadow: 0 16px 42px rgba(0, 0, 0, .62);
 }
 .chatMobileCameraMenu[hidden] { display: none !important; }
-.chatMobileCameraMenu button {
+.chatMobileCameraMenu button,
+.chatMobileCameraMenuAction {
   min-height: 42px;
   padding: 0 12px;
   border: 1px solid rgba(255, 255, 255, .12);
@@ -368,6 +369,23 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: 12px;
   font-weight: 800;
   text-align: left;
+}
+.chatMobileCameraMenuAction {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.chatMobileNativeFileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  opacity: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .chatMobileProfileMenu { top: calc(68px + var(--vsh-safe-top)); right: 12px; bottom: auto; }
 .chatMobileProfileMenu button[hidden] { display: none !important; }

@@ -63,6 +63,7 @@ let currentBridgeState = null;
 let chatHookState = null;
 let chatHookPollTimer = 0;
 let chatHookPollInFlight = false;
+let chatHookAccountRevision = 0;
 let chatHookSending = false;
 let chatHookSelectedMedia = null;
 let chatHookVoiceRecorder = null;
@@ -380,6 +381,7 @@ async function performAccountLogin(email, document) {
   if (accountLoginBusy) return null;
 
   const revision = ++accountAccessRevision;
+  resetChatHookAccountState();
   setAccountLoginBusy(true);
   accountLoginTransitionActive = true;
   try {
@@ -410,6 +412,7 @@ async function performAccountCodeLogin(email, challengeId, code) {
   if (accountLoginBusy) return null;
 
   const revision = ++accountAccessRevision;
+  resetChatHookAccountState();
   setAccountLoginBusy(true);
   accountLoginTransitionActive = true;
   try {
@@ -523,6 +526,7 @@ function setupAccountAccess() {
   $('#devicesLogoutButton')?.addEventListener('click', async () => {
     accountAccessRevision += 1;
     accountLoginTransitionActive = false;
+    resetChatHookAccountState();
     const button = $('#devicesLogoutButton');
     try {
       if (button) {
@@ -4505,6 +4509,20 @@ function renderChatHookCurrentUser() {
   $('#chatHookAdminMenuButton')?.classList.toggle('hidden', user?.isAdmin !== true);
 }
 
+function resetChatHookAccountState() {
+  chatHookAccountRevision += 1;
+  chatHookState = null;
+  chatHookMessagesById.clear();
+  chatHookLastMessageId = 0;
+  chatHookRevision = 0;
+  chatHookClearedAt = '';
+  chatAdminPassword = '';
+  renderChatHookCurrentUser();
+  renderChatHookControls();
+  const messages = $('#chatHookMessages');
+  if (messages) messages.innerHTML = '<div class="chat-hook-empty">Carregando a conta atual...</div>';
+}
+
 function chatHookCooldownRemaining() {
   if (chatHookState?.user?.isAdmin) return 0;
   const target = new Date(chatHookState?.limits?.nextAllowedAt || '').getTime();
@@ -4812,11 +4830,13 @@ function applyChatHookState(next, { full = false } = {}) {
 
 async function refreshChatHook(forceFull = false) {
   if (!isChatHookHomeVisible() || chatHookPollInFlight) return;
+  const accountRevision = chatHookAccountRevision;
   chatHookPollInFlight = true;
   chatHookLastPollAt = Date.now();
   try {
     const afterId = forceFull ? 0 : chatHookLastMessageId;
     const result = await window.hookUpdateCenter.getChatState(afterId);
+    if (accountRevision !== chatHookAccountRevision) return;
     const serverRevision = Math.max(0, Number(result?.chat?.revision || 0));
     if (!forceFull && chatHookRevision && serverRevision !== chatHookRevision) {
       chatHookPollInFlight = false;
@@ -4825,6 +4845,7 @@ async function refreshChatHook(forceFull = false) {
     }
     applyChatHookState(result, { full: forceFull || !chatHookState });
   } catch (error) {
+    if (accountRevision !== chatHookAccountRevision) return;
     const status = $('#chatHookStatus');
     if (status) {
       status.dataset.kind = 'connection';
@@ -7192,9 +7213,7 @@ async function init() {
   window.hookUpdateCenter.onUpdateStatus(renderState);
   window.hookUpdateCenter.onLicenseStatus((nextState) => {
     renderState(nextState);
-    chatHookState = null;
-    chatHookMessagesById.clear();
-    chatHookLastMessageId = 0;
+    resetChatHookAccountState();
     refreshChatHook(true).catch(() => {});
   });
   // A verificação de atualização não deve abrir popup de erro. Instabilidade de rede/backend fica silenciosa.
