@@ -54,6 +54,7 @@ jobs:
         with:
           repository: JBdevy/vshookapploja
           path: hook-keys-source
+          lfs: true
 
       - uses: actions/setup-node@v4
         with:
@@ -68,6 +69,11 @@ jobs:
           workspaces: hook-keys-source/Hook Keys/src-tauri
 
       - run: npm ci
+
+      - name: Validar SF2 e testar release
+        run: |
+          npm run verify:desktop-assets
+          npm run test:release
 
       - name: Gerar instalador EXE
         run: npm run desktop:build -- --bundles nsis
@@ -98,6 +104,7 @@ jobs:
         with:
           repository: JBdevy/vshookapploja
           path: hook-keys-source
+          lfs: true
 
       - uses: actions/setup-node@v4
         with:
@@ -114,6 +121,11 @@ jobs:
           workspaces: hook-keys-source/Hook Keys/src-tauri
 
       - run: npm ci
+
+      - name: Validar SF2 e testar release
+        run: |
+          npm run verify:desktop-assets
+          npm run test:release
 
       - name: Importar certificados Developer ID
         shell: bash
