@@ -1,4 +1,4 @@
-name: Hook Keys - Windows e macOS
+name: Bronze Keys - Windows e macOS
 
 on:
   workflow_dispatch:
@@ -76,7 +76,15 @@ jobs:
           npm run test:release
 
       - name: Gerar instalador EXE
-        run: npm run desktop:build -- --bundles nsis
+        shell: pwsh
+        run: |
+          # Evita selecionar um instalador Hook Keys antigo restaurado pelo
+          # cache depois da troca do nome do produto para Bronze Keys.
+          $bundlePath = 'src-tauri/target/release/bundle/nsis'
+          if (Test-Path -LiteralPath $bundlePath) {
+            Remove-Item -LiteralPath $bundlePath -Recurse -Force
+          }
+          npm run desktop:build -- --bundles nsis
 
       - name: Separar EXE
         shell: pwsh
@@ -84,12 +92,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path build/release | Out-Null
           $installer = Get-ChildItem -LiteralPath src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
           if (-not $installer) { throw 'Instalador EXE não encontrado.' }
-          Copy-Item -LiteralPath $installer.FullName -Destination 'build/release/Hook Keys Windows.exe'
+          Copy-Item -LiteralPath $installer.FullName -Destination 'build/release/Bronze Keys Windows.exe'
 
       - uses: actions/upload-artifact@v4
         with:
           name: Hook-Keys-Windows
-          path: hook-keys-source/Hook Keys/build/release/Hook Keys Windows.exe
+          path: hook-keys-source/Hook Keys/build/release/Bronze Keys Windows.exe
           if-no-files-found: error
 
   macos:
@@ -207,15 +215,31 @@ jobs:
           rm -f "$RUNNER_TEMP/hook-keys-installer-probe-unsigned.pkg" "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg"
 
       - name: Gerar aplicativo universal macOS
-        run: npm run desktop:build -- --target universal-apple-darwin --bundles app
+        shell: bash
+        run: |
+          set -euo pipefail
+          # O cache do Rust pode restaurar o bundle antigo Hook Keys.app. Limpe
+          # somente os bundles finais para nunca assinar uma sobra do cache.
+          rm -rf src-tauri/target/universal-apple-darwin/release/bundle/macos
+          npm run desktop:build -- --target universal-apple-darwin --bundles app
 
-      - name: Assinar aplicativo Hook Keys
+          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          INFO_PLIST="$APP_PATH/Contents/Info.plist"
+          test -d "$APP_PATH"
+          test -f "$INFO_PLIST"
+          plutil -lint "$INFO_PLIST"
+          APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+          test -n "$APP_EXECUTABLE"
+          test -x "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
+          lipo "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" -verify_arch arm64 x86_64
+
+      - name: Assinar aplicativo Bronze Keys
         timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          test -n "$APP_PATH"
+          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          test -d "$APP_PATH"
           echo "Assinando $APP_PATH com $HOOK_KEYS_APP_IDENTITY"
           date -u
           codesign --force --deep --options runtime --timestamp \
@@ -229,13 +253,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          test -n "$APP_PATH"
+          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          test -d "$APP_PATH"
           mkdir -p build/release
           pkgbuild \
             --component "$APP_PATH" \
             --install-location /Applications \
-            "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg"
+            "$RUNNER_TEMP/Bronze Keys macOS unsigned.pkg"
 
       - name: Assinar instalador PKG
         timeout-minutes: 12
@@ -253,13 +277,13 @@ jobs:
           # O teste da chave já ocorreu com um PKG mínimo, antes do build.
           # Este pacote final nunca é assinado sem timestamp. O watchdog
           # também encerra os helpers, evitando tentativas órfãs concorrentes.
-          SIGNED_PKG='build/release/Hook Keys macOS.pkg'
+          SIGNED_PKG='build/release/Bronze Keys macOS.pkg'
           SIGNED=false
           for ATTEMPT in 1 2 3; do
             echo "Tentativa $ATTEMPT de 3 com timestamp seguro..."
             rm -f "$SIGNED_PKG"
             if node scripts/macos-pkg-sign.mjs release \
-              "$RUNNER_TEMP/Hook Keys macOS unsigned.pkg" "$SIGNED_PKG"
+              "$RUNNER_TEMP/Bronze Keys macOS unsigned.pkg" "$SIGNED_PKG"
             then
               SIGNED=true
               break
@@ -268,7 +292,7 @@ jobs:
             sleep 10
           done
           test "$SIGNED" = true || { echo 'Não foi possível assinar o PKG com timestamp seguro após 3 tentativas. Confira a saída do productbuild e o diagnóstico.'; exit 1; }
-          PKG_SIGNATURE="$(pkgutil --check-signature 'build/release/Hook Keys macOS.pkg')"
+          PKG_SIGNATURE="$(pkgutil --check-signature 'build/release/Bronze Keys macOS.pkg')"
           printf '%s\n' "$PKG_SIGNATURE"
           grep -q 'Developer ID Installer' <<< "$PKG_SIGNATURE"
           grep -q 'Signed with a trusted timestamp' <<< "$PKG_SIGNATURE"
@@ -293,18 +317,18 @@ jobs:
           test -n "$APPLE_ID"
           test -n "$APPLE_PASSWORD"
           test -n "$APPLE_TEAM_ID"
-          xcrun notarytool submit 'build/release/Hook Keys macOS.pkg' \
+          xcrun notarytool submit 'build/release/Bronze Keys macOS.pkg' \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          xcrun stapler staple 'build/release/Hook Keys macOS.pkg'
-          xcrun stapler validate 'build/release/Hook Keys macOS.pkg'
+          xcrun stapler staple 'build/release/Bronze Keys macOS.pkg'
+          xcrun stapler validate 'build/release/Bronze Keys macOS.pkg'
 
       - uses: actions/upload-artifact@v4
         with:
           name: Hook-Keys-macOS
-          path: hook-keys-source/Hook Keys/build/release/Hook Keys macOS.pkg
+          path: hook-keys-source/Hook Keys/build/release/Bronze Keys macOS.pkg
           if-no-files-found: error
 
   release:
@@ -321,17 +345,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s 'release-assets/Hook Keys Windows.exe'
-          test -s 'release-assets/Hook Keys macOS.pkg'
+          test -s 'release-assets/Bronze Keys Windows.exe'
+          test -s 'release-assets/Bronze Keys macOS.pkg'
           test "$(find release-assets -type f | wc -l | tr -d ' ')" = '2'
 
-      - name: Publicar Release desktop do Hook Keys
+      - name: Publicar Release desktop do Bronze Keys
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.metadata.outputs.tag }}
-          name: Hook Keys Desktop ${{ needs.metadata.outputs.version }}
+          name: Bronze Keys Desktop ${{ needs.metadata.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/Hook Keys Windows.exe
-            release-assets/Hook Keys macOS.pkg
+            release-assets/Bronze Keys Windows.exe
+            release-assets/Bronze Keys macOS.pkg
