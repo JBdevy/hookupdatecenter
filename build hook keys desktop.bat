@@ -75,7 +75,12 @@ if errorlevel 1 goto erro_fonte
 git -C "%HOOK_KEYS_SOURCE_REPO%" push origin "%HOOK_KEYS_SOURCE_BRANCH%"
 if errorlevel 1 goto erro_fonte
 
-git add -- ".github/workflows/hook-keys-desktop-release.yml" "build hook keys desktop.bat"
+for /f "delims=" %%S in ('git -C "%HOOK_KEYS_SOURCE_REPO%" rev-parse HEAD') do set "HOOK_KEYS_SOURCE_REF=%%S"
+if not defined HOOK_KEYS_SOURCE_REF goto erro_fonte
+if not exist build mkdir build
+> "build\hook-keys-source-ref.txt" echo %HOOK_KEYS_SOURCE_REF%
+
+git add -- ".github/workflows/hook-keys-desktop-release.yml" "build hook keys desktop.bat" "build hook keys desktop.command" "build/hook-keys-source-ref.txt"
 if errorlevel 1 goto erro
 rem Sempre cria um commit proprio para este disparo. Sem --allow-empty, quando
 rem nao havia mudanca no workflow o nome digitado era ignorado e a tag ficava

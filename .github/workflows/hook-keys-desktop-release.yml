@@ -24,7 +24,9 @@ jobs:
     outputs:
       version: ${{ steps.values.outputs.version }}
       tag: ${{ steps.values.outputs.tag }}
+      source_ref: ${{ steps.values.outputs.source_ref }}
     steps:
+      - uses: actions/checkout@v4
       - id: values
         shell: bash
         env:
@@ -41,6 +43,9 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Versao invalida.'; exit 1; }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          SOURCE_REF="$(tr -d '[:space:]' < build/hook-keys-source-ref.txt)"
+          [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'Revisao da fonte invalida.'; exit 1; }
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: metadata
@@ -53,6 +58,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JBdevy/vshookapploja
+          ref: ${{ needs.metadata.outputs.source_ref }}
           path: hook-keys-source
           lfs: true
 
@@ -102,7 +108,7 @@ jobs:
 
   macos:
     needs: metadata
-    runs-on: macos-14
+    runs-on: macos-26
     defaults:
       run:
         working-directory: hook-keys-source/Hook Keys
@@ -111,6 +117,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JBdevy/vshookapploja
+          ref: ${{ needs.metadata.outputs.source_ref }}
           path: hook-keys-source
           lfs: true
 
@@ -119,14 +126,6 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: hook-keys-source/Hook Keys/package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: hook-keys-source/Hook Keys/src-tauri
 
       - run: npm ci
 
@@ -214,35 +213,63 @@ jobs:
           pkgutil --check-signature "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg" | grep -q 'Developer ID Installer'
           rm -f "$RUNNER_TEMP/hook-keys-installer-probe-unsigned.pkg" "$RUNNER_TEMP/hook-keys-installer-probe-signed.pkg"
 
-      - name: Gerar aplicativo universal macOS
+      - name: Restaurar Skia Apple
+        id: skia-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            hook-keys-source/Hook Keys/ios/App/Vendor/Skia.xcframework
+            hook-keys-source/Hook Keys/ios/Skia.generated.xcconfig
+          key: bronze-catalyst-skia-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('hook-keys-source/Hook Keys/scripts/skia-apple.revision', 'hook-keys-source/Hook Keys/scripts/build-skia-apple.sh', 'hook-keys-source/Hook Keys/scripts/skia-apple-arm64.patch') }}
+
+      - name: Compilar Skia com ABI Mac Catalyst
+        if: steps.skia-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-skia-apple.sh
+
+      - name: Gerar aplicativo nativo universal macOS
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          # O cache do Rust pode restaurar o bundle antigo Hook Keys.app. Limpe
-          # somente os bundles finais para nunca assinar uma sobra do cache.
-          rm -rf src-tauri/target/universal-apple-darwin/release/bundle/macos
-          npm run desktop:build -- --target universal-apple-darwin --bundles app
-
-          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          npm run native:sync:ios
+          node scripts/set-native-version.mjs --platform ios --version-name "$RELEASE_VERSION" --build-number "$GITHUB_RUN_NUMBER"
+          test -s ios/Skia.generated.xcconfig
+          test -s ios/App/Vendor/Skia.xcframework/ios-arm64_x86_64-maccatalyst/libskia-catalyst.a
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath build/native-macos \
+            ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" build
+          APP_PATH='build/native-macos/Build/Products/Release-maccatalyst/Bronze Keys.app'
           INFO_PLIST="$APP_PATH/Contents/Info.plist"
-          test -d "$APP_PATH"
-          test -f "$INFO_PLIST"
           plutil -lint "$INFO_PLIST"
           APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
-          test -n "$APP_EXECUTABLE"
-          test -x "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
           lipo "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" -verify_arch arm64 x86_64
+          if find "$APP_PATH" -iname '*.html' -o -iname '*Capacitor*' | grep -q .; then
+            echo 'O pacote nativo nao pode conter a interface WebView.'; exit 1
+          fi
+          python3 - <<'PYTHON'
+          import os, plistlib
+          with open('ios/App/App/BronzeMac.entitlements', 'rb') as f:
+              data = plistlib.load(f)
+          data['keychain-access-groups'] = [os.environ['APPLE_TEAM_ID'] + '.com.hookdeveloper.hookkeys']
+          with open('build/native-macos.entitlements', 'wb') as f:
+              plistlib.dump(data, f)
+          PYTHON
 
       - name: Assinar aplicativo Bronze Keys
         timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          APP_PATH='build/native-macos/Build/Products/Release-maccatalyst/Bronze Keys.app'
           test -d "$APP_PATH"
           echo "Assinando $APP_PATH com $HOOK_KEYS_APP_IDENTITY"
           date -u
           codesign --force --deep --options runtime --timestamp \
+            --entitlements build/native-macos.entitlements \
             --sign "$HOOK_KEYS_APP_IDENTITY" \
             --keychain "$HOOK_KEYS_KEYCHAIN_PATH" \
             "$APP_PATH"
@@ -253,7 +280,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH='src-tauri/target/universal-apple-darwin/release/bundle/macos/Bronze Keys.app'
+          APP_PATH='build/native-macos/Build/Products/Release-maccatalyst/Bronze Keys.app'
           test -d "$APP_PATH"
           mkdir -p build/release
           pkgbuild \
@@ -355,6 +382,10 @@ jobs:
           tag_name: ${{ needs.metadata.outputs.tag }}
           name: Bronze Keys Desktop ${{ needs.metadata.outputs.version }}
           generate_release_notes: true
+          body: |
+            Bronze Keys Desktop ${{ needs.metadata.outputs.version }}
+            macOS nativo (Mac Catalyst, arm64/x86_64). Windows WebView.
+            Fonte: JBdevy/vshookapploja@${{ needs.metadata.outputs.source_ref }}
           fail_on_unmatched_files: true
           files: |
             release-assets/Bronze Keys Windows.exe
