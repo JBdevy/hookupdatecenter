@@ -4017,6 +4017,13 @@ function createTimecodeLanRelay(options = {}) {
 
   function nextTickIntervalMs() {
     const status = localStatus
+    // Playback alone does not activate a disabled relay. Both relay instances
+    // used to poll at 50 Hz with no pairing code, needlessly waking REAPER.
+    // Incoming HTTP/UDP requests still wake the receiver independently of UI.
+    if (!licenseIsActive() || !status || !isPairCode(status.code) ||
+        (!statusCanTransmit(status) && !statusCanReceive(status))) {
+      return DISABLED_IDLE_INTERVAL_MS
+    }
     const playState = Math.max(0,
       Math.trunc(Number(status?.transport?.playState) || 0))
     const transportActive = playState !== 0 && (playState & 2) !== 2

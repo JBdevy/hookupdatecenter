@@ -6,7 +6,7 @@ const { auditRemoval, executeRemoval, removalName, auditSuggestions, suggestRepe
 const { containsCreateProjectTrackName, isCreateProjectSourceLabel } = require('../src/create-project');
 
 (async () => {
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-rename-test-'));
+  const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'hook-rename-test-')));
   const file = async (relative, content = relative) => {
     const target = path.join(temporary, relative);
     await fs.mkdir(path.dirname(target), { recursive: true });
@@ -147,7 +147,7 @@ const { containsCreateProjectTrackName, isCreateProjectSourceLabel } = require('
     console.log('HOOK_RENAME_REMOVAL_OK: recursive, overlapping roots, conflicts, no match, options, extensions, symlinks, suggestions');
   } finally {
     // Only this freshly-created test directory, never selected user folders.
-    if (path.dirname(temporary) !== path.resolve(os.tmpdir()) || !path.basename(temporary).startsWith('hook-rename-test-')) {
+    if (path.dirname(temporary) !== await fs.realpath(os.tmpdir()) || !path.basename(temporary).startsWith('hook-rename-test-')) {
       throw new Error('Unexpected test cleanup path');
     }
     await fs.rm(temporary, { recursive: true, force: true });

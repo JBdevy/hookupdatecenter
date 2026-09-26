@@ -322,7 +322,7 @@ async function main() {
     assert(rpp.includes('MARKER 2 123 "Evidências"'));
     assert(!rpp.includes('ignorar.flac'));
     assert(!rpp.includes(songA));
-    assert(rpp.includes('FILE "Media\\001 - Sabor do Teu Beijo - Click.wav"'));
+    assert(rpp.includes(`FILE "${path.join('Media', '001 - Sabor do Teu Beijo - Click.wav')}"`));
     await writeCreateProjectFileExclusive(destinationPath, rpp);
     await assert.rejects(
       () => writeCreateProjectFileExclusive(destinationPath, 'não pode sobrescrever'),
