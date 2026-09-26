@@ -182,7 +182,14 @@ jobs:
               --proto '=https' --connect-timeout 10 --max-time 30 \
               "https://www.apple.com/certificateauthority/$CERT_NAME.cer" \
               --output "$INTERMEDIATE"
-            security import "$INTERMEDIATE" -k "$KEYCHAIN_PATH"
+            IMPORT_LOG="$RUNNER_TEMP/intermediate-import.log"
+            if security import "$INTERMEDIATE" -k "$KEYCHAIN_PATH" > "$IMPORT_LOG" 2>&1; then
+              echo "$CERT_NAME importado."
+            elif grep -Fq 'The specified item already exists in the keychain' "$IMPORT_LOG"; then
+              echo "$CERT_NAME já presente na cadeia importada."
+            else
+              cat "$IMPORT_LOG"; exit 1
+            fi
           done
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
           # Preserve os keychains do macOS para que a cadeia intermediária da
