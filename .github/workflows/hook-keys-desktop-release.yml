@@ -159,16 +159,22 @@ jobs:
           # -A evita que o macOS abra uma confirmação gráfica invisível no
           # runner. É seguro aqui porque este keychain é exclusivo e
           # descartável, criado somente para este job.
-          security import "$APP_CERT" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$APP_CERT_PASSWORD" \
-            -A -t cert -f pkcs12
-          security import "$INSTALLER_CERT" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$INSTALLER_CERT_PASSWORD" \
-            -A -t cert -f pkcs12
-          # Tauri não instala o keychain de certificados intermediários que
-          # electron-builder instala na Hook Center. Carregue G1/G2 oficiais
+          import_identity() {
+            local CERT_FILE="$1" CERT_PASSWORD="$2"
+            local IMPORT_LOG="$RUNNER_TEMP/identity-import.log"
+            if security import "$CERT_FILE" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 > "$IMPORT_LOG" 2>&1; then
+              cat "$IMPORT_LOG"
+            elif grep -Fq 'The specified item already exists in the keychain' "$IMPORT_LOG"; then
+              # A P12 pode conter a mesma chave/cadeia que a outra P12.
+              # As duas identidades completas ainda são exigidas abaixo.
+              echo 'Item compartilhado já importado; validando as identidades.'
+            else
+              cat "$IMPORT_LOG"; return 1
+            fi
+          }
+          import_identity "$APP_CERT" "$APP_CERT_PASSWORD"
+          import_identity "$INSTALLER_CERT" "$INSTALLER_CERT_PASSWORD"
+          # Carregue G1/G2 oficiais
           # localmente; não altera a confiança das raízes do macOS.
           for CERT_NAME in DeveloperIDCA DeveloperIDG2CA; do
             INTERMEDIATE="$RUNNER_TEMP/$CERT_NAME.cer"
