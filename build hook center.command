@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+finish() {
+  result=$?
+  if [[ $result -ne 0 ]]; then
+    echo 'ERRO: build não concluído. Commits e tags foram preservados, sem envio forçado.' >&2
+  fi
+  if [[ -t 0 && "${HOOK_BUILD_NO_PAUSE:-0}" != 1 ]]; then read -r -p 'Enter para fechar...' _ || true; fi
+  exit "$result"
+}
+trap finish EXIT
 cd "$(dirname "$0")"
 VERSION="${1:-1.0.0}"
 MESSAGE="${2:-Build Hook Center $VERSION}"
@@ -32,4 +41,4 @@ done
 [[ -n "$RUN" ]] || { echo "Consulte Actions para $TAG"; exit 1; }
 echo "https://github.com/JBdevy/hookupdatecenter/actions/runs/$RUN"
 gh run watch "$RUN" --repo JBdevy/hookupdatecenter --exit-status --interval 15
-if [[ -t 0 && "${HOOK_BUILD_NO_PAUSE:-0}" != 1 ]]; then read -r -p 'Concluído. Enter para fechar...' _; fi
+echo 'Instaladores compilados e publicados.'

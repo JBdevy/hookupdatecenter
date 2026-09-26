@@ -22,3 +22,16 @@ Hook Center nem uma medição em PC Windows fraco.
 remanescente, pareamento, transmissão, recepção, transferência e licença.
 Ainda é necessário comparar a aplicação empacotada com um projeto real no
 PC que apresenta travamentos; não foi atribuída uma redução global de CPU.
+
+## Build no Mac
+
+Abra `build hook center.command` para validar, gerar a versão 1.0.0 e
+acompanhar os instaladores Windows/macOS no GitHub. O lançador usa uma tag
+única por build, sem apagar tags anteriores. Alterações do aplicativo devem
+estar commitadas antes; o lançador inclui somente sua própria versão e
+arquivos de pacote. `build hook keys desktop.command` é o lançador separado
+do Bronze Keys, com a fonte nativa fixada pelo SHA do repositório apploja.
+
+A verificação de integração do relay executa o módulo real contra um servidor
+HTTP local por 2,2 segundos, sem janela aberta. Passou com cinco consultas
+de estado; o limite do teste é oito (a versão anterior fazia cerca de cem).
