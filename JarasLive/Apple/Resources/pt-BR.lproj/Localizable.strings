@@ -55,7 +55,6 @@
 "DEMO · SEM ÁUDIO" = "DEMO · SEM ÁUDIO";
 "Autorização pendente ao parar" = "Autorização pendente ao parar";
 "Salvar projeto" = "Salvar projeto";
-"Abrir .jaras" = "Abrir .jaras";
 "Abrir grid" = "Abrir grid";
 "REPRODUZINDO" = "REPRODUZINDO";
 "PARADO" = "PARADO";
@@ -84,7 +83,6 @@
 "%lld dispositivos" = "%lld dispositivos";
 "%lld dispositivo" = "%lld dispositivo";
 "%lld / %lld dispositivos" = "%lld / %lld dispositivos";
-"%lld músicas · formato .jaras 1" = "%lld músicas · formato .jaras 1";
 "SAÍDA %lld" = "SAÍDA %lld";
 "1 dispositivo" = "1 dispositivo";
 "active" = "Ativo";
@@ -124,3 +122,621 @@
 "Carregando projeto…" = "Carregando projeto…";
 
 "Pronto" = "Pronto";
+
+"Live Session" = "Sessão ao vivo";
+
+"Criar região do item" = "Criar região do item";
+
+"Editar região" = "Editar região";
+
+"Salvar" = "Salvar";
+
+"Selecione um item e pressione Shift + R para criar uma região." = "Selecione um item e pressione Shift + R para criar uma região.";
+
+"A track supports at most three overlapping items" = "Uma pista permite no máximo três itens sobrepostos no tempo.";
+"Create Project" = "Criar projeto";
+"Add Project" = "Adicionar ao projeto";
+"Open Project" = "Abrir projeto";
+"Add Stems" = "Adicionar stems";
+"Empty" = "Vazio";
+"Recent projects" = "Projetos recentes";
+"Review stems" = "Revisar stems";
+"Repeated names were found that may identify providers. Select suggestions or type names to remove." = "Foram encontrados nomes repetidos que podem identificar empresas. Selecione sugestões ou digite os nomes que deseja limpar.";
+"Names to remove, separated by commas" = "Nomes para limpar, separados por vírgula";
+"Original folders remain unchanged. Audio is copied beside the .jl project." = "As pastas originais serão preservadas. Os áudios serão copiados para junto do projeto .jl.";
+"Back" = "Voltar";
+"Create / Add" = "Criar / Adicionar";
+"Opening project…" = "Abrindo projeto…";
+"Analyzing audio and names…" = "Analisando áudios e nomes…";
+"Copying audio and saving project…" = "Copiando áudios e salvando projeto…";
+"%lld song folders · %lld audio files" = "%lld pastas de músicas · %lld arquivos de áudio";
+"Browse…" = "Procurar…";
+
+"Salvo" = "Salvo";
+"Salvando…" = "Salvando…";
+
+"General" = "Geral";
+
+"Audio" = "Áudio";
+
+"Account" = "Conta";
+
+"Language" = "Idioma";
+
+"Theme" = "Tema";
+
+"Dark" = "Escuro";
+
+"Light" = "Claro";
+
+"Output device" = "Dispositivo de áudio";
+
+"No output device" = "Nenhum dispositivo de áudio";
+
+"Refresh devices" = "Atualizar dispositivos";
+
+"MIDI inputs" = "Entradas MIDI";
+
+"No MIDI inputs" = "Nenhuma entrada MIDI";
+
+"Output" = "Saída";
+
+"Buffer size" = "Tamanho do buffer";
+
+"Smaller buffers reduce latency and use more CPU." = "Buffers menores reduzem a latência e usam mais CPU.";
+
+"Do you want to save this project?" = "Deseja salvar este projeto?";
+
+"Mappings" = "Mapeamentos";
+"Enabled" = "Ativado";
+"Input" = "Entrada";
+"Ratio" = "Ratio";
+"Threshold" = "Threshold";
+"Attack" = "Attack";
+"Release" = "Release";
+"Gain" = "Gain";
+"Decay" = "Decay";
+"Low Cut" = "Low Cut";
+"High Cut" = "High Cut";
+"Mix" = "Mix";
+"Space" = "Ambiente";
+"Room" = "Room";
+"Hall" = "Hall";
+"Plate" = "Plate";
+"Inserted" = "Inserido";
+"Not inserted" = "Não inserido";
+"Insert effect" = "Inserir efeito";
+"Remove effect" = "Remover efeito";
+"Instruments" = "Instrumentos";
+"Compressor" = "Compressor";
+"Reverb" = "Reverb";
+"Delay — coming soon" = "Delay — em breve";
+"Track effects" = "Efeitos da pista";
+"Master effects" = "Efeitos do Master";
+"Arm track for recording" = "Armar pista para gravação";
+"Record armed tracks" = "Gravar pistas armadas";
+"Repeat (R)" = "Repeat (R)";
+"Right-click the zero line to add a band." = "Clique com o botão direito na linha central para adicionar uma banda.";
+"Remove band" = "Remover banda";
+"Slope" = "Inclinação";
+"Band" = "Banda";
+"Type" = "Tipo";
+"Frequency" = "Frequência";
+"Unavailable" = "Indisponível";
+
+"Apply" = "Aplicar";
+
+"Cancel" = "Cancelar";
+
+"Effect" = "Efeito";
+
+"Download" = "Baixar";
+
+"MIDI input" = "Entrada MIDI";
+
+"None" = "Nenhum";
+
+"Disconnected" = "Desconectado";
+
+"R2 download links pending." = "Os links de download dos instrumentos ainda não foram configurados.";
+
+"Blocks" = "Blocos";
+
+"Add a setlist block" = "Adicionar bloco ao setlist";
+
+"Edit block" = "Editar bloco";
+
+"Edit song" = "Editar música";
+
+"Could not save the project." = "Não foi possível salvar o projeto.";
+
+"Import audio" = "Importar áudio";
+
+"Placement" = "Distribuição";
+
+"One track per item" = "Uma pista para cada item";
+
+"All items on the same track" = "Todos os itens na mesma pista";
+
+"Interval between items" = "Intervalo entre os itens";
+
+"Import" = "Importar";
+"Parameters" = "Parâmetros";
+"Velocity" = "Velocity";
+"Controller" = "Controller";
+"Curve" = "Curva";
+"Soft" = "Soft";
+"Medium" = "Médio";
+"Hard" = "Hard";
+"Depth" = "Profundidade";
+"Cutoff envelope" = "Envelope do Cutoff";
+"Minimum cutoff for soft notes. Stronger notes open their own filter." = "Cutoff mínimo para notas fracas. Notas fortes abrem seu próprio filtro.";
+"Modulation wheel controls the cutoff." = "A roda de Modulation controla o Cutoff.";
+"Pitch Bend controls vibrato depth at 6.85 Hz." = "Pitch Bend controla a intensidade do vibrato a 6,85 Hz.";
+"No instruments available yet" = "Ainda não há instrumentos nesta categoria";
+
+"Move a MIDI fader or knob." = "Mova um fader ou knob MIDI.";
+"A Timecode track already exists." = "Já existe uma pista Timecode.";
+"Mode" = "Modo";
+"Frame rate" = "Taxa de quadros";
+"Start at zero in each region" = "Começar do zero em cada região";
+"Offset (s)" = "Deslocamento (s)";
+"MIDI output" = "Saída MIDI";
+"Add video" = "Adicionar vídeo";
+"Show / hide video" = "Abrir / fechar vídeo";
+"No video at this position" = "Nenhum vídeo nesta posição";
+
+"Delete selected tracks?" = "Excluir as pistas selecionadas?";
+"Delete" = "Excluir";
+"Delete region" = "Excluir região";
+"Remove from playlist" = "Remover da playlist";
+"Delete this region?" = "Excluir esta região?";
+"Remove this song from the playlist?" = "Remover esta música da playlist?";
+"Ungroup" = "Desfazer grupo";
+"Split selected items at the edit cursor?" = "Cortar os itens selecionados na posição do cursor verde?";
+"Split" = "Cortar";
+"Split at edit cursor…" = "Cortar no cursor verde…";
+"Normalize" = "Normalizar";
+"Normalize…" = "Normalizar…";
+"Target" = "Alvo";
+"Maximum item gain: +12 dB" = "Ganho máximo do item: +12 dB";
+"No audio items selected." = "Nenhum item de áudio selecionado.";
+
+"Choose folders" = "Escolher pastas";
+"Search folders" = "Pesquisar pastas";
+"Select all" = "Selecionar tudo";
+"Deselect all" = "Desmarcar tudo";
+"Folders will be placed on the grid in the order you check them." = "As pastas serão colocadas no grid na ordem em que você marcar.";
+"Continue" = "Continuar";
+
+"Editar pista" = "Editar pista";
+"Editar marcador" = "Editar marcador";
+"Agulha de edição" = "Agulha de edição";
+"Fechar" = "Fechar";
+"Escolha um nome" = "Escolha um nome";
+"Expandir Setlist" = "Expandir Setlist";
+"Expandir Track-Mixer" = "Expandir Track-Mixer";
+"Ocultar Setlist" = "Ocultar Setlist";
+"Ocultar Track-Mixer" = "Ocultar Track-Mixer";
+"Recolher Setlist" = "Recolher Setlist";
+"Recolher Track-Mixer" = "Recolher Track-Mixer";
+"Restaurar largura anterior do Setlist" = "Restaurar largura anterior do Setlist";
+"Restaurar largura anterior do Track-Mixer" = "Restaurar largura anterior do Track-Mixer";
+"Uso total de RAM do sistema" = "Uso total de RAM do sistema";
+"No máximo duas regiões sobrepostas." = "No máximo duas regiões sobrepostas.";
+"Bloco" = "Bloco";
+"Add Track" = "Adicionar pista";
+"All" = "Todas";
+"All regions" = "Todas as regiões";
+"Audio input and output" = "Entrada e saída de áudio";
+"BPM · Tap tempo" = "BPM · Tap tempo";
+"Beat unit" = "Unidade de tempo";
+"Beats per bar" = "Tempos por compasso";
+"Bell" = "Bell";
+"Brickwall uses a 192 dB/oct low-latency filter." = "Brickwall usa um filtro de baixa latência de 192 dB/oitava.";
+"Cancel playlist creation" = "Cancelar criação de playlist";
+"Choose playlist" = "Escolher playlist";
+"Clear" = "Limpar";
+"Close" = "Fechar";
+"Close playlists" = "Fechar playlists";
+"Create" = "Criar";
+"Create group" = "Criar grupo";
+"Create playlist" = "Criar playlist";
+"Double-click to reset to 0 dB" = "Clique duas vezes para voltar a 0 dB";
+"Drag vertically. Double-click to reset." = "Arraste verticalmente. Clique duas vezes para restaurar o padrão.";
+"Edit" = "Editar";
+"Enter a BPM between 60 and 300." = "Insira um BPM entre 60 e 300.";
+"Envelope" = "Envelope";
+"Export" = "Exportar";
+"High Shelf" = "High Shelf";
+"Interval seconds" = "Intervalo em segundos";
+"Keyboard" = "Teclado";
+"Low Shelf" = "Low Shelf";
+"Map control" = "Mapear controle";
+"Menu" = "Menu";
+"Modulation" = "Modulation";
+"New playlist" = "Nova playlist";
+"No mappings yet." = "Nenhum mapeamento ainda.";
+"No results" = "Nenhum resultado";
+"OUTPUT · SPECTROGRAM" = "SAÍDA · ESPECTROGRAMA";
+"Pan" = "Pan";
+"Pan · Double-click to center" = "Pan · Clique duas vezes para centralizar";
+"Patch" = "Patch";
+"Pitch Bend" = "Pitch Bend";
+"Play / Stop (Space)" = "Play / Stop (Espaço)";
+"Playlist name" = "Nome da playlist";
+"Playlists" = "Playlists";
+"Queue the next song automatically" = "Colocar a próxima música na fila automaticamente";
+"Queued song" = "Música na fila";
+"Record" = "Gravar";
+"Recording" = "Gravação";
+"Remove mapping" = "Remover mapeamento";
+"Repeat" = "Repeat";
+"Resize mixer" = "Redimensionar mixer";
+"SIMBOL" = "SÍMBOLO";
+"Sample rate" = "Taxa de amostragem";
+"Save" = "Salvar";
+"Search songs" = "Pesquisar músicas";
+"Search songs (Tab)" = "Pesquisar músicas (Tab)";
+"Seconds" = "Segundos";
+"Select an item and press Shift + R to create a region." = "Selecione um item e pressione Shift + R para criar uma região.";
+"Stereo meter, L and R" = "Meter estéreo, L e R";
+"Sub Play / Stop (Enter)" = "Sub Play / Stop (Enter)";
+"Tap tempo · Right-click to edit BPM" = "Tap tempo · Clique com o botão direito para editar o BPM";
+"Teleprompter" = "Teleprompter";
+"This control is already mapped." = "Este controle já está mapeado.";
+"Track-Mixer" = "Track-Mixer";
+"Transport time" = "Tempo do transporte";
+"Track unavailable" = "Pista indisponível";
+"Volume" = "Volume";
+"Mute" = "Mute";
+"Solo" = "Solo";
+"Video" = "Vídeo";
+"⌘ / Ctrl: multiple · Shift: range" = "⌘ / Ctrl: múltiplos · Shift: intervalo";
+"%lld output channels" = "%lld canais de saída";
+"%lld samples" = "%lld amostras";
+"Importing audio…" = "Importando áudio…";
+"Preparing waveforms…" = "Preparando formas de onda…";
+"Grand Piano" = "Piano de cauda";
+"Upright" = "Piano vertical";
+"Electric" = "Pianos elétricos";
+"Organ" = "Órgãos";
+"Strings" = "Cordas";
+"Guitar" = "Guitarras";
+"Bass" = "Baixos";
+"Synth" = "Synth";
+"Synth Pad" = "Synth Pad";
+"Lead" = "Lead";
+"Acordeon" = "Acordeon";
+"Brass" = "Metais";
+"Mallets" = "Mallets";
+"Drum" = "Baterias";
+
+"Default output" = "Saída padrão";
+
+"No MIDI outputs" = "Nenhuma saída MIDI";
+
+"Standard" = "Padrão";
+"Count" = "Quantidade";
+"Sequential" = "Sequencial";
+"No audio inputs available." = "Nenhuma entrada de áudio disponível.";
+"Enter a quantity between 1 and %lld." = "Insira uma quantidade entre 1 e %lld.";
+"Track %lld" = "Pista %lld";
+"Special tracks must be created one at a time." = "As pistas especiais devem ser criadas uma por vez.";
+"Invalid input routing." = "Roteamento de entrada inválido.";
+
+"Create a Video track first, then drop the video on it" = "Crie uma pista de Vídeo primeiro e depois arraste o vídeo para ela";
+"Drop videos on an existing Video track" = "Arraste os vídeos para uma pista de Vídeo existente";
+"Choose Same track to add these videos to the existing Video track" = "Escolha Mesma pista para adicionar estes vídeos à pista de Vídeo existente";
+"Drop audio and video separately" = "Arraste os arquivos de áudio e vídeo separadamente";
+"Audio files must be dropped on a standard audio track" = "Os arquivos de áudio devem ser arrastados para uma pista de áudio padrão";
+"Drop media on a standard audio track or a Video track" = "Arraste os arquivos para uma pista de áudio padrão ou uma pista de Vídeo";
+"The destination track no longer exists" = "A pista de destino não existe mais";
+"The destination Video track no longer exists" = "A pista de Vídeo de destino não existe mais";
+"No media files to import" = "Nenhum arquivo de mídia para importar";
+"Select media files, not folders." = "Selecione arquivos de mídia, não pastas.";
+"Could not read the dropped file." = "Não foi possível ler o arquivo arrastado.";
+"Unsupported media file: %@" = "Arquivo de mídia não suportado: %@";
+"Empty media file: %@" = "Arquivo de mídia vazio: %@";
+"Video items must stay on a Video track" = "Os itens de vídeo devem permanecer em uma pista de Vídeo";
+"Invalid Timecode span" = "Intervalo de Timecode inválido";
+"Timecode items cannot repeat their source" = "Os itens de Timecode não podem repetir sua origem";
+
+"Lyrics color" = "Cor da letra";
+"Lyrics border color" = "Cor do contorno da letra";
+"Timer color" = "Cor do cronômetro";
+"Expired countdown color" = "Cor do fim regressivo";
+"Timer border color" = "Cor da borda do cronômetro";
+"Local clock color" = "Cor do horário local";
+"Local clock border color" = "Cor da borda do horário local";
+"Window border color" = "Cor da borda da janela";
+"Song name color" = "Cor do nome da música";
+"Queued song color" = "Cor do nome da fila";
+"Progress color" = "Cor do progresso";
+"Chords color" = "Cor da cifra";
+"Lyrics scale" = "Escala da letra";
+"Timer scale" = "Escala do cronômetro";
+"Song name scale" = "Escala do nome da música";
+"Queued song scale" = "Escala do nome da fila";
+"Media scale" = "Escala da mídia";
+"Preview depth" = "Profundidade do preview";
+"Local clock scale" = "Escala do horário local";
+"Chords scale" = "Escala da cifra";
+"Text case" = "Caixa da letra";
+"Lyrics font" = "Fonte da letra";
+"Preview font" = "Fonte do preview";
+"Song name font" = "Fonte do nome da música";
+"Queued song font" = "Fonte do nome da fila";
+"Chords font" = "Fonte da cifra";
+"Lyrics alignment" = "Alinhamento das letras";
+"Timer position" = "Posição do cronômetro";
+"Local clock position" = "Posição do horário local";
+"Song name position" = "Posição do nome da música";
+"Queued song position" = "Posição do nome da fila";
+"Progress position" = "Posição do progresso";
+"Progress mode" = "Modo da barra de progresso";
+"Chords position" = "Posição da cifra";
+"Show window border" = "Mostrar borda da janela";
+"RGB window border" = "Borda da janela em RGB";
+"RGB timer and local clock borders" = "RGB borda do cronômetro/local";
+"RGB lyrics border" = "Contorno da letra em RGB";
+"RGB chords border" = "RGB borda da cifra";
+"Show timer border" = "Mostrar borda do cronômetro";
+"Show local clock border" = "Mostrar borda do horário local";
+"Show lyrics border" = "Mostrar borda da letra";
+"Show timer" = "Mostrar cronômetro";
+"Show local clock" = "Mostrar horário local";
+"Show song name" = "Mostrar nome da música";
+"Show queued song" = "Mostrar nome da fila";
+"Show chords" = "Exibir cifras";
+"Show preview in this window" = "Mostrar preview nesta janela";
+"Show song durations in preview" = "Mostrar tempo das músicas no preview";
+"Show block durations in preview" = "Mostrar tempo total dos blocos no preview";
+"Underline preview names" = "Sublinhar nomes do preview";
+"Show progress bar" = "Mostrar barra de progresso";
+"Original text" = "PADRÃO (COMO FOI ESCRITO)";
+"UPPERCASE" = "CAIXA ALTA";
+"lowercase" = "caixa baixa";
+"Default" = "PADRÃO";
+"Left" = "ESQUERDA";
+"Center" = "CENTRALIZADO";
+"Right" = "DIREITA";
+"Top left" = "ESQUERDA EM CIMA";
+"Bottom left" = "ESQUERDA EM BAIXO";
+"Top right" = "DIREITA EM CIMA";
+"Bottom right" = "DIREITA EM BAIXO";
+"Top center" = "CENTRO EM CIMA";
+"Bottom center" = "CENTRO EM BAIXO";
+"Top" = "EM CIMA";
+"Bottom" = "EM BAIXO";
+"Lyrics" = "LETRAS";
+"Chords" = "Cifras";
+"Night" = "NOITE";
+"Day" = "DIA";
+"Teleprompter settings" = "Configurações do Teleprompter";
+"Colors" = "Cores";
+"Scales" = "Escalas";
+"Fonts and positions" = "Fontes e posições";
+"Display" = "Mostrar";
+"Queue is empty" = "Fila de espera vazia";
+"No teleprompter text at this position" = "Nenhum texto do Teleprompter nesta posição";
+"Text Editor" = "Editor de texto";
+"Add text" = "Adicionar texto";
+"Text" = "Texto";
+"Maximum 100 characters." = "Máximo de 100 caracteres.";
+"characters" = "caracteres";
+"Command+Enter to apply; Enter for a new line." = "Command+Enter para aplicar; Enter para uma nova linha.";
+
+// Independent stage timer
+"Timer" = "Cronômetro";
+"Timer mode" = "Modo do cronômetro";
+"Progressive" = "Progressivo";
+"Countdown" = "Regressivo";
+"Hours" = "Horas";
+"Minutes" = "Minutos";
+"Start" = "Iniciar";
+"INIT AUTO" = "INIT AUTO";
+"Start timer automatically when a song starts" = "Iniciar o cronômetro automaticamente quando uma música começar";
+"Stop timer?" = "Parar cronômetro?";
+"The timer will be reset." = "O cronômetro será zerado.";
+"Timer settings" = "Configurações do cronômetro";
+"Timer duration" = "Duração do cronômetro";
+"Timer Play" = "Iniciar cronômetro";
+"Timer Stop" = "Parar cronômetro";
+"Enter time as HH:MM:SS." = "Informe o tempo como HH:MM:SS.";
+"Timer settings · Right-click" = "Configurações do cronômetro · Clique direito";
+"Disabled" = "Desativado";
+"There is already an item at this position on this track." = "Já existe um item nesta posição nesta pista.";
+"Teleprompter, Video and Chords items cannot overlap" = "Itens de Teleprompter, Vídeo e Cifras não podem se sobrepor";
+"Special items can only move horizontally on their own track" = "Itens especiais só podem se mover horizontalmente na própria pista";
+"Maximum %lld characters." = "Máximo de %lld caracteres.";
+"Chords text must contain at most 30 characters" = "O texto de cifras deve conter no máximo 30 caracteres";
+"Teleprompter text must contain at most 400 characters" = "O texto do teleprompter deve conter no máximo 400 caracteres";
+
+"Uppercase" = "Caixa alta";
+
+"Source" = "Origem";
+
+"Bounds" = "Limites";
+
+"Region render matrix" = "Matriz de renderização de regiões";
+
+"All project regions" = "Todas as regiões do projeto";
+
+"Directory:" = "Diretório:";
+
+"File name:" = "Nome do arquivo:";
+
+"Choose folder" = "Escolher pasta";
+
+"Directory" = "Diretório";
+
+"Complete project" = "Projeto completo";
+
+"Master + Tracks" = "Master + Pistas";
+
+"Stems" = "Stems";
+
+"Selected area" = "Área selecionada";
+
+"Selected regions" = "Regiões selecionadas";
+
+"Select an area in the grid." = "Selecione uma área no grid.";
+
+"Blocks %lld–%lld" = "Blocos %lld–%lld";
+
+"Tracks" = "Pistas";
+"Items" = "Itens";
+"Regions" = "Regiões";
+"Rendering" = "Renderizando";
+"Render" = "Renderizar";
+"Render complete." = "Renderização concluída.";
+"Render cancelled." = "Renderização cancelada.";
+"Select files to render." = "Selecione os arquivos para renderizar.";
+"The render did not finish." = "A renderização não foi concluída.";
+"The audio engine could not render this project." = "O motor de áudio não conseguiu renderizar este projeto.";
+"The render produced invalid audio samples." = "A renderização produziu amostras de áudio inválidas.";
+"Choose 44.1 kHz or 48 kHz." = "Escolha 44,1 kHz ou 48 kHz.";
+"A file already exists:" = "Já existe um arquivo:";
+"RAM used by Jaras Live" = "RAM utilizada pelo Jaras Live";
+"%lld files" = "%lld arquivos";
+"%lld / %lld files" = "%lld / %lld arquivos";
+"Primary output format" = "Formato de saída principal";
+"Secondary output format" = "Formato de saída secundária";
+"Enable secondary output" = "Ativar saída secundária";
+"Output format" = "Formato de saída";
+"Format" = "Formato";
+"Channels" = "Canais";
+"Stereo" = "Estéreo";
+"Mono" = "Mono";
+"Bit depth" = "Resolução";
+"Bitrate" = "Taxa de bits";
+
+"Unify" = "Unificar";
+"Unify regions" = "Unificar regiões";
+"Show unified songs" = "Mostrar músicas unificadas";
+"Not possible" = "Não é possível";
+"Select overlapping regions" = "Selecione regiões sobrepostas";
+"Invalid unified region" = "Região unificada inválida";
+
+"Choose a name" = "Escolha um nome";
+"Name" = "Nome";
+
+"Disunify" = "Desunificar";
+"Unknown unified region" = "Região unificada desconhecida";
+
+"Cannot queue a song from the active unified region" = "Não é possível colocar na fila uma música da região unificada em reprodução";
+"Stop automatically at the end of each region" = "Parar automaticamente no fim de cada região";
+"Region stop" = "Parada no fim da região";
+"Closing…" = "Encerrando…";
+"Could not close the project." = "Não foi possível encerrar o projeto.";
+"Delete the selected setlist items?" = "Excluir os itens selecionados do setlist?";
+
+"Receive 1" = "Receber 1";
+"Receive 2" = "Receber 2";
+"Transmitter 1" = "Enviar 1";
+"Transmitter 2" = "Enviar 2";
+"Invalid track routing" = "Roteamento de pista inválido";
+"This routing would create an audio feedback loop." = "Esse roteamento criaria um ciclo de realimentação de áudio.";
+"Maximum of 400 tracks per project." = "Máximo de 400 pistas por projeto.";
+"A project supports at most 400 tracks" = "Um projeto aceita no máximo 400 pistas";
+
+"Plugins" = "Plugins";
+"External" = "Externo";
+"Plugin" = "Plugin";
+"VST3 paths" = "Caminhos VST3";
+"Add path" = "Adicionar caminho";
+"Scan plugins" = "Escanear plugins";
+"Choose a plugin" = "Escolha um plugin";
+"Scanning plugins…" = "Escaneando plugins…";
+"Scan complete." = "Varredura concluída.";
+"Scan timed out." = "A varredura excedeu o tempo limite.";
+"Plugin scan failed." = "A varredura do plugin falhou.";
+"Invalid external plugin" = "Plugin externo inválido";
+"VST3 plugins are available on desktop." = "Os plugins VST3 estão disponíveis no desktop.";
+"Remove" = "Excluir";
+"Add" = "Add";
+
+"Plugin settings are unavailable" = "As configurações do plugin estão indisponíveis";
+"Audio track is not prepared" = "A pista de áudio não está preparada";
+"Plugin is not loaded" = "O plugin não está carregado";
+"This plugin does not expose controls" = "Este plugin não disponibiliza controles";
+"Bypass" = "Bypass";
+
+"Actions" = "Ações";
+"Actions are saved for all projects." = "As ações são salvas para todos os projetos.";
+"Select Track" = "Selecionar pista";
+"Mute Track" = "Mutar pista";
+"Solo Track" = "Solar pista";
+"Volume Track" = "Volume da pista";
+"Pan Track" = "Pan da pista";
+"Play/Stop" = "Play/Stop";
+"SubPlay/Stop" = "SubPlay/Stop";
+"Setlist Up" = "Setlist para cima";
+"Setlist Down" = "Setlist para baixo";
+"Setlist Auto on/off" = "Auto do setlist liga/desliga";
+"Selected track" = "Pista selecionada";
+"MIDI only" = "Somente MIDI";
+"Use Enter" = "Usar Enter";
+"Reset" = "Restaurar";
+
+"Map MIDI" = "Mapear MIDI";
+"Split stems" = "Cortar stems";
+
+"Without playback" = "Sem reprodução";
+
+"Next song" = "Próxima música";
+
+"Ignore Next" = "Ignore Next";
+
+"Groups" = "Grupos";
+
+"Semitones" = "Semitons";
+
+"Lower song pitch" = "Diminuir tonalidade";
+
+"Raise song pitch" = "Aumentar tonalidade";
+
+"Song pitch" = "Tonalidade da música";
+
+"Pitch" = "Pitch";
+
+"Special" = "Especial";
+"TP Remoto" = "TP Remoto";
+"Copy link" = "Copiar link";
+"Copied" = "Copiado";
+"Open this link on a device connected to the same network." = "Abra este link em um dispositivo conectado à mesma rede.";
+"Enable TP Remote to share the teleprompter." = "Ative o TP Remoto para compartilhar o teleprompter.";
+"Connect to a local network to use TP Remote." = "Conecte-se a uma rede local para usar o TP Remoto.";
+
+"Add media" = "Adicionar mídia";
+
+"Copy" = "Copiar";
+
+"Paste" = "Colar";
+
+"Move" = "Mover";
+
+"Stretch" = "Stretch";
+
+"The copied items belong to another project" = "Os itens copiados pertencem a outro projeto";
+
+"An item to move no longer exists" = "Um item a mover não existe mais";
+
+"Invalid item paste" = "Não foi possível colar os itens";
+
+"Invalid destination track" = "Pista de destino inválida";
+
+"Drop media on an audio, Video or Teleprompter track" = "Solte a mídia em uma pista de áudio, Video ou Teleprompter";
+
+"Add output" = "Adicionar saída";
+"Remove output" = "Excluir saída";
+"Add receive" = "Adicionar recebimento";
+"Remove receive" = "Excluir recebimento";
+"Add transmitter" = "Adicionar envio";
+"Remove transmitter" = "Excluir envio";
+"Receive" = "Recebimento";
+"Transmitter" = "Envio";
+
+"Folders" = "Pastas";
+"All regions preview" = "Prévia de todas as regiões";

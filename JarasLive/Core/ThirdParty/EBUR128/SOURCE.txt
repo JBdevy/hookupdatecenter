@@ -1,0 +1,3 @@
+libebur128 v1.2.6
+https://github.com/jiixyj/libebur128/tree/v1.2.6
+MIT license, see EBUR128-LICENSE.txt.

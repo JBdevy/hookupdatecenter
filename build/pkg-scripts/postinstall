@@ -99,12 +99,25 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   [ -d "$USER_HOME" ] || continue
   USER_NAME="$(basename "$USER_HOME")"
   [ "$USER_NAME" = "Shared" ] && continue
+  id -u "$USER_NAME" >/dev/null 2>&1 || continue
   USER_REAPER="$USER_HOME/Library/Application Support/REAPER"
+  # Diretórios novos no perfil precisam pertencer ao usuário, pois o PKG é root.
+  for USER_DIRECTORY in "$USER_HOME/Library" "$USER_HOME/Library/Application Support" \
+    "$USER_REAPER" "$USER_REAPER/UserPlugins" "$USER_REAPER/ColorThemes" "$USER_REAPER/Scripts"; do
+    if [ ! -d "$USER_DIRECTORY" ]; then
+      mkdir -p "$USER_DIRECTORY"
+      chown "$USER_NAME":staff "$USER_DIRECTORY"
+      chmod u+rwx "$USER_DIRECTORY"
+    fi
+  done
   install_companion "$USER_REAPER"
   install_themes "$USER_REAPER/ColorThemes" "$USER_NAME"
-  if id -u "$USER_NAME" >/dev/null 2>&1; then
-    chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookTelepromptSettings" 2>/dev/null || true
-  fi
+  # Também repara os diretórios que versões anteriores deixaram pertencendo a root.
+  chown "$USER_NAME":staff "$USER_REAPER" "$USER_REAPER/UserPlugins" \
+    "$USER_REAPER/ColorThemes" "$USER_REAPER/Scripts"
+  chmod u+rwx "$USER_REAPER" "$USER_REAPER/UserPlugins" \
+    "$USER_REAPER/ColorThemes" "$USER_REAPER/Scripts"
+  chown -R "$USER_NAME":staff "$USER_REAPER/UserPlugins/VSHookTelepromptSettings"
 done
 
 touch "$RESOURCES/vshook-center-install-complete.flag"

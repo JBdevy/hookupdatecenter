@@ -35,7 +35,7 @@ struct LoginView: View {
                     Picker("Cenário", selection: $scenario) { Text("Normal").tag(MockScenario.valid); Text("Bloqueada").tag(MockScenario.blocked); Text("Expirada").tag(MockScenario.expired); Text("Revogada").tag(MockScenario.revoked) }
                 }.textFieldStyle(.roundedBorder).padding(28).frame(width: 390).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 12))
             }.padding(32)
-        }.preferredColorScheme(.dark)
+        }
     }
     private func submit() {
         Task {

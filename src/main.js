@@ -3585,7 +3585,7 @@ async function selectBridgeNetwork(payload = {}) {
   return getBridgeState();
 }
 
-function resolveBridgeScriptsDir(config) {
+function resolveBridgeScriptsDir(config, { create = true } = {}) {
   const envDir = process.env.VSHOOK_SCRIPTS_DIR;
   const candidates = [envDir, config?.scriptsDir, getDefaultReaperScriptsDir()].filter(Boolean);
   for (const candidate of candidates) {
@@ -3594,7 +3594,7 @@ function resolveBridgeScriptsDir(config) {
     } catch (_) {}
   }
   const fallback = path.resolve(getDefaultReaperScriptsDir());
-  fs.mkdirSync(fallback, { recursive: true });
+  if (create) fs.mkdirSync(fallback, { recursive: true });
   return fallback;
 }
 
@@ -4046,7 +4046,7 @@ function getBridgeState(snapshot = refreshBridgeNetwork({ publish: false })) {
     selectedNetwork: selected,
     selectedNetworkIp: selected.ip,
     selectedNetworkName: selected.name,
-    scriptsDir: resolveBridgeScriptsDir(config),
+    scriptsDir: resolveBridgeScriptsDir(config, { create: false }),
     directorPort,
     musiciansPort,
     directorUrl: `http://${lanIp}:${directorPort}`,

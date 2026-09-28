@@ -1,0 +1,556 @@
+#import "JarasEffects.h"
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <algorithm>
+#include <memory>
+#include <set>
+// Storage is prepared on the control thread. The render block uses only
+// bounded arithmetic and atomic snapshots, never locks, files or allocations.
+struct EffectAnalysis {
+    static constexpr unsigned capacity=8192, window=2048;
+    std::array<std::atomic<float>,capacity> samples, rightSamples;
+    std::atomic<uint64_t> head{0};
+    std::atomic<bool> enabled{false}, resetRequested{false};
+    std::atomic<float> left{0},right{0};
+    uint64_t consumed=0, enabledAt=0;
+    EffectAnalysis() { for(auto& sample:samples) sample.store(0,std::memory_order_relaxed); for(auto& sample:rightSamples) sample.store(0,std::memory_order_relaxed); }
+    void capture(AudioBufferList *buffers,unsigned frames) {
+        if(!enabled.load(std::memory_order_relaxed) || buffers->mNumberBuffers<1) return;
+        const auto &leftBuffer=buffers->mBuffers[0];
+        const auto &rightBuffer=buffers->mBuffers[std::min(1u,buffers->mNumberBuffers-1)];
+        const float *l=static_cast<float*>(leftBuffer.mData), *r=static_cast<float*>(rightBuffer.mData);
+        const auto leftStride=std::max(1u,leftBuffer.mNumberChannels), rightStride=std::max(1u,rightBuffer.mNumberChannels);
+        if(!l || !r) return;
+        if(buffers->mNumberBuffers==1 && leftStride>1) ++r;
+        auto next=head.load(std::memory_order_relaxed);
+        float pl=0,pr=0;
+        for(unsigned i=0;i<frames;i++) {
+            const float lv=l[i*leftStride], rv=r[i*rightStride];
+            samples[next%capacity].store(lv,std::memory_order_relaxed);
+            rightSamples[next++%capacity].store(rv,std::memory_order_relaxed);
+            pl=std::max(pl,fabsf(lv)); pr=std::max(pr,fabsf(rv));
+        }
+        left.store(std::max(left.load(std::memory_order_relaxed),pl),std::memory_order_relaxed);
+        right.store(std::max(right.load(std::memory_order_relaxed),pr),std::memory_order_relaxed);
+        head.store(next,std::memory_order_release);
+    }
+    NSData *snapshot() {
+        const auto end=head.load(std::memory_order_acquire);
+        if(end<window || end==consumed || end-enabledAt<window) return nil;
+        float frame[window*2];
+        for(unsigned i=0;i<window;i++) { frame[i]=samples[(end-window+i)%capacity].load(std::memory_order_relaxed); frame[window+i]=rightSamples[(end-window+i)%capacity].load(std::memory_order_relaxed); }
+        if(head.load(std::memory_order_acquire)-end>capacity-window) return nil;
+        consumed=end;
+        return [NSData dataWithBytes:frame length:sizeof(frame)];
+    }
+};
+
+@implementation JarasAudioAnalysisProbe {
+    std::shared_ptr<EffectAnalysis> storage;
+    __weak AVAudioNode *observedNode;
+}
+- (instancetype)init { if ((self=[super init])) storage=std::make_shared<EffectAnalysis>(); return self; }
+- (void)attachToNode:(AVAudioNode *)node {
+    if(observedNode==node) return;
+    [self detach];
+    observedNode=node;
+    storage->consumed=storage->head.load(); storage->enabledAt=storage->consumed;
+    storage->enabled.store(true);
+    auto capture=storage;
+    [node installTapOnBus:0 bufferSize:1024 format:nil block:^(AVAudioPCMBuffer *buffer, AVAudioTime *time) {
+        if(buffer.format.commonFormat==AVAudioPCMFormatFloat32) capture->capture(buffer.mutableAudioBufferList,buffer.frameLength);
+    }];
+}
+- (void)detach {
+    storage->enabled.store(false);
+    if(observedNode) [observedNode removeTapOnBus:0];
+    observedNode=nil; storage->left.store(0); storage->right.store(0);
+}
+- (void)dealloc { [self detach]; }
+- (NSData *)frame { return storage->enabled.load() ? storage->snapshot() : nil; }
+- (NSArray<NSNumber *> *)takePeaks { return @[@(storage->left.exchange(0)),@(storage->right.exchange(0))]; }
+@end
+
+static constexpr unsigned kSections=160;
+struct EQKernel {
+    std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
+    std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
+    std::array<std::array<std::atomic<double>,5>,kSections> pending;
+    double coefficients[kSections][5] = {}, z1[2][kSections] = {}, z2[2][kSections] = {};
+    std::atomic<unsigned> count{0}, generation{0};
+    double desired[kSections][5] = {};
+    unsigned activeSections=0;
+    std::atomic<bool> enabled{false}, resetRequested{false};
+    double mix=0;
+    EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
+    void process(AudioBufferList *buffers, unsigned frames) {
+        if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
+            for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
+        }
+        const auto before=generation.load(std::memory_order_acquire);
+        const auto requested=std::min(kSections,count.load(std::memory_order_acquire));
+        const bool on=enabled.load(std::memory_order_relaxed);
+        if(!on && mix==0) return;
+        double target[kSections][5];
+        if((before&1)==0) {
+            for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) target[n][j]=pending[n][j].load(std::memory_order_relaxed);
+            if(generation.load(std::memory_order_acquire)==before) {
+                activeSections=requested;
+                for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) desired[n][j]=target[n][j];
+            }
+        }
+        const auto sections=activeSections;
+        for(unsigned frame=0;frame<frames;frame++) {
+            mix += ((on?1.0:0.0)-mix)*0.02; if(!on && mix<1e-6) mix=0;
+            for(unsigned n=0;n<sections;n++) for(unsigned j=0;j<5;j++) coefficients[n][j]+=(desired[n][j]-coefficients[n][j])*0.02;
+            for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
+                auto data=static_cast<float*>(buffers->mBuffers[ch].mData); if(!data) continue;
+                double dry=data[frame], value=dry;
+                for(unsigned n=0;n<sections;n++) {
+                    auto k=coefficients[n];
+                    double out=k[0]*value+z1[ch][n];
+                    z1[ch][n]=k[1]*value-k[3]*out+z2[ch][n];
+                    z2[ch][n]=k[2]*value-k[4]*out;
+                    value=out;
+                }
+                if(!std::isfinite(value)) {
+                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    value=0;
+                }
+                data[frame]=float(dry+(value-dry)*mix);
+            }
+        }
+    }
+};
+@interface JarasEQAudioUnit : AUAudioUnit {
+@public EQKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+@implementation JarasEQAudioUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if((self=[super initWithComponentDescription:d options:o error:e])) {
+        AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+    } return self;
+}
+- (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (AUInternalRenderBlock)internalRenderBlock {
+    EQKernel *state=&kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        if(!pull) return kAudioUnitErr_NoConnection;
+        auto status=pull(flags,time,frames,0,output);
+        if(status==noErr) {
+            if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            state->process(output,frames);
+            if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+        }
+        return status;
+    };
+}
+@end
+@implementation JarasEqualizer
++ (AVAudioUnitEffect *)makeNode {
+    static dispatch_once_t once;
+    AudioComponentDescription d={kAudioUnitType_Effect,'JLEQ','Jara',0,0};
+    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasEQAudioUnit.class asComponentDescription:d name:@"Jaras Live EQ" version:1]; });
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)values enabled:(BOOL)enabled {
+    JarasEQAudioUnit *unit=(JarasEQAudioUnit *)node.AUAudioUnit;
+    unit->kernel.generation.fetch_add(1,std::memory_order_acq_rel);
+    auto count=std::min<NSUInteger>(kSections,values.count);
+    for(NSUInteger n=0;n<count;n++) if(values[n].count==5) for(unsigned j=0;j<5;j++) unit->kernel.pending[n][j].store(values[n][j].doubleValue,std::memory_order_relaxed);
+    unit->kernel.count.store((unsigned)count,std::memory_order_release);
+    unit->kernel.enabled.store(enabled,std::memory_order_relaxed);
+    unit->kernel.generation.fetch_add(1,std::memory_order_release);
+}
++ (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
+    auto &kernel=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel;
+    auto configure=[&](std::unique_ptr<EffectAnalysis>& storage, std::atomic<EffectAnalysis*>& published) {
+        if(enabled) {
+            if(!storage) storage=std::make_unique<EffectAnalysis>();
+            if(storage->enabled.exchange(true,std::memory_order_relaxed)) return;
+            storage->consumed=storage->head.load(std::memory_order_acquire);
+            storage->enabledAt=storage->consumed;
+            published.store(storage.get(),std::memory_order_release);
+        } else {
+            published.store(nullptr,std::memory_order_release);
+            if(storage) storage->enabled.store(false,std::memory_order_relaxed);
+        }
+    };
+    // Allocation and publication happen on the control thread. Disabled EQs
+    // retain no capture work; storage stays alive until the AU leaves the graph.
+    configure(kernel.inputStorage,kernel.inputAnalysis);
+    configure(kernel.outputStorage,kernel.outputAnalysis);
+}
++ (NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input {
+    auto &kernel=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel;
+    auto analysis=(input?kernel.inputAnalysis:kernel.outputAnalysis).load(std::memory_order_acquire);
+    return analysis?analysis->snapshot():nil;
+}
+@end
+
+#include <vector>
+#include <algorithm>
+struct DynamicsKernel {
+    EffectAnalysis inputAnalysis, outputAnalysis;
+    bool reverb = false;
+    double rate = 48000, envelope = 0, gain = 1, mix = 0;
+    std::atomic<bool> enabled{false}, resetRequested{false};
+    std::atomic<bool> meteringEnabled{false};
+    std::array<std::atomic<double>,6> params;
+    std::array<std::atomic<float>,4> peaks;
+    std::array<std::vector<float>,8> delays;
+    std::array<unsigned,8> positions{};
+    std::array<double,8> damping{};
+    double lowState[2]{}, highState[2]{};
+    DynamicsKernel() { for(auto &v:params) v.store(0); for(auto &v:peaks) v.store(0); }
+    void prepare(double sampleRate) {
+        rate=sampleRate; envelope=0; gain=1; mix=0;
+        positions.fill(0); damping.fill(0);
+        for(auto &v:peaks) v.store(0);
+        for(unsigned ch=0;ch<2;ch++) lowState[ch]=highState[ch]=0;
+        if(reverb) for(auto &line:delays) line.assign(unsigned(rate*.18)+1,0);
+    }
+    void process(AudioBufferList *buffers, unsigned frames) {
+        if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
+            envelope=0; gain=1; positions.fill(0); damping.fill(0);
+            for (auto& line : delays) std::fill(line.begin(), line.end(), 0);
+            for (unsigned ch=0; ch<2; ++ch) lowState[ch]=highState[ch]=0;
+            for (auto& peak : peaks) peak.store(0);
+        }
+
+        const bool on=enabled.load(std::memory_order_relaxed);
+        // Most per-item chains are prepared but bypassed. Preserve the ramp
+        // when switching off, and read peaks only while an editor needs them.
+        if (!reverb && !on && !meteringEnabled.load(std::memory_order_relaxed) && fabs(gain-1)<1e-7) {
+            gain=1; envelope=0; return;
+        }
+        if(buffers->mNumberBuffers<2) return;
+        auto l=static_cast<float*>(buffers->mBuffers[0].mData), r=static_cast<float*>(buffers->mBuffers[1].mData);
+        if(!l || !r) return;
+        float observed[4]{};
+        if(!reverb) {
+            const double threshold=params[0].load(), ratio=std::max(1.0,params[1].load());
+            const double attack=exp(-1/(rate*std::max(.0001,params[2].load()))), release=exp(-1/(rate*std::max(.01,params[3].load())));
+            const double makeup=pow(10,params[4].load()/20), smoothing=1-exp(-1/(rate*.002));
+            for(unsigned i=0;i<frames;i++) {
+                const double peak=std::max(fabs(l[i]),fabs(r[i]));
+                observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i]));
+                if(!on && fabs(gain-1)<1e-7) {
+                    gain=1; envelope=0;
+                    observed[2]=observed[0]; observed[3]=observed[1];
+                    continue;
+                }
+                // Stereo-linked detector keeps the image stable. Attack/release
+                // smooth gain reduction in dB; Ratio is the actual transfer slope.
+                const double reduction=std::max(0.0,20*log10(std::max(1e-12,peak))-threshold)*(1-1/ratio);
+                const double coefficient=reduction>envelope?attack:release;
+                envelope=coefficient*envelope+(1-coefficient)*reduction;
+                const double target=on?pow(10,-envelope/20)*makeup:1;
+                gain+=(target-gain)*smoothing;
+                l[i]*=gain; r[i]*=gain;
+                observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i]));
+            }
+            for(unsigned ch=0;ch<4;ch++) {
+                // Only the renderer writes peaks; UI exchange clears the window.
+                float previous=peaks[ch].load(std::memory_order_relaxed);
+                peaks[ch].store(std::max(previous,observed[ch]),std::memory_order_relaxed);
+            }
+            return;
+        }
+        if(!on && mix<1e-6) { mix=0; return; }
+        const unsigned space=std::min(2u,unsigned(std::max(0.0,params[0].load())));
+        const double targetMix=on?params[1].load()*.01:0;
+        const double decay=std::max(.1,params[2].load());
+        const double hp=exp(-2*M_PI*params[3].load()/rate), lp=1-exp(-2*M_PI*std::min(rate*.45,params[4].load())/rate);
+        const double smooth=1-exp(-1/(rate*.01));
+        // Eight mutually prime delay lengths, orthogonal Householder feedback.
+        // RT60 is calibrated independently of room size. Plate uses dense short
+        // reflections; Hall longer diffuse reflections; Room a smaller space.
+        static const double times[3][8]={{.0191,.0239,.0293,.0317,.0371,.0419,.0437,.0479},{.0473,.0531,.0617,.0713,.0797,.0893,.1013,.1139},{.0113,.0137,.0179,.0199,.0233,.0271,.0299,.0313}};
+        unsigned lengths[8]; double feedback[8];
+        for(unsigned n=0;n<8;n++) { lengths[n]=std::min(unsigned(delays[n].size()),std::max(1u,unsigned(times[space][n]*rate))); feedback[n]=pow(.001,double(lengths[n])/rate/decay); positions[n]%=lengths[n]; }
+        const double damp=space==2?.72:(space==1?.46:.6);
+        for(unsigned frame=0;frame<frames;frame++) {
+            mix+=(targetMix-mix)*smooth;
+            double values[8],sum=0,wetL=0,wetR=0;
+            for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=damp*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
+            for(unsigned n=0;n<8;n++) {
+                double input=(n&1?r[frame]:l[frame])*.24;
+                // I - 2/N * ones is energy-preserving before RT60 attenuation.
+                double value=input+(values[n]-.25*sum)*feedback[n];
+                delays[n][positions[n]]=std::isfinite(value)?float(value):0;
+                positions[n]=(positions[n]+1)%lengths[n];
+                wetL+=values[n]*(n&2?-1:1)*.45;
+                wetR+=values[n]*(n&1?-1:1)*.45;
+            }
+            double wet[2]={wetL,wetR};
+            for(unsigned ch=0;ch<2;ch++) {
+                lowState[ch]=(1-hp)*wet[ch]+hp*lowState[ch];
+                highState[ch]+=lp*((wet[ch]-lowState[ch])-highState[ch]);
+                auto data=ch?r:l;
+                data[frame]=float(data[frame]*(1-mix)+highState[ch]*mix);
+            }
+        }
+    }
+};
+@interface JarasDynamicsAudioUnit : AUAudioUnit {
+@public DynamicsKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+@implementation JarasDynamicsAudioUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if((self=[super initWithComponentDescription:d options:o error:e])) {
+        kernel.reverb=d.componentSubType=='JLRV';
+        AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e]; _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+    } return self;
+}
+- (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    kernel.prepare(_output.format.sampleRate); return YES;
+}
+- (AUInternalRenderBlock)internalRenderBlock {
+    DynamicsKernel *state=&kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        if(!pull) return kAudioUnitErr_NoConnection;
+        auto status=pull(flags,time,frames,0,output);
+        if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames); }
+        return status;
+    };
+}
+@end
+@implementation JarasDynamics
++ (AVAudioUnitEffect *)make:(OSType)subtype {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV')]) {
+            AudioComponentDescription d={kAudioUnitType_Effect,type.unsignedIntValue,'Jara',0,0};
+            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"Jaras Live Compressor":@"Jaras Live Reverb" version:1];
+        }
+    });
+    AudioComponentDescription d={kAudioUnitType_Effect,subtype,'Jara',0,0};
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (AVAudioUnitEffect *)makeCompressor { return [self make:'JLCP']; }
++ (AVAudioUnitEffect *)makeReverb { return [self make:'JLRV']; }
++ (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    const double values[]={threshold,ratio,attack,release,gain}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+}
++ (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    const double values[]={double(space),mix,decay,lowCut,highCut}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+}
++ (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
+    if(analysis.enabled.exchange(enabled)==enabled) return;
+    analysis.consumed=analysis.head.load();
+    analysis.enabledAt=analysis.consumed;
+    analysis.left.store(0); analysis.right.store(0);
+}
++ (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
+    ((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel.meteringEnabled.store(enabled, std::memory_order_relaxed);
+}
++ (NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    return (input?k.inputAnalysis:k.outputAnalysis).snapshot();
+}
++ (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
+    return @[@(analysis.left.exchange(0)),@(analysis.right.exchange(0))];
+}
++ (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node {
+    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    return @[@(k.peaks[0].exchange(0)),@(k.peaks[1].exchange(0)),@(k.peaks[2].exchange(0)),@(k.peaks[3].exchange(0))];
+}
+@end
+
+// Stereo-to-hardware routing. Storage is allocated with the graph, never in render.
+struct ChannelRouteKernel {
+    std::array<std::atomic<uint32_t>, 1024> destinations;
+    ChannelRouteKernel() { for(auto& value : destinations) value.store(0, std::memory_order_relaxed); }
+    std::vector<float> input, output, leftGain, rightGain;
+    unsigned capacity=0, channels=0;
+    void prepare(unsigned frames,unsigned count) {
+        capacity=frames; channels=count;
+        input.assign(frames*2,0); output.assign(frames*count,0);
+        leftGain.assign(count,0); rightGain.assign(count,0);
+    }
+};
+@interface JarasChannelRouteUnit : AUAudioUnit {
+@public ChannelRouteKernel route;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+@implementation JarasChannelRouteUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if ((self=[super initWithComponentDescription:d options:o error:e])) {
+        AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _output.maximumChannelCount=1024;
+        _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+        self.maximumFramesToRender=4096;
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if (![super allocateRenderResourcesAndReturnError:error]) return NO;
+    route.prepare(self.maximumFramesToRender,_output.format.channelCount);
+    return YES;
+}
+- (AUInternalRenderBlock)internalRenderBlock {
+    ChannelRouteKernel *state=&route;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        if (!pull) return kAudioUnitErr_NoConnection;
+        if (frames>state->capacity) return kAudioUnitErr_TooManyFramesToProcess;
+        struct { UInt32 count; AudioBuffer buffers[2]; } input;
+        input.count=2;
+        for(unsigned ch=0;ch<2;ch++) input.buffers[ch]={1,UInt32(frames*sizeof(float)),state->input.data()+ch*state->capacity};
+        auto status=pull(flags,time,frames,0,reinterpret_cast<AudioBufferList*>(&input));
+        if(status!=noErr) return status;
+        const auto left=static_cast<const float*>(input.buffers[0].mData),right=static_cast<const float*>(input.buffers[1].mData);
+        for(unsigned ch=0;ch<output->mNumberBuffers && ch<state->channels;ch++) {
+            auto& buffer=output->mBuffers[ch];
+            if(!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
+            buffer.mDataByteSize=frames*sizeof(float);
+            auto out=static_cast<float*>(buffer.mData);
+            const uint32_t gains=state->destinations[ch].load(std::memory_order_relaxed);
+            const float l=float(gains & 0xffff) * 0.5f, r=float(gains >> 16) * 0.5f;
+            float gl=state->leftGain[ch],gr=state->rightGain[ch];
+            if(l==0 && r==0 && std::abs(gl)<1e-6f && std::abs(gr)<1e-6f) {
+                state->leftGain[ch]=0; state->rightGain[ch]=0;
+                memset(out,0,frames*sizeof(float)); continue;
+            }
+            for(unsigned frame=0;frame<frames;frame++) {
+                gl+=(l-gl)*0.02f; gr+=(r-gr)*0.02f;
+                out[frame]=(left ? left[frame]:0)*gl+(right ? right[frame]:0)*gr;
+            }
+            state->leftGain[ch]=gl; state->rightGain[ch]=gr;
+        }
+        return noErr;
+    };
+}
+@end
+@implementation JarasChannelRouter
++ (AVAudioUnitEffect *)makeNode {
+    static dispatch_once_t once;
+    AudioComponentDescription d={kAudioUnitType_Effect,'JLrt','Jara',0,0};
+    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasChannelRouteUnit.class asComponentDescription:d name:@"Jaras Channel Route" version:1]; });
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count {
+    [self configurePatches:node firsts:@[@(first)] counts:@[@(count)]];
+}
++ (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts {
+    // Build the hardware matrix on the control thread. Changing route count
+    // needs no new audio units, graph rebuilds or render-time allocations.
+    auto *unit=(JarasChannelRouteUnit*)node.AUAudioUnit;
+    std::array<uint32_t,1024> gains{};
+    std::set<std::pair<unsigned,unsigned>> seen;
+    const unsigned channels=unit.outputBusses[0].format.channelCount;
+    for (NSUInteger i=0; i<MIN(firsts.count, counts.count); ++i) {
+        const NSInteger first=firsts[i].integerValue, count=counts[i].integerValue;
+        if (first<1 || first>1024 || count<1 || count>2 || first+count-1>channels || !seen.insert({unsigned(first),unsigned(count)}).second) continue;
+        if (count==1) gains[first-1] += (1u<<16)|1u;
+        else { gains[first-1] += 2u; gains[first] += 2u<<16; }
+    }
+    for(unsigned i=0; i<1024; ++i) unit->route.destinations[i].store(gains[i],std::memory_order_relaxed);
+}
+@end
+
+// One packed buffer serves all export lanes. Allocating a full multichannel
+// buffer per track would grow memory quadratically with the number of tracks.
+@interface JarasExportUnit : AUAudioUnit {
+    AUAudioUnitBusArray *_exportInputs, *_exportOutputs;
+    std::vector<float> _exportStorage;
+}
+@end
+@implementation JarasExportUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if ((self=[super initWithComponentDescription:d options:o error:e])) {
+        AVAudioFormat *stereo=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        NSMutableArray *inputs=[NSMutableArray array];
+        const unsigned count=std::clamp(unsigned(d.componentSubType-'JE00'),1u,512u);
+        for(unsigned i=0;i<count;i++) [inputs addObject:[[AUAudioUnitBus alloc] initWithFormat:stereo error:e]];
+        AVAudioChannelLayout *layout=[[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_DiscreteInOrder|(count*2)];
+        AVAudioFormat *packed=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channelLayout:layout];
+        AUAudioUnitBus *output=[[AUAudioUnitBus alloc] initWithFormat:packed error:e]; output.maximumChannelCount=1024;
+        _exportInputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:inputs];
+        _exportOutputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[output]];
+        self.maximumFramesToRender=4096;
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _exportInputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _exportOutputs; }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    _exportStorage.assign(self.maximumFramesToRender*_exportOutputs[0].format.channelCount,0);
+    return YES;
+}
+- (AUInternalRenderBlock)internalRenderBlock {
+    float *storage=_exportStorage.data();
+    const unsigned capacity=self.maximumFramesToRender, channels=_exportOutputs[0].format.channelCount;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        if(!pull) return kAudioUnitErr_NoConnection;
+        if(frames>capacity || output->mNumberBuffers!=channels) return kAudioUnitErr_TooManyFramesToProcess;
+        for(unsigned ch=0;ch<channels;ch++) {
+            if(!output->mBuffers[ch].mData) output->mBuffers[ch].mData=storage+ch*capacity;
+            output->mBuffers[ch].mDataByteSize=frames*sizeof(float);
+        }
+        for(unsigned i=0;i<channels/2;i++) {
+            struct { UInt32 count; AudioBuffer data[2]; } input;
+            input.count=2; input.data[0]=output->mBuffers[i*2]; input.data[1]=output->mBuffers[i*2+1];
+            AudioUnitRenderActionFlags inputFlags=0;
+            auto status=pull(&inputFlags,time,frames,i,reinterpret_cast<AudioBufferList*>(&input));
+            if(status!=noErr) return status;
+            for(unsigned c=0;c<2;c++) {
+                void *destination=output->mBuffers[i*2+c].mData;
+                if(inputFlags & kAudioUnitRenderAction_OutputIsSilence) memset(destination,0,frames*sizeof(float));
+                else if(input.data[c].mData!=destination) memcpy(destination,input.data[c].mData,frames*sizeof(float));
+            }
+        }
+        *flags &= ~kAudioUnitRenderAction_OutputIsSilence;
+        return noErr;
+    };
+}
+@end
+@implementation JarasExportMultiplexer
+ + (AVAudioUnitEffect *)makeNode:(NSInteger)outputs {
+    const unsigned count=unsigned(std::clamp(outputs,NSInteger(1),NSInteger(512)));
+    AudioComponentDescription d={kAudioUnitType_Effect,OSType('JE00'+count),'Jara',0,0};
+    @synchronized(self) {
+        static NSMutableSet<NSNumber *> *registered;
+        if(!registered) registered=[NSMutableSet set];
+        if(![registered containsObject:@(count)]) {
+            [AUAudioUnit registerSubclass:JarasExportUnit.class asComponentDescription:d name:@"Jaras Offline Export" version:1];
+            [registered addObject:@(count)];
+        }
+    }
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
+@end

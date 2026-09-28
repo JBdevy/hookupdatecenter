@@ -30,7 +30,7 @@ tablets**, sem interface de celular.
 - Licenças de 1, 2 ou 3 dispositivos, substituição atômica do menos recentemente
   visto e revogação que espera o fim da reprodução. Revogação conhecida invalida
   o cache offline, sem interromper as agulhas em andamento.
-- Projeto `.jaras` em JSON versionado, salvo automaticamente após alterações de
+- Projeto `.jl` binário, criptografado com AES-256-GCM, com salvamento explícito pelo botão Save após alterações de
   pistas/mixer, com carregamento manual e restauração do último projeto.
 
 **Não existe reprodução de áudio nesta fundação.** Os blocos e waveforms são
@@ -124,7 +124,7 @@ clipes, waveforms, pistas, partes e UUIDs.
 
 - Keychain service `com.hookdeveloper.jaraslive`: sessão/cache de entitlement e
   installationId por instalação. Não usa identificação invasiva do hardware.
-- Application Support/JarasLive/last-show.jaras: último projeto.
+- Projetos `.jl`: salvos no local escolhido pelo usuário; áudios em `Steams/` ao lado do documento. A abertura começa pelo seletor de projetos, sem carregar demonstrações automaticamente.
 - Application Support/JarasLive/mock-server.json: estado do servidor de demonstração.
 - UserDefaults: idioma e zoom. O padrão de idioma é `en`.
 
@@ -188,3 +188,11 @@ pista e alternância English/Português. O app foi instalado em
 Não foi feita publicação/notarização do Jaras Live nem homologação em iPad
 nesta etapa. O código está dentro do repositório da Hook Center, sem embutir
 certificados ou copiar secrets para o projeto.
+
+### Importação de stems
+
+Create Project oferece Add Stems ou Empty e exige salvar o `.jl` antes de abrir o editor. Add Project adiciona pastas ao documento atual ou a um `.jl` escolhido. Open Project lista os recentes e permite procurar no Finder. Os nomes são analisados pelas regras atuais de Create Project e Hook Rename da Hook Center, embarcadas via `scripts/sync-import-rules.py` e executadas localmente por JavaScriptCore, sem depender de Node instalado.
+
+A primeira região começa em 30 segundos, com 30 segundos entre regiões. As sugestões de limpeza são opcionais e alteram somente nomes importados e cópias: os originais são preservados. Arquivos WAV, AIFF e MP3 são analisados fora da thread da interface em buffers limitados; cada item guarda seu próprio áudio, waveform e ganho. Pistas equivalentes são reutilizadas e classificações duplicadas na mesma música ganham pistas separadas.
+
+O documento `.jl` usa AES-256-GCM com nonce aleatório a cada gravação e cabeçalho versionado autenticado. A chave pertence ao aplicativo para permitir abrir o projeto em outra instalação; protege contra leitura e edição casual, não contra engenharia reversa do aplicativo. Os arquivos de áudio da pasta Steams continuam no formato original. Documentos JSON de desenvolvimento podem ser abertos e passam a ser criptografados ao salvar.

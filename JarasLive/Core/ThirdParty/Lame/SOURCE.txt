@@ -1,0 +1,3 @@
+LAME 3.100 — https://lame.sourceforge.io/
+Official source: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+Encoder sources are unmodified, built without assembly or decoder support. LGPL terms are in COPYING.

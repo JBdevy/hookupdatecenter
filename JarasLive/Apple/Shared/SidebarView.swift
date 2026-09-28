@@ -1,26 +1,23 @@
 import SwiftUI
 struct SidebarView: View {
-    @ObservedObject var show: ShowController
-    static let entries = [("Projetos","square.stack.3d.up"),("Repertórios","list.bullet.rectangle"),("Músicas","music.note.list"),("Live","waveform"),("Configurações","gearshape")]
+    var close: () -> Void = {}
+    var openProjects: () -> Void = {}
     var body: some View {
-        HStack(spacing: 8) {
-            Image("JarasLogo").resizable().scaledToFit()
-                .frame(width: 106, height: 54).accessibilityLabel("Jaras Live")
-            ForEach(Self.entries, id: \.0) { item in
-                Button { show.section = item.0 } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: item.1).font(.system(size: 16))
-                        Text(LocalizedStringKey(item.0)).font(.system(size: 10, weight: .medium))
-                    }
-                    .frame(width: 94, height: 48)
-                    .background(show.section == item.0 ? JarasTheme.accent.opacity(0.12) : .clear)
-                    .foregroundStyle(show.section == item.0 ? JarasTheme.accent : JarasTheme.secondary)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }.buttonStyle(.plain)
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            navigation("Projetos", icon: "square.stack.3d.up", active: false, action: openProjects)
+            navigation("Live Session", icon: "waveform", active: true, action: {})
             Spacer(minLength: 0)
-            Text("1.0.0").font(.system(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
-        }.padding(.horizontal, 14).padding(.vertical, 8).background(Color(hex: 0x101419))
+        }.padding(.horizontal, 12).padding(.vertical, 12).background(Color(hex: 0x101419))
+    }
+    private func navigation(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button { close(); action() } label: {
+            Label(LocalizedStringKey(title), systemImage: icon)
+                .font(.system(size: 11, weight: .medium))
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).frame(height: 38)
+                .background(active ? JarasTheme.accent.opacity(0.12) : .clear)
+                .foregroundStyle(active ? JarasTheme.accent : JarasTheme.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
 }
-struct SidebarPreview: PreviewProvider { static var previews: some View { SidebarView(show: try! AppContainer(preview: true).show).frame(width: 1100) } }
+struct SidebarPreview: PreviewProvider { static var previews: some View { SidebarView().frame(width: 1100) } }

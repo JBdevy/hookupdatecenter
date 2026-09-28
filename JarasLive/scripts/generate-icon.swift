@@ -1,5 +1,7 @@
 import AppKit
 let root = URL(fileURLWithPath: CommandLine.arguments[1])
+let sourceURL = CommandLine.arguments.count > 2 ? URL(fileURLWithPath: CommandLine.arguments[2]) : URL(fileURLWithPath: "Jara Live Logo.png")
+guard let source = NSImage(contentsOf: sourceURL) else { fatalError("Logo PNG not found") }
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 var images: [[String:String]] = []
 for size in [16,32,128,256,512] { for scale in [1,2] {
@@ -8,11 +10,10 @@ for size in [16,32,128,256,512] { for scale in [1,2] {
     NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current=NSGraphicsContext(bitmapImageRep:bitmap)
     let c=NSGraphicsContext.current!.cgContext
     c.scaleBy(x: CGFloat(pixels)/1024, y: CGFloat(pixels)/1024)
-    c.setFillColor(NSColor(srgbRed:0.065,green:0.083,blue:0.11,alpha:1).cgColor)
-    c.addPath(CGPath(roundedRect:CGRect(x:64,y:64,width:896,height:896),cornerWidth:190,cornerHeight:190,transform:nil));c.fillPath()
-    c.setStrokeColor(NSColor(srgbRed:0.847,green:0.984,blue:0.4,alpha:1).cgColor);c.setLineWidth(88);c.setLineCap(.round)
-    c.move(to:CGPoint(x:322,y:752));c.addLine(to:CGPoint(x:558,y:752));c.addLine(to:CGPoint(x:558,y:390));c.addCurve(to:CGPoint(x:268,y:390),control1:CGPoint(x:558,y:218),control2:CGPoint(x:268,y:218));c.strokePath()
-    c.setFillColor(NSColor.white.cgColor);c.move(to:CGPoint(x:677,y:608));c.addLine(to:CGPoint(x:812,y:516));c.addLine(to:CGPoint(x:677,y:424));c.closePath();c.fillPath()
+    let imageRect = CGRect(x: 0, y: 0, width: 1024, height: 1024)
+    NSColor(calibratedRed: 0.075, green: 0.085, blue: 0.10, alpha: 1).setFill()
+    NSBezierPath(roundedRect: imageRect.insetBy(dx: 32, dy: 32), xRadius: 210, yRadius: 210).fill()
+    source.draw(in: imageRect.insetBy(dx: 45, dy: 45), from: .zero, operation: .sourceOver, fraction: 1)
     NSGraphicsContext.restoreGraphicsState()
     let name="icon-\(size)@\(scale)x.png"
     try bitmap.representation(using:.png,properties:[:])!.write(to:root.appendingPathComponent(name))

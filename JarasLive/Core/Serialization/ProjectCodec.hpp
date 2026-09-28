@@ -2,7 +2,7 @@
 #include "../Project/Models.hpp"
 namespace jaras {
 // Platform codecs use this portable schema. Apple uses Codable + the ObjC++ bridge.
-// A .jaras manifest contains relative paths; archive extraction is a future layer.
+// A .jl manifest contains relative paths; archive extraction is a future layer.
 class ProjectCodec {
 public:
     virtual ~ProjectCodec() = default;
