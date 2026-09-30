@@ -277,6 +277,7 @@
 
 "Move a MIDI fader or knob." = "Mova um fader ou knob MIDI.";
 "A Timecode track already exists." = "Já existe uma pista Timecode.";
+"A %@ track already exists." = "Já existe uma pista %@.";
 "Mode" = "Modo";
 "Frame rate" = "Taxa de quadros";
 "Start at zero in each region" = "Começar do zero em cada região";
@@ -385,6 +386,15 @@
 "Tap tempo · Right-click to edit BPM" = "Tap tempo · Clique com o botão direito para editar o BPM";
 "Teleprompter" = "Teleprompter";
 "This control is already mapped." = "Este controle já está mapeado.";
+"%@ is already mapped to %@. Remove it from that function and use it for %@?" = "%@ já está mapeado para %@. Deseja remover da função antiga e usar em %@?";
+"Transfer mapping" = "Transferir mapeamento";
+"The arrow keys are fixed to setlist navigation." = "As setas são fixas para navegar no setlist.";
+"Go to project start" = "Voltar ao início do projeto";
+"Go to project end" = "Ir ao fim do projeto";
+"Go to next region" = "Ir para a próxima região";
+"Go to previous region" = "Voltar para a região anterior";
+"Next marker or region boundary" = "Avançar entre marcadores e bordas de regiões";
+"Previous marker or region boundary" = "Retroceder entre marcadores e bordas de regiões";
 "Track-Mixer" = "Track-Mixer";
 "Transport time" = "Tempo do transporte";
 "Track unavailable" = "Pista indisponível";
@@ -740,3 +750,204 @@
 
 "Folders" = "Pastas";
 "All regions preview" = "Prévia de todas as regiões";
+
+"Project timebase" = "Projeto timebase";
+"Free Grid" = "Grid Livre";
+"Relative Grid" = "Grid Relativo";
+"Timebase" = "Timebase";
+"Global" = "Global";
+"Free" = "Livre";
+"Relative" = "Relativo";
+"Tracks show/hide" = "Ocultar/mostrar Tracks";
+"Setlist show/hide" = "Ocultar/mostrar Setlist";
+"Divisions" = "Divisões";
+"Grid divisions" = "Divisões da grade";
+"Time signature" = "Compasso";
+"Timebase affects MIDI items" = "Timebase afeta itens MIDI";
+"Timebase affects automation item length" = "Timebase afeta a duração dos itens de automação";
+"Invalid time signature." = "Compasso inválido.";
+
+"Restore this mapping?" = "Restaurar este mapeamento?";
+"Restore" = "Restaurar";
+
+"Mute Master" = "Mutar Master";
+"Volume Master" = "Volume do Master";
+
+"Video window on/off" = "Abrir/fechar janela de vídeo";
+"Teleprompter window on/off" = "Abrir/fechar janela do Teleprompter";
+
+"Normalize selected items" = "Normalizar itens selecionados";
+
+"Maximum item gain: +24 dB" = "Ganho máximo do item: +24 dB";
+
+"Create marker" = "Criar marcador";
+
+"Create tempo marker" = "Criar marcador de tempo";
+
+"Tempo marker" = "Marcador de tempo";
+
+"Invalid tempo or time signature." = "BPM ou compasso inválido.";
+
+"Solo Master" = "Solo do Master";
+
+"Search plugins" = "Pesquisar plugins";
+
+"No plugins found" = "Nenhum plugin encontrado";
+
+"Detect BPM…" = "Detectar BPM…";
+"Detect BPM" = "Detectar BPM";
+"Detect BPM from the Click track?" = "Detectar BPM pela pista Click?";
+"Detecting BPM…" = "Detectando BPM…";
+"No stable click tempo was found." = "Não foi encontrado um tempo estável na pista Click.";
+"BPM detected." = "BPM detectado.";
+"Quality" = "Qualidade";
+"Re-render" = "Re-renderizar";
+
+"Advanced" = "Avançado";
+"TimeProject" = "Tempo do projeto";
+"Gridline" = "Linhas do grid";
+"Resolution" = "Resolução";
+"Black and white" = "Preto e branco";
+"No audio" = "Sem áudio";
+"24-bit PCM" = "PCM de 24 bits";
+"32-bit PCM" = "PCM de 32 bits";
+"Re-rendering…" = "Re-renderizando…";
+"Re-render complete." = "Re-renderização concluída.";
+"The audio item changed during Re-render." = "O item de áudio mudou durante a re-renderização.";
+"Detect BPM for each song?" = "Detectar o BPM de cada música?";
+"Yes" = "Sim";
+"No" = "Não";
+"Missing audio files" = "Arquivos de áudio ausentes";
+"%d audio file is missing" = "%d arquivo de áudio ausente";
+"%d audio files are missing" = "%d arquivos de áudio ausentes";
+"Search" = "Buscar";
+"Open anyway" = "Abrir assim mesmo";
+"Cancel" = "Cancelar";
+"Not found" = "Não encontrado";
+"Searching for missing audio…" = "Buscando arquivos de áudio…";
+
+"Messages" = "Recados";
+"Message" = "Recado";
+"Message %lld" = "Recado %lld";
+"Message settings" = "Configurações de recados";
+"Send" = "Enviar";
+"Pin" = "Fixar";
+"Show on TP-1" = "Exibir no TP-1";
+"Show on TP-2" = "Exibir no TP-2";
+"Text scale: %lld%%" = "Escala da letra: %lld%%";
+"Text color" = "Cor da letra";
+"Background color" = "Cor de fundo";
+"Flash color" = "Cor do pisca";
+"Show emoji" = "Exibir emoji";
+"Hide content while showing a message" = "Ocultar conteúdo enquanto exibe o recado";
+"Add image" = "Adicionar imagem";
+"Remove image" = "Remover imagem";
+
+"Automatic Subplay" = "Subplay automático";
+
+"Start before the end" = "Iniciar antes do fim";
+
+"Withdraw message" = "Retirar";
+
+"Link tracks" = "Linkar tracks";
+
+"Unlink tracks" = "Deslinkar tracks";
+
+"Clone playlist" = "Clonar playlist";
+
+"Delete playlist" = "Apagar playlist";
+
+"Delete playlist?" = "Deseja apagar esta playlist?";
+
+"Voice mode" = "Modo de vozes";
+
+"Monophonic" = "Monofônico";
+
+"Polyphonic" = "Polifônico";
+
+"Drag to resize mixer" = "Arraste para redimensionar a Barra Mixer";
+
+"Show blocks in the teleprompter" = "Mostrar blocos no teleprompter";
+
+"Independent normalization gain: up to +24 dB" = "Ganho independente de normalização: até +24 dB";
+
+"MIDI channel" = "Canal MIDI";
+"All channels" = "Todos";
+
+"White key highlight" = "Cor da tecla branca acesa";
+"Black key highlight" = "Cor da tecla preta acesa";
+
+"FX Manager" = "Gerenciador de FX";
+
+"Click to open FX Manager" = "Clique para abrir o Gerenciador de FX";
+"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot)." = "Clique: abrir este plugin no Gerenciador de FX. Option/Alt + clique: remover plugin. Shift + clique: alternar bypass (slot vermelho).";
+
+"All Regions song text" = "Letras das músicas em All Regions";
+"Playlist song text" = "Letras das músicas nas playlists";
+"Unified drawer song text" = "Letras das músicas dentro das gavetas";
+
+"Setlist font" = "Fonte do Setlist";
+
+"Regular" = "Padrão";
+
+"Bold" = "Negrito";
+
+"Bold italic" = "Negrito itálico";
+
+"ID mode for playlists" = "Modo ID para playlists";
+
+"Recording mode" = "Modo de gravação";
+
+"Convert Mono - L" = "Converter Mono - L";
+
+"Convert Mono - R" = "Converter Mono - R";
+
+"Convert Mono L-R" = "Converter Mono L-R";
+
+"Convert Stereo" = "Converter Estéreo";
+
+"Setlist ID mode" = "Modo ID do Setlist";
+
+"Playlist ID" = "ID da playlist";
+
+"Region ID" = "ID da região";
+
+"Toggle Master Stereo/Mono" = "Alternar Master entre Estéreo e Mono";
+
+"Multiloops" = "Multiloops";
+
+"Create multiloop" = "Criar multiloop";
+
+"No markers found" = "Nenhum marcador encontrado";
+
+"Marker 1" = "Marcador 1";
+
+"Marker 2" = "Marcador 2";
+
+"Choose two different markers in chronological order" = "Escolha dois marcadores diferentes em ordem cronológica";
+
+"Auto Fader" = "Auto Fader";
+
+"Markers" = "Marcadores";
+
+"Next" = "Avançar";
+
+"This song has an active multiloop" = "Essa música tem multiloop ativo";
+
+"Multiloop Manager" = "Gerenciador de Multiloops";
+
+"Metronome" = "Metrônomo";
+"Metronome · Right-click to configure" = "Metrônomo · Clique direito para configurar";
+"Click sound" = "Som do click";
+"Click mode" = "Modo do click";
+"Only A" = "Somente A";
+"Only B" = "Somente B";
+"Wood" = "Madeira";
+"Digital" = "Digital";
+"Clave" = "Clave";
+"Click A" = "Click A";
+"Click B" = "Click B";
+"A: first beat · B: remaining beats" = "A: primeiro tempo · B: demais tempos";
+"Load click A" = "Carregar click A";
+"Load click B" = "Carregar click B";
+"Audio file" = "Arquivo de áudio";

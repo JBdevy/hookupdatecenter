@@ -30,3 +30,27 @@ precondition(!output.isVisible && !output.isProjectionFullscreen,"video right do
 precondition(application.presentationOptions == presentation && main.frame == mainFrame)
 main.close()
 print("PROJECTION_DOUBLE_CLICK_ESCAPE_RESTORE_AND_INDEPENDENT_DISPLAY_OK")
+
+let key = "jaras.test.projection." + UUID().uuidString
+func restoredWindow() -> ProjectionWindow {
+    let w = ProjectionWindow(contentRect: NSRect(x: 0,y: 0,width: 640,height: 360),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+    w.isReleasedWhenClosed = false
+    w.restorePlacement(key: key)
+    return w
+}
+let first = restoredWindow()
+let targetScreen = NSScreen.screens.last!
+let smallFrame = NSRect(x: targetScreen.visibleFrame.minX + 30,y: targetScreen.visibleFrame.minY + 30,width: 650,height: 400)
+first.setFrame(smallFrame, display: false)
+first.toggleProjectionFullscreen(on: targetScreen)
+first.close()
+let second = restoredWindow()
+precondition(second.isProjectionFullscreen && second.frame == targetScreen.frame, "fullscreen restores on the previous monitor")
+second.toggleProjectionFullscreen()
+precondition(second.frame == smallFrame, "leaving restored fullscreen restores the previous window dimensions")
+second.close()
+let third = restoredWindow()
+precondition(!third.isProjectionFullscreen && third.frame == smallFrame, "windowed geometry persists independently")
+third.close()
+for suffix in [".frame", ".fullscreen", ".screen"] { UserDefaults.standard.removeObject(forKey: key + suffix) }
+print("PROJECTION_PERSISTENT_MONITOR_FRAME_AND_FULLSCREEN_OK")

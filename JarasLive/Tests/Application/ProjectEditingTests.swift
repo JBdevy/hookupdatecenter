@@ -40,10 +40,13 @@ final class ProjectEditingTests: XCTestCase {
     func testDeletePriorityAndUndoRedoPreserveMediaAndRouting() throws {
         var project = fixture(); let original = project
         let track = project.songs[0].tracks[0], clip = track.clips[0]
+        XCTAssertTrue(project.tracksContainItems([track.id]))
+        XCTAssertFalse(project.tracksContainItems([project.songs[0].tracks[1].id]))
         XCTAssertEqual(GridDeleteTarget(items: [clip.id], tracks: [track.id]), .items([clip.id]))
         XCTAssertEqual(GridDeleteTarget(items: [], tracks: [track.id]), .tracks([track.id]))
         var history = ProjectEditHistory(project)
         project.deleteItems([clip.id]); history.record(project)
+        XCTAssertFalse(project.tracksContainItems([track.id]))
         XCTAssertEqual(project.songs[0].tracks.count, 2)
         XCTAssertEqual(history.undo(), original)
         XCTAssertEqual(history.redo(), project)

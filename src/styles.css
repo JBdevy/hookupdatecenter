@@ -10484,12 +10484,15 @@ body.tools-mode .add-project-setup-card {
   font-size: 10px;
 }
 
-/* Enquanto o processo principal ainda nao envia porcentagem (preparo, copia
-   local e abertura do instalador) a barra so indica atividade. Reaproveita a
-   animacao ja usada na copia de projetos. */
+/* O preparo pulsa sem simular avanço ou retrocesso do download. */
 #previousView .previous-update-card .previous-progress-area .progress-bar.previous-progress-indeterminate {
-  width: 32% !important;
-  animation: copy-project-progress 1.15s ease-in-out infinite alternate;
+  width: 100% !important;
+  animation: previous-progress-pulse 1.15s ease-in-out infinite alternate;
+}
+
+@keyframes previous-progress-pulse {
+  from { opacity: .2; }
+  to { opacity: .5; }
 }
 
 /* No estado pós-instalação, centraliza a ação no espaço livre do card e deixa

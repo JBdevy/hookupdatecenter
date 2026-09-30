@@ -330,6 +330,15 @@
 "Tap tempo · Right-click to edit BPM" = "Tap tempo · Right-click to edit BPM";
 "Teleprompter" = "Teleprompter";
 "This control is already mapped." = "This control is already mapped.";
+"%@ is already mapped to %@. Remove it from that function and use it for %@?" = "%@ is already mapped to %@. Remove it from that function and use it for %@?";
+"Transfer mapping" = "Transfer mapping";
+"The arrow keys are fixed to setlist navigation." = "The arrow keys are fixed to setlist navigation.";
+"Go to project start" = "Go to project start";
+"Go to project end" = "Go to project end";
+"Go to next region" = "Go to next region";
+"Go to previous region" = "Go to previous region";
+"Next marker or region boundary" = "Next marker or region boundary";
+"Previous marker or region boundary" = "Previous marker or region boundary";
 "Track-Mixer" = "Track-Mixer";
 "Transport time" = "Transport time";
 "Track unavailable" = "Track unavailable";
@@ -387,6 +396,7 @@
 "Pitch Bend controls vibrato depth at 6.85 Hz." = "Pitch Bend controls vibrato depth at 6.85 Hz.";
 "No instruments available yet" = "No instruments available yet";
 "A Timecode track already exists." = "A Timecode track already exists.";
+"A %@ track already exists." = "A %@ track already exists.";
 "Mode" = "Mode";
 "Frame rate" = "Frame rate";
 "Start at zero in each region" = "Start at zero in each region";
@@ -739,3 +749,204 @@
 
 "Folders" = "Folders";
 "All regions preview" = "All regions preview";
+
+"Project timebase" = "Project timebase";
+"Free Grid" = "Free Grid";
+"Relative Grid" = "Relative Grid";
+"Timebase" = "Timebase";
+"Global" = "Global";
+"Free" = "Free";
+"Relative" = "Relative";
+"Tracks show/hide" = "Tracks show/hide";
+"Setlist show/hide" = "Setlist show/hide";
+"Divisions" = "Divisions";
+"Grid divisions" = "Grid divisions";
+"Time signature" = "Time signature";
+"Timebase affects MIDI items" = "Timebase affects MIDI items";
+"Timebase affects automation item length" = "Timebase affects automation item length";
+"Invalid time signature." = "Invalid time signature.";
+
+"Restore this mapping?" = "Restore this mapping?";
+"Restore" = "Restore";
+
+"Mute Master" = "Mute Master";
+"Volume Master" = "Volume Master";
+
+"Video window on/off" = "Video window on/off";
+"Teleprompter window on/off" = "Teleprompter window on/off";
+
+"Normalize selected items" = "Normalize selected items";
+
+"Maximum item gain: +24 dB" = "Maximum item gain: +24 dB";
+
+"Create marker" = "Create marker";
+
+"Create tempo marker" = "Create tempo marker";
+
+"Tempo marker" = "Tempo marker";
+
+"Invalid tempo or time signature." = "Invalid tempo or time signature.";
+
+"Solo Master" = "Solo Master";
+
+"Search plugins" = "Search plugins";
+
+"No plugins found" = "No plugins found";
+
+"Detect BPM…" = "Detect BPM…";
+"Detect BPM" = "Detect BPM";
+"Detect BPM from the Click track?" = "Detect BPM from the Click track?";
+"Detecting BPM…" = "Detecting BPM…";
+"No stable click tempo was found." = "No stable click tempo was found.";
+"BPM detected." = "BPM detected.";
+"Quality" = "Quality";
+"Re-render" = "Re-render";
+
+"Advanced" = "Advanced";
+"TimeProject" = "TimeProject";
+"Gridline" = "Gridline";
+"Resolution" = "Resolution";
+"Black and white" = "Black and white";
+"No audio" = "No audio";
+"24-bit PCM" = "24-bit PCM";
+"32-bit PCM" = "32-bit PCM";
+"Re-rendering…" = "Re-rendering…";
+"Re-render complete." = "Re-render complete.";
+"The audio item changed during Re-render." = "The audio item changed during Re-render.";
+"Detect BPM for each song?" = "Detect BPM for each song?";
+"Yes" = "Yes";
+"No" = "No";
+"Missing audio files" = "Missing audio files";
+"%d audio file is missing" = "%d audio file is missing";
+"%d audio files are missing" = "%d audio files are missing";
+"Search" = "Search";
+"Open anyway" = "Open anyway";
+"Cancel" = "Cancel";
+"Not found" = "Not found";
+"Searching for missing audio…" = "Searching for missing audio…";
+
+"Messages" = "Messages";
+"Message" = "Message";
+"Message %lld" = "Message %lld";
+"Message settings" = "Message settings";
+"Send" = "Send";
+"Pin" = "Pin";
+"Show on TP-1" = "Show on TP-1";
+"Show on TP-2" = "Show on TP-2";
+"Text scale: %lld%%" = "Text scale: %lld%%";
+"Text color" = "Text color";
+"Background color" = "Background color";
+"Flash color" = "Flash color";
+"Show emoji" = "Show emoji";
+"Hide content while showing a message" = "Hide content while showing a message";
+"Add image" = "Add image";
+"Remove image" = "Remove image";
+
+"Automatic Subplay" = "Automatic Subplay";
+
+"Start before the end" = "Start before the end";
+
+"Withdraw message" = "Withdraw";
+
+"Link tracks" = "Link tracks";
+
+"Unlink tracks" = "Unlink tracks";
+
+"Clone playlist" = "Clone playlist";
+
+"Delete playlist" = "Delete playlist";
+
+"Delete playlist?" = "Delete playlist?";
+
+"Voice mode" = "Voice mode";
+
+"Monophonic" = "Monophonic";
+
+"Polyphonic" = "Polyphonic";
+
+"Drag to resize mixer" = "Drag to resize mixer";
+
+"Show blocks in the teleprompter" = "Show blocks in the teleprompter";
+
+"Independent normalization gain: up to +24 dB" = "Independent normalization gain: up to +24 dB";
+
+"MIDI channel" = "MIDI channel";
+"All channels" = "All";
+
+"White key highlight" = "White key highlight";
+"Black key highlight" = "Black key highlight";
+
+"FX Manager" = "FX Manager";
+
+"Click to open FX Manager" = "Click to open FX Manager";
+"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot)." = "Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot).";
+
+"All Regions song text" = "All Regions song text";
+"Playlist song text" = "Playlist song text";
+"Unified drawer song text" = "Songs inside unified regions";
+
+"Setlist font" = "Setlist font";
+
+"Regular" = "Regular";
+
+"Bold" = "Bold";
+
+"Bold italic" = "Bold italic";
+
+"ID mode for playlists" = "ID mode for playlists";
+
+"Recording mode" = "Recording mode";
+
+"Convert Mono - L" = "Convert Mono - L";
+
+"Convert Mono - R" = "Convert Mono - R";
+
+"Convert Mono L-R" = "Convert Mono L-R";
+
+"Convert Stereo" = "Convert Stereo";
+
+"Setlist ID mode" = "Setlist ID mode";
+
+"Playlist ID" = "Playlist ID";
+
+"Region ID" = "Region ID";
+
+"Toggle Master Stereo/Mono" = "Toggle Master Stereo/Mono";
+
+"Multiloops" = "Multiloops";
+
+"Create multiloop" = "Create multiloop";
+
+"No markers found" = "No markers found";
+
+"Marker 1" = "Marker 1";
+
+"Marker 2" = "Marker 2";
+
+"Choose two different markers in chronological order" = "Choose two different markers in chronological order";
+
+"Auto Fader" = "Auto Fader";
+
+"Markers" = "Markers";
+
+"Next" = "Next";
+
+"This song has an active multiloop" = "This song has an active multiloop";
+
+"Multiloop Manager" = "Multiloop Manager";
+
+"Metronome" = "Metronome";
+"Metronome · Right-click to configure" = "Metronome · Right-click to configure";
+"Click sound" = "Click sound";
+"Click mode" = "Click mode";
+"Only A" = "Only A";
+"Only B" = "Only B";
+"Wood" = "Wood";
+"Digital" = "Digital";
+"Clave" = "Clave";
+"Click A" = "Click A";
+"Click B" = "Click B";
+"A: first beat · B: remaining beats" = "A: first beat · B: remaining beats";
+"Load click A" = "Load click A";
+"Load click B" = "Load click B";
+"Audio file" = "Audio file";

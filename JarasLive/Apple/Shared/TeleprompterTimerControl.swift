@@ -20,7 +20,8 @@ import Combine
             timerButton
         }.fixedSize(horizontal: true, vertical: false)
             .padding(4)
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.55), lineWidth: 1).allowsHitTesting(false))
+            .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
             .onReceive(clock) { if timer.running { tick = $0 } }
             .onAppear(perform: refresh)
             .onChange(of: timer.targetSeconds) { _ in if focused == nil { refresh() } }
@@ -47,14 +48,14 @@ import Combine
                             .onExitCommand { refresh(); focused = nil }
                     }
                 }
-                .multilineTextAlignment(.center).frame(width: 28, height: 32)
+                .multilineTextAlignment(.center).frame(width: 30, height: 35)
                 .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(invalid ? Color.red : JarasTheme.line))
                 .accessibilityLabel(LocalizedStringKey(["Hours", "Minutes", "Seconds"][index]))
                 .immediateRightClick { timer.showConfiguration() }
             }
         }
-        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .font(.system(size: 12, weight: .semibold, design: .monospaced))
         .modifier(InputValidationShake(animatableData: shake))
         .jarasHelp("Timer settings · Right-click")
     }
@@ -64,7 +65,7 @@ import Combine
             else if commit() { focused = nil; timer.start() }
         } label: {
             Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
-                .font(.system(size: 11, weight: .semibold)).frame(width: 48, height: 32)
+                .font(.system(size: 12, weight: .semibold)).frame(width: 52, height: 35)
                 .foregroundStyle(timer.running ? Color.white : JarasTheme.green)
                 .background(timer.running ? Color.red.opacity(0.65) : JarasTheme.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -95,7 +96,7 @@ private struct TimerReadout: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.alignment = .center
-        field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }

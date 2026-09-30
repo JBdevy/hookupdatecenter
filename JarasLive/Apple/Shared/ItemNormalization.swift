@@ -85,7 +85,7 @@ enum ItemNormalization {
     }
     static func gain(measured: Double, target: Double) -> Double {
         guard measured.isFinite, measured > -150 else { return 1 }
-        return pow(10, min(12, max(-120, target - measured)) / 20)
+        return pow(10, min(24, max(-120, target - measured)) / 20)
     }
 }
 
@@ -112,7 +112,7 @@ struct ItemNormalizationEditor: View {
                     .modifier(NormalizeShake(value: shake))
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
-            Text("Maximum item gain: +12 dB").font(.caption).foregroundStyle(JarasTheme.secondary)
+            Text("Independent normalization gain: up to +24 dB").font(.caption).foregroundStyle(JarasTheme.secondary)
             if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.caption).lineLimit(1) } }
             if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption) }
             HStack {

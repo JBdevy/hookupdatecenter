@@ -142,7 +142,7 @@ struct AudioExportView: View {
                     renderedPlan = snapshot
                     renderScreen = true
                     session.start(project: project,song: song,plan: snapshot,media: mediaDirectory,output: URL(fileURLWithPath: directory),rate: rate,encoding: AudioExportEncoding(format: format,bitDepth: bits,channels: channels,bitrate: bitrate,sampleRate: rate),secondaryEncoding: secondaryEnabled ? AudioExportEncoding(format: secondaryFormat,bitDepth: secondaryBits,channels: channels,bitrate: secondaryBitrate,sampleRate: rate) : nil)
-                }.buttonStyle(.borderedProminent).tint(JarasTheme.green).disabled(plan.jobs.isEmpty || directory.isEmpty || mediaDirectory == nil)
+                }.buttonStyle(.borderedProminent).tint(JarasTheme.green).keyboardShortcut(.defaultAction).disabled(plan.jobs.isEmpty || directory.isEmpty || mediaDirectory == nil)
             }
         }
     }
@@ -240,11 +240,11 @@ struct AudioExportView: View {
             } else { ProgressView().frame(height: 180).frame(maxWidth: .infinity) }
             if !session.error.isEmpty { Text(verbatim: session.error).font(.caption).foregroundStyle(.red) }
             HStack {
-                if session.running { Button("Cancel") { session.cancel() } }
+                if session.running { Button("Cancel") { session.cancel() }.keyboardShortcut(.cancelAction) }
                 else if session.finished { Text("Render complete.").foregroundStyle(JarasTheme.green) }
                 else { Button("Back") { renderScreen = false; renderedPlan = nil } }
                 Spacer()
-                if !session.running { Button("Close") { dismiss() } }
+                if !session.running { Button("Close") { dismiss() }.keyboardShortcut(.defaultAction) }
             }
         }
     }

@@ -55,7 +55,7 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().appendingPathComponent("Steams").path))
         let tp = try StemProjectImporter.prepareDroppedAudio([source], start: 10, destinationTracks: [UUID()], destination: destination, destinationKind: .teleprompt)
         XCTAssertEqual(tp.tracks[0].kind, .teleprompt)
-        XCTAssertEqual(tp.tracks[0].name, "Teleprompter")
+        XCTAssertEqual(tp.tracks[0].name, "Teleprompter 1")
         XCTAssertTrue(tp.tracks[0].clips[0].isProjectionMedia)
         XCTAssertEqual(try Data(contentsOf: source), try Data(contentsOf: destination.deletingLastPathComponent().appendingPathComponent(clips[0].audioFile!.path)))
     }

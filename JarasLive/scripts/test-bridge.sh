@@ -26,6 +26,14 @@ project.songs[0].tracks[0].clips[0].fx = itemFX
 let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 12)
 let second = Part(id: UUID(), name: "Second", startTime: 20, endTime: 30)
 project.songs[0].parts = [first, second]
+let loopStart = TimelineMarker(id: UUID(), name: "Loop start", position: 3, color: 0xffffff)
+let loopEnd = TimelineMarker(id: UUID(), name: "Loop end", position: 9, color: 0xffffff)
+// Keep unresolved marker references here to verify lossless persistence after marker deletion.
+var multiLoop = MultiLoop(name: "Verse loop", marker1: loopStart.id, marker2: loopEnd.id)
+var loopTrack = MultiLoopTrack(id: project.songs[0].tracks[0].id, gain: 0.2)
+loopTrack.autoFader = true; loopTrack.mute = true; loopTrack.solo = true
+multiLoop.tracks = [loopTrack, MultiLoopTrack(id: MultiLoopTrack.masterID, gain: 0.5)]
+project.songs[0].parts[0].multiLoops = [multiLoop]
 project.songs[0].parts[0].pitchSemitones = 6
 project.songs[0].parts[0].pitchTrackIDs = [project.songs[0].tracks[0].id]
 project.songs[0].parts[0].pitchGroupIDs = []
@@ -54,7 +62,7 @@ for song in project.songs.indices {
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
-swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
+swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
 build/bridge-tests/fixture build/bridge-tests/demo.json
 clang++ -std=c++17 -fobjc-arc -framework Foundation Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp Apple/Bridge/JarasCoreBridge.mm Tests/Core/BridgeTests.mm -o build/bridge-tests/test
 build/bridge-tests/test build/bridge-tests/demo.json

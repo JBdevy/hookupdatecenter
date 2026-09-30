@@ -82,11 +82,43 @@ struct EQKernel {
     double desired[kSections][5] = {};
     unsigned activeSections=0;
     std::atomic<bool> enabled{false}, resetRequested{false};
+    std::atomic<double> inputGain{1};
+    std::atomic<int> channelMode{0};
+    double channelMatrix[4] = {1,0,0,1};
+    double currentInputGain=1;
+    bool inputGainInitialized=false;
     double mix=0;
     EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
     void process(AudioBufferList *buffers, unsigned frames) {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
             for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
+            inputGainInitialized=false;
+        }
+        const int mode=channelMode.load(std::memory_order_relaxed);
+        const double matrices[4][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5}};
+        const auto &matrixTarget=matrices[std::clamp(mode,0,3)];
+        if(!inputGainInitialized) std::copy(matrixTarget,matrixTarget+4,channelMatrix);
+        if(buffers->mNumberBuffers>=2 && (mode!=0 || channelMatrix[0]!=1 || channelMatrix[3]!=1)) {
+            auto left=static_cast<float*>(buffers->mBuffers[0].mData);
+            auto right=static_cast<float*>(buffers->mBuffers[1].mData);
+            if(left && right) for(unsigned frame=0;frame<frames;frame++) {
+                for(int i=0;i<4;i++) { channelMatrix[i]+=(matrixTarget[i]-channelMatrix[i])*0.02; if(std::abs(matrixTarget[i]-channelMatrix[i])<1e-9) channelMatrix[i]=matrixTarget[i]; }
+                const float l=left[frame], r=right[frame];
+                left[frame]=float(l*channelMatrix[0]+r*channelMatrix[1]);
+                right[frame]=float(l*channelMatrix[2]+r*channelMatrix[3]);
+            }
+        }
+        const double gain=inputGain.load(std::memory_order_relaxed);
+        if(!inputGainInitialized) { currentInputGain=gain; inputGainInitialized=true; }
+        if(gain!=1 || currentInputGain!=1) {
+            for(unsigned frame=0;frame<frames;frame++) {
+                currentInputGain += (gain-currentInputGain)*0.02;
+                if(std::abs(gain-currentInputGain)<1e-9) currentInputGain=gain;
+                for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
+                    auto data=static_cast<float*>(buffers->mBuffers[ch].mData);
+                    if(data) data[frame]*=float(currentInputGain);
+                }
+            }
         }
         const auto before=generation.load(std::memory_order_acquire);
         const auto requested=std::min(kSections,count.load(std::memory_order_acquire));
@@ -171,6 +203,12 @@ struct EQKernel {
     unit->kernel.count.store((unsigned)count,std::memory_order_release);
     unit->kernel.enabled.store(enabled,std::memory_order_relaxed);
     unit->kernel.generation.fetch_add(1,std::memory_order_release);
+}
++ (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,3),std::memory_order_relaxed);
+}
++ (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain {
+    if(std::isfinite(gain)) ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.inputGain.store(std::clamp(gain,0.0,std::pow(10.0,24.0/20.0)),std::memory_order_relaxed);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &kernel=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel;
@@ -388,12 +426,19 @@ struct DynamicsKernel {
 struct ChannelRouteKernel {
     std::array<std::atomic<uint32_t>, 1024> destinations;
     ChannelRouteKernel() { for(auto& value : destinations) value.store(0, std::memory_order_relaxed); }
-    std::vector<float> input, output, leftGain, rightGain;
-    unsigned capacity=0, channels=0;
-    void prepare(unsigned frames,unsigned count) {
+    std::atomic<bool> renderEnabled{true};
+    std::atomic<bool> stopFadeRequested{false};
+    std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin;
+    unsigned capacity=0, channels=0, stopFadeFrames=0, stopFadePosition=0;
+    bool wasRendering=false;
+    void prepare(unsigned frames,unsigned count,double rate) {
         capacity=frames; channels=count;
         input.assign(frames*2,0); output.assign(frames*count,0);
         leftGain.assign(count,0); rightGain.assign(count,0);
+        lastOutput.assign(count,0); fadeOrigin.assign(count,0);
+        stopFadeFrames=std::max(64u,static_cast<unsigned>(rate*0.005)); stopFadePosition=stopFadeFrames;
+        wasRendering=false;
+        stopFadeRequested.store(false,std::memory_order_relaxed);
     }
 };
 @interface JarasChannelRouteUnit : AUAudioUnit {
@@ -419,14 +464,44 @@ struct ChannelRouteKernel {
 - (AUAudioUnitBusArray *)outputBusses { return _outputs; }
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if (![super allocateRenderResourcesAndReturnError:error]) return NO;
-    route.prepare(self.maximumFramesToRender,_output.format.channelCount);
+    route.prepare(self.maximumFramesToRender,_output.format.channelCount,_output.format.sampleRate);
     return YES;
 }
 - (AUInternalRenderBlock)internalRenderBlock {
     ChannelRouteKernel *state=&route;
     return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
-        if (!pull) return kAudioUnitErr_NoConnection;
         if (frames>state->capacity) return kAudioUnitErr_TooManyFramesToProcess;
+        const bool enabled=state->renderEnabled.load(std::memory_order_relaxed);
+        const bool stopRequested=state->stopFadeRequested.exchange(false,std::memory_order_relaxed);
+        if (!enabled || stopRequested || state->stopFadePosition<state->stopFadeFrames) {
+            if (stopRequested || (!enabled && state->wasRendering)) {
+                std::copy(state->lastOutput.begin(),state->lastOutput.end(),state->fadeOrigin.begin());
+                state->stopFadePosition=0;
+                state->wasRendering=false;
+            }
+            const unsigned fadePosition=state->stopFadePosition;
+            const bool fading=fadePosition<state->stopFadeFrames;
+            for(unsigned ch=0;ch<output->mNumberBuffers && ch<state->channels;ch++) {
+                auto& buffer=output->mBuffers[ch];
+                if(!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
+                buffer.mDataByteSize=frames*sizeof(float);
+                auto *out=static_cast<float*>(buffer.mData);
+                if (!fading || state->fadeOrigin[ch]==0) { memset(out,0,buffer.mDataByteSize); continue; }
+                for(unsigned frame=0;frame<frames;frame++) {
+                    const unsigned position=std::min(state->stopFadeFrames,fadePosition+frame+1);
+                    out[frame]=state->fadeOrigin[ch]*(1-float(position)/float(state->stopFadeFrames));
+                }
+            }
+            state->stopFadePosition=std::min(state->stopFadeFrames,fadePosition+frames);
+            if (flags) {
+                if (fading) *flags &= ~kAudioUnitRenderAction_OutputIsSilence;
+                else *flags |= kAudioUnitRenderAction_OutputIsSilence;
+            }
+            return noErr;
+        }
+        state->wasRendering=true;
+        state->stopFadePosition=state->stopFadeFrames;
+        if (!pull) return kAudioUnitErr_NoConnection;
         struct { UInt32 count; AudioBuffer buffers[2]; } input;
         input.count=2;
         for(unsigned ch=0;ch<2;ch++) input.buffers[ch]={1,UInt32(frames*sizeof(float)),state->input.data()+ch*state->capacity};
@@ -443,6 +518,7 @@ struct ChannelRouteKernel {
             float gl=state->leftGain[ch],gr=state->rightGain[ch];
             if(l==0 && r==0 && std::abs(gl)<1e-6f && std::abs(gr)<1e-6f) {
                 state->leftGain[ch]=0; state->rightGain[ch]=0;
+                state->lastOutput[ch]=0;
                 memset(out,0,frames*sizeof(float)); continue;
             }
             for(unsigned frame=0;frame<frames;frame++) {
@@ -450,6 +526,7 @@ struct ChannelRouteKernel {
                 out[frame]=(left ? left[frame]:0)*gl+(right ? right[frame]:0)*gr;
             }
             state->leftGain[ch]=gl; state->rightGain[ch]=gr;
+            state->lastOutput[ch]=frames ? out[frames-1] : 0;
         }
         return noErr;
     };
@@ -461,6 +538,14 @@ struct ChannelRouteKernel {
     AudioComponentDescription d={kAudioUnitType_Effect,'JLrt','Jara',0,0};
     dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasChannelRouteUnit.class asComponentDescription:d name:@"Jaras Channel Route" version:1]; });
     return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
+    auto *unit=(JarasChannelRouteUnit*)node.AUAudioUnit;
+    unit->route.renderEnabled.store(enabled,std::memory_order_relaxed);
+}
++ (void)beginStopFade:(AVAudioUnitEffect *)node {
+    auto *unit=(JarasChannelRouteUnit*)node.AUAudioUnit;
+    unit->route.stopFadeRequested.store(true,std::memory_order_relaxed);
 }
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count {
     [self configurePatches:node firsts:@[@(first)] counts:@[@(count)]];

@@ -14,8 +14,7 @@ struct MainView: View {
     @ObservedObject var documents: ProjectDocuments
     private enum Panel: String, Identifiable { case projects, settings; var id: String { rawValue } }
     @State private var panel: Panel?
-    private struct TrackEdit { let id: UUID; let name: String; let color: UInt32 }
-    @State private var trackEdit: TrackEdit?
+    @State private var trackEdit: TrackDetailsEditRequest?
     private struct FXTarget: Identifiable { let track: UUID?; let effect: String; var id: String { (track.map { "track:" + $0.uuidString } ?? "master") + effect } }
     @State private var fxTargets: [FXTarget] = []
     @State private var clipFXTargets: [UUID] = []
@@ -23,18 +22,26 @@ struct MainView: View {
     @State private var lastObservedProjectID: UUID?
     @AppStorage("jaras.language") private var language = "en"
     @State private var navigationOpen = false
+    @State private var footerMixerOpen = false
+    @State private var keyboardOpen = false
+    @State private var keyboardSettings = false
+    @State private var workspaceHeight: CGFloat = 900
     @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
     @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = 248.0
-    @State private var liveSetlistWidth: CGFloat?
+    #if os(macOS)
+    @State private var setlistScrollController = SidebarScrollController()
+    #endif
     @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlist)
     @AppStorage("jaras.setlistRestoreWidth") private var setlistRestoreWidth = 240.0
     private func toggleMixer() {
-        if mixerWidth > 0 { mixerRestoreWidth = mixerWidth; mixerWidth = 0 }
-        else { mixerWidth = max(Double(SidebarWidthLimits.trackMixer), mixerRestoreWidth) }
+        Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
     }
     private func toggleSetlist() {
-        if setlistWidth > 0 { setlistRestoreWidth = setlistWidth; setlistWidth = 0 }
-        else { setlistWidth = max(Double(SidebarWidthLimits.setlist), setlistRestoreWidth) }
+        Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist)
+    }
+    private static func togglePanel(width: Binding<Double>, restore: Binding<Double>, minimum: CGFloat) {
+        if width.wrappedValue > 0 { restore.wrappedValue = width.wrappedValue; width.wrappedValue = 0 }
+        else { width.wrappedValue = max(Double(minimum), restore.wrappedValue) }
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -42,23 +49,18 @@ struct MainView: View {
                 TransportView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
                     #if os(macOS)
                     GeometryReader { geometry in
-                        let maximum = max(0, min(486.5, geometry.size.width - 420))
-                        let requested = liveSetlistWidth ?? setlistWidth
-                        let width = requested <= 0 ? 0 : min(maximum, max(SidebarWidthLimits.setlist, requested))
-                        HStack(spacing: 0) {
-                            TimelineGridView(show: show, documents: documents, toggleMixer: toggleMixer)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            MixerResizeHandle(width: width, maximum: maximum, minimum: SidebarWidthLimits.setlist, direction: -1, onStart: {
-                                if width > 0 { setlistRestoreWidth = width }
-                            }, onToggle: toggleSetlist, onEnd: { finalWidth in
+                        NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
+                            minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
+                            onToggle: toggleSetlist, onEnd: { finalWidth in
+                                if finalWidth > 0 { setlistRestoreWidth = finalWidth }
                                 setlistWidth = finalWidth
-                                liveSetlistWidth = nil
-                            }) { liveSetlistWidth = $0 }
-                                .frame(width: 6)
-                            SongListView(show: show)
-                                .frame(width: width > 0 ? width : min(maximum, max(Double(SidebarWidthLimits.setlist), setlistRestoreWidth)))
-                                .frame(width: width, alignment: .trailing).clipped().allowsHitTesting(width > 0)
-                        }
+                            }) {
+                            TimelineGridView(show: show, documents: documents, toggleMixer: toggleMixer)
+                                .foregroundStyle(JarasTheme.text)
+                        } trailing: {
+                            SongListView(show: show, sidebarScrollController: setlistScrollController)
+                                .foregroundStyle(JarasTheme.text)
+                        }.frame(width: geometry.size.width, height: geometry.size.height)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #else
                     HStack(spacing: 1) {
@@ -66,14 +68,31 @@ struct MainView: View {
                         SongListView(show: show).frame(width: 220)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #endif
-                HStack {
-                    ResourceUsageView()
-                    Spacer()
-                    AudioStatusView()
-                }.overlay { RegionPitchControl(show: show) }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
+                FooterMixerPanel(show: show, active: footerMixerOpen, maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)))
+                FooterPianoKeyboard(active: keyboardOpen).frame(height: 108)
+                    .frame(height: keyboardOpen ? 108 : 0, alignment: .top).clipped().allowsHitTesting(keyboardOpen).accessibilityHidden(!keyboardOpen)
+                GeometryReader { geometry in
+                    let displayWidth = min(300, max(0, geometry.size.width - 320))
+                    let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
+                    HStack(spacing: 0) {
+                        HStack(spacing: 10) {
+                            ResourceUsageView().fixedSize()
+                            Button { footerMixerOpen.toggle() } label: { Image(systemName: "slider.vertical.3").font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 25).contentShape(Rectangle()) }
+                                .foregroundStyle(footerMixerOpen ? JarasTheme.green : JarasTheme.text).jarasHelp("Barra Mixer").accessibilityLabel("Barra Mixer")
+                            Button { keyboardOpen.toggle() } label: { Image(systemName: "pianokeys").font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 25).contentShape(Rectangle()) }
+                                .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text).jarasHelp("Keyboard").accessibilityLabel("Keyboard")
+                                .immediateRightClick { keyboardSettings = true }
+                                .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
+                        }.buttonStyle(.plain).frame(width: sideWidth, alignment: .leading).clipped()
+                        FooterInformationDisplay(show: show, status: documents.importingAudio ? documents.status : "").frame(width: displayWidth)
+                        AudioStatusView().frame(width: sideWidth, alignment: .trailing)
+                    }.frame(height: 27)
+                }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
 
             }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).scrollIndicators(.hidden)
+            .background { GeometryReader { geometry in Color.clear.preference(key: MixerWorkspaceHeightKey.self, value: geometry.size.height) } }
+            .onPreferenceChange(MixerWorkspaceHeightKey.self) { workspaceHeight = $0 }
             .overlay(alignment: .top) {
                 if documents.importingAudio {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(LocalizedStringKey(documents.status)).font(.caption).lineLimit(1) }
@@ -88,7 +107,7 @@ struct MainView: View {
                     _ = documents.importAudio(drop.providers, start: drop.start, track: drop.track, song: drop.song, layout: layout, gap: gap)
                 }
             }
-            .alert("Import audio", isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
+            .alert(Text(verbatim: documents.audioImportError.isEmpty ? "" : JarasLocalization.string("Import audio")), isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
                 Button("OK") { documents.audioImportError = "" }
             } message: { Text(LocalizedStringKey(documents.audioImportError)) }
 
@@ -121,16 +140,23 @@ struct MainView: View {
             #else
             .environment(\.gridInteractionBlocked, navigationOpen || textItemTarget != nil || trackEdit != nil || mappings.editing != nil)
             #endif
-            .environment(\.editTrackDetails, { id, name, color in
-                trackEdit = TrackEdit(id: id, name: name, color: color)
+            .environment(\.editTrackDetails, { request in
+                guard request.project == show.snapshot.project.id, !request.tracks.isEmpty else { return }
+                trackEdit = request
             })
+            .onChange(of: show.snapshot.project.id) { _ in trackEdit = nil }
             .overlay {
                 if let edit = trackEdit {
                     ZStack {
                         Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { trackEdit = nil }
                         NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                            show.editTrack(edit.id, name: name, color: color)
-                        }, close: { trackEdit = nil }, nameEditable: show.current?.tracks.first(where: { $0.id == edit.id })?.kind == .standard)
+                            guard edit.project == show.snapshot.project.id else { return }
+                            if edit.nameEditable, let track = edit.tracks.first {
+                                show.editTrack(track, name: name, color: color)
+                            } else {
+                                show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                            }
+                        }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
                         .background(JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .shadow(color: .black.opacity(0.4), radius: 18)
@@ -152,19 +178,28 @@ struct MainView: View {
                 }
                 #endif
             }
-            .onAppear { mappings.bind(show) }
+            .onAppear {
+                mappings.bind(show)
+                show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
+                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.trackMixer)
+                }
+                show.toggleSetlistPanel = { [width = $setlistWidth, restore = $setlistRestoreWidth] in
+                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.setlist)
+                }
+            }
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
                 #if os(macOS)
                 RightClickRouter.shared.interactionBlocked = blocked
                 #endif
             }
             .onDisappear {
+                show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}
                 #if os(macOS)
                 FXWindows.shared.closeAll()
                 RightClickRouter.shared.interactionBlocked = false
                 #endif
             }
-            .alert("Recording", isPresented: Binding(get: { !recording.error.isEmpty }, set: { if !$0 { recording.error = "" } })) { Button("OK") { recording.error = "" } } message: { Text(LocalizedStringKey(recording.error)) }
+            .alert(Text(verbatim: recording.error.isEmpty ? "" : JarasLocalization.string("Recording")), isPresented: Binding(get: { !recording.error.isEmpty }, set: { if !$0 { recording.error = "" } })) { Button("OK") { recording.error = "" } } message: { Text(LocalizedStringKey(recording.error)) }
             .overlay {
                 if mappings.editing != nil && mappings.editing?.fxParameter == nil && panel == nil {
                     ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }
@@ -188,7 +223,7 @@ struct MainView: View {
                     HStack {
                         Text(LocalizedStringKey(selected == .settings ? "Configurações" : "Projetos")).font(.headline)
                         Spacer()
-                        Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar")
+                        Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
                     }.padding(16)
                     Divider()
                     if selected == .settings {
@@ -312,8 +347,8 @@ private struct AudioDropOptions: View {
 
 }
 
-/// This small observer keeps playback changes confined to the footer control.
-private struct RegionPitchControl: View {
+/// Reuses the per-song pitch state and target editor in the transport.
+struct RegionTunerControl: View {
     @ObservedObject var show: ShowController
     @State private var editing: Part?
     private func step(_ delta: Int) {
@@ -323,16 +358,20 @@ private struct RegionPitchControl: View {
     }
     var body: some View {
         HStack(spacing: 3) {
-            Button { step(-1) } label: { Image(systemName: "minus").frame(width: 24, height: 22).contentShape(Rectangle()) }
+            Text(verbatim: "Tuner").font(.system(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
+            Button { step(-1) } label: { Image(systemName: "minus").frame(width: 20, height: 25).contentShape(Rectangle()) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -6).jarasHelp("Lower song pitch")
             Text(String(format: "%dst", show.pitchRegion?.semitones ?? 0))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
-                .frame(width: 45, height: 22).background(JarasTheme.display).cornerRadius(4)
+                .frame(width: 34, height: 23).background(JarasTheme.display).cornerRadius(4)
                 .immediateRightClick { editing = show.pitchRegion }
                 .accessibilityLabel("Song pitch").accessibilityValue(String(show.pitchRegion?.semitones ?? 0) + "st")
-            Button { step(1) } label: { Image(systemName: "plus").frame(width: 24, height: 22).contentShape(Rectangle()) }
+            Button { step(1) } label: { Image(systemName: "plus").frame(width: 20, height: 25).contentShape(Rectangle()) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 6).jarasHelp("Raise song pitch")
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
+        .padding(.horizontal, 6).frame(height: 25)
+        .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
         .sheet(item: $editing) { region in
             if let song = show.current {
                 RegionPitchTargets(show: show, song: song, region: region, close: { editing = nil })
@@ -397,5 +436,95 @@ private struct RegionPitchTargets: View {
                 show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: groups); close()
             }.keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width: 410).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+    }
+}
+
+private struct FooterPianoKeyboard: View {
+    var active = true
+    @ObservedObject private var state = KeyboardMIDIMonitor.shared
+    @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
+    @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
+    @State private var pressed: UInt8?
+    private let whiteNotes = (21...108).filter { ![1,3,6,8,10].contains($0 % 12) }
+    private func keyRect(_ note: Int, size: CGSize) -> CGRect {
+        let width = size.width / CGFloat(whiteNotes.count)
+        if let index = whiteNotes.firstIndex(of: note) { return CGRect(x: CGFloat(index) * width, y: 0, width: width, height: size.height) }
+        let preceding = whiteNotes.filter { $0 < note }.count
+        return CGRect(x: CGFloat(preceding) * width - width * 0.3, y: 0, width: width * 0.6, height: size.height * 0.63)
+    }
+    private func note(at point: CGPoint, size: CGSize) -> UInt8? {
+        guard CGRect(origin: .zero, size: size).contains(point) else { return nil }
+        for note in 21...108 where !whiteNotes.contains(note) {
+            if keyRect(note, size: size).contains(point) { return UInt8(note) }
+        }
+        return whiteNotes.first(where: { keyRect($0, size: size).contains(point) }).map(UInt8.init)
+    }
+    private func release() { if let pressed { StemAudioPlayback.shared.releaseKeyboardNote(pressed) }; pressed = nil }
+    var body: some View {
+        GeometryReader { geometry in
+            Canvas { context, size in
+                for black in [false, true] {
+                    for note in 21...108 where (!whiteNotes.contains(note)) == black {
+                        let rect = keyRect(note, size: size).insetBy(dx: 0.5, dy: 0)
+                        let active = state.notes.contains(UInt8(note)) || pressed == UInt8(note)
+                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : (black ? Color(white: 0.08) : Color(white: 0.89))))
+                        if note == 21 || note % 12 == 0 {
+                            let label = note == 21 ? "A-1" : "C\(note / 12 - 2)"
+                            context.draw(Text(verbatim: label).font(.system(size: 9, weight: .medium)).foregroundColor(.black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
+                        }
+                    }
+                }
+            }.contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { event in
+                    let next = note(at: event.location, size: geometry.size)
+                    guard pressed != next else { return }
+                    release(); pressed = next
+                    if let next { StemAudioPlayback.shared.playKeyboardNote(next) }
+                }.onEnded { _ in release() })
+        }.padding(.horizontal, 6).padding(.vertical, 4).background(JarasTheme.panel)
+            .onDisappear { release(); StemAudioPlayback.shared.releaseKeyboardNotes() }
+            .onChange(of: active) { if !$0 { release(); StemAudioPlayback.shared.releaseKeyboardNotes() } }
+            #if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in release(); StemAudioPlayback.shared.releaseKeyboardNotes() }
+            #endif
+            .accessibilityLabel("88-key keyboard")
+    }
+}
+
+private struct MixerWorkspaceHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 900
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct KeyboardSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
+    @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
+    @State private var channel = KeyboardMIDIMonitor.shared.channel
+    private func color(_ value: Binding<Int>) -> Binding<Color> {
+        Binding(get: { Color(hex: UInt32(value.wrappedValue)) }, set: { color in
+            #if os(macOS)
+            guard let rgb = NSColor(color).usingColorSpace(.deviceRGB) else { return }
+            value.wrappedValue = Int((rgb.redComponent * 255).rounded()) << 16 | Int((rgb.greenComponent * 255).rounded()) << 8 | Int((rgb.blueComponent * 255).rounded())
+            #else
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
+            value.wrappedValue = Int((r * 255).rounded()) << 16 | Int((g * 255).rounded()) << 8 | Int((b * 255).rounded())
+            #endif
+        })
+    }
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("Keyboard").font(.headline)
+            ColorPicker("White key highlight", selection: color($whiteColor), supportsOpacity: false)
+            ColorPicker("Black key highlight", selection: color($blackColor), supportsOpacity: false)
+            Picker("MIDI channel", selection: $channel) {
+                ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
+            }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
+            Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
+        }.font(.body).padding(24).frame(width: 340).background(JarasTheme.panel)
+            #if os(macOS)
+            .onExitCommand { dismiss() }
+            #endif
     }
 }

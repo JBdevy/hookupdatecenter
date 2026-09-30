@@ -1,0 +1,73 @@
+#include "../../Core/Transport/Engine.hpp"
+#include <cassert>
+#include <cmath>
+#include <iostream>
+using namespace jaras;
+bool near(double a,double b) { return std::abs(a-b)<1e-8; }
+Project fixture() {
+    Project p; p.id="project"; p.name="Test";
+    p.songs={{"song","Song",60,120,{{"track","Track",{"other"}}},{{"region","Region",0,60}}}};
+    auto& s=p.songs[0];
+    s.markers=std::vector<TimelineMarker>{{"a","A",10,0},{"b","B",20,0}};
+    MultiLoop l; l.id="loop";l.name="Chorus";l.marker1="a";l.marker2="b";l.fadeSeconds=3;
+    l.tracks={{"track",0.2,true,true,true}};s.parts[0].multiLoops={l};return p;
+}
+int main() {
+    Engine e;e.loadProject(fixture());e.execute({CommandKind::play});e.advance(8.5);
+    assert(e.transport().multiLoop && near(e.transport().multiLoop->amount,0.5));
+    assert(!e.transport().loop.enabled && !e.transport().multiLoop->gates);
+    e.advance(1.5);assert(e.transport().loop.enabled && e.transport().multiLoop->gates);
+    assert(near(e.transport().position,10));e.advance(25.25);assert(near(e.transport().position,15.25));
+    assert(e.project().songs[0].tracks[0].volume==1 && !e.project().songs[0].tracks[0].mute && !e.project().songs[0].tracks[0].solo);
+    e.execute({CommandKind::toggleLoop});assert(!e.transport().loop.enabled && e.transport().multiLoop->released);
+    e.advance(2.375);assert(near(e.transport().multiLoop->amount,0.5) && e.transport().multiLoop->gates);
+    e.execute({CommandKind::toggleLoop});assert(e.transport().loop.enabled && near(e.transport().multiLoop->amount,1));
+    e.execute({CommandKind::toggleLoop});e.advance(2.375);assert(near(e.transport().position,20) && !e.transport().multiLoop && !e.transport().loop.enabled);
+    e.execute({CommandKind::seek,"",12});e.advance(0);assert(e.transport().multiLoop && e.transport().loop.enabled);
+    e.execute({CommandKind::stop});assert(!e.transport().multiLoop && !e.transport().loop.enabled);
+    e.execute({CommandKind::editSeek,"",0});e.execute({CommandKind::play});e.advance(32);assert(near(e.transport().position,12));
+    e.execute({CommandKind::pause});assert(e.transport().multiLoop);e.execute({CommandKind::play});e.advance(1);assert(near(e.transport().position,13));
+    auto edited=e.project();edited.songs[0].markers->erase(edited.songs[0].markers->begin());e.applyProjectEdit(edited);e.advance(0.1);assert(!e.transport().multiLoop);
+    auto unified=fixture();unified.songs[0].parts[0].id="child";unified.songs[0].parts[0].parentRegionID="parent";
+    unified.songs[0].parts.push_back({"parent","Special",0,60});
+    e.execute({CommandKind::stop});e.loadProject(unified);e.execute({CommandKind::play});e.advance(12);assert(e.transport().loop.enabled);
+    auto excluded=fixture();excluded.songs[0].markers->at(0).tempoBPM=120;
+    e.execute({CommandKind::stop});e.loadProject(excluded);e.execute({CommandKind::play});e.advance(25);assert(!e.transport().multiLoop && near(e.transport().position,25));
+    for (const auto& marker : {"a", "b"}) {
+        Engine deletion; deletion.loadProject(fixture()); deletion.execute({CommandKind::play}); deletion.advance(12);
+        deletion.deleteManualMarker(marker);
+        assert(deletion.project().songs[0].parts[0].multiLoops.empty());
+        assert(!deletion.transport().multiLoop && !deletion.transport().loop.enabled);
+    }
+    Engine release; release.loadProject(fixture()); release.execute({CommandKind::play}); release.advance(12);
+    release.execute({CommandKind::escape,"",1});
+    assert(release.transport().multiLoop->released && release.transport().multiLoop->gates && !release.transport().loop.enabled);
+    release.advance(4); assert(near(release.transport().multiLoop->amount,0.5));
+    release.execute({CommandKind::toggleLoop}); assert(release.transport().loop.enabled && !release.transport().multiLoop->released);
+    auto manual = fixture(); manual.songs[0].parts[0].multiLoops.clear();
+    manual.songs[0].parts[0].endTime = 30;
+    manual.songs[0].parts.push_back({"next", "Next", 30, 60});
+    manual.regionSetlist = RegionSetlist{}; manual.regionSetlist->autoAdvance = true;
+    Engine escape; escape.loadProject(manual); escape.execute({CommandKind::play});
+    escape.execute({CommandKind::queueRegion,"next"});
+    escape.execute({CommandKind::toggleLoop});
+    assert(escape.transport().loop.start == 0 && escape.transport().loop.end == 10);
+    escape.advance(12); assert(near(escape.transport().position, 2));
+    escape.execute({CommandKind::escape,"",1});
+    assert(!escape.transport().loop.enabled && !escape.project().regionSetlist->autoAdvance);
+    assert(escape.transport().queuedRegionId == "next");
+    escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
+    escape.execute({CommandKind::queueRegion,"next"}); escape.execute({CommandKind::escape,"",1});
+    assert(escape.transport().queuedRegionId == "next");
+    escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
+    escape.execute({CommandKind::loopStart,"",25}); escape.execute({CommandKind::loopEnd,"",35});
+    escape.execute({CommandKind::toggleLoop}); escape.advance(36);
+    assert(near(escape.transport().position,28));
+    escape.execute({CommandKind::toggleLoop}); assert(!escape.transport().loop.start && !escape.transport().loop.end);
+    manual.songs[0].parts.clear();
+    Engine outside; outside.loadProject(manual); outside.execute({CommandKind::toggleLoop}); assert(!outside.transport().loop.enabled);
+    outside.execute({CommandKind::loopStart,"",2}); outside.execute({CommandKind::loopEnd,"",5});
+    outside.execute({CommandKind::toggleLoop}); outside.execute({CommandKind::play}); outside.advance(6);
+    assert(outside.transport().loop.enabled && near(outside.transport().position,3));
+    std::cout<<"MULTILOOP_FADE_ARM_WRAP_RELEASE_REARM_STOP_PAUSE_LONG_TICK_UNIFIED_OK\n";
+}

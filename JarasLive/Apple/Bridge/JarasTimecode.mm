@@ -3,13 +3,17 @@
 #include "../../Core/Timecode/Timecode.hpp"
 #include <atomic>
 #include <memory>
+#include <vector>
+#include <cstring>
+#include <algorithm>
 #include <mach/mach_time.h>
 
 struct TimecodeSignal {
     std::atomic<double> position{0},end{0},fps{30};
     std::atomic<uint64_t> host{0};
     std::atomic<bool> active{false};
-    std::atomic<float> peak{0};
+    std::atomic<float> peak{0}, gain{1};
+    float renderedGain = 1;
     std::atomic<uint64_t> generation{0};
     uint64_t renderGeneration=~uint64_t(0);
     double anchorSample=0, anchorPosition=0, renderedFPS=0;
@@ -31,6 +35,8 @@ struct TimecodeSignal {
         const double limit=end.load();
         const double first=std::max(0.0,position.load());
         float observedPeak=0;
+        const float targetGain = gain.load(std::memory_order_relaxed);
+        const float smoothing = float(1.0 - std::exp(-1.0 / (sampleRate * 0.01)));
         for(unsigned sample=0;sample<count;++sample) {
             float value=0;
             const double seconds=start+sample/sampleRate;
@@ -42,7 +48,8 @@ struct TimecodeSignal {
                     float phase=0.25f;
                     for(int bit=0;bit<80;++bit) { phase=-phase; halves[bit*2]=phase; if(bits[bit]) phase=-phase; halves[bit*2+1]=phase; }
                 }
-                value=halves[half%160];
+                renderedGain += (targetGain - renderedGain) * smoothing;
+                value=halves[half%160] * renderedGain;
                 observedPeak=std::max(observedPeak,std::abs(value));
             }
             for(unsigned b=0;b<list->mNumberBuffers;++b) {
@@ -80,6 +87,7 @@ struct TimecodeSignal {
     return self;
 }
 - (AVAudioSourceNode*)node { return _node; }
+- (void)setGain:(float)gain { _signal->gain.store(std::max(0.f, std::min(4.f, gain)), std::memory_order_relaxed); }
 - (float)takePeak { return _signal->peak.exchange(0,std::memory_order_relaxed); }
 - (void)send:(const Byte*)bytes length:(UInt16)length at:(MIDITimeStamp)timestamp {
     MIDIPacketList list; auto packet=MIDIPacketListInit(&list);
@@ -140,4 +148,128 @@ struct TimecodeSignal {
     return values;
 }
 - (void)dealloc { if(_timer) dispatch_source_cancel(_timer); if(_port) MIDIPortDispose(_port); if(_client) MIDIClientDispose(_client); }
+@end
+
+// Immutable sound/tempo programs are published with a hazard pointer. The render
+// callback neither locks nor allocates; retired programs are reclaimed by the UI.
+struct MetronomeProgram {
+    struct Tempo { double start, bpm; int beats, unit; };
+    std::vector<Tempo> sections;
+    std::vector<float> a, b;
+    int mode = 0;
+};
+struct MetronomeSignal {
+    std::atomic<MetronomeProgram*> program{nullptr}, reading{nullptr};
+    std::atomic<float> gainA{1}, gainB{1};
+    float renderedA=1, renderedB=1;
+    std::vector<std::unique_ptr<MetronomeProgram>> programs;
+    std::atomic<double> position{0}, loopStart{0}, loopEnd{0};
+    std::atomic<uint64_t> host{0}, generation{0};
+    std::atomic<bool> running{false};
+    uint64_t renderedGeneration = ~uint64_t(0);
+    double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
+    double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
+    MetronomeProgram* renderedProgram=nullptr;
+    struct Voice { size_t frame=0; bool a=true, active=false; };
+    std::array<Voice,32> voices{};
+    size_t nextVoice=0; float gain=0;
+    explicit MetronomeSignal(double rate):sampleRate(rate) {
+        mach_timebase_info_data_t info; mach_timebase_info(&info); ticksPerSecond=1e9*info.denom/info.numer;
+    }
+    double wrap(double p) const {
+        const double first=loopStart.load(), last=loopEnd.load();
+        return last>first && p>=last ? first+std::fmod(p-first,last-first) : p;
+    }
+    double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond; }
+    void publish(std::unique_ptr<MetronomeProgram> value) {
+        auto* next=value.get(); programs.push_back(std::move(value)); program.store(next);
+        const auto* protectedProgram=reading.load();
+        programs.erase(std::remove_if(programs.begin(),programs.end(),[&](const auto& p) {
+            return p.get()!=next && p.get()!=protectedProgram;
+        }),programs.end());
+    }
+    void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
+        MetronomeProgram* p;
+        do { p=program.load(); reading.store(p); } while(p!=program.load());
+        const auto version=generation.load(std::memory_order_acquire);
+        const bool active=running.load();
+        if(!active && gain==0) {
+            for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
+            reading.store(nullptr); return;
+        }
+        if(renderedGeneration!=version || time->mSampleTime<previousSample) {
+            renderedGeneration=version; anchorSample=time->mSampleTime;
+            anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
+            previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
+        }
+        previousSample=time->mSampleTime;
+        if(renderedProgram!=p) { renderedProgram=p; for(auto& voice:voices) voice.active=false; previousBeat=-1; }
+        const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate : clock(mach_absolute_time());
+        const float step=float(1.0/(sampleRate*0.003));
+        const float targetA=gainA.load(std::memory_order_relaxed), targetB=gainB.load(std::memory_order_relaxed);
+        const double first=position.load();
+        size_t section=0;
+        for(unsigned sample=0;sample<count;++sample) {
+            const double position=wrap(start+sample/sampleRate);
+            if(p && !p->sections.empty() && active && position>=0 && start+sample/sampleRate>=first) {
+                if(position<previousPosition) { section=0; previousBeat=-1; previousPosition=-1; }
+                while(section+1<p->sections.size() && p->sections[section+1].start<=position) ++section;
+                const auto& tempo=p->sections[section];
+                const double beatSeconds=60.0/tempo.bpm*4.0/tempo.unit;
+                const double exact=(position-tempo.start)/beatSeconds;
+                const int64_t beat=int64_t(std::floor(std::max(0.0,exact)+1e-9));
+                const double phase=(exact-double(beat))*beatSeconds;
+                if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
+                    auto& voice=voices[nextVoice++%voices.size()];
+                    voice={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),true};
+                }
+                previousBeat=beat; previousSection=section; previousPosition=position;
+            }
+            gain=active ? std::min(1.0f,gain+step) : std::max(0.0f,gain-step);
+            renderedA += (targetA-renderedA)*step;
+            renderedB += (targetB-renderedB)*step;
+            float value=0;
+            if(p && gain>0) for(auto& voice:voices) if(voice.active) {
+                const auto& data=voice.a ? p->a : p->b;
+                if(voice.frame<data.size()) value+=data[voice.frame++]*(voice.a ? renderedA : renderedB); else voice.active=false;
+            }
+            value*=gain;
+            if(!active && gain==0) for(auto& voice:voices) voice.active=false;
+            for(unsigned b=0;b<list->mNumberBuffers;++b) {
+                auto& buffer=list->mBuffers[b]; auto* data=static_cast<float*>(buffer.mData);
+                if(data) for(unsigned ch=0;ch<buffer.mNumberChannels;++ch) data[sample*buffer.mNumberChannels+ch]=value;
+            }
+        }
+        reading.store(nullptr);
+    }
+};
+@implementation JarasMetronomeGenerator {
+    std::shared_ptr<MetronomeSignal> _signal;
+}
+- (instancetype)initWithFormat:(AVAudioFormat*)format {
+    if((self=[super init])) {
+        _signal=std::make_shared<MetronomeSignal>(format.sampleRate); auto signal=_signal;
+        _node=[[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL* silent,const AudioTimeStamp* time,AVAudioFrameCount count,AudioBufferList* buffers) {
+            *silent=NO; signal->render(time,count,buffers); return noErr;
+        }];
+    } return self;
+}
+- (void)setSections:(NSArray<NSDictionary*>*)sections soundA:(NSData*)a soundB:(NSData*)b mode:(NSInteger)mode {
+    auto value=std::make_unique<MetronomeProgram>(); value->mode=int(mode);
+    for(NSDictionary* s in sections) value->sections.push_back({[s[@"start"] doubleValue],[s[@"bpm"] doubleValue],[s[@"beats"] intValue],[s[@"unit"] intValue]});
+    const auto* pa=static_cast<const float*>(a.bytes); const auto* pb=static_cast<const float*>(b.bytes);
+    if(a.length) value->a.assign(pa,pa+a.length/sizeof(float));
+    if(b.length) value->b.assign(pb,pb+b.length/sizeof(float));
+    _signal->publish(std::move(value));
+}
+- (void)setGainA:(float)a gainB:(float)b { _signal->gainA.store(a); _signal->gainB.store(b); }
+- (void)configurePosition:(double)position hostTime:(uint64_t)host running:(BOOL)running loopStart:(double)first loopEnd:(double)last {
+    _signal->loopStart.store(first); _signal->loopEnd.store(last);
+    const bool wasRunning=_signal->running.load();
+    if(wasRunning!=bool(running) || std::abs(_signal->wrap(_signal->clock(host))-position)>0.06) {
+        _signal->position.store(position); _signal->host.store(host);
+        _signal->generation.fetch_add(1,std::memory_order_release);
+    }
+    _signal->running.store(running);
+}
 @end

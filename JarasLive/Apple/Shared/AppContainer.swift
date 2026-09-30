@@ -33,19 +33,52 @@ import UIKit
         } catch { throw error }
         auth.isPlaying = { [weak show] in show?.isPlaying ?? false }
         auth.onPendingRevocation = { [weak show] pending in show?.finishCurrentSong(pending) }
+        #if os(iOS)
+        // The iPad preview runs locally without account or license checks.
+        show.canExecute = { true }
+        #else
         show.canExecute = { [weak auth] in preview || auth?.allowed == true }
+        #endif
+        #if os(macOS)
+        show.toggleVideoWindow = { VideoPlayback.shared.toggle() }
+        show.toggleTeleprompterWindow = { [weak show] in
+            if let show { TeleprompterWindow.shared.toggle(show: show) }
+        }
+        #endif
         if !preview {
             let audio = StemAudioPlayback.shared
-            armedInstrumentObservation = TrackRecording.shared.$armed.sink { audio.setArmedInstrumentTracks($0) }
+            armedInstrumentObservation = TrackRecording.shared.$armed.sink { [weak show] _ in
+                // Published state is sent before the REC button redraws. Queue
+                // graph changes after the click, and only wake live instruments.
+                Task { @MainActor [weak show] in
+                    guard let show else { return }
+                    let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
+                        track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
+                    }.map(\.id))
+                    audio.setArmedInstrumentTracks(TrackRecording.shared.armed.intersection(instruments))
+                }
+            }
             audio.instrumentFile = { id in
                 guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }), InstrumentLibrary.shared.downloaded.contains(id) else { return nil }
                 return (InstrumentLibrary.shared.file(id),instrument.percussion)
             }
+            show.selectedLoopArea = { [weak show] in
+                guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
+                return area.start...area.end
+            }
+            var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak show] snapshot, revision in
+                let repeatEnabled = snapshot.transport.loop.enabled
+                if repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
+                repeatWasEnabled = repeatEnabled
                 do {
                     try audio.update(snapshot, revision: revision); TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot)
+                    if repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
+                        TimelineAreaSelection.shared.update(song: song, from: start, to: end)
+                    }
                     #if os(macOS)
                     TeleprompterWindow.shared.update(snapshot, revision: show?.projectRevision ?? revision)
+                    TeleprompterWindow.second.update(snapshot, revision: show?.projectRevision ?? revision)
                     #endif
                 }
                 catch { show?.message = error.localizedDescription }
@@ -56,12 +89,16 @@ import UIKit
                 guard let show else { return }
                 TeleprompterWindow.shared.invalidatePreview()
                 TeleprompterWindow.shared.update(show.snapshot, revision: show.projectRevision)
+                TeleprompterWindow.second.invalidatePreview()
+                TeleprompterWindow.second.update(show.snapshot, revision: show.projectRevision)
             }
             #endif
             show.audioFX = { audio.previewFX($0, settings: $1) }
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
             show.audioItemGain = { audio.previewItemGain($0, gain: $1) }
+            show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
+            show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }
             show.audioVolume = { audio.previewVolume($0, gain: $1) }
             show.audioPan = { audio.previewPan($0, pan: $1) }
             show.audioMute = { [weak show] track, muted in
@@ -69,6 +106,12 @@ import UIKit
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
             }
             show.audioSolo = { audio.previewSolo($0, solo: $1) }
+            show.audioMasterMono = { audio.previewMasterMono($0) }
+            audio.onPeakLimit = { [weak show] id in
+                guard let show, show.current?.tracks.first(where: { $0.id == id })?.mute == false else { return }
+                show.send(.mute, target: id)
+            }
+            show.audioMasterSolo = { audio.previewMasterSolo($0) }
             show.audioClipMute = { audio.previewClipMute($0, muted: $1) }
             #if os(macOS)
             show.prepareForSave = { [weak show] in if let show { ExternalPluginState.captureAll(show: show) } }
@@ -82,6 +125,7 @@ import UIKit
                 audio.previewPatch(track, patch: patch, slot: slot)
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
             }
+            show.audioMIDIChannel = { audio.previewMIDIChannel($0, channel: $1) }
             show.audioMIDIInput = { audio.previewMIDIInput($0, slot: $1) }
             audio.prepareAfterDeviceChange = { [weak show] in show?.preparePlayback() }
             #if os(macOS)
@@ -92,6 +136,7 @@ import UIKit
             audio.afterAudioGraphReset = { FXWindows.shared.restoreAudioEditors() }
             #endif
             audio.onError = { [weak show] error in show?.message = error.localizedDescription }
+            do { try audio.startDeviceSession() } catch { audio.onError(error) }
         }
         show.onStop = { [weak auth] in auth?.transportDidStop() }
     }
@@ -104,17 +149,21 @@ import UIKit
         await Task.yield()
         // A document is loaded only after an explicit choice in the project launcher.
         startupProgress = 0.55
+        #if os(macOS)
         startupStage = "Validando acesso…"
         await auth.restore()
+        #endif
         startupProgress = 1
         startupStage = "Pronto"
         // Temporary four-second minimum requested for reviewing the splash artwork.
         let remaining = max(0, 4 - (ProcessInfo.processInfo.systemUptime - splashStarted))
         try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         starting = false
+        #if os(macOS)
         while !Task.isCancelled {
             do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             if auth.allowed { await auth.revalidate() }
         }
+        #endif
     }
 }

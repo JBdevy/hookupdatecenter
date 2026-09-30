@@ -28,6 +28,8 @@ final class TimecodeItemSpanTests: XCTestCase {
         var track = Track(id: UUID(), name: "Timecode", role: TrackRole(rawValue: "timecode"))
         let clip = AudioClip(id: Project.timecodeItemID(region.id), name: "MTC", startTime: 25, duration: 40, timecodeStartOffset: -5, timecodeEndOffset: 15)
         track.clips = [clip]; project.songs[0].tracks = [track]
+        project.songs[0].timeSettings = ProjectTimeSettings()
+        project.songs[0].timeSettings?.timebase = .relative
         project.songs[0].followTempo(240)
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].timecodeStartOffset, -2.5)
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].timecodeEndOffset, 7.5)

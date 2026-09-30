@@ -226,11 +226,16 @@ final class OfflineAudioExport {
         var voices: [Voice] = []
         var starts: [(AVAudioPlayerNode,AVAudioTime)] = []
         let preroll = 4096
-        func makeBus(fx: NativeFXSettings?, volume: Double, pan: Double, muted: Bool) throws -> Bus {
+        func makeBus(fx: NativeFXSettings?, volume: Double, pan: Double, muted: Bool, mono: Bool = false) throws -> Bus {
             let bus = Bus()
             for node in [bus.mix,bus.gain,bus.pan] as [AVAudioNode] { engine.attach(node) }
-            engine.connect(bus.gain,to: bus.pan,format: format)
-            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.externalPlugins?.isEmpty == false {
+            if mono {
+                let matrix = JarasEqualizer.makeNode(); engine.attach(matrix)
+                JarasEqualizer.setInputChannelMode(matrix, mode: 3)
+                engine.connect(bus.gain, to: matrix, format: format)
+                engine.connect(matrix, to: bus.pan, format: format)
+            } else { engine.connect(bus.gain,to: bus.pan,format: format) }
+            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false {
                 let effects = NativeEffectsChain(); bus.effects = effects
                 effects.attach(to: engine,input: bus.mix,format: format,destinations: [AVAudioConnectionPoint(node: bus.gain,bus: 0)])
                 effects.apply(fx)
@@ -267,7 +272,7 @@ final class OfflineAudioExport {
             link(node,lane,0)
         }
 
-        func addClip(_ clip: AudioClip,track: Track,bus: Bus,start: Double,end: Double) throws {
+        func addClip(_ clip: AudioClip,track: Track,bus: Bus,start: Double,end: Double,pitchStart: Double? = nil) throws {
             if cancellation.cancelled { throw CancellationError() }
             guard clip.muted != true, let audio = clip.audioFile ?? track.audioFile else { return }
             let begin = max(start,clip.startTime), finish = min(end,clip.startTime+clip.duration)
@@ -277,17 +282,18 @@ final class OfflineAudioExport {
             engine.attach(player); engine.attach(gain)
             let sourceFormat = file.processingFormat
             var source: AVAudioNode = player
-            let semitones = song.pitch(for: track.id, region: song.pitchRegion(at: clip.startTime))
+            let semitones = song.pitch(for: track.id, region: song.pitchRegion(at: pitchStart ?? clip.startTime))
             if abs(clip.audioRate - 1) > 0.0000001 || semitones != 0 {
                 let stretch = AVAudioUnitTimePitch(); stretch.rate = Float(clip.audioRate); stretch.pitch = Float(semitones * 100); stretch.overlap = 8
                 engine.attach(stretch); engine.connect(player,to: stretch,format: sourceFormat); source = stretch
             }
             gain.globalGain = Float(max(-96,min(24,20*log10(max(0.00000001,clip.gain ?? 1)))))
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
-            if let fx = clip.fx, clip.fxBypassed != true, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true {
+            let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
+            if (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true {
                 let effects = NativeEffectsChain()
                 effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
-                effects.apply(fx)
+                effects.apply(fx); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 // The graph retains the configured Audio Units.
             } else { engine.connect(source,to: gain,format: sourceFormat) }
             engine.connect(gain,to: bus.mix,fromBus: 0,toBus: bus.mix.nextAvailableInputBus,format: sourceFormat)
@@ -305,17 +311,21 @@ final class OfflineAudioExport {
                 else {
                     let bus = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track))
                     buses[clip.id] = bus; capture(bus.output,index: index)
-                    try addClip(clip,track: track,bus: bus,start: writer.job.start,end: writer.job.end)
+                    for fragment in song.tempoAudioSegments(clip) {
+                        try addClip(fragment,track: track,bus: bus,start: writer.job.start,end: writer.job.end,pitchStart: clip.startTime)
+                    }
                 }
             }
         } else {
-            let root = hasMaster ? try makeBus(fx: project.masterFX,volume: project.masterVolume ?? 1,pan: 0,muted: project.masterMute ?? false) : nil
+            let root = hasMaster ? try makeBus(fx: project.masterFX,volume: project.masterVolume ?? 1,pan: 0,muted: project.masterMute ?? false, mono: project.masterMono ?? false) : nil
             for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
                 buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track))
             }
             for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
                 for clip in track.clips where writers[0].job.includes(clip) {
-                    try addClip(clip,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end)
+                    for fragment in song.tempoAudioSegments(clip) {
+                        try addClip(fragment,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end,pitchStart: clip.startTime)
+                    }
                 }
             }
             for track in song.tracks where track.kind == .standard && needed.contains(track.id) {

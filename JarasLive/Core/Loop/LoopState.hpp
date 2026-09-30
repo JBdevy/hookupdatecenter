@@ -1,2 +1,3 @@
 #pragma once
-namespace jaras { struct LoopState { bool enabled = false; }; }
+#include <optional>
+namespace jaras { struct LoopState { bool enabled = false; std::optional<double> start, end; }; }

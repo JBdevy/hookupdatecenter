@@ -22,7 +22,7 @@ for rate in [44100.0, 48000.0] {
     precondition(tp >= peak - 0.01 && tp < peak + 0.3, "true peak \(tp)")
     precondition(abs(ItemNormalization.gain(measured: peak, target: -1) - pow(10,5.0206/20)) < 0.001)
 }
-precondition(ItemNormalization.gain(measured: -80, target: 12) <= pow(10,12.0/20))
+precondition(ItemNormalization.gain(measured: -80, target: 12) == pow(10,24.0/20))
 precondition(ItemNormalization.gain(measured: -.infinity, target: -1) == 1)
 print("NORMALIZATION_LUFS_RMS_PEAK_TRUE_PEAK_44100_48000_AND_GAIN_LIMIT_OK")
 let tpFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!

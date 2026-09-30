@@ -32,6 +32,16 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
         return cached
     }
     try executor.load(project)
+    try executor.setMIDIChannel(track.id, channel: 16)
+    let channel16 = try matchesFull().project.songs[0].tracks[0].midiChannel
+    precondition(channel16 == 16)
+    try executor.setMIDIChannel(track.id, channel: 0)
+    let allChannels = try matchesFull().project.songs[0].tracks[0].midiChannel
+    precondition(allChannels == nil)
+    try executor.execute(.clipNormalization, target: clip.id, value: 0.5)
+    let normalized = try matchesFull().project.songs[0].tracks[0].clips[0]
+    precondition(normalized.normalizationGain == 0.5 && normalized.gain == nil, "normalization crosses the native bridge independently from volume")
+    try executor.execute(.clipNormalization, target: clip.id, value: 1)
     let loaded = try matchesFull()
     let originalStorage = source.withUnsafeBufferPointer { $0.baseAddress }
     precondition(loaded.project.songs[0].tracks[0].clips[0].waveform.withUnsafeBufferPointer { $0.baseAddress } == originalStorage, "hydration shares existing immutable waveform storage instead of allocating or decoding it")
@@ -147,6 +157,77 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     try pasteExecutor.setOutputPatches(track: pasteTrack.id, patches: [])
     routed = try pasteExecutor.snapshot()
     precondition(routed.project.songs[0].tracks[0].outputPatches.isEmpty, "native metadata retains explicitly empty routes")
+    var timeSettings = ProjectTimeSettings()
+    timeSettings.timebase = .free; timeSettings.divisions = 0
+    timeSettings.affectsMIDIItems = true; timeSettings.affectsAutomationLength = false
+    let originalTiming = routed.project.songs[0]
+    try pasteExecutor.setProjectTiming(bpm: 240, beats: 3, unit: 8, settings: timeSettings)
+    var timed = try pasteExecutor.snapshot()
+    precondition(timed.project.songs[0].projectTime == timeSettings && timed.project.songs[0].meterBeats == 3 && timed.project.songs[0].meterUnit == 8, "native timing configuration persists all controls together")
+    precondition(timed.project.songs[0].tracks == originalTiming.tracks && timed.transport == routed.transport, "free grid never stretches items or moves playback heads")
+    let reopened = LocalCommandExecutor()
+    try reopened.load(timed.project)
+    let reopenedTiming = try reopened.snapshot()
+    precondition(reopenedTiming.project.songs[0].projectTime == timeSettings, "timebase and divisions survive the complete native project round trip")
+    timeSettings.timebase = .relative; timeSettings.divisions = 8
+    try pasteExecutor.setProjectTiming(bpm: 120, beats: 4, unit: 4, settings: timeSettings)
+    timed = try pasteExecutor.snapshot()
+    let timedItem = timed.project.songs[0].tracks[0].clips.first { $0.id == pastedClip.id }!
+    let beforeTimedItem = originalTiming.tracks[0].clips.first { $0.id == pastedClip.id }!
+    precondition(timedItem.startTime == beforeTimedItem.startTime * 2 && timedItem.audioRate == beforeTimedItem.audioRate / 2 && timedItem.waveform == pastedClip.waveform, "relative grid updates clip position and audio speed while retaining waveform storage")
+    precondition(timedItem.waveform.withUnsafeBufferPointer { $0.baseAddress } == waveAddress, "timing changes do not recreate cached waveform arrays")
+    var linkedProject = Project.empty(name: "Linked pair")
+    var left = Track(id: UUID(), name: "Keys", role: .keys)
+    left.volume = 0.6; left.pan = 0.2; left.inputPatch = OutputPatch(firstChannel: 5, channelCount: 2)
+    var right = Track(id: UUID(), name: "Other", role: .keys)
+    right.volume = 0.2; right.pan = -0.4; right.color = 0xff0033
+    linkedProject.songs[0].tracks = [left,right]
+    let beforeLink = linkedProject
+    linkedProject.songs[0].linkTracks([left.id,right.id], firstInput: 5, color: 0x333333)
+    let linked = LocalCommandExecutor(); try linked.load(linkedProject)
+    try linked.execute(.volume, target: right.id, value: 0.75)
+    try linked.execute(.pan, target: right.id, value: -0.3)
+    var linkedState = try linked.snapshot().project
+    precondition(linkedState.songs[0].tracks[0].volume == 0.75 && linkedState.songs[0].tracks[1].volume == 0.75)
+    precondition(linkedState.songs[0].tracks[0].pan == 0.3 && linkedState.songs[0].tracks[1].pan == -0.3)
+    try linked.execute(.pan, target: left.id, value: 0)
+    try linked.setRecording(right.id, input: OutputPatch(firstChannel: 8,channelCount: 2), format: "wav")
+    linkedState = try linked.snapshot().project
+    precondition(linkedState.songs[0].tracks.allSatisfy { $0.pan == 0 && $0.inputPatch?.channelCount == 1 })
+    precondition(linkedState.songs[0].tracks[0].inputPatch?.firstChannel == 7 && linkedState.songs[0].tracks[1].inputPatch?.firstChannel == 8)
+    let restoredLink = LocalCommandExecutor(); try restoredLink.load(linkedState)
+    var reopenedLink = try restoredLink.snapshot().project
+    reopenedLink.songs[0].unlinkTracks(left.id)
+    // Recording format was explicitly changed after linking and is independent.
+    reopenedLink.songs[0].tracks[1].recordingFormat = nil
+    precondition(reopenedLink.songs[0].tracks == beforeLink.songs[0].tracks, "unlink restores original mixer and routing after native save/reopen")
+    try restoredLink.applyProjectEdit(reopenedLink)
+    let unlinkedState = try restoredLink.snapshot()
+    precondition(unlinkedState.project.songs[0].tracks == beforeLink.songs[0].tracks)
+    print("LINKED_TRACKS_NATIVE_VOLUME_MIRRORED_PAN_MONO_INPUT_AND_REOPEN_RESTORE_OK")
+    let channelsCore = LocalCommandExecutor()
+    var channelsProject = Project.empty(name: "Channel modes")
+    var channelTrack = Track(id: UUID(), name: "Stereo source", role: .keys)
+    let channelClip = AudioClip(id: UUID(), name: "Original", startTime: 0, duration: 1, audioFile: AudioFile(path: "Steams/original.wav"), gain: 0.4, muted: true)
+    channelTrack.clips = [channelClip]; channelsProject.songs[0].tracks = [channelTrack]
+    try channelsCore.load(channelsProject)
+    let channelBaseline = try channelsCore.snapshot().project.songs[0].tracks[0].clips[0]
+    try channelsCore.execute(.masterMono, target: nil, value: 0)
+    try channelsCore.setRecordingChannels(channelTrack.id, channel: 1)
+    try channelsCore.execute(.clipChannelMode, target: channelClip.id, value: 3)
+    let channelState = try channelsCore.snapshot().project
+    precondition(channelState.masterMono == true)
+    precondition(channelState.songs[0].tracks[0].recordingChannels == 1)
+    precondition(channelState.songs[0].tracks[0].clips[0].channelMode == 3)
+    let reopenedChannels = LocalCommandExecutor(); try reopenedChannels.load(channelState)
+    let reopenedMono = try reopenedChannels.snapshot().project.masterMono
+    precondition(reopenedMono == true)
+    try reopenedChannels.execute(.masterMono, target: nil, value: 0)
+    try reopenedChannels.execute(.clipChannelMode, target: channelClip.id, value: 0)
+    let stereoState = try reopenedChannels.snapshot().project
+    precondition(stereoState.masterMono != true)
+    precondition(stereoState.songs[0].tracks[0].clips[0] == channelBaseline)
+    print("CHANNEL_MODE_NATIVE_SAVE_REOPEN_AND_ORIGINAL_STEREO_RESTORE_OK")
     print("LOCAL_METADATA_SNAPSHOT_CACHE_COW_IMPORT_RECORD_SPLIT_UNDO_FAILURE_AND_TRANSPORT_OK fullBytes=\(fullSize) metadataBytes=\(metadataSize) retainedEditBytes=\(retainedEditBytes)")
 }
 try MainActor.assumeIsolated { try runSnapshotCacheTests() }

@@ -17,7 +17,7 @@ import SwiftUI
     var body: some Scene {
         #if os(macOS)
         Window("Jaras Live", id: "main") { appContent }
-            .defaultSize(width: 1360, height: 800)
+            .defaultSize(width: ProjectWindowAnchor.editorFrameSize.width, height: ProjectWindowAnchor.editorFrameSize.height)
             .windowStyle(.hiddenTitleBar)
         #else
         WindowGroup("Jaras Live") { appContent }
@@ -30,11 +30,18 @@ struct RootView: View {
     @ObservedObject private var auth: AuthService
     @ObservedObject private var documents: ProjectDocuments
     init(container: AppContainer) { self.container = container; auth = container.auth; documents = container.documents }
+    private var canEnter: Bool {
+        #if os(iOS)
+        true
+        #else
+        auth.allowed
+        #endif
+    }
     var body: some View {
         Group {
             if container.starting {
                 StartupView(progress: container.startupProgress, stage: container.startupStage)
-            } else if auth.allowed {
+            } else if canEnter {
                 if documents.ready { MainView(show: container.show, auth: auth, backend: container.backend, documents: documents) }
                 else { ProjectBrowserView(documents: documents) }
             }
@@ -43,7 +50,7 @@ struct RootView: View {
             } else { LoginView(auth: auth, backend: container.backend) }
         }
         #if os(macOS)
-        .frame(minWidth: documents.ready ? 1050 : 600, minHeight: documents.ready ? 650 : 460)
+        .frame(minWidth: documents.ready ? 1408 : 600, minHeight: documents.ready ? 650 : 460)
         .background(ProjectWindowSizing(editor: documents.ready, documents: documents))
         .overlay {
             GeometryReader { geometry in
@@ -60,6 +67,9 @@ struct RootView: View {
         .background(FloatingStartup(active: container.starting, progress: container.startupProgress, stage: container.startupStage, language: language))
         #endif
         .onOpenURL { url in if ["jl", "bkjl"].contains(url.pathExtension.lowercased()) { documents.open(url) } }
+        .sheet(item: $documents.missingAudioPrompt) { _ in
+            MissingAudioRecoveryView(documents: documents)
+        }
         .preferredColorScheme(.dark)
         .scrollIndicators(.hidden)
         .environment(\.locale, Locale(identifier: language)).task { await container.start() }
@@ -268,7 +278,7 @@ private struct ClosingLogoView: View {
         }
         let alert = NSAlert()
         alert.messageText = localized("Do you want to save this project?")
-        alert.addButton(withTitle: localized("Salvar"))
+        alert.addButton(withTitle: localized("Salvar")).keyEquivalent = "\r"
         alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\u{1b}"
         let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self else { completion(false); return }

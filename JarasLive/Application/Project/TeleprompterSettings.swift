@@ -133,12 +133,14 @@ public final class TeleprompterSettingsStore {
     }
     public static let preferenceKey = "jaras.teleprompter.settings"
     private let defaults: UserDefaults
+    private let key: String
     private var profiles: Profiles
     public var selected: TeleprompterPreset { profiles.selected }
     public var current: TeleprompterSettings { selected == .day ? profiles.day : profiles.night }
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard, key: String = TeleprompterSettingsStore.preferenceKey) {
         self.defaults = defaults
-        profiles = defaults.data(forKey: Self.preferenceKey).flatMap { try? JSONDecoder().decode(Profiles.self, from: $0) } ?? Profiles()
+        self.key = key
+        profiles = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(Profiles.self, from: $0) } ?? Profiles()
         profiles.night = profiles.night.sanitized(); profiles.day = profiles.day.sanitized()
     }
     @discardableResult public func select(_ preset: TeleprompterPreset) -> Bool {
@@ -152,6 +154,6 @@ public final class TeleprompterSettingsStore {
         persist(); return true
     }
     private func persist() {
-        if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: Self.preferenceKey) }
+        if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: key) }
     }
 }

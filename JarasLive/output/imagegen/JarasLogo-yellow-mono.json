@@ -1,0 +1,5 @@
+{
+  "tool": "built-in imagegen",
+  "asset": "Apple/Assets.xcassets/JarasLogo.imageset/JarasLogo.png",
+  "prompt": "Edit ONLY the typography of the yellow subtitle 'Multitrack Workstation' under LIVE. Replace its current heavy proportional sans-serif font with a clean technical monospaced typeface closely resembling JetBrains Mono SemiBold: uniform character widths, recognizable programmer typography, crisp straight stems, less bulky than the current font. Keep title case exactly 'Multitrack Workstation', bright yellow #FFDF00, centered on one line, large enough to read at a 330px logo size, fit within 75% of the logo width. Preserve the metallic JARAS, neon green LIVE, all circular frame and DAW artwork exactly. Preserve the solid BLACK background, no checkerboard, no additional text."
+}

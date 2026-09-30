@@ -23,17 +23,27 @@ import XCTest
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: TransportState(playing: playing, songId: project.songs.first?.id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))) }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         if command == .selectRegion || command == .queueRegion, let target { regionSelections.append(target); regionCommands.append(command) }
-        if command == .clipGain, let target {
+        if command == .clipGain || command == .clipNormalization, let target {
             if failsGain { throw ProjectError.invalid("Gain command rejected") }
             for song in project.songs.indices {
                 for track in project.songs[song].tracks.indices {
                     if let index = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == target }) {
-                        project.songs[song].tracks[track].clips[index].gain = value; gainCommands += 1; return
+                        if command == .clipNormalization { project.songs[song].tracks[track].clips[index].normalizationGain = value }
+                        else { project.songs[song].tracks[track].clips[index].gain = value }; gainCommands += 1; return
                     }
                 }
             }
             throw ProjectError.invalid("Missing item")
         }
+    }
+    func replaceAudioClip(_ clip: AudioClip, track: UUID) throws {
+        guard let channel = project.songs[0].tracks.firstIndex(where: { $0.id == track }),
+              let item = project.songs[0].tracks[channel].clips.firstIndex(where: { $0.id == clip.id }) else { throw ProjectError.invalid("Missing item") }
+        project.songs[0].tracks[channel].clips[item] = clip
+    }
+    func setTempoMarkers(_ markers: [TimelineMarker]) throws {
+        if project.songs[0].markers == nil { project.songs[0].markers = [] }
+        project.songs[0].markers!.append(contentsOf: markers)
     }
     func applyProjectEdit(_ project: Project) throws { self.project = project; projectEditCount += 1 }
     func setFX(_ id: UUID?, settings: NativeFXSettings) throws {
@@ -261,6 +271,20 @@ final class ProjectSaveTests: XCTestCase {
         show.setItemGain(clip.id, gain: 0.2)
         XCTAssertEqual(show.snapshot.project, unchanged); XCTAssertEqual(previewCount, 102)
     }
+    @MainActor func testItemGainSupportsPlus24WithoutChangingTrackVolumeOrReloading() throws {
+        var project = Project.empty(name: "Gain")
+        let clip = AudioClip(id: UUID(), name: "Item", startTime: 0, duration: 1)
+        project.songs[0].tracks = [Track(id: UUID(), name: "Track", role: .other, clips: [clip])]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let snapshots = executor.snapshotCount
+        show.setItemGain(clip.id, gain: pow(10, 24.0/20))
+        XCTAssertEqual(show.current?.tracks[0].clips[0].gain, pow(10, 24.0/20))
+        XCTAssertEqual(show.current?.tracks[0].volume, 1)
+        XCTAssertEqual(executor.snapshotCount, snapshots); XCTAssertEqual(executor.projectEditCount, 0)
+        show.setItemGain(clip.id, gain: 30)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].gain, pow(10, 24.0/20))
+    }
     @MainActor func testRecordingInsertionDoesNotReloadPlayingProject() throws {
         var project = Project.empty(name: "Recording")
         let track = Track(id: UUID(), name: "Input", role: .other)
@@ -297,7 +321,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 4, pixelsPerSecond: 40), 1)
         XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 6, pixelsPerSecond: 40), 2.0 / 3, accuracy: 0.00001)
         XCTAssertEqual(TimelineTempo.snap(-1, bar: 2, beats: 4, pixelsPerSecond: 40), 0)
-        XCTAssertEqual(TimelineTempo.snap(11, bar: 2, beats: 4, pixelsPerSecond: 0.3), 16, "distant zoom snaps to drawn bar divisions")
+        XCTAssertEqual(TimelineTempo.snap(11, bar: 2, beats: 4, pixelsPerSecond: 0.3), 0, "distant zoom snaps to the wider visible bar divisions")
         show.setMeterBeats(0); show.setMeterUnit(3)
         XCTAssertEqual(show.current?.meterBeats, 6); XCTAssertEqual(show.current?.meterUnit, 8)
         XCTAssertTrue(show.hasUnsavedChanges)
@@ -309,6 +333,8 @@ final class ProjectSaveTests: XCTestCase {
         show.setTempo(59); XCTAssertEqual(show.current?.bpm, 60)
         show.adjustTempo(-1); XCTAssertEqual(show.current?.bpm, 60)
         var project = Project.empty(name: "Stretch")
+        project.songs[0].timeSettings = ProjectTimeSettings()
+        project.songs[0].timeSettings?.timebase = .relative
         var track = Track(id: UUID(), name: "Audio", role: .other)
         track.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 30, duration: 10, sourceOffset: 2)]
         project.songs[0].tracks = [track]
@@ -322,6 +348,15 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].duration, 10, accuracy: 0.000001)
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].audioRate, 1)
     }
+    func testTapTempoRoundsMeasuredBPMToWholeNumbers() {
+        for (measured, expected) in [(123.2, 123.0), (123.8, 124.0)] {
+            var tap = TapTempo()
+            XCTAssertNil(tap.tap(at: 0))
+            XCTAssertEqual(tap.tap(at: 60 / measured), expected)
+            XCTAssertEqual(tap.tap(at: 120 / measured), expected)
+        }
+    }
+
     func testTapTempoAveragesAndResetsAfterIdle() {
         var tap = TapTempo()
         XCTAssertNil(tap.tap(at: 0))
@@ -348,6 +383,10 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(show.searchRegions(" ").map(\.id), regions.map(\.id))
         XCTAssertEqual(show.searchRegions(" CANCAO ").map(\.id), [regions[0].id])
         XCTAssertEqual(show.searchRegions("outside").map(\.id), [regions[1].id])
+        XCTAssertEqual(show.searchRegions("02", byRegionID: true).map(\.id), [regions[1].id])
+        XCTAssertEqual(show.searchRegions("2", byRegionID: true).map(\.id), [regions[1].id])
+        XCTAssertTrue(show.searchRegions("02").isEmpty)
+        XCTAssertTrue(show.searchRegions("0", byRegionID: true).isEmpty)
         XCTAssertTrue(show.selectRegionSearchResult(regions[0].id))
         XCTAssertEqual(show.selectedRegionPlaylist?.id, playlist.id)
         XCTAssertEqual(executor.regionCommands.last, .selectRegion)
@@ -509,6 +548,57 @@ final class ProjectSaveTests: XCTestCase {
         let decoded = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
         XCTAssertFalse(try XCTUnwrap(decoded.regionSetlist?.blocks?.first { $0.id == first }).showsSymbol)
         XCTAssertTrue(try XCTUnwrap(decoded.regionSetlist?.blocks?.first { $0.id == second }).showsSymbol)
+    }
+
+    @MainActor func testBulkBlockSymbolsAreOneUndoableIncrementalEdit() throws {
+        var project = Project.empty(name: "Symbols")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 5)
+        project.songs[0].parts = [region]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: [region.id]))
+        let first = try XCTUnwrap(show.addSetlistBlock())
+        let second = try XCTUnwrap(show.addSetlistBlock())
+        let untouched = try XCTUnwrap(show.addSetlistBlock())
+        let reads = executor.snapshotCount, revision = show.projectRevision
+        var audio = 0
+        show.audioUpdate = { _, _ in audio += 1 }
+        show.setBlockSymbols([first, second, UUID()], enabled: false)
+        XCTAssertFalse(try XCTUnwrap(show.listedBlocks.first { $0.id == first }).showsSymbol)
+        XCTAssertFalse(try XCTUnwrap(show.listedBlocks.first { $0.id == second }).showsSymbol)
+        XCTAssertTrue(try XCTUnwrap(show.listedBlocks.first { $0.id == untouched }).showsSymbol)
+        XCTAssertEqual(reads, executor.snapshotCount); XCTAssertEqual(revision, show.projectRevision); XCTAssertEqual(audio, 0)
+        show.undo()
+        XCTAssertTrue(try XCTUnwrap(show.listedBlocks.first { $0.id == first }).showsSymbol)
+        XCTAssertTrue(try XCTUnwrap(show.listedBlocks.first { $0.id == second }).showsSymbol)
+    }
+
+    @MainActor func testFreezeUndoRedoAndStaleRenderRejection() throws {
+        var project = Project.empty(name: "Freeze")
+        var track = Track(id: UUID(), name: "Keys", role: .keys)
+        let old = AudioClip(id: UUID(), name: "Keys", startTime: 4, duration: 5, audioFile: AudioFile(path: "Steams/Keys.wav"), gain: 0.5)
+        track.clips = [old]; project.songs[0].tracks = [track]; project.songs[0].duration = 10
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        var frozen = old; frozen.audioFile = AudioFile(path: "Steams/Keys-01.wav"); frozen.gain = 1
+        let reads = executor.snapshotCount
+        XCTAssertTrue(show.replaceRenderedItem(frozen, original: old, track: track.id, project: project.id))
+        XCTAssertEqual(reads, executor.snapshotCount, "publishing a render does not reload the project")
+        XCTAssertEqual(show.current?.tracks[0].clips[0], frozen)
+        show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], old)
+        show.redo(); XCTAssertEqual(show.current?.tracks[0].clips[0], frozen)
+        XCTAssertFalse(show.replaceRenderedItem(frozen, original: old, track: track.id, project: project.id))
+        XCTAssertTrue(show.knownMediaPaths.contains("Steams/Keys.wav")); XCTAssertTrue(show.knownMediaPaths.contains("Steams/Keys-01.wav"))
+    }
+    @MainActor func testDetectedTempoBatchHasOneUndo() throws {
+        let project = Project.empty(name: "Tempo")
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0.123, color: 0x999999, tempoBPM: 120, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global),
+                       TimelineMarker(id: UUID(), name: "TEMPO", position: 8.123, color: 0x999999, tempoBPM: 90, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global)]
+        XCTAssertTrue(show.applyDetectedTempo(markers, project: project.id, song: project.songs[0].id))
+        XCTAssertEqual(show.current?.markers, markers)
+        show.undo(); XCTAssertTrue(show.current?.markers?.isEmpty ?? true)
+        show.redo(); XCTAssertEqual(show.current?.markers, markers)
     }
 
     @MainActor func testBlockIsInsertedImmediatelyAboveSelectedSong() throws {

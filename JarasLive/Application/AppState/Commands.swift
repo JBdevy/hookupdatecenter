@@ -1,5 +1,5 @@
 import Foundation
-public enum ShowCommand: String, Sendable { case ignoreNext, tempo, beatsPerBar, beatUnit, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
+public enum ShowCommand: String, Sendable { case loopStart, loopEnd, escape, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
 @MainActor public protocol CommandExecutor {
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws
     func configureRegionSetlist(_ state: RegionSetlist) throws
@@ -16,18 +16,24 @@ public enum ShowCommand: String, Sendable { case ignoreNext, tempo, beatsPerBar,
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws
     func setClipText(_ clip: UUID, text: String) throws
     func setMIDIInput(_ track: UUID, slot: Int) throws
+    func setMIDIChannel(_ track: UUID, channel: Int) throws
+    func setRecordingChannels(_ track: UUID, channel: Int) throws
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws
+    func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
+    func editMasterColor(_ color: UInt32) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws
     func regionFromClip(_ id: UUID) throws
     func regionsFromClips(_ ids: [UUID]) throws
+    func setTempoMarkers(_ markers: [TimelineMarker]) throws
     func setMarker(_ marker: TimelineMarker) throws
+    func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws
     func deleteManualMarker(_ id: UUID) throws
     func applyProjectEdit(_ project: Project) throws
     func load(_ project: Project) throws
@@ -48,20 +54,26 @@ public enum ShowCommand: String, Sendable { case ignoreNext, tempo, beatsPerBar,
 }
 
 public extension CommandExecutor {
+    func replaceAudioClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
+    func setTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
     func applyProjectEdit(_ project: Project) throws { throw BackendFailure.notConfigured }
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws { throw BackendFailure.notConfigured }
     func groupTracks(_ ids: [UUID]) throws { throw BackendFailure.notConfigured }
     func setMarker(_ marker: TimelineMarker) throws { throw BackendFailure.notConfigured }
+    func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws { throw BackendFailure.notConfigured }
     func deleteManualMarker(_ id: UUID) throws { throw BackendFailure.notConfigured }
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws { throw BackendFailure.notConfigured }
     func setClipText(_ clip: UUID, text: String) throws { throw BackendFailure.notConfigured }
     func setMIDIInput(_ track: UUID, slot: Int) throws { throw BackendFailure.notConfigured }
+    func setMIDIChannel(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }
+    func setRecordingChannels(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws { throw BackendFailure.notConfigured }
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws { throw BackendFailure.notConfigured }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
+    func editMasterColor(_ color: UInt32) throws { throw BackendFailure.notConfigured }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { throw BackendFailure.notConfigured }
     func setTrackRouting(_ routes: [UUID: TrackRouting]) throws { throw BackendFailure.notConfigured }
     func setOutputPatches(track: UUID?, patches: [OutputPatch]) throws { throw BackendFailure.notConfigured }

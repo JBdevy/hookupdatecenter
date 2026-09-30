@@ -5,6 +5,9 @@
 # atualizacao com o REAPER fechado.
 set -euo pipefail
 
+SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIRECTORY/reaper-directories.sh"
+
 log() {
   echo "[Hook Center postinstall] $*"
 }
@@ -28,7 +31,7 @@ install_companion() {
   local temporary="$parent/.VS Hook Teleprompt Settings.install.$$"
   local backup="$parent/.VS Hook Teleprompt Settings.backup.$$"
 
-  mkdir -p "$parent"
+  hook_ensure_directory "$parent"
   rm -rf "$temporary" "$backup"
   ditto "$COMPANION_SOURCE" "$temporary"
   is_complete_companion "$temporary" || fail "A copia temporaria do Teleprompt Settings esta incompleta."
@@ -54,7 +57,7 @@ install_themes() {
   local owner="${2:-}"
   local source filename temporary installed=0
 
-  mkdir -p "$theme_directory"
+  hook_ensure_directory "$theme_directory"
   for source in "$THEMES_SOURCE"/*.ReaperTheme "$THEMES_SOURCE"/*.ReaperThemeZip; do
     [ -f "$source" ] || continue
     filename="$(basename "$source")"
@@ -92,6 +95,7 @@ THEMES_SOURCE="$RESOURCES/vshook-themes"
 is_complete_companion "$COMPANION_SOURCE" || fail "Teleprompt Settings empacotado esta incompleto."
 
 GLOBAL_REAPER="${TARGET_VOLUME}/Library/Application Support/REAPER"
+hook_prepare_reaper_directories "$GLOBAL_REAPER"
 install_companion "$GLOBAL_REAPER"
 install_themes "$GLOBAL_REAPER/ColorThemes"
 
@@ -105,7 +109,7 @@ for USER_HOME in "${TARGET_VOLUME}"/Users/*; do
   for USER_DIRECTORY in "$USER_HOME/Library" "$USER_HOME/Library/Application Support" \
     "$USER_REAPER" "$USER_REAPER/UserPlugins" "$USER_REAPER/ColorThemes" "$USER_REAPER/Scripts"; do
     if [ ! -d "$USER_DIRECTORY" ]; then
-      mkdir -p "$USER_DIRECTORY"
+      hook_ensure_directory "$USER_DIRECTORY"
       chown "$USER_NAME":staff "$USER_DIRECTORY"
       chmod u+rwx "$USER_DIRECTORY"
     fi

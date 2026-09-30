@@ -44,6 +44,8 @@ import Foundation
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws { try core.setClipFXBypass(clip.uuidString, bypassed: bypassed) }
     func setClipText(_ clip: UUID, text: String) throws { try AudioClip.validateText(text); try core.setClipText(clip.uuidString, text: text) }
     func setMIDIInput(_ track: UUID, slot: Int) throws { try core.setMIDIInput(track.uuidString, slot: Int32(slot)) }
+    func setMIDIChannel(_ track: UUID, channel: Int) throws { try core.setMIDIChannel(track.uuidString, channel: Int32(channel)) }
+    func setRecordingChannels(_ track: UUID, channel: Int) throws { try core.setRecordingChannels(track.uuidString, channel: Int32(channel)) }
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws { try core.setRecording(track.uuidString, first: Int32(input.firstChannel), count: Int32(input.channelCount), format: format) }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws {
         var tracks: [Track] = []
@@ -59,16 +61,26 @@ import Foundation
         try core.insertAudioTracks(JSONEncoder().encode(tracks), song: song.uuidString)
         for track in tracks { for clip in track.clips { waveforms[clip.id] = ClipWaveform(clip) } }
     }
+    func replaceAudioClip(_ clip: AudioClip, track: UUID) throws { try core.replaceAudioClip(JSONEncoder().encode(clip), track: track.uuidString) }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws {
         try core.addRecordedClip(JSONEncoder().encode(clip), track: track.uuidString)
         waveforms[clip.id] = ClipWaveform(clip)
     }
+    func editMasterColor(_ color: UInt32) throws { try core.editMasterColor(color) }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { try core.editTrack(id.uuidString, name: name, color: color) }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { try core.setRegionPitch(id.uuidString, semitones: Int32(semitones), tracks: tracks.map(\.uuidString), groups: groups.map(\.uuidString)) }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { try core.editRegion(id.uuidString, name: name, color: color, uppercaseName: uppercaseName) }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { try core.moveClip(id.uuidString, start: start, track: track?.uuidString ?? "") }
     func deleteManualMarker(_ id: UUID) throws { try core.deleteManualMarker(id.uuidString) }
-    func setMarker(_ marker: TimelineMarker) throws { try core.setMarker(marker.id.uuidString, name: marker.name, position: marker.position, color: marker.color) }
+    func setTempoMarkers(_ markers: [TimelineMarker]) throws { try core.setTempoMarkers(JSONEncoder().encode(markers)) }
+    func setMarker(_ marker: TimelineMarker) throws {
+        if let bpm = marker.tempoBPM { try core.setTempoMarker(marker.id.uuidString, position: marker.position, bpm: bpm, beats: Int32(marker.tempoBeats ?? 4), unit: Int32(marker.tempoUnit ?? 4), timebase: (marker.tempoTimebase ?? .global).rawValue) }
+        else { try core.setMarker(marker.id.uuidString, name: marker.name, position: marker.position, color: marker.color) }
+    }
+    func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws {
+        try settings.validate()
+        try core.setProjectTiming(bpm, beats: Int32(beats), unit: Int32(unit), settings: JSONEncoder().encode(settings))
+    }
     func regionsFromClips(_ ids: [UUID]) throws { try core.regions(fromClips: ids.map(\.uuidString), identifiers: ids.map { _ in UUID().uuidString }) }
     func regionFromClip(_ id: UUID) throws { try core.region(fromClip: id.uuidString, identifier: UUID().uuidString) }
     func applyProjectEdit(_ project: Project) throws {
@@ -99,6 +111,8 @@ import Foundation
             for track in snapshot.project.songs[song].tracks.indices {
                 for item in snapshot.project.songs[song].tracks[track].clips.indices {
                     let id = snapshot.project.songs[song].tracks[track].clips[item].id
+                    if snapshot.project.songs[song].tracks[track].kind.isTeleprompter,
+                       snapshot.project.songs[song].tracks[track].clips[item].isProjectionMedia { continue }
                     snapshot.project.songs[song].tracks[track].clips[item].waveform = waveforms[id]?.values ?? []
                     snapshot.project.songs[song].tracks[track].clips[item].waveformChannels = waveforms[id]?.channels
                 }

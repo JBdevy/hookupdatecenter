@@ -2,6 +2,28 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineSnapTests: XCTestCase {
+    func testFreeCursorPositionIgnoresGridAndEveryMagneticAnchor() {
+        for scale in [0.16, 1, 100, 10_000] {
+            for position in [30.18, 39.29, 42.13, 123.456789] {
+                XCTAssertEqual(TimelineTempo.snap(position, bar: 2, beats: 4, pixelsPerSecond: scale,
+                    anchors: [30.15], additionalAnchors: [39.27], cursor: 42.125, enabled: false), position)
+            }
+        }
+        XCTAssertEqual(TimelineTempo.snap(-2, bar: 2, beats: 4, pixelsPerSecond: 100, anchors: [30.15], enabled: false), 0)
+        XCTAssertEqual(TimelineTempo.snap(.nan, bar: 2, beats: 4, pixelsPerSecond: 100, anchors: [30.15], enabled: false), 0)
+        XCTAssertEqual(TimelineTempo.snap(30.18, bar: 2, beats: 4, pixelsPerSecond: 100, anchors: [30.15]), 30.15,
+                       "releasing Shift restores normal snapping")
+    }
+    func testGridStaysReadableAndSnapMatchesVisibleLinesAcrossZoom() {
+        for scale in [0.05, 0.3, 1, 3, 10, 20, 40, 100, 500] {
+            let step = TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: scale)
+            XCTAssertGreaterThanOrEqual(step * scale, 16)
+            let major = 2 * Double(TimelineTempo.barStride(bar: 2, pixelsPerSecond: scale))
+            XCTAssertGreaterThanOrEqual(major * scale, 16)
+            let snapped = TimelineTempo.snap(123.456, bar: 2, beats: 4, pixelsPerSecond: scale)
+            XCTAssertEqual(snapped / step, (snapped / step).rounded(), accuracy: 0.000001)
+        }
+    }
     private func snap(_ time: Double, starts: [Double] = [30.15], ends: [Double]? = nil,
                       cursor: Double? = nil, scale: Double = 100) -> Double {
         TimelineTempo.snap(time, bar: 2, beats: 4, pixelsPerSecond: scale, anchors: starts,

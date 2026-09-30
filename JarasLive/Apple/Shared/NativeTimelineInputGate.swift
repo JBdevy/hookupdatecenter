@@ -5,6 +5,10 @@ import SwiftUI
 protocol NativeTimelineInputObserver: AnyObject {
     var window: NSWindow? { get }
     func timelineInputGateChanged(blocked: Bool)
+    func timelinePendingClickCancelled()
+}
+extension NativeTimelineInputObserver {
+    func timelinePendingClickCancelled() {}
 }
 
 /// AppKit input changes do not invalidate the nested SwiftUI timeline hosts.
@@ -24,6 +28,15 @@ final class NativeTimelineInputGate {
         observers.removeAll { $0.value == nil }
         if !observers.contains(where: { $0.value === observer }) { observers.append(Observer(observer)) }
         observer.timelineInputGateChanged(blocked: isBlocked(observer.window))
+    }
+    /// Wheel panning owns the pending click, without blocking input or
+    /// interrupting an item drag that has already begun.
+    func cancelPendingClicks(for window: NSWindow) {
+        observers.removeAll { $0.value == nil }
+        for observer in observers {
+            guard let value = observer.value, value.window === window else { continue }
+            value.timelinePendingClickCancelled()
+        }
     }
     func setBlocked(_ blocked: Bool, for window: NSWindow) {
         guard blocked != blockedWindows.contains(window) else { return }

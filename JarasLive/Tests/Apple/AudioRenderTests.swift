@@ -67,6 +67,149 @@ let maximumStep = zip(onsetSamples, onsetSamples.dropFirst()).map { abs($0 - $1)
 precondition(maximumStep < 0.01, "start must not jump from silence to full signal: \(maximumStep)")
 let mainPeak = try peak()
 precondition(mainPeak > 0.09 && mainPeak < 0.11, "real file audio must reach output: \(mainPeak)")
+renderer.previewPan(id, pan: -1)
+let leftOnly = try peak()
+precondition(abs(output.floatChannelData![1][256]) < 0.0001)
+renderer.previewMasterMono(true)
+let monoMaster = try peak()
+precondition(abs(monoMaster - leftOnly * 0.5) < 0.001, "Master mono sums the post-pan channels with headroom")
+precondition(abs(output.floatChannelData![0][256] - output.floatChannelData![1][256]) < 0.0001)
+renderer.previewMasterMono(false)
+let restoredMaster = try peak()
+precondition(abs(restoredMaster - leftOnly) < 0.001 && abs(output.floatChannelData![1][256]) < 0.0001)
+renderer.previewPan(id, pan: 0)
+print("MASTER_POST_FX_MONO_SUM_AND_LIVE_STEREO_RESTORE_PCM_OK")
+// Transient multiloop mix must alter PCM without changing the project faders.
+var loopRule = MultiLoopTrack(id: id, gain: 0.2); loopRule.autoFader = true
+snapshot.transport.multiLoop = MultiLoopPlayback(id: UUID(), start: 1, end: 9, amount: 1, gates: true, released: false, tracks: [loopRule])
+try renderer.update(snapshot, revision: 1)
+let loopQuiet = try peak()
+precondition(abs(loopQuiet - mainPeak * 0.2) < 0.001, "multiloop target gain reaches actual PCM")
+snapshot.transport.multiLoop?.amount = 0.5; snapshot.transport.multiLoop?.released = true
+try renderer.update(snapshot, revision: 1)
+let loopRecovering = try peak()
+precondition(abs(loopRecovering - mainPeak * 0.6) < 0.001, "release fade restores proportionally without reload")
+snapshot.transport.multiLoop?.amount = 1; snapshot.transport.multiLoop?.tracks[0].mute = true
+try renderer.update(snapshot, revision: 1)
+let loopMuted = try peak()
+precondition(loopMuted < 0.0001, "multiloop mute reaches actual PCM")
+snapshot.transport.multiLoop = nil
+try renderer.update(snapshot, revision: 1)
+let loopRestored = try peak()
+precondition(abs(loopRestored - mainPeak) < 0.001, "leaving multiloop restores gain and mute")
+precondition(snapshot.project.songs[0].tracks[0].volume == 1 && !snapshot.project.songs[0].tracks[0].mute, "multiloop never writes project mixer state")
+print("MULTILOOP_TRANSIENT_GAIN_RELEASE_MUTE_RESTORE_PCM_OK")
+let heldPeak = TrackMeterLevel()
+heldPeak.update(peak: 0.99, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == nil)
+heldPeak.update(peak: 1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 0)
+heldPeak.update(peak: pow(10, 3.0 / 20), elapsed: 0.03)
+heldPeak.update(peak: 1.1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 3)
+heldPeak.reset(); precondition(heldPeak.peakHold.decibels == 3, "Stop retains the maximum clip peak")
+var automaticMutes: [UUID] = []
+renderer.onPeakLimit = { automaticMutes.append($0) }
+renderer.observeTrackPeak(id, left: pow(10, 9.99 / 20), right: 0, elapsed: 0.03)
+precondition(automaticMutes.isEmpty)
+renderer.observeTrackPeak(id, left: 0, right: TrackMeterLevel.PeakHold.muteThreshold, elapsed: 0.03)
+precondition(automaticMutes == [id])
+let protectionSilence = try peak(); precondition(protectionSilence < 0.0001)
+renderer.observeTrackPeak(id, left: 4, right: 4, elapsed: 0.03)
+precondition(automaticMutes == [id], "An already-muted track cannot toggle back on")
+renderer.onPeakLimit = nil; renderer.previewMute(id, muted: false)
+print("TRACK_PEAK_HOLD_MAXIMUM_AND_10_DB_AUTOMUTE_BOTH_CHANNELS_OK")
+let missingEngine = AVAudioEngine()
+try missingEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+let missingRenderer = StemAudioPlayback(engine: missingEngine, realtime: false)
+missingRenderer.open(directory: directory)
+missingRenderer.setMissingAudioPaths(["lost.wav"])
+var partiallyMissing = project
+partiallyMissing.songs[0].tracks[0].clips.append(AudioClip(id: UUID(), name: "Lost", startTime: 0, duration: 10, audioFile: AudioFile(path: "lost.wav")))
+let missingSnapshot = ShowSnapshot(project: partiallyMissing, transport: snapshot.transport)
+try missingRenderer.update(missingSnapshot, revision: 1)
+var remainingAudio: Float = 0
+for iteration in 0..<32 {
+    if try missingEngine.renderOffline(512, to: output) == .success, iteration > 24 {
+        remainingAudio = max(remainingAudio, (0..<Int(output.frameLength)).map { abs(output.floatChannelData![0][$0]) }.max() ?? 0)
+    }
+}
+precondition(remainingAudio > 0.09 && remainingAudio < 0.11, "missing audio must stay silent while present tracks keep playing")
+missingRenderer.stop()
+print("MISSING_AUDIO_SILENT_OTHER_TRACKS_PLAY_OK")
+do {
+    let file = try AVAudioFile(forWriting: directory.appendingPathComponent("tempo-tone.wav"), settings: format.settings)
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441000)!; buffer.frameLength = 441000
+    for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = Float(0.1 * sin(Double(i) * 2 * .pi * 997 / 44100)) } }
+    try file.write(from: buffer)
+}
+// Tempo markers must leave the actual PCM unchanged in Free Grid, including
+// when playback starts directly inside a section after a tempo change.
+func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTimebase = .free, markerTimebase: TempoMarkerTimebase = .global) throws -> [Float] {
+    let testEngine = AVAudioEngine()
+    try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: testEngine, realtime: false); audio.open(directory: directory)
+    defer { audio.stop() }
+    var mapped = project
+    mapped.songs[0].timeSettings = ProjectTimeSettings(); mapped.songs[0].timeSettings?.timebase = projectTimebase
+    mapped.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "tempo-tone.wav")
+    if withMarkers {
+        mapped.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 2, color: 0x999999, tempoBPM: 180, tempoTimebase: markerTimebase),
+                                   TimelineMarker(id: UUID(), name: "TEMPO", position: 5, color: 0x999999, tempoBPM: 90, tempoTimebase: markerTimebase)]
+    }
+    let state = ShowSnapshot(project: mapped, transport: TransportState(playing: true, songId: mapped.songs[0].id, position: position, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try audio.update(state, revision: 1)
+    var samples: [Float] = []
+    for iteration in 0..<32 {
+        if try testEngine.renderOffline(512, to: output) == .success, iteration > 24 {
+            samples += Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
+        }
+    }
+    return samples
+}
+for position in [3.0, 6] {
+    let before = try markerPCM(position: position, withMarkers: false)
+    let after = try markerPCM(position: position, withMarkers: true)
+    precondition(before.count == after.count && !before.isEmpty)
+    let difference = zip(before, after).map { abs($0 - $1) }.max() ?? 1
+    precondition(difference < 0.00001, "Free Grid preserves PCM after tempo markers: \(difference) at \(position)")
+    let forcedFree = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative, markerTimebase: .free)
+    precondition(zip(before, forcedFree).map { abs($0 - $1) }.max()! < 0.00001, "Free marker overrides Relative Grid playback")
+    let inheritedRelative = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative)
+    let forcedRelative = try markerPCM(position: position, withMarkers: true, markerTimebase: .relative)
+    precondition(inheritedRelative.count == forcedRelative.count && !inheritedRelative.isEmpty)
+    precondition(zip(inheritedRelative, forcedRelative).map { abs($0 - $1) }.max()! < 0.00001, "Relative marker overrides Free Grid playback")
+}
+print("GLOBAL_FREE_AND_RELATIVE_MARKER_TIMEBASE_PCM_OK")
+// Item gain must reach +24 dB in actual PCM, including temporary tempo fragments.
+for position in [0.0, 3, 6] {
+    let testEngine = AVAudioEngine()
+    try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: testEngine, realtime: false); audio.open(directory: directory)
+    var mapped = project
+    mapped.songs[0].timeSettings = ProjectTimeSettings(); mapped.songs[0].timeSettings?.timebase = .relative
+    mapped.songs[0].tracks[0].volume = 0.1
+    mapped.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "tempo-tone.wav")
+    mapped.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 2, color: 0x999999, tempoBPM: 180),
+                               TimelineMarker(id: UUID(), name: "TEMPO", position: 5, color: 0x999999, tempoBPM: 90)]
+    let state = ShowSnapshot(project: mapped, transport: TransportState(playing: true, songId: mapped.songs[0].id, position: position, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try audio.update(state, revision: 1)
+    audio.previewItemGain(track.clips[0].id, gain: pow(10,24.0/20))
+    var value: Float = 0
+    for iteration in 0..<32 {
+        if try testEngine.renderOffline(512, to: output) == .success, iteration > 24 {
+            value = max(value, (0..<Int(output.frameLength)).map { abs(output.floatChannelData![0][$0]) }.max() ?? 0)
+        }
+    }
+    precondition(abs(value - Float(0.01 * pow(10,24.0/20))) < 0.01, "selected original item gain reaches +24 dB on every tempo fragment: \(value) at \(position)")
+    audio.previewClipMute(track.clips[0].id, muted: true)
+    var silent: Float = 0
+    for iteration in 0..<32 {
+        if try testEngine.renderOffline(512, to: output) == .success, iteration > 24 {
+            silent = max(silent, (0..<Int(output.frameLength)).map { abs(output.floatChannelData![0][$0]) }.max() ?? 0)
+        }
+    }
+    precondition(silent < 0.0001, "original item mute silences every tempo fragment")
+    audio.stop()
+}
+print("ITEM_PLUS24_DB_TEMPO_FRAGMENT_PCM_AND_ORIGINAL_ITEM_MUTE_OK")
 renderer.previewVolume(id, gain: pow(10, 12.0/20))
 let louder = try peak()
 precondition(louder > 0.38 && louder < 0.41, "+12 dB must amplify PCM: \(louder)")
@@ -79,6 +222,8 @@ precondition(!engine.isRunning, "stop suspends the audio engine")
 snapshot.project.songs[0].tracks[0].mute = false
 snapshot.transport.subPlay.playing = true
 snapshot.transport.subPlay.position = 0
+snapshot.project.songs[0].timeSettings = ProjectTimeSettings()
+snapshot.project.songs[0].timeSettings?.timebase = .relative
 snapshot.project.songs[0].followTempo(180)
 try renderer.update(snapshot, revision: 3)
 let dual = try peak()
@@ -183,9 +328,11 @@ do {
     }
     try file.write(from: buffer)
 }
-func renderTempo(_ rate: Double, change: Bool = false) throws -> [[Float]] {
+func renderTempo(_ rate: Double, change: Bool = false, timebase: ProjectTimebase = .relative) throws -> [[Float]] {
     renderer.open(directory: directory)
     var project = Project.empty(name: "Tempo PCM")
+    project.songs[0].timeSettings = ProjectTimeSettings()
+    project.songs[0].timeSettings?.timebase = timebase
     var track = Track(id: UUID(), name: "Tempo", role: .other)
     track.clips = [AudioClip(id: UUID(), name: "Stereo", startTime: 0, duration: 4, audioFile: AudioFile(path: "tempo.wav"))]
     project.songs[0].tracks = [track]
@@ -194,12 +341,13 @@ func renderTempo(_ rate: Double, change: Bool = false) throws -> [[Float]] {
     var revision: UInt64 = 200
     var samples = [[Float](), [Float]()]
     var changed = false
-    let total = Int(outputFormat.sampleRate * (change ? 3 : 3 / rate + 0.4))
+    let total = Int(outputFormat.sampleRate * (change ? 3 : 3 / (timebase == .relative ? rate : 1) + 0.4))
     var position = 0.0
     while samples[0].count < total {
         if change && !changed && samples[0].count >= Int(outputFormat.sampleRate) {
             state.project.songs[0].followTempo(120 * rate)
-            position /= rate; revision += 1; changed = true
+            if timebase == .relative { position /= rate; revision += 1 }
+            changed = true
         }
         state.transport.position = position
         try renderer.update(state, revision: revision)
@@ -240,6 +388,13 @@ for channel in 0..<2 {
     precondition(maximumStep < 0.03, "Live tempo edit must not introduce a click: \(maximumStep)")
 }
 print("TEMPO_STEREO_PITCH_DURATION_LIVE_CONTINUITY_OK")
+let unchangedFreePCM = try renderTempo(1, change: true, timebase: .free)
+let changedFreePCM = try renderTempo(1.5, change: true, timebase: .free)
+for channel in 0..<2 {
+    precondition(unchangedFreePCM[channel].count == changedFreePCM[channel].count)
+    precondition(zip(unchangedFreePCM[channel], changedFreePCM[channel]).map { abs($0 - $1) }.max()! < 0.00001, "Free Grid BPM edits keep playing PCM uninterrupted")
+}
+print("FREE_GRID_BPM_EDIT_PRESERVES_RUNNING_PCM_OK")
 
 // Finalizing a take updates the project while an existing voice is sounding.
 // Its player, stretch latency and effect history must remain uninterrupted.
@@ -303,6 +458,10 @@ func checkRoutes(_ expected: [Float], _ description: String) throws {
 try checkRoutes([0.05,0.05,0,0,0,0], "child defaults through folder fader to Master")
 routingState.project.songs[0].tracks[1].secondaryPatch = OutputPatch(firstChannel: 3, channelCount: 2)
 try checkRoutes([0.05,0.05,0.1,0.1,0,0], "two independent sends: group and direct hardware")
+routingState.project.masterSolo = true
+try checkRoutes([0.05,0.05,0,0,0,0], "Master solo preserves the group path and suppresses its parallel direct hardware send")
+routingState.project.masterSolo = false
+try checkRoutes([0.05,0.05,0.1,0.1,0,0], "clearing Master solo restores the original hardware routing")
 routingState.project.songs[0].tracks[0].mute = true
 try checkRoutes([0,0,0.1,0.1,0,0], "folder mute does not mute child's direct send")
 routingState.project.songs[0].tracks[1].patch = .master
@@ -680,8 +839,14 @@ scalarAudio.previewClipMute(childA.clips[0].id, muted: true); try scalarCheck(0.
 scalarAudio.previewClipMute(childA.clips[0].id, muted: false); try scalarCheck(0.15, "clip unmute retains its edited gain")
 scalarAudio.previewMute(nil, muted: true); try scalarCheck(0, "master mute gates its sends")
 scalarAudio.previewPatch(childA.id, patch: .stereo, slot: 0); try scalarCheck(0.1, "live direct routing bypasses muted master")
+scalarAudio.previewMasterSolo(true); try scalarCheck(0, "Master solo suppresses hardware bypass even when Master is muted")
+scalarAudio.previewMasterSolo(false); try scalarCheck(0.1, "clearing Master solo restores the active direct output without restarting players")
 scalarAudio.previewPatch(childA.id, patch: .master, slot: 1); try scalarCheck(0.1, "second send preserves direct output")
 scalarAudio.previewMute(nil, muted: false); try scalarCheck(0.3, "both sends coexist without rescheduling players")
+scalarAudio.previewMasterSolo(true); try scalarCheck(0.2, "Master solo preserves all Master sends while silencing their direct duplicates")
+scalarAudio.previewPatch(childA.id, patch: .stereo, slot: 1); try scalarCheck(0.1, "routing changes during Master solo cannot leak a hardware-only track")
+scalarAudio.previewPatch(childA.id, patch: .master, slot: 1); try scalarCheck(0.2, "a track newly routed to Master becomes audible while solo stays active")
+scalarAudio.previewMasterSolo(false); try scalarCheck(0.3, "Master solo leaves gains, individual solos and both heads unchanged")
 scalarAudio.previewPatch(childA.id, patch: .stereo, slot: 1); try scalarCheck(0.2, "duplicate hardware output is not doubled")
 scalarAudio.previewPatch(childA.id, patch: .none, slot: 1)
 scalarAudio.previewPatch(childA.id, patch: .masterGroup, slot: 0); try scalarCheck(0.15, "switching back to group restores parent gain")
@@ -738,8 +903,31 @@ for (channel, expected) in [Float(0.2),0.6,0.2,0.6,0.4,0,0,0].enumerated() {
 JarasChannelRouter.configurePatches(matrix, firsts: [], counts: [])
 for _ in 0..<16 { let status = try routeEngine.renderOffline(512, to: routeBuffer); precondition(status == .success) }
 for channel in 0..<8 { precondition(abs(routeBuffer.floatChannelData![channel][400]) < 0.0001) }
+JarasChannelRouter.configurePatches(matrix, firsts: [1], counts: [2])
+for _ in 0..<16 { let status = try routeEngine.renderOffline(512, to: routeBuffer); precondition(status == .success) }
+let beforeStop = routeBuffer.floatChannelData![0][511]
+precondition(beforeStop > 0.19)
+JarasChannelRouter.setRenderEnabled(matrix, enabled: false)
+let stoppingStatus = try routeEngine.renderOffline(512, to: routeBuffer)
+precondition(stoppingStatus == .success)
+let stopSamples = routeBuffer.floatChannelData![0]
+precondition(stopSamples[0] > 0.18 && stopSamples[32] < stopSamples[0] && stopSamples[32] > 0,
+             "Stop should fade rather than disconnect at a nonzero sample")
+precondition(abs(stopSamples[400]) < 0.000001, "Stop fade must end in silence within one output buffer")
+let stoppedStatus = try routeEngine.renderOffline(512, to: routeBuffer)
+precondition(stoppedStatus == .success)
+precondition(abs(routeBuffer.floatChannelData![0][0]) < 0.000001)
+JarasChannelRouter.setRenderEnabled(matrix, enabled: true)
+for _ in 0..<16 { let status = try routeEngine.renderOffline(512, to: routeBuffer); precondition(status == .success) }
+precondition(abs(routeBuffer.floatChannelData![0][400] - 0.2) < 0.001, "Play restores routed audio after Stop")
+JarasChannelRouter.beginStopFade(matrix)
+let armedStopStatus = try routeEngine.renderOffline(512, to: routeBuffer)
+precondition(armedStopStatus == .success)
+precondition(routeBuffer.floatChannelData![0][0] > 0.18 && abs(routeBuffer.floatChannelData![0][400]) < 0.000001,
+             "Stop fades routed audio even while the graph remains awake for armed instruments")
 routeEngine.stop()
 print("DYNAMIC_HARDWARE_STEREO_MONO_DUPLICATE_SUPPRESSION_AND_REMOVAL_PCM_OK")
+print("STOP_OUTPUT_SHORT_FADE_AND_RESTART_OK")
 print("INCREMENTAL_MUTE_SOLO_CLIP_MUTE_GROUP_DUAL_PATCH_AND_FADERS_PCM_TOPOLOGY_OK")
 
 // Preview before onset must reach the clip index used to schedule future voices.
@@ -917,6 +1105,42 @@ for keys in [["Reverb", "Delay", "EQ", "Compressor"], ["Compressor", "EQ", "Reve
     try checkOrderedPlayers()
     precondition(orderedEngine.attachedNodes.count == orderedNodes)
 }
+var repeated = NativeFXSettings()
+let compressorOne = repeated.appendNative("Compressor")
+let compressorTwo = repeated.appendNative("Compressor")
+repeated.threshold = 0; repeated.ratio = 1; repeated.makeup = 6
+var secondCompressor = repeated.settings(for: compressorTwo)
+secondCompressor.threshold = 0; secondCompressor.ratio = 1; secondCompressor.makeup = 6
+repeated = repeated.merging(effect: compressorTwo, from: secondCompressor)
+orderedAudio.previewFX(nil, settings: NativeFXSettings())
+orderedAudio.previewFX(orderedTrack.id, settings: repeated)
+func repeatedPeak(_ expected: Float) throws {
+    for _ in 0..<32 { let status = try orderedEngine.renderOffline(512, to: orderedBuffer); precondition(status == .success) }
+    let sample = orderedBuffer.floatChannelData![0][128]
+    precondition(abs(sample - expected) < 0.01, "independent repeated processors must both process PCM: \(sample) vs \(expected)")
+}
+try repeatedPeak(0.2 * Float(pow(10, 12.0 / 20)))
+repeated.setEnabled(compressorOne, enabled: false)
+orderedAudio.previewFX(orderedTrack.id, settings: repeated)
+try repeatedPeak(0.2 * Float(pow(10, 6.0 / 20)))
+repeated.inserted.reverse()
+orderedAudio.previewFX(orderedTrack.id, settings: repeated)
+try repeatedPeak(0.2 * Float(pow(10, 6.0 / 20)))
+repeated.inserted.removeAll { $0 == compressorTwo }; repeated.removeInstance(compressorTwo)
+orderedAudio.previewFX(orderedTrack.id, settings: repeated)
+try repeatedPeak(0.2)
+precondition(orderedEngine.attachedNodes.count == orderedNodes, "removing repeated processors releases their audio nodes")
+print("REPEATED_NATIVE_PROCESSORS_INDEPENDENT_GAIN_BYPASS_REORDER_REMOVE_PCM_OK")
+let normalizedClip = orderedTrack.clips[0].id
+orderedAudio.previewItemNormalization(normalizedClip, gain: 0.5)
+try repeatedPeak(0.1)
+orderedAudio.previewItemGain(normalizedClip, gain: 0.5)
+try repeatedPeak(0.05)
+orderedAudio.previewItemNormalization(normalizedClip, gain: 1)
+try repeatedPeak(0.1)
+orderedAudio.previewItemGain(normalizedClip, gain: 1)
+try repeatedPeak(0.2)
+print("NORMALIZATION_AND_ITEM_VOLUME_INDEPENDENT_LIVE_PCM_OK")
 orderedAudio.prepareForClosing()
 print("TRACK_MASTER_FX_REORDER_PRESERVES_MAIN_SUBPLAY_SCHEDULED_PCM_OK")
 
@@ -998,7 +1222,157 @@ precondition(abs(ignoreBuffer.floatChannelData![0][128] - 0.1) < 0.003, "Ignore 
 ignoreAudio.prepareForClosing()
 print("IGNORE_NEXT_PRESCHEDULED_SOURCE_MASK_PCM_OK")
 
+
+let previousVideoNoAudio = VideoMediaSettings.shared.noAudio
+VideoMediaSettings.shared.noAudio = false
+let videoFolder = directory.appendingPathComponent("Videos")
+try FileManager.default.createDirectory(at: videoFolder, withIntermediateDirectories: true)
+try FileManager.default.copyItem(at: directory.appendingPathComponent("tone.wav"), to: videoFolder.appendingPathComponent("soundtrack.wav"))
+var videoProject = Project.empty(name: "Video audio")
+let videoID = UUID()
+var videoTrack = Track(id: videoID, name: "Video", role: TrackRole(rawValue: "video"), volume: 0.5, pan: 0, mute: false, solo: true)
+videoTrack.clips = [AudioClip(id: UUID(), name: "Video", startTime: 0, duration: 2, audioFile: AudioFile(path: "Videos/soundtrack.wav"))]
+videoProject.songs[0].tracks = [videoTrack]; videoProject.songs[0].duration = 2
+try videoProject.validate()
+let videoEngine = AVAudioEngine()
+try videoEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+let videoAudio = StemAudioPlayback(engine: videoEngine, realtime: false)
+videoAudio.open(directory: directory)
+var videoSnapshot = ShowSnapshot(project: videoProject, transport: TransportState(playing: true, songId: videoProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+try videoAudio.update(videoSnapshot, revision: 1)
+try videoEngine.start()
+let videoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+func videoPeak() throws -> Float {
+    for _ in 0..<40 { _ = try videoEngine.renderOffline(512, to: videoBuffer) }
+    return (0..<512).map { abs(videoBuffer.floatChannelData![0][$0]) }.max()!
+}
+precondition(abs(try! videoPeak() - 0.05) < 0.003, "video soundtrack passes through its track fader")
+videoAudio.previewVolume(videoID, gain: 0.25)
+precondition(abs(try! videoPeak() - 0.025) < 0.003)
+videoAudio.previewMute(videoID, muted: true)
+precondition(try! videoPeak() < 0.00001)
+videoAudio.previewMute(videoID, muted: false)
+precondition(abs(try! videoPeak() - 0.025) < 0.003)
+VideoMediaSettings.shared.noAudio = true
+try videoAudio.update(videoSnapshot, revision: 1)
+precondition(try! videoPeak() < 0.00001, "No audio silences only video voices without stopping transport")
+VideoMediaSettings.shared.noAudio = false
+try videoAudio.update(videoSnapshot, revision: 1)
+precondition(abs(try! videoPeak() - 0.05) < 0.003, "unchecking No audio resumes the soundtrack")
+videoAudio.prepareForClosing()
+VideoMediaSettings.shared.noAudio = previousVideoNoAudio
+print("VIDEO_AUDIO_FADER_MUTE_SOLO_AND_LIVE_NO_AUDIO_ROUTING_PCM_OK")
+
 print("REAL_AUDIO_RENDER_OK main=\(mainPeak) +12dB=\(louder) muted=\(muted)")
+
+// Stereo track meters must observe the actual PCM after pan and gain, even
+// when Master is muted or this track routes directly to hardware.
+for panValue in [-1.0, 0.0, 1.0] {
+    let panEngine = AVAudioEngine()
+    try panEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let panRenderer = StemAudioPlayback(engine: panEngine, realtime: false)
+    panRenderer.open(directory: directory)
+    var panProject = Project.empty(name: "Pan meter")
+    var panTrack = track
+    panTrack.pan = panValue; panTrack.volume = 0.5
+    panTrack.patch = OutputPatch(firstChannel: 1, channelCount: 2)
+    panProject.songs[0].tracks = [panTrack]; panProject.masterMute = true
+    let panState = ShowSnapshot(project: panProject, transport: TransportState(playing: true,songId: panProject.songs[0].id,position: 0,queue: QueueState(),loop: LoopState(enabled: false),subPlay: SubPlayState(playing: false,position: 0)))
+    let level = panRenderer.meter(for: panTrack.id)
+    try panRenderer.update(panState, revision: 1)
+    let panBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat,frameCapacity: 512)!
+    var pcm = SIMD2<Double>(repeating: 0)
+    for block in 0..<48 {
+        let status = try panEngine.renderOffline(512,to: panBuffer)
+        precondition(status == .success)
+        if block > 24 {
+            for channel in 0..<2 { for frame in 0..<Int(panBuffer.frameLength) {
+                pcm[channel] = max(pcm[channel],Double(abs(panBuffer.floatChannelData![channel][frame])))
+            } }
+        }
+    }
+    Thread.sleep(forTimeInterval: 0.06)
+    try panRenderer.update(panState, revision: 1)
+    precondition(abs(level.levels.x - pcm.x) < 0.005 && abs(level.levels.y - pcm.y) < 0.005,
+                 "track meter must match post-pan PCM independently of Master: pan=\(panValue), meter=\(level.levels), pcm=\(pcm)")
+    if panValue == -1 { precondition(pcm.x > 0.02 && pcm.y < 0.00001) }
+    if panValue == 1 { precondition(pcm.y > 0.02 && pcm.x < 0.00001) }
+    if panValue == 0 { precondition(pcm.x > 0.02 && pcm.y > 0.02) }
+    panRenderer.stop()
+}
+print("TRACK_STEREO_METERS_MATCH_POST_PAN_GAIN_PCM_WITH_MUTED_MASTER_OK")
+
+if let path = ProcessInfo.processInfo.environment["JARAS_TEST_SF2"] {
+    let instrumentEngine = AVAudioEngine()
+    try instrumentEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let instrumentAudio = StemAudioPlayback(engine: instrumentEngine, realtime: false)
+    instrumentAudio.open(directory: directory)
+    instrumentAudio.instrumentFile = { _ in (URL(fileURLWithPath: path), true) }
+    var instrumentProject = Project.empty(name: "Repeated SF2")
+    var instrumentFX = NativeFXSettings()
+    let sfOne = instrumentFX.appendNative("Instruments", instrument: "glide-moog", parameters: InstrumentParameters())
+    let sfTwo = instrumentFX.appendNative("Instruments", instrument: "glide-moog", parameters: InstrumentParameters())
+    var instrumentTrack = Track(id: UUID(), name: "Layer", role: .keys); instrumentTrack.fx = instrumentFX
+    instrumentProject.songs[0].tracks = [instrumentTrack]
+    instrumentAudio.setArmedInstrumentTracks([instrumentTrack.id])
+    let state = ShowSnapshot(project: instrumentProject, transport: TransportState(playing: false, songId: instrumentProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try instrumentAudio.update(state, revision: 1)
+    let deadline = Date().addingTimeInterval(20)
+    while !instrumentAudio.isInstrumentReady(instrumentTrack.id) && Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    precondition(instrumentAudio.isInstrumentReady(instrumentTrack.id), "both independent SF2 instances finish loading")
+    let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+    func instrumentPeak() throws -> Float {
+        var peak: Float = 0
+        for _ in 0..<32 {
+            let status = try instrumentEngine.renderOffline(512, to: buffer); precondition(status == .success)
+            for c in 0..<2 { for f in 0..<Int(buffer.frameLength) { peak = max(peak, abs(buffer.floatChannelData![c][f])) } }
+        }
+        return peak
+    }
+    for active in [sfOne, sfTwo] {
+        instrumentAudio.releaseMIDINotes()
+        instrumentFX.setEnabled(sfOne, enabled: active == sfOne)
+        instrumentFX.setEnabled(sfTwo, enabled: active == sfTwo)
+        instrumentAudio.previewFX(instrumentTrack.id, settings: instrumentFX)
+        _ = try instrumentPeak() // Render the pending all-notes-off before sending the next note.
+        instrumentAudio.playKeyboardNote(60)
+        let peak = try instrumentPeak()
+        precondition(peak > 0.0001, "each repeated SF2 receives notes independently: \(active), peak=\(peak)")
+    }
+    instrumentAudio.releaseMIDINotes(); _ = try instrumentPeak()
+    instrumentAudio.midiSlotsProvider = { [Int32(123), 0, 0] }
+    instrumentAudio.previewMIDIInput(instrumentTrack.id, slot: 1)
+    instrumentAudio.previewMIDIChannel(instrumentTrack.id, channel: 2)
+    _ = try instrumentPeak()
+    instrumentAudio.receiveMIDI(device: 123, status: 0x90, number: 60, value: 100)
+    let wrongChannel = try instrumentPeak()
+    precondition(wrongChannel < 0.00001, "SF2 ignores notes on other channels")
+    instrumentAudio.receiveMIDI(device: 123, status: 0x91, number: 60, value: 100)
+    let rightChannel = try instrumentPeak()
+    precondition(rightChannel > 0.0001, "SF2 plays the selected MIDI channel")
+    instrumentAudio.previewMIDIChannel(instrumentTrack.id, channel: 3)
+    _ = try instrumentPeak()
+    let releasedChannel = try instrumentPeak()
+    precondition(releasedChannel < 0.00001, "changing MIDI channel releases former notes")
+    instrumentAudio.receiveMIDI(device: 123, status: 0x92, number: 60, value: 100)
+    let newChannel = try instrumentPeak()
+    precondition(newChannel > 0.0001, "new MIDI channel plays without rebuilding the engine")
+    print("MIDI_CHANNEL_FILTER_AND_LIVE_CHANNEL_CHANGE_PCM_OK")
+    var mutedInstrument = instrumentFX.settings(for: sfTwo)
+    var parameters = mutedInstrument.instrumentParameters ?? InstrumentParameters()
+    parameters.controllers = InstrumentControllerParameters()
+    parameters.controllers?.volume = -96
+    mutedInstrument.instrumentParameters = parameters
+    instrumentFX = instrumentFX.merging(effect: sfTwo, from: mutedInstrument)
+    instrumentAudio.previewFX(instrumentTrack.id, settings: instrumentFX)
+    _ = try instrumentPeak()
+    let quiet = try instrumentPeak()
+    precondition(quiet < 0.00001, "Controller volume silences only its own instrument")
+    instrumentAudio.prepareForClosing()
+    print("REPEATED_SF2_INDEPENDENT_MIDI_BYPASS_AND_CONTROLLER_VOLUME_PCM_OK")
+}
 
 }
 try MainActor.assumeIsolated { try run() }

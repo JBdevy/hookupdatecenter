@@ -104,6 +104,10 @@
           "filter": [
             "vshook-apple-peer-bridge"
           ]
+        },
+        {
+          "from": "build/pkg-scripts/reaper-directories.sh",
+          "to": "hook-install/reaper-directories.sh"
         }
       ],
       "hardenedRuntime": true,

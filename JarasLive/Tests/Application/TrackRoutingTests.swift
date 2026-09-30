@@ -27,6 +27,29 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testSharedMixerSelectionKeepsAnchorAndDoesNotReloadAudio() throws {
+        var p = Project.empty(name: "Mixer selection")
+        let first = Track(id: UUID(), name: "Left", role: .keys)
+        let second = Track(id: UUID(), name: "Right", role: .keys)
+        let video = Track(id: UUID(), name: "Video", role: TrackRole(rawValue: "video"))
+        p.songs[0].tracks = [first, second, video]
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: p)
+        var audioUpdates = 0
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+        show.setMixerTrackSelection([first.id, second.id, video.id, UUID()], anchor: second.id)
+        XCTAssertEqual(show.mixerTrackSelection, [first.id, second.id])
+        XCTAssertEqual(show.selectedTrackForActions, second.id)
+        XCTAssertNotNil(show.current?.linkableTracks(show.mixerTrackSelection))
+        show.setMixerTrackSelection([first.id], anchor: second.id)
+        XCTAssertEqual(show.selectedTrackForActions, first.id)
+        show.setMixerTrackSelection([], anchor: nil)
+        XCTAssertTrue(show.mixerTrackSelection.isEmpty)
+        XCTAssertNil(show.selectedTrackForActions)
+        XCTAssertEqual(audioUpdates, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertFalse(show.hasUnsavedChanges)
+    }
+
     func testArbitraryRouteListsAndLegacyOutputsRoundTrip() throws {
         var p = Project.empty(name: "Dynamic")
         var tracks = (0..<6).map { Track(id: UUID(), name: "Track \($0)", role: .other) }

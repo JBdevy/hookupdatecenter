@@ -46,6 +46,16 @@ let directedDownloadReady = false;
 let combinedDownloadReady = { package: false, vsHook: false, hookCenter: false };
 let activeUpdateDownloadSurface = '';
 let activePreviousProgress = null;
+let updateOperationInProgress = false;
+async function runExclusiveUpdateAction(action) {
+  if (updateOperationInProgress) return;
+  updateOperationInProgress = true;
+  try {
+    return await action();
+  } finally {
+    updateOperationInProgress = false;
+  }
+}
 let selectedLyricsConfigSlot = 1;
 const selectedLyricsPresets = { 1: 'night', 2: 'night' };
 let recadosHubSelectedSlot = 'global';
@@ -1192,7 +1202,11 @@ function stopPreviousProgress() {
   }
 }
 
-async function startVsHookDownload(updateOverride = null) {
+function startVsHookDownload(...args) {
+  return runExclusiveUpdateAction(() => startVsHookDownloadImpl(...args));
+}
+
+async function startVsHookDownloadImpl(updateOverride = null) {
   try {
     if (!(await ensureLicenseActiveForDownload())) return;
     if (!(await showDownloadDescriptionNotice(updateOverride))) return;
@@ -1239,7 +1253,11 @@ async function startVsHookDownload(updateOverride = null) {
   }
 }
 
-async function startCombinedUpdateDownload() {
+function startCombinedUpdateDownload(...args) {
+  return runExclusiveUpdateAction(() => startCombinedUpdateDownloadImpl(...args));
+}
+
+async function startCombinedUpdateDownloadImpl() {
   if (!state?.latestUpdate && !state?.hookCenterLatest) {
     showModal({ title: 'Atualizações', message: 'Nenhuma atualização disponível no momento.', type: 'info' });
     return;
@@ -1337,7 +1355,11 @@ async function startCombinedUpdateDownload() {
   }
 }
 
-async function installCombinedDownloadedUpdates() {
+function installCombinedDownloadedUpdates(...args) {
+  return runExclusiveUpdateAction(() => installCombinedDownloadedUpdatesImpl(...args));
+}
+
+async function installCombinedDownloadedUpdatesImpl() {
   if (!combinedDownloadReady.package) return;
   const confirmed = await confirmModal({
     title: 'Instalar atualização',
@@ -1369,7 +1391,11 @@ async function installCombinedDownloadedUpdates() {
   }
 }
 
-async function installVsHookDownloadedUpdate() {
+function installVsHookDownloadedUpdate(...args) {
+  return runExclusiveUpdateAction(() => installVsHookDownloadedUpdateImpl(...args));
+}
+
+async function installVsHookDownloadedUpdateImpl() {
   const confirmed = await confirmModal({
     title: 'Instalar VS Hook',
     message: 'Feche o REAPER antes de continuar. O Hook Center vai instalar o VS Hook e os arquivos necessários.',
@@ -6608,7 +6634,7 @@ function renderPreviousUpdates(updates) {
   }).join('');
 
   list.querySelectorAll('.previous-install-button').forEach((button) => {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', () => runExclusiveUpdateAction(async () => {
       const index = Number(button.dataset.index);
       const update = updates[index];
       if (!hasCompleteInstallablePackage(update) && update.cached !== true) {
@@ -6672,11 +6698,11 @@ function renderPreviousUpdates(updates) {
         button.disabled = false;
         button.textContent = update.installed === true ? 'Reinstalar' : 'Instalar';
       }
-    });
+    }));
   });
 
   list.querySelectorAll('.previous-cache-button').forEach((button) => {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', () => runExclusiveUpdateAction(async () => {
       const index = Number(button.dataset.index);
       const update = updates[index];
       try {
@@ -6715,7 +6741,7 @@ function renderPreviousUpdates(updates) {
         stopPreviousProgress();
         button.disabled = false;
       }
-    });
+    }));
   });
 }
 

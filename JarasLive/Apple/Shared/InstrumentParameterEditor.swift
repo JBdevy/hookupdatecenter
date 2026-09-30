@@ -112,6 +112,21 @@ struct InstrumentParameterEditor: View {
     }
     private var controllerPage: some View {
         VStack(alignment: .leading, spacing: 24) {
+            FXKnob("Volume", value: Binding(get: { parameters.controllers?.volume ?? 0 }, set: { volume in
+                var value = parameters.controllers ?? InstrumentLibrary.controllers(category)
+                value.volume = min(0, max(-96, volume)); parameters.controllers = value
+            }), range: -96...0, unit: "dB", reset: 0, parameter: .instrumentVolume)
+
+            Picker("Voice mode", selection: Binding(get: {
+                parameters.controllers?.monophonic ?? (category == .lead)
+            }, set: { mono in
+                var value = parameters.controllers ?? InstrumentLibrary.controllers(category)
+                value.monophonic = mono; parameters.controllers = value
+            })) {
+                Text("Monophonic").tag(true)
+                Text("Polyphonic").tag(false)
+            }.pickerStyle(.segmented)
+            Divider()
             Toggle("Modulation", isOn: controller(\.modulation)).mapFXMIDI(.modulation, name: "Modulation", range: 0...1)
             Text("Modulation wheel controls the cutoff.").foregroundStyle(JarasTheme.secondary)
             Divider()

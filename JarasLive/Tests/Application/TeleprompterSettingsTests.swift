@@ -29,6 +29,20 @@ final class TeleprompterSettingsTests: XCTestCase {
         reopened.select(.night)
         XCTAssertEqual(reopened.current,night)
     }
+    func testTwoTelepromptersKeepSeparatePresetsAndChordVisibility() {
+        let (defaults, suite) = preferences(); defer { defaults.removePersistentDomain(forName: suite) }
+        let first = TeleprompterSettingsStore(defaults: defaults)
+        let second = TeleprompterSettingsStore(defaults: defaults, key: "jaras.teleprompter2.settings")
+        var firstNight = first.current; firstNight.chordsEnabled = false
+        XCTAssertTrue(first.update(firstNight))
+        XCTAssertTrue(second.select(.day))
+        var secondDay = second.current; secondDay.chordsEnabled = true; secondDay.textColor = 0x123456
+        XCTAssertTrue(second.update(secondDay))
+        XCTAssertFalse(TeleprompterSettingsStore(defaults: defaults).current.chordsEnabled)
+        let reopenedSecond = TeleprompterSettingsStore(defaults: defaults, key: "jaras.teleprompter2.settings")
+        XCTAssertEqual(reopenedSecond.selected, .day)
+        XCTAssertEqual(reopenedSecond.current, secondDay)
+    }
     func testSanitizationProtectsSliderRangesAndDisplayChoices() {
         var value = TeleprompterSettings()
         value.chordScale = 70; value.textScale = .nan; value.clockScale = 600; value.songNameScale = 0

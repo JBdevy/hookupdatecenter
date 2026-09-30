@@ -12,6 +12,7 @@ import XCTest
     var failGainCommand: Int?
     var failMixerCommand: ShowCommand?
     var failSettingsCommand: String?
+    var failSettingsCommandAt: Int?
     func load(_ project: Project) throws {
         try project.validate(); self.project = project
         transport.songId = project.songs.first?.id; transport.regionId = project.songs.first?.parts.first?.id
@@ -23,12 +24,13 @@ import XCTest
     func playbackSnapshot() throws -> PlaybackSnapshot { playbackReads += 1; return PlaybackSnapshot(transport: transport) }
     func applyProjectEdit(_ project: Project) throws { try project.validate(); self.project = project; fullEdits += 1 }
     func execute(_ command: ShowCommand,target: UUID?,value: Double) throws {
-        if command != .clipGain {
+        if command != .clipGain && command != .clipNormalization && command != .clipChannelMode {
             mixerCommands.append(command)
             if failMixerCommand == command { throw ProjectError.invalid("Injected mixer failure") }
             if target == nil {
                 if command == .volume { project.masterVolume = min(pow(10,12.0 / 20),max(0,value)) }
                 else if command == .mute { project.masterMute = !(project.masterMute ?? false) }
+                else if command == .solo { project.masterSolo = !(project.masterSolo ?? false) }
                 else { XCTFail("Unexpected master command: \(command)") }
                 return
             }
@@ -56,7 +58,9 @@ import XCTest
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices {
                 if let clip = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == target }) {
-                    project.songs[song].tracks[track].clips[clip].gain = value; return
+                    if command == .clipChannelMode { project.songs[song].tracks[track].clips[clip].channelMode = value == 0 ? nil : Int(value) }
+                    else if command == .clipNormalization { project.songs[song].tracks[track].clips[clip].normalizationGain = value == 1 ? nil : value }
+                    else { project.songs[song].tracks[track].clips[clip].gain = value }; return
                 }
             }
         }
@@ -64,7 +68,7 @@ import XCTest
     }
     private func mutate(_ id: UUID,operation: String,edit: (inout Track) -> Void) throws {
         settingsCommands.append(operation)
-        if failSettingsCommand == operation { throw ProjectError.invalid("Injected settings failure") }
+        if failSettingsCommand == operation || failSettingsCommandAt == settingsCommands.count { throw ProjectError.invalid("Injected settings failure") }
         for song in project.songs.indices {
             if let track = project.songs[song].tracks.firstIndex(where: { $0.id == id }) {
                 edit(&project.songs[song].tracks[track]); return
@@ -79,6 +83,11 @@ import XCTest
             for clip in value.clips.indices { value.clips[clip].name = "TIMECODE" }
         }
     }
+    func editMasterColor(_ color: UInt32) throws {
+        settingsCommands.append("masterColor")
+        if failSettingsCommand == "masterColor" { throw ProjectError.invalid("Injected settings failure") }
+        project.masterColor = color
+    }
     func editTrack(_ track: UUID,name: String,color: UInt32) throws { try mutate(track,operation: "details") { $0.name = name; $0.color = color } }
     func editRegion(_ id: UUID,name: String,color: UInt32,uppercaseName: Bool) throws {
         settingsCommands.append("region")
@@ -88,6 +97,10 @@ import XCTest
             }
         }
         throw ProjectError.invalid("Missing region")
+    }
+    func setMIDIChannel(_ track: UUID, channel: Int) throws {
+        guard (0...16).contains(channel) else { throw ProjectError.invalid("Invalid MIDI channel") }
+        try mutate(track, operation: "midiChannel") { $0.midiChannel = channel == 0 ? nil : channel }
     }
     func setMIDIInput(_ track: UUID,slot: Int) throws { try mutate(track,operation: "midi") { $0.midiInput = slot == 0 ? nil : slot } }
     func setRecording(_ track: UUID,input: OutputPatch,format: String) throws { try mutate(track,operation: "recording") { $0.inputPatch = input; $0.recordingFormat = format } }
@@ -113,6 +126,27 @@ import XCTest
 }
 
 final class IncrementalTrackSettingsTests: XCTestCase {
+    @MainActor func testMIDIChannelIsIncrementalAndFiltersEveryVoiceMessage() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let id = project.songs[0].tracks[1].id
+        var received: [Int] = []
+        show.audioMIDIChannel = { _, channel in received.append(channel) }
+        show.setMIDIChannel(id, channel: 16); show.setMIDIChannel(id, channel: 16)
+        let track = try XCTUnwrap(show.current?.tracks[1])
+        XCTAssertEqual(track.midiChannel, 16)
+        for kind: UInt8 in [0x80, 0x90, 0xb0, 0xe0] {
+            XCTAssertTrue(track.acceptsMIDI(status: kind | 15))
+            XCTAssertFalse(track.acceptsMIDI(status: kind))
+        }
+        XCTAssertEqual(try JSONDecoder().decode(Track.self, from: JSONEncoder().encode(track)), track)
+        XCTAssertEqual(received, [16]); XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+        show.setMIDIChannel(id, channel: 17)
+        XCTAssertEqual(show.current?.tracks[1].midiChannel, 16)
+        show.setMIDIChannel(id, channel: 0)
+        XCTAssertNil(show.current?.tracks[1].midiChannel)
+        XCTAssertTrue(show.current!.tracks[1].acceptsMIDI(status: 0x91))
+        XCTAssertFalse(show.current!.tracks[1].acceptsMIDI(status: 0xf8))
+    }
     @MainActor func testManualMarkerDeleteDoesNotReloadAudioAndUndoRestoresIt() throws {
         var project = fixture()
         let manual = TimelineMarker(id: UUID(), name: "Manual", position: 35, color: 0x00ff88)
@@ -190,6 +224,34 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.current?.tracks[0].clips,project.songs[0].tracks[0].clips)
         XCTAssertTrue(show.canUndo); XCTAssertTrue(show.hasUnsavedChanges)
     }
+    @MainActor func testMasterSoloAndColorAreIncrementalAndPreserveTransport() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let transport = show.snapshot.transport
+        var solos: [Bool] = [], audioRevisions: [UInt64] = []
+        show.audioMasterSolo = { solos.append($0) }
+        show.audioUpdate = { _, revision in audioRevisions.append(revision) }
+        show.send(.solo)
+        XCTAssertEqual(show.snapshot.project.masterSolo, true)
+        show.performAction(.soloMaster)
+        XCTAssertEqual(show.snapshot.project.masterSolo, false)
+        show.editMasterColor(0x12ab34)
+        show.editMasterColor(0x12ab34)
+        show.editMasterColor(0x1000000)
+        XCTAssertEqual(solos, [true, false])
+        XCTAssertEqual(show.snapshot.project.masterColor, 0x12ab34)
+        XCTAssertEqual(executor.settingsCommands, ["masterColor"])
+        XCTAssertEqual(executor.snapshotReads, 0); XCTAssertEqual(executor.playbackReads, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertTrue(audioRevisions.allSatisfy { $0 == 0 })
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(show.snapshot.project, executor.project)
+        executor.failMixerCommand = .solo
+        executor.failSettingsCommand = "masterColor"
+        show.send(.solo); show.editMasterColor(0xabcdef)
+        XCTAssertEqual(solos, [true, false]); XCTAssertEqual(show.snapshot.project.masterColor, 0x12ab34)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        let data = try JSONEncoder().encode(show.snapshot.project)
+        XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data), show.snapshot.project)
+    }
     @MainActor func testTrackDetailsMIDIRecordingAndRoutingUseIncrementalSettingsWithoutSnapshot() throws {
         let project = fixture(), (show,executor) = try show(project)
         let track = project.songs[0].tracks[1].id, originalClips = project.songs[0].tracks[1].clips
@@ -220,6 +282,53 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].name,"Piano"); XCTAssertEqual(show.current?.tracks[1].inputPatch,input)
         XCTAssertEqual(show.current?.tracks[1].midiInput,2)
+    }
+    @MainActor func testBatchTrackColorKeepsEveryNameAndCreatesOneUndoWithoutReload() throws {
+        var project = fixture()
+        project.songs[0].tracks.append(Track(id: UUID(), name: "Untouched", role: .bass))
+        let (show, executor) = try show(project)
+        let tracks = Set(project.songs[0].tracks.prefix(2).map(\.id))
+        let transport = show.snapshot.transport
+        var updates = 0, edits = 0
+        show.audioUpdate = { _, revision in XCTAssertEqual(revision, 0); updates += 1 }
+        show.onProjectEdited = { edits += 1 }
+        show.editTrackColors(tracks, color: 0x5ebb73, project: project.id)
+        var expected = project
+        for row in 0..<2 { expected.songs[0].tracks[row].color = 0x5ebb73 }
+        XCTAssertEqual(show.snapshot.project, expected)
+        XCTAssertEqual(executor.project, expected)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.settingsCommands, ["details", "details"])
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(show.projectRevision, 1); XCTAssertEqual(updates, 1); XCTAssertEqual(edits, 1)
+        show.editTrackColors(tracks, color: 0x5ebb73, project: project.id)
+        show.editTrackColors(tracks, color: 0xff0000, project: UUID())
+        show.editTrackColors([UUID()], color: 0xff0000, project: project.id)
+        show.editTrackColors(tracks, color: 0xffffff01, project: project.id)
+        XCTAssertEqual(executor.settingsCommands.count, 2)
+        XCTAssertEqual(show.projectRevision, 1)
+        show.audioUpdate = { _, _ in }
+        show.undo()
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertFalse(show.canUndo, "The complete selection must be one undo operation")
+        show.redo()
+        XCTAssertEqual(show.snapshot.project, expected)
+        XCTAssertFalse(show.canRedo)
+    }
+    @MainActor func testPartialColorFailureKeepsBackendAndSnapshotInSyncAndIsUndoable() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        executor.failSettingsCommandAt = 2
+        show.editTrackColors(Set(project.songs[0].tracks.map(\.id)), color: 0x5ebb73, project: project.id)
+        var expected = project
+        expected.songs[0].tracks[0].color = 0x5ebb73
+        XCTAssertEqual(show.snapshot.project, expected)
+        XCTAssertEqual(executor.project, expected)
+        XCTAssertFalse(show.message.isEmpty)
+        XCTAssertEqual(show.projectRevision, 1)
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+        show.undo()
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertFalse(show.canUndo)
     }
     @MainActor func testRejectedScalarSettingsLeaveControllerAndHistoryUnchanged() throws {
         let project = fixture(), (show,executor) = try show(project)
@@ -272,12 +381,28 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveform,project.songs[0].tracks[1].clips[0].waveform)
     }
+    @MainActor func testChannelConversionPreservesSourceAndAllEditsAndRestoresStereoWithUndo() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let clips = project.songs[0].tracks[1].clips
+        let ids = Set(clips.map(\.id))
+        XCTAssertTrue(show.convertItems(ids, mode: 3))
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
+        var converted = show.current!.tracks[1].clips
+        XCTAssertTrue(converted.allSatisfy { $0.channelMode == 3 })
+        for index in converted.indices { converted[index].channelMode = nil }
+        XCTAssertEqual(converted, clips, "Channel conversion preserves source paths, gain, FX, mute and position")
+        show.undo(); XCTAssertEqual(show.snapshot.project, project)
+        show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 3 })
+        XCTAssertTrue(show.convertItems(ids, mode: 0))
+        XCTAssertEqual(show.current!.tracks[1].clips, clips)
+    }
     @MainActor func testNormalizationCommitsScalarBatchOnceAndUndoRestoresWholeBatch() throws {
         let project = fixture(), (show,executor) = try show(project)
         let clips = project.songs[0].tracks[1].clips
-        let capped = pow(10,12.0 / 20)
+        let capped = pow(10,24.0 / 20)
         var gains: [IncrementalSettingsExecutor.GainCommand] = [], revisions: [UInt64] = []
-        show.audioItemGain = { gains.append(.init(item: $0,value: $1)) }
+        show.audioItemNormalization = { gains.append(.init(item: $0,value: $1)) }
         show.audioUpdate = { _,revision in revisions.append(revision) }
         XCTAssertTrue(show.normalizeItems([clips[0].id: 100,clips[1].id: 0.25],project: project.id))
         let expected: [IncrementalSettingsExecutor.GainCommand] = [.init(item: clips[0].id,value: capped),.init(item: clips[1].id,value: 0.25)]
@@ -286,10 +411,11 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(revisions,[0]); XCTAssertEqual(show.projectRevision,1); XCTAssertTrue(show.canUndo)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveform,clips[0].waveform)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveformChannels,clips[0].waveformChannels)
+        XCTAssertEqual(show.current?.tracks[1].clips.map(\.gain), clips.map(\.gain), "normalization preserves volume knobs")
         show.undo()
         XCTAssertEqual(show.snapshot.project,project); XCTAssertFalse(show.canUndo); XCTAssertTrue(show.canRedo)
         show.redo()
-        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.gain ?? 1 },[capped,0.25])
+        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.normalizationGain ?? 1 },[capped,0.25])
         XCTAssertEqual(executor.fullEdits,2)
     }
     @MainActor func testFailedNormalizationRollsBackAppliedScalarsWithoutPublishingOrUndo() throws {
@@ -297,7 +423,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let clips = project.songs[0].tracks[1].clips
         executor.failGainCommand = 2
         var audioWrites = 0, audioUpdates = 0
-        show.audioItemGain = { _,_ in audioWrites += 1 }; show.audioUpdate = { _,_ in audioUpdates += 1 }
+        show.audioItemNormalization = { _,_ in audioWrites += 1 }; show.audioUpdate = { _,_ in audioUpdates += 1 }
         XCTAssertFalse(show.normalizeItems([clips[0].id: 0.5,clips[1].id: 0.25],project: project.id))
         XCTAssertEqual(executor.gainCommands,[.init(item: clips[0].id,value: 0.5),.init(item: clips[1].id,value: 0.25),.init(item: clips[0].id,value: 1)])
         XCTAssertEqual(show.snapshot.project,project); XCTAssertEqual(executor.project,project)
@@ -312,7 +438,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertFalse(show.normalizeItems([clips[0].id: .nan],project: project.id))
         XCTAssertFalse(show.normalizeItems([clips[0].id: 0.5],project: UUID()))
         XCTAssertTrue(executor.gainCommands.isEmpty)
-        XCTAssertTrue(show.normalizeItems([clips[0].id: 1,clips[1].id: 0.75],project: project.id))
+        XCTAssertTrue(show.normalizeItems([clips[0].id: 1,clips[1].id: 1],project: project.id))
         XCTAssertFalse(show.hasUnsavedChanges); XCTAssertFalse(show.canUndo); XCTAssertEqual(show.projectRevision,0)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.fullEdits,0)
     }
@@ -330,6 +456,10 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.performAction(.soloTrack)
         show.performAction(.volumeTrack, midiValue: 0)
         show.performAction(.panTrack, midiValue: 64)
+        show.performAction(.muteMaster)
+        show.performAction(.volumeMaster, midiValue: 64)
+        XCTAssertTrue(show.snapshot.project.masterMute == true)
+        XCTAssertEqual(show.snapshot.project.masterVolume ?? 1, MIDIFaderValue.gain(64))
         XCTAssertTrue(show.current!.tracks[1].mute)
         XCTAssertTrue(show.current!.tracks[1].solo)
         XCTAssertEqual(show.current!.tracks[1].volume, 0)

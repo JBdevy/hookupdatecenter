@@ -1,13 +1,34 @@
 import Foundation
+import SwiftUI
 import Combine
 import Accelerate
 
 struct EQSpectrum: Equatable, Sendable {
-    static let binCount = 192
+    static let binCount = 384
     static let minimumDB: Float = -96
     static let maximumDB: Float = 12
     var input = [Float](repeating: minimumDB, count: binCount)
     var output = [Float](repeating: minimumDB, count: binCount)
+    static func smoothedBins(_ bins: [Float]) -> [Float] {
+        guard !bins.isEmpty else { return [] }
+        let weights: [Float] = [1, 6, 15, 20, 15, 6, 1]
+        var levels = bins.map { $0.isFinite ? min(EQSpectrum.maximumDB, max(EQSpectrum.minimumDB, $0)) : EQSpectrum.minimumDB }
+        // Two short Gaussian passes produce rounded hills across frequency,
+        // keeping flat spectra flat and every value within the measured range.
+        for _ in 0..<2 {
+            var next = levels
+            for index in levels.indices {
+                var sum: Float = 0
+                for offset in weights.indices {
+                    sum += levels[min(levels.count - 1, max(0, index + offset - 3))] * weights[offset]
+                }
+                next[index] = sum / 64
+            }
+            levels = next
+        }
+        return levels
+    }
+
     static func frequency(at index: Int) -> Double { 20 * pow(1000, Double(index) / Double(binCount - 1)) }
 }
 
@@ -41,8 +62,10 @@ final class EQSpectrumAnalyzer: @unchecked Sendable {
                 for bin in 0..<EQSpectrum.binCount {
                     let frequency = EQSpectrum.frequency(at: bin)
                     guard frequency < rate / 2 else { continue }
-                    let fftBin = min(Self.samples / 2 - 1, max(1, Int((frequency * Double(Self.samples) / rate).rounded())))
-                    let power = powers[fftBin] / Float(Self.samples * Self.samples / 2)
+                    let position = min(Double(Self.samples / 2 - 1), max(1, frequency * Double(Self.samples) / rate))
+                    let lower = Int(position), upper = min(Self.samples / 2 - 1, lower + 1)
+                    let fraction = Float(position - Double(lower))
+                    let power = (powers[lower] + (powers[upper] - powers[lower]) * fraction) / Float(Self.samples * Self.samples / 2)
                     if power.isFinite { levels[bin] += max(0, power) }
                 }
             }
@@ -79,12 +102,35 @@ final class EQSpectrumAnalyzer: @unchecked Sendable {
         lastUpdate = now; busy = true
         let analyzer = analyzer
         worker.async { [weak self] in
-            let next = analyzer.analyze(frames, elapsed: elapsed)
+            var next = analyzer.analyze(frames, elapsed: elapsed)
+            next.input = EQSpectrum.smoothedBins(next.input)
+            next.output = EQSpectrum.smoothedBins(next.output)
+            let rounded = next
             DispatchQueue.main.async {
                 guard let self else { return }
-                if self.spectrum != next { self.spectrum = next }
+                if self.spectrum != rounded { self.spectrum = rounded }
                 self.busy = false
             }
         }
+    }
+}
+
+/// Interpolate the display between completed FFTs, without requesting more FFTs.
+struct EQSpectrumVector: VectorArithmetic {
+    var values: [Double]
+    init(_ spectrum: EQSpectrum) { values = (spectrum.input + spectrum.output).map(Double.init) }
+    private init(values: [Double]) { self.values = values }
+    static let zero = EQSpectrumVector(values: [])
+    static func + (lhs: Self, rhs: Self) -> Self {
+        Self(values: (0..<max(lhs.values.count, rhs.values.count)).map { (lhs.values.indices.contains($0) ? lhs.values[$0] : 0) + (rhs.values.indices.contains($0) ? rhs.values[$0] : 0) })
+    }
+    static func - (lhs: Self, rhs: Self) -> Self {
+        Self(values: (0..<max(lhs.values.count, rhs.values.count)).map { (lhs.values.indices.contains($0) ? lhs.values[$0] : 0) - (rhs.values.indices.contains($0) ? rhs.values[$0] : 0) })
+    }
+    mutating func scale(by rhs: Double) { for index in values.indices { values[index] *= rhs } }
+    var magnitudeSquared: Double { values.reduce(0) { $0 + $1 * $1 } }
+    var spectrum: EQSpectrum {
+        guard values.count == EQSpectrum.binCount * 2 else { return EQSpectrum() }
+        return EQSpectrum(input: values.prefix(EQSpectrum.binCount).map(Float.init), output: values.suffix(EQSpectrum.binCount).map(Float.init))
     }
 }

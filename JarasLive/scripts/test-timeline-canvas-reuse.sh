@@ -23,7 +23,9 @@ extension EnvironmentValues {
 }
 '''
 surface = source[start:end]
-surface = surface.replace('        Canvas(rendersAsynchronously: false)', '        let _ = recordSurfaceBody(tile)\n        return Canvas(rendersAsynchronously: false)', 1)
+needle = '        Canvas(rendersAsynchronously: !synchronized)'
+assert needle in surface, 'Canvas body instrumentation must match production'
+surface = surface.replace(needle, '        let _ = recordSurfaceBody(tile)\n        return Canvas(rendersAsynchronously: !synchronized)', 1)
 if sys.argv[2] == 'drawing-group':
     surface = surface.replace('''        }
     }

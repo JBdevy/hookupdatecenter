@@ -51,7 +51,62 @@ func frameRMS(_ data: Data) -> Double {
         return sqrt(values.reduce(0) { $0 + Double($1) * Double($1) } / Double(values.count))
     }
 }
+@MainActor func testIdleRouteGate() throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+    var sourcePulls = 0
+    let source = AVAudioSourceNode { _, _, _, buffers in
+        sourcePulls += 1
+        for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+            guard let data = buffer.mData else { continue }
+            let samples = data.assumingMemoryBound(to: Float.self)
+            for index in 0..<Int(buffer.mDataByteSize) / MemoryLayout<Float>.size { samples[index] = 0.125 }
+        }
+        return noErr
+    }
+    let route = JarasChannelRouter.makeNode()
+    engine.attach(source); engine.attach(route)
+    engine.connect(source, to: route, format: format)
+    engine.connect(route, to: engine.mainMixerNode, format: format)
+    JarasChannelRouter.configure(route, first: 1, count: 2)
+    try engine.start()
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    func render() throws -> Float {
+        let status = try engine.renderOffline(512, to: buffer)
+        precondition(status == .success)
+        return (0..<Int(buffer.frameLength)).map { abs(buffer.floatChannelData![0][$0]) }.max() ?? 0
+    }
+    let audible = try render()
+    precondition(audible > 0.1 && sourcePulls > 0, "an enabled route must deliver audio")
+    JarasChannelRouter.setRenderEnabled(route, enabled: false)
+    let before = sourcePulls
+    for _ in 0..<8 {
+        let silence = try render()
+        precondition(silence == 0, "sleeping output remains digitally silent")
+    }
+    precondition(sourcePulls == before, "sleeping route must not pull the upstream track and effects")
+    JarasChannelRouter.setRenderEnabled(route, enabled: true)
+    let restored = try render()
+    precondition(restored > 0.1 && sourcePulls > before, "waking route immediately restores audio")
+    engine.stop()
+    print("IDLE_ROUTE_STOPS_UPSTREAM_RENDER_WITH_DEVICE_CLOCK_ALIVE_OK")
+}
+func testRoundedSpectrum() {
+    let flat = [Float](repeating: -24, count: EQSpectrum.binCount)
+    precondition(EQSpectrum.smoothedBins(flat) == flat, "visual rounding preserves a flat measured spectrum")
+    var peak = [Float](repeating: -80, count: EQSpectrum.binCount)
+    let center = peak.count / 2; peak[center] = -12
+    let rounded = EQSpectrum.smoothedBins(peak)
+    precondition(rounded[center] > rounded[center-1] && rounded[center-1] > rounded[center-2] && rounded[center-2] > rounded[center-3], "a narrow FFT spike becomes a rounded hill instead of a square step")
+    for offset in 1...6 { precondition(abs(rounded[center-offset]-rounded[center+offset]) < 0.001, "rounding cannot shift a frequency peak") }
+    precondition(rounded.allSatisfy { $0 >= -80 && $0 <= -12 }, "curve smoothing cannot invent out-of-range levels")
+    precondition(EQSpectrum.smoothedBins([.nan, .infinity, -200, 300]).allSatisfy { $0.isFinite && $0 >= EQSpectrum.minimumDB && $0 <= EQSpectrum.maximumDB })
+    precondition(EQSpectrum.smoothedBins([]).isEmpty)
+    print("EQ_RTA_ROUNDED_HILLS_BOUNDED_FREQUENCY_ALIGNMENT_OK")
+}
 func testSpectrumWorker(rate: Double) {
+    testRoundedSpectrum()
     let tone = rate * 46 / 2048
     let input = stereoFrame(rate: rate, frequency: tone, gain: 0.5)
     let output = stereoFrame(rate: rate, frequency: tone, gain: 0.125)
@@ -112,6 +167,7 @@ func testSpectrumWorker(rate: Double) {
     print("EQ_RTA_REAL_PCM_FFT_BOTH_HEADS_BYPASS_AND_CLOSED_CAPTURE_OK rate=\(rate) channels=\(channels)")
 }
 @MainActor func run() throws {
+    try testIdleRouteGate()
     for rate in [44100.0,48000.0] {
         try testEQCapture(rate: rate)
         try testEQCapture(rate: rate, channels: 1)
@@ -157,3 +213,13 @@ func testSpectrumWorker(rate: Double) {
     }
 }
 try MainActor.assumeIsolated { try run() }
+
+let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))
+let spectrumEnd = EQSpectrum(input: Array(repeating: -24, count: EQSpectrum.binCount), output: Array(repeating: -12, count: EQSpectrum.binCount))
+let vectorStart = EQSpectrumVector(spectrumStart), vectorEnd = EQSpectrumVector(spectrumEnd)
+var halfTransition = vectorEnd - vectorStart
+halfTransition.scale(by: 0.5)
+let midpoint = (vectorStart + halfTransition).spectrum
+precondition(midpoint.input.allSatisfy { $0 == -48 } && midpoint.output.allSatisfy { $0 == -30 }, "RTA display moves between measured spectra without jumping or altering their endpoints")
+precondition((EQSpectrumVector.zero + vectorEnd).spectrum == spectrumEnd && (vectorStart + (vectorEnd - vectorStart)).spectrum == spectrumEnd)
+print("RTA_TEMPORAL_INTERPOLATION_AND_ENDPOINTS_OK")

@@ -9,7 +9,7 @@
 namespace jaras {
 void orderSpecialTracks(Project& project) {
     const auto rank = [](const Track& track) {
-        return track.role.id == "timecode" ? 0 : track.role.id == "chords" ? 1 : track.role.id == "teleprompt" ? 2 : track.role.id == "video" ? 3 : 4;
+        return track.role.id == "timecode" ? 0 : track.role.id == "chords" ? 1 : track.role.id == "teleprompt" ? 2 : track.role.id == "teleprompt2" ? 3 : track.role.id == "video" ? 4 : 5;
     };
     for (auto& song : project.songs) {
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };
@@ -71,6 +71,7 @@ void validateClipFXJSON(const std::string& json) {
 }
 void validateRegionSetlist(const Project& p, const RegionSetlist& state) {
     auto require = [](bool valid, const char* message) { if (!valid) throw std::invalid_argument(message); };
+    require(!state.automaticSubplaySeconds || (std::isfinite(*state.automaticSubplaySeconds) && *state.automaticSubplaySeconds >= 1 && *state.automaticSubplaySeconds <= 5), "Automatic Subplay time must be between 1 and 5 seconds");
     std::set<ID> ids{p.id};
     for (const auto& song : p.songs) {
         ids.insert(song.id);
@@ -146,6 +147,7 @@ void validate(const Project& p) {
                 patch.channelCount >= 1 && patch.channelCount <= 2 &&
                 (patch.firstChannel != 0 || patch.channelCount == 2), "Invalid output patch");
     };
+    require(!p.masterColor || *p.masterColor <= 0xffffff, "Invalid master color");
     require(finite(p.masterVolume) && p.masterVolume >= 0 && p.masterVolume <= std::pow(10.0, 12.0 / 20.0), "Invalid master volume");
     if (p.masterPatch) validatePatch(*p.masterPatch, false, false, true);
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
@@ -158,21 +160,22 @@ void validate(const Project& p) {
         unique(s.id); songIds.insert(s.id);
         require(finite(s.duration) && s.duration > 0 && finite(s.bpm) && s.bpm > 0, "Invalid song timing");
         require(s.beatsPerBar >= 1 && s.beatsPerBar <= 32 && s.beatUnit >= 1 && s.beatUnit <= 64 && (s.beatUnit & (s.beatUnit - 1)) == 0, "Invalid time signature");
+        require(!s.timeSettings || validProjectTimeSettings(*s.timeSettings), "Invalid project timebase");
         std::optional<ID> folder;
         for (const auto& t : s.tracks) {
             if (t.parentTrackID) require(folder && *folder == *t.parentTrackID && t.id != *folder, "Invalid track group");
             else folder = t.id;
             unique(t.id);
             const auto fixed = fixedTrackName(t.role);
-            require(fixed.empty() || (t.name == fixed && !t.solo && !t.parentTrackID), "Invalid special track");
-            const bool textTrack = t.role.id == "teleprompt" || t.role.id == "chords";
+            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video") && !t.parentTrackID), "Invalid special track");
+            const bool textTrack = isTeleprompterRole(t.role) || t.role.id == "chords";
             if (textTrack || t.role.id == "video") {
                 std::vector<const AudioClip*> ordered;
-                for (int layer = 0; layer < (t.role.id == "teleprompt" ? 2 : 1); ++layer) {
+                for (int layer = 0; layer < (isTeleprompterRole(t.role) ? 2 : 1); ++layer) {
                 ordered.clear();
                 for (const auto& clip : t.clips) {
                     const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
-                    if (t.role.id != "teleprompt" || media == (layer == 1)) ordered.push_back(&clip);
+                    if (!isTeleprompterRole(t.role) || media == (layer == 1)) ordered.push_back(&clip);
                 }
                 std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->startTime < b->startTime; });
                 for (size_t index = 1; index < ordered.size(); ++index)
@@ -180,15 +183,24 @@ void validate(const Project& p) {
                             "Teleprompter, Video and Chords items cannot overlap");
                 }
             }
-            require(!textTrack || (!t.mute && !t.fxJSON && !t.audioFile && !t.midiInput && !t.recordingFormat), "Text tracks cannot contain audio controls");
+            require(!textTrack || (!t.mute && !t.fxJSON && !t.audioFile && !t.midiInput && !t.midiChannel && !t.recordingFormat && !t.recordingChannels), "Text tracks cannot contain audio controls");
             if (t.role.id == "timecode") require(++timecodeTracks <= 1, "Only one Timecode track is allowed");
             if (t.timecode) {
                 const auto& tc = *t.timecode;
                 require((tc.mode == "mtc" || tc.mode == "ltc") && (tc.frameRate == 24 || tc.frameRate == 25 || tc.frameRate == 29.97 || tc.frameRate == 30) && finite(tc.offset) && tc.offset >= 0 && tc.offset < 86400, "Invalid timecode settings");
             }
             require(!t.color || *t.color <= 0xffffff, "Invalid track color");
+            require(!t.midiChannel || (*t.midiChannel >= 1 && *t.midiChannel <= 16), "Invalid MIDI channel");
             require(!t.midiInput || (*t.midiInput >= 1 && *t.midiInput <= 3), "Invalid MIDI input");
             if (t.inputPatch) validatePatch(*t.inputPatch, false);
+            if (t.stereoLinkPartner) {
+                const auto partner = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const auto& other) { return other.id == *t.stereoLinkPartner; });
+                require(fixed.empty() && partner != s.tracks.end() && partner->id != t.id && partner->stereoLinkPartner == t.id && partner->stereoLinkLeft != t.stereoLinkLeft, "Invalid linked tracks");
+                require(std::none_of(s.tracks.begin(), s.tracks.end(), [&](const auto& child) { return child.parentTrackID == t.id; }), "Folder tracks cannot be linked");
+                require(t.inputPatch && partner->inputPatch && t.inputPatch->channelCount == 1 && partner->inputPatch->channelCount == 1 && partner->inputPatch->firstChannel == t.inputPatch->firstChannel + (t.stereoLinkLeft ? 1 : -1), "Linked tracks require consecutive mono inputs");
+                require(t.volume == partner->volume && t.pan == -partner->pan, "Linked track controls must match");
+            }
+            require(!t.recordingChannels || *t.recordingChannels == 1 || *t.recordingChannels == 2, "Invalid recording channel mode");
             require(!t.recordingFormat || *t.recordingFormat == "wav" || *t.recordingFormat == "wav32" || *t.recordingFormat == "mp3", "Invalid recording format");
             if (t.patch) validatePatch(*t.patch, true, t.parentTrackID.has_value(), true);
             if (t.secondaryPatch) validatePatch(*t.secondaryPatch, true, t.parentTrackID.has_value(), true);
@@ -201,8 +213,8 @@ void validate(const Project& p) {
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
                 if (clip.text) validateClipText(*clip.text, t.role.id == "chords" ? 30 : 400);
                 const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
-                require(!media || t.role.id == "video" || t.role.id == "teleprompt", "Videos require a Video or Teleprompter track");
-                if (t.role.id == "teleprompt" && media) require(!clip.text && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && !clip.loopStart && !clip.loopLength, "Teleprompter media cannot contain audio controls");
+                require(!media || t.role.id == "video" || isTeleprompterRole(t.role), "Videos require a Video or Teleprompter track");
+                if (isTeleprompterRole(t.role) && media) require(!clip.text && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && !clip.loopStart && !clip.loopLength, "Teleprompter media cannot contain audio controls");
                 else require(!textTrack || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && clip.sourceOffset == 0 && !clip.loopStart && !clip.loopLength), "Text items cannot contain audio");
                 require(!clip.fxJSON || fixed.empty(), "Item FX requires an audio track");
                 require(!clip.fxBypassed || fixed.empty(), "Item FX requires an audio track");
@@ -214,6 +226,8 @@ void validate(const Project& p) {
                 require(!clip.loopStart || (finite(*clip.loopStart) && *clip.loopStart >= 0), "Invalid loop start");
                 require(!clip.loopLength || (finite(*clip.loopLength) && *clip.loopLength > 0), "Invalid loop length");
                 require(!clip.gain || (finite(*clip.gain) && *clip.gain >= 0), "Invalid clip gain");
+                require(!clip.channelMode || (*clip.channelMode >= 0 && *clip.channelMode <= 3), "Invalid item channel mode");
+                require(!clip.normalizationGain || (finite(*clip.normalizationGain) && *clip.normalizationGain >= 0 && *clip.normalizationGain <= std::pow(10.0, 24.0 / 20.0)), "Invalid normalization gain");
                 unique(clip.id);
                 require(finite(clip.startTime) && finite(clip.duration) && clip.startTime >= 0 && clip.duration > 0 && clip.startTime + clip.duration <= s.duration, "Invalid clip interval");
                 require(finite(clip.playbackRate) && clip.playbackRate >= 1.0/32 && clip.playbackRate <= 32, "Invalid clip playback rate");
@@ -235,11 +249,22 @@ void validate(const Project& p) {
             }
         }
         if (s.markers) for (const auto& marker : *s.markers) {
+            if (marker.tempoBPM) {
+                const int unit = marker.tempoUnit.value_or(4);
+                require(finite(*marker.tempoBPM) && *marker.tempoBPM >= 60 && *marker.tempoBPM <= 300 && marker.tempoBeats.value_or(4) >= 1 && marker.tempoBeats.value_or(4) <= 32 && (unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16 || unit == 32 || unit == 64) && !marker.unifiedRegionID && !marker.sourceRegionID, "Invalid tempo marker");
+                require(!marker.tempoTimebase || *marker.tempoTimebase == "global" || *marker.tempoTimebase == "free" || *marker.tempoTimebase == "relative", "Invalid tempo marker timebase");
+            } else require(!marker.tempoBeats && !marker.tempoUnit && !marker.tempoTimebase, "Invalid tempo marker");
             unique(marker.id);
             require(marker.name.find_first_not_of(" \t\r\n") != std::string::npos && marker.color <= 0xffffff && finite(marker.position) && marker.position >= 0 && marker.position <= s.duration, "Invalid marker");
         }
         std::vector<std::pair<double, int>> regionEdges;
         for (const auto& part : s.parts) {
+            for (const auto& loop : part.multiLoops) {
+                unique(loop.id);
+                require(loop.name.find_first_not_of(" \t\r\n") != std::string::npos && loop.marker1 != loop.marker2 && finite(loop.fadeSeconds) && loop.fadeSeconds >= 1 && loop.fadeSeconds <= 5, "Invalid multiloop");
+                std::set<ID> targets;
+                for (const auto& track : loop.tracks) require(targets.insert(track.id).second && finite(track.gain) && track.gain >= 0 && track.gain <= std::pow(10.0, 12.0 / 20.0), "Invalid multiloop track");
+            }
             require(!part.pitchSemitones || (*part.pitchSemitones >= -6 && *part.pitchSemitones <= 6), "Invalid region pitch");
             unique(part.id);
             if (!part.parentRegionID) { regionEdges.emplace_back(part.startTime, 1); regionEdges.emplace_back(part.endTime, -1); }

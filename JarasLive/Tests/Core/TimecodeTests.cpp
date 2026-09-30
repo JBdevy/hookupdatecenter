@@ -25,6 +25,7 @@ int main() {
     Engine engine; engine.loadProject(project);
     engine.addTrack("tc","Ignored",{"timecode"});
     auto tc=engine.project().songs[0].tracks[0];
+    assert(!tc.color.has_value());
     assert(tc.name=="Timecode" && tc.clips.size()==2);
     assert(tc.clips[0].startTime==30 && tc.clips[0].duration==20);
     bool rejected=false; try { engine.addTrack("tc2","Timecode",{"timecode"}); } catch(...) { rejected=true; } assert(rejected);
@@ -41,9 +42,10 @@ int main() {
     assert(engine.project().songs[0].tracks[0].color==0x123456);
     engine.addTrack("video","Cannot rename",{"video"});
     engine.addTrack("tp","Cannot rename",{"teleprompt"});
-    assert(engine.project().songs[0].tracks[1].name=="Teleprompter");
+    assert(engine.project().songs[0].tracks[1].name=="Teleprompter 1");
     assert(engine.project().songs[0].tracks[2].name=="Video");
     engine.addTrack("audio","Audio",{"other"});
+    assert(engine.project().songs[0].tracks.back().color==0x828282);
     AudioClip recorded; recorded.id="new-item"; recorded.name="Third"; recorded.startTime=130; recorded.duration=20;
     engine.addRecordedClip("audio",recorded);
     engine.regionFromClip("new-item","region-c");

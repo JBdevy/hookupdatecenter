@@ -39,6 +39,40 @@ precondition(right[27000..<45000].map { abs($0) }.max()! > 0.29,"every track ren
 for frame in stride(from:27000,to:45000,by:127) { precondition(abs(master[frame]-left[frame]-right[frame]) < 0.00002,"Master equals simultaneous track mix") }
 precondition(reports.last?.completed == 3 && reports.last?.total == 3)
 precondition(reports.last!.waveform.max()! > 0.29,"display uses real rendered samples")
+// Free Grid and a marker's Free override preserve the rendered source across
+// tempo boundaries for Master, tracks and individual selected stems.
+func renderedPCM(_ url: URL) throws -> [Float] {
+    let file = try AVAudioFile(forReading: url)
+    let data = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+    try file.read(into: data)
+    return Array(UnsafeBufferPointer(start: data.floatChannelData![0], count: Int(data.frameLength)))
+}
+var tempoSong = song
+tempoSong.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0.4, color: 0x999999, tempoBPM: 180),
+                     TimelineMarker(id: UUID(), name: "TEMPO", position: 0.8, color: 0x999999, tempoBPM: 60)]
+for timebase in [ProjectTimebase.free, .relative] {
+    tempoSong.timeSettings = ProjectTimeSettings(); tempoSong.timeSettings?.timebase = timebase
+    for i in tempoSong.markers!.indices { tempoSong.markers![i].tempoTimebase = timebase == .free ? .global : .free }
+    let folder = root.appendingPathComponent("free-tempo-" + timebase.rawValue)
+    try OfflineAudioExport.run(project: project, song: tempoSong, plan: plan, mediaDirectory: root, outputDirectory: folder, sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+    for job in plan.jobs {
+        let baseline = try renderedPCM(output.appendingPathComponent(job.fileName))
+        let actual = try renderedPCM(folder.appendingPathComponent(job.fileName))
+        precondition(baseline.count == actual.count && !baseline.isEmpty)
+        precondition(zip(baseline, actual).map { abs($0 - $1) }.max()! < 0.00001, "Free Grid exports preserve PCM: \(job.fileName)")
+    }
+}
+let tempoStemPlan = AudioExportPlan(project: project, song: song, source: .stems, bounds: .project, template: "%stem", tracks: [], clips: [a.clips[0].id, b.clips[0].id], regions: [])
+let baselineStemsFolder = root.appendingPathComponent("baseline-tempo-stems"), tempoStemsFolder = root.appendingPathComponent("free-tempo-stems")
+try OfflineAudioExport.run(project: project, song: song, plan: tempoStemPlan, mediaDirectory: root, outputDirectory: baselineStemsFolder, sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+try OfflineAudioExport.run(project: project, song: tempoSong, plan: tempoStemPlan, mediaDirectory: root, outputDirectory: tempoStemsFolder, sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+for job in tempoStemPlan.jobs {
+    let baseline = try renderedPCM(baselineStemsFolder.appendingPathComponent(job.fileName))
+    let actual = try renderedPCM(tempoStemsFolder.appendingPathComponent(job.fileName))
+    precondition(baseline.count == actual.count && !baseline.isEmpty)
+    precondition(zip(baseline, actual).map { abs($0 - $1) }.max()! < 0.00001, "Free marker also preserves selected stem PCM")
+}
+print("FREE_GRID_GLOBAL_AND_LOCAL_OVERRIDE_MASTER_TRACKS_AND_STEMS_EXPORT_PCM_OK")
 // A shorter stem finishes first; the same display then follows the next file.
 var short = b.clips[0]; short.startTime = 0; short.duration = 0.2; short.gain = 5
 var long = a.clips[0]; long.startTime = 0; long.duration = 1
@@ -204,3 +238,30 @@ for (index, job) in pitchPlan.jobs.enumerated() {
     precondition(abs(measured-expected) < 8, "export pitch frequency \(measured), expected \(expected)")
 }
 print("OFFLINE_REGION_AND_NATIVE_PITCH_PCM_AND_DURATION_OK")
+
+func verifyFrozenItem() throws {
+    var freeze = Project.empty(name: "Freeze")
+    var channel = Track(id: UUID(), name: "Click", role: .click, volume: 0.1, pan: 0.5, mute: true, solo: false)
+    let original = AudioClip(id: UUID(), name: "click.wav", startTime: 0.5, duration: 0.5, audioFile: AudioFile(path: "a.wav"), gain: 0.5, normalizationGain: 0.5, muted: true)
+    channel.clips = [original]; freeze.songs[0].tracks = [channel]; freeze.songs[0].duration = 1
+    let a = try ItemReRender.render(project: freeze, song: freeze.songs[0], track: channel, clip: original, directory: root,
+                                  settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
+    precondition(a.id == original.id && a.startTime == original.startTime && a.duration == original.duration)
+    precondition(a.muted == true && a.gain == 1 && a.normalizationGain == nil && a.fx == nil && a.audioRate == 1 && a.sourceOffset == 0)
+    precondition(a.audioFile?.path == "Steams/click-01.wav")
+    let audio = try AVAudioFile(forReading: root.appendingPathComponent(a.audioFile!.path))
+    let pcm = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(audio.length))!
+    try audio.read(into: pcm)
+    let maximum = (0..<Int(pcm.frameLength)).map { abs(pcm.floatChannelData![0][$0]) }.max()!
+    precondition(abs(maximum - 0.05) < 0.003, "freeze bakes normalization and item gain once while leaving track volume, pan and mute live")
+    let b = try ItemReRender.render(project: freeze, song: freeze.songs[0], track: channel, clip: original, directory: root,
+                                  settings: MediaProcessingFormat(format: .aiff, bitDepth: 32, bitrate: 320), cancellation: AudioExportCancellation())
+    precondition(b.audioFile?.path == "Steams/click-01.aiff")
+    let c = try ItemReRender.render(project: freeze, song: freeze.songs[0], track: channel, clip: a, directory: root,
+                                  settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
+    precondition(c.audioFile?.path == "Steams/click-02.wav")
+    precondition(FileManager.default.fileExists(atPath: root.appendingPathComponent(original.audioFile!.path).path))
+    precondition(FileManager.default.fileExists(atPath: root.appendingPathComponent(a.audioFile!.path).path), "all previous sources remain available for Undo")
+    print("FREEZE_ITEM_GAIN_ONCE_SOURCE_PRESERVATION_EXACT_POSITION_AND_SEQUENTIAL_SUFFIX_OK")
+}
+try verifyFrozenItem()

@@ -8,6 +8,8 @@ static void expect(bool ok, const char* message) { if (!ok) throw std::runtime_e
 int main() {
     Project p; p.id="project"; p.name="Show"; p.songs={{"one","One",10,120,{{"track","Click",{"click"}}},{}},{"two","Two",20,100,{},{}},{"three","Three",30,90,{},{}}};
     p.setlists={{"setlist","Setlist",{"one","two","three"}}};
+    ProjectTimeSettings relativeTime; relativeTime.timebase = ProjectTimebase::relative;
+    p.songs[0].timeSettings = relativeTime;
     Engine tempo; tempo.loadProject(p); tempo.execute({CommandKind::play}); tempo.advance(1);
     tempo.execute({CommandKind::tempo, "", 90});
     tempo.execute({CommandKind::beatsPerBar, "", 6}); tempo.execute({CommandKind::beatUnit, "", 8});
@@ -19,6 +21,16 @@ int main() {
     bool invalidMeter = false; try { tempo.execute({CommandKind::beatUnit, "", 3}); } catch (...) { invalidMeter = true; }
     expect(invalidMeter && tempo.currentSong()->beatUnit == 8, "invalid beat unit is rejected without mutation");
     validate(tempo.project());
+    ProjectTimeSettings freeTime; freeTime.timebase = ProjectTimebase::free; freeTime.divisions = 8;
+    Engine freeGrid; freeGrid.loadProject(p); freeGrid.execute({CommandKind::editSeek, "", 2});
+    freeGrid.setProjectTiming(240, 3, 8, freeTime);
+    expect(freeGrid.currentSong()->duration == 10 && freeGrid.transport().editPosition == 2, "free grid keeps absolute timeline and cursor positions");
+    expect(freeGrid.currentSong()->timeSettings->divisions == 8 && freeGrid.currentSong()->beatsPerBar == 3, "project timing settings update together");
+    freeGrid.execute({CommandKind::tempo, "", 120});
+    expect(freeGrid.currentSong()->duration == 10 && freeGrid.transport().editPosition == 2, "toolbar tempo also respects free grid");
+    freeTime.divisions = 16;
+    bool invalidDivisions = false; try { freeGrid.setProjectTiming(200, 4, 4, freeTime); } catch (...) { invalidDivisions = true; }
+    expect(invalidDivisions && freeGrid.currentSong()->bpm == 120 && freeGrid.currentSong()->beatsPerBar == 3, "invalid settings never partially apply tempo or meter");
     Project stretchProject = p;
     AudioClip stretchClip; stretchClip.id = "stretched"; stretchClip.name = "Audio";
     stretchClip.startTime = 2; stretchClip.duration = 6; stretchClip.sourceOffset = 0.5;
@@ -86,6 +98,14 @@ int main() {
     expect(ignore.transport().playing && ignore.transport().regionId == "ignore-queue" && ignore.transport().position == 81 && !ignore.transport().ignoreNextAfter, "Ignore Next consumes boundary once and resumes the queued song");
     ignore.execute({CommandKind::stopAll}); ignore.execute({CommandKind::selectRegion, "ignore-first"}); ignore.execute({CommandKind::play}); ignore.execute({CommandKind::ignoreNext}); ignore.execute({CommandKind::ignoreNext}); ignore.advance(26);
     expect(ignore.transport().playing && !ignore.transport().ignoreNextAfter && ignore.transport().position == 26, "Ignore Next toggles off without seeking or stopping");
+    ignore.execute({CommandKind::stopAll}); ignore.execute({CommandKind::selectRegion, "ignore-first"}); ignore.execute({CommandKind::play}); ignore.advance(24);
+    ignore.execute({CommandKind::ignoreNext});
+    expect(ignore.transport().ignoreNextRegionId == "ignore-first" && ignore.transport().ignoreNextAfter == 20 && ignore.transport().ignoreNextEnd == 25, "late Ignore Next targets the previous song while its audio still plays");
+    ignore.execute({CommandKind::ignoreNext});
+    expect(!ignore.transport().ignoreNextAfter && ignore.transport().position == 24, "late toggle off restores the next song without moving the cursor");
+    ignore.execute({CommandKind::ignoreNext});
+    expect(ignore.transport().ignoreNextRegionId == "ignore-first", "toggling on again after crossing a marker retains the audible tail");
+    ignore.advance(2); expect(!ignore.transport().playing && ignore.transport().position == 25, "late Ignore Next uses actual file end");
     ignore.execute({CommandKind::stopAll}); ignore.execute({CommandKind::selectRegion, "ignore-third"}); ignore.execute({CommandKind::play}); ignore.execute({CommandKind::ignoreNext});
     expect(!ignore.transport().ignoreNextAfter, "last drawer song cannot ignore a nonexistent next song");
     ignore.setRegionPitch("ignore-first", 6, {"track"}, {});
@@ -204,6 +224,7 @@ int main() {
     expect(trackIDs(fixedTrackOrder) == trackIDs(loadOldTrackOrder), "undo restores the canonical special prefix and normal groups");
     Engine timecodeSpan; timecodeSpan.loadProject(oldTrackOrder);
     auto trimmedTimecode = timecodeSpan.project();
+    trimmedTimecode.songs[0].timeSettings = relativeTime;
     auto& trimmedTimecodeClip = trimmedTimecode.songs[0].tracks[0].clips[0];
     const auto timecodeClipID = trimmedTimecodeClip.id;
     trimmedTimecodeClip.timecodeStartOffset = -1; trimmedTimecodeClip.timecodeEndOffset = 8; trimmedTimecodeClip.sourceOffset = 3;
@@ -238,6 +259,16 @@ int main() {
         bool rejected = false; try { mediaMoves.moveClip(ids.first, 4, ids.second); } catch (...) { rejected = true; }
         expect(rejected && mediaMoves.project().songs[0].tracks[0].clips[0].id == "video-move-item" && mediaMoves.project().songs[0].tracks[1].clips[0].id == "clip", "video and audio cannot cross incompatible track kinds");
     }
+    Project crossMediaProject = mediaMoveProject;
+    crossMediaProject.songs[0].tracks.push_back({"teleprompter-move", "Teleprompter", {"teleprompt"}});
+    Engine crossMedia; crossMedia.loadProject(crossMediaProject);
+    crossMedia.moveClip("video-move-item", 6, "teleprompter-move");
+    const auto& teleprompterAfterMove = crossMedia.project().songs[0].tracks.front();
+    expect(teleprompterAfterMove.id == "teleprompter-move" && teleprompterAfterMove.clips.size() == 1 && teleprompterAfterMove.clips[0].startTime == 6,
+           "a video item moves from Video to Teleprompter");
+    crossMedia.moveClip("video-move-item", 8, "video-move");
+    expect(crossMedia.project().songs[0].tracks[1].clips.size() == 1 && crossMedia.project().songs[0].tracks[1].clips[0].startTime == 8,
+           "a Teleprompter video item moves back to Video");
     auto mislabeledVideo = editable; mislabeledVideo.songs[0].tracks[0].clips[0].audioFile = AudioFile{"Videos/movie.wav", {}};
     mislabeledVideo.songs[0].tracks.push_back({"audio-move", "Audio", {"other"}});
     mediaMoves.execute({CommandKind::stopAll});
@@ -405,7 +436,24 @@ int main() {
     regionLists.blocks = std::vector<SetlistBlock>{{"block1", "one", "playlist", "Bloco 01", 0x45c68b, "r2"}};
     regionShow.regionSetlist = regionLists;
     expect(!regionLists.prepareWithoutPlayback.value_or(false), "prepare without playback is off by default");
-    auto readyProject = regionShow; readyProject.regionSetlist->prepareWithoutPlayback = true;
+    for (bool automaticQueue : {false, true}) {
+        auto crossProject = regionShow; crossProject.regionSetlist->autoAdvance = automaticQueue;
+        crossProject.regionSetlist->automaticSubplay = true; crossProject.regionSetlist->automaticSubplaySeconds = 1;
+        Engine cross; cross.loadProject(crossProject); cross.execute({CommandKind::selectRegion, "r1"}); cross.execute({CommandKind::play});
+        if (!automaticQueue) cross.execute({CommandKind::queueRegion, "r2"});
+        cross.advance(1.5); expect(!cross.transport().subPlay.playing, "automatic subplay waits for its lead time");
+        cross.advance(0.75); expect(cross.transport().subPlay.playing && cross.transport().subPlay.position == 7.25, "automatic subplay accounts only for elapsed after the trigger");
+        cross.advance(0.75); expect(cross.transport().regionId == "r2" && cross.transport().position == 8 && cross.transport().subPlayPromotion == 1, "manual and automatic queues promote without restarting audio");
+    }
+    auto ignoredCrossProject = ignoreProject; ignoredCrossProject.regionSetlist = RegionSetlist{};
+    ignoredCrossProject.regionSetlist->automaticSubplay = true; ignoredCrossProject.regionSetlist->automaticSubplaySeconds = 2;
+    Engine ignoredCross; ignoredCross.loadProject(ignoredCrossProject);
+    ignoredCross.execute({CommandKind::selectRegion, "ignore-first"}); ignoredCross.execute({CommandKind::play});
+    ignoredCross.execute({CommandKind::queueRegion, "ignore-queue"}); ignoredCross.execute({CommandKind::ignoreNext});
+    ignoredCross.advance(22); expect(!ignoredCross.transport().subPlay.playing, "Ignore Next lead time uses the real current audio end");
+    ignoredCross.advance(2); expect(ignoredCross.transport().subPlay.playing && ignoredCross.transport().subPlay.position == 81, "Ignore Next starts queue before its shortened boundary");
+    ignoredCross.advance(1); expect(ignoredCross.transport().position == 82 && ignoredCross.transport().subPlayPromotion == 1, "Ignore Next preserves the automatic subplay handoff");
+    auto readyProject = regionShow; readyProject.regionSetlist->prepareWithoutPlayback = true; readyProject.regionSetlist->automaticSubplay = true;
     Engine ready; ready.loadProject(readyProject);
     ready.execute({CommandKind::selectRegion, "r1"}); ready.execute({CommandKind::play});
     ready.advance(3.5);
@@ -490,6 +538,7 @@ int main() {
     e.execute({CommandKind::seek,"",2});
     e.execute({CommandKind::queue,"three"}); expect(e.nextSongId()=="three","queue overrides next"); e.advance(9); expect(e.transport().songId=="three" && e.transport().position==1 && !e.transport().queue.songId,"queued target consumed");
     e.execute({CommandKind::previous}); expect(e.transport().songId=="two","previous"); e.execute({CommandKind::next}); expect(e.transport().songId=="three","next");
+    e.execute({CommandKind::loopStart,"",0}); e.execute({CommandKind::loopEnd,"",30});
     e.execute({CommandKind::toggleLoop}); e.advance(35); expect(e.transport().playing && e.transport().position==5,"loop wraps");
     e.finishCurrentSong(true); e.advance(40); expect(!e.transport().playing && e.transport().position==30,"revocation waits for boundary even with loop");
     e.execute({CommandKind::volume,"track",0.3}); expect(e.project().songs[0].tracks[0].volume==0.3,"mixer volume");
@@ -536,7 +585,7 @@ int main() {
     itemGain.execute({CommandKind::clipGain, "clip2", 0.25});
     expect(itemGain.project().songs[0].tracks[0].clips[1].gain == 0.25 && !itemGain.project().songs[0].tracks[0].clips[0].gain && !itemGain.project().songs[0].tracks[0].clips[2].gain, "item gain command changes only the requested clip");
     expect(itemGain.transport().playing && itemGain.transport().position == 1 && itemGain.transport().subPlay.playing && itemGain.transport().subPlay.position == 3, "item gain preserves both playback heads");
-    for (double invalid : {-0.01, std::pow(10.0, 12.0 / 20.0) + 0.01, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+    for (double invalid : {-0.01, std::pow(10.0, 24.0 / 20.0) + 0.01, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
         bool rejected = false; try { itemGain.execute({CommandKind::clipGain, "clip2", invalid}); } catch (...) { rejected = true; }
         expect(rejected && itemGain.project().songs[0].tracks[0].clips[1].gain == 0.25 && itemGain.transport().position == 1 && itemGain.transport().subPlay.position == 3, "invalid item gain is atomic");
     }
@@ -544,8 +593,8 @@ int main() {
     expect(missingGainItem && itemGain.project().songs[0].tracks[0].clips[1].gain == 0.25, "unknown gain target cannot mutate another clip");
     itemGain.execute({CommandKind::clipGain, "clip2", 0});
     expect(itemGain.project().songs[0].tracks[0].clips[1].gain == 0, "item gain supports silence");
-    itemGain.execute({CommandKind::clipGain, "clip2", std::pow(10.0, 12.0 / 20.0)});
-    expect(itemGain.project().songs[0].tracks[0].clips[1].gain == std::pow(10.0, 12.0 / 20.0), "item gain supports exactly +12 dB");
+    itemGain.execute({CommandKind::clipGain, "clip2", std::pow(10.0, 24.0 / 20.0)});
+    expect(itemGain.project().songs[0].tracks[0].clips[1].gain == std::pow(10.0, 24.0 / 20.0), "item gain supports exactly +24 dB");
     for (const auto* specialRole : {"video", "teleprompt", "timecode", "chords"}) {
         auto specialGainProject = editable;
         specialGainProject.songs[0].parts = {{"special-region", "Special", 0, 9}};
@@ -692,6 +741,24 @@ int main() {
         try { dynamic.setTrackRouting({{"route-5",cycle}}); } catch(...) { rejected=true; }
         expect(rejected && !dynamic.currentSong()->tracks[5].routing, "feedback in any slot is rejected atomically");
         dynamic.setOutputPatches("route-0", {}); expect(dynamic.currentSong()->tracks[0].outputPatches().empty(), "all outputs can be removed");
+    }
+    {
+        Project media; media.id="video-audio-test"; media.name="Video controls"; media.songs={{"video-song","Song",10,120,{},{}}};
+        Track video; video.id="video-controls"; video.name="Video"; video.role={"video"};
+        Track timecode; timecode.id="timecode-controls"; timecode.name="Timecode"; timecode.role={"timecode"};
+        media.songs[0].tracks.push_back(video); media.songs[0].tracks.push_back(timecode);
+        Engine engine; engine.loadProject(media);
+        engine.execute({CommandKind::volume,video.id,0.5}); engine.execute({CommandKind::solo,video.id});
+        engine.execute({CommandKind::mute,video.id}); engine.execute({CommandKind::volume,timecode.id,0.25});
+        validate(engine.project());
+        auto track = std::find_if(engine.currentSong()->tracks.begin(),engine.currentSong()->tracks.end(),[&](const auto& value){return value.id==video.id;});
+        expect(track!=engine.currentSong()->tracks.end() && track->volume==0.5 && track->solo && track->mute,"video audio controls are persisted");
+        TimelineMarker a{"detected-a","TEMPO",0.123,0x999999}; a.tempoBPM=120; a.tempoBeats=4; a.tempoUnit=4; a.tempoTimebase="global";
+        TimelineMarker b{"detected-b","TEMPO",8.123,0x999999}; b.tempoBPM=90; b.tempoBeats=4; b.tempoUnit=4; b.tempoTimebase="global";
+        engine.setMarkers({a,b}); expect(engine.currentSong()->markers->size()==2,"tempo sections commit as one batch");
+        const auto saved = engine.currentSong()->markers->size(); b.id="invalid-tempo"; b.tempoBPM=400;
+        bool rejected=false; try {engine.setMarkers({b});} catch(...) {rejected=true;}
+        expect(rejected && engine.currentSong()->markers->size()==saved,"invalid tempo batch is atomic");
     }
     std::cout << "JARAS_CORE_OK\n";
 }

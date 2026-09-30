@@ -8,7 +8,7 @@ public struct NativeFXParameter: Codable, Equatable {
         case enabled, threshold, ratio, makeup, attack, release
         case delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut, reverbRoom
         case bandFrequency, bandGain, bandQ, bandType, bandSlope
-        case instrumentGain, instrumentAttack, instrumentHold, instrumentDecay, instrumentSustain, instrumentRelease
+        case instrumentVolume, instrumentGain, instrumentAttack, instrumentHold, instrumentDecay, instrumentSustain, instrumentRelease
         case velocityCutoff, velocityCurve, cutoffFrequency, cutoffDepth, cutoffAttack, cutoffHold, cutoffDecay, cutoffSustain, cutoffRelease
         case modulation, pitchBend
     }
@@ -35,6 +35,11 @@ public struct NativeFXParameter: Codable, Equatable {
     @discardableResult public func apply(_ midi: UInt8, to settings: inout NativeFXSettings) -> Bool {
         guard settings.inserted.contains(effect), minimum.isFinite, maximum.isFinite, minimum <= maximum,
               !logarithmic || (minimum >= 0 && maximum > minimum) else { return false }
+        if let index = settings.instances?.firstIndex(where: { $0.effectKey == effect }), var instance = settings.instances?[index] {
+            var parameter = self; parameter.effect = instance.kind
+            let applied = parameter.apply(midi, to: &instance.settings)
+            settings.instances?[index] = instance; return applied
+        }
         let value = value(midi), enabled = midi >= 64
         switch key {
         case .enabled: settings.setEnabled(effect, enabled: enabled)
@@ -66,9 +71,10 @@ public struct NativeFXParameter: Codable, Equatable {
                 settings.bands[index].type = choices[min(choices.count - 1, max(0, Int(value.rounded())))]
             default: break
             }
-        case .instrumentGain, .instrumentAttack, .instrumentHold, .instrumentDecay, .instrumentSustain, .instrumentRelease:
+        case .instrumentVolume, .instrumentGain, .instrumentAttack, .instrumentHold, .instrumentDecay, .instrumentSustain, .instrumentRelease:
             var parameters = settings.instrumentParameters ?? InstrumentParameters()
             switch key {
+            case .instrumentVolume: var controllers = parameters.controllers ?? InstrumentControllerParameters(); controllers.volume = min(0, max(-96, value)); parameters.controllers = controllers
             case .instrumentGain: parameters.gain = value
             case .instrumentAttack: parameters.attack = value
             case .instrumentHold: parameters.hold = value

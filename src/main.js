@@ -1,5 +1,10 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, shell, dialog, nativeImage, screen, powerMonitor, powerSaveBlocker, session } = require('electron');
 const path = require('path');
+const { createUpdateOperationGuard } = require('./update-operation-guard');
+const runUpdateOperation = createUpdateOperationGuard();
+function handleUpdateOperation(channel, handler) {
+  ipcMain.handle(channel, (...args) => runUpdateOperation(() => handler(...args)));
+}
 const fs = require('fs');
 // O Electron intercepta caminhos terminados em .asar no módulo fs comum.
 // O companion contém o próprio resources/app.asar e precisa ser tratado como
@@ -6987,17 +6992,20 @@ function installMacPayload(files, options = {}) {
   const installsReaperAssets = installExtension || hasCompanion ||
     themeSources.length > 0;
 
+  const directoryHelper = app.isPackaged
+    ? path.join(process.resourcesPath, 'hook-install', 'reaper-directories.sh')
+    : path.join(__dirname, '..', 'build', 'pkg-scripts', 'reaper-directories.sh');
   commands.push('set -e');
+  commands.push(fs.readFileSync(directoryHelper, 'utf8'));
   commands.push('GLOBAL_REAPER="/Library/Application Support/REAPER"');
   commands.push('GLOBAL_PLUGIN_DIR="$GLOBAL_REAPER/UserPlugins"');
   commands.push('GLOBAL_THEME_DIR="$GLOBAL_REAPER/ColorThemes"');
   commands.push('GLOBAL_LEGACY_SCRIPT_DIR="$GLOBAL_REAPER/Scripts/VS Hook APP"');
+  if (installsReaperAssets) {
+    commands.push('hook_prepare_reaper_directories "$GLOBAL_REAPER"');
+  }
   if (installExtension) {
     commands.push('rm -rf "$GLOBAL_LEGACY_SCRIPT_DIR"');
-  }
-  if (installsReaperAssets) {
-    commands.push('mkdir -p "$GLOBAL_PLUGIN_DIR"');
-    commands.push('mkdir -p "$GLOBAL_THEME_DIR"');
   }
   // No macOS vale a mesma regra do Windows: somente copiar/substituir o nome
   // empacotado, sem limpar qualquer tema anterior nas pastas do REAPER.
@@ -7020,7 +7028,7 @@ function installMacPayload(files, options = {}) {
   if (hasCompanion) {
     commands.push(`COMPANION_SOURCE=${shellQuote(companionSource)}`);
     commands.push('GLOBAL_COMPANION_DIR="$GLOBAL_PLUGIN_DIR/VSHookTelepromptSettings"');
-    commands.push('mkdir -p "$GLOBAL_COMPANION_DIR"');
+    commands.push('hook_ensure_directory "$GLOBAL_COMPANION_DIR"');
     commands.push('rm -rf "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
     commands.push('ditto "$COMPANION_SOURCE" "$GLOBAL_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
   }
@@ -7037,11 +7045,10 @@ function installMacPayload(files, options = {}) {
     commands.push('  USER_PLUGIN_DIR="$USER_REAPER/UserPlugins"');
     commands.push('  USER_THEME_DIR="$USER_REAPER/ColorThemes"');
     commands.push('  USER_LEGACY_SCRIPT_DIR="$USER_REAPER/Scripts/VS Hook APP"');
+    commands.push('  hook_prepare_reaper_directories "$USER_REAPER"');
     if (installExtension) {
       commands.push('  rm -rf "$USER_LEGACY_SCRIPT_DIR"');
     }
-    commands.push('  mkdir -p "$USER_PLUGIN_DIR"');
-    commands.push('  mkdir -p "$USER_THEME_DIR"');
     for (const themeSource of themeSources) {
       const filename = path.basename(themeSource);
       const temporaryName = `.${filename}.tmp`;
@@ -7061,7 +7068,7 @@ function installMacPayload(files, options = {}) {
     }
     if (hasCompanion) {
       commands.push('  USER_COMPANION_DIR="$USER_PLUGIN_DIR/VSHookTelepromptSettings"');
-      commands.push('  mkdir -p "$USER_COMPANION_DIR"');
+      commands.push('  hook_ensure_directory "$USER_COMPANION_DIR"');
       commands.push('  rm -rf "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
       commands.push('  ditto "$COMPANION_SOURCE" "$USER_COMPANION_DIR/VS Hook Teleprompt Settings.app"');
       commands.push('  chown -R "$USER_NAME":staff "$USER_COMPANION_DIR" 2>/dev/null || true');
@@ -9742,9 +9749,9 @@ ipcMain.handle('check-updates', async () => {
   return { ...result, ok: true, state: getAppState() };
 });
 ipcMain.handle('check-hook-center-update', () => checkHookCenterUpdates(true));
-ipcMain.handle('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());
-ipcMain.handle('download-hook-center-update', () => downloadHookCenterUpdateInstaller());
-ipcMain.handle('install-downloaded-hook-center-update', () => installDownloadedHookCenterUpdate());
+handleUpdateOperation('install-hook-center-update', () => downloadAndInstallHookCenterUpdate());
+handleUpdateOperation('download-hook-center-update', () => downloadHookCenterUpdateInstaller());
+handleUpdateOperation('install-downloaded-hook-center-update', () => installDownloadedHookCenterUpdate());
 ipcMain.handle('check-bridge-app-update', () => checkBridgeAppUpdates(true));
 ipcMain.handle('install-bridge-app-update', () => downloadAndInstallBridgeAppUpdate());
 ipcMain.handle('check-license-status', () => checkLicenseStatus(true));
@@ -9764,11 +9771,11 @@ ipcMain.handle('chat-admin-publish-update', (_event, payload) => publishUpdateFr
 ipcMain.handle('open-external', (_event, url) => shell.openExternal(url));
 ipcMain.handle('open-support', () => openSupport());
 ipcMain.handle('get-previous-updates', () => getPreviousUpdates());
-ipcMain.handle('download-update', (_event, payload) => downloadLatestUpdate(payload?.update || null));
-ipcMain.handle('install-update', () => installDownloadedUpdate());
-ipcMain.handle('cache-update-package', (_event, payload) => cacheUpdatePackage(payload?.update || null, { requireInstaller: true }));
-ipcMain.handle('remove-cached-update-package', (_event, payload) => removeCachedUpdatePackage(payload?.update || payload || null));
-ipcMain.handle('install-cached-update-package', (_event, payload) => {
+handleUpdateOperation('download-update', (_event, payload) => downloadLatestUpdate(payload?.update || null));
+handleUpdateOperation('install-update', () => installDownloadedUpdate());
+handleUpdateOperation('cache-update-package', (_event, payload) => cacheUpdatePackage(payload?.update || null, { requireInstaller: true }));
+handleUpdateOperation('remove-cached-update-package', (_event, payload) => removeCachedUpdatePackage(payload?.update || payload || null));
+handleUpdateOperation('install-cached-update-package', (_event, payload) => {
   const requestedSource = String(payload?.source || 'auto').trim().toLowerCase();
   const source = ['internet', 'computer'].includes(requestedSource)
     ? requestedSource

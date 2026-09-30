@@ -61,6 +61,9 @@ final class StemImportTests: XCTestCase {
         let destination = root.appendingPathComponent("Project/Show.jl")
         let first = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Order"), destination: destination)
         XCTAssertEqual(first.songs[0].parts.map(\.name), Array(names.reversed()))
+        let click = try XCTUnwrap(first.songs[0].tracks.first { $0.name == "Click" })
+        let clickGroup = try XCTUnwrap(first.songs[0].tracks.first { $0.id == click.parentTrackID })
+        XCTAssertEqual(click.color, clickGroup.color, "Imported groups keep their explicit taxonomy color")
         for pair in zip(first.songs[0].parts, first.songs[0].parts.dropFirst()) {
             XCTAssertEqual(pair.1.startTime - pair.0.endTime, 30, accuracy: 0.00001)
         }
@@ -80,6 +83,7 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(imported.tracks.count, 2)
         XCTAssertEqual(imported.tracks[0].id, track)
         XCTAssertNotEqual(imported.tracks[1].id, track)
+        XCTAssertTrue(imported.tracks.allSatisfy { $0.color == Track.defaultStandardColor })
         for (index, source) in [one, two].enumerated() {
             let clip = imported.tracks[index].clips[0]
             XCTAssertEqual(clip.startTime, 12.5)

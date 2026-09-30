@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasEqualizer : NSObject
 + (AVAudioUnitEffect *)makeNode;
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)coefficients enabled:(BOOL)enabled;
++ (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain;
++ (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 @end
@@ -32,6 +34,8 @@ NS_ASSUME_NONNULL_END
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasChannelRouter : NSObject
 + (AVAudioUnitEffect *)makeNode;
++ (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
++ (void)beginStopFade:(AVAudioUnitEffect *)node;
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count;
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts;
 @end

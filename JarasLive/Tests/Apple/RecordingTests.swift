@@ -115,3 +115,50 @@ dynamic.finish(start: 40) { items,error in
 }
 precondition(final.wait(timeout: .now()+3) == .success)
 print("RECORDING_EMPTY_REC_DYNAMIC_ARM_DISARM_AND_CONTINUOUS_OTHER_TRACK_OK")
+
+for formatKey in ["wav24pcm", "wav32pcm", "aiff24pcm", "aiff32pcm", "mp3-128", "mp3-320"] {
+    let target = CaptureTarget(track: UUID(), input: .stereo, format: formatKey)
+    let take = try CaptureWriter(targets: [target], directory: directory, format: format)
+    take.start(); take.ring.push(buffer)
+    let done = DispatchSemaphore(value: 0)
+    take.finish(start: 5) { items, error in
+        precondition(error == nil && items.count == 1)
+        let url = directory.appendingPathComponent(items[0].clip.audioFile!.path)
+        let audio = try! AVAudioFile(forReading: url)
+        if !formatKey.hasPrefix("mp3") {
+            let description = audio.fileFormat.streamDescription.pointee
+            precondition(description.mBitsPerChannel == (formatKey.contains("32") ? 32 : 24))
+            precondition(description.mFormatFlags & kAudioFormatFlagIsFloat == 0, "new recordings use integer PCM")
+            precondition(url.pathExtension == (formatKey.hasPrefix("aiff") ? "aiff" : "wav"))
+        }
+        done.signal()
+    }
+    precondition(done.wait(timeout: .now() + 10) == .success)
+}
+print("RECORD_GLOBAL_WAV_AIFF_24_32_INTEGER_PCM_AND_MP3_128_320_OK")
+
+let outputModes = try CaptureWriter(targets: [
+    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav", recordedChannels: 1),
+    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 2, channelCount: 1), format: "wav", recordedChannels: 2)
+], directory: directory, format: format)
+outputModes.start { _, _ in }
+outputModes.ring.push(buffer)
+let outputDone = DispatchSemaphore(value: 0)
+outputModes.finish(start: 0) { items, error in
+    precondition(error == nil && items.count == 2)
+    for item in items {
+        let file = try! AVAudioFile(forReading: directory.appendingPathComponent(item.clip.audioFile!.path))
+        let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48000)!
+        try! file.read(into: pcm)
+        if file.processingFormat.channelCount == 1 {
+            precondition(abs(pcm.floatChannelData![0][20] - buffer.floatChannelData![2][20]) < 0.00001)
+        } else {
+            precondition(file.processingFormat.channelCount == 2)
+            precondition(abs(pcm.floatChannelData![0][20] - buffer.floatChannelData![1][20]) < 0.00001)
+            precondition(pcm.floatChannelData![0][20] == pcm.floatChannelData![1][20])
+        }
+    }
+    outputDone.signal()
+}
+precondition(outputDone.wait(timeout: .now()+5) == .success)
+print("RECORDING_OUTPUT_MODE_INDEPENDENT_OF_INPUT_PATCH_OK")

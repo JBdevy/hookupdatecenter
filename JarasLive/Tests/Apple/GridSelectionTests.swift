@@ -39,19 +39,44 @@ grid.updateSelection([third])
 drag(CGPoint(x: 300,y: 190),CGPoint(x: 90,y: 90),modifiers: .control)
 precondition(grid.selected == [first,second,third], "Control adds to the selection")
 var seeks: [CGFloat] = []
-grid.seek = { seeks.append($0) }
+var freeSeeks: [Bool] = []
+grid.seek = { x,free in seeks.append(x); freeSeeks.append(free) }
 for x in [320.0,500.0,310.0,700.0] {
     precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: x,y: 220))))
     precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: x,y: 220))))
 }
 precondition(seeks == [320,500,310,700], "every blank grid click reaches seek exactly once")
+precondition(freeSeeks.allSatisfy { !$0 })
+precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 321.75,y: 220), modifiers: .shift)))
+precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 321.75,y: 220), modifiers: .shift)))
+precondition(seeks.last == 321.75 && freeSeeks.last == true, "Shift cursor clicks preserve the exact coordinate and bypass snapping using the event's own modifiers")
 precondition(!grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 500,y: 40))), "headers retain their own cursor/region gestures")
 var moved: [UUID] = []
+for modifiers: NSEvent.ModifierFlags in [[], .shift] {
+    let before = seeks.count
+    precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 130,y: 122), modifiers: modifiers)))
+    precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 130,y: 122), modifiers: modifiers)))
+    precondition(seeks.count == before + 1 && seeks.last == 130, "item body clicks seek exactly once at the clicked position")
+    precondition(freeSeeks.last == modifiers.contains(.shift), "item clicks preserve Shift free positioning")
+    precondition(grid.selected == [first], "seeking from an item keeps item selection")
+}
 grid.move = { id,_,_,_ in moved.append(id) }
 precondition(grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 130,y: 122))))
 precondition(grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 250,y: 172))))
+NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
 precondition(grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: 250,y: 172))))
-precondition(moved == [first,first], "drag ownership stays with the initial item")
+precondition(moved == [first,first], "wheel panning preserves an existing drag and its original item commit")
+precondition(grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 130,y: 122))))
+NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
+precondition(grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 250,y: 172))))
+precondition(grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: 250,y: 172))))
+precondition(moved == [first,first], "panning before a drag starts cancels the latent item move")
+var releasePosition: CGFloat = 0
+grid.move = { _,_,y,ended in if ended { releasePosition = y } }
+precondition(grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 130,y: 122))))
+precondition(grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 130,y: 650))))
+precondition(grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: 130,y: 650))))
+precondition(releasePosition.isNaN, "releasing outside the grid cancels a provisional track")
 
 // Reproduce a scroll occurring before SwiftUI has delivered its next offset.
 final class FlippedDocument: NSView { override var isFlipped: Bool { true } }
@@ -153,8 +178,8 @@ precondition(gainMotions.last!.1 == 0, "continuous gain motion reaches silence")
 grid.items[0].gain = 0
 let knob = grid.items[0].gainKnobRect!
 _ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: knob.midX,y: knob.midY)))
-_ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: knob.midX,y: knob.midY-100)))
-_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: knob.midX,y: knob.midY-100)))
+_ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: knob.midX,y: knob.midY-(60.0/84.0*120))))
+_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: knob.midX,y: knob.midY-(60.0/84.0*120))))
 precondition(abs(gainMotions.last!.1-1) < 0.000001, "the next drag starts at the new saved gain and returns to 0 dB")
 print("GRID_CONTINUOUS_GAIN_SINGLE_COMMIT_AND_UPDATED_DRAG_ANCHOR_OK")
 
@@ -182,6 +207,14 @@ for rectangle in [header.fxRect!,header.muteRect!] {
     _ = grid.handlePointerEvent(event(.leftMouseUp,center))
 }
 precondition(effects.count == effectsBeforeCancellation && muted.count == mutedBeforeCancellation && unexpectedMoves == 0, "outside releases and small drags cancel without activating another item")
+for rectangle in [header.fxRect!, header.muteRect!] {
+    let center = CGPoint(x: rectangle.midX, y: rectangle.midY)
+    precondition(grid.handlePointerEvent(event(.leftMouseDown, center)))
+    NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
+    precondition(grid.handlePointerEvent(event(.leftMouseUp, center)))
+}
+precondition(effects.count == effectsBeforeCancellation && muted.count == mutedBeforeCancellation,
+             "held-left wheel pan consumes the release without activating a pending FX or mute button")
 let testSheet = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 120,height: 80),styleMask: [.titled],backing: .buffered,defer: false)
 testSheet.isReleasedWhenClosed = false
 var sheetOpenings = 0
@@ -275,3 +308,8 @@ _ = grid.handlePointerEvent(event(.rightMouseDown,CGPoint(x: 150,y: 130)))
 _ = grid.handlePointerEvent(event(.rightMouseUp,CGPoint(x: 150,y: 130)))
 precondition(grid.selected == [timecode] && window.attachedSheet == nil, "Timecode right click selects without showing a context menu")
 print("GRID_TIMECODE_BOTH_EDGES_ONLY_NO_MOVE_CONTROLS_OR_MENU_OK")
+
+let boostedItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 200, height: 60), gain: 1)
+precondition(abs(boostedItem.draggingGain(by: -120) - pow(10, 24.0 / 20)) < 0.000001, "item knob reaches +24 dB")
+precondition(GridSelectionItem(id: UUID(), rect: .zero, gain: pow(10,24.0/20)).gainPosition == 1)
+print("GRID_ITEM_GAIN_PLUS24_DB_AND_SILENCE_OK")

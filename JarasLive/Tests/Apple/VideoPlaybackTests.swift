@@ -40,6 +40,22 @@ import AVFoundation
     }
     precondition(controller.player.currentItem?.status == .readyToPlay, "imported video must decode")
     precondition(controller.player.isMuted && controller.player.volume == 0, "video must never output soundtrack audio")
+    let videoSettings = VideoMediaSettings.shared
+    let savedResolution = videoSettings.resolution, savedGray = videoSettings.blackAndWhite
+    defer { videoSettings.resolution = savedResolution; videoSettings.blackAndWhite = savedGray }
+    videoSettings.resolution = 360; videoSettings.blackAndWhite = true
+    let capped = VideoPlayback(preferences: .standard)
+    capped.open(directory: directory); capped.setProjectionEnabled(true); capped.update(snapshot)
+    for _ in 0..<100 {
+        if capped.player.currentItem?.status == .readyToPlay { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    guard let composition = capped.player.currentItem?.videoComposition else { preconditionFailure("resolution and grayscale use a real video composition") }
+    precondition(composition.renderSize.width * CGFloat(composition.renderScale) <= 640.1 &&
+                 composition.renderSize.height * CGFloat(composition.renderScale) <= 360.1,
+                 "1080p media must be rendered within the selected 360p output")
+    capped.setProjectionEnabled(false)
+    videoSettings.resolution = savedResolution; videoSettings.blackAndWhite = savedGray
     let item = controller.player.currentItem
     controller.setStretch(false)
     precondition(controller.player.currentItem === item && !controller.stretch, "Stretch changes the presentation without reopening media")
@@ -74,7 +90,8 @@ import AVFoundation
     try bitmap.representation(using: .png, properties: [:])!.write(to: png)
     let slide = try StemProjectImporter.prepareDroppedAudio([png], start: 40, destinationTracks: [videoTrackID], destination: directory.appendingPathComponent("test.jl"), destinationKind: .video)
     precondition(slide.tracks[0].clips[0].duration == 10 && slide.tracks[0].clips[0].audioFile!.path.hasPrefix("Videos/"), "images are copied to Videos with an initial ten-second duration")
-    snapshot.project.songs[0].tracks[0].clips += slide.tracks[0].clips
+    let originalVideoClips = snapshot.project.songs[0].tracks[0].clips
+    snapshot.project.songs[0].tracks[0].clips = slide.tracks[0].clips
     snapshot.transport.editPosition = 40
     controller.update(snapshot)
     for _ in 0..<100 {
@@ -93,6 +110,7 @@ import AVFoundation
     try await Task.sleep(nanoseconds: 100_000_000)
     precondition(controller.image == nil && controller.player.currentItem == nil, "a stale image decode cannot appear outside its item")
     controller.setProjectionEnabled(false)
+    snapshot.project.songs[0].tracks[0].clips = originalVideoClips
     let teleprompterID = UUID()
     let tpImport = try StemProjectImporter.prepareDroppedAudio([source], start: 30, destinationTracks: [teleprompterID], destination: directory.appendingPathComponent("test.jl"), destinationKind: .teleprompt)
     precondition(tpImport.tracks[0].kind == .teleprompt && tpImport.tracks[0].name == "Teleprompter")

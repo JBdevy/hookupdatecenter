@@ -75,7 +75,7 @@ enum StemProjectImporter {
         guard let kind = sources.first?.kind else { throw ProjectError.invalid("No media files to import") }
         guard sources.allSatisfy({ $0.kind == kind }) else { throw ProjectError.invalid("Drop audio and video separately") }
         if kind == .video {
-            guard destinationKind == .video || destinationKind == .teleprompt, !destinationTracks.isEmpty else {
+            guard destinationKind == .video || destinationKind?.isTeleprompter == true, !destinationTracks.isEmpty else {
                 throw ProjectError.invalid(videoTrackAvailable ? "Drop videos on an existing Video track" : "Create a Video track first, then drop the video on it")
             }
             guard layout == .sameTrack || sources.count <= destinationTracks.count else {
@@ -86,6 +86,8 @@ enum StemProjectImporter {
         }
         let fm = FileManager.default
         let batch = UUID().uuidString
+        var audioNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Steams"))
+        var videoNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Videos"))
         var folders: [URL] = []
         do {
             var tracks: [Track] = []
@@ -96,7 +98,7 @@ enum StemProjectImporter {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 progress?(index, sources.count, url.lastPathComponent)
-                let name = String(index + 1) + "-" + url.lastPathComponent.replacingOccurrences(of: ":", with: "-")
+                let name = isVideo ? videoNames.allocate(url.lastPathComponent) : audioNames.allocate(url.lastPathComponent)
                 let relative = (isVideo ? "Videos/" : "Steams/") + batch
                 let folder = destination.deletingLastPathComponent().appendingPathComponent(relative, isDirectory: true)
                 if !folders.contains(folder) {
@@ -111,7 +113,7 @@ enum StemProjectImporter {
                 if layout == .sameTrack, !tracks.isEmpty { tracks[0].clips.append(clip) }
                 else {
                     let trackID = tracks.count < destinationTracks.count ? destinationTracks[tracks.count] : UUID()
-                    var track = Track(id: trackID, name: isVideo ? (destinationKind == .teleprompt ? "Teleprompter" : "Video") : itemName, role: TrackRole(rawValue: isVideo ? (destinationKind == .teleprompt ? "teleprompt" : "video") : "other"))
+                    var track = Track(id: trackID, name: isVideo ? (destinationKind?.title ?? "Video") : itemName, role: TrackRole(rawValue: isVideo ? (destinationKind?.rawValue ?? "video") : "other"), color: isVideo ? nil : Track.defaultStandardColor)
                     track.clips = [clip]; tracks.append(track)
                 }
                 cursor += source.duration + gap
@@ -307,7 +309,7 @@ enum StemProjectImporter {
         for channel in audit.tracks where keys[channel.key] == nil {
             let role: TrackRole = channel.name == "Click" ? .click : channel.name == "Guia" || channel.name == "Regência" ? .guide : channel.groupKey == "sanfonas" ? .accordion : channel.name.hasPrefix("Baixo") ? .bass : channel.groupKey == "teclados" ? .keys : channel.groupKey == "percussivo" ? .drums : channel.groupKey == "guitarras" ? .guitar : .other
             keys[channel.key] = arrangement.tracks.count
-            arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role))
+            arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role, color: Track.defaultStandardColor))
         }
         // A unique import directory makes rollback safe and keeps existing media untouched.
         let relativeFolder = "Steams/" + UUID().uuidString
@@ -315,11 +317,12 @@ enum StemProjectImporter {
         try fm.createDirectory(at: media, withIntermediateDirectories: true)
         do {
             var jobs: [MediaImportJob] = []
+            var fileNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Steams"))
             for (songIndex, song) in audit.songs.enumerated() {
                 arrangement.parts.append(Part(id: UUID(), name: song.name, startTime: song.start + offset, endTime: song.end + offset, color: [0x53be8c,0xddad54,0x7a93dd,0xbf79b8,0x55acbe][songIndex % 5]))
                 for (fileIndex, stem) in song.files.enumerated() {
                     guard let source = sources[stem.filePath], let track = keys[stem.trackKey] else { throw ProjectError.invalid("Missing imported audio") }
-                    let name = "\(songIndex + 1)-\(fileIndex + 1)-" + stem.fileName
+                    let name = fileNames.allocate(stem.fileName)
                     jobs.append(MediaImportJob(source: source.url, copied: media.appendingPathComponent(name), relative: relativeFolder + "/" + name, stem: stem, track: track, start: song.start + offset))
                 }
             }

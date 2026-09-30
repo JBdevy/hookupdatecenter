@@ -21,6 +21,48 @@ import XCTest
 }
 
 final class TrackCreationTests: XCTestCase {
+    @MainActor func testNewStandardColorPreservesExistingAndSpecialTracks() throws {
+        var project = Project.empty(name: "Colors")
+        let legacy = Track(id: UUID(), name: "Legacy", role: .guide)
+        let custom = Track(id: UUID(), name: "Custom", role: .other, color: 0x45aaff)
+        project.songs[0].tracks = [legacy, custom]
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        XCTAssertNil(restored.songs[0].tracks[0].color)
+        XCTAssertEqual(restored.songs[0].tracks[1].color, custom.color)
+        let show = try ShowController(executor: BulkTrackExecutor(), persistence: MemoryProjectStore(), initialProject: restored)
+        let standard = try XCTUnwrap(show.addTracks(name: "New", role: .guide, count: 1).first)
+        let video = try XCTUnwrap(show.addTracks(name: "Video", role: TrackRole(rawValue: "video"), count: 1).first)
+        XCTAssertEqual(show.current?.tracks.first { $0.id == standard }?.color, 0x828282)
+        XCTAssertNil(show.current?.tracks.first { $0.id == video }?.color)
+        XCTAssertNil(show.current?.tracks.first { $0.id == legacy.id }?.color)
+        XCTAssertEqual(show.current?.tracks.first { $0.id == custom.id }?.color, custom.color)
+    }
+    @MainActor func testDroppingItemBelowLastTrackCreatesOneTrackAndUndoRestoresBoth() throws {
+        var project = Project.empty(name: "Drag")
+        var source = Track(id: UUID(), name: "Source", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Voice", startTime: 2, duration: 5, gain: 0.4, muted: true)
+        source.clips = [clip]
+        project.songs[0].tracks = [source]
+        let executor = BulkTrackExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let pending = Track(id: UUID(), name: "Track 2", role: .other)
+        XCTAssertEqual(show.current?.tracks.count, 1, "The drag preview must not edit the project")
+        show.moveClipToNewStandardTrack(clip.id, start: 12, newTrack: pending)
+        XCTAssertEqual(executor.editCount, 1)
+        XCTAssertEqual(show.current?.tracks.count, 2)
+        XCTAssertEqual(show.current?.tracks[0].clips.count, 0)
+        XCTAssertEqual(show.current?.tracks[1].id, pending.id)
+        XCTAssertEqual(show.current?.tracks[1].color, Track.defaultStandardColor)
+        XCTAssertEqual(show.current?.tracks[1].clips.first?.startTime, 12)
+        XCTAssertEqual(show.current?.tracks[1].clips.first?.gain, 0.4)
+        XCTAssertEqual(show.current?.tracks[1].clips.first?.muted, true)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks.count, 1)
+        XCTAssertEqual(show.current?.tracks[0].clips, [clip])
+        show.redo()
+        XCTAssertEqual(show.current?.tracks.count, 2)
+        XCTAssertEqual(show.current?.tracks[1].clips.first?.id, clip.id)
+    }
     @MainActor func testBulkCreationIsOneEditWithSequentialMonoInputsAndOneUndo() throws {
         let executor = BulkTrackExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: .empty(name: "Bulk"))
@@ -32,6 +74,7 @@ final class TrackCreationTests: XCTestCase {
         XCTAssertEqual(executor.editCount, 1)
         XCTAssertEqual(updates, 1)
         XCTAssertEqual(show.current?.tracks.map(\.name), ["Drums 01", "Drums 02", "Drums 03", "Drums 04", "Drums 05"])
+        XCTAssertTrue(show.current?.tracks.allSatisfy { $0.color == Track.defaultStandardColor } == true)
         XCTAssertEqual(show.current?.tracks.compactMap(\.inputPatch).map(\.firstChannel), [1, 2, 1, 2, 1])
         XCTAssertTrue(inputs.allSatisfy { $0.channelCount == 1 })
         show.undo()
@@ -75,13 +118,21 @@ final class TrackCreationTests: XCTestCase {
         let show = try ShowController(executor: BulkTrackExecutor(), persistence: MemoryProjectStore(), initialProject: project)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "video"), count: 1, after: folder.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "teleprompt"), count: 1, after: child.id).count, 1)
+        XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "teleprompt2"), count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "timecode"), count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: .chords, count: 1, after: child.id).count, 1)
-        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Chords", "Teleprompter", "Video", "Folder", "Child"])
+        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Chords", "Teleprompter 1", "Teleprompter 2", "Video", "Folder", "Child"])
         XCTAssertEqual(show.current?.tracks[0].patch, OutputPatch.none)
         XCTAssertNotNil(show.current?.tracks[0].timecode)
         XCTAssertTrue(show.addTracks(name: "Timecode", role: TrackRole(rawValue: "timecode"), count: 1).isEmpty)
         XCTAssertTrue(show.addTracks(name: "Video", role: TrackRole(rawValue: "video"), count: 2).isEmpty)
+        let editsBeforeDuplicates = (show.current?.tracks.count ?? 0)
+        for kind: TrackKind in [.timecode, .chords, .teleprompt, .teleprompt2, .video] {
+            XCTAssertTrue(show.addTracks(name: kind.title, role: TrackRole(rawValue: kind.rawValue), count: 1).isEmpty, "Duplicated \(kind.title)")
+            XCTAssertEqual(show.message, "A \(kind.title) track already exists.")
+            XCTAssertNil(show.addTrack(name: kind.title, role: TrackRole(rawValue: kind.rawValue)), "Legacy creation also rejects duplicated \(kind.title)")
+        }
+        XCTAssertEqual(show.current?.tracks.count, editsBeforeDuplicates)
         try show.snapshot.project.validate()
     }
     @MainActor func testSequentialRoutingDoesNotInventInputsAndRejectedEditKeepsSnapshot() throws {

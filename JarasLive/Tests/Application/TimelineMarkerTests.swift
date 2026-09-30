@@ -2,6 +2,24 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineMarkerTests: XCTestCase {
+    func testLastFlagNeverCrossesItsNormalOrUnifiedRegionEnd() {
+        var song = Project.empty(name: "Flags").songs[0]
+        let ordinary = Part(id: UUID(), name: "Normal", startTime: 10, endTime: 15)
+        let special = Part(id: UUID(), name: "Special", startTime: 20, endTime: 30)
+        let child = Part(id: UUID(), name: "Child", startTime: 25, endTime: 30, parentRegionID: special.id)
+        let normalMarker = TimelineMarker(id: UUID(), name: "Normal", position: 14, color: 0x55ff99)
+        let unifiedMarker = TimelineMarker(id: UUID(), name: "Child", position: 29, color: 0x55ff99, unifiedRegionID: special.id, sourceRegionID: child.id)
+        let outside = TimelineMarker(id: UUID(), name: "Outside", position: 40, color: 0x55ff99)
+        song.parts = [ordinary, special, child]; song.markers = [normalMarker, unifiedMarker, outside]
+        let measured = Dictionary(uniqueKeysWithValues: song.markers!.map { ($0.id, 140.0) })
+        let result = TimelineMarker.flagWidths(song.markers!, scale: 50, widths: measured, regionEnds: song.markerRegionEnds)
+        XCTAssertEqual(result[normalMarker.id], 50)
+        XCTAssertEqual(result[unifiedMarker.id], 50)
+        XCTAssertEqual(result[outside.id], 150, "an independent marker outside every region keeps its normal flag")
+        let distant = TimelineMarker.flagWidths(song.markers!, scale: 10, widths: measured, regionEnds: song.markerRegionEnds)
+        XCTAssertNil(distant[normalMarker.id]); XCTAssertNil(distant[unifiedMarker.id])
+        XCTAssertEqual(distant[outside.id], 150)
+    }
     func testNamesYieldToRightMarkerAndReappearWithZoom() {
         let left = TimelineMarker(id: UUID(), name: "Entrada", position: 10, color: 0x00ff00)
         let right = TimelineMarker(id: UUID(), name: "Refrão", position: 12, color: 0xffff00)

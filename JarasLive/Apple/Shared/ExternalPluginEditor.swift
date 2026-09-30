@@ -104,7 +104,7 @@ import Combine
     private let footer = NSView()
     private let addButton = NSButton()
     private let removeButton = NSButton()
-    private var insertionPopover: NSPopover?
+    private var insertionPanel: NSPanel?
     private var editor: NSView?
     private var rows: [Row] = []
     private var selection: String?
@@ -158,7 +158,7 @@ import Combine
     private func refresh(_ settings: NativeFXSettings, preferred: String? = nil) {
         let next = settings.effectKeys.map { effect in
             Row(effect: effect, name: settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
-                ?? (effect == "Instruments" ? InstrumentLibrary.displayName(settings.instrumentID) : JarasLocalization.string(effect)), enabled: settings.isEnabled(effect))
+                ?? (settings.kind(of: effect) == "Instruments" ? InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) : JarasLocalization.string(settings.kind(of: effect))), enabled: settings.isEnabled(effect))
         }
         if next != rows { rows = next; refreshing = true; list.reloadData(); refreshing = false }
         let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
@@ -230,16 +230,33 @@ import Combine
         show.toggleFXBypass(track, effect: effect)
     }
     @objc private func addEffect() {
-        let popover = NSPopover(); popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView:
-            FXInsertEditor(show: show, track: track, targets: [track], dismiss: { [weak popover] in popover?.performClose(nil) })
+        if let insertionPanel, insertionPanel.isVisible { insertionPanel.makeKeyAndOrderFront(nil); return }
+        let insert = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
+                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        insert.title = JarasLocalization.string("Insert effect")
+        insert.isFloatingPanel = true
+        insert.hidesOnDeactivate = false
+        insert.contentView = NSHostingView(rootView:
+            FXInsertEditor(show: show, track: track, targets: [track], resize: { [weak insert] height in
+                guard let insert, abs(insert.contentLayoutRect.height - height) > 1 else { return }
+                let center = CGPoint(x: insert.frame.midX, y: insert.frame.midY)
+                insert.setContentSize(NSSize(width: 460, height: height))
+                insert.setFrameOrigin(CGPoint(x: center.x - insert.frame.width / 2, y: center.y - insert.frame.height / 2))
+            }, dismiss: { [weak insert] in insert?.close() })
                 .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en"))
                 .environment(\.openFX, { [weak self] target, effect in
                     guard let self else { return }
                     FXWindows.shared.open(show: self.show, track: target, effect: effect, language: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")
-                }).preferredColorScheme(.dark))
-        insertionPopover = popover
-        popover.show(relativeTo: addButton.bounds, of: addButton, preferredEdge: .maxY)
+                }).preferredColorScheme(.dark).frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(JarasTheme.panel))
+        let owner = panel ?? window
+        if let owner {
+            insert.setFrameOrigin(CGPoint(x: owner.frame.midX - insert.frame.width / 2,
+                                          y: owner.frame.midY - insert.frame.height / 2))
+            owner.addChildWindow(insert, ordered: .above)
+        } else { insert.center() }
+        insertionPanel = insert
+        insert.makeKeyAndOrderFront(nil)
     }
     @objc private func removeSelectedEffect() {
         guard let selection else { return }

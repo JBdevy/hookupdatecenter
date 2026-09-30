@@ -18,6 +18,47 @@ final class NativeEffectsChain {
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
     private let outputMix = AVAudioMixerNode()
+    private var instanceNodes: [String: AVAudioNode] = [:]
+    private var instanceDelayProbes: [String: (JarasAudioAnalysisProbe, JarasAudioAnalysisProbe)] = [:]
+    private var observedEffects = Set<String>()
+    func instrumentInput(for key: String) -> AVAudioMixerNode? {
+        key == "Instruments" ? instrumentInput : instanceNodes[key] as? AVAudioMixerNode
+    }
+    private func configureInstances(_ next: NativeFXSettings, rate: Double) {
+        for instance in next.instances ?? [] where next.inserted.contains(instance.effectKey) {
+            let key = instance.effectKey, value = instance.settings
+            let node: AVAudioNode
+            if let existing = instanceNodes[key] { node = existing }
+            else {
+                switch instance.kind {
+                case "Instruments": node = AVAudioMixerNode()
+                case "EQ": node = JarasEqualizer.makeNode()
+                case "Compressor": node = JarasDynamics.makeCompressor()
+                case "Pitch": let pitch = AVAudioUnitTimePitch(); pitch.rate = 1; pitch.overlap = 8; node = pitch
+                case "Delay": node = AVAudioUnitDelay()
+                default: node = JarasDynamics.makeReverb()
+                }
+                instanceNodes[key] = node; engine?.attach(node)
+            }
+            if settings?.settings(for: key) == value && rate == sampleRate { continue }
+            switch instance.kind {
+            case "EQ":
+                JarasEqualizer.configure(node as! AVAudioUnitEffect, coefficients: value.bands.flatMap { $0.coefficients(rate: rate) }.map { $0.map(NSNumber.init(value:)) }, enabled: value.eqEnabled)
+            case "Compressor":
+                JarasDynamics.configureCompressor(node as! AVAudioUnitEffect, enabled: value.compressorEnabled, threshold: value.threshold, ratio: value.ratio, attack: value.attack, release: value.release, gain: value.makeup)
+            case "Pitch":
+                let pitch = node as! AVAudioUnitTimePitch
+                pitch.pitch = Float(value.semitones * 100); pitch.bypass = value.pitchEnabled != true || value.semitones == 0
+            case "Delay":
+                let delay = node as! AVAudioUnitDelay
+                delay.bypass = !value.delayEnabled; delay.delayTime = value.delayTime
+                delay.feedback = Float(value.feedback); delay.wetDryMix = Float(value.delayMix)
+            case "Reverb":
+                JarasDynamics.configureReverb(node as! AVAudioUnitEffect, enabled: value.reverbEnabled, space: value.reverbRoom, mix: value.reverbMix, decay: value.reverbDecay, lowCut: value.reverbLowCut, highCut: value.reverbHighCut)
+            default: break
+            }
+        }
+    }
     private weak var engine: AVAudioEngine?
     private var input: AVAudioNode?
     private var format: AVAudioFormat?
@@ -71,6 +112,8 @@ final class NativeEffectsChain {
         #endif
     }
     var output: AVAudioNode { outputMix }
+    func setSourceChannelMode(_ mode: Int) { JarasEqualizer.setInputChannelMode(equalizer, mode: Int32(mode)) }
+    func setSourceGain(_ gain: Double) { JarasEqualizer.setInputGain(equalizer, gain: gain) }
     var instrumentInput: AVAudioMixerNode {
         if let instrumentMix { return instrumentMix }
         let mixer = AVAudioMixerNode(); instrumentMix = mixer
@@ -95,6 +138,7 @@ final class NativeEffectsChain {
         keys += NativeFXSettings.order.dropFirst().filter { !keys.contains($0) }
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         let ordered: [AVAudioNode] = keys.compactMap { key in
+            if let node = instanceNodes[key] { return node }
             switch key {
             case "Instruments": return instrumentMix
             case "EQ": return equalizer
@@ -126,14 +170,17 @@ final class NativeEffectsChain {
         if let mixer = destination as? AVAudioMixerNode { engine.connect(input, to: mixer, fromBus: 0, toBus: 0, format: format) }
         else { engine.connect(input, to: destination, format: format) }
         connected = ordered
-        updateDelayAnalysis()
+        observe(observedEffects)
     }
     func resetTails() {
         for node in nodes { node.auAudioUnit.reset() }
+        for node in instanceNodes.values { (node as? AVAudioUnit)?.auAudioUnit.reset() }
         meterTime = 0; meterCache.removeAll(keepingCapacity: true)
     }
     func detach(from engine: AVAudioEngine) {
         delayInputProbe?.detach(); delayOutputProbe?.detach()
+        for probes in instanceDelayProbes.values { probes.0.detach(); probes.1.detach() }; instanceDelayProbes.removeAll()
+        for node in instanceNodes.values { engine.detach(node) }; instanceNodes.removeAll()
         for node in nodes { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
         engine.detach(outputMix); connected.removeAll(); self.engine = nil; input = nil
@@ -168,7 +215,13 @@ final class NativeEffectsChain {
             pitch.pitch = Float(next.semitones * 100)
             pitch.bypass = !next.inserted.contains("Pitch") || next.pitchEnabled != true || next.semitones == 0
         }
+        configureInstances(next, rate: rate)
         connect(next)
+        let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
+        for key in Set(instanceNodes.keys).subtracting(nativeRetained) {
+            if let probes = instanceDelayProbes.removeValue(forKey: key) { probes.0.detach(); probes.1.detach() }
+            if let node = instanceNodes.removeValue(forKey: key) { engine?.detach(node) }
+        }
         #if os(macOS)
         for identifier in Set(externalNodes.keys).subtracting(retained) {
             if let node = externalNodes.removeValue(forKey: identifier) { engine?.detach(node) }
@@ -195,6 +248,23 @@ final class NativeEffectsChain {
     private var meterTime = 0.0
     private var meterCache: [String:[Float]] = [:]
     func observe(_ effects: Set<String>) {
+        observedEffects = effects
+        for (key, node) in instanceNodes {
+            let enabled = effects.contains(key)
+            switch settings?.kind(of: key) {
+            case "EQ": JarasEqualizer.setAnalysisEnabled(node as! AVAudioUnitEffect, enabled: enabled)
+            case "Compressor": JarasDynamics.setCompressorMeteringEnabled(node as! AVAudioUnitEffect, enabled: enabled)
+            case "Reverb":
+                JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: true, enabled: enabled)
+                JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: false, enabled: enabled)
+            case "Delay":
+                if enabled, let index = connected.firstIndex(where: { $0 === node }), let predecessor = index > 0 ? connected[index - 1] : input {
+                    let probes = instanceDelayProbes[key] ?? (JarasAudioAnalysisProbe(), JarasAudioAnalysisProbe())
+                    instanceDelayProbes[key] = probes; probes.0.attach(to: predecessor); probes.1.attach(to: node)
+                } else if let probes = instanceDelayProbes[key] { probes.0.detach(); probes.1.detach() }
+            default: break
+            }
+        }
         JarasEqualizer.setAnalysisEnabled(equalizer, enabled: effects.contains("EQ"))
         JarasDynamics.setCompressorMeteringEnabled(compressor, enabled: effects.contains("Compressor"))
         JarasDynamics.setAnalysisEnabled(reverb, input: true, enabled: effects.contains("Reverb"))
@@ -211,15 +281,28 @@ final class NativeEffectsChain {
         delayInputProbe?.attach(to: predecessor); delayOutputProbe?.attach(to: delay)
     }
     func spectrum(_ effect: String) -> Data? {
-        effect == "Delay" ? delayOutputProbe?.frame() : JarasDynamics.analysisFrame(reverb, input: false)
+        if let node = instanceNodes[effect] {
+            if node is AVAudioUnitDelay { return instanceDelayProbes[effect]?.1.frame() }
+            return (node as? AVAudioUnitEffect).flatMap { JarasDynamics.analysisFrame($0, input: false) }
+        }
+        return effect == "Delay" ? delayOutputProbe?.frame() : JarasDynamics.analysisFrame(reverb, input: false)
     }
-    func eqSpectrumFrame() -> EQAnalysisFrame? {
+    func eqSpectrumFrame(_ effect: String = "EQ") -> EQAnalysisFrame? {
+        let equalizer = (instanceNodes[effect] as? AVAudioUnitEffect) ?? self.equalizer
         let input = JarasEqualizer.analysisFrame(equalizer, input: true)
         let output = JarasEqualizer.analysisFrame(equalizer, input: false)
         guard input != nil || output != nil else { return nil }
         return EQAnalysisFrame(input: input, output: output, sampleRate: equalizer.outputFormat(forBus: 0).sampleRate)
     }
     func effectPeaks(_ effect: String) -> [Float] {
+        if let node = instanceNodes[effect] {
+            switch settings?.kind(of: effect) {
+            case "Compressor": return JarasDynamics.takeCompressorPeaks(node as! AVAudioUnitEffect).map(\.floatValue)
+            case "Reverb": return JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: false).map(\.floatValue)
+            case "Delay": return (instanceDelayProbes[effect]?.0.takePeaks().map(\.floatValue) ?? [0,0]) + (instanceDelayProbes[effect]?.1.takePeaks().map(\.floatValue) ?? [0,0])
+            default: return [0,0,0,0]
+            }
+        }
         let now = ProcessInfo.processInfo.systemUptime
         if now - meterTime > 1.0 / 40 {
             meterTime = now

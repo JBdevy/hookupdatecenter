@@ -1,6 +1,50 @@
 import XCTest
 @testable import JarasApplication
 final class NativeFXTests: XCTestCase {
+    func testRepeatedNativeEffectsAndInstrumentsPersistIndependentParametersAndBypass() throws {
+        var fx = NativeFXSettings()
+        let first = fx.appendNative("Compressor")
+        let second = fx.appendNative("Compressor")
+        XCTAssertNotEqual(first, second)
+        var edited = fx.settings(for: second); edited.makeup = 6
+        fx = fx.merging(effect: second, from: edited)
+        XCTAssertEqual(fx.makeup, 0); XCTAssertEqual(fx.settings(for: second).makeup, 6)
+        fx.setEnabled(first, enabled: false)
+        XCTAssertFalse(fx.isEnabled(first)); XCTAssertTrue(fx.isEnabled(second))
+        let piano = fx.appendNative("Instruments", instrument: "Piano")
+        let layered = fx.appendNative("Instruments", instrument: "Piano")
+        XCTAssertNotEqual(piano, layered); XCTAssertEqual(fx.instrumentKeys.count, 2)
+        let external = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Instrument", path: "/test.vst3", category: "Instrument")
+        var other = external; other.id = UUID().uuidString
+        fx.externalPlugins = [external, other]; fx.inserted += [external.effectKey, other.effectKey]
+        try fx.validate()
+        XCTAssertEqual(try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx)), fx)
+        let mapping = NativeFXParameter(effect: second, key: .makeup, name: "Gain", range: -12...24)
+        XCTAssertTrue(mapping.apply(127, to: &fx))
+        XCTAssertEqual(fx.settings(for: second).makeup, 24); XCTAssertEqual(fx.makeup, 0)
+        fx.inserted.removeAll { $0 == second }; fx.removeInstance(second)
+        try fx.validate(); XCTAssertEqual(fx.instrumentKeys.count, 2)
+    }
+    func testControllerVolumeDefaultsAndBounds() throws {
+        var fx = NativeFXSettings(); let key = fx.appendNative("Instruments", instrument: "Piano")
+        XCTAssertNil(fx.instrumentParameters?.controllers?.volume)
+        let mapping = NativeFXParameter(effect: key, key: .instrumentVolume, name: "Volume", range: -96...0)
+        XCTAssertTrue(mapping.apply(127, to: &fx)); XCTAssertEqual(fx.instrumentParameters?.controllers?.volume, 0)
+        XCTAssertTrue(mapping.apply(0, to: &fx)); XCTAssertEqual(fx.instrumentParameters?.controllers?.volume, -96)
+        try fx.validate()
+        fx.instrumentParameters?.controllers?.volume = 1
+        XCTAssertThrowsError(try fx.validate())
+    }
+
+    func testVoiceModePersistsAndLegacyControllerKeepsCategoryDefault() throws {
+        let legacy = try JSONDecoder().decode(InstrumentControllerParameters.self, from: Data("{\"modulation\":true,\"pitchBend\":false}".utf8))
+        XCTAssertNil(legacy.monophonic)
+        for mode in [false, true] {
+            let value = InstrumentControllerParameters(modulation: true, pitchBend: false, monophonic: mode)
+            XCTAssertEqual(try JSONDecoder().decode(InstrumentControllerParameters.self, from: JSONEncoder().encode(value)), value)
+        }
+    }
+
     func testPitchRangePersistenceLegacyDefaultsAndMIDISemitoneSteps() throws {
         var settings = NativeFXSettings()
         let legacy = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(settings))

@@ -25,12 +25,19 @@ struct GridSelectionItem {
     var muteRect: CGRect? { editable && rect.width >= 20 ? CGRect(x: rect.minX + 1, y: rect.minY, width: 17, height: 13) : nil }
     var fxRect: CGRect? { editable && rect.width >= 42 ? CGRect(x: rect.minX + 19, y: rect.minY, width: 20, height: 13) : nil }
     var gainKnobRect: CGRect? { editable && rect.width >= 64 ? CGRect(x: rect.minX + 40, y: rect.minY, width: 15, height: 13) : nil }
+    var gainLabel: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
+    var gainLabelRect: CGRect? {
+        guard let knob = gainKnobRect else { return nil }
+        let width = ceil(CGFloat(gainLabel.count) * 5.5) + 8
+        guard rect.maxX - knob.maxX >= width + 3 else { return nil }
+        return CGRect(x: knob.maxX + 1, y: rect.minY, width: width, height: 13)
+    }
     var editRect: CGRect? { textEditable && rect.width >= 34 ? CGRect(x: rect.minX + 1, y: rect.minY, width: 30, height: 13) : nil }
-    var titleInset: CGFloat { editRect != nil ? 33 : gainKnobRect != nil ? 56 : fxRect != nil ? 40 : muteRect != nil ? 19 : 2 }
-    var gainPosition: Double { max(0, min(1, (20 * log10(max(0.000001, gain)) + 60) / 72)) }
+    var titleInset: CGFloat { editRect != nil ? 33 : gainLabelRect.map { $0.maxX - rect.minX + 1 } ?? (gainKnobRect != nil ? 56 : fxRect != nil ? 40 : muteRect != nil ? 19 : 2) }
+    var gainPosition: Double { max(0, min(1, (20 * log10(max(0.000001, gain)) + 60) / 84)) }
     func draggingGain(by delta: CGFloat) -> Double {
         let position = max(0, min(1, gainPosition - Double(delta) / 120))
-        return position == 0 ? 0 : pow(10, (position * 72 - 60) / 20)
+        return position == 0 ? 0 : pow(10, (position * 84 - 60) / 20)
     }
 }
 #if os(macOS)
@@ -44,13 +51,15 @@ struct GridSelectionInput: NSViewRepresentable {
     let selectionChanged: (Set<UUID>) -> Void
     let mute: (UUID) -> Void
     let move: (UUID, CGSize, CGFloat, Bool) -> Void
-    let seek: (CGFloat) -> Void
+    let seek: (CGFloat, Bool) -> Void
     let createRegion: (UUID) -> Void
     var interactionBlocked = false
     var resize: (UUID, Bool, CGFloat, Bool) -> Void = { _,_,_,_ in }
     var gain: (UUID, Double, Bool) -> Void = { _,_,_ in }
     var fx: (UUID, Bool) -> Void = { _, _ in }
     var editText: (UUID) -> Void = { _ in }
+    var reRender: (Set<UUID>) -> Void = { _ in }
+    var convert: (Set<UUID>, Int) -> Void = { _, _ in }
     var normalize: (Set<UUID>) -> Void = { _ in }
     var split: (Set<UUID>) -> Void = { _ in }
     func makeNSView(context: Context) -> GridSelectionView { GridSelectionView() }
@@ -58,7 +67,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.timelineOrigin = origin; view.headerHeight = headerHeight
         view.interactionBlocked = interactionBlocked
         view.items = items; view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.normalize = normalize; view.split = split; view.resize = resize; view.gain = gain; view.fx = fx; view.editText = editText
+        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.split = split; view.resize = resize; view.gain = gain; view.fx = fx; view.editText = editText
     }
 }
 final class GridSelectionView: NSView, NativeTimelineInputObserver {
@@ -78,6 +87,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     private var headerPressCancelled = false
     private var resizingLeft: Bool?
     private var gainItem: GridSelectionItem?
+    var reRender: ((Set<UUID>) -> Void)?
+    var convert: ((Set<UUID>, Int) -> Void)?
     var normalize: ((Set<UUID>) -> Void)?
     var split: ((Set<UUID>) -> Void)?
     var mute: ((UUID) -> Void)?
@@ -87,7 +98,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     private var dragOrigin = CGPoint.zero
     private var hasDragged = false
     private var movingAllowed = false
-    var seek: ((CGFloat) -> Void)?
+    var seek: ((CGFloat, Bool) -> Void)?
     private var anchor: CGPoint?
     private var selectionRect: CGRect?
     private var baseSelection = Set<UUID>()
@@ -163,11 +174,18 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         pressedHeader = nil; headerPressCancelled = false; gainItem = nil; resizingLeft = nil
         needsDisplay = true
     }
+    func timelinePendingClickCancelled() {
+        guard activeButton == 0, !hasDragged else { return }
+        // Keep ownership of mouse-up so it cannot activate another view after
+        // the viewport has moved. Existing item/gain/edge drags still commit.
+        draggedItem = nil; movingAllowed = false; resizingLeft = nil; gainItem = nil
+        pressedHeader = nil; headerPressCancelled = false
+    }
     override func mouseDown(with event: NSEvent) {
         let timeline = timelinePoint(event)
         draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil
         pressedHeader = nil; headerPressCancelled = false
-        guard let item = items.first(where: { $0.rect.contains(timeline) }) else { seek?(timeline.x); return }
+        guard let item = items.first(where: { $0.rect.contains(timeline) }) else { seek?(timeline.x, event.modifierFlags.contains(.shift)); return }
         if let rect = item.editRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .editText); dragStart = event.locationInWindow; return
         } else if item.gainKnobRect?.contains(timeline) == true {
@@ -180,6 +198,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         } else if item.resizable && item.rect.width > 14 && (timeline.x < item.rect.minX + 5 || timeline.x > item.rect.maxX - 5) {
             resizingLeft = timeline.x < item.rect.midX
         }
+        if resizingLeft == nil { seek?(timeline.x, event.modifierFlags.contains(.shift)) }
         let additive = !event.modifierFlags.intersection([.command, .control]).isEmpty
         if additive {
             if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
@@ -223,7 +242,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             let translation = CGSize(width: event.locationInWindow.x - dragStart.x, height: dragStart.y - event.locationInWindow.y)
             if let resizingLeft { resize?(id, resizingLeft, translation.width, true) }
             else if let gainItem { gain?(id, gainItem.draggingGain(by: translation.height), true) }
-            else if movingAllowed { move?(id, translation, dragOrigin.y + translation.height, true) }
+            else if movingAllowed {
+                let point = convert(event.locationInWindow, from: nil)
+                let inside = coordinates.viewport.contains(point)
+                move?(id, translation, inside ? dragOrigin.y + translation.height : .nan, true)
+            }
         }
         draggedItem = nil; hasDragged = false; movingAllowed = false
     }
@@ -274,15 +297,26 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 let menu = NSMenu()
                 let item = NSMenuItem(title: JarasLocalization.string("Criar região do item"), action: #selector(createContextRegion), keyEquivalent: "")
                 item.target = self; menu.addItem(item)
+                let freeze = NSMenuItem(title: JarasLocalization.string("Re-render"), action: #selector(reRenderSelection), keyEquivalent: "")
+                freeze.target = self; menu.addItem(freeze)
                 let normalize = NSMenuItem(title: JarasLocalization.string("Normalize…"), action: #selector(normalizeSelection), keyEquivalent: "")
                 normalize.target = self; menu.addItem(normalize)
                 let split = NSMenuItem(title: JarasLocalization.string("Split at edit cursor…"), action: #selector(splitSelection), keyEquivalent: "")
                 split.target = self; menu.addItem(split)
+                if items.first(where: { $0.id == contextItem })?.editable == true {
+                    menu.addItem(.separator())
+                    for (mode, title) in [(1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
+                        let option = NSMenuItem(title: JarasLocalization.string(title), action: #selector(convertSelection(_:)), keyEquivalent: "")
+                        option.tag = mode; option.target = self; menu.addItem(option)
+                    }
+                }
                 NSMenu.popUpContextMenu(menu, with: event, for: self)
             } else if !additive { selected.removeAll(); selectionChanged?([]) }
         }
         self.anchor = nil; selectionRect = nil; needsDisplay = true
     }
+    @objc private func reRenderSelection() { reRender?(selected) }
+    @objc private func convertSelection(_ sender: NSMenuItem) { convert?(selected, sender.tag) }
     @objc private func normalizeSelection() { normalize?(selected) }
     @objc private func splitSelection() { split?(selected) }
     @objc private func createContextRegion() { if let contextItem { createRegion?(contextItem) } }

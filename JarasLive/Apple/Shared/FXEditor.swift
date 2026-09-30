@@ -24,13 +24,16 @@ struct FXEditor: View {
     let close: () -> Void
     @State private var settings: NativeFXSettings
     let page: String
+    let effectKey: String
     private let project: UUID
     private let fallbackSettings: NativeFXSettings
     @State private var selected: UUID?
     @State private var changed = false
     init(show: ShowController, track: UUID?, clip: UUID? = nil, clipChainEditor: Bool = false, effect: String, close: @escaping () -> Void) {
-        self.show = show; self.track = track; self.clip = clip; self.clipChainEditor = clipChainEditor; self.close = close; page = effect; project = show.snapshot.project.id
-        let initial = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
+        self.show = show; self.track = track; self.clip = clip; self.clipChainEditor = clipChainEditor; self.close = close; effectKey = effect; project = show.snapshot.project.id
+        let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
+        page = chain.kind(of: effect)
+        let initial = chain.settings(for: effect)
         fallbackSettings = initial
         _settings = State(initialValue: initial); _selected = State(initialValue: initial.bands.first?.id)
     }
@@ -40,12 +43,12 @@ struct FXEditor: View {
     }
     private var currentSettings: NativeFXSettings {
         if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.fx ?? fallbackSettings }
-        return show.fxSettings(track)
+        return show.fxSettings(track).settings(for: effectKey)
     }
     private var audioTarget: UUID? { clip ?? track }
     private func remove() {
-        if let clip { show.removeClipFX(clip, effect: page) }
-        else { show.removeFX(track, effect: page) }
+        if let clip { show.removeClipFX(clip, effect: effectKey) }
+        else { show.removeFX(track, effect: effectKey) }
         close()
     }
     var body: some View {
@@ -64,7 +67,7 @@ struct FXEditor: View {
             case "Compressor":
                 Toggle("Enabled", isOn: $settings.compressorEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
                 HStack(spacing: 30) {
-                    EffectVerticalMeters(track: audioTarget, effect: page)
+                    EffectVerticalMeters(track: audioTarget, effect: effectKey)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 22) {
                         FXKnob("Threshold", value: $settings.threshold, range: -60...0, unit: "dB", reset: -20, parameter: .threshold)
                         FXKnob("Ratio", value: $settings.ratio, range: 1...20, unit: ":1", reset: 4, parameter: .ratio)
@@ -79,9 +82,9 @@ struct FXEditor: View {
                     .padding(24).background(JarasTheme.display).cornerRadius(10)
             case "Delay":
                 Toggle("Enabled", isOn: $settings.delayEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
-                EffectSpectrogram(track: audioTarget, effect: page)
+                EffectSpectrogram(track: audioTarget, effect: effectKey)
                 HStack(spacing: 26) {
-                    EffectVerticalMeters(track: audioTarget, effect: page)
+                    EffectVerticalMeters(track: audioTarget, effect: effectKey)
                     FXKnob("Time", value: $settings.delayTime, range: 0.01...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.25, parameter: .delayTime)
                     FXKnob("Feedback", value: $settings.feedback, range: 0...90, unit: "%", reset: 25, parameter: .feedback)
                     FXKnob("Mix", value: $settings.delayMix, range: 0...100, unit: "%", reset: 20, parameter: .delayMix)
@@ -93,9 +96,9 @@ struct FXEditor: View {
                         Text("Room").tag(0); Text("Hall").tag(1); Text("Plate").tag(2)
                     }.pickerStyle(.segmented).labelsHidden().frame(width: 280).mapFXMIDI(.reverbRoom, name: "Space", range: 0...2)
                 }
-                EffectSpectrogram(track: audioTarget, effect: page)
+                EffectSpectrogram(track: audioTarget, effect: effectKey)
                 HStack(spacing: 14) {
-                    EffectVerticalMeters(track: audioTarget, effect: page)
+                    EffectVerticalMeters(track: audioTarget, effect: effectKey)
                     FXKnob("Mix", value: $settings.reverbMix, range: 0...100, unit: "%", reset: 20, parameter: .reverbMix)
                     FXKnob("Decay", value: $settings.reverbDecay, range: 0.1...20, unit: "s", logarithmic: true, reset: 2, parameter: .reverbDecay)
                     FXKnob("Low Cut", value: $settings.reverbLowCut, range: 20...2000, unit: "Hz", logarithmic: true, reset: 80, parameter: .reverbLowCut)
@@ -103,24 +106,24 @@ struct FXEditor: View {
                 }.padding(18).background(JarasTheme.display).cornerRadius(10)
 
             }
-        }.environment(\.fxMIDIScope, FXMIDIScope(track: track, clip: clip, effect: page))
+        }.environment(\.fxMIDIScope, FXMIDIScope(track: track, clip: clip, effect: effectKey))
         .padding(clipChainEditor ? 0 : 20).frame(minWidth: clipChainEditor ? 600 : 640, idealWidth: clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: clipChainEditor ? 410 : 540, idealHeight: clipChainEditor ? 440 : 560, maxHeight: .infinity).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
             .onChange(of: settings) { value in
                 guard show.snapshot.project.id == project else { return }
                 guard currentSettings.merging(effect: page, from: value) != currentSettings else { return }
                 changed = true
-                if let clip { show.updateClipFX(clip, effect: page, settings: value) }
-                else { show.updateFX(track, effect: page, settings: value) }
+                if let clip { show.updateClipFX(clip, effect: effectKey, settings: value) }
+                else { show.updateFX(track, effect: effectKey, settings: value) }
             }
             .onReceive(show.$snapshot.map { snapshot in
                 if let clip { return FXModelLookup.clip(clip, in: snapshot.project)?.fx ?? fallbackSettings }
                 return track.flatMap { id in FXModelLookup.track(id, in: snapshot.project)?.fx } ?? (track == nil ? snapshot.project.masterFX : nil) ?? NativeFXSettings()
             }.removeDuplicates()) { current in
-                settings = settings.merging(effect: page, from: current)
+                settings = settings.merging(effect: page, from: current.settings(for: effectKey))
             }
-            .onAppear { StemAudioPlayback.shared.observeEffect(audioTarget, effect: page, active: true) }
+            .onAppear { StemAudioPlayback.shared.observeEffect(audioTarget, effect: effectKey, active: true) }
             .onDisappear {
-                StemAudioPlayback.shared.observeEffect(audioTarget, effect: page, active: false)
+                StemAudioPlayback.shared.observeEffect(audioTarget, effect: effectKey, active: false)
                 if changed && show.snapshot.project.id == project { show.commitFX() }
             }
             #if os(macOS)
@@ -146,7 +149,7 @@ struct FXEditor: View {
                             context.stroke(line, with: .color(gain == 0 ? JarasTheme.secondary : JarasTheme.line), lineWidth: gain == 0 ? 1 : 0.5)
                         }
                     }
-                    EQRTAOverlay(target: audioTarget)
+                    EQRTAOverlay(target: audioTarget, effect: effectKey)
                     Canvas { context, size in
                         var response = Path()
                         for pixel in stride(from: 0, through: Int(size.width), by: 2) {

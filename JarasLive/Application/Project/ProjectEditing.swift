@@ -8,6 +8,10 @@ public enum GridDeleteTarget: Equatable {
 }
 
 public extension Project {
+    /// Track IDs may appear in more than one song; deletion removes them all.
+    func tracksContainItems(_ ids: Set<UUID>) -> Bool {
+        songs.contains { song in song.tracks.contains { ids.contains($0.id) && !$0.clips.isEmpty } }
+    }
     /// Only connected overlapping roots form a group; touching edges stay separate.
     func overlappingRegions(containing id: UUID) -> [Part] {
         guard let song = songs.first(where: { $0.parts.contains { $0.id == id } }),
@@ -110,7 +114,7 @@ public extension Project {
     }
     /// Special tracks keep a stable prefix; normal tracks and their groups retain their order.
     mutating func orderSpecialTracks() {
-        let order: [TrackKind] = [.timecode, .chords, .teleprompt, .video, .standard]
+        let order: [TrackKind] = [.timecode, .chords, .teleprompt, .teleprompt2, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
             let ranks = tracks.map { order.firstIndex(of: $0.kind)! }
@@ -185,6 +189,7 @@ public extension Project {
         orderSpecialTracks()
     }
     mutating func deleteTracks(_ ids: Set<UUID>) {
+        for song in songs.indices { for id in ids { songs[song].unlinkTracks(id) } }
         for id in ids { ungroupTrack(id) }
         for song in songs.indices {
             songs[song].tracks.removeAll { ids.contains($0.id) }
@@ -318,5 +323,60 @@ public extension AudioClip {
         clip.sourceOffset = loopStart + ((offset.truncatingRemainder(dividingBy: loopLength) + loopLength).truncatingRemainder(dividingBy: loopLength))
         clip.startTime = start; clip.duration = end - start
         return clip
+    }
+}
+
+/// Restores audio at the relative paths already stored in a project. Keeping
+/// those paths means opening and saving with missing clips never discards them.
+public enum ProjectAudioRecovery {
+    public struct Result: Sendable {
+        public let recovered: [String]
+        public let remaining: [String]
+        public let errors: [String]
+    }
+
+    public static func missingPaths(in project: Project, directory: URL) -> [String] {
+        let paths = Set(project.songs.flatMap(\.tracks).filter { $0.kind == .standard || $0.kind == .timecode }.flatMap { track in
+            [track.audioFile?.path].compactMap { $0 } + track.clips.compactMap { $0.audioFile?.path }
+        })
+        return paths.filter { path in
+            let url = directory.appendingPathComponent(path)
+            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) != true
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    public static func restore(_ project: Project, directory: URL, searching folder: URL) throws -> Result {
+        let missing = missingPaths(in: project, directory: directory)
+        guard !missing.isEmpty else { return Result(recovered: [], remaining: [], errors: []) }
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
+            throw ProjectError.invalid("Could not search the selected folder.")
+        }
+        var candidates: [String: [URL]] = [:]
+        for case let url as URL in enumerator {
+            try Task.checkCancellation()
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values?.isRegularFile == true, values?.isSymbolicLink != true else { continue }
+            candidates[url.lastPathComponent.lowercased(), default: []].append(url)
+        }
+        var recovered: [String] = [], errors: [String] = []
+        for path in missing {
+            try Task.checkCancellation()
+            let matches = candidates[URL(fileURLWithPath: path).lastPathComponent.lowercased()] ?? []
+            let exact = matches.filter { $0.path.lowercased().hasSuffix("/" + path.lowercased()) }
+            guard let source = (exact.count == 1 ? exact : matches.count == 1 ? matches : []).first else { continue }
+            let destination = directory.appendingPathComponent(path)
+            let temporary = destination.deletingLastPathComponent().appendingPathComponent("." + UUID().uuidString + ".recovering")
+            do {
+                try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: source, to: temporary)
+                try fm.moveItem(at: temporary, to: destination)
+                recovered.append(path)
+            } catch {
+                try? fm.removeItem(at: temporary)
+                errors.append("\(path): \(error.localizedDescription)")
+            }
+        }
+        return Result(recovered: recovered, remaining: missingPaths(in: project, directory: directory), errors: errors)
     }
 }

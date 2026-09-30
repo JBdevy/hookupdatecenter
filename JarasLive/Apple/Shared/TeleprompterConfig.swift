@@ -7,11 +7,12 @@ import UIKit
 
 @MainActor final class TeleprompterPreferences: ObservableObject {
     static let shared = TeleprompterPreferences()
+    static let second = TeleprompterPreferences(key: "jaras.teleprompter2.settings")
     @Published private(set) var settings: TeleprompterSettings
     @Published private(set) var selected: TeleprompterPreset
     private let store: TeleprompterSettingsStore
-    init(defaults: UserDefaults = .standard) {
-        store = TeleprompterSettingsStore(defaults: defaults)
+    init(defaults: UserDefaults = .standard, key: String = TeleprompterSettingsStore.preferenceKey) {
+        store = TeleprompterSettingsStore(defaults: defaults, key: key)
         settings = store.current; selected = store.selected
     }
     func select(_ preset: TeleprompterPreset) {
@@ -100,6 +101,7 @@ private enum TPSettingField: Identifiable {
 }
 
 struct TeleprompterConfig: View {
+    @State private var showingNotices = false
     @ObservedObject var preferences: TeleprompterPreferences
     let close: () -> Void
     var body: some View {
@@ -132,11 +134,19 @@ struct TeleprompterConfig: View {
                 }.scrollIndicators(.hidden)
             }
             HStack {
+                #if os(macOS)
+                Button("Message settings") { showingNotices = true }
+                #endif
                 Button("Timer settings") { TeleprompterTimerController.shared.showConfiguration() }
                 Spacer(); Button("Close",action: close).keyboardShortcut(.cancelAction)
             }
         }.padding(16).frame(minWidth: 500,idealWidth: 760,maxWidth: .infinity,minHeight: 520,idealHeight: 700,maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            #if os(macOS)
+            .sheet(isPresented: $showingNotices) {
+                VStack { TPNoticeSettingsView(); Button("Close") { showingNotices = false }.keyboardShortcut(.cancelAction) }.padding().frame(width: 480)
+            }
+            #endif
     }
     @ViewBuilder private func fieldView(_ field: TPSettingField) -> some View {
         switch field {

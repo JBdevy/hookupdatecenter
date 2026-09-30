@@ -16,8 +16,10 @@ struct CreateTrackEditor: View {
     @FocusState private var nameFocused: Bool
     private var existingCount: Int { show.snapshot.project.songs.reduce(0) { $0 + $1.tracks.count } }
     private var availableCount: Int { max(0, 400 - existingCount) }
-    private var timecodeExists: Bool { show.snapshot.project.songs.contains { $0.tracks.contains { $0.kind == .timecode } } }
-    private var unavailable: Bool { availableCount == 0 || (kind == .timecode && timecodeExists) }
+    private var specialTrackExists: Bool {
+        kind != .standard && show.snapshot.project.songs.contains { $0.tracks.contains { $0.kind == kind } }
+    }
+    private var unavailable: Bool { availableCount == 0 || specialTrackExists }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Criar pista").font(.title2.bold())
@@ -47,8 +49,9 @@ struct CreateTrackEditor: View {
                     Text("Enter a quantity between 1 and \(max(1, availableCount)).").font(.caption).foregroundStyle(.red)
                 }
             } else { Text(LocalizedStringKey(kind.title)).foregroundStyle(JarasTheme.secondary) }
-            if kind == .timecode && timecodeExists {
-                Text("A Timecode track already exists.").font(.caption).foregroundStyle(.orange)
+            if specialTrackExists {
+                Text(String(format: JarasLocalization.string("A %@ track already exists."), JarasLocalization.string(kind.title)))
+                    .font(.caption).foregroundStyle(.orange)
             }
             if availableCount == 0 {
                 Text("Maximum of 400 tracks per project.").font(.caption).foregroundStyle(.orange)

@@ -8,12 +8,19 @@ struct SettingsView: View {
     private enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
         var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
+    private var availableSections: [Section] {
+        #if os(iOS)
+        Section.allCases.filter { $0 != .account && $0 != .plugins }
+        #else
+        Section.allCases
+        #endif
+    }
     @ObservedObject private var mappings = ControlMappings.shared
     @State private var section = Section.general
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 6) {
-                ForEach(Section.allCases, id: \.self) { item in
+                ForEach(availableSections, id: \.self) { item in
                     Button { section = item } label: {
                         Label(LocalizedStringKey(item.rawValue), systemImage: item.icon)
                             .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)

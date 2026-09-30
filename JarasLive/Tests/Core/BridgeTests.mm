@@ -35,6 +35,20 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
     expectMetadataSnapshot(core,snapshot);
+    expect([core executeCommand:@"solo" target:nil value:0 error:&error], "Master solo is a native mixer command");
+    expect([core editMasterColor:0x12ab34 error:&error], "edit Master color incrementally");
+    NSDictionary* masterEdited=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect([masterEdited[@"project"][@"masterSolo"] boolValue] && [masterEdited[@"project"][@"masterColor"] unsignedIntValue]==0x12ab34, "Master solo and color persist in snapshots");
+    expect(equalJSON(snapshot[@"transport"],masterEdited[@"transport"]), "Master mixer changes preserve both transport heads");
+    NSData* masterSaved=[NSJSONSerialization dataWithJSONObject:masterEdited[@"project"] options:0 error:&error];
+    expect([core loadProjectData:masterSaved error:&error], "reload Master mixer settings");
+    NSDictionary* masterReloaded=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(equalJSON(masterEdited[@"project"],masterReloaded[@"project"]), "Master mixer settings survive native project round trip");
+    error=nil;
+    expect(![core editMasterColor:0x1000000 error:&error] && error!=nil, "reject invalid Master color");
+    NSDictionary* masterRejected=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(equalJSON(masterReloaded,masterRejected), "invalid Master color is atomic");
+    error=nil; expect([core loadProjectData:input error:&error], "restore original project after Master tests");
     NSString* regionID = original[@"songs"][0][@"parts"][0][@"id"];
     NSString* pitchTrack = original[@"songs"][0][@"tracks"][0][@"id"];
     expect([core setRegionPitch:regionID semitones:-3 tracks:@[pitchTrack] groups:@[] error:&error], "incremental pitch mutation through native bridge");
@@ -46,8 +60,10 @@ int main(int argc,char**argv){@autoreleasepool{
     NSMutableDictionary* stopList = [original[@"regionSetlist"] mutableCopy];
     stopList[@"stopAtRegionEnd"] = @YES;
     stopList[@"prepareWithoutPlayback"] = @YES;
+    stopList[@"automaticSubplay"] = @YES; stopList[@"automaticSubplaySeconds"] = @3;
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:stopList options:0 error:&error] error:&error], "enable region Stop through bridge");
     NSDictionary* stopSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplay"] boolValue] && [stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplaySeconds"] doubleValue] == 3, "automatic subplay settings survive native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"prepareWithoutPlayback"] boolValue], "prepare without playback survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"stopAtRegionEnd"] boolValue], "region Stop survives native serialization");
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:original[@"regionSetlist"] options:0 error:&error] error:&error], "restore disabled region Stop");
@@ -71,7 +87,7 @@ int main(int argc,char**argv){@autoreleasepool{
     expect([snapshot[@"project"][@"songs"][0][@"tracks"][0][@"clips"][0][@"muted"] boolValue],"item gain preserves clip mute");
     expect(equalJSON(snapshot[@"transport"],playback[@"transport"]),"item gain preserves the entire live transport");
     expectMetadataSnapshot(core,snapshot);
-    for(double invalid : {-0.01,4.0,std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity()}) {
+    for(double invalid : {-0.01,std::pow(10.0,24.0/20.0)+0.01,std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity()}) {
         error=nil;
         expect(![core executeCommand:@"clipGain" target:gainClipID value:invalid error:&error] && error!=nil,"invalid item gain is reported");
         NSDictionary* unchanged=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
@@ -121,6 +137,39 @@ int main(int argc,char**argv){@autoreleasepool{
     expect(![core setClipFXBypass:@"missing" bypassed:NO error:&error] && error != nil, "unknown global bypass target rejected");
     NSDictionary* bypassAfterUnknown = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(snapshot, bypassAfterUnknown), "unknown global bypass mutation is atomic");
+    NSString* tempoID=NSUUID.UUID.UUIDString;
+    expect([core setTempoMarker:tempoID position:8 bpm:180 beats:3 unit:8 timebase:@"global" error:&error], "create tempo marker without replacing the project");
+    NSDictionary* tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    NSDictionary* tempoMarker=[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject];
+    expect([tempoMarker[@"tempoBPM"] doubleValue]==180 && [tempoMarker[@"tempoBeats"] intValue]==3 && [tempoMarker[@"tempoUnit"] intValue]==8, "tempo marker BPM and meter survive bridge snapshot");
+    expect(equalJSON(snapshot[@"transport"],tempoSnapshot[@"transport"]), "tempo marker preserves both playback heads");
+    expect([tempoMarker[@"tempoTimebase"] isEqual:@"global"], "new tempo marker follows global timebase");
+    expect(![core setTempoMarker:tempoID position:8 bpm:301 beats:3 unit:8 timebase:@"global" error:&error], "reject out-of-range marker tempo");
+    NSDictionary* badTempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(equalJSON(tempoSnapshot,badTempoSnapshot), "invalid tempo marker is atomic");
+    for (NSString* mode in @[@"free", @"relative", @"global"]) {
+        expect([core setTempoMarker:tempoID position:8 bpm:180 beats:3 unit:8 timebase:mode error:&error], "edit marker-specific timebase incrementally");
+        tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+        expect([[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject][@"tempoTimebase"] isEqual:mode], "marker timebase survives bridge snapshot");
+        expect(equalJSON(snapshot[@"transport"],tempoSnapshot[@"transport"]), "timebase edit preserves playback heads");
+    }
+    for (double position : {8.137875, 7.932125}) {
+        error=nil;
+        expect([core setTempoMarker:tempoID position:position bpm:180 beats:3 unit:8 timebase:@"global" error:&error], "move tempo marker freely in either direction");
+        tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+        NSDictionary* moved=[[tempoSnapshot[@"project"][@"songs"] firstObject][@"markers"] lastObject];
+        expect(std::abs([moved[@"position"] doubleValue]-position)<1e-12, "tempo drag must retain exact fractional positions without beat snapping");
+        expect(equalJSON(snapshot[@"transport"],tempoSnapshot[@"transport"]), "moving tempo markers cannot move either playback head");
+    }
+    expect(![core setTempoMarker:tempoID position:8 bpm:180 beats:3 unit:8 timebase:@"invalid" error:&error], "reject invalid marker timebase");
+    badTempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(equalJSON(tempoSnapshot,badTempoSnapshot), "invalid marker timebase is atomic");
+    NSData* tempoData=[NSJSONSerialization dataWithJSONObject:tempoSnapshot[@"project"] options:0 error:&error];
+    JarasCoreBridge* tempoCore=[JarasCoreBridge new];
+    expect([tempoCore loadProjectData:tempoData error:&error], "reload tempo marker metadata");
+    NSDictionary* tempoReloaded=[NSJSONSerialization JSONObjectWithData:[tempoCore snapshotWithError:&error] options:0 error:&error];
+    expect(equalJSON(tempoSnapshot[@"project"],tempoReloaded[@"project"]), "tempo map project round trip");
+    expect([core deleteManualMarker:tempoID error:&error], "delete tempo marker");
     NSString* markerID=NSUUID.UUID.UUIDString;
     expect([core setMarker:markerID name:@"Entrada" position:18 color:0x00ff88 error:&error],"create marker");
     expect([core setMarker:markerID name:@"Refrão" position:19 color:0xffcc00 error:&error],"edit marker");

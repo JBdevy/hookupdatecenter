@@ -11,6 +11,8 @@ private struct CaptureTarget: Sendable {
     let format: String
     var id = UUID()
     var lane = 0
+    var recordedChannels: Int? = nil
+    var channelCount: Int { recordedChannels ?? input.channelCount }
 }
 private struct CapturedItem: Sendable { let track: UUID; let clip: AudioClip }
 
@@ -40,7 +42,7 @@ private final class CaptureWriter: @unchecked Sendable {
         var position: Double?
         init(target: CaptureTarget,url: URL,file: AVAudioFile,buffer: AVAudioPCMBuffer) {
             self.target=target; self.url=url; self.file=file; self.buffer=buffer
-            overview=RecordingOverview(channels: target.input.channelCount,sampleRate: buffer.format.sampleRate)
+            overview=RecordingOverview(channels: target.channelCount,sampleRate: buffer.format.sampleRate)
         }
     }
     init(targets: [CaptureTarget], directory: URL, format: AVAudioFormat, ring: JarasCaptureRing? = nil) throws {
@@ -53,8 +55,9 @@ private final class CaptureWriter: @unchecked Sendable {
         let folder = directory.appendingPathComponent("Steams/Recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             guard target.input.firstChannel >= 1, target.input.firstChannel + target.input.channelCount - 1 <= channels else { throw ProjectError.invalid("Selected recording input is unavailable.") }
-            let url = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-            let settings: [String: Any] = [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:sampleRate, AVNumberOfChannelsKey:target.input.channelCount, AVLinearPCMBitDepthKey:target.format == "wav32" ? 32 : 24, AVLinearPCMIsFloatKey:target.format == "wav32", AVLinearPCMIsBigEndianKey:false, AVLinearPCMIsNonInterleaved:false]
+            let aiff = target.format.hasPrefix("aiff")
+            let url = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension(aiff ? "aiff" : "wav")
+            let settings: [String: Any] = [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:sampleRate, AVNumberOfChannelsKey:target.channelCount, AVLinearPCMBitDepthKey:(target.format == "wav32" || target.format.hasSuffix("32pcm")) ? 32 : 24, AVLinearPCMIsFloatKey:target.format == "wav32", AVLinearPCMIsBigEndianKey:aiff, AVLinearPCMIsNonInterleaved:false]
             let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ProjectError.invalid("Could not allocate recording buffer") }
         return Take(target: target, url: url, file: file, buffer: buffer)
@@ -97,8 +100,8 @@ private final class CaptureWriter: @unchecked Sendable {
                 for take in takes {
                     take.buffer.frameLength = AVAudioFrameCount(count)
                     for frame in 0..<Int(count) {
-                        for channel in 0..<take.target.input.channelCount {
-                            let sample = interleaved[frame * channels + take.target.input.firstChannel - 1 + channel]
+                        for channel in 0..<take.target.channelCount {
+                            let sample = interleaved[frame * channels + take.target.input.firstChannel - 1 + min(channel, take.target.input.channelCount - 1)]
                             take.buffer.floatChannelData![channel][frame] = sample
                             take.overview.append(sample,channel: channel)
                         }
@@ -126,9 +129,13 @@ private final class CaptureWriter: @unchecked Sendable {
                     continue
                 }
                 var url = take.url
-                if take.target.format == "mp3" {
+                if take.target.format.hasPrefix("mp3") {
                     let mp3 = url.deletingPathExtension().appendingPathExtension("mp3")
-                    do { try JarasMP3Encoder.encodeWav(url, to: mp3); url = mp3; try? FileManager.default.removeItem(at: take.url) }
+                    do { let source = try AVAudioFile(forReading: url)
+                        let encoder = try JarasMP3StreamEncoder(url: mp3, sampleRate: Int(source.processingFormat.sampleRate), channels: Int(source.processingFormat.channelCount), bitRate: Int(take.target.format.split(separator: "-").last ?? "320") ?? 320)
+                        let pcm = AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: 4096)!
+                        while source.framePosition < source.length { try source.read(into: pcm, frameCount: 4096); try encoder.write(pcm) }
+                        try encoder.finish(); url = mp3; try? FileManager.default.removeItem(at: take.url) }
                     catch { message = error.localizedDescription; try? FileManager.default.removeItem(at: mp3) }
                 }
                 do {
@@ -206,19 +213,27 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !busy else { return }
         if armed.contains(track) { armed.remove(track); updateArmedTargets(); return }
         if !requiresAudioInput { armed.insert(track); updateArmedTargets(); return }
-        Task {
-            let permission = AVCaptureDevice.authorizationStatus(for: .audio)
-            let allowed = permission == .authorized ? true : permission == .notDetermined ? await AVCaptureDevice.requestAccess(for: .audio) : false
-            if allowed { armed.insert(track); updateArmedTargets() } else { error = "Allow microphone access in System Settings to record audio." }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            // The common path must change the button state in this click.
+            armed.insert(track); updateArmedTargets()
+        case .notDetermined:
+            Task {
+                if await AVCaptureDevice.requestAccess(for: .audio) {
+                    armed.insert(track); updateArmedTargets()
+                } else { error = "Allow microphone access in System Settings to record audio." }
+            }
+        default:
+            error = "Allow microphone access in System Settings to record audio."
         }
     }
     private func target(for track: Track, position: Double) -> CaptureTarget {
         let occupied = RecordingLaneLayout.shared.items.values.filter { $0.track == track.id }.map { $0.clip.recordingLane ?? 0 }
         let lane = max(track.clips.isEmpty ? 0 : TrackLanes(track: track).count, (occupied.max().map { $0 + 1 }) ?? 0)
-        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: track.recordingFormat ?? "wav", lane: lane)
+        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey, lane: lane, recordedChannels: track.recordingChannels ?? 2)
         let clip = AudioClip(id: target.id, name: "Recording", startTime: position, duration: 0.01, recordingLane: lane)
         RecordingLaneLayout.shared.reserve(track: track.id, clip: clip)
-        LiveRecordingPreview.shared.takes[target.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: Array(repeating: [0], count: target.input.channelCount))
+        LiveRecordingPreview.shared.takes[target.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: Array(repeating: [0], count: target.channelCount))
         return target
     }
     private func updateArmedTargets() {
@@ -356,9 +371,9 @@ struct TrackRecordButton: View {
     let show: ShowController
     let track: Track
     @ObservedObject private var recorder = TrackRecording.shared
-    @State private var formatPresented = false
+    @State private var editingMode = false
     var body: some View {
-        Button { recorder.toggleArm(track.id, requiresAudioInput: track.fx?.instrumentID == nil && !(track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)) } label: {
+        Button { recorder.toggleArm(track.id, requiresAudioInput: track.fx?.instrumentKeys.isEmpty != false && !(track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)) } label: {
             Image(systemName: "record.circle")
                 .foregroundStyle(recorder.armed.contains(track.id) ? JarasTheme.green : .red)
                 .frame(width: 22, height: 21)
@@ -368,24 +383,28 @@ struct TrackRecordButton: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 3))
-        }.accessibilityLabel("Arm track for recording").jarasHelp("Arm track for recording")
-            .immediateRightClick { formatPresented = true }
-            .popover(isPresented: $formatPresented) {
-                Button((track.recordingFormat ?? "wav") == "wav" ? "✓ WAV · 24-bit" : "WAV · 24-bit") { show.setRecording(track.id, input: track.inputPatch ?? recorder.defaultInputPatch, format: "wav"); formatPresented = false }.padding(12)
-                Button(track.recordingFormat == "wav32" ? "✓ WAV · 32-bit float" : "WAV · 32-bit float") { show.setRecording(track.id, input: track.inputPatch ?? recorder.defaultInputPatch, format: "wav32"); formatPresented = false }.padding(12)
-                Button(track.recordingFormat == "mp3" ? "✓ MP3 · 320 kbps" : "MP3 · 320 kbps") { show.setRecording(track.id, input: track.inputPatch ?? recorder.defaultInputPatch, format: "mp3"); formatPresented = false }.padding(12)
-            }
+        }
+        #if os(macOS)
+        .background(TrackRecordSelectionExclusion())
+        #endif
+        .immediateRightClick { editingMode = true }
+        .popover(isPresented: $editingMode) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Recording mode").font(.headline)
+                Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
+                    Text("Mono").tag(1)
+                    Text("Stereo").tag(2)
+                }.pickerStyle(.segmented).labelsHidden()
+            }.padding(16)
+        }
+        .accessibilityLabel("Arm track for recording").jarasHelp("Arm track for recording")
+
     }
 }
 private struct ArmedRecordingBackground: View {
-    @State private var dimmed = false
-    var body: some View {
-        Color.red.opacity(dimmed ? 0.72 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { dimmed = true }
-            }
-    }
+    var body: some View { Color.red.modifier(JarasBlink(active: true, interval: 0.6, lowOpacity: 0.72)) }
 }
+
 struct TransportRecordButton: View {
     let show: ShowController
     @ObservedObject private var recorder = TrackRecording.shared
@@ -393,6 +412,6 @@ struct TransportRecordButton: View {
         Button { recorder.toggle(show: show) } label: {
             Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
                 .foregroundStyle(recorder.recording ? .red : JarasTheme.secondary)
-        }.buttonStyle(TransportButtonStyle(color: .red,active: recorder.recording)).disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
+        }.buttonStyle(TransportButtonStyle(color: .red, active: recorder.recording, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height)).disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
     }
 }

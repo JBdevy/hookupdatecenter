@@ -71,7 +71,9 @@ public struct InstrumentCutoffParameters: Codable, Equatable, Sendable {
 public struct InstrumentControllerParameters: Codable, Equatable, Sendable {
     public var modulation: Bool
     public var pitchBend: Bool
-    public init(modulation: Bool = false, pitchBend: Bool = false) { self.modulation = modulation; self.pitchBend = pitchBend }
+    public var monophonic: Bool?
+    public var volume: Double?
+    public init(modulation: Bool = false, pitchBend: Bool = false, monophonic: Bool? = nil) { self.modulation = modulation; self.pitchBend = pitchBend; self.monophonic = monophonic }
 }
 public struct InstrumentParameters: Codable, Equatable, Sendable {
     public var controllers: InstrumentControllerParameters?
@@ -82,6 +84,7 @@ public struct InstrumentParameters: Codable, Equatable, Sendable {
     public init(drums: Bool = false) { if drums { release = 20 } }
     public func validate() throws {
         try cutoff?.validate()
+        if let volume = controllers?.volume { guard volume.isFinite, (-96...0).contains(volume) else { throw ProjectError.invalid("Invalid controller volume") } }
         if let velocity { guard velocity.cutoffMinimum.isFinite, (20...20000).contains(velocity.cutoffMinimum) else { throw ProjectError.invalid("Invalid velocity cutoff") } }
         guard [gain, attack, hold, decay, sustain, release].allSatisfy(\.isFinite),
               (-24...12).contains(gain), (0...10).contains(attack), (0...10).contains(hold),
@@ -98,7 +101,16 @@ public struct ExternalPlugin: Codable, Equatable, Identifiable, Sendable {
     public var effectKey: String { "External:" + id }
     public init(classID: String, name: String, path: String, category: String = "") { self.classID = classID; self.name = name; self.path = path; self.category = category }
 }
+public struct NativeFXInstance: Codable, Equatable, Sendable {
+    public var id = UUID().uuidString
+    public var kind: String
+    public var settings: NativeFXSettings
+    public var effectKey: String { "Native:" + id }
+    public init(kind: String, settings: NativeFXSettings) { self.kind = kind; self.settings = settings }
+}
 public struct NativeFXSettings: Codable, Equatable, Sendable {
+    public var instances: [NativeFXInstance]?
+
     public var externalPlugins: [ExternalPlugin]?
     public var instrumentID: String?
     public var instrumentParameters: InstrumentParameters?
@@ -122,17 +134,24 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public func validateForClip() throws {
         try validate()
         guard inserted.allSatisfy({ Self.order.dropFirst().contains($0) }),
-              externalPlugins?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
+              instances?.isEmpty != false, externalPlugins?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
         else { throw ProjectError.invalid("Items support EQ, Compressor, Pitch, Delay and Reverb only") }
     }
     public func validate() throws {
         try instrumentParameters?.validate()
         guard semitones.isFinite, (-12...12).contains(semitones), semitones == semitones.rounded() else { throw ProjectError.invalid("Invalid pitch") }
+        let native = instances ?? []
+        guard Set(native.map(\.id)).count == native.count else { throw ProjectError.invalid("Duplicate FX instance") }
+        for instance in native {
+            guard !instance.id.isEmpty, Self.order.contains(instance.kind), instance.settings.instances?.isEmpty != false,
+                  instance.settings.externalPlugins?.isEmpty != false, instance.settings.inserted == [instance.kind]
+            else { throw ProjectError.invalid("Invalid FX instance") }
+            try instance.settings.validate()
+        }
         let external = externalPlugins ?? []
-        guard external.filter({ $0.category.contains("Instrument") }).count + (instrumentID == nil ? 0 : 1) <= 1,
-              Set(external.map(\.id)).count == external.count,
+        guard Set(external.map(\.id)).count == external.count,
               external.allSatisfy({ !$0.id.isEmpty && $0.classID.count == 32 && $0.classID.allSatisfy(\.isHexDigit) && !$0.name.isEmpty && !$0.path.isEmpty }) else { throw ProjectError.invalid("Invalid external plugin") }
-        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || external.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
+        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || external.contains(where: { $0.effectKey == effect }) || native.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
               bands.allSatisfy({ $0.frequency.isFinite && (20...20000).contains($0.frequency) && $0.gain.isFinite && (-24...24).contains($0.gain) && $0.q.isFinite && (0.1...18).contains($0.q) && [6,12,24,36,48,72,96,192].contains($0.slope) && ["bell","lowCut","highCut","lowShelf","highShelf"].contains($0.type) }),
               [threshold, ratio, attack, release, makeup, delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut].allSatisfy(\.isFinite),
               (-60...0).contains(threshold), (1...20).contains(ratio), (0.0001...0.2).contains(attack), (0.01...3).contains(release), (-12...24).contains(makeup),
@@ -143,17 +162,40 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
 
 extension NativeFXSettings {
     public var effectKeys: [String] { inserted }
+    public func kind(of key: String) -> String { instances?.first { $0.effectKey == key }?.kind ?? key }
+    public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
+    public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }
+    @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil) -> String {
+        if !inserted.contains(kind) {
+            inserted.append(kind); setEnabled(kind, enabled: true)
+            if kind == "Instruments" { instrumentID = instrument; instrumentParameters = parameters; instrumentBypassed = false }
+            return kind
+        }
+        var value = Self(); value.inserted = [kind]; value.setEnabled(kind, enabled: true)
+        if kind == "Instruments" { value.instrumentID = instrument; value.instrumentParameters = parameters; value.instrumentBypassed = false }
+        let instance = NativeFXInstance(kind: kind, settings: value)
+        instances = (instances ?? []) + [instance]; inserted.append(instance.effectKey)
+        return instance.effectKey
+    }
+    public mutating func removeInstance(_ key: String) { instances?.removeAll { $0.effectKey == key } }
+
     public func isEnabled(_ effect: String) -> Bool {
+        if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
         switch effect { case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
+        if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
         switch effect { case "Instruments": instrumentBypassed = !enabled; case "EQ": eqEnabled = enabled; case "Compressor": compressorEnabled = enabled; case "Pitch": pitchEnabled = enabled; case "Delay": delayEnabled = enabled; case "Reverb": reverbEnabled = enabled; default: break }
     }
     /// Editors for different effects can remain open; each updates only its own parameters.
     public func merging(effect: String, from draft: Self) -> Self {
         var next = self
+        if let index = next.instances?.firstIndex(where: { $0.effectKey == effect }), let instance = next.instances?[index] {
+            next.instances?[index].settings = instance.settings.merging(effect: instance.kind, from: draft.settings(for: effect))
+            return next
+        }
         switch effect {
         case "Instruments": next.instrumentID = draft.instrumentID; next.instrumentParameters = draft.instrumentParameters
         case "EQ": next.eqEnabled = draft.eqEnabled; next.bands = draft.bands

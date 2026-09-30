@@ -4,6 +4,7 @@ struct FXInsertEditor: View {
     let show: ShowController
     let track: UUID?
     let targets: [UUID?]
+    var resize: (CGFloat) -> Void = { _ in }
     let dismiss: () -> Void
     @Environment(\.openFX) private var open
     @State private var effect = "EQ"
@@ -13,6 +14,7 @@ struct FXInsertEditor: View {
     @ObservedObject private var plugins = PluginCatalog.shared
     @State private var external: String?
     @State private var externalError = ""
+    @State private var browsingExternal = false
     #endif
     private var availableEffects: [String] {
         var result = track == nil ? ["EQ", "Compressor"] : NativeFXSettings.order.filter { targets.count == 1 || $0 != "Instruments" }
@@ -37,10 +39,15 @@ struct FXInsertEditor: View {
                     if effect == "Instruments" { InstrumentBrowser(selected: $instrument).frame(height: 330) }
                     #if os(macOS)
                     if effect == "External" {
-                        Picker("Plugin", selection: $external) {
-                            Text("Choose a plugin").tag(Optional<String>.none)
-                            ForEach(plugins.plugins.filter { !($0.isInstrument && (targets.count > 1 || track == nil)) }) { plugin in Text(verbatim: plugin.name).tag(Optional(plugin.id)) }
-                        }
+                        Button { browsingExternal = true } label: {
+                            HStack {
+                                Image(systemName: "magnifyingglass")
+                                Text(external.flatMap { id in plugins.plugins.first { $0.id == id }?.name } ?? JarasLocalization.string("Choose a plugin"))
+                                    .lineLimit(1)
+                                Spacer()
+                                Image(systemName: "square.grid.2x2")
+                            }.frame(maxWidth: .infinity).padding(8)
+                        }.buttonStyle(.bordered)
                         HStack { Button("Scan plugins") { plugins.scan() }.disabled(plugins.scanning); if plugins.scanning { ProgressView().controlSize(.small) } }
                         if !externalError.isEmpty { Text(verbatim: externalError).font(.caption).foregroundStyle(.red) }
                     }
@@ -59,12 +66,6 @@ struct FXInsertEditor: View {
                                         guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
                                         var settings = show.fxSettings(target)
                                         var instance = chosen.instance
-                                        if chosen.isInstrument {
-                                            settings.instrumentID = nil; settings.instrumentParameters = nil; settings.instrumentBypassed = nil
-                                            let replaced = Set((settings.externalPlugins ?? []).filter { $0.category.contains("Instrument") }.map(\.effectKey))
-                                            settings.externalPlugins?.removeAll { $0.category.contains("Instrument") }
-                                            settings.inserted.removeAll { $0 == "Instruments" || replaced.contains($0) }
-                                        }
                                         settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
                                         settings.inserted.append(instance.effectKey)
                                         try settings.validate()
@@ -87,24 +88,31 @@ struct FXInsertEditor: View {
                                 return
                             }
                             #endif
+                            var insertedKey: String?
                             if effect == "Instruments" {
                                 guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
                                 var settings = show.fxSettings(track)
-                                if settings.instrumentID != instrument { settings.instrumentParameters = InstrumentLibrary.parameters(instrument) }
-                                let replaced = Set((settings.externalPlugins ?? []).filter { $0.category.contains("Instrument") }.map(\.effectKey))
-                                settings.externalPlugins?.removeAll { $0.category.contains("Instrument") }
-                                settings.inserted.removeAll { replaced.contains($0) }
-                                settings.instrumentID = instrument; settings.instrumentBypassed = false
-                                if !settings.inserted.contains(effect) { settings.inserted.append(effect) }
+                                insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
                                 show.previewFX(track, settings: settings); show.commitFX()
-                            } else { for target in targets { show.insertFX(target, effect: effect) } }
-                            guard show.fxSettings(track).inserted.contains(effect) else { return }
+                            } else {
+                                for target in targets {
+                                    let key = show.insertFX(target, effect: effect)
+                                    if target == track { insertedKey = key }
+                                }
+                            }
+                            guard let insertedKey, show.fxSettings(track).inserted.contains(insertedKey) else { return }
                             dismiss()
-                            open(track, effect)
+                            open(track, insertedKey)
                         }.keyboardShortcut(.defaultAction).disabled(cannotApply)
                     }
                 }.padding(20).frame(width: effect == "Instruments" ? 440 : 300).foregroundStyle(JarasTheme.text)
-        .onAppear { instrument = show.fxSettings(track).instrumentID }
+        .onAppear { instrument = show.fxSettings(track).instrumentID; resize(210) }
+        .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
+        #if os(macOS)
+        .onChange(of: effect) { value in if value == "External" { browsingExternal = true } }
+        .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
+                                                  allowsInstruments: targets.count == 1 && track != nil))
+        #endif
     }
 }
 #if os(macOS)
@@ -153,7 +161,7 @@ private struct LocalizedClipFXEditor: View {
         case .clip(let clip): return "Jaras FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
         case .track(let track, let effect):
             let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
-            if effect == "Chain" { return "FX · " + name }
+            if effect == "Chain" { return JarasLocalization.string("FX Manager") }
             return (show.fxSettings(track).externalPlugins?.first(where: { $0.effectKey == effect })?.name ?? EffectPresentation.title(effect)) + " · " + name
         }
     }

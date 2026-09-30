@@ -301,7 +301,7 @@ struct LibraryInstrument: Identifiable {
     ]
     static func category(_ id: String?) -> InstrumentCategory? { catalog.first { $0.id == id }?.category }
     static func controllers(_ category: InstrumentCategory?) -> InstrumentControllerParameters {
-        InstrumentControllerParameters(modulation: category == .synthPad || category == .strings, pitchBend: category == .bass || category == .lead)
+        InstrumentControllerParameters(modulation: category == .synthPad || category == .strings, pitchBend: category == .bass || category == .lead, monophonic: category == .lead)
     }
     static func parameters(_ id: String?) -> InstrumentParameters {
         var value = InstrumentParameters(drums: category(id) == .drum)
