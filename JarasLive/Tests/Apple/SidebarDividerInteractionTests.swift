@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+final class SidebarHitProbeClip: NSClipView {
+    var hitCount = 0
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        hitCount += 1
+        return super.hitTest(point)
+    }
+}
 final class SidebarFixtureDocument: NSView { override var isFlipped: Bool { true } }
 private final class HostedSidebarCounts { var resized = 0; var bodies = 0 }
 private struct HostedSidebarFixture: View {
@@ -27,6 +34,7 @@ let root = SidebarFixtureDocument(frame: CGRect(x: 0, y: 0, width: 800, height: 
 window.contentView = root
 func makeScroll(x: CGFloat, documentHeight: CGFloat) -> NSScrollView {
     let scroll = NSScrollView(frame: CGRect(x: x, y: 0, width: 280, height: 400))
+    scroll.contentView = SidebarHitProbeClip()
     scroll.borderType = .noBorder
     scroll.hasVerticalScroller = false
     scroll.documentView = SidebarFixtureDocument(frame: CGRect(x: 0, y: 0, width: 280, height: documentHeight))
@@ -165,7 +173,12 @@ precondition(mixerController.handleWheel(physicalWheel))
 settle(0.65)
 precondition(abs(mixerController.metrics.offset - max(0, beforeReversal - 32)) < 0.001, "reversal cancels outstanding travel")
 physicalWheel.precise = true
-precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
+let hitProbe = mixerScroll.contentView as! SidebarHitProbeClip
+let previousHits = hitProbe.hitCount
+for _ in 0..<120 {
+    precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
+}
+precondition(hitProbe.hitCount == previousHits, "trackpad zoom must not hit-test the sidebar's entire hosted document")
 print("SIDEBAR_PHYSICAL_WHEEL_SMOOTH_EXACT_TARGET_AND_REVERSAL_OK")
 
 // Every thumb event commits immediately, including reversal and mouse-up.

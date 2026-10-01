@@ -574,6 +574,10 @@ struct SidebarScrollMetrics: Equatable {
         guard let scroll = scrollView, event.window === scroll.window, scroll.window?.attachedSheet == nil,
               !scroll.isHiddenOrHasHiddenAncestor,
               scroll.contentView.visibleRect.contains(scroll.contentView.convert(event.locationInWindow, from: nil)) else { return false }
+        // Trackpad/modified wheel events belong to the timeline or native scroll.
+        // Reject them before traversing the entire SwiftUI document for hit testing.
+        guard !event.hasPreciseScrollingDeltas,
+              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { stopWheel(); return false }
         var hit = scroll.contentView.hitTest(scroll.convert(event.locationInWindow, from: nil))
         var nearest: NSScrollView?
         while let current = hit {
@@ -581,8 +585,6 @@ struct SidebarScrollMetrics: Equatable {
             hit = current.superview
         }
         guard nearest === scroll else { return false }
-        guard !event.hasPreciseScrollingDeltas,
-              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { stopWheel(); return false }
         let movement = -event.scrollingDeltaY * 16
         guard movement != 0 else { return false }
         refresh()

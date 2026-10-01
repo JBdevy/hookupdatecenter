@@ -351,10 +351,11 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
                 lease: lease, requestedAt: scheduled)
             command.addScheduledHandler { [weak self] _ in
                 DispatchQueue.main.async {
-                    defer { lease.finish(2) }
-                    guard let self, let presentation = self.scheduledPresentations.removeValue(forKey: sequence) else { return }
+                    guard let self, let presentation = self.scheduledPresentations.removeValue(forKey: sequence) else {
+                        lease.finish(2); return
+                    }
                     self.lastScheduleMilliseconds = (CACurrentMediaTime() - presentation.requestedAt) * 1000
-                    self.present(presentation.frame, drawable: presentation.drawable, sequence: sequence)
+                    self.present(presentation.frame, drawable: presentation.drawable, sequence: sequence, lease: lease)
                 }
             }
         }
@@ -366,18 +367,26 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             // atomic; ordinary zoom/pan never waits here.
             command.waitUntilScheduled()
             lastScheduleMilliseconds = (CACurrentMediaTime() - scheduled) * 1000
-            present(frame, drawable: drawable, sequence: sequence)
-            lease.finish(2)
+            present(frame, drawable: drawable, sequence: sequence, lease: lease)
         }
     }
 
-    private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64) {
-        guard sequence > lastPresentedSequence else { return }
+    private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64, lease: FrameLease) {
+        guard sequence > lastPresentedSequence else { lease.finish(2); return }
+        // Calling present only queues the drawable. Releasing the slot there
+        // can exhaust the triple buffer before Core Animation displays it and
+        // make nextDrawable block the UI thread for an entire timeout.
+        drawable.addPresentedHandler { _ in lease.finish(2) }
         lastPresentedSequence = sequence
-        CATransaction.begin(); CATransaction.setDisableActions(true)
+        // Join the run loop's implicit transaction. Starting and committing a
+        // root explicit transaction from each GPU callback forces AppKit to
+        // flush layout and cursor hit testing again between display frames.
+        // Geometry and drawable still commit together at the display boundary.
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
         didPresent?(frame)
         drawable.present()
-        CATransaction.commit()
 
     }
 }

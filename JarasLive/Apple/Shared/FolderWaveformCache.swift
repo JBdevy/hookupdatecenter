@@ -448,7 +448,7 @@ final class FolderWaveformCache: ObservableObject {
         return TimelineAudioWaveform.VertexBlock(pcm: TimelineAudioWaveform.PCM(channels: [left, right]),
             start: Int64(start * rate), span: count, step: step, rate: rate, key: key)
     }
-    private final class Reader {
+    final class Reader {
         let file: AVAudioFile
         let buffer: AVAudioPCMBuffer
         let rate: Double
@@ -460,6 +460,9 @@ final class FolderWaveformCache: ObservableObject {
         var pageStart: Int64 = -1
         var count = 0
         private(set) var failed = false
+        private(set) var decodedPageCount = 0
+        private var overlapIndex: Int64 = -1
+        private var overlap: (Float, Float) = (0, 0)
         init(_ url: URL) throws {
             file = try AVAudioFile(forReading: url)
             rate = file.processingFormat.sampleRate
@@ -472,10 +475,18 @@ final class FolderWaveformCache: ObservableObject {
         private func load(_ page: Int64) -> Bool {
             guard page != pageStart else { return count > 0 }
             do {
+                // Keep the interpolation seam when a fractional rate asks for
+                // the previous page's last sample again. Seeking back here can
+                // restart a compressed decoder from the beginning of the file.
+                if count > 0 && page == pageStart + Int64(count) {
+                    overlapIndex = page - 1
+                    overlap = (left[(count - 1) * stride], right[(count - 1) * stride])
+                } else { overlapIndex = -1 }
                 // Adjacent pages read sequentially. Seeking backwards by the
                 // interpolation overlap repeatedly restarted the MP3 decoder.
                 if file.framePosition != page { file.framePosition = page }
                 try file.read(into: buffer, frameCount: AVAudioFrameCount(min(capacity, length - page)))
+                decodedPageCount += 1
                 pageStart = page; count = Int(buffer.frameLength)
                 return count > 0
             } catch { count = 0; failed = true; return false }
@@ -483,6 +494,11 @@ final class FolderWaveformCache: ObservableObject {
         func sample(_ frame: Double) -> (Float, Float) {
             guard frame >= 0, frame < Double(length), frame.isFinite else { return (0, 0) }
             let index = Int64(frame), page = index / capacity * capacity
+            if index == overlapIndex && pageStart == index + 1 && count > 0 {
+                let blend = Float(frame - Double(index))
+                return (overlap.0 + (left[0] - overlap.0) * blend,
+                        overlap.1 + (right[0] - overlap.1) * blend)
+            }
             guard load(page) else { return (0, 0) }
             let local = Int(index - pageStart)
             guard local < count else { return (0, 0) }

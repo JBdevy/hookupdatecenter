@@ -141,6 +141,18 @@ for looped in [false, true] {
     precondition(actual.channels == reference.channels, "fractional rate and loops interpolate exactly across decoder pages")
 }
 print("FOLDER_SEQUENTIAL_READER_FRACTIONAL_RATE_LOOP_AND_PAGE_SEAMS_OK")
+let seamReader = try FolderWaveformCache.Reader(seamURL)
+for frame in [65_534.75, 65_535.0, 65_535.25, 65_535.5, 65_535.75, 65_536.0, 65_536.25] {
+    let actual = seamReader.sample(frame), index = Int(frame), blend = Float(frame - Double(index))
+    for channel in 0..<2 {
+        let samples = seamBuffer.floatChannelData![channel]
+        let expected = samples[index] + (samples[index + 1] - samples[index]) * blend
+        precondition((channel == 0 ? actual.0 : actual.1) == expected)
+    }
+}
+precondition(seamReader.decodedPageCount == 2, "fractional seam reuse must not seek back and restart the decoder")
+print("FOLDER_INTERPOLATION_SEAM_TWO_SEQUENTIAL_READS_NO_BACKWARD_DECODE_OK")
+
 
 let compactHeader = try Data(contentsOf: sumCacheURL)
 precondition(compactHeader.prefix(4) == Data("JFS2".utf8))

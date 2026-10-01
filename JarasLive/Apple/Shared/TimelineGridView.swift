@@ -1325,7 +1325,7 @@ struct TimelineDrawing: View, Equatable {
     @State private var rowLayoutCache = TrackLayoutCache()
     var body: some View {
         let rows = rowLayoutCache.layout(song.tracks, height: rowHeight, key: renderKey)
-        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, rulerHeight: rulerHeight, selectedClips: selectedClips, waveformRevision: 0, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory), tileIdentity: { tile, size in
+        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, batchesViewport: MetalWaveformRenderer.isSupported, identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, rulerHeight: rulerHeight, selectedClips: selectedClips, waveformRevision: 0, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory), tileIdentity: { tile, size in
             var identity = TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, rulerHeight: rulerHeight, selectedClips: selectedClips, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory)
             if MetalWaveformRenderer.isSupported { return identity }
             let scale = size.width / extent
@@ -2680,6 +2680,7 @@ private struct ViewportTimelineCanvas: View {
     let visibleRect: CGRect
     var synchronized = false
     var documentWidth: CGFloat? = nil
+    var batchesViewport = false
     let identity: TimelineTileIdentity
     var tileIdentity: ((CGRect, CGSize) -> TimelineTileIdentity)? = nil
     let draw: (inout GraphicsContext, CGSize, CGRect, TimelineAudioWaveform.PresentationStore) -> Void
@@ -2700,6 +2701,15 @@ private struct ViewportTimelineCanvas: View {
             let firstRow = Int(floor(top / verticalSurface))
             let lastRow = max(firstRow + 1, Int(ceil(bottom / verticalSurface)))
             ZStack(alignment: .topLeading) {
+                if batchesViewport || tileIdentity == nil {
+                    // Background, ruler and marker layers contain no per-tile
+                    // waveform cache. Draw their bounded viewport once instead
+                    // of maintaining and laying out many identical Canvas hosts.
+                    TimelineCanvasSurface(synchronized: synchronized, identity: identity, size: size,
+                        tile: prepared, drawingRect: prepared, draw: draw).equatable()
+                        .frame(width: prepared.width, height: prepared.height)
+                        .clipped().offset(x: prepared.minX, y: prepared.minY)
+                } else {
                 ForEach(firstRow..<lastRow, id: \.self) { row in
                     ForEach(firstColumn..<lastColumn, id: \.self) { column in
                         // A tile keeps its document origin when the viewport
@@ -2717,6 +2727,7 @@ private struct ViewportTimelineCanvas: View {
                             .frame(width: tile.width, height: tile.height)
                             .clipped().offset(x: tile.minX, y: tile.minY)
                     }
+                }
                 }
             }
         }.allowsHitTesting(false)

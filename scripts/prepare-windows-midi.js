@@ -8,9 +8,8 @@ const FILE_NAME = 'Windows-MIDI-Services-Runtime-and-Tools-x64.exe';
 const DOWNLOAD_URL = 'https://github.com/microsoft/MIDI/releases/download/rc-4/Windows.MIDI.Services.SDK.Runtime.and.Tools.1.0.17-rc.4.25-x64.exe';
 const EXPECTED_SIZE = 219603123;
 const EXPECTED_SHA256 = '5d241b52669a69795b7503f53eb082f83a1860e5ebc50849427b79f15c1a2546';
-const outputDir = path.resolve(__dirname, '..', 'vendor', 'windows-midi-services');
-const outputPath = path.join(outputDir, FILE_NAME);
-const partialPath = `${outputPath}.partial`;
+const DEFAULT_OUTPUT_DIR = path.resolve(__dirname, '..', 'vendor', 'windows-midi-services');
+const PART_FILES = Array.from({ length: 5 }, (_, index) => `runtime-x64.exe.part${String(index + 1).padStart(2, '0')}`);
 
 function sha256File(filePath) {
   return new Promise((resolve, reject) => {
@@ -32,7 +31,9 @@ async function fileIsValid(filePath) {
   }
 }
 
-async function main() {
+async function prepareWindowsMidi({ outputDir = DEFAULT_OUTPUT_DIR, fetchImpl = fetch } = {}) {
+  const outputPath = path.join(outputDir, FILE_NAME);
+  const partialPath = `${outputPath}.partial`;
   if (process.argv.includes('--if-windows') && process.platform !== 'win32') {
     console.log('Windows MIDI Services ignorado neste sistema.');
     return;
@@ -42,29 +43,46 @@ async function main() {
     console.log(`Windows MIDI Services já preparado: ${outputPath}`);
     return;
   }
-  await fs.promises.rm(outputPath, { force: true });
   await fs.promises.rm(partialPath, { force: true });
-  console.log('Baixando o instalador oficial do Windows MIDI Services RC4...');
-  const response = await fetch(DOWNLOAD_URL, {
-    redirect: 'follow',
-    headers: { 'User-Agent': 'VS-Hook-Build/1.0.2', Accept: 'application/octet-stream' }
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(`Falha ao baixar Windows MIDI Services: HTTP ${response.status}`);
-  }
-  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partialPath, { flags: 'wx' }));
+  const parts = PART_FILES.map(name => path.join(outputDir, 'parts', name));
+  try {
+    if (parts.every(filename => fs.existsSync(filename))) {
+      console.log('Preparando Windows MIDI Services RC4 a partir da cópia verificada do repositório...');
+      async function* bundledBytes() {
+        for (const filename of parts) {
+          for await (const chunk of fs.createReadStream(filename)) yield chunk;
+        }
+      }
+      await pipeline(Readable.from(bundledBytes()), fs.createWriteStream(partialPath, { flags: 'wx' }));
+    } else {
+      console.log('Baixando o instalador oficial do Windows MIDI Services RC4...');
+      const response = await fetchImpl(DOWNLOAD_URL, {
+        redirect: 'follow',
+        headers: { 'User-Agent': 'VS-Hook-Build/1.0.2', Accept: 'application/octet-stream' }
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`Falha ao baixar Windows MIDI Services: HTTP ${response.status}. Inclua os cinco arquivos de vendor/windows-midi-services/parts no checkout do build.`);
+      }
+      await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partialPath, { flags: 'wx' }));
+    }
   if (!await fileIsValid(partialPath)) {
     const actualSize = (await fs.promises.stat(partialPath)).size;
     const actualHash = await sha256File(partialPath);
     await fs.promises.rm(partialPath, { force: true });
     throw new Error(`O instalador do Windows MIDI Services não corresponde ao oficial esperado (bytes=${actualSize}, sha256=${actualHash}).`);
   }
+  await fs.promises.rm(outputPath, { force: true });
   await fs.promises.rename(partialPath, outputPath);
   console.log(`Windows MIDI Services preparado: ${outputPath}`);
+  } finally {
+    await fs.promises.rm(partialPath, { force: true });
+  }
 }
 
-main().catch(async (error) => {
-  try { await fs.promises.rm(partialPath, { force: true }); } catch (_) {}
-  console.error(error?.stack || error?.message || error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  prepareWindowsMidi().catch(error => {
+    console.error(error?.stack || error?.message || error);
+    process.exitCode = 1;
+  });
+}
+module.exports = { prepareWindowsMidi, fileIsValid, FILE_NAME, PART_FILES };

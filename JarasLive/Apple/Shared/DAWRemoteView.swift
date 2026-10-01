@@ -352,7 +352,7 @@ struct DAWRemoteClientView: View {
         let progress = progressClip.map { min(1, max(0, (position - $0.startTime) / max(0.001, $0.duration))) } ?? 0
         let queueName = queued?.name ?? snapshot.project.songs.first { $0.id == snapshot.nextSongId || $0.id == transport.queue.songId }?.name ?? ""
         var result = DAWRemoteTeleprompter(index: index, text: settings.display(lyric?.text ?? ""), chords: settings.display(chord?.text ?? ""),
-            song: settings.display(region?.name ?? song?.name ?? ""), queued: settings.display(queueName), progress: progress,
+            song: settings.display(region?.name ?? song?.name ?? ""), queued: settings.display(queueName.isEmpty ? JarasLocalization.string("Queue is empty") : queueName), progress: progress,
             style: style, preview: controller.previewActive, settings: settings)
         if controller.previewActive, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
@@ -705,6 +705,16 @@ struct DAWRemoteClientView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 5) {
                 HStack(spacing: 6) {
+                    topPrompterButton(.first, title: "TP1")
+                    topPrompterButton(.second, title: "TP2")
+                }.frame(height: 25)
+                RemoteNativeTimerView(timer: timer, send: {
+                    guard state.timer != nil else { return }
+                    send(.init(id: $2, project: state.project, song: state.song, action: $0, value: $1))
+                }, close: {}, compact: true)
+            }.frame(width: 176)
+            VStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Text(verbatim: selectedTimelineRegion?.name ?? state.songName)
                         .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -734,16 +744,6 @@ struct DAWRemoteClientView: View {
                     tunerControl
                 }
             }.frame(maxWidth: .infinity)
-            VStack(spacing: 5) {
-                HStack(spacing: 6) {
-                    topPrompterButton(.first, title: "TP1")
-                    topPrompterButton(.second, title: "TP2")
-                }.frame(height: 25)
-                RemoteNativeTimerView(timer: timer, send: {
-                    guard state.timer != nil else { return }
-                    send(.init(id: $2, project: state.project, song: state.song, action: $0, value: $1))
-                }, close: {}, compact: true)
-            }.frame(width: 176)
             VStack(spacing: 5) {
             Button { confirmSave = true } label: {
                 Label(state.saving ? "Salvando…" : state.pendingSave ? "Save" : "Salvo", systemImage: state.pendingSave ? "square.and.arrow.down" : "checkmark")

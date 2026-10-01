@@ -168,6 +168,21 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     var modelUnitWidth: Double?
     var changeZoom: ((Double, CGFloat) -> Void)?
     var changeTrackHeight: ((Double) -> Void)?
+    private var zoomPersistenceTimer: Timer?
+    private var pendingSavedZoom: Double?
+    private func persistZoomAfterGesture(_ value: Double) {
+        pendingSavedZoom = value
+        zoomPersistenceTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.25, repeats: false) { [weak self] _ in self?.flushSavedZoom() }
+        zoomPersistenceTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    private func flushSavedZoom() {
+        zoomPersistenceTimer?.invalidate(); zoomPersistenceTimer = nil
+        guard let value = pendingSavedZoom else { return }
+        pendingSavedZoom = nil
+        UserDefaults.standard.set(value, forKey: "jaras.timelineZoom")
+    }
     private var awaitingRenderedZoom: Double?
     func acceptRenderedZoom(_ value: Double) {
         // An older SwiftUI update must not replace the next scale already requested.
@@ -233,7 +248,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { stopZoomUpdates(); stopScrollCoast() }
+        if window == nil { stopZoomUpdates(); stopScrollCoast(); flushSavedZoom() }
         DispatchQueue.main.async { [weak self] in self?.observeVerticalScroll(); self?.observeHorizontalScroll() }
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if window != nil {
@@ -252,7 +267,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
         return handle(event, pressedMouseButtons: pressedMouseButtons)
     }
-    deinit { cancelDisplayLink?(); zoomTimer?.invalidate(); scrollCoastTimer?.invalidate(); if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }; if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
+    deinit { zoomPersistenceTimer?.invalidate(); cancelDisplayLink?(); zoomTimer?.invalidate(); scrollCoastTimer?.invalidate(); if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }; if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
     private var scrollViews: [NSScrollView] {
         var result: [NSScrollView] = []
         var parent = superview
@@ -382,7 +397,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             zoom = next
             awaitingRenderedZoom = next
             changeZoom?(next, offset)
-            UserDefaults.standard.set(next, forKey: "jaras.timelineZoom")
+            persistZoomAfterGesture(next)
             return
         }
         if event.phase.contains(.began), event.momentumPhase.isEmpty, zoomRunning { stopZoomUpdates() }
@@ -454,7 +469,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         advanceZoom(grid)
     }
     private func stopZoomUpdates() {
-        if zoomRunning { UserDefaults.standard.set(zoom, forKey: "jaras.timelineZoom") }
+        if zoomRunning { persistZoomAfterGesture(zoom) }
         cancelDisplayLink?()
         cancelDisplayLink = nil
         zoomGrid = nil

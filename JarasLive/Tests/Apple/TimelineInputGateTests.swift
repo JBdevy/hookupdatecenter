@@ -227,8 +227,11 @@ precondition(zoomTimes.last! - burstInput > 0.13,
              "trackpad release continues gently beyond the shorter physical-wheel tail")
 
 resetZoomInput(precise: false)
+let savedBeforeWheel = UserDefaults.standard.double(forKey: "jaras.timelineZoom")
 event.delta = 2
 precondition(wheel.handleWheelEvent(event))
+precondition(UserDefaults.standard.double(forKey: "jaras.timelineZoom") == savedBeforeWheel,
+             "wheel input must not publish UserDefaults changes during a grid frame")
 let physicalTarget = exp(2 * TimelineZoomLimits.wheelSensitivity)
 precondition(zoomValues.count == 1 && abs(zoomValues[0] - physicalTarget) < 1e-12,
              "a physical wheel tick applies its exact target before the handler returns")
@@ -238,6 +241,8 @@ precondition(abs(wheel.zoom - physicalTarget) < 1e-12,
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
 precondition(zoomValues.count == 1 && abs(zoomValues.last! - physicalTarget) < 1e-12,
              "mouse zoom has no interpolation frames or release animation")
+precondition(abs(UserDefaults.standard.double(forKey: "jaras.timelineZoom") - physicalTarget) < 1e-12,
+             "the final zoom preference is persisted after the gesture settles")
 let physicalTailCount = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 precondition(zoomValues.count == physicalTailCount, "physical-wheel zoom settles without idle updates")
