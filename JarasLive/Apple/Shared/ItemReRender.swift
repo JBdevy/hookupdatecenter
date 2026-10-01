@@ -35,6 +35,7 @@ enum ItemReRender {
             var result = clip
             result.name = url.deletingPathExtension().lastPathComponent
             result.audioFile = AudioFile(path: "Steams/" + name)
+            result.fadeIn = nil; result.fadeOut = nil; result.fadeTimelineStart = nil; result.fadeTimelineDuration = nil
             result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil
             result.loopStart = nil; result.loopLength = nil; result.fx = nil; result.fxBypassed = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels

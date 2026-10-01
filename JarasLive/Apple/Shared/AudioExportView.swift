@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor private final class AudioExportSession: ObservableObject {
     @Published var running = false
@@ -138,6 +141,7 @@ struct AudioExportView: View {
                 Spacer()
                 Button("Render") {
                     guard let song, let mediaDirectory else { return }
+                    guard AudioDestinationSpace.confirm(at: URL(fileURLWithPath: directory)) else { return }
                     let snapshot = plan
                     renderedPlan = snapshot
                     renderScreen = true
@@ -160,7 +164,7 @@ struct AudioExportView: View {
                 if chosenFormat.wrappedValue == .mp3 {
                     Picker("Bitrate",selection: chosenBitrate) { ForEach([128,160,192,224,256,320],id: \.self) { Text(verbatim: "\($0) kbps").tag($0) } }
                 } else {
-                    Picker("Bit depth",selection: chosenBits) { Text(verbatim: "24 bit PCM").tag(24); Text(verbatim: "32 bit PCM").tag(32) }
+                    Picker("Bit depth",selection: chosenBits) { Text(verbatim: "16 bit PCM").tag(16); Text(verbatim: "24 bit PCM").tag(24); Text(verbatim: "32 bit PCM").tag(32) }
                 }
             }.disabled(outputTab == 1 && !secondaryEnabled)
         }.padding(10).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -247,5 +251,44 @@ struct AudioExportView: View {
                 if !session.running { Button("Close") { dismiss() }.keyboardShortcut(.defaultAction) }
             }
         }
+    }
+}
+
+// MARK: - Destination disk reserve
+/// Consult the destination volume, including a not-yet-created export directory.
+/// This preflight never runs from an audio callback and never writes a probe file.
+enum AudioDestinationSpace {
+    static let reserveBytes: Int64 = 5_000_000_000
+    static func needsWarning(availableBytes: Int64) -> Bool {
+        availableBytes >= 0 && availableBytes < reserveBytes
+    }
+    static func existingAncestor(of destination: URL) -> URL {
+        var directory = destination.standardizedFileURL
+        while !FileManager.default.fileExists(atPath: directory.path) {
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { break }
+            directory = parent
+        }
+        return directory.resolvingSymlinksInPath()
+    }
+    static func availableBytes(at destination: URL) -> Int64? {
+        let directory = existingAncestor(of: destination)
+        if let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+           let bytes = values.volumeAvailableCapacity { return Int64(bytes) }
+        return (try? FileManager.default.attributesOfFileSystem(forPath: directory.path)[.systemFreeSize] as? NSNumber)?.int64Value
+    }
+    @MainActor static func confirm(at destination: URL) -> Bool {
+        guard let available = availableBytes(at: destination), needsWarning(availableBytes: available) else { return true }
+        #if os(macOS)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Pouco espaço no disco de destino"
+        alert.informativeText = String(format: "Restam %.2f GB livres no disco onde o áudio será salvo. A margem recomendada é de 5 GB. Libere espaço antes de gravar, re-renderizar ou exportar stems.\n\nDestino: %@", Double(available) / 1_000_000_000, destination.path)
+        alert.addButton(withTitle: "Cancelar")
+        alert.addButton(withTitle: "Continuar mesmo assim")
+        return alert.runModal() == .alertSecondButtonReturn
+        #else
+        return true
+        #endif
     }
 }

@@ -53,13 +53,16 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
  _=NSApplication.shared
  let actions=Actions()
  let row=RegionSetlistRow(region:Part(name:"FULL LONG REGION NAME THAT MUST REMAIN ACCESSIBLE",color:0),number:107,selected:true,active:false,queued:false,prepareOnly:false,remaining:145,progress:0,queueProgress:0,expanded:false,toggleDrawer:{actions.drawers+=1},select:{actions.selects+=1}).foregroundStyle(.white)
- let host=NSHostingView(rootView:row)
+ // Match the real Setlist insets: the drawer must remain inside its viewport.
+ let host=NSHostingView(rootView:row.padding(.leading, 8).padding(.trailing, 2))
  let window=NSWindow(contentRect:CGRect(x:300,y:300,width:340,height:34),styleMask:[.titled],backing:.buffered,defer:false)
  window.isReleasedWhenClosed=false;window.contentView=host;window.orderFront(nil)
  for _ in 0..<3 {host.layoutSubtreeIfNeeded();RunLoop.main.run(until:Date(timeIntervalSinceNow:0.02))}
  let native=descendants(NativeRegionSetlistLabelView.self,host).first!
  precondition(native.accessibilityLabel() == "107, FULL LONG REGION NAME THAT MUST REMAIN ACCESSIBLE, 2m 25s")
  precondition(native.hitTest(CGPoint(x:60,y:15)) == nil, "Drawing must not capture the selection button")
+ let labelFrame = native.convert(native.bounds, to: host)
+ precondition(labelFrame.maxX <= host.bounds.maxX - 16, "Reserve the complete drawer hit area and outer margin")
  func click(_ x: CGFloat) {
   let point=host.convert(CGPoint(x:x,y:17),to:nil)
   func event(_ type: NSEvent.EventType) -> NSEvent { NSEvent.mouseEvent(with:type,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)! }

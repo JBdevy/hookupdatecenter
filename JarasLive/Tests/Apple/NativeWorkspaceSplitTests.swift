@@ -1,10 +1,13 @@
 import SwiftUI
 import AppKit
 
+enum WorkspaceRootUpdateProbe { static var count = 0 }
+
 private let editRequest = TrackDetailsEditRequest(project: UUID(), tracks: [UUID(), UUID()], name: "Track", color: 0x123456, nameEditable: false)
 @MainActor private final class WorkspaceTestState: ObservableObject {
     @Published var width: CGFloat = 320
     @Published var revision = 0
+    @Published var pulse = 0
     var restore: CGFloat = 320
     var commits: [CGFloat] = []
     var actions: [String] = []
@@ -92,7 +95,7 @@ private struct WorkspaceFixture: View {
             Text("Transport").frame(height: 60)
             GeometryReader { geometry in
                 NativeWorkspaceSplit(width: state.width, restoreWidth: state.restore, minimum: 277,
-                    scrollController: state.scroll, onToggle: state.toggle, onEnd: { width in
+                    scrollController: state.scroll, contentIdentity: state.revision, onToggle: state.toggle, onEnd: { width in
                         state.width = width; state.restore = width; state.commits.append(width)
                     }) {
                     LeadingPane(revision: revision).foregroundStyle(.white)
@@ -148,6 +151,13 @@ MainActor.assumeIsolated {
     settle(root)
     precondition(controls.allSatisfy { $0.count == 1 })
     precondition(state.actions == ["fx0", "clip0", "text0", "details0", "fx0", "clip0", "text0", "details0"])
+    let updatesBefore = WorkspaceRootUpdateProbe.count
+    for _ in 0..<10 { state.pulse += 1; settle(root) }
+    precondition(WorkspaceRootUpdateProbe.count == updatesBefore,
+                 "unrelated parent publications must not replace grid/setlist hosting roots")
+    precondition(controls.allSatisfy { $0.count == 1 }, "child control state survives stable root publications")
+    print("WORKSPACE_PARENT_PUBLICATIONS_PRESERVE_NATIVE_ROOTS_AND_CHILD_CONTROL_STATE_OK")
+
     precondition(window.makeFirstResponder(rightControl))
     let focused = window.firstResponder
     let grids = descendants(GridNativeScrollView.self, in: leftHost)

@@ -23,6 +23,8 @@ slider.mouseUp(with: event(.leftMouseUp, 150))
 precondition(delivered == dragged && slider.doubleValue == dragged && commits == 1, "release preserves dragged volume")
 slider.synchronizeModel(0)
 precondition(slider.doubleValue == dragged, "stale committed value after release must not revert fader")
+slider.synchronizeModel(dragged - 2)
+precondition(slider.doubleValue == dragged, "an out-of-order intermediate preview cannot overwrite the released pointer before final model confirmation")
 slider.synchronizeModel(dragged)
 slider.synchronizeModel(-10)
 precondition(slider.doubleValue == -10, "new external volume must still be accepted")
@@ -161,3 +163,26 @@ vertical.mouseDragged(with: localEvent(vertical, .leftMouseDragged, NSPoint(x: 1
 precondition(vertical.doubleValue == 0.5, "dragging knob up pans right with stable relative movement")
 vertical.mouseUp(with: localEvent(vertical, .leftMouseUp, NSPoint(x: 14, y: 0)))
 print("FOOTER_MIXER_VERTICAL_FADER_ROTARY_PAN_AND_SHARED_TRACK_LIVE_SYNC_OK")
+
+// Selected, unlinked tracks receive their own computed value on each native event.
+linkedA.linkedTrack = nil; linkedB.linkedTrack = nil
+linkedA.mini = false; linkedB.mini = false
+linkedA.minValue = -60; linkedA.maxValue = 12; linkedB.minValue = -60; linkedB.maxValue = 12
+var groupValues: [UUID:Double] = [:]
+linkedA.groupValues = { groupValues }
+linkedA.changed = { value in
+    let gain = value <= -60 ? 0 : pow(10, value / 20)
+    groupValues = [leftID: gain, rightID: gain * 0.5]
+}
+linkedA.mouseDown(with: event(.leftMouseDown, 100))
+linkedA.mouseDragged(with: event(.leftMouseDragged, 150))
+precondition(abs(linkedB.doubleValue - (linkedA.doubleValue + 20 * log10(0.5))) < 0.000001, "Selected unlinked faders preserve their dB difference before release")
+linkedA.mouseUp(with: event(.leftMouseUp, 150))
+linkedA.mini = true; linkedB.mini = true
+linkedA.minValue = -1; linkedA.maxValue = 1; linkedB.minValue = -1; linkedB.maxValue = 1
+linkedA.changed = { groupValues = [leftID: $0, rightID: min(1, $0 + 0.2)] }
+linkedA.mouseDown(with: event(.leftMouseDown, 100))
+linkedA.mouseDragged(with: event(.leftMouseDragged, 130))
+precondition(abs(linkedB.doubleValue - (linkedA.doubleValue + 0.2)) < 0.000001, "Selected pan follows live without becoming the inverse unless linked")
+linkedA.mouseUp(with: event(.leftMouseUp, 130))
+print("SELECTED_TRACK_FADER_AND_PAN_LIVE_MIRROR_BEFORE_RELEASE_OK")

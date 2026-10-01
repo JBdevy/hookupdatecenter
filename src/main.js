@@ -720,19 +720,29 @@ function applyLicenseFileChanges({ writes = [], removes = [] } = {}) {
 }
 
 async function getWindowsAnchor() {
-  const probes = [
-    ['reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64']],
-    ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "(Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -Name MachineGuid).MachineGuid"]],
-    ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', '(Get-CimInstance Win32_ComputerSystemProduct).UUID']],
-    ['wmic.exe', ['csproduct', 'get', 'uuid']]
-  ];
+  // Match license_validator.cpp: the complete REG_SZ from the 64-bit registry.
+  // Do not substitute the SMBIOS UUID or strip braces from MachineGuid: the
+  // native extension hashes the original value after whitespace normalization.
+  const registry = await runCapture('reg.exe', [
+    'query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64'
+  ]);
+  const value = registry.match(/(?:^|\s)MachineGuid\s+REG_SZ\s+(.+)$/i)?.[1];
+  if (value && normalizeMachineId(value)) return normalizeMachineId(value);
+  const fallback = await runCapture('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+    "$base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64); " +
+    "try { $key = $base.OpenSubKey('SOFTWARE\\Microsoft\\Cryptography'); " +
+    "if ($key -and $key.GetValueKind('MachineGuid') -eq [Microsoft.Win32.RegistryValueKind]::String) { $key.GetValue('MachineGuid') } } " +
+    "finally { if ($key) { $key.Dispose() }; $base.Dispose() }"
+  ]);
+  return normalizeMachineId(fallback);
+}
 
-  for (const [cmd, args] of probes) {
-    const raw = await runCapture(cmd, args);
-    const guid = raw.match(/\b([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32})\b/);
-    if (guid?.[1]) return normalizeMachineId(guid[1]);
-  }
-  return '';
+function getGenericDeviceAnchor() {
+  // The native Windows validator uses these environment variables, in this order.
+  return normalizeMachineId(process.platform === 'win32'
+    ? (process.env.COMPUTERNAME || process.env.HOSTNAME || 'UNKNOWNHOST')
+    : (os.hostname() || 'UNKNOWNHOST'));
 }
 
 async function getMacAnchor() {
@@ -769,7 +779,7 @@ async function getMachineId() {
   let anchor = '';
   if (process.platform === 'win32') anchor = await getWindowsAnchor();
   if (process.platform === 'darwin') anchor = await getMacAnchor();
-  if (!anchor) anchor = normalizeMachineId(os.hostname() || 'UNKNOWNHOST');
+  if (!anchor) anchor = getGenericDeviceAnchor();
 
   const machineId = simpleHash(`${LICENSE_PRODUCT}|${anchor}`);
   try {
@@ -786,7 +796,7 @@ async function getDeviceFingerprint() {
   let anchor = '';
   if (process.platform === 'win32') anchor = await getWindowsAnchor();
   if (process.platform === 'darwin') anchor = await getMacAnchor();
-  if (!anchor) anchor = normalizeMachineId(os.hostname() || 'UNKNOWNHOST');
+  if (!anchor) anchor = getGenericDeviceAnchor();
   cachedDeviceFingerprint = crypto.createHash('sha256')
     .update(`VSHOOK_DEVICE_V1|${process.platform}|${normalizeMachineId(anchor)}`)
     .digest('hex')
@@ -805,6 +815,20 @@ function readSignedLicenseToken() {
   } catch (_) {
     return '';
   }
+}
+
+function localLicenseIdentityIssue() {
+  const token = readSignedLicenseToken();
+  if (!token) return 'A licença local não foi encontrada. Ative este dispositivo novamente.';
+  const payload = decodeSignedLicensePayload(token);
+  if (!payload) return 'A licença local é inválida. Ative este dispositivo novamente.';
+  let machineId = '';
+  try { machineId = normalizeMachineId(fs.readFileSync(getSharedMachineIdPath(), 'utf8')); } catch (_) {}
+  if ((machineId && normalizeMachineId(payload.m) !== machineId) ||
+      (cachedDeviceFingerprint && normalizeMachineId(payload.f) !== cachedDeviceFingerprint)) {
+    return 'A licença local não corresponde a este computador. Ative este dispositivo novamente.';
+  }
+  return '';
 }
 
 function decodeSignedLicensePayload(token) {
@@ -846,7 +870,7 @@ function writeSignedLicenseClockState(token) {
   hideLicenseShardOnWindows(target);
 }
 
-function saveSignedLicenseToken(token, { required = false } = {}) {
+function saveSignedLicenseToken(token, { required = false, machineId = '', deviceFingerprint = '' } = {}) {
   const clean = String(token || '').trim();
   if (!clean) {
     if (required) {
@@ -856,6 +880,11 @@ function saveSignedLicenseToken(token, { required = false } = {}) {
   }
   if (clean.length > 16384 || clean.split('.').length !== 3) {
     throw new Error('A licença assinada recebida é inválida.');
+  }
+  const payload = decodeSignedLicensePayload(clean);
+  if (!payload || (machineId && normalizeMachineId(payload.m) !== normalizeMachineId(machineId)) ||
+      (deviceFingerprint && normalizeMachineId(payload.f) !== normalizeMachineId(deviceFingerprint))) {
+    throw new Error('A licença recebida não corresponde à identificação deste computador. A ativação local não foi concluída.');
   }
   writeSignedLicenseClockState(clean);
   const target = getSharedSignedLicensePath();
@@ -870,8 +899,14 @@ function saveSignedLicenseToken(token, { required = false } = {}) {
       });
     } catch (_) {}
   }
-  try { fs.rmSync(target, { force: true }); } catch (_) {}
-  fs.renameSync(temp, target);
+  try {
+    fs.renameSync(temp, target);
+    if (String(fs.readFileSync(target, 'utf8')).trim() !== clean) {
+      throw new Error('Não foi possível confirmar a licença gravada para o REAPER.');
+    }
+  } finally {
+    try { fs.rmSync(temp, { force: true }); } catch (_) {}
+  }
   hideLicenseShardOnWindows(target);
   return true;
 }
@@ -910,7 +945,7 @@ function assertCurrentLicenseSession(revision) {
   }
 }
 
-function persistLicenseDeviceLogin({ revision, result, email, fallbackDocument = '', previousLicense = {} }) {
+function persistLicenseDeviceLogin({ revision, result, email, machineId, deviceFingerprint, fallbackDocument = '', previousLicense = {} }) {
   assertCurrentLicenseSession(revision);
   if (result?.ok !== true) throw new Error(result?.message || 'Não foi possível entrar.');
   licenseSessionRevision += 1;
@@ -919,14 +954,14 @@ function persistLicenseDeviceLogin({ revision, result, email, fallbackDocument =
   const accountChanged = normalizeEmail(previousLicense.email) !== cleanEmail;
   const accountLicense = accountChanged ? {} : previousLicense;
   if (accountChanged || !result.active) removeLocalLicense();
-  if (result.active) saveSignedLicenseToken(result.licenseToken);
+  if (result.active) saveSignedLicenseToken(result.licenseToken, { required: true, machineId, deviceFingerprint });
   const nextLicense = {
     ...accountLicense,
     cpf:resultDocument.cpf,
     cnpj:resultDocument.cnpj,
     document:resultDocument.document,
     email:cleanEmail,
-    machineId:result.machineId || accountLicense.machineId || '',
+    machineId:machineId || result.machineId || accountLicense.machineId || '',
     activationSessionToken:String(result.activationSessionToken || '').trim(),
     activationSessionExpiresAt:String(result.activationSessionExpiresAt || '').trim(),
     active:!!result.active,
@@ -956,7 +991,7 @@ function persistLicenseDeviceLogin({ revision, result, email, fallbackDocument =
 async function loginLicenseDevices(payload = {}) {
   const revision = ++licenseSessionRevision;
   const license = store.get('license') || {}
-  const machineId = normalizeMachineId(license.machineId || await getMachineId())
+  const machineId = normalizeMachineId(await getMachineId())
   const request = typeof payload === 'string' ? { email:payload } : (payload || {})
   const cleanEmail = normalizeEmail(request.email || license.email || store.get('deviceLoginEmail'))
   const loginDocument = splitDocument(request.document || request.cpf || request.cnpj)
@@ -983,7 +1018,7 @@ async function loginLicenseDevices(payload = {}) {
     result:{ ...result, machineId:result.machineId || machineId },
     email:cleanEmail,
     fallbackDocument:loginDocument.document,
-    previousLicense:license
+    previousLicense:license, machineId, deviceFingerprint
   });
 }
 
@@ -991,7 +1026,7 @@ async function requestLicenseLoginCode(payload = {}) {
   const revision = licenseSessionRevision;
   const cleanEmail = normalizeEmail(payload?.email);
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.');
-  const machineId = normalizeMachineId((store.get('license') || {}).machineId || await getMachineId());
+  const machineId = normalizeMachineId(await getMachineId());
   const deviceFingerprint = await getDeviceFingerprint();
   const result = await fetchJson(`${BACKEND_URL}/api/license/login/code/request`, {
     method:'POST',
@@ -1015,7 +1050,7 @@ async function verifyLicenseLoginCode(payload = {}) {
   const verificationCode = String(payload?.verificationCode || payload?.code || '').replace(/\D/g, '').slice(0, 6);
   if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Digite o e-mail usado na compra.');
   if (!challengeId || verificationCode.length !== 6) throw new Error('Digite o código de 6 dígitos enviado por e-mail.');
-  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const machineId = normalizeMachineId(await getMachineId());
   const deviceFingerprint = await getDeviceFingerprint();
   const result = await fetchJson(`${BACKEND_URL}/api/license/login/code/verify`, {
     method:'POST',
@@ -1035,7 +1070,7 @@ async function verifyLicenseLoginCode(payload = {}) {
     revision,
     result:{ ...result, machineId:result.machineId || machineId },
     email:cleanEmail,
-    previousLicense:license
+    previousLicense:license, machineId, deviceFingerprint
   });
 }
 
@@ -1059,7 +1094,7 @@ async function removeLicenseDevice(payload = {}, emailOverride = '') {
     ? { removeMachineId:payload, email:emailOverride }
     : (payload || {})
   const removeMachineId = normalizeMachineId(request.machineId || request.deviceId || request.removeMachineId || '')
-  const machineId = normalizeMachineId(license.machineId || await getMachineId())
+  const machineId = normalizeMachineId(await getMachineId())
   const cleanEmail = normalizeEmail(request.email || emailOverride || license.email || store.get('deviceLoginEmail'))
   if (!cleanEmail) throw new Error('Digite o e-mail usado na compra.')
   const loginDocument = splitDocument(license.document || license.cpf || license.cnpj || '')
@@ -1116,7 +1151,7 @@ async function removeLicenseDevice(payload = {}, emailOverride = '') {
     nextLicense.message = result.message || 'Este computador foi removido da licença.';
     removeLocalLicense();
   } else if (nextLicense.active) {
-    saveSignedLicenseToken(result.licenseToken);
+    saveSignedLicenseToken(result.licenseToken, { required: true, machineId, deviceFingerprint });
   }
   store.set('license', nextLicense)
   rebuildTrayMenu();
@@ -1251,7 +1286,7 @@ async function persistActiveLocalLicenseFromStore(extraPayload = null, options =
   const revision = licenseSessionRevision;
   const license = store.get('license') || {};
   if (!license.active) return false;
-  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const machineId = normalizeMachineId(await getMachineId());
   if (revision !== licenseSessionRevision) return false;
   const email = normalizeEmail(license.email || store.get('deviceLoginEmail'));
   if (!machineId || !email) return false;
@@ -1329,7 +1364,7 @@ async function getChatAuthPayload() {
   const document = normalizeDocument(license.document || license.cpf || license.cnpj || '');
   const parts = splitDocument(document);
   const email = signedInEmail;
-  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const machineId = normalizeMachineId(await getMachineId());
   if ((!parts.cpf && !parts.cnpj && !email) || !machineId) {
     throw new Error('Ative sua licença para acessar o Chat Hook.');
   }
@@ -3382,7 +3417,7 @@ async function checkLicenseStatus(manual = false) {
   const cnpj = docParts.cnpj;
   const document = docParts.document;
   const email = normalizeEmail(license.email);
-  const machineId = normalizeMachineId(license.machineId || await getMachineId());
+  const machineId = normalizeMachineId(await getMachineId());
   const deviceFingerprint = await getDeviceFingerprint();
 
   if (!email || !machineId) {
@@ -3425,12 +3460,8 @@ async function checkLicenseStatus(manual = false) {
       lastLocalClockAt: new Date().toISOString()
     };
 
-    store.set('license', nextLicense);
-    licenseOfflineWarningShownThisSession = 0;
-    publishLicenseOfflineStatus(nextLicense);
-
     if (active) {
-      saveSignedLicenseToken(result.licenseToken, { required: manual });
+      saveSignedLicenseToken(result.licenseToken, { required: true, machineId, deviceFingerprint });
       const licenseAlreadySaved = protectedLicenseShardsExist();
       const shouldPersistProtectedLicense = process.platform !== 'darwin' || (manual && !licenseAlreadySaved);
 
@@ -3451,6 +3482,10 @@ async function checkLicenseStatus(manual = false) {
       }
       notifyLicense(result.message || 'Este computador foi desvinculado da licença do VS Hook.');
     }
+
+    store.set('license', nextLicense);
+    licenseOfflineWarningShownThisSession = 0;
+    publishLicenseOfflineStatus(nextLicense);
 
     rebuildTrayMenu();
     if (isValidWindow(mainWindow)) mainWindow.webContents.send('license-status', getAppState());
@@ -5208,7 +5243,10 @@ function toggleLyricsWindowFullscreen(win) {
 function getAppState() {
   const hookCenterBinaryVersion = app.getVersion();
   const installedVsHookVersion = getInstalledVsHookVersion();
-  const license = store.get('license') || {};
+  const storedLicense = store.get('license') || {};
+  const localIssue = storedLicense.active ? localLicenseIdentityIssue() : '';
+  const license = localIssue ? { ...storedLicense, active: false,
+    reason: 'local_license_unavailable', message: localIssue } : storedLicense;
   const storedDeviceLoginEmail = String(store.get('deviceLoginEmail') || '').trim();
   const explicitlyLoggedOut = store.get('deviceLoggedOut') === true;
   // Compatibilidade com versões anteriores: quem já possuía o e-mail salvo
@@ -10017,7 +10055,7 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   assertCurrentLicenseSession(revision);
   if (result.ok !== true || result.active !== true) throw new Error(result.message || 'A licença não foi ativada.');
   licenseSessionRevision += 1;
-  saveSignedLicenseToken(result.licenseToken, { required: true });
+  saveSignedLicenseToken(result.licenseToken, { required: true, machineId, deviceFingerprint });
   const licenseKey = result.licenseKey || result.license || generateExpectedLicense(machineId);
   const docParts = splitDocument(result.document || result.cpf || result.cnpj || currentLicense.document || currentLicense.cpf || currentLicense.cnpj);
   const cpf = docParts.cpf;

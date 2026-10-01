@@ -34,6 +34,21 @@ final class ApplicationTests: XCTestCase {
         let active = try await backend.devices(result.session).filter { $0.status == .active }
         XCTAssertEqual(active.count, 1)
     }
+    @MainActor func testPeriodicSessionStorageDoesNotBlockInterface() async throws {
+        let backend = MockBackendClient(), store = BackgroundSessionStore()
+        let auth = AuthService(backend: backend, store: store, installation: device("Mac"), feature: "desktop")
+        await auth.login(email: "demo@jaras.live", password: "jaras123")
+        XCTAssertTrue(auth.allowed)
+        store.blockNextRead()
+        let checking = Task { @MainActor in await auth.revalidate() }
+        try await Task.sleep(nanoseconds: 40_000_000)
+        // This main-actor continuation must run while the storage call waits.
+        store.release.signal()
+        await checking.value
+        XCTAssertEqual(store.mainCalls, 0)
+        XCTAssertFalse(store.timedOut)
+        XCTAssertTrue(auth.allowed)
+    }
     @MainActor func testSessionRestoreOfflineAndSafeRevocation() async throws {
         let backend = MockBackendClient(); let store = MemorySecureStore(); let installed = device("Mac")
         let auth = AuthService(backend: backend, store: store, installation: installed, feature: "desktop")
@@ -78,4 +93,22 @@ final class ApplicationTests: XCTestCase {
         XCTAssertEqual(active.count, 3)
     }
 
+}
+
+private final class BackgroundSessionStore: SecureStore, @unchecked Sendable {
+    private let memory = MemorySecureStore(), lock = NSLock()
+    let release = DispatchSemaphore(value: 0)
+    private var block = false, timeout = false, calls = 0
+    var mainCalls: Int { lock.lock(); defer { lock.unlock() }; return calls }
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return timeout }
+    func blockNextRead() { lock.lock(); block = true; lock.unlock() }
+    private func noteCall() { lock.lock(); if Thread.isMainThread { calls += 1 }; lock.unlock() }
+    func read(_ key: String) throws -> Data? {
+        noteCall()
+        lock.lock(); let waiting = block; block = false; lock.unlock()
+        if waiting, release.wait(timeout: .now() + 1) == .timedOut { lock.lock(); timeout = true; lock.unlock() }
+        return memory.read(key)
+    }
+    func write(_ data: Data, key: String) throws { noteCall(); memory.write(data, key: key) }
+    func delete(_ key: String) throws { noteCall(); memory.delete(key) }
 }

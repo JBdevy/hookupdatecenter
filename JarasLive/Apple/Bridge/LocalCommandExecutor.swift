@@ -73,6 +73,9 @@ import Foundation
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { try core.moveClip(id.uuidString, start: start, track: track?.uuidString ?? "") }
     func deleteManualMarker(_ id: UUID) throws { try core.deleteManualMarker(id.uuidString) }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { try core.setTempoMarkers(JSONEncoder().encode(markers)) }
+    func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
+        try core.setTempoMarkers(JSONEncoder().encode(markers), removing: removing.map(\.uuidString))
+    }
     func setMarker(_ marker: TimelineMarker) throws {
         if let bpm = marker.tempoBPM { try core.setTempoMarker(marker.id.uuidString, position: marker.position, bpm: bpm, beats: Int32(marker.tempoBeats ?? 4), unit: Int32(marker.tempoUnit ?? 4), timebase: (marker.tempoTimebase ?? .global).rawValue) }
         else { try core.setMarker(marker.id.uuidString, name: marker.name, position: marker.position, color: marker.color) }

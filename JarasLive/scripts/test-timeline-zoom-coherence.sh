@@ -14,5 +14,5 @@ if sys.argv[2]=='legacy':
  part=part.replace('documentWidth ?? geometry.size.width','geometry.size.width')
 Path(sys.argv[1]).write_text('import SwiftUI\nprivate struct TimelineTileIdentity: Equatable {}\n'+part+'\n'+Path('Tests/Apple/TimelineZoomFrameCoherenceTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" "${1:-current}"

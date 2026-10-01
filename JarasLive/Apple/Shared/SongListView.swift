@@ -28,7 +28,7 @@ struct SongListView: View {
     #if os(macOS)
     var sidebarScrollController: SidebarScrollController? = nil
     #endif
-    private struct EntryEdit: Identifiable { let id: UUID; let name: String; let color: UInt32; let block: Bool }
+    private struct EntryEdit: Identifiable { let id: UUID; let name: String; let color: UInt32; let block: Bool; var regionTargets: Set<UUID> = [] }
     @State private var editingEntry: EntryEdit?
     @State private var entryCache = SetlistEntryCache()
     @State private var expandedRegions: Set<UUID> = []
@@ -44,9 +44,9 @@ struct SongListView: View {
     @State private var multiLoopRegion: Part?
     @AppStorage("jaras.setlist.idMode") private var idMode = "playlist"
     @AppStorage("jaras.setlist.fontStyle") private var fontStyle = 0
-    @AppStorage("jaras.setlist.allRegionsTextColor") private var allRegionsTextColor = 0xffffff
-    @AppStorage("jaras.setlist.playlistTextColor") private var playlistTextColor = 0xb9e229
-    @AppStorage("jaras.setlist.unifiedTextColor") private var unifiedTextColor = 0xff6f00
+    @ObservedObject private var allRegionsTextColor = AppearanceColor.shared("jaras.setlist.allRegionsTextColor", default: 0xffffff)
+    @ObservedObject private var playlistTextColor = AppearanceColor.shared("jaras.setlist.playlistTextColor", default: 0x00ff9a)
+    @ObservedObject private var unifiedTextColor = AppearanceColor.shared("jaras.setlist.unifiedTextColor", default: 0xffeb3b)
     @AppStorage("jaras.blocks.symbol") private var defaultBlockSymbol = true
     @State private var blockSymbolTargets = Set<UUID>()
     @State private var editingMultipleSymbols = false
@@ -58,14 +58,13 @@ struct SongListView: View {
     @State private var createdBlock: UUID?
     @State private var selectedEntries: Set<UUID> = []
     @State private var entrySelectionAnchor: UUID?
+    @State private var playlistMaximumListHeight: CGFloat = 500
     @State private var choosingPlaylist = false
     @State private var creatingPlaylist = false
     @State private var showingAutoOptions = false
     @State private var searching = false
     @State private var query = ""
     @State private var playlistName = ""
-    @State private var deletingPlaylist: UUID?
-    @State private var confirmingPlaylistDelete = false
     @State private var missingPlaylistName = false
     @State private var nameShake = 0.0
     @FocusState private var playlistNameFocused: Bool
@@ -123,10 +122,6 @@ struct SongListView: View {
         let displayedPlaying = transport.playing ? song?.playingSetlistRegion(ignoredRegion?.id ?? transport.regionId, position: ignoredRegion?.startTime ?? transport.position, expanded: expandedRegions) : nil
         let playbackEnd = transport.ignoreNextEnd ?? playingBounds?.endTime ?? transport.position
         VStack(spacing: 0) {
-            HStack {
-                Text("SETLIST").font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
-                Spacer()
-            }.padding(.horizontal, 8)
             HStack(spacing: 3) {
                 Button { choosingPlaylist.toggle() } label: {
                     HStack(spacing: 3) {
@@ -138,7 +133,14 @@ struct SongListView: View {
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.45)))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).jarasHelp("Choose playlist")
-                    .popover(isPresented: $choosingPlaylist, arrowEdge: .bottom) { playlistPanel }
+                    #if os(macOS)
+                    .background(PlaylistPopoverSpaceReader { height in
+                        if abs(playlistMaximumListHeight - height) > 0.5 { playlistMaximumListHeight = height }
+                    })
+                    #endif
+                    .popover(isPresented: $choosingPlaylist, arrowEdge: .bottom) {
+                        PlaylistSelectionPanel(show: show, isPresented: $choosingPlaylist, maximumListHeight: $playlistMaximumListHeight) { query = "" }
+                    }
                 Button {
                     playlistName = ""; missingPlaylistName = false; nameShake = 0; selection = []; selectionAnchor = nil
                     choosingPlaylist = false; creatingPlaylist = true
@@ -208,7 +210,7 @@ struct SongListView: View {
                             let progress = active ? min(1, max(0, (transport.position - region.startTime) / duration)) : 0
                             let queueRemaining = queued ? max(0, playbackEnd - transport.position) : 0
                             let queueLength = max(0.001, playbackEnd - (transport.queueStartedAt ?? transport.position))
-                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor : playlist == nil ? allRegionsTextColor : playlistTextColor), number: idMode == "region" ? (regionIDs[region.id] ?? number) : number, selected: selectedEntries.contains(region.id),
+                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[region.id] ?? number) : number, selected: selectedEntries.contains(region.id),
                                              active: active, queued: queued, prepareOnly: setlist.preparesWithoutPlayback, remaining: Int(ceil(remaining)),
                                              progress: progress, queueProgress: queued ? min(1, queueRemaining / queueLength) : 0,
                                              expanded: content.unifiedRegionIDs.contains(region.id) ? expandedRegions.contains(region.id) : nil,
@@ -218,9 +220,12 @@ struct SongListView: View {
                                 selectEntry(region.id, visible: visible)
                             }.equatable().padding(.leading, region.parentRegionID == nil ? 0 : 18)
                                 .contextMenu {
-                                    Button("Multiloops") { multiLoopRegion = region }
-                                    Button("Detect BPM…") { show.detectBPMRegion = region.id }
-                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: region.id, name: region.name, color: region.color ?? 0x705264, block: false) }
+                                    let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
+                                    if targets.count == 1 { Button("Multiloops") { multiLoopRegion = region } }
+                                    Button("Detect BPM…") { show.detectBPMRegions = visible.compactMap { entry in
+                                        if case .region(let part, _) = entry, targets.contains(part.id) { return part.id }; return nil
+                                    } }
+                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: region.id, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: targets) }
                                     if content.unifiedRegionIDs.contains(region.id) {
                                         Button("Disunify") { show.disunifyRegion(region.id); expandedRegions.remove(region.id) }
                                     }
@@ -238,7 +243,9 @@ struct SongListView: View {
                             Text("Select an item and press Shift + R to create a region.")
                                 .font(.caption).foregroundStyle(JarasTheme.secondary).padding(12)
                         }
-                    }.padding(.horizontal, 8)
+                    }.padding(.leading, 8)
+                    // Keep the drawer button inside the scroll viewport.
+                    .padding(.trailing, 2)
                     #if os(macOS)
                     .background(SetlistScrollbarsHidden())
                     .background {
@@ -301,9 +308,9 @@ struct SongListView: View {
             show.stepRegion(request.direction, entries: visible)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(hex: 0x151b22))
-        .alert(Text(verbatim: confirmingRemoval ? JarasLocalization.string(removal?.keyboard == true ? "Delete the selected setlist items?" : removal?.playlist == nil ? "Delete this region?" : "Remove this song from the playlist?") : ""), isPresented: $confirmingRemoval) {
+        .alert(Text(verbatim: confirmingRemoval ? JarasLocalization.string(removal?.playlist == nil ? "Delete selected regions from the project?" : "Remove selected items from this playlist?") : ""), isPresented: $confirmingRemoval) {
             Button("Cancel", role: .cancel) { removal = nil }
-            Button("Delete", role: .destructive) {
+            Button(removal?.playlist == nil ? "Delete" : "Remove from playlist", role: .destructive) {
                 if let removal, removal.project == show.snapshot.project.id, removal.song == show.current?.id,
                    removal.playlist == show.selectedRegionPlaylist?.id, show.deleteSetlistEntries(removal.ids) {
                     selectedEntries.subtract(removal.ids)
@@ -317,8 +324,9 @@ struct SongListView: View {
         .sheet(item: $editingEntry) { edit in
             NameColorEditor(title: edit.block ? "Edit block" : "Edit song", initialName: edit.name, initialColor: edit.color, save: { name, color in
                 if edit.block { show.editSetlistBlock(edit.id, name: name, color: color, symbol: editingBlockSymbol) }
+                else if edit.regionTargets.count > 1 { show.editRegionColors(edit.regionTargets, color: color) }
                 else { show.editRegion(edit.id, name: name, color: color, uppercaseName: editingUppercaseName) }
-            }, symbol: edit.block ? $editingBlockSymbol : nil, uppercaseName: edit.block ? nil : $editingUppercaseName).background(JarasTheme.panel)
+            }, symbol: edit.block ? $editingBlockSymbol : nil, uppercaseName: edit.block || edit.regionTargets.count > 1 ? nil : $editingUppercaseName, nameEditable: edit.regionTargets.count <= 1, showsName: edit.regionTargets.count <= 1).background(JarasTheme.panel)
         }
         .sheet(isPresented: $editingMultipleSymbols) {
             VStack(alignment: .leading, spacing: 16) {
@@ -371,49 +379,6 @@ struct SongListView: View {
                 }
             }.frame(height: min(300, CGFloat(max(1, results.count)) * 34))
         }.padding(12).frame(width: 300).onAppear { searchFocused = true }
-    }
-    private var playlistPanel: some View {
-                VStack(spacing: 2) {
-                    HStack {
-                        Text("Playlists").font(.headline); Spacer()
-                        Button { choosingPlaylist = false } label: { Image(systemName: "xmark").frame(width: 30, height: 30).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Close playlists")
-                    }
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 3) {
-                            playlistChoice("All regions", id: nil)
-                            ForEach(show.regionSetlist.playlists.filter { $0.songId == show.current?.id }) { list in
-                                playlistChoice(list.name, id: list.id)
-                            }
-                        }
-                    }.frame(maxHeight: 250)
-                }.padding(10).background(JarasTheme.panel)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
-                    .frame(width: 240)
-                    .alert("Delete playlist?", isPresented: $confirmingPlaylistDelete) {
-                        Button("Delete playlist", role: .destructive) {
-                            if let id = deletingPlaylist { show.deleteRegionPlaylist(id) }
-                            deletingPlaylist = nil
-                        }
-                        Button("Cancel", role: .cancel) { deletingPlaylist = nil }
-                    }
-    }
-    private func playlistChoice(_ name: String, id: UUID?) -> some View {
-        Button {
-            show.selectRegionPlaylist(id); choosingPlaylist = false; query = ""
-        } label: {
-            HStack {
-                Group { if id == nil { Text(LocalizedStringKey(name)) } else { Text(name) } }.lineLimit(1); Spacer()
-                if show.regionSetlist.selectedId == id { Image(systemName: "checkmark").foregroundStyle(JarasTheme.green) }
-            }.font(.system(size: 12)).padding(8).frame(maxWidth: .infinity)
-                .background(JarasTheme.background).contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .contextMenu {
-                if let id {
-                    Button("Clone playlist") { show.cloneRegionPlaylist(id) }
-                    Button("Delete playlist", role: .destructive) { deletingPlaylist = id; confirmingPlaylistDelete = true }
-                }
-            }
     }
     private var creationPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -514,6 +479,199 @@ struct SongListView: View {
         selectionAnchor = id
     }
 }
+private struct PlaylistNameEditor: View {
+    let save: (String) -> Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var invalid = false
+    @State private var shake = 0.0
+    @FocusState private var focused: Bool
+    init(initialName: String, save: @escaping (String) -> Bool) {
+        self.save = save; _name = State(initialValue: initialName)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit playlist").font(.headline)
+            TextField("Playlist name", text: $name).focused($focused)
+                .onSubmit(confirm)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? Color.red : Color.clear))
+                .modifier(InputValidationShake(animatableData: shake))
+                .onChange(of: name) { _ in invalid = false }
+            if invalid { Text("Choose a name").font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save", action: confirm).keyboardShortcut(.defaultAction)
+            }
+        }.padding(20).frame(width: 320).onAppear { focused = true }
+    }
+    private func confirm() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            invalid = true; focused = true
+            withAnimation(.linear(duration: 0.3)) { shake += 1 }
+            return
+        }
+        if save(trimmed) { dismiss() }
+    }
+}
+// The popover is a separate presentation root: observe the controller here so
+// cloning/deleting updates its rows without dismissing and reopening it.
+private struct PlaylistSelectionPanel: View {
+    @ObservedObject var show: ShowController
+    @Binding var isPresented: Bool
+    @Binding var maximumListHeight: CGFloat
+    var didSelect: () -> Void
+    @State private var editingPlaylist: RegionPlaylist?
+    @State private var deletingPlaylist: UUID?
+    @State private var confirmingPlaylistDelete = false
+    private let rowHeight: CGFloat = 32
+    private let rowSpacing: CGFloat = 3
+    var body: some View {
+        let playlists = show.regionSetlist.playlists.filter { $0.songId == show.current?.id }
+        let contentHeight = CGFloat(playlists.count + 1) * rowHeight + CGFloat(playlists.count) * rowSpacing
+        let needsScroll = contentHeight > maximumListHeight
+        VStack(spacing: 2) {
+            HStack {
+                Text("Playlists").font(.headline); Spacer()
+                Button { isPresented = false } label: {
+                    Image(systemName: "xmark").frame(width: 30, height: 30).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Close playlists")
+            }
+            ScrollView(showsIndicators: needsScroll) {
+                VStack(spacing: rowSpacing) {
+                    playlistChoice("All regions", id: nil)
+                    ForEach(playlists) { list in playlistChoice(list.name, id: list.id) }
+                }
+                #if os(macOS)
+                .background(PlaylistPersistentScrollbar(visible: needsScroll))
+                #endif
+            }
+            .scrollDisabled(!needsScroll)
+            .frame(height: min(contentHeight, maximumListHeight))
+        }.padding(10).background(JarasTheme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
+            .frame(width: 240)
+            .sheet(item: $editingPlaylist) { playlist in
+                PlaylistNameEditor(initialName: playlist.name) { name in
+                    show.renameRegionPlaylist(playlist.id, name: name)
+                }
+            }
+            .alert("Delete playlist?", isPresented: $confirmingPlaylistDelete) {
+                Button("Delete playlist", role: .destructive) {
+                    if let id = deletingPlaylist { show.deleteRegionPlaylist(id) }
+                    deletingPlaylist = nil
+                }
+                Button("Cancel", role: .cancel) { deletingPlaylist = nil }
+            }
+    }
+    private func playlistChoice(_ name: String, id: UUID?) -> some View {
+        Button {
+            show.selectRegionPlaylist(id); isPresented = false; didSelect()
+        } label: {
+            HStack {
+                Group { if id == nil { Text(LocalizedStringKey(name)) } else { Text(name) } }.lineLimit(1); Spacer()
+                if show.regionSetlist.selectedId == id { Image(systemName: "checkmark").foregroundStyle(JarasTheme.green) }
+            }.font(.system(size: 12)).padding(.horizontal, 8)
+                .frame(maxWidth: .infinity).frame(height: rowHeight)
+                .background(JarasTheme.background).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .contextMenu {
+                if let id {
+                    Button("Edit") { editingPlaylist = show.regionSetlist.playlists.first { $0.id == id } }
+                    Button("Clone playlist") { show.cloneRegionPlaylist(id) }
+                    Button("Delete playlist", role: .destructive) { deletingPlaylist = id; confirmingPlaylistDelete = true }
+                }
+            }
+    }
+}
+#if os(macOS)
+// A legacy scroller remains visible while idle, including when the system
+// preference normally hides scrollbars. Its full native hit area stays usable.
+private struct PlaylistPersistentScrollbar: NSViewRepresentable {
+    var visible: Bool
+    func makeNSView(context: Context) -> PlaylistScrollbarView {
+        let view = PlaylistScrollbarView(); view.visible = visible; return view
+    }
+    func updateNSView(_ view: PlaylistScrollbarView, context: Context) {
+        view.visible = visible; view.configure()
+        DispatchQueue.main.async { [weak view] in view?.configure() }
+    }
+}
+private final class PlaylistGreenScroller: NSScroller {
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+        NSColor(white: 0.12, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 3, y: slotRect.minY, width: 6, height: slotRect.height), xRadius: 3, yRadius: 3).fill()
+    }
+    override func drawKnob() {
+        NSColor(calibratedRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1).setFill()
+        let knob = rect(for: .knob)
+        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 3, y: knob.minY, width: 6, height: knob.height), xRadius: 3, yRadius: 3).fill()
+    }
+}
+private final class PlaylistScrollbarView: NSView {
+    var visible = false
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow(); configure()
+        DispatchQueue.main.async { [weak self] in self?.configure() }
+    }
+    override func layout() { super.layout(); configure() }
+    func configure() {
+        guard let scroll = enclosingScrollView else { return }
+        if scroll.scrollerStyle != .legacy { scroll.scrollerStyle = .legacy }
+        if scroll.autohidesScrollers { scroll.autohidesScrollers = false }
+        if scroll.hasHorizontalScroller { scroll.hasHorizontalScroller = false }
+        if visible && !(scroll.verticalScroller is PlaylistGreenScroller) {
+            scroll.verticalScroller = PlaylistGreenScroller(frame: NSRect(x: 0, y: 0, width: 14, height: 100))
+        }
+        if scroll.hasVerticalScroller != visible { scroll.hasVerticalScroller = visible }
+    }
+}
+// Measure from the actual chooser button on its own monitor, reserving space
+// for the popover arrow, title and padding. No fixed seven-row scroll limit.
+private struct PlaylistPopoverSpaceReader: NSViewRepresentable {
+    var changed: (CGFloat) -> Void
+    func makeNSView(context: Context) -> PlaylistPopoverAnchorView {
+        let view = PlaylistPopoverAnchorView(); view.changed = changed; return view
+    }
+    func updateNSView(_ view: PlaylistPopoverAnchorView, context: Context) {
+        view.changed = changed; view.measure()
+    }
+}
+private final class PlaylistPopoverAnchorView: NSView {
+    var changed: ((CGFloat) -> Void)?
+    private var observers: [NSObjectProtocol] = []
+    private var lastHeight: CGFloat = 0
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+        if let window {
+            for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification, NSWindow.didChangeScreenNotification] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.measure() })
+            }
+        }
+        measure()
+    }
+    override func layout() { super.layout(); measure() }
+    override func setFrameSize(_ size: NSSize) { super.setFrameSize(size); measure() }
+    override func setFrameOrigin(_ point: NSPoint) { super.setFrameOrigin(point); measure() }
+    func measure() {
+        guard let window, let screen = window.screen, bounds.height > 0 else { return }
+        let anchor = window.convertToScreen(convert(bounds, to: nil))
+        let visible = screen.visibleFrame
+        let space = max(anchor.minY - visible.minY, visible.maxY - anchor.maxY)
+        let height = max(96, min(space, visible.height) - 68)
+        guard abs(lastHeight - height) > 0.5 else { return }
+        lastHeight = height
+        DispatchQueue.main.async { [weak self] in self?.changed?(height) }
+    }
+    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+}
+#endif
 private struct RegionSetlistRow: View, Equatable {
     let region: Part
     var fontStyle: Int = 0
@@ -537,7 +695,7 @@ private struct RegionSetlistRow: View, Equatable {
     var body: some View {
         let color = Color(hex: region.color ?? 0x705264)
         let numberWidth = CGFloat(max(2, String(number).count)) * 6
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
         Button(action: select) {
             #if os(macOS)
             NativeRegionSetlistLabel(number: number, name: region.displayName, duration: regionDurationText(Double(remaining)),
@@ -579,10 +737,10 @@ private struct RegionSetlistRow: View, Equatable {
                     Button(action: toggleDrawer) {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 11, weight: .bold)).foregroundStyle(JarasTheme.green)
-                            .frame(width: 12, height: 34).contentShape(Rectangle())
+                            .frame(width: 14, height: 34).contentShape(Rectangle())
                     }.buttonStyle(.plain).jarasHelp("Show unified songs").accessibilityLabel("Show unified songs")
                 } else {
-                    Color.clear.frame(width: 12, height: 34).allowsHitTesting(false)
+                    Color.clear.frame(width: 14, height: 34).allowsHitTesting(false)
                 }
             }
         }
@@ -774,6 +932,7 @@ final class SetlistKeyView: NSView {
     static func handleDelete(_ event: NSEvent) -> Bool {
         guard [51,117].contains(event.keyCode), event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
               let owner = deleteOwner, event.window === owner.window, owner.acceptsNavigation,
+              !(owner.window?.firstResponder is any TimelineGridKeyboardTarget),
               !owner.isHiddenOrHasHiddenAncestor, owner.visibleRect.width > 0 else { return false }
         owner.stopRepeating(commit: false)
         if !event.isARepeat { owner.delete?() }
@@ -783,7 +942,10 @@ final class SetlistKeyView: NSView {
     }
     func notePointerEvent(_ event: NSEvent) {
         guard event.window === window else { return }
-        if visibleRect.contains(convert(event.locationInWindow, from: nil)) { Self.deleteOwner = self }
+        if visibleRect.contains(convert(event.locationInWindow, from: nil)) {
+            if window?.firstResponder is any TimelineGridKeyboardTarget { window?.makeFirstResponder(nil) }
+            Self.deleteOwner = self
+        }
         else if Self.deleteOwner === self { Self.deleteOwner = nil }
     }
     private var monitor: Any?
@@ -847,6 +1009,7 @@ final class SetlistKeyView: NSView {
             self.stopRepeating(commit: false)
             let direction = event.keyCode == 125 ? 1 : -1
             guard self.move?(direction) == true else { return event }
+            if self.window?.firstResponder is any TimelineGridKeyboardTarget { self.window?.makeFirstResponder(nil) }
             Self.deleteOwner = self
             self.heldKey = event.keyCode
             let timer = Timer(fire: Date(timeIntervalSinceNow: 0.20), interval: 0.055, repeats: true) { [weak self] _ in

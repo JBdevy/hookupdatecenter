@@ -1,7 +1,7 @@
 #pragma once
 #include "../Project/Models.hpp"
 namespace jaras {
-enum class CommandKind { loopStart, loopEnd, escape, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipChannelMode, clipNormalization };
+enum class CommandKind { clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipChannelMode, clipNormalization };
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
 class Engine {
 public:
@@ -35,7 +35,7 @@ public:
     void setTimecode(const ID& track, TimecodeSettings settings);
     void editTrack(const ID& id, std::string name, unsigned color);
     void editMasterColor(unsigned color);
-    void setMarkers(const std::vector<TimelineMarker>& markers);
+    void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {});
     void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {});
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);
     void deleteManualMarker(const ID& id);

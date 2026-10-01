@@ -31,6 +31,7 @@ import XCTest
                 if command == .volume { project.masterVolume = min(pow(10,12.0 / 20),max(0,value)) }
                 else if command == .mute { project.masterMute = !(project.masterMute ?? false) }
                 else if command == .solo { project.masterSolo = !(project.masterSolo ?? false) }
+                else if command == .phase { project.masterPhaseInverted = !(project.masterPhaseInverted ?? false) }
                 else { XCTFail("Unexpected master command: \(command)") }
                 return
             }
@@ -45,6 +46,7 @@ import XCTest
                     case .pan: project.songs[song].tracks[track].pan = min(1,max(-1,value))
                     case .mute: project.songs[song].tracks[track].mute.toggle()
                     case .solo: project.songs[song].tracks[track].solo.toggle()
+                    case .phase: project.songs[song].tracks[track].phaseInverted = !(project.songs[song].tracks[track].phaseInverted ?? false)
                     default: XCTFail("Unexpected track command: \(command)")
                     }
                     return
@@ -200,6 +202,76 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         executor.snapshotReads = 0; executor.playbackReads = 0
         return (show,executor)
     }
+    @MainActor func testSelectedMixerControlsShareStatesAndPreserveUnselectedTracks() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        let c = Track(id: UUID(), name: "C", role: .keys)
+        a.volume = 1; b.volume = 0.5; b.mute = true; b.solo = true; b.phaseInverted = true
+        project.songs[0].tracks = [a,b,c]
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([a.id,b.id], anchor: a.id)
+        var revisions = Set<UInt64>()
+        controller.audioUpdate = { _, revision in revisions.insert(revision) }
+        for command: ShowCommand in [.mute,.solo,.phase] {
+            controller.sendMixerControl(command, target: a.id)
+        }
+        let tracks = try XCTUnwrap(controller.current).tracks
+        XCTAssertTrue(tracks[0].mute && tracks[1].mute && !tracks[2].mute)
+        XCTAssertTrue(tracks[0].solo && tracks[1].solo && !tracks[2].solo)
+        XCTAssertEqual(tracks[0].phaseInverted, true); XCTAssertEqual(tracks[1].phaseInverted, true)
+        controller.sendMixerControl(.mute, target: c.id)
+        XCTAssertTrue(controller.current!.tracks.allSatisfy(\.mute))
+        XCTAssertEqual(controller.mixerTrackSelection, [a.id,b.id])
+        XCTAssertEqual(revisions.count, 1, "Scalar changes retain the same audio project revision")
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+    }
+    @MainActor func testSelectedVolumePreviewMaintainsRatiosAndSilenceEqualizesWithinGesture() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        a.volume = 1; b.volume = 0.25
+        project.songs[0].tracks = [a,b]
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([a.id,b.id], anchor: a.id)
+        var live: [UUID:Double] = [:]
+        controller.audioVolume = { id, gain in if let id { live[id] = gain } }
+        controller.sendMixerControl(.volume, target: a.id, value: 0.5, preview: true)
+        XCTAssertEqual(live[a.id], 0.5); XCTAssertEqual(live[b.id], 0.125)
+        XCTAssertEqual(controller.current!.tracks[0].volume, 1, "Dragging must not publish full project changes")
+        controller.sendMixerControl(.volume, target: a.id, value: 0, preview: true)
+        XCTAssertEqual(live[b.id], 0)
+        controller.sendMixerControl(.volume, target: a.id, value: 0.2, preview: true)
+        XCTAssertEqual(live[a.id], 0.2); XCTAssertEqual(live[b.id], 0.2)
+        controller.sendMixerControl(.volume, target: a.id, value: 0.2)
+        XCTAssertEqual(controller.current!.tracks.map(\.volume), [0.2,0.2])
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+        controller.undo()
+        XCTAssertEqual(controller.current!.tracks.map(\.volume), [1,0.25], "One undo restores the entire multi-track gesture")
+    }
+    @MainActor func testSelectedPanMovesTogetherAndLinkedPairStaysOpposed() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        var c = Track(id: UUID(), name: "C", role: .keys)
+        a.pan = -0.2; b.pan = 0.1; c.pan = 0.3
+        project.songs[0].tracks = [a,b,c]
+        let (controller, _) = try show(project)
+        controller.setMixerTrackSelection([a.id,b.id], anchor: a.id)
+        controller.sendMixerControl(.pan, target: a.id, value: 0.1, preview: true)
+        XCTAssertEqual(controller.mixerPreviewValues[b.id]!, 0.4, accuracy: 0.000001)
+        controller.sendMixerControl(.pan, target: a.id, value: 0.1)
+        XCTAssertEqual(controller.current!.tracks[2].pan, 0.3)
+        controller.linkTracks([a.id,b.id], defaultInput: 1, color: 0xffffff)
+        controller.setMixerTrackSelection([a.id,b.id,c.id], anchor: b.id)
+        var live: [UUID:Double] = [:]
+        controller.audioPan = { live[$0] = $1 }
+        controller.sendMixerControl(.pan, target: b.id, value: 0.4, preview: true)
+        XCTAssertEqual(live[a.id]!, -0.4, accuracy: 0.000001); XCTAssertEqual(live[b.id]!, 0.4, accuracy: 0.000001)
+        controller.sendMixerControl(.pan, target: b.id, value: 0.4)
+        XCTAssertEqual(controller.current!.tracks[0].pan, -0.4, accuracy: 0.000001)
+        XCTAssertEqual(controller.current!.tracks[1].pan, 0.4, accuracy: 0.000001)
+    }
     @MainActor func testTimecodeModeEditsRetainAudioRevisionTransportAndWaveformStorageWithoutReads() throws {
         let project = fixture(), (show,executor) = try show(project)
         let originalTransport = show.snapshot.transport
@@ -282,6 +354,22 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].name,"Piano"); XCTAssertEqual(show.current?.tracks[1].inputPatch,input)
         XCTAssertEqual(show.current?.tracks[1].midiInput,2)
+    }
+    @MainActor func testBatchRegionColorsPreserveNamesAndTimingWithoutReload() throws {
+        var project = fixture()
+        project.songs[0].parts.append(Part(id: UUID(), name: "Second (original)", startTime: 20, endTime: 30))
+        project.songs[0].parts.append(Part(id: UUID(), name: "Untouched", startTime: 30, endTime: 40))
+        let original = project.songs[0].parts
+        let (show, executor) = try show(project)
+        show.editRegionColors(Set(original.prefix(2).map(\.id)), color: 0x123456)
+        XCTAssertEqual(show.current?.parts.map(\.name), original.map(\.name))
+        XCTAssertEqual(show.current?.parts.map(\.startTime), original.map(\.startTime))
+        XCTAssertEqual(show.current?.parts.map(\.endTime), original.map(\.endTime))
+        XCTAssertEqual(show.current?.parts[0].color, 0x123456)
+        XCTAssertEqual(show.current?.parts[1].color, 0x123456)
+        XCTAssertEqual(show.current?.parts[2], original[2])
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
     }
     @MainActor func testBatchTrackColorKeepsEveryNameAndCreatesOneUndoWithoutReload() throws {
         var project = fixture()
@@ -380,6 +468,27 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.playbackReads,0); XCTAssertEqual(executor.fullEdits,0)
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveform,project.songs[0].tracks[1].clips[0].waveform)
+    }
+    @MainActor func testPhaseChangesAudioWithoutReloadAndSupportsUndo() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let track = project.songs[0].tracks[1].id
+        let transport = show.snapshot.transport
+        var targets: [UUID?] = [], values: [Bool] = [], revisions: [UInt64] = []
+        show.audioUpdate = { _, revision in revisions.append(revision) }
+        show.audioPhase = { targets.append($0); values.append($1) }
+        show.send(.phase, target: track)
+        show.send(.phase)
+        XCTAssertEqual(targets, [track]); XCTAssertEqual(values, [true])
+        XCTAssertEqual(show.current?.tracks[1].phaseInverted, true)
+        XCTAssertNotEqual(show.snapshot.project.masterPhaseInverted, true)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(show.projectRevision, 1); XCTAssertEqual(revisions, [0])
+        show.undo(); show.undo()
+        XCTAssertEqual(show.snapshot.project, project)
+        show.redo(); show.redo()
+        XCTAssertEqual(show.current?.tracks[1].phaseInverted, true)
+        XCTAssertNotEqual(show.snapshot.project.masterPhaseInverted, true)
     }
     @MainActor func testChannelConversionPreservesSourceAndAllEditsAndRestoresStereoWithUndo() throws {
         let project = fixture(), (show, executor) = try show(project)

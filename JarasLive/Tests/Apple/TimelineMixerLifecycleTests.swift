@@ -365,7 +365,7 @@ MainActor.assumeIsolated {
 }
 print("TIMELINE_MIXER_PRECISE_RESIZE_FINAL_RECONCILIATION_AND_SIMULTANEOUS_SCROLL_OK")
 private let variablePool = TimelineMixerRowPool<Int>()
-let trackIDs = Array(0..<400)
+let trackIDs = Array(0..<1000)
 let variableHeights: [CGFloat] = trackIDs.map { $0 % 7 == 0 ? 240 : ($0 % 3 == 0 ? 128 : 64) }
 var variableOffsets: [CGFloat] = []
 var accumulatedHeight: CGFloat = 0
@@ -377,7 +377,7 @@ for y: CGFloat in [0, 512, 4096, 25000, 8192, 0] {
     let indices = Set(slots.map(\.index))
     precondition(indices.count == slots.count && Set(slots.map(\.id)).count == slots.count,
                  "each track and native slot appears at most once")
-    precondition(slots.count <= 43, "400 variable-height tracks keep a bounded native pool")
+    precondition(slots.count <= 43, "1000 variable-height tracks keep a bounded native pool")
     for index in trackIDs where mixerRowIsMounted(start: 71 + variableOffsets[index], height: variableHeights[index], visibleY: y, viewportHeight: 1024) {
         precondition(indices.contains(index), "every required variable-height row has a native slot")
     }

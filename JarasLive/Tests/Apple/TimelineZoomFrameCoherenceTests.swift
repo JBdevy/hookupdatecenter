@@ -4,7 +4,7 @@ import AppKit
     for width: CGFloat in [800.125, 1700.375, 950.625, 3600.875, 801.25, 1200.125] {
         let fraction: CGFloat = 0.173
         func layer(_ layoutWidth: CGFloat) -> some View {
-            ViewportTimelineCanvas(visibleRect: CGRect(x: 0, y: 0, width: 700, height: 24), synchronized: true, documentWidth: width, identity: TimelineTileIdentity()) { context, size, _ in
+            ViewportTimelineCanvas(visibleRect: CGRect(x: 0, y: 0, width: 700, height: 24), synchronized: true, documentWidth: width, identity: TimelineTileIdentity()) { context, size, _, _ in
                 context.fill(Path(CGRect(x: size.width * fraction, y: 0, width: 3, height: 24)), with: .color(.white))
             }.frame(width: layoutWidth, height: 24).frame(width: 700, height: 24, alignment: .leading).clipped()
         }

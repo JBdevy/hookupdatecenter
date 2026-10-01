@@ -9,7 +9,7 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
 }
@@ -18,6 +18,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public static let defaultStandardColor: UInt32 = 0x828282
     public var id: UUID; public var name: String; public var role: TrackRole
     public var volume: Double = 1, pan: Double = 0
+    public var phaseInverted: Bool? = nil
     public var mute = false, solo = false
     public var output = 1
     public var fx: NativeFXSettings?
@@ -115,6 +116,7 @@ public struct Part: Codable, Identifiable, Equatable, Sendable {
     public var pitchTrackIDs: [UUID]? = nil
     public var pitchGroupIDs: [UUID]? = nil
     public var multiLoops: [MultiLoop]? = nil
+    public var totalLoop: Bool? = nil
     public var semitones: Int { pitchSemitones ?? 0 }
     public var usesUppercase: Bool { uppercaseName ?? true }
     public var displayName: String {
@@ -140,11 +142,27 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var tempoBeats: Int? = nil
     public var tempoUnit: Int? = nil
     public var tempoTimebase: TempoMarkerTimebase? = nil
+    public var tempoReferenceBPM: Double? = nil
     public var isTempo: Bool { tempoBPM != nil }
     public static let maximumNameLength = 12
-    public static func flagWidths(_ markers: [Self], scale: Double, widths: [UUID: Double], regionEnds: [UUID: Double] = [:]) -> [UUID: Double] {
+    public static func flagWidths(_ markers: [Self], scale: Double, widths: [UUID: Double], regionEnds: [UUID: Double] = [:], facesLeft: Bool = false) -> [UUID: Double] {
         let ordered = markers.enumerated().sorted { $0.element.position == $1.element.position ? $0.offset < $1.offset : $0.element.position < $1.element.position }
         var result: [UUID: Double] = [:]
+        if facesLeft {
+            var previousEdge = 0.0
+            for (index, entry) in ordered.enumerated() {
+                let marker = entry.element, x = marker.position * scale
+                // At project zero the head stays inside the viewport. Every
+                // subsequent tempo head ends at its own vertical line.
+                let available = marker.position == 0
+                    ? (index + 1 < ordered.count ? ordered[index + 1].element.position * scale - 3 : .infinity)
+                    : x - previousEdge - 3
+                let width = min((widths[marker.id] ?? 0) + 10, available)
+                if width >= 18 { result[marker.id] = width }
+                previousEdge = marker.position == 0 ? max(0, width) : x
+            }
+            return result
+        }
         var rightHead = Double.infinity
         for entry in ordered.reversed() {
             let marker = entry.element, x = marker.position * scale
@@ -175,7 +193,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public var beatsPerBar: Int?
     public var beatUnit: Int?
     public var timeSettings: ProjectTimeSettings? = nil
-    public var projectTime: ProjectTimeSettings { timeSettings ?? ProjectTimeSettings() }
+    public var projectTime: ProjectTimeSettings { timeSettings ?? .legacy }
     public var meterBeats: Int { beatsPerBar ?? 4 }
     public var meterUnit: Int { beatUnit ?? 4 }
     public var barSeconds: Double { 60 / bpm * Double(meterBeats) * 4 / Double(meterUnit) }
@@ -319,6 +337,7 @@ public extension RegionSetlist {
     }
 }
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    public static let maximumTrackCount = 1000
     public var id: UUID; public var name: String
     public var projectFormatVersion = 1, minimumJarasVersion = "1.0.0"
     public var createdAt: String, updatedAt: String
@@ -328,7 +347,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var masterMute: Bool?
     public var masterSolo: Bool?
     public var masterMono: Bool?
-    public var masterColor: UInt32?
+    public var masterPhaseInverted: Bool?
+    public var masterColor: UInt32? = 0x414141
     public var masterFX: NativeFXSettings?
     public var masterPatch: OutputPatch?
     public var masterSecondaryPatch: OutputPatch?
@@ -341,7 +361,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     }
     public func validate() throws {
         guard projectFormatVersion == 1, minimumJarasVersion == "1.0.0", !name.isEmpty else { throw ProjectError.invalid("Versão ou nome do projeto inválido.") }
-        guard songs.reduce(0, { $0 + $1.tracks.count }) <= 400 else { throw ProjectError.invalid("A project supports at most 400 tracks") }
+        guard songs.reduce(0, { $0 + $1.tracks.count }) <= Self.maximumTrackCount else { throw ProjectError.invalid("A project supports at most 1000 tracks") }
         guard (masterVolume ?? 1).isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(masterVolume ?? 1) else { throw ProjectError.invalid("Invalid master volume") }
         guard masterColor == nil || masterColor! <= 0xffffff else { throw ProjectError.invalid("Invalid master color") }
         try masterFX?.validate()
@@ -415,6 +435,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
                     guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
+                    guard [clip.fadeIn, clip.fadeOut].allSatisfy({ $0 == nil || ($0!.isFinite && $0! >= 0) }) else { throw ProjectError.invalid("Invalid item fade") }
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
                     guard clip.startTime.isFinite, clip.duration.isFinite, clip.startTime >= 0, clip.duration > 0, clip.startTime + clip.duration <= song.duration, clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.waveform.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw ProjectError.invalid("Bloco de áudio inválido.") }
                 }
@@ -427,7 +448,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
             for marker in song.markers ?? [] {
                 if let bpm = marker.tempoBPM {
                     guard bpm.isFinite, TimelineTempo.bpmRange.contains(bpm), (1...32).contains(marker.tempoBeats ?? 4), TimelineTempo.beatUnits.contains(marker.tempoUnit ?? 4), marker.unifiedRegionID == nil, marker.sourceRegionID == nil else { throw ProjectError.invalid("Invalid tempo marker") }
-                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil { throw ProjectError.invalid("Invalid tempo marker") }
+                    if let reference = marker.tempoReferenceBPM, !reference.isFinite || !TimelineTempo.bpmRange.contains(reference) { throw ProjectError.invalid("Invalid tempo reference") }
+                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil { throw ProjectError.invalid("Invalid tempo marker") }
                 try register(marker.id)
                 guard !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       (marker.unifiedRegionID != nil || marker.name.count <= TimelineMarker.maximumNameLength), marker.color <= 0xffffff,
@@ -478,7 +500,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     }
     public static func empty(name: String) -> Project {
         let date = ISO8601DateFormatter().string(from: Date())
-        let song = Song(id: UUID(), name: name, duration: 300, bpm: 120, tracks: [], parts: [])
+        let song = Song(id: UUID(), name: name, duration: 300, bpm: 120, tracks: [], parts: [], timeSettings: ProjectTimeSettings())
         return Project(id: UUID(), name: name, createdAt: date, updatedAt: date, setlists: [Setlist(id: UUID(), name: name, songIds: [song.id])], songs: [song])
     }
     public static func demo() -> Project {

@@ -1,6 +1,179 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
+
+// One native layout for Mac and iPad: settings and geometry follow the same formulas.
+struct TeleprompterProjectionLayout<Media: View>: View {
+    let content: DAWRemoteTeleprompter
+    let fullscreen: Bool
+    let timerValue: () -> (text: String, opacity: Double, expired: Bool)
+    @ViewBuilder let media: () -> Media
+    private var settings: TeleprompterSettings { content.resolvedSettings }
+    var body: some View {
+        GeometryReader { geometry in
+            let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
+            TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
+                VStack(spacing: 3) {
+                    decorations(top: true,date: context.date,size: geometry.size)
+                    GeometryReader { area in
+                        ZStack {
+                            Color.clear
+                            if content.preview { previewGrid(size: area.size) }
+                            else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
+                        }.clipped()
+                    }
+                    decorations(top: false,date: context.date,size: geometry.size)
+                }.padding(fullscreen ? 0 : 3)
+                    .background {
+                        ZStack {
+                            Color.black
+                            if !content.preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
+            }
+        }.background(Color.black)
+    }
+    @ViewBuilder private func decorations(top: Bool, date: Date, size: CGSize) -> some View {
+        let timerHere = settings.clockEnabled && settings.clockPosition.hasSuffix(top ? "top" : "bottom")
+        let localHere = settings.localClockEnabled && (settings.clockEnabled ? timerHere : top)
+        if timerHere || localHere { clockRow(date: date,size: size,timer: timerHere,local: localHere) }
+        if settings.songNameEnabled && settings.songNamePosition == (top ? "top" : "bottom") {
+            title(content.song,color: settings.songNameColor,font: settings.songNameFontFamily,scale: settings.songNameScale)
+        }
+        if settings.queueNameEnabled && settings.queueNamePosition == (top ? "top" : "bottom") {
+            title(content.queued.isEmpty ? JarasLocalization.string("Queue is empty") : content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
+        }
+        if !content.preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
+            Text(settings.display(content.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
+                .foregroundStyle(Color(hex: settings.chordColor)).lineLimit(2).minimumScaleFactor(0.4).padding(6)
+                .frame(maxWidth: .infinity)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
+        }
+        if settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
+            GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * content.progress) }
+                .frame(height: 5).background(Color.white.opacity(0.1))
+        }
+    }
+    private func clockRow(date: Date, size: CGSize, timer: Bool, local: Bool) -> some View {
+        let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
+        let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
+        let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
+        let height = max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
+        let timerWidth = min(width,max(118,tpTimerTextWidth(font) + 36))
+        return ZStack {
+            if side && timer && local {
+                HStack(spacing: 8) {
+                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
+                    timerText(font: font,date: date).frame(maxWidth: .infinity)
+                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
+                }
+            } else {
+                if timer {
+                    timerText(font: font,date: date).frame(width: timerWidth)
+                        .frame(maxWidth: .infinity,alignment: settings.clockPosition.hasPrefix("left") ? .leading : settings.clockPosition.hasPrefix("right") ? .trailing : .center)
+                }
+                if local {
+                    let localWidth = timer ? max(0,(width-timerWidth)/2-8) : width
+                    let localFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
+                    HStack {
+                        if settings.localClockPosition == "right" { Spacer(minLength: 0) }
+                        localClock(date,font: localFont).frame(maxWidth: localWidth,alignment: settings.localClockPosition == "right" ? .trailing : .leading).clipped()
+                        if settings.localClockPosition != "right" { Spacer(minLength: 0) }
+                    }.frame(maxHeight: .infinity,alignment: settings.clockPosition.hasSuffix("bottom") ? .bottom : .top)
+                }
+            }
+        }.frame(height: height).frame(maxWidth: .infinity)
+    }
+    private func timerText(font: CGFloat,date: Date) -> some View {
+        Text(timerValue().text).opacity(timerValue().opacity).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
+            .foregroundStyle(Color(hex: timerValue().expired ? settings.clockExpiredColor : settings.clockColor)).padding(.horizontal,10).padding(.vertical,5)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 2))
+    }
+    private func localClock(_ date: Date,font: CGFloat) -> some View {
+        let values = Calendar.current.dateComponents([.hour,.minute,.second],from: date)
+        return Text(String(format: "%02d:%02d:%02d",values.hour ?? 0,values.minute ?? 0,values.second ?? 0)).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
+            .foregroundStyle(Color(hex: settings.localClockColor)).padding(.horizontal,5).padding(.vertical,5)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.localClockBorderEnabled ? border(settings.localClockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
+            .padding(.horizontal,fullscreen ? 24 : 0)
+    }
+    private func title(_ text: String,color: UInt32,font: String,scale: Double) -> some View {
+        Text(settings.display(text)).font(tpFont(font,size: 22 * scale / 100)).foregroundStyle(Color(hex: color))
+            .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity)
+    }
+    private func lyricText(size: CGSize,date: Date) -> some View {
+        let text = settings.display(content.text)
+        let lines = text.components(separatedBy: .newlines)
+        let longest = max(1,lines.map(\.count).max() ?? 1)
+        let font = max(9,min(120,min((size.width-20) / (Double(longest)*0.64),(size.height-20) / (Double(max(1,lines.count))*1.2))) * settings.textScale / 100)
+        let textWidth = min(size.width,max(20,Double(longest) * font * 0.64 + 12))
+        let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
+        let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
+        return Text(text).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
+            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6).frame(width: textWidth)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))
+            .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: alignment)
+    }
+    private func previewGrid(size: CGSize) -> some View {
+        let blocks = content.blocks
+        let columns = max(1,min(4,blocks.count))
+        let longestColumn = max(1,(blocks.count + columns - 1) / columns)
+        let mostSongs = max(1,blocks.map { $0.rows.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
+        let font = max(9,min((size.width/Double(columns)-20)/13,(size.height/Double(longestColumn)-20)/Double(mostSongs)/1.1) * settings.previewScale / 100)
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8,alignment: .top),count: columns),alignment: .leading,spacing: 8) {
+            ForEach(blocks) { block in
+                VStack(alignment: .leading,spacing: 3) {
+                    if !block.name.isEmpty {
+                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && (block.rows.reduce(0) { $0 + $1.duration }) > 0 ? " • " + tpTime(Int(ceil((block.rows.reduce(0) { $0 + $1.duration })))) : ""))
+                            .font(tpFont(settings.previewFontFamily,size: font * 1.05)).foregroundStyle(Color(hex: block.color)).lineLimit(2)
+                    }
+                    ForEach(block.rows) { song in
+                        Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
+                            .font(tpFont(settings.previewFontFamily,size: font))
+                            .foregroundStyle(Color(hex: song.color))
+                            .underline(settings.previewUnderlineEnabled).lineLimit(2)
+                    }
+                }.frame(maxWidth: .infinity,alignment: .leading).padding(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
+            }
+        }.padding(6).frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .topLeading)
+    }
+    private func border(_ color: UInt32,rgb: Bool,date: Date) -> Color {
+        rgb ? Color(hue: date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6)/6,saturation: 0.9,brightness: 1) : Color(hex: color)
+    }
+}
+
+private func tpFont(_ name: String,size: CGFloat) -> Font {
+    let names = ["arial":"Arial-BoldMT","segoe":"SegoeUI-Bold","bahnschrift":"Bahnschrift","verdana":"Verdana-Bold","tahoma":"Tahoma-Bold","georgia":"Georgia-Bold","trebuchet":"TrebuchetMS-Bold","impact":"Impact","mono":"CourierNewPS-BoldMT"]
+    if let font = names[name], tpFontAvailable(font, size: size) { return .custom(font,size: size) }
+    return .system(size: size,weight: .bold,design: name == "mono" ? .monospaced : .default)
+}
+private func tpTime(_ seconds: Int,spaced: Bool = false) -> String {
+    let value = abs(seconds), separator = spaced ? " : " : ":"
+    let time = String(format: "%02d%@%02d%@%02d",value/3600,separator,value/60%60,separator,value%60)
+    return (seconds < 0 ? "−" : "") + time
+}
+private func tpFontAvailable(_ name: String, size: CGFloat) -> Bool {
+    #if os(macOS)
+    return NSFont(name: name, size: size) != nil
+    #else
+    return UIFont(name: name, size: size) != nil
+    #endif
+}
+private func tpTimerTextWidth(_ size: CGFloat) -> CGFloat {
+    #if os(macOS)
+    let font = NSFont(name: "Arial-BoldMT", size: size) ?? NSFont.boldSystemFont(ofSize: size)
+    #else
+    let font = UIFont(name: "Arial-BoldMT", size: size) ?? UIFont.boldSystemFont(ofSize: size)
+    #endif
+    return ("-00 : 00 : 00" as NSString).size(withAttributes: [.font: font]).width
+}
+
+#if os(macOS)
+import AppKit
 import Combine
 import UniformTypeIdentifiers
 
@@ -322,156 +495,27 @@ private final class TeleprompterRightClickView: RightClickTargetView { override 
 
 private struct TeleprompterProjectionView: View {
     let index: Int
-
     @ObservedObject var display: TPProjectionDisplay
     @ObservedObject var preferences: TeleprompterPreferences
     @ObservedObject var video: VideoPlayback
     @ObservedObject private var timer = TeleprompterTimerController.shared
     @AppStorage("jaras.language") private var language = "en"
-    private var settings: TeleprompterSettings { preferences.settings }
-    private var data: TPProjectionData { display.data }
+    private var content: DAWRemoteTeleprompter {
+        let data = display.data, settings = preferences.settings
+        let blocks = Array(data.preview.dropFirst(display.previewPage * 4).prefix(4)).map { block in
+            DAWRemoteTeleprompter.Block(id: UUID(uuidString: block.id)!, name: block.name, color: block.color, rows: block.songs.map { song in
+                .init(id: song.id, name: song.name, color: song.id == data.currentRegion ? settings.highlightColor : song.id == data.queuedRegion ? settings.queueNameColor : song.color, duration: song.duration)
+            })
+        }
+        return .init(index: index, text: data.text, chords: data.chords, song: data.song, queued: data.queued,
+                     progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings)
+    }
     var body: some View {
-        GeometryReader { geometry in
-            let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
-            TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
-                VStack(spacing: 3) {
-                    decorations(top: true,date: context.date,size: geometry.size)
-                    GeometryReader { content in
-                        ZStack {
-                            Color.clear
-                            if display.previewActive { previewGrid(size: content.size) }
-                            else if !data.text.isEmpty { lyricText(size: content.size,date: context.date) }
-                        }.clipped()
-                    }
-                    decorations(top: false,date: context.date,size: geometry.size)
-                }.padding(display.fullscreen ? 0 : 3)
-                    .background {
-                        ZStack {
-                            Color.black
-                            if !display.previewActive { ProjectionMediaSurface(controller: video) }
-                        }
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
-            }
-        }.background(Color.black).overlay { TPNoticeOverlay(index: index) }.environment(\.locale,Locale(identifier: language))
+        TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
+            timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
+            media: { ProjectionMediaSurface(controller: video) })
+            .overlay { TPNoticeOverlay(index: index) }.environment(\.locale, Locale(identifier: language))
     }
-    @ViewBuilder private func decorations(top: Bool, date: Date, size: CGSize) -> some View {
-        let timerHere = settings.clockEnabled && settings.clockPosition.hasSuffix(top ? "top" : "bottom")
-        let localHere = settings.localClockEnabled && (settings.clockEnabled ? timerHere : top)
-        if timerHere || localHere { clockRow(date: date,size: size,timer: timerHere,local: localHere) }
-        if settings.songNameEnabled && settings.songNamePosition == (top ? "top" : "bottom") {
-            title(data.song,color: settings.songNameColor,font: settings.songNameFontFamily,scale: settings.songNameScale)
-        }
-        if settings.queueNameEnabled && settings.queueNamePosition == (top ? "top" : "bottom") {
-            title(data.queued.isEmpty ? JarasLocalization.string("Queue is empty") : data.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
-        }
-        if !display.previewActive && settings.chordsEnabled && !data.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
-            Text(settings.display(data.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
-                .foregroundStyle(Color(hex: settings.chordColor)).lineLimit(2).minimumScaleFactor(0.4).padding(6)
-                .frame(maxWidth: .infinity)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
-        }
-        if settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
-            GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * data.progress) }
-                .frame(height: 5).background(Color.white.opacity(0.1))
-        }
-    }
-    private func clockRow(date: Date, size: CGSize, timer: Bool, local: Bool) -> some View {
-        let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
-        let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
-        let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
-        let height = max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
-        let timerWidth = min(width,max(118,("-00 : 00 : 00" as NSString).size(withAttributes: [.font: NSFont(name: "Arial-BoldMT",size: font) ?? NSFont.boldSystemFont(ofSize: font)]).width + 36))
-        return ZStack {
-            if side && timer && local {
-                HStack(spacing: 8) {
-                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
-                    timerText(font: font,date: date).frame(maxWidth: .infinity)
-                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
-                }
-            } else {
-                if timer {
-                    timerText(font: font,date: date).frame(width: timerWidth)
-                        .frame(maxWidth: .infinity,alignment: settings.clockPosition.hasPrefix("left") ? .leading : settings.clockPosition.hasPrefix("right") ? .trailing : .center)
-                }
-                if local {
-                    let localWidth = timer ? max(0,(width-timerWidth)/2-8) : width
-                    let localFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
-                    HStack {
-                        if settings.localClockPosition == "right" { Spacer(minLength: 0) }
-                        localClock(date,font: localFont).frame(maxWidth: localWidth,alignment: settings.localClockPosition == "right" ? .trailing : .leading).clipped()
-                        if settings.localClockPosition != "right" { Spacer(minLength: 0) }
-                    }.frame(maxHeight: .infinity,alignment: settings.clockPosition.hasSuffix("bottom") ? .bottom : .top)
-                }
-            }
-        }.frame(height: height).frame(maxWidth: .infinity)
-    }
-    private func timerText(font: CGFloat,date: Date) -> some View {
-        Text(timer.displayText(spaced: true)).opacity(timer.displayOpacity()).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
-            .foregroundStyle(timer.expired() ? Color.red : Color(hex: settings.clockColor)).padding(.horizontal,10).padding(.vertical,5)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 2))
-    }
-    private func localClock(_ date: Date,font: CGFloat) -> some View {
-        let values = Calendar.current.dateComponents([.hour,.minute,.second],from: date)
-        return Text(String(format: "%02d:%02d:%02d",values.hour ?? 0,values.minute ?? 0,values.second ?? 0)).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
-            .foregroundStyle(Color(hex: settings.localClockColor)).padding(.horizontal,5).padding(.vertical,5)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.localClockBorderEnabled ? border(settings.localClockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
-            .padding(.horizontal,display.fullscreen ? 24 : 0)
-    }
-    private func title(_ text: String,color: UInt32,font: String,scale: Double) -> some View {
-        Text(settings.display(text)).font(tpFont(font,size: 22 * scale / 100)).foregroundStyle(Color(hex: color))
-            .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity)
-    }
-    private func lyricText(size: CGSize,date: Date) -> some View {
-        let text = settings.display(data.text)
-        let lines = text.components(separatedBy: .newlines)
-        let longest = max(1,lines.map(\.count).max() ?? 1)
-        let font = max(9,min(120,min((size.width-20) / (Double(longest)*0.64),(size.height-20) / (Double(max(1,lines.count))*1.2))) * settings.textScale / 100)
-        let textWidth = min(size.width,max(20,Double(longest) * font * 0.64 + 12))
-        let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
-        let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
-        return Text(text).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
-            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6).frame(width: textWidth)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))
-            .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: alignment)
-    }
-    private func previewGrid(size: CGSize) -> some View {
-        let blocks = Array(data.preview.dropFirst(display.previewPage * 4).prefix(4))
-        let columns = max(1,min(4,blocks.count))
-        let longestColumn = max(1,(blocks.count + columns - 1) / columns)
-        let mostSongs = max(1,blocks.map { $0.songs.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
-        let font = max(9,min((size.width/Double(columns)-20)/13,(size.height/Double(longestColumn)-20)/Double(mostSongs)/1.1) * settings.previewScale / 100)
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8,alignment: .top),count: columns),alignment: .leading,spacing: 8) {
-            ForEach(blocks) { block in
-                VStack(alignment: .leading,spacing: 3) {
-                    if !block.name.isEmpty {
-                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && block.duration > 0 ? " • " + tpTime(Int(ceil(block.duration))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font * 1.05)).foregroundStyle(Color(hex: block.color)).lineLimit(2)
-                    }
-                    ForEach(block.songs) { song in
-                        Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font))
-                            .foregroundStyle(Color(hex: song.id == data.currentRegion ? settings.highlightColor : song.id == data.queuedRegion ? settings.queueNameColor : song.color))
-                            .underline(settings.previewUnderlineEnabled).lineLimit(2)
-                    }
-                }.frame(maxWidth: .infinity,alignment: .leading).padding(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
-            }
-        }.padding(6).frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .topLeading)
-    }
-    private func border(_ color: UInt32,rgb: Bool,date: Date) -> Color {
-        rgb ? Color(hue: date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6)/6,saturation: 0.9,brightness: 1) : Color(hex: color)
-    }
-}
-private func tpFont(_ name: String,size: CGFloat) -> Font {
-    let names = ["arial":"Arial-BoldMT","segoe":"SegoeUI-Bold","bahnschrift":"Bahnschrift","verdana":"Verdana-Bold","tahoma":"Tahoma-Bold","georgia":"Georgia-Bold","trebuchet":"TrebuchetMS-Bold","impact":"Impact","mono":"CourierNewPS-BoldMT"]
-    if let font = names[name], NSFont(name: font,size: size) != nil { return .custom(font,size: size) }
-    return .system(size: size,weight: .bold,design: name == "mono" ? .monospaced : .default)
-}
-private func tpTime(_ seconds: Int,spaced: Bool = false) -> String {
-    let value = abs(seconds), separator = spaced ? " : " : ":"
-    let time = String(format: "%02d%@%02d%@%02d",value/3600,separator,value/60%60,separator,value%60)
-    return (seconds < 0 ? "−" : "") + time
 }
 #else
 @MainActor final class TeleprompterWindow: ObservableObject {
@@ -578,7 +622,12 @@ struct TPNoticeAppearance: Codable {
 }
 struct TPNoticeButton: View {
     var body: some View {
-        Button("Messages") { TPNoticeController.shared.open() }
+        Button { TPNoticeController.shared.open() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "text.bubble")
+                Text("Messages")
+            }
+        }
             .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height))
     }
 }

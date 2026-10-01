@@ -282,9 +282,12 @@ public struct ProjectEditHistory {
     public var canUndo: Bool { !past.isEmpty }
     public var canRedo: Bool { !future.isEmpty }
     public init(_ project: Project) { baseline = project }
-    public mutating func record(_ project: Project) {
+    public mutating func record(_ project: Project, preservingMediaStorage: Bool = false) {
         guard project != baseline else { return }
         past.append(baseline); if past.count > 100 { past.removeFirst() }
+        // Mixer controls already retain immutable clip/waveform storage.
+        // Preserve that storage directly instead of visiting every project item.
+        if preservingMediaStorage { baseline = project; future.removeAll(); return }
         var compact = project
         let previous = Dictionary(uniqueKeysWithValues: baseline.songs.flatMap(\.tracks).flatMap(\.clips).map { ($0.id, $0) })
         for song in compact.songs.indices {

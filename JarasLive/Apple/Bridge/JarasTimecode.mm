@@ -87,7 +87,7 @@ struct TimecodeSignal {
     return self;
 }
 - (AVAudioSourceNode*)node { return _node; }
-- (void)setGain:(float)gain { _signal->gain.store(std::max(0.f, std::min(4.f, gain)), std::memory_order_relaxed); }
+- (void)setGain:(float)gain { _signal->gain.store(std::max(-4.f, std::min(4.f, gain)), std::memory_order_relaxed); }
 - (float)takePeak { return _signal->peak.exchange(0,std::memory_order_relaxed); }
 - (void)send:(const Byte*)bytes length:(UInt16)length at:(MIDITimeStamp)timestamp {
     MIDIPacketList list; auto packet=MIDIPacketListInit(&list);
@@ -163,9 +163,9 @@ struct MetronomeSignal {
     std::atomic<float> gainA{1}, gainB{1};
     float renderedA=1, renderedB=1;
     std::vector<std::unique_ptr<MetronomeProgram>> programs;
-    std::atomic<double> position{0}, loopStart{0}, loopEnd{0};
+    std::atomic<double> position{0}, loopStart{0}, loopEnd{0}, referenceSample{NAN};
     std::atomic<uint64_t> host{0}, generation{0};
-    std::atomic<bool> running{false};
+    std::atomic<bool> running{false}, enabled{true};
     uint64_t renderedGeneration = ~uint64_t(0);
     double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
     double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
@@ -192,14 +192,16 @@ struct MetronomeSignal {
         MetronomeProgram* p;
         do { p=program.load(); reading.store(p); } while(p!=program.load());
         const auto version=generation.load(std::memory_order_acquire);
-        const bool active=running.load();
+        const bool active=running.load() && enabled.load(std::memory_order_acquire);
         if(!active && gain==0) {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
             reading.store(nullptr); return;
         }
         if(renderedGeneration!=version || time->mSampleTime<previousSample) {
             renderedGeneration=version; anchorSample=time->mSampleTime;
-            anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
+            const double reference=referenceSample.load();
+            if(std::isfinite(reference)) { anchorSample=reference; anchorPosition=position.load(); }
+            else anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
             previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
         }
         previousSample=time->mSampleTime;
@@ -262,12 +264,13 @@ struct MetronomeSignal {
     if(b.length) value->b.assign(pb,pb+b.length/sizeof(float));
     _signal->publish(std::move(value));
 }
+- (void)setEnabled:(BOOL)enabled { _signal->enabled.store(enabled, std::memory_order_release); }
 - (void)setGainA:(float)a gainB:(float)b { _signal->gainA.store(a); _signal->gainB.store(b); }
-- (void)configurePosition:(double)position hostTime:(uint64_t)host running:(BOOL)running loopStart:(double)first loopEnd:(double)last {
+- (void)configurePosition:(double)position hostTime:(uint64_t)host running:(BOOL)running loopStart:(double)first loopEnd:(double)last sampleTime:(double)sampleTime {
     _signal->loopStart.store(first); _signal->loopEnd.store(last);
     const bool wasRunning=_signal->running.load();
     if(wasRunning!=bool(running) || std::abs(_signal->wrap(_signal->clock(host))-position)>0.06) {
-        _signal->position.store(position); _signal->host.store(host);
+        _signal->position.store(position); _signal->host.store(host); _signal->referenceSample.store(sampleTime);
         _signal->generation.fetch_add(1,std::memory_order_release);
     }
     _signal->running.store(running);

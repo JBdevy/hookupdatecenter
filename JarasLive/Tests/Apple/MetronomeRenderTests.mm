@@ -48,5 +48,18 @@ int main() {
         assert(std::abs(double(beats[1])/rate-1)<2/rate && std::abs(double(beats[2])/rate-2)<2/rate);
         assert(std::abs(samples[beats[2]+size_t(rate*0.015)]-0.2f*std::pow(10.,6./20))<0.0001);
     }
+    {
+        MetronomeSignal signal(48000); signal.host=1000000; signal.running=true;
+        auto program=std::make_unique<MetronomeProgram>(); program->sections={{0,120,4,4}};
+        program->a.assign(1680,0.2f); program->b.assign(1680,0.2f);
+        signal.publish(std::move(program));
+        render(signal,48000,0.01);
+        signal.enabled=false;
+        auto disabled=render(signal,48000,1.1);
+        for(size_t i=200;i<disabled.size();++i) assert(disabled[i]==0);
+        signal.enabled=true;
+        const auto enabled=render(signal,48000,1.1);
+        assert(!onsets(enabled).empty());
+    }
     std::cout<<"METRONOME_PCM_OK 44100/48000 tempo changes, accents, A/B modes, loop, gain +6dB, mute, stop\n";
 }

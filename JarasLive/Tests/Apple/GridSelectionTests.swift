@@ -42,7 +42,9 @@ var seeks: [CGFloat] = []
 var freeSeeks: [Bool] = []
 grid.seek = { x,free in seeks.append(x); freeSeeks.append(free) }
 for x in [320.0,500.0,310.0,700.0] {
+    let before = seeks.count
     precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: x,y: 220))))
+    precondition(seeks.count == before, "blank grid presses cannot move the cursor before release")
     precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: x,y: 220))))
 }
 precondition(seeks == [320,500,310,700], "every blank grid click reaches seek exactly once")
@@ -55,11 +57,32 @@ var moved: [UUID] = []
 for modifiers: NSEvent.ModifierFlags in [[], .shift] {
     let before = seeks.count
     precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 130,y: 122), modifiers: modifiers)))
+    precondition(seeks.count == before, "item presses must leave the cursor unchanged until release")
     precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 130,y: 122), modifiers: modifiers)))
     precondition(seeks.count == before + 1 && seeks.last == 130, "item body clicks seek exactly once at the clicked position")
     precondition(freeSeeks.last == modifiers.contains(.shift), "item clicks preserve Shift free positioning")
     precondition(grid.selected == [first], "seeking from an item keeps item selection")
 }
+let seeksBeforeCancelledGestures = seeks.count
+for point in [CGPoint(x: 320, y: 220), CGPoint(x: 130, y: 122), CGPoint(x: 101, y: 122)] {
+    _ = grid.handlePointerEvent(event(.leftMouseDown, point))
+    _ = grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: point.x + 12, y: point.y)))
+    _ = grid.handlePointerEvent(event(.leftMouseDragged, point))
+    _ = grid.handlePointerEvent(event(.leftMouseUp, point))
+    _ = grid.handlePointerEvent(event(.leftMouseDown, point))
+    NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
+    _ = grid.handlePointerEvent(event(.leftMouseUp, point))
+    _ = grid.handlePointerEvent(event(.leftMouseDown, point))
+    NativeTimelineInputGate.shared.setBlocked(true, for: window)
+    NativeTimelineInputGate.shared.setBlocked(false, for: window)
+    _ = grid.handlePointerEvent(event(.leftMouseUp, point))
+}
+precondition(seeks.count == seeksBeforeCancelledGestures,
+             "empty/item/edge drags, return-to-origin, wheel panning, and modal cancellation never seek")
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 320, y: 220)))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 805, y: 220)))
+precondition(seeks.count == seeksBeforeCancelledGestures, "release outside the grid cancels the click")
+print("GRID_SEEK_ONLY_ON_RELEASE_DRAG_SCROLL_MODAL_AND_OUTSIDE_CANCEL_OK")
 grid.move = { id,_,_,_ in moved.append(id) }
 precondition(grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 130,y: 122))))
 precondition(grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 250,y: 172))))
@@ -152,11 +175,34 @@ for points in [(CGPoint(x: 102,y: 130),CGPoint(x: 80,y: 130)),(CGPoint(x: 218,y:
     _ = grid.handlePointerEvent(event(.leftMouseUp,points.1))
 }
 precondition(resized.count == 4 && resized[0].0 && !resized[2].0 && resized[3].1)
+precondition(grid.items[0].muteRect!.minX - grid.items[0].rect.minX == 2,
+             "header controls start near the left edge with the repeat notch below")
+let edgeSeeksBefore = seeks.count
+for x in [101.0, 219.0] {
+    _ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: x, y: 130)))
+    _ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: x, y: 130)))
+    precondition(seeks.last == x, "stationary edge clicks seek without trimming")
+    precondition(grid.pointerCursor(at: CGPoint(x: x, y: 130)) === NSCursor.resizeLeftRight,
+                 "the same edge target that trims must always show the resize cursor")
+}
+precondition(seeks.count == edgeSeeksBefore + 2)
+precondition(grid.pointerCursor(at: CGPoint(x: grid.items[0].muteRect!.midX, y: grid.items[0].muteRect!.midY)) === NSCursor.pointingHand)
+let edgeResizesBefore = resized.count
+for points in [(CGPoint(x: 101,y: 106),CGPoint(x: 80,y: 106)),
+               (CGPoint(x: 95,y: 106),CGPoint(x: 80,y: 106)),
+               (CGPoint(x: 225,y: 106),CGPoint(x: 240,y: 106))] {
+    _ = grid.handlePointerEvent(event(.leftMouseDown, points.0))
+    _ = grid.handlePointerEvent(event(.leftMouseDragged, points.1))
+    _ = grid.handlePointerEvent(event(.leftMouseUp, points.1))
+}
+precondition(resized.count == edgeResizesBefore + 6 && resized[edgeResizesBefore].0 && !resized.last!.0,
+             "item edges resize from the header and from a narrow grip just outside the item")
 var gains: [Double] = []
 grid.gain = { _,value,_ in gains.append(value) }
-_ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 147,y: 106)))
-_ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 147,y: 226)))
-_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: 147,y: 226)))
+let gainX = grid.items[0].gainKnobRect!.midX
+_ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: gainX,y: 106)))
+_ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: gainX,y: 226)))
+_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: gainX,y: 226)))
 precondition(gains.count == 2 && gains.last == 0, "gain knob reaches silence without moving the item")
 print("GRID_ITEM_EDGES_AND_GAIN_KNOB_GESTURE_OWNERSHIP_OK")
 
@@ -167,11 +213,11 @@ var gainMotions: [(UUID,Double,Bool)] = []
 var unexpectedMoves = 0
 grid.gain = { gainMotions.append(($0,$1,$2)) }
 grid.move = { _,_,_,_ in unexpectedMoves += 1 }
-_ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 147,y: 106)))
+_ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: gainX,y: 106)))
 for step in 1...100 {
-    _ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: 147,y: 106+Double(step))))
+    _ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: gainX,y: 106+Double(step))))
 }
-_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: 147,y: 206)))
+_ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: gainX,y: 206)))
 precondition(!gainMotions.isEmpty && gainMotions.allSatisfy { $0.0 == first }, "gain ownership stays on the original clip while crossing another item")
 precondition(gainMotions.filter { $0.2 }.count == 1 && unexpectedMoves == 0, "gain commits once without moving clips")
 precondition(gainMotions.last!.1 == 0, "continuous gain motion reaches silence")
@@ -313,3 +359,148 @@ let boostedItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 
 precondition(abs(boostedItem.draggingGain(by: -120) - pow(10, 24.0 / 20)) < 0.000001, "item knob reaches +24 dB")
 precondition(GridSelectionItem(id: UUID(), rect: .zero, gain: pow(10,24.0/20)).gainPosition == 1)
 print("GRID_ITEM_GAIN_PLUS24_DB_AND_SILENCE_OK")
+
+// A grid click must retire text-editing/Setlist focus before keyboard routing.
+let staleEditor = NSTextField(frame: NSRect(x: 0, y: 0, width: 30, height: 20))
+grid.addSubview(staleEditor)
+window.makeFirstResponder(staleEditor)
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 150, y: 130)))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 150, y: 130)))
+precondition(window.firstResponder === grid && window.firstResponder is any TimelineGridKeyboardTarget, "Item clicks claim keyboard focus for Delete even after editing text")
+window.makeFirstResponder(staleEditor)
+drag(CGPoint(x: 90, y: 90), CGPoint(x: 250, y: 180))
+precondition(window.firstResponder === grid, "Marquee selection claims Delete focus as well")
+staleEditor.removeFromSuperview()
+print("GRID_ITEM_AND_MARQUEE_SELECTION_CLAIM_DELETE_FOCUS_OK")
+
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 150, y: 130)))
+precondition(grid.heldItemGuide != nil, "item boundary guides appear on press, before drag threshold")
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 150, y: 130)))
+precondition(grid.heldItemGuide == nil, "release removes both guides")
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 150, y: 130)))
+grid.timelineInputGateChanged(blocked: true)
+precondition(grid.heldItemGuide == nil, "modal cancellation removes guides without waiting for mouse-up")
+print("GRID_ITEM_GUIDES_PRESS_RELEASE_AND_MODAL_CANCELLATION_OK")
+
+let longHeader = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 10000, height: 60), name: "LONG ITEM")
+let nameWidth = ("LONG ITEM" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 9, weight: .semibold)]).width
+for left in [0.0, 500.0, 5000.0, 9800.0] {
+    let viewport = CGRect(x: left, y: 0, width: 800, height: 600)
+    let displayed = longHeader.visibleLeftHeader(in: viewport, titleWidth: nameWidth)
+    let visible = longHeader.rect.intersection(viewport)
+    precondition(abs(displayed.headerRect.minX - visible.minX) < 0.001)
+    precondition(displayed.headerRect.minX >= visible.minX && displayed.headerRect.maxX <= visible.maxX)
+    precondition(displayed.rect == longHeader.rect, "repositioning controls never changes the item's trim edges")
+}
+grid.items = [longHeader]; grid.timelineOrigin = CGPoint(x: 5000, y: 0)
+let visibleHeader = longHeader.visibleLeftHeader(in: CGRect(x: 5000, y: 0, width: 800, height: 600), titleWidth: nameWidth)
+var visibleMuteCount = 0
+grid.mute = { id in precondition(id == longHeader.id); visibleMuteCount += 1 }
+let mutePoint = CGPoint(x: visibleHeader.muteRect!.midX - 5000, y: visibleHeader.muteRect!.midY)
+_ = grid.handlePointerEvent(event(.leftMouseDown, mutePoint))
+_ = grid.handlePointerEvent(event(.leftMouseUp, mutePoint))
+precondition(visibleMuteCount == 1, "left-pinned controls remain clickable with the original item start offscreen")
+print("GRID_VISIBLE_ITEM_HEADER_LEFT_SCROLL_AND_CLICK_ALIGNMENT_OK")
+
+// Fade handles sit below the title/control strip; the remaining edge still trims.
+grid.timelineOrigin = .zero
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 400, height: 80), duration: 10)]
+let fadeLayout = grid.items[0]
+for side in [true, false] {
+    precondition(fadeLayout.fadeHandleRect(side)!.minY == 114, "fade grip must sit below the control strip")
+}
+precondition(fadeLayout.fadeSide(at: CGPoint(x: 102, y: 102)) == nil, "title/controls must never initiate fade")
+precondition(fadeLayout.fadeSide(at: CGPoint(x: 498, y: 102)) == nil, "right title edge must never initiate fade")
+var fades: [(Bool, Double, Bool)] = []
+grid.fade = { _, left, seconds, ended in fades.append((left, seconds, ended)) }
+for pair in [(CGPoint(x: 102, y: 116), CGPoint(x: 502, y: 116)),
+             (CGPoint(x: 498, y: 116), CGPoint(x: 98, y: 116))] {
+    _ = grid.handlePointerEvent(event(.leftMouseDown, pair.0))
+    _ = grid.handlePointerEvent(event(.leftMouseDragged, pair.1))
+    _ = grid.handlePointerEvent(event(.leftMouseUp, pair.1))
+}
+precondition(fades.count == 4 && fades[0].0 && !fades[2].0 && fades.allSatisfy { $0.1 == 10 }, "both fades can span the entire expanded item")
+precondition(fades[1].2 && fades[3].2, "release commits once per fade gesture")
+precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 116)) === NSCursor.crosshair)
+precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 130)) === NSCursor.resizeLeftRight)
+grid.updateSelection([])
+precondition(grid.hitTest(grid.convert(CGPoint(x: 102, y: 130), to: grid.superview)) === grid,
+             "the grid body must own native cursor updates rather than falling through to the hosting view")
+precondition(grid.hitTest(grid.convert(CGPoint(x: 102, y: 40), to: grid.superview)) == nil,
+             "ruler input remains outside the body hit target")
+grid.mouseEntered(with: event(.mouseMoved, CGPoint(x: 102, y: 130)))
+precondition(NSCursor.current == NSCursor.resizeLeftRight && grid.selected.isEmpty,
+             "unselected item edges expose a native resize cursor immediately")
+grid.resetCursorRects()
+grid.cursorUpdate(with: event(.mouseMoved, CGPoint(x: 498, y: 130)))
+precondition(NSCursor.current == NSCursor.resizeLeftRight,
+             "right edges keep the resize cursor after AppKit cursor-rect resets")
+grid.mouseMoved(with: event(.mouseMoved, CGPoint(x: 102, y: 116)))
+precondition(NSCursor.current == NSCursor.crosshair,
+             "below-header fades use their distinct cursor instead of the trim cursor")
+print("GRID_FADE_CORNERS_FULL_ITEM_LENGTH_PREVIEW_COMMIT_AND_EDGE_CURSOR_OK")
+
+// The same immutable scene must support consecutive zoom scales without
+// rebuilding all item rectangles, including fixed-width minimum-size items.
+let indexedID = UUID(), microscopicID = UUID()
+let timedItems = [
+    GridSelectionItem(id: indexedID, rect: CGRect(x: 10, y: 100, width: 40, height: 80), name: "INDEXED ITEM", duration: 40),
+    GridSelectionItem(id: microscopicID, rect: CGRect(x: 60, y: 220, width: 0.00001, height: 58), duration: 0.00001)
+]
+let indexedLayout = GridSelectionLayout(items: timedItems, timeCoordinates: true)
+for scale in [1.0, 8.0, 12.0, 0.001, 20000.0] {
+    grid.updateLayout(indexedLayout, pixelsPerSecond: scale)
+    let projected = indexedLayout.projectedItem(at: 0, pixelsPerSecond: scale)
+    precondition(projected.rect == CGRect(x: 10 * scale + 1, y: 100, width: max(2, 40 * scale - 2), height: 80))
+    let tiny = indexedLayout.projectedItem(at: 1, pixelsPerSecond: scale)
+    let tip = CGRect(x: tiny.rect.maxX - 0.1, y: 230, width: 0.01, height: 1)
+    precondition(indexedLayout.candidates(in: tip, pixelsPerSecond: scale).contains(1), "culling includes the fixed minimum pixel width even far beyond the source duration")
+}
+var indexedResizes: [(Bool, CGFloat, Bool)] = []
+grid.resize = { id, left, delta, ended in precondition(id == indexedID); indexedResizes.append((left, delta, ended)) }
+grid.updateLayout(indexedLayout, pixelsPerSecond: 12)
+precondition(grid.pointerCursor(at: CGPoint(x: 121, y: 140)) === NSCursor.resizeLeftRight)
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 121, y: 140)))
+_ = grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 141, y: 140)))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 141, y: 140)))
+precondition(indexedResizes.count == 2 && indexedResizes.allSatisfy { $0.0 && $0.1 == 20 } && indexedResizes.last!.2,
+             "trim hit testing and deltas use the latest zoom while metadata remains shared")
+grid.updateLayout(indexedLayout, pixelsPerSecond: 8)
+drag(CGPoint(x: 75, y: 95), CGPoint(x: 402, y: 185))
+precondition(grid.selected == [indexedID], "marquee after a zoom uses projected item bounds")
+grid.timelineOrigin = CGPoint(x: 160, y: 0)
+let indexedVisible = indexedLayout.projectedItem(at: 0, pixelsPerSecond: 8)
+    .visibleLeftHeader(in: CGRect(x: 160, y: 0, width: 800, height: 600), titleWidth: 100)
+var indexedMuteCount = 0
+grid.mute = { id in precondition(id == indexedID); indexedMuteCount += 1 }
+let indexedMutePoint = CGPoint(x: indexedVisible.muteRect!.midX - 160, y: indexedVisible.muteRect!.midY)
+_ = grid.handlePointerEvent(event(.leftMouseDown, indexedMutePoint))
+_ = grid.handlePointerEvent(event(.leftMouseUp, indexedMutePoint))
+precondition(indexedMuteCount == 1, "the indexed long item's controls stay pinned and clickable after a native viewport move")
+grid.timelineOrigin = .zero
+print("GRID_INDEXED_ITEM_ZOOM_MARQUEE_TRIM_MINIMUM_WIDTH_AND_PINNED_CONTROLS_OK")
+
+// Compare the spatial index with the brute-force geometry oracle across
+// overlapping clips, unsorted source order, different row heights and zooms.
+var indexedSources: [GridSelectionItem] = []
+for row in 0..<18 {
+    for column in (0..<35).reversed() {
+        indexedSources.append(GridSelectionItem(id: UUID(), rect: CGRect(x: Double(column) * 4.3,
+            y: Double(row) * 37, width: column % 5 == 0 ? 30 : 3, height: 28 + Double(column % 4) * 6)))
+    }
+}
+let indexedScene = GridSelectionLayout(items: indexedSources, timeCoordinates: true)
+for scale in [0.003, 0.25, 12.3, 1000.0] {
+    for step in 0..<35 {
+        let area = CGRect(x: Double(step) * 1.3 * scale, y: Double(step) * 11.5, width: 51, height: 63)
+        let actual = indexedScene.candidates(in: area, pixelsPerSecond: scale).filter {
+            indexedScene.projectedItem(at: $0, pixelsPerSecond: scale).rect.intersects(area)
+        }
+        let expected = indexedSources.indices.filter {
+            indexedScene.projectedItem(at: $0, pixelsPerSecond: scale).rect.intersects(area)
+        }
+        precondition(Set(actual) == Set(expected), "the index cannot cull a visible or selectable item")
+        precondition(actual == expected, "overlapping items keep their original per-row interaction order")
+    }
+}
+print("GRID_SPATIAL_INDEX_MATCHES_BRUTE_FORCE_OVERLAP_AND_ZOOM_ORACLE_OK")

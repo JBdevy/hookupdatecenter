@@ -36,8 +36,13 @@ int main(int argc,char**argv){@autoreleasepool{
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
     expectMetadataSnapshot(core,snapshot);
     expect([core executeCommand:@"solo" target:nil value:0 error:&error], "Master solo is a native mixer command");
+    NSString* phaseTrack=original[@"songs"][0][@"tracks"][0][@"id"];
+    expect([core executeCommand:@"phase" target:nil value:0 error:&error],"Master phase command");
+    expect([core executeCommand:@"phase" target:phaseTrack value:0 error:&error],"track phase command");
+
     expect([core editMasterColor:0x12ab34 error:&error], "edit Master color incrementally");
     NSDictionary* masterEdited=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(![masterEdited[@"project"][@"masterPhaseInverted"] boolValue] && [masterEdited[@"project"][@"songs"][0][@"tracks"][0][@"phaseInverted"] boolValue],"phase is available only on tracks");
     expect([masterEdited[@"project"][@"masterSolo"] boolValue] && [masterEdited[@"project"][@"masterColor"] unsignedIntValue]==0x12ab34, "Master solo and color persist in snapshots");
     expect(equalJSON(snapshot[@"transport"],masterEdited[@"transport"]), "Master mixer changes preserve both transport heads");
     NSData* masterSaved=[NSJSONSerialization dataWithJSONObject:masterEdited[@"project"] options:0 error:&error];
@@ -151,7 +156,11 @@ int main(int argc,char**argv){@autoreleasepool{
         expect([core setTempoMarker:tempoID position:8 bpm:180 beats:3 unit:8 timebase:mode error:&error], "edit marker-specific timebase incrementally");
         tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
         expect([[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject][@"tempoTimebase"] isEqual:mode], "marker timebase survives bridge snapshot");
-        expect(equalJSON(snapshot[@"transport"],tempoSnapshot[@"transport"]), "timebase edit preserves playback heads");
+        NSMutableDictionary* expectedTransport=[NSJSONSerialization JSONObjectWithData:[NSJSONSerialization dataWithJSONObject:snapshot[@"transport"] options:0 error:&error] options:NSJSONReadingMutableContainers error:&error];
+        // Relative tempo resizes occupied spans after 8 s, keeping the 8 s gap.
+        // The main head at 2 s stays put; the secondary head follows the music.
+        expectedTransport[@"subPlay"][@"position"] = [mode isEqual:@"relative"] ? @19.2 : @22;
+        expect(equalJSON(expectedTransport,tempoSnapshot[@"transport"]), "timebase edit keeps playing state and retimes the secondary head with occupied audio");
     }
     for (double position : {8.137875, 7.932125}) {
         error=nil;
@@ -164,11 +173,29 @@ int main(int argc,char**argv){@autoreleasepool{
     expect(![core setTempoMarker:tempoID position:8 bpm:180 beats:3 unit:8 timebase:@"invalid" error:&error], "reject invalid marker timebase");
     badTempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(tempoSnapshot,badTempoSnapshot), "invalid marker timebase is atomic");
+    NSMutableDictionary* detectedTempo = [[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject] mutableCopy];
+    detectedTempo[@"tempoReferenceBPM"] = @120;
+    NSData* detectedBatch = [NSJSONSerialization dataWithJSONObject:@[detectedTempo] options:0 error:&error];
+    expect([core setTempoMarkers:detectedBatch error:&error], "detected marker batch accepts original tempo reference");
+    expect([core setTempoMarker:tempoID position:8 bpm:240 beats:4 unit:4 timebase:@"global" error:&error], "detected BPM remains editable");
+    tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    NSDictionary* editedDetected = [tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject];
+    expect([editedDetected[@"tempoReferenceBPM"] doubleValue] == 120, "BPM edit retains original reference through native bridge");
     NSData* tempoData=[NSJSONSerialization dataWithJSONObject:tempoSnapshot[@"project"] options:0 error:&error];
     JarasCoreBridge* tempoCore=[JarasCoreBridge new];
     expect([tempoCore loadProjectData:tempoData error:&error], "reload tempo marker metadata");
     NSDictionary* tempoReloaded=[NSJSONSerialization JSONObjectWithData:[tempoCore snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(tempoSnapshot[@"project"],tempoReloaded[@"project"]), "tempo map project round trip");
+    NSString* correctedTempoID = NSUUID.UUID.UUIDString;
+    NSDictionary* correctedTempo = @{@"id":correctedTempoID,@"name":@"TEMPO",@"position":@7.9,@"tempoBPM":@140,@"tempoBeats":@4,@"tempoUnit":@4,@"tempoTimebase":@"global",@"tempoReferenceBPM":@140};
+    NSData* correctedData = [NSJSONSerialization dataWithJSONObject:@[correctedTempo] options:0 error:&error];
+    expect([tempoCore setTempoMarkers:correctedData removing:@[tempoID] error:&error], "redetection atomically replaces old detected marker");
+    NSDictionary* correctedSnapshot = [NSJSONSerialization JSONObjectWithData:[tempoCore snapshotWithError:&error] options:0 error:&error];
+    NSArray* correctedMarkers = correctedSnapshot[@"project"][@"songs"][0][@"markers"];
+    expect(![correctedMarkers filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id == %@", tempoID]].count, "wrong marker is gone");
+    expect([correctedMarkers filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id == %@", correctedTempoID]].count == 1, "one corrected marker exists");
+    expect(equalJSON(tempoReloaded[@"project"][@"songs"][0][@"tracks"], correctedSnapshot[@"project"][@"songs"][0][@"tracks"]), "redetect leaves audio positions and rates intact");
+    expect(equalJSON(tempoReloaded[@"project"][@"songs"][0][@"timeSettings"] ?: NSNull.null, correctedSnapshot[@"project"][@"songs"][0][@"timeSettings"] ?: NSNull.null), "redetect restores project timebase");
     expect([core deleteManualMarker:tempoID error:&error], "delete tempo marker");
     NSString* markerID=NSUUID.UUID.UUIDString;
     expect([core setMarker:markerID name:@"Entrada" position:18 color:0x00ff88 error:&error],"create marker");
@@ -328,5 +355,10 @@ int main(int argc,char**argv){@autoreleasepool{
     error=nil;
     NSDictionary *after=[NSJSONSerialization JSONObjectWithData:[routeCore metadataSnapshotWithError:&error] options:0 error:&error];
     expect([routed[@"project"] isEqual:after[@"project"]], "rejected native routing restores both slots");
+    JarasMeterBank* bank=[JarasMeterBank new];
+    [bank recordPeak:0.5f slot:1998]; [bank recordPeak:0.25f slot:1999];
+    [bank recordPeak:0.75f slot:2000]; [bank recordPeak:1.0f slot:2001];
+    expect([bank takePeak:1998]==0.5f && [bank takePeak:1999]==0.25f, "track 1000 has independent stereo meter slots");
+    expect([bank takePeak:2000]==0.75f && [bank takePeak:2001]==1.0f, "Master meter does not collide with track 1000");
     std::cout<<"JARAS_BRIDGE_OK\n";
 }}

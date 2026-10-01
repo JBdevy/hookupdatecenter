@@ -19,11 +19,21 @@ public final class AuthService: ObservableObject {
         self.backend = backend; self.store = store; self.installation = installation; self.feature = feature
         entitlements = EntitlementService(backend: backend); authorization = DeviceAuthorizationService(backend: backend)
     }
+    // Keychain may wait on securityd, especially after inactivity. Never make
+    // the periodic session check hold the main thread while waiting for it.
+    private func readSessionData() async throws -> Data? {
+        let store = self.store
+        return try await Task.detached(priority: .utility) { try store.read("session") }.value
+    }
+    private func writeSessionData(_ data: Data) async throws {
+        let store = self.store
+        try await Task.detached(priority: .utility) { try store.write(data, key: "session") }.value
+    }
     public func restore() async {
         guard !busy else { return }; busy = true; defer { busy = false }
         phase = .checkingSession
         do {
-            guard let data = try store.read("session") else { phase = .unauthenticated; return }
+            guard let data = try await readSessionData() else { phase = .unauthenticated; return }
             let cache = try JSONDecoder().decode(SessionCache.self, from: data)
             guard cache.login.device.installationId == installation.installationId else { throw BackendFailure.invalidSession }
             loginResult = cache.login
@@ -48,7 +58,7 @@ public final class AuthService: ObservableObject {
             if foreground { phase = .checkingDevice }
             result.device = try await authorization.validate(session: result.session, installationId: installation.installationId)
             let activeDevices = try await backend.devices(result.session)
-            try store.write(JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())), key: "session")
+            try await writeSessionData(JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())))
             loginResult = result; devices = activeDevices
             revokedPending = false; onPendingRevocation(false); message = ""; phase = .authorized
         } catch BackendFailure.unavailable {
@@ -60,7 +70,8 @@ public final class AuthService: ObservableObject {
         guard !busy, let loginResult else { return }
         busy = true; defer { busy = false }
         do {
-            let cache = try store.read("session").map { try JSONDecoder().decode(SessionCache.self, from: $0) } ?? SessionCache(login: loginResult, validatedAt: Date())
+            let data = try await readSessionData()
+            let cache = try data.map { try JSONDecoder().decode(SessionCache.self, from: $0) } ?? SessionCache(login: loginResult, validatedAt: Date())
             // Preserve the show UI while checking in the background.
             try await validate(cache: cache, foreground: false)
         } catch { deny(error) }

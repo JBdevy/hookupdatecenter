@@ -33,6 +33,121 @@ do {
     for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = 0.1 } }
     try file.write(from: buffer)
 }
+// Item fades use the whole timeline item clock even after seeking or looping
+// the underlying file. Exercise the production voice scheduler, not only the AU.
+do {
+    let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+    let fadeFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    for position in [0.0, 1.25] {
+        func renderFade(enabled: Bool) throws -> [Float] {
+            let fadeEngine = AVAudioEngine()
+            try fadeEngine.enableManualRenderingMode(.offline, format: fadeFormat, maximumFrameCount: 512)
+            let audio = StemAudioPlayback(engine: fadeEngine, realtime: false)
+            audio.open(directory: directory)
+            defer { audio.prepareForClosing() }
+            var project = Project.empty(name: "Item envelope")
+            var track = Track(id: UUID(), name: "Repeated tone", role: .other)
+            var clip = AudioClip(id: UUID(), name: "Tone", startTime: 0.5, duration: 3,
+                                 audioFile: AudioFile(path: "tone.wav"), loopStart: 0, loopLength: 0.5)
+            if enabled { clip.fadeIn = 2.5; clip.fadeOut = 1.5 }
+            track.clips = [clip]; project.songs[0].tracks = [track]
+            let state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+                    position: position, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+            try audio.update(state, revision: 1)
+            let buffer = AVAudioPCMBuffer(pcmFormat: fadeFormat, frameCapacity: 512)!
+            var samples: [Float] = []
+            for _ in 0..<Int(ceil((3.5-position)*rate/512)) {
+                let status = try fadeEngine.renderOffline(512, to: buffer)
+                precondition(status == .success)
+                samples += Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+            }
+            return samples
+        }
+        let dry = try renderFade(enabled: false), faded = try renderFade(enabled: true)
+        precondition(dry.count == faded.count && dry.contains { abs($0) > 0.05 })
+        var error = 0.0
+        for i in dry.indices {
+            let t = Double(i)/rate + position - 0.5
+            func curve(_ input: Double) -> Double { let x = min(1, max(0, input)); return x*x*(3-2*x) }
+            error = max(error, abs(Double(faded[i]) - Double(dry[i])*curve(t/2.5)*curve((3-t)/1.5)))
+        }
+        precondition(error < 0.0003, "production item fade clock at \(position)s / \(rate) Hz: \(error)")
+    }
+    print("ITEM_FADE_PRODUCTION_SCHEDULER_SEEK_REPEAT_AND_DELAY_OK")
+}
+// Exercise the production live graph in offline mode: click goes directly to
+// selected hardware buses even with Master muted and its fader at silence.
+do {
+    let settings = MetronomeSettings.shared
+    let saved = (settings.enabled, settings.output, settings.preset, settings.gainA, settings.gainB)
+    defer { settings.enabled = saved.0; settings.output = saved.1; settings.preset = saved.2; settings.gainA = saved.3; settings.gainB = saved.4 }
+    settings.enabled = true; settings.output = .stereo; settings.preset = "Digital"
+    settings.gainA = 0; settings.gainB = 0
+    let clickEngine = AVAudioEngine()
+    let clickFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4)!)
+    try clickEngine.enableManualRenderingMode(.offline, format: clickFormat, maximumFrameCount: 512)
+    let clickAudio = StemAudioPlayback(engine: clickEngine, realtime: true)
+    clickAudio.open(directory: directory)
+    defer { clickAudio.prepareForClosing() }
+    var project = Project.empty(name: "Direct click")
+    project.masterVolume = 0; project.masterMute = true; project.masterMono = true
+    let state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try clickAudio.update(state, revision: 1)
+    let generator = Mirror(reflecting: clickAudio).children.first { $0.label == "metronome" }!.value as! JarasMetronomeGenerator?
+    let buffer = AVAudioPCMBuffer(pcmFormat: clickFormat, frameCapacity: 512)!
+    func clickPeaks() throws -> [Float] {
+        generator!.configurePosition(0, hostTime: mach_absolute_time(), running: settings.enabled, loopStart: 0, loopEnd: 0, sampleTime: Double(clickEngine.manualRenderingSampleTime))
+        var peaks = [Float](repeating: 0, count: 4)
+        for block in 0..<110 {
+            if try clickEngine.renderOffline(512, to: buffer) == .success, block > 1 {
+                for channel in 0..<4 { for sample in 0..<Int(buffer.frameLength) {
+                    peaks[channel] = max(peaks[channel], abs(buffer.floatChannelData![channel][sample]))
+                } }
+            }
+        }
+        return peaks
+    }
+    let stereo = try clickPeaks()
+    precondition(stereo[0] > 0.5 && stereo[1] > 0.5 && stereo[2] == 0 && stereo[3] == 0, "default click bypasses muted Master and reaches only 1+2: \(stereo)")
+    settings.output = OutputPatch(firstChannel: 3, channelCount: 2)
+    let alternate = try clickPeaks()
+    precondition(alternate[0] == 0 && alternate[1] == 0 && alternate[2] > 0.5 && alternate[3] > 0.5, "click output changes live to 3+4: \(alternate)")
+    settings.output = OutputPatch(firstChannel: 4, channelCount: 1)
+    let mono = try clickPeaks()
+    precondition(mono[0] == 0 && mono[1] == 0 && mono[2] == 0 && mono[3] > 0.5, "mono click uses only its chosen hardware channel: \(mono)")
+    settings.enabled = false
+    let off = try clickPeaks()
+    precondition(off.allSatisfy { $0 < 0.00001 }, "disabled click stays silent")
+    print("METRONOME_DIRECT_OUTPUT_MASTER_BYPASS_STEREO_MONO_LIVE_PATCH_AND_OFF_PCM_OK")
+}
+// Track polarity reverses PCM; Master never adds a second inversion.
+do {
+    let phaseEngine = AVAudioEngine()
+    let renderFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channels: 2)!
+    try phaseEngine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 512)
+    let phaseAudio = StemAudioPlayback(engine: phaseEngine, realtime: false); phaseAudio.open(directory: directory)
+    var project = Project.empty(name: "Phase")
+    var channel = Track(id: UUID(), name: "Tone", role: .other)
+    channel.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 10, audioFile: AudioFile(path: "tone.wav"))]
+    project.songs[0].tracks = [channel]
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    let buffer = AVAudioPCMBuffer(pcmFormat: renderFormat, frameCapacity: 512)!
+    func signedPCM() throws -> Float {
+        for _ in 0..<50 { _ = try phaseEngine.renderOffline(512, to: buffer) }
+        return buffer.floatChannelData![0][Int(buffer.frameLength) - 1]
+    }
+    try phaseAudio.update(state, revision: 1)
+    let normal = try signedPCM(); precondition(normal > 0.09)
+    phaseAudio.previewPhase(channel.id, inverted: true)
+    let inverted = try signedPCM(); precondition(abs(inverted + normal) < 0.0001, "track phase reverses PCM")
+    phaseAudio.previewPhase(nil, inverted: true)
+    let restored = try signedPCM(); precondition(abs(restored - inverted) < 0.0001, "Master phase commands are ignored")
+    state.project.masterPhaseInverted = true; state.project.songs[0].tracks[0].phaseInverted = true
+    try phaseAudio.update(state, revision: 2)
+    let refreshed = try signedPCM(); precondition(abs(refreshed - inverted) < 0.0001, "legacy Master phase cannot reverse track PCM")
+    phaseAudio.stop(); phaseEngine.stop()
+    print("TRACK_PHASE_PCM_AND_MASTER_PHASE_DISABLED_OK")
+}
 let engine = AVAudioEngine()
 let outputFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channels: 2)!
 try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
@@ -142,7 +257,7 @@ do {
 }
 // Tempo markers must leave the actual PCM unchanged in Free Grid, including
 // when playback starts directly inside a section after a tempo change.
-func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTimebase = .free, markerTimebase: TempoMarkerTimebase = .global) throws -> [Float] {
+func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTimebase = .free, markerTimebase: TempoMarkerTimebase = .global, detectedReference: Bool = false) throws -> [Float] {
     let testEngine = AVAudioEngine()
     try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: testEngine, realtime: false); audio.open(directory: directory)
@@ -153,6 +268,11 @@ func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTime
     if withMarkers {
         mapped.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 2, color: 0x999999, tempoBPM: 180, tempoTimebase: markerTimebase),
                                    TimelineMarker(id: UUID(), name: "TEMPO", position: 5, color: 0x999999, tempoBPM: 90, tempoTimebase: markerTimebase)]
+    }
+    if detectedReference, mapped.songs[0].markers != nil {
+        for index in mapped.songs[0].markers!.indices {
+            mapped.songs[0].markers![index].tempoReferenceBPM = mapped.songs[0].markers![index].tempoBPM
+        }
     }
     let state = ShowSnapshot(project: mapped, transport: TransportState(playing: true, songId: mapped.songs[0].id, position: position, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
     try audio.update(state, revision: 1)
@@ -170,6 +290,8 @@ for position in [3.0, 6] {
     precondition(before.count == after.count && !before.isEmpty)
     let difference = zip(before, after).map { abs($0 - $1) }.max() ?? 1
     precondition(difference < 0.00001, "Free Grid preserves PCM after tempo markers: \(difference) at \(position)")
+    let detected = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative, detectedReference: true)
+    precondition(zip(before, detected).map { abs($0 - $1) }.max()! < 0.00001, "Detected tempo references preserve original PCM in Relative Grid")
     let forcedFree = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative, markerTimebase: .free)
     precondition(zip(before, forcedFree).map { abs($0 - $1) }.max()! < 0.00001, "Free marker overrides Relative Grid playback")
     let inheritedRelative = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative)

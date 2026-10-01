@@ -20,18 +20,18 @@ view.layoutSubtreeIfNeeded()
 precondition(scroll.contentView.bounds.minX <= 100.1, "removing tracks clamps the viewport")
 print("MIXER_TOP_SCROLLBAR_AND_PHYSICAL_WHEEL_SHORT_EASE_OUT_OK")
 var prepared: [Range<Int>] = []
-view.update(width: 400 * 153 + 7, stride: 153, count: 400) { range in
+view.update(width: 1000 * 153 + 7, stride: 153, count: 1000) { range in
     prepared.append(range)
-    return AnyView(Color.black.frame(width: 400 * 153 + 7, height: 226))
+    return AnyView(Color.black.frame(width: 1000 * 153 + 7, height: 226))
 }
 view.layoutSubtreeIfNeeded()
 bar.doubleValue = 0.92; bar.sendAction(bar.action, to: bar.target)
 let destination = Int(scroll.contentView.bounds.minX / 153)
 precondition(prepared.contains(where: { $0.contains(destination) }), "destination channels must exist synchronously before the scrollbar exposes them")
-precondition(prepared.last!.count < 40, "400 tracks must not create 400 channel controls")
+precondition(prepared.last!.count < 40, "1000 tracks must not create 1000 channel controls")
 bar.doubleValue = 0; bar.sendAction(bar.action, to: bar.target)
 precondition(prepared.contains(where: { $0.contains(0) }), "fast reversal prepares the first channel before showing it")
-print("MIXER_400_TRACKS_SYNCHRONOUS_DESTINATION_PREPARATION_AND_BOUNDED_CHANNEL_COUNT_OK")
+print("MIXER_1000_TRACKS_SYNCHRONOUS_DESTINATION_PREPARATION_AND_BOUNDED_CHANNEL_COUNT_OK")
 
 let document = scroll.documentView!
 precondition(document.subviews.count < 20, "channel host count remains bounded")
@@ -52,3 +52,28 @@ view.update(width: 7, stride: 127, count: 0) { range in
 }
 view.layoutSubtreeIfNeeded()
 precondition(scroll.documentView!.subviews.isEmpty && !bar.isEnabled, "no standard tracks leaves an empty mixer")
+
+var versions = (0..<1000).map(UInt64.init)
+var updatedStrips: [Int] = []
+func refreshStrips() {
+    view.update(width: 1000 * 153 + 7, stride: 153, count: 1000, versions: versions) { range in
+        updatedStrips.append(contentsOf: range)
+        return AnyView(Color.black.frame(width: 153, height: 226))
+    }
+    view.layoutSubtreeIfNeeded()
+}
+refreshStrips()
+let retainedHosts = Set(scroll.documentView!.subviews.map(ObjectIdentifier.init))
+updatedStrips.removeAll()
+refreshStrips()
+precondition(updatedStrips.isEmpty, "unchanged mixer metadata must not replace native hosting roots")
+versions[2] = 2000
+refreshStrips()
+precondition(updatedStrips == [2], "one volume/pan edit replaces only its channel's hosting root")
+precondition(Set(scroll.documentView!.subviews.map(ObjectIdentifier.init)) == retainedHosts,
+             "scalar updates preserve channel controls and the current horizontal viewport")
+updatedStrips.removeAll()
+versions[999] = 3000
+refreshStrips()
+precondition(updatedStrips.isEmpty, "offscreen scalar changes never rebuild visible controls")
+print("MIXER_SCALAR_EDITS_UPDATE_ONLY_CHANGED_HOST_WITHOUT_WINDOW_WIDE_RELAYOUT_OK")

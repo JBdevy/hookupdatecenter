@@ -33,6 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)deleteManualMarker:(NSString *)identifier error:(NSError **)error;
 - (BOOL)setProjectTiming:(double)bpm beats:(int)beats unit:(int)unit settings:(NSData *)settings error:(NSError **)error;
 - (BOOL)setTempoMarkers:(NSData *)data error:(NSError **)error;
+- (BOOL)setTempoMarkers:(NSData *)data removing:(NSArray<NSString *> *)identifiers error:(NSError **)error;
 - (BOOL)setTempoMarker:(NSString *)identifier position:(double)position bpm:(double)bpm beats:(int)beats unit:(int)unit timebase:(NSString *)timebase error:(NSError **)error;
 - (BOOL)setMarker:(NSString *)identifier name:(NSString *)name position:(double)position color:(unsigned int)color error:(NSError **)error;
 - (BOOL)regionsFromClips:(NSArray<NSString *> *)clips identifiers:(NSArray<NSString *> *)identifiers error:(NSError **)error;

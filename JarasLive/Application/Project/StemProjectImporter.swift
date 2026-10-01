@@ -353,11 +353,17 @@ enum StemProjectImporter {
                         arrangement.tracks[index].patch = .masterGroup
                         arrangement.tracks[index].secondaryPatch = nil; arrangement.tracks[index].outputs = nil
                     }
-                    arrangement.tracks[index].color = color
+                    // Keep the folder saturated; its children use the same hue softened toward white.
+                    let r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255
+                    func soft(_ value: UInt32) -> UInt32 { value + (255 - value) * 28 / 100 }
+                    arrangement.tracks[index].color = soft(r) << 16 | soft(g) << 8 | soft(b)
                 }
             }
             let children = Dictionary(grouping: arrangement.tracks.filter { $0.parentTrackID != nil }, by: { $0.parentTrackID! })
-            arrangement.tracks = arrangement.tracks.filter { $0.parentTrackID == nil }.flatMap { [$0] + (children[$0.id] ?? []) }
+            let roots = arrangement.tracks.filter { $0.parentTrackID == nil }
+            let percussionIDs = Set(roots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == "percussivo" }.map(\.id))
+            arrangement.tracks = (roots.filter { !percussionIDs.contains($0.id) } + roots.filter { percussionIDs.contains($0.id) })
+                .flatMap { [$0] + (children[$0.id] ?? []) }
             project.songs[0] = arrangement
             project.updatedAt = ISO8601DateFormatter().string(from: Date())
             try project.validate()

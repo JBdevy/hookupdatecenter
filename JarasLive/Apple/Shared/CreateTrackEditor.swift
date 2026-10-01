@@ -15,7 +15,7 @@ struct CreateTrackEditor: View {
     @State private var failure = ""
     @FocusState private var nameFocused: Bool
     private var existingCount: Int { show.snapshot.project.songs.reduce(0) { $0 + $1.tracks.count } }
-    private var availableCount: Int { max(0, 400 - existingCount) }
+    private var availableCount: Int { max(0, Project.maximumTrackCount - existingCount) }
     private var specialTrackExists: Bool {
         kind != .standard && show.snapshot.project.songs.contains { $0.tracks.contains { $0.kind == kind } }
     }
@@ -54,7 +54,7 @@ struct CreateTrackEditor: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             if availableCount == 0 {
-                Text("Maximum of 400 tracks per project.").font(.caption).foregroundStyle(.orange)
+                Text("Maximum of 1000 tracks per project.").font(.caption).foregroundStyle(.orange)
             }
             if !failure.isEmpty { Text(LocalizedStringKey(failure)).font(.caption).foregroundStyle(.red) }
             HStack {

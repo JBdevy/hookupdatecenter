@@ -2,6 +2,36 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectEditingTests: XCTestCase {
+    func testScalarHistoryRetainsClipStorageAndSupportsUndoRedo() {
+        var project = fixture()
+        let waveform = (0..<100000).map { Double($0) / 100000 }
+        project.songs[0].tracks[0].clips = (0..<2000).map { index in
+            AudioClip(id: UUID(), name: "Item", startTime: Double(index), duration: 1, waveform: waveform)
+        }
+        let original = project
+        var history = ProjectEditHistory(project)
+        let started = Date()
+        for index in 1...20 {
+            project.songs[0].tracks[0].volume = Double(index) / 20
+            history.record(project, preservingMediaStorage: true)
+        }
+        print("SCALAR_HISTORY_2000_ITEMS_20_EDITS_MS=\(Date().timeIntervalSince(started) * 1000)")
+        let final = project
+        let undone = history.undo()!
+        XCTAssertEqual(undone.songs[0].tracks[0].volume, 0.95)
+        let restored = history.redo()!
+        XCTAssertEqual(restored, final)
+        original.songs[0].tracks[0].clips.withUnsafeBufferPointer { old in
+            restored.songs[0].tracks[0].clips.withUnsafeBufferPointer { next in
+                XCTAssertEqual(old.baseAddress, next.baseAddress, "scalar history shares unchanged item storage")
+            }
+        }
+        _ = history.undo()
+        project.songs[0].tracks[0].pan = 0.5
+        history.record(project, preservingMediaStorage: true)
+        XCTAssertFalse(history.canRedo)
+    }
+
     func testCompleteExportUsesAudioEndRatherThanRegionsOrAuxiliaryItems() {
         var song = fixture().songs[0]
         song.parts = [Part(id: UUID(), name: "Long region", startTime: 0, endTime: 280)]

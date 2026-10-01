@@ -2,6 +2,8 @@
 import AppKit
 import SwiftUI
 
+protocol TimelineGridKeyboardTarget: AnyObject {}
+
 protocol NativeTimelineInputObserver: AnyObject {
     var window: NSWindow? { get }
     func timelineInputGateChanged(blocked: Bool)

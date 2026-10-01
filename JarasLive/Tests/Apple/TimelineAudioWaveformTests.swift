@@ -53,16 +53,22 @@ for rate in [44_100.0, 48_000.0] {
     precondition(close === cache.geometry(url, header: header, block: 0, pixelsPerSecond: rate * 2), "warm drawing reuses geometry")
     let next = waitFor { cache.geometry(url, header: header, block: 1, pixelsPerSecond: rate * 2) }
     precondition(next.start == 512)
+    let blockTwo = waitFor { cache.geometry(url, header: header, block: 2, pixelsPerSecond: rate * 2) }
+    let incomplete = TimelineAudioWaveform.Drawing(values: [close, blockTwo], step: 1)
+    precondition(!incomplete.covers(start: 0, end: 1536 / rate, rate: rate),
+                 "a missing interior block must never be frozen as a complete visible drawing")
+    let completeRange = TimelineAudioWaveform.Drawing(values: [close, next, blockTwo], step: 1)
+    precondition(completeRange.covers(start: 0, end: 1536 / rate, rate: rate))
     var endY: CGFloat = 0, startY: CGFloat = 0
     close.paths[0].forEach { if case .line(to: let point) = $0 { endY = point.y } }
     next.paths[0].forEach { if case .move(to: let point) = $0 { startY = point.y } }
     precondition(endY == startY, "neighboring sample blocks join without a seam")
     let far = waitFor { cache.geometry(url, header: header, block: 0, pixelsPerSecond: rate / 1024) }
     precondition(far.paths.count == 3)
-    precondition(abs(far.paths[1].boundingRect.maxY - 0.9) < 0.000001, "short negative transient must survive far zoom")
+    precondition(abs(far.paths[1].boundingRect.maxY - 0.9) < 1 / 48000, "short negative transient must survive far zoom within 16-bit peak precision")
     var closed = false
     far.paths[0].forEach { if case .closeSubpath = $0 { closed = true } }
-    precondition(!closed, "far zoom retains the same signed curve, without switching to an envelope")
+    precondition(closed && far.isPeakEnvelope, "far zoom uses signed peak rectangles spanning each full interval")
     let persistentURL = url.deletingLastPathComponent().appendingPathComponent("WF").appendingPathComponent(url.lastPathComponent + ".waveform")
     let persistentData = try Data(contentsOf: persistentURL)
     let reopened = TimelineAudioWaveform()
@@ -71,13 +77,20 @@ for rate in [44_100.0, 48_000.0] {
     precondition(restored.paths == far.paths, "a new waveform cache reproduces the exact signed curve from the disk cache")
     let persistedAgain = try Data(contentsOf: persistentURL)
     precondition(persistedAgain == persistentData, "reopening uses the existing waveform file")
-    let distant = reopened.drawing(url, header: reopenedHeader, start: 0, end: Double(length) / rate, pixelsPerSecond: 0.1647805478659852)
-    precondition(!distant.values.isEmpty && !distant.paths.isEmpty, "a large zoom keeps the full-file waveform while new detail loads")
-    print("PERSISTENT_WF_REOPEN_AND_FULL_FILE_ZOOM_FALLBACK_OK rate=\(rate)")
+    let delayedCurveWorker = DispatchQueue(label: "jaras.waveform.no-simplified-fallback")
+    let freshCache = TimelineAudioWaveform(drawingWorker: delayedCurveWorker)
+    let freshHeader = waitFor { freshCache.header(url) }
+    _ = waitFor { freshCache.geometry(url, header: freshHeader, block: 0, pixelsPerSecond: rate / 1024) }
+    delayedCurveWorker.suspend()
+    let unvisited = freshCache.displayDrawing(url, header: freshHeader, start: 1.5, end: 2.0, pixelsPerSecond: rate * 2)
+    delayedCurveWorker.resume()
+    precondition(unvisited.values.isEmpty, "unvisited audio waits for its real drawing; no simplified line may appear underneath")
+    print("WAVEFORM_NO_SIMPLIFIED_UNDERLAY_OK")
+    print("PERSISTENT_WF_REOPEN_OK rate=\(rate)")
     print("REAL_PCM_SIGNED_STEREO_CURVE_TRANSIENT_CACHE_AND_BLOCK_SEAMS_OK rate=\(rate)")
 
-    // Every coarser level keeps real samples at their original time, even
-    // across the streamed decoder's buffer boundaries and large zoom changes.
+    // Fine detail keeps exact samples; compact levels retain signed extrema
+    // over their source intervals, including streamed decoder boundaries.
     for step in [2, 4, 16, 64, 256, 512, 1024, 2048, 16_384] {
         let scale = rate / Double(step * 2)
         let span = TimelineAudioWaveform.span(step: step)
@@ -85,20 +98,39 @@ for rate in [44_100.0, 48_000.0] {
         var impulse = false
         for channel in 0..<2 {
             var previous = -1
+            var intervalStart = 0
             geometry.paths[channel].forEach { element in
                 let point: CGPoint
                 switch element {
-                case .move(to: let p), .line(to: let p): point = p
-                default: fatalError("zoom levels must all draw one continuous, time-ordered line")
+                case .move(to: let p):
+                    point = p
+                    intervalStart = Int(geometry.start) + Int((p.x * rate).rounded())
+                case .line(to: let p): point = p
+                case .closeSubpath:
+                    precondition(step >= 256); return
+                default: fatalError("waveforms contain sample lines or peak rectangles")
                 }
                 let frame = Int(geometry.start) + Int((point.x * rate).rounded())
-                precondition(frame > previous && frame < length)
-                previous = frame
-                precondition(abs(point.y + CGFloat(buffer.floatChannelData![channel][frame])) < 0.000001, "zoom cannot invent or reposition waveform points")
-                if channel == 1 && point.y > 0.8 { precondition(frame == 12_345); impulse = true }
+                if step < 256 {
+                    precondition(frame > previous && frame < length)
+                    previous = frame
+                    precondition(abs(point.y + CGFloat(buffer.floatChannelData![channel][frame])) < 0.000001, "sample detail cannot invent or reposition waveform points")
+                } else {
+                    precondition(frame >= intervalStart && frame <= min(length, intervalStart + step))
+                    var low = Float.infinity, high = -Float.infinity
+                    for index in intervalStart..<min(length, intervalStart + step) {
+                        let value = buffer.floatChannelData![channel][index]
+                        low = min(low, value); high = max(high, value)
+                    }
+                    precondition(min(abs(point.y + CGFloat(low)), abs(point.y + CGFloat(high))) <= 1 / 48000,
+                                 "compact peak rectangles must preserve actual signed interval extrema")
+                }
+                if channel == 1 && point.y > 0.8 {
+                    precondition(step < 256 ? frame == 12_345 : abs(frame - 12_345) <= step); impulse = true
+                }
             }
         }
-        precondition(impulse, "a one-sample transient must remain at exactly the same source position at every zoom")
+        precondition(impulse, "a one-sample transient must survive every zoom in its correct source interval")
     }
     print("WAVEFORM_ALL_DETAIL_LEVELS_PRESERVE_REAL_SAMPLE_TIMES_AND_TRANSIENTS_OK")
 
@@ -141,28 +173,136 @@ for rate in [44_100.0, 48_000.0] {
     print("WAVEFORM_SAME_DETAIL_COVERAGE_REUSES_PATH_AND_EXCLUDES_DISJOINT_AUDIO_OK")
 
 
+    // A blocked curve worker must never make the display thread join vertices.
+    let curveWorker = DispatchQueue(label: "jaras.waveform.curve-fixture")
+    let decodeWorker = DispatchQueue(label: "jaras.waveform.decode-fixture")
+    let asynchronous = TimelineAudioWaveform(worker: decodeWorker, drawingWorker: curveWorker)
+    let asynchronousHeader = waitFor { asynchronous.header(url) }
+    _ = waitFor { asynchronous.geometry(url, header: asynchronousHeader, block: 0, pixelsPerSecond: rate * 2) }
+    curveWorker.suspend()
+    let deferred = asynchronous.displayDrawing(url, header: asynchronousHeader, start: 0, end: 512 / rate, pixelsPerSecond: rate * 2)
+    precondition(deferred.values.isEmpty, "display thread must not assemble a curve even when PCM geometry is ready")
+    curveWorker.resume()
+    let readyCurve: TimelineAudioWaveform.Drawing = waitFor {
+        let value = asynchronous.displayDrawing(url, header: asynchronousHeader, start: 0, end: 512 / rate, pixelsPerSecond: rate * 2)
+        return value.values.isEmpty ? nil : value
+    }
+    let repeatedCurve = asynchronous.displayDrawing(url, header: asynchronousHeader, start: 0, end: 512 / rate, pixelsPerSecond: rate * 2)
+    precondition(zip(readyCurve.cgPaths, repeatedCurve.cgPaths).allSatisfy { $0 === $1 })
+    print("WAVEFORM_DISPLAY_NEVER_JOINS_VERTICES_AND_REUSES_WORKER_RESULT_OK")
+    decodeWorker.suspend()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    let stationaryVersion = asynchronous.version(url)
+    for _ in 0..<12 {
+        _ = asynchronous.displayDrawing(url, header: asynchronousHeader, start: 0, end: 512 / rate, pixelsPerSecond: rate / 4)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+    }
+    let finalStationaryVersion = asynchronous.version(url)
+    decodeWorker.resume()
+    precondition(finalStationaryVersion == stationaryVersion, "reusing a fallback must not publish another redraw: stationary zoom must settle")
+    print("WAVEFORM_PENDING_RESOLUTION_DOES_NOT_SELF_INVALIDATE_WHILE_STATIONARY_OK")
+
+
+    let stableLayers = asynchronous.drawingLayers(url, header: asynchronousHeader, start: 0, end: 512 / rate, pixelsPerSecond: rate * 2, presentationID: "visible-item")
+    _ = waitFor { asynchronous.geometry(url, header: asynchronousHeader, block: 8, pixelsPerSecond: rate * 2) }
+    _ = asynchronous.drawing(url, header: asynchronousHeader, start: 4096 / rate, end: 4608 / rate, pixelsPerSecond: rate * 2)
+    decodeWorker.suspend(); curveWorker.suspend()
+    let zoomingLayers = asynchronous.drawingLayers(url, header: asynchronousHeader, start: 256 / rate, end: 1536 / rate, pixelsPerSecond: rate / 8, presentationID: "visible-item")
+    decodeWorker.resume(); curveWorker.resume()
+    precondition(zoomingLayers.count == stableLayers.count)
+    let zoomKeepsOldCurve = zip(zoomingLayers[0].drawing.cgPaths, stableLayers[0].drawing.cgPaths).allSatisfy { $0 === $1 }
+    let zoomHasFullCoverage = zoomingLayers[0].drawing.values.first.map { $0.start <= 256 } == true &&
+        zoomingLayers[0].drawing.values.last.map { $0.end >= 1536 } == true
+    precondition(!zoomingLayers[0].drawing.cgPaths.isEmpty && (zoomKeepsOldCurve || zoomHasFullCoverage),
+                 "zoom must retain the existing curve or cover the newly visible interval while detail is pending")
+    print("WAVEFORM_ZOOM_CHANGED_INTERVAL_RETAINS_STABLE_CURVE_OK")
+
+    let familyWorker = DispatchQueue(label: "jaras.waveform.family-fixture")
+    let familyDecode = DispatchQueue(label: "jaras.waveform.family-decode")
+    let familyCache = TimelineAudioWaveform(worker: familyDecode, drawingWorker: familyWorker)
+    let familyHeader = waitFor { familyCache.header(url) }
+    for block in 0...1 { _ = waitFor { familyCache.geometry(url, header: familyHeader, block: block, pixelsPerSecond: rate * 2) } }
+    let firstTile: TimelineAudioWaveform.DrawingLayer = waitFor {
+        let layer = familyCache.drawingLayers(url, header: familyHeader, start: 0, end: 1024 / rate,
+                                             pixelsPerSecond: rate * 2, presentationID: "tile-a", familyID: "same-item")[0]
+        return layer.drawing.step == 1 && layer.drawing.values.count >= 2 ? layer : nil
+    }
+    _ = waitFor { familyCache.geometry(url, header: familyHeader, block: 8, pixelsPerSecond: rate * 2) }
+    _ = familyCache.drawing(url, header: familyHeader, start: 4096 / rate, end: 4608 / rate, pixelsPerSecond: rate * 2)
+    familyWorker.suspend(); familyDecode.suspend()
+    let nextTile = familyCache.drawingLayers(url, header: familyHeader, start: 128 / rate, end: 896 / rate,
+                                             pixelsPerSecond: rate / 4, presentationID: "tile-b", familyID: "same-item")[0]
+    familyDecode.resume(); familyWorker.resume()
+    precondition(zip(firstTile.drawing.cgPaths, nextTile.drawing.cgPaths).allSatisfy { $0 === $1 },
+                 "a micro zoom crossing a tile boundary must keep the same waveform path")
+    print("WAVEFORM_SMALL_ZOOM_CROSS_TILE_REUSES_SAME_CURVE_OK")
+
+    // Mounted surfaces must retain their exact drawing even when ALL reusable
+    // caches disappear. Replacing the cache models complete eviction; no decoder
+    // may run to reconstruct the visible curve for a stationary repaint.
+    let owner = TimelineAudioWaveform.PresentationStore()
+    let owned = familyCache.drawingLayers(url, header: familyHeader, start: 0, end: 1024 / rate,
+                                         pixelsPerSecond: rate * 2, presentationID: "mounted", owner: owner)
+    let coldWorker = DispatchQueue(label: "jaras.waveform.eviction-decode")
+    let coldCurves = DispatchQueue(label: "jaras.waveform.eviction-curves")
+    let cold = TimelineAudioWaveform(worker: coldWorker, drawingWorker: coldCurves, presentationCacheCostLimit: 1)
+    coldWorker.suspend(); coldCurves.suspend()
+    for _ in 0..<30 {
+        owner.beginFrame()
+        let repaint = cold.drawingLayers(url, header: familyHeader, start: 0, end: 1024 / rate,
+                                        pixelsPerSecond: rate * 2, presentationID: "mounted", owner: owner)
+        owner.endFrame()
+        precondition(zip(owned[0].drawing.cgPaths, repaint[0].drawing.cgPaths).allSatisfy { $0 === $1 },
+                     "eviction must not replace a mounted waveform with an overview or empty drawing")
+        precondition(repaint[0].drawing.cgPaths.count == owned[0].drawing.cgPaths.count)
+    }
+    precondition(cold.version(url) == 0, "stationary repaints must not start another decode/invalidation cycle")
+    owner.beginFrame(); owner.endFrame()
+    let unmounted = cold.drawingLayers(url, header: familyHeader, start: 0, end: 1024 / rate,
+                                     pixelsPerSecond: rate * 2, presentationID: "mounted", owner: owner)
+    precondition(unmounted[0].drawing.values.isEmpty, "unmounted items release their retained drawing")
+    coldCurves.resume(); coldWorker.resume()
+    print("WAVEFORM_MOUNTED_SURFACE_SURVIVES_CACHE_EVICTION_AND_RELEASES_OFFSCREEN_OK")
+
     // Capture the actual timeline drawing helper without touching the user project.
-    @MainActor func render(scale: Double, start: Double, name: String, base: Double = 0, loopLength: Double? = nil) -> NSBitmapImageRep {
+    @MainActor func render(scale: Double, start: Double, name: String, base: Double = 0, loopLength: Double? = nil, gain: Double = 1) -> NSBitmapImageRep {
         let width = 720.0, height = 200.0
-        var clip = AudioClip(startTime: base, duration: Double(length) / rate, sourceOffset: 0, playbackRate: 1, gain: 1)
+        var clip = AudioClip(startTime: base, duration: Double(length) / rate, sourceOffset: 0, playbackRate: 1, gain: gain)
         clip.loopLength = loopLength
         let tile = CGRect(x: (base + start) * scale, y: 0, width: width, height: height)
-        let step = TimelineAudioWaveform.step(rate: rate, pixelsPerSecond: scale)
-        let span = TimelineAudioWaveform.span(step: step)
-        let first = max(0, Int(start * rate) / span)
-        let last = min(length - 1, Int((start + width / scale) * rate)) / span
-        for block in first...last {
-            let geometry = waitFor { cache.geometry(url, header: header, block: block, pixelsPerSecond: scale) }
+        for resolution in [scale, scale / 2] {
+            let step = TimelineAudioWaveform.step(rate: rate, pixelsPerSecond: resolution)
+            let span = TimelineAudioWaveform.span(step: step)
+            let first = max(0, Int(start * rate) / span)
+            let last = min(length - 1, Int((start + width / scale) * rate)) / span
+            for block in first...last {
+                _ = waitFor { cache.geometry(url, header: header, block: block, pixelsPerSecond: resolution) }
+            }
         }
         if let loopLength, loopLength * scale < 1 {
             let loopScale = 128 / loopLength
             let span = TimelineAudioWaveform.span(step: TimelineAudioWaveform.step(rate: rate, pixelsPerSecond: loopScale))
             for block in 0...Int(loopLength * rate) / span { _ = waitFor { cache.geometry(url, header: header, block: block, pixelsPerSecond: loopScale) } }
         }
+        // Geometry decoding and display-path joining are separate workers.
+        // Pixel comparisons must wait for the exact requested display pair.
+        let level = max(0, log2(max(1, rate / scale / 2)))
+        let fine = 1 << Int(floor(level))
+        let visibleEnd = min(Double(length) / rate, start + width / scale)
+        let padding = min(2, (visibleEnd - start) / 2)
+        let requestedStart = max(0, start - padding)
+        let requestedEnd = min(Double(length) / rate, loopLength ?? .infinity, visibleEnd + padding)
+        for step in [fine, fine * 2] {
+            let _: TimelineAudioWaveform.Drawing = waitFor {
+                let value = cache.displayDrawing(url, header: header, start: requestedStart, end: requestedEnd, pixelsPerSecond: rate / Double(step * 2))
+                return value.step == step && value.values.first.map { Double($0.start) / rate <= requestedStart } == true &&
+                    value.values.last.map { Double($0.end) / rate >= requestedEnd - 1 / rate } == true ? value : nil
+            }
+        }
         let canvas = Canvas { context, _ in
             context.fill(Path(CGRect(x: 0, y: 0, width: width, height: height)), with: .color(.green))
             context.translateBy(x: -tile.minX, y: 0)
-            drawTimelineAudioWaveform(clip, url: url, rect: CGRect(x: base * scale, y: 0, width: clip.duration * scale, height: height), waveTop: 14, scale: scale, tile: tile, silenced: false, context: &context)
+            drawTimelineAudioWaveform(clip, url: url, rect: CGRect(x: base * scale, y: 0, width: clip.duration * scale, height: height), waveTop: 14, scale: scale, tile: tile, waveColor: Color(white: 0.08), context: &context)
         }.frame(width: width, height: height)
         let renderer = ImageRenderer(content: canvas)
         renderer.scale = 1
@@ -174,6 +314,21 @@ for rate in [44_100.0, 48_000.0] {
     }
     MainActor.assumeIsolated {
         let closeImage = render(scale: rate * 2, start: 0, name: "close")
+        let boostedImage = render(scale: rate * 2, start: 0, name: "plus6db", gain: 2)
+        func inkHeight(_ image: NSBitmapImageRep) -> Int {
+            var first = image.pixelsHigh, last = 0
+            for y in 16..<105 {
+                for x in 10..<700 {
+                    if let color = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), color.greenComponent < 0.4 {
+                        first = min(first, y); last = max(last, y)
+                    }
+                }
+            }
+            return max(0, last - first)
+        }
+        precondition(inkHeight(boostedImage) > inkHeight(closeImage) * 3 / 2,
+                     "positive item gain must expand the actual rendered waveform above 0 dB")
+        print("WAVEFORM_POSITIVE_ITEM_GAIN_PCM_RENDER_OK")
         let distantImage = render(scale: rate * 2, start: 0, name: "distant", base: 10_000)
         precondition(closeImage.bytesPerRow == distantImage.bytesPerRow)
         let bytes = closeImage.bytesPerRow * closeImage.pixelsHigh
@@ -189,7 +344,7 @@ for rate in [44_100.0, 48_000.0] {
             let a = before.bitmapData!, b = after.bitmapData!
             let difference = (0..<count).reduce(0.0) { $0 + Double(abs(Int(a[$1]) - Int(b[$1]))) } / Double(count * 255)
             print("WAVEFORM_DETAIL_BOUNDARY_MEAN_PIXEL_DELTA=\(difference) divisor=\(divisor)")
-            precondition(difference < 0.015, "crossing a detail threshold must not visibly replace the waveform shape")
+            precondition(difference < 0.001, "crossing a detail threshold must not visibly replace the waveform shape")
         }
         let farImage = render(scale: 240, start: 0, name: "far")
         let coverage = (10..<min(700, Int(Double(length) / rate * 240) - 10)).map { farImage.colorAt(x: $0, y: 45)!.usingColorSpace(.deviceRGB)!.greenComponent }

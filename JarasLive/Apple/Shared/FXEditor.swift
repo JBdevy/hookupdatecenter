@@ -76,6 +76,14 @@ struct FXEditor: View {
                         FXKnob("Release", value: $settings.release, range: 0.01...3, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.1, parameter: .release)
                     }
                 }.padding(18).background(JarasTheme.display).cornerRadius(10)
+            case "Limiter":
+                Toggle("Enabled", isOn: Binding(get: { settings.limiterEnabled == true }, set: { settings.limiterEnabled = $0 })).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
+                HStack(spacing: 26) {
+                    EffectVerticalMeters(track: audioTarget, effect: effectKey)
+                    FXKnob("Input gain", value: $settings.limiterParameters.inputGain, range: -24...24, unit: "dB", reset: 0, parameter: .limiterGain)
+                    FXKnob("Ceiling", value: $settings.limiterParameters.ceiling, range: -24...0, unit: "dB", reset: -0.1, parameter: .limiterCeiling)
+                    FXKnob("Release", value: $settings.limiterParameters.release, range: 0.01...3, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.1, parameter: .limiterRelease)
+                }.padding(18).background(JarasTheme.display).cornerRadius(10)
             case "Pitch":
                 Toggle("Enabled", isOn: Binding(get: { settings.pitchEnabled == true }, set: { settings.pitchEnabled = $0 })).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
                 FXKnob("Semitones", value: Binding(get: { settings.semitones }, set: { settings.pitchSemitones = $0.rounded() }), range: -12...12, unit: "st", reset: 0, parameter: .pitchSemitones)
@@ -233,11 +241,12 @@ struct TabbedClipFXEditor: View {
     let close: () -> Void
     @State private var page = "EQ"
     @State private var enabledEffects: Set<String> = []
-    private let pages = ["EQ", "Compressor", "Pitch", "Delay", "Reverb"]
+    private let pages = ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
     private func color(_ effect: String) -> Color {
         switch effect {
         case "EQ": return JarasTheme.green
         case "Compressor": return Color(hex: 0xffb547)
+        case "Limiter": return Color(hex: 0xff625b)
         case "Pitch": return Color(hex: 0xc39aff)
         case "Delay": return Color(hex: 0x56bfff)
         default: return Color(hex: 0xca88ff)
@@ -256,7 +265,7 @@ struct TabbedClipFXEditor: View {
                     let active = enabledEffects.contains(effect)
                     let tint = color(effect)
                     Button { page = effect } label: {
-                        Text(LocalizedStringKey(effect)).font(.system(size: 12, weight: .semibold))
+                        Text(LocalizedStringKey(effect == "Limiter" ? "Jaras Limiter" : effect)).font(.system(size: 12, weight: .semibold))
                             .frame(maxWidth: .infinity).frame(height: 30)
                             .background(tint.opacity(active ? 0.30 : 0.06))
                             .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(page == effect ? 0.95 : active ? 0.55 : 0.14), lineWidth: page == effect ? 1.5 : 1))

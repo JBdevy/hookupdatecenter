@@ -96,6 +96,7 @@ import UIKit
             show.audioFX = { audio.previewFX($0, settings: $1) }
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
+            show.audioItemFade = { audio.previewItemFade($0, fadeIn: $1, seconds: $2) }
             show.audioItemGain = { audio.previewItemGain($0, gain: $1) }
             show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
             show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }
@@ -106,6 +107,7 @@ import UIKit
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
             }
             show.audioSolo = { audio.previewSolo($0, solo: $1) }
+            show.audioPhase = { audio.previewPhase($0, inverted: $1) }
             show.audioMasterMono = { audio.previewMasterMono($0) }
             audio.onPeakLimit = { [weak show] id in
                 guard let show, show.current?.tracks.first(where: { $0.id == id })?.mute == false else { return }
@@ -144,7 +146,6 @@ import UIKit
         guard !preview else { starting = false; return }
         guard !started else { return }
         started = true
-        let splashStarted = ProcessInfo.processInfo.systemUptime
         startupProgress = 0.15
         await Task.yield()
         // A document is loaded only after an explicit choice in the project launcher.
@@ -155,9 +156,6 @@ import UIKit
         #endif
         startupProgress = 1
         startupStage = "Pronto"
-        // Temporary four-second minimum requested for reviewing the splash artwork.
-        let remaining = max(0, 4 - (ProcessInfo.processInfo.systemUptime - splashStarted))
-        try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         starting = false
         #if os(macOS)
         while !Task.isCancelled {

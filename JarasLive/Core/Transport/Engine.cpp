@@ -1,10 +1,12 @@
 #include "Engine.hpp"
+#include "../Songs/TempoEditMap.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <stdexcept>
 #include <random>
 #include <set>
+#include <limits>
 namespace jaras {
 void Engine::loadProject(Project project) {
     orderSpecialTracks(project); synchronizeTimecode(project); validate(project);
@@ -309,27 +311,54 @@ void Engine::setMarker(ID id, std::string name, double position, unsigned color,
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
+    const Song& beforeTempoEdit = *currentSong();
     if (!song->markers) song->markers.emplace();
     auto found = std::find_if(song->markers->begin(), song->markers->end(), [&](const auto& marker) { return marker.id == id; });
+    if(found==song->markers->end() && std::any_of(song->markers->begin(),song->markers->end(),[&](const auto& marker){
+        return marker.tempoBPM.has_value()==bpm.has_value() && std::abs(marker.position-position)<0.000001;
+    })) throw std::invalid_argument("A marker already exists at this position.");
+    const bool retime = bpm && (found == song->markers->end() || found->tempoBPM != bpm || found->tempoTimebase != timebase);
     TimelineMarker marker{std::move(id), std::move(name), position, color};
     if (found != song->markers->end()) marker.unifiedRegionID = found->unifiedRegionID;
     if (found != song->markers->end()) marker.sourceRegionID = found->sourceRegionID;
+    if (bpm && found != song->markers->end()) marker.tempoReferenceBPM = found->tempoReferenceBPM;
     marker.tempoBPM = bpm; marker.tempoBeats = beats; marker.tempoUnit = unit;
     marker.tempoTimebase = std::move(timebase);
     if (std::isfinite(position)) song->duration = std::max(song->duration, position);
     if (found == song->markers->end()) song->markers->push_back(std::move(marker)); else *found = std::move(marker);
+    const TempoEditMap map(beforeTempoEdit,*song);
+    if(retime) map.apply(*song);
     orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next);
+    if(retime && map.changesTime()) {
+        transport_.position=map.position(transport_.position); transport_.editPosition=map.position(transport_.editPosition);
+        transport_.subPlay.position=map.position(transport_.subPlay.position); transport_.queueStartedAt=map.position(transport_.queueStartedAt);
+        if(transport_.loop.start) *transport_.loop.start=map.position(*transport_.loop.start);
+        if(transport_.loop.end) *transport_.loop.end=map.position(*transport_.loop.end);
+        if(transport_.ignoreNextAfter) *transport_.ignoreNextAfter=map.position(*transport_.ignoreNextAfter);
+        if(transport_.ignoreNextEnd) *transport_.ignoreNextEnd=map.position(*transport_.ignoreNextEnd);
+        if(playStart_) *playStart_=map.position(*playStart_);
+        if(subPlayStart_) *subPlayStart_=map.position(*subPlayStart_);
+        if(transport_.multiLoop) {transport_.multiLoop->start=map.position(transport_.multiLoop->start);transport_.multiLoop->end=map.position(transport_.multiLoop->end);}
+    }
 }
-void Engine::setMarkers(const std::vector<TimelineMarker>& markers) {
+void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing) {
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
+    const auto originalTiming = song->timeSettings;
+    auto freeTiming = originalTiming.value_or(ProjectTimeSettings{});
+    freeTiming.timebase = ProjectTimebase::free;
+    song->timeSettings = freeTiming;
     if (!song->markers) song->markers.emplace();
+    song->markers->erase(std::remove_if(song->markers->begin(), song->markers->end(), [&](const auto& marker) {
+        return marker.tempoBPM && std::find(removing.begin(), removing.end(), marker.id) != removing.end();
+    }), song->markers->end());
     for (const auto& marker : markers) {
         auto found = std::find_if(song->markers->begin(), song->markers->end(), [&](const auto& item) { return item.id == marker.id; });
         if (found == song->markers->end()) song->markers->push_back(marker); else *found = marker;
         if (std::isfinite(marker.position)) song->duration = std::max(song->duration, marker.position);
     }
+    song->timeSettings = originalTiming;
     orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next);
 }
 void Engine::regionFromClip(const ID& clipId, ID regionId) {
@@ -349,7 +378,7 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
             source = &clip;
         }
         if (!source) throw std::invalid_argument("Unknown clip");
-        if (std::any_of(song->parts.begin(), song->parts.end(), [&](const auto& part) { return part.startTime == source->startTime && part.endTime == source->startTime + source->duration; })) continue;
+        if (std::any_of(song->parts.begin(), song->parts.end(), [&](const auto& part) { return std::abs(part.startTime - source->startTime) < 0.000001; })) continue;
         std::string name = source->name;
         const auto dot = name.find_last_of('.');
         if (dot != std::string::npos) {
@@ -642,6 +671,22 @@ void Engine::execute(const Command& c) {
         if (!part) throw std::invalid_argument("Unknown region");
         if (c.kind == CommandKind::queueRegion && transport_.playing) {
             const auto* active = region(transport_.regionId);
+            const auto* bounds = playbackBounds(active);
+            if (bounds && part->id == bounds->id) break;
+            const Part* displayed = region(transport_.ignoreNextRegionId);
+            if (!displayed && bounds) for (const auto& child : currentSong()->parts) {
+                if (child.parentRegionID == bounds->id && transport_.position >= child.startTime && transport_.position < child.endTime &&
+                    (!displayed || child.startTime > displayed->startTime ||
+                     (child.startTime == displayed->startTime && child.endTime > displayed->endTime))) displayed = &child;
+            }
+            if (displayed && part->id == displayed->id) break;
+            const auto* queued = region(transport_.queuedRegionId);
+            if (queued && (part->id == queued->id || queued->parentRegionID == part->id)) {
+                transport_.queuedRegionId.reset(); transport_.queueStartedAt = 0;
+                autoRegionQueue_ = false; automaticSubplayQueue_.reset();
+                if (project_.regionSetlist) project_.regionSetlist->autoAdvance = false;
+                break;
+            }
             if (part->parentRegionID && active && (active->id == *part->parentRegionID || active->parentRegionID == part->parentRegionID))
                 throw std::invalid_argument("Cannot queue a song from the active unified region");
             transport_.queuedRegionId = part->id; transport_.queueStartedAt = transport_.position;
@@ -664,6 +709,17 @@ void Engine::execute(const Command& c) {
             if (clip.id == c.target) {
                 if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special item channels cannot be changed");
                 clip.channelMode = c.value == 0 ? std::nullopt : std::optional<int>(int(c.value)); return;
+            }
+        throw std::invalid_argument("Unknown clip");
+    case CommandKind::clipFadeIn:
+    case CommandKind::clipFadeOut:
+        if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid item fade");
+        for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
+            if (clip.id == c.target) {
+                if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special items cannot have fades");
+                auto& fade = c.kind == CommandKind::clipFadeIn ? clip.fadeIn : clip.fadeOut;
+                fade = c.value == 0 ? std::nullopt : std::optional<double>(std::min(clip.duration,c.value));
+                return;
             }
         throw std::invalid_argument("Unknown clip");
     case CommandKind::clipNormalization:
@@ -800,12 +856,14 @@ void Engine::execute(const Command& c) {
     default:
         if (c.target.empty() && c.kind == CommandKind::volume) { project_.masterVolume = std::clamp(c.value, 0.0, std::pow(10.0, 12.0 / 20.0)); return; }
         if (c.target.empty() && c.kind == CommandKind::mute) { project_.masterMute = !project_.masterMute; return; }
+        if (c.target.empty() && c.kind == CommandKind::phase) { return; }
         if (c.target.empty() && c.kind == CommandKind::masterMono) { project_.masterMono = !project_.masterMono; return; }
         if (c.target.empty() && c.kind == CommandKind::solo) { project_.masterSolo = !project_.masterSolo; return; }
         for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == c.target) {
-            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume))) throw std::invalid_argument("This control is unavailable on a special track");
+            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume || c.kind == CommandKind::phase))) throw std::invalid_argument("This control is unavailable on a special track");
             if (c.kind == CommandKind::volume) track.volume = std::clamp(c.value, 0.0, std::pow(10.0, 12.0 / 20.0));
             if (c.kind == CommandKind::pan) track.pan = std::clamp(c.value, -1.0, 1.0);
+            if (c.kind == CommandKind::phase) track.phaseInverted = !track.phaseInverted.value_or(false);
             if (c.kind == CommandKind::mute) track.mute = !track.mute;
             if (c.kind == CommandKind::solo) track.solo = !track.solo;
             if (track.stereoLinkPartner && (c.kind == CommandKind::volume || c.kind == CommandKind::pan)) {
@@ -931,18 +989,39 @@ void Engine::setTrackRouting(const std::vector<std::pair<ID,TrackRouting>>& rout
 }
 
 namespace jaras {
+static bool multiLoopsBypassed(const Song& song,const Part& part) {
+    if(part.totalLoop.value_or(false)) return true;
+    if(part.parentRegionID) for(const auto& parent:song.parts) if(parent.id==*part.parentRegionID && parent.totalLoop.value_or(false)) return true;
+    return false;
+}
 void Engine::resetMultiLoop() {
     if (transport_.multiLoop && transport_.multiLoop->gates) transport_.loop = {};
     transport_.multiLoop.reset();
 }
 void Engine::refreshMultiLoop() {
-    if (transport_.loop.enabled && !transport_.multiLoop) return;
     const auto* song = currentSong();
+    if(transport_.loop.enabled && !transport_.multiLoop) {
+        const bool total=song && (transport_.playing || transport_.paused) && std::any_of(song->parts.begin(),song->parts.end(),[&](const auto& part){
+            return part.totalLoop.value_or(false) && transport_.position>=part.startTime && transport_.position<part.endTime;
+        });
+        if(!total) return;
+    }
     if (!song || (!transport_.playing && !transport_.paused)) { resetMultiLoop(); return; }
     const double position = transport_.position;
     const MultiLoop* candidate = nullptr;
     double begin = 0, end = 0;
-    if (song->markers) for (const auto& part : song->parts) for (const auto& loop : part.multiLoops) {
+    MultiLoop total;
+    const Part* whole=nullptr;
+    for(const auto& part:song->parts) if(part.totalLoop.value_or(false) && position>=part.startTime && position<part.endTime) {
+        if(!whole || (whole->parentRegionID && !part.parentRegionID) || (whole->parentRegionID==part.parentRegionID && part.startTime<whole->startTime)) whole=&part;
+    }
+    if(whole) {
+        total.id=whole->id;total.name="Total Loop";total.fadeSeconds=1;
+        candidate=&total;begin=whole->startTime;end=whole->endTime;
+    }
+    if (!candidate && transport_.loop.enabled && !transport_.multiLoop) return;
+    if (!whole && song->markers) for (const auto& part : song->parts) for (const auto& loop : part.multiLoops) {
+        if(multiLoopsBypassed(*song,part)) continue;
         const TimelineMarker *first = nullptr, *last = nullptr;
         for (const auto& marker : *song->markers) {
             if (marker.tempoBPM || marker.sourceRegionID || marker.unifiedRegionID) continue;
@@ -976,9 +1055,13 @@ bool Engine::advanceMultiLoop(double elapsed) {
     const auto* song = currentSong();
     if (!song || !transport_.playing) return false;
     // Detect crossing a start even if a busy UI delivered a long tick.
-    if (!transport_.multiLoop && song->markers) {
-        double boundary = song->duration + 1;
-        for (const auto& part : song->parts) for (const auto& loop : part.multiLoops) {
+    if (!transport_.multiLoop) {
+        double boundary = std::numeric_limits<double>::infinity();
+        for(const auto& part:song->parts) if(part.totalLoop.value_or(false) && part.startTime>=transport_.position && part.startTime<=transport_.position+elapsed) {
+            if(!transport_.ignoreNextEnd || part.startTime<*transport_.ignoreNextEnd) boundary=std::min(boundary,part.startTime);
+        }
+        if(song->markers) for (const auto& part : song->parts) for (const auto& loop : part.multiLoops) {
+            if(multiLoopsBypassed(*song,part)) continue;
             const TimelineMarker *a = nullptr, *b = nullptr;
             for (const auto& marker : *song->markers) if (!marker.tempoBPM && !marker.sourceRegionID && !marker.unifiedRegionID) {
                 if (marker.id == loop.marker1) a = &marker;

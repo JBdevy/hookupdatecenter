@@ -168,7 +168,7 @@ public struct DAWActionBindings: Codable, Equatable {
     }
     public mutating func setTrack(_ number: Int?, action: DAWAction) {
         guard let index = entries.firstIndex(where: { $0.action == action }) else { return }
-        entries[index].trackNumber = number.map { min(400, max(1, $0)) }
+        entries[index].trackNumber = number.map { min(Project.maximumTrackCount, max(1, $0)) }
     }
     public mutating func reset(_ action: DAWAction, kind: String? = nil) {
         guard let index = entries.firstIndex(where: { $0.action == action }) else { return }

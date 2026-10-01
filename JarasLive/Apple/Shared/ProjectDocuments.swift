@@ -87,6 +87,17 @@ import AppKit
                             throw ProjectError.invalid("The destination Video track no longer exists")
                         }
                     }
+                    #if os(macOS)
+                    var waveProject = show.snapshot.project
+                    if let index = waveProject.songs.firstIndex(where: { $0.id == song }) {
+                        for track in prepared.tracks {
+                            if let existing = waveProject.songs[index].tracks.firstIndex(where: { $0.id == track.id }) {
+                                waveProject.songs[index].tracks[existing].clips += track.clips
+                            } else { waveProject.songs[index].tracks.append(track) }
+                        }
+                        await preloadTimelineWaveforms(waveProject, at: destination)
+                    }
+                    #endif
                     try show.insertAudioTracks(prepared.tracks, song: song, project: projectID)
                 }
             } catch {
@@ -119,9 +130,41 @@ import AppKit
     private var addTarget: (project: Project, url: URL)?
     private let store: DocumentProjectStore
     let show: ShowController
+    #if os(macOS)
+    private var remoteProjectCatalog = DAWRemoteProjectCatalog()
+    private var remoteProjectError = ""
+    var remoteProjectBrowser: DAWRemoteState.ProjectBrowser {
+        let recent = remoteProjectCatalog.update(self.recent, current: currentURL)
+        let recording = TrackRecording.shared.recording || TrackRecording.shared.busy
+        let busy = self.busy || show.saving
+        let status = busy ? "Opening project…" : recording ? "Stop recording on the Mac to open a project." :
+            show.isPlaying ? "Stop playback to open a project." : ""
+        let error = !remoteProjectError.isEmpty ? remoteProjectError : missingAudioPrompt != nil ?
+            "Resolve missing audio on the Mac to continue." : self.error.isEmpty ? "" :
+            "Could not open the project. Check the Mac for details."
+        return .init(recent: recent, busy: busy,
+                     canOpen: !busy && !recording && !show.isPlaying && missingAudioPrompt == nil,
+                     status: status, error: error)
+    }
+    func openRemoteProject(_ id: UUID) {
+        remoteProjectError = ""
+        guard remoteProjectBrowser.canOpen else { return }
+        guard let url = remoteProjectCatalog.url(for: id) else {
+            remoteProjectError = "This project is no longer in the Mac’s recent projects."
+            return
+        }
+        guard url != currentURL?.standardizedFileURL else { return }
+        // The normal document transition flushes unsaved changes before replacing
+        // the project, and keeps the current project if saving or loading fails.
+        open(url)
+    }
+    #endif
     init(store: DocumentProjectStore, show: ShowController, preview: Bool) {
         self.store = store; self.show = show; ready = preview
         recent = (UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []).map { URL(fileURLWithPath: $0) }
+        #if os(macOS)
+        DAWRemoteHostBridge.documents = self
+        #endif
     }
     private func remember(_ url: URL) {
         ProjectDocumentAppearance.apply(to: url)
@@ -140,9 +183,34 @@ import AppKit
         }.value
         show.discardClosedHistory()
     }
+    private func preloadTimelineWaveforms(_ project: Project, at url: URL) async {
+        #if os(macOS)
+        let directory = url.deletingLastPathComponent()
+        let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
+            track.clips.compactMap { ($0.audioFile ?? track.audioFile).map { directory.appendingPathComponent($0.path) } }
+        }
+        status = "Preparing waveforms…"
+        await TimelineAudioWaveform.shared.preload(files) { done, total in
+            self.status = "Preparing waveforms… \(done)/\(total)"
+        }
+        let groups = project.songs.flatMap { song in
+            let folders = Set(song.tracks.compactMap(\.parentTrackID))
+            return song.tracks.filter { folders.contains($0.id) }.map { folder in
+                (folder: folder.id, sources: FolderWaveformCache.sources(song: song, folder: folder, directory: directory, missing: []))
+            }
+        }
+        await FolderWaveformCache.shared.preload(groups) { done, total in
+            self.status = "Preparing folder waveforms… \(done * 100 / max(1, total))%"
+        }
+        #endif
+    }
     private func activate(_ project: Project, at url: URL) async throws {
+        var project = project
+        if let global = GlobalProjectTiming.load() { global.apply(to: &project) }
+        else if let song = project.songs.first { GlobalProjectTiming(song: song).save() }
         try project.validate()
-        if ready && show.hasUnsavedChanges { try await show.flushProject() }
+        await preloadTimelineWaveforms(project, at: url)
+        if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
         if currentURL != url { try await cleanupClosedProject() }
         await store.select(url: url, id: project.id)
         try show.replaceProject(project)
@@ -163,9 +231,10 @@ import AppKit
     }
     private func finishOpening(_ project: Project, at url: URL) async throws {
         status = "Preparing waveforms…"
-        let enriched = try await Task.detached(priority: .userInitiated) {
+        var enriched = try await Task.detached(priority: .userInitiated) {
             try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent())
         }.value
+        for index in enriched.songs.indices { enriched.songs[index].ensureInitialTempoMarker() }
         if enriched != project { try await ProjectStore(url: url).save(enriched) }
         try await activate(enriched, at: url)
     }
@@ -313,14 +382,15 @@ import AppKit
                         let directory = url.deletingLastPathComponent()
                         for region in song.parts where !existingRegions.contains(region.id) && region.parentRegionID == nil {
                             try Task.checkCancellation()
-                            let detection = try ClickTempoDetector.markers(song: song, region: region) { file in
-                                try TimelineAudioWaveform.clickOnsets(directory.appendingPathComponent(file.path))
+                            let detection = try ClickTempoDetector.markersWithMeter(song: song, region: region) { file in
+                                try TimelineAudioWaveform.clickTransients(directory.appendingPathComponent(file.path)).map {
+                                    ClickTempoDetector.Transient(position: $0.position, peak: $0.peak, shape: $0.shape)
+                                }
                             }
                             if detection.markers.isEmpty {
                                 tempoWarnings.append("No stable Click tempo found for \(region.name).")
                             } else {
-                                if song.markers == nil { song.markers = [] }
-                                song.markers!.append(contentsOf: detection.markers)
+                                song.insertDetectedTempo(detection.markers)
                             }
                         }
                         project.songs[0] = song
@@ -339,6 +409,7 @@ import AppKit
                 if currentURL != url { try await cleanupClosedProject() }
                 // The new file is already saved. Do not save the old snapshot over it.
                 await store.select(url: url, id: result.0.id)
+                await preloadTimelineWaveforms(result.0, at: url)
                 try show.replaceProject(result.0)
                 StemAudioPlayback.shared.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
@@ -410,6 +481,9 @@ struct ProjectBrowserView: View {
     @State private var creating = false
     @State private var opening = false
     @State private var askingForBPM = false
+    #if os(iOS)
+    @State private var showingRemote = false
+    #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if let folders = documents.folderReview {
@@ -444,6 +518,9 @@ struct ProjectBrowserView: View {
                         documents.addProject()
                     }
                     action("Open Project", icon: "folder") { opening = true; creating = false }
+                    #if os(iOS)
+                    action("Remote", icon: "network") { showingRemote = true }
+                    #endif
                 }
                 if creating {
                     HStack {
@@ -472,6 +549,9 @@ struct ProjectBrowserView: View {
             .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
             .disabled(documents.busy || documents.show.isPlaying)
             .onChange(of: documents.opened) { _ in completed() }
+            #if os(iOS)
+            .fullScreenCover(isPresented: $showingRemote) { DAWRemoteClientView() }
+            #endif
             .onChange(of: documents.scan == nil) { done in if done && documents.ready { completed() } }
             .confirmationDialog("Detect BPM for each song?", isPresented: $askingForBPM, titleVisibility: .visible) {
                 Button("Yes") { documents.confirmImport(detectBPM: true) }
@@ -484,6 +564,151 @@ struct ProjectBrowserView: View {
 }
 
 #if os(macOS)
+/// Keep project controls in AppKit's titlebar without extending the timeline
+/// hosting view beneath it. Only this small host measures its content.
+struct ProjectTitlebarContent<Content: View>: NSViewRepresentable {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    func makeNSView(context: Context) -> ProjectTitlebarAnchor<Content> { ProjectTitlebarAnchor(content: content) }
+    func updateNSView(_ view: ProjectTitlebarAnchor<Content>, context: Context) { view.update(content) }
+    static func dismantleNSView(_ view: ProjectTitlebarAnchor<Content>, coordinator: ()) { view.detach() }
+}
+
+private final class ProjectTitlebarAccessory: NSTitlebarAccessoryViewController {
+    var originalTitleVisibility: NSWindow.TitleVisibility = .visible
+    var interactive = false
+    static func containsControl(at point: NSPoint, in window: NSWindow) -> Bool {
+        window.titlebarAccessoryViewControllers.contains { controller in
+            guard let accessory = controller as? ProjectTitlebarAccessory, accessory.interactive,
+                  !accessory.view.isHiddenOrHasHiddenAncestor else { return false }
+            return accessory.view.bounds.insetBy(dx: 8, dy: 0).contains(accessory.view.convert(point, from: nil))
+        }
+    }
+}
+
+private struct ProjectTitlebarHostedContent<Content: View>: View {
+    let content: Content
+    var body: some View { content.padding(.horizontal, 8).frame(height: 22).clipped() }
+}
+
+private final class ProjectTitlebarHostingView<Content: View>: NSHostingView<Content> {
+    var widthChanged: ((CGFloat) -> Void)?
+    private var publishedWidth: CGFloat = -1
+    private var measurementPending = false
+    override func layout() { super.layout(); measureWidth() }
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        measureWidth()
+    }
+    private func measureWidth() {
+        guard widthChanged != nil, !measurementPending else { return }
+        measurementPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.measurementPending = false
+            let width = self.intrinsicContentSize.width
+            guard width.isFinite, width > 0, abs(width - self.publishedWidth) > 0.5 else { return }
+            self.publishedWidth = width
+            self.widthChanged?(width)
+        }
+    }
+}
+
+private final class ProjectTitlebarVersionView: NSView {
+    static let text = "Jaras Live Version 1.00"
+    private let label = NSTextField(labelWithString: text)
+    var preferredWidth: CGFloat { ceil(label.intrinsicContentSize.width) + 20 }
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.textColor = .white
+        label.alignment = .right
+        label.lineBreakMode = .byClipping
+        addSubview(label)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(Self.text)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layout() {
+        super.layout()
+        let height = min(bounds.height, ceil(label.intrinsicContentSize.height))
+        label.frame = NSRect(x: 6, y: floor((bounds.height - height) / 2), width: max(0, bounds.width - 16), height: height)
+    }
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+final class ProjectTitlebarAnchor<Content: View>: NSView {
+    private let leading = ProjectTitlebarAccessory()
+    private let trailing = ProjectTitlebarAccessory()
+    private let host: ProjectTitlebarHostingView<ProjectTitlebarHostedContent<Content>>
+    private let version = ProjectTitlebarVersionView()
+    private weak var mountedWindow: NSWindow?
+    private var observers: [NSObjectProtocol] = []
+    private var preferredWidth: CGFloat = 500
+    init(content: Content) {
+        host = ProjectTitlebarHostingView(rootView: ProjectTitlebarHostedContent(content: content))
+        super.init(frame: .zero)
+        host.sizingOptions = [.intrinsicContentSize]
+        host.frame = NSRect(x: 0, y: 0, width: preferredWidth, height: 22)
+        host.widthChanged = { [weak self] width in self?.preferredWidth = width; self?.updateWidths() }
+        leading.layoutAttribute = .left; leading.view = host; leading.interactive = true
+        trailing.layoutAttribute = .right; trailing.view = version
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attach() }
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    func update(_ content: Content) {
+        host.rootView = ProjectTitlebarHostedContent(content: content)
+        attach()
+    }
+    private func attach() {
+        guard mountedWindow !== window else { return }
+        detach()
+        guard let window else { return }
+        mountedWindow = window
+        // SwiftUI can briefly retain the previous background during a root
+        // transition. Replace its accessories without losing the original title.
+        let previous = window.titlebarAccessoryViewControllers.compactMap { $0 as? ProjectTitlebarAccessory }
+        let original = previous.first?.originalTitleVisibility ?? window.titleVisibility
+        for index in window.titlebarAccessoryViewControllers.indices.reversed() {
+            if window.titlebarAccessoryViewControllers[index] is ProjectTitlebarAccessory { window.removeTitlebarAccessoryViewController(at: index) }
+        }
+        leading.originalTitleVisibility = original; trailing.originalTitleVisibility = original
+        window.titleVisibility = .hidden
+        updateWidths()
+        window.addTitlebarAccessoryViewController(leading)
+        window.addTitlebarAccessoryViewController(trailing)
+        observers = [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.updateWidths() }
+        }
+    }
+    private func updateWidths() {
+        guard let window = mountedWindow else { return }
+        let versionWidth = version.preferredWidth
+        let controlsRight = window.standardWindowButton(.zoomButton).map { $0.convert($0.bounds, to: nil).maxX } ?? 80
+        let available = max(0, window.frame.width - controlsRight - versionWidth - 60)
+        let width = min(650, max(0, min(preferredWidth, available)))
+        if abs(host.frame.width - width) > 0.5 { host.setFrameSize(NSSize(width: width, height: host.frame.height)) }
+        if abs(version.frame.width - versionWidth) > 0.5 { version.setFrameSize(NSSize(width: versionWidth, height: version.frame.height)) }
+    }
+    func detach() {
+        observers.forEach(NotificationCenter.default.removeObserver); observers = []
+        guard let window = mountedWindow else { return }
+        mountedWindow = nil
+        var removed = false
+        for index in window.titlebarAccessoryViewControllers.indices.reversed() {
+            let accessory = window.titlebarAccessoryViewControllers[index]
+            if accessory === leading || accessory === trailing { window.removeTitlebarAccessoryViewController(at: index); removed = true }
+        }
+        if removed, !window.titlebarAccessoryViewControllers.contains(where: { $0 is ProjectTitlebarAccessory }) {
+            window.titleVisibility = leading.originalTitleVisibility
+        }
+    }
+}
+
 struct ProjectWindowSizing: NSViewRepresentable {
     let editor: Bool
     let documents: ProjectDocuments
@@ -529,6 +754,7 @@ final class ProjectWindowAnchor: NSView {
             for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
                 if let button = window.standardWindowButton(kind), button.bounds.contains(button.convert(event.locationInWindow, from: nil)) { return event }
             }
+            if ProjectTitlebarAccessory.containsControl(at: event.locationInWindow, in: window) { return event }
             if event.type == .leftMouseDown, let screen = window.screen {
                 let available = screen.visibleFrame
                 let maximized = abs(window.frame.minX - available.minX) < 2 && abs(window.frame.minY - available.minY) < 2 && abs(window.frame.width - available.width) < 2 && abs(window.frame.height - available.height) < 2

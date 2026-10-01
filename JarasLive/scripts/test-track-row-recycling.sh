@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
 source=Path('Apple/Shared/TrackMixerRow.swift').read_text()
-start=source.index('struct TrackRecordSelectionExclusion:')
+start=source.index('struct TrackControlSelectionExclusion:')
 end=source.index('\n#endif',start)
 title_start=source.index('private struct TrackDragTitle:')
 title_end=source.index('\n#endif',title_start)

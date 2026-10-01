@@ -81,6 +81,8 @@ func frameRMS(_ data: Data) -> Double {
     precondition(audible > 0.1 && sourcePulls > 0, "an enabled route must deliver audio")
     JarasChannelRouter.setRenderEnabled(route, enabled: false)
     let before = sourcePulls
+    let releasePeak = try render()
+    precondition(releasePeak <= audible && buffer.floatChannelData![0][511] == 0, "stop performs its existing short de-click ramp before sleeping")
     for _ in 0..<8 {
         let silence = try render()
         precondition(silence == 0, "sleeping output remains digitally silent")
@@ -166,7 +168,120 @@ func testSpectrumWorker(rate: Double) {
     testSpectrumWorker(rate: rate)
     print("EQ_RTA_REAL_PCM_FFT_BOTH_HEADS_BYPASS_AND_CLOSED_CAPTURE_OK rate=\(rate) channels=\(channels)")
 }
+@MainActor func testItemFades() throws {
+    for rate in [44_100.0, 48_000.0] {
+        for offset in [0.0, 0.5, 1.0] {
+            let engine = AVAudioEngine(), player = AVAudioPlayerNode(), chain = NativeEffectsChain(reorderable: false)
+            let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+            engine.attach(player); chain.attach(to: engine, input: player, format: format)
+            engine.connect(chain.output, to: engine.mainMixerNode, format: format)
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+            var clip = AudioClip(id: UUID(), name: "Fade", startTime: 10, duration: 2)
+            clip.fadeIn = 1; clip.fadeOut = 1
+            // A tempo fragment retains the original item envelope.
+            if offset == 1 { clip.startTime = 11; clip.duration = 1; clip.fadeTimelineStart = 10; clip.fadeTimelineDuration = 2 }
+            chain.configureItemFade(clip, position: 10 + offset)
+            let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+            input.frameLength = 512
+            for channel in 0..<2 { for frame in 0..<512 { input.floatChannelData![channel][frame] = 0.6 } }
+            player.scheduleBuffer(input, at: nil, options: .loops)
+            try engine.start(); player.play()
+            let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+            var maximumError = 0.0
+            for block in 0..<Int(ceil((2 - offset) * rate / 512)) {
+                let status = try engine.renderOffline(512, to: output)
+                precondition(status == .success)
+                for frame in 0..<Int(output.frameLength) {
+                    let time = offset + Double(block * 512 + frame) / rate
+                    func curve(_ t: Double) -> Double { let x = min(1, max(0, t)); return x * x * (3 - 2 * x) }
+                    let expected = 0.6 * curve(time) * curve(2 - time)
+                    for channel in 0..<2 { maximumError = max(maximumError, abs(Double(output.floatChannelData![channel][frame]) - expected)) }
+                }
+            }
+            precondition(maximumError < 0.0001, "sample-clock fades differ from their drawn curve: \(maximumError)")
+            engine.stop()
+        }
+        print("ITEM_FADE_PCM_STEREO_SEEK_REPEAT_AND_TEMPO_FRAGMENT_OK rate=\(rate)")
+    }
+}
+@MainActor func testLimiter() throws {
+    var settings = NativeFXSettings()
+    precondition(settings.limiterEnabled != true && settings.limiterParameters.ceiling == -0.1)
+    settings.appendNative("Limiter")
+    settings.limiterParameters.ceiling = -6
+    settings.limiterParameters.inputGain = 12
+    try settings.validateForClip()
+    let duplicate = settings.appendNative("Limiter")
+    settings.instances?[0].settings.limiterParameters.ceiling = -9
+    let encoded = try JSONEncoder().encode(settings)
+    let decoded = try JSONDecoder().decode(NativeFXSettings.self, from: encoded)
+    precondition(decoded == settings && decoded.isEnabled(duplicate))
+    settings.setEnabled(duplicate, enabled: false)
+    precondition(settings.isEnabled("Limiter") && !settings.isEnabled(duplicate))
+    var oldJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(NativeFXSettings())) as! [String: Any]
+    oldJSON.removeValue(forKey: "limiter"); oldJSON.removeValue(forKey: "limiterEnabled")
+    let old = try JSONDecoder().decode(NativeFXSettings.self, from: JSONSerialization.data(withJSONObject: oldJSON))
+    precondition(!old.isEnabled("Limiter"))
+    for rate in [44100.0, 48000, 96000] {
+        for channels in [1, 2] {
+            let engine = AVAudioEngine()
+            let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: AVAudioChannelCount(channels))!
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+            let player = AVAudioPlayerNode(), limiter = JarasDynamics.makeLimiter()
+            engine.attach(player); engine.attach(limiter)
+            engine.connect(player, to: limiter, format: format)
+            engine.connect(limiter, to: engine.outputNode, format: format)
+            JarasDynamics.configureLimiter(limiter, enabled: true, gain: 12, ceiling: -6, release: 0.05)
+            JarasDynamics.setCompressorMeteringEnabled(limiter, enabled: true)
+            let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192)!
+            input.frameLength = 8192
+            for i in 0..<8192 {
+                // Alternating impulses straddle render-block boundaries.
+                let value: Float = i % 511 == 0 ? (i % 2 == 0 ? 3 : -3) : 0.7 * sin(Float(i)*0.3)
+                input.floatChannelData![0][i] = value
+                if channels == 2 { input.floatChannelData![1][i] = -0.25 * value }
+            }
+            player.scheduleBuffer(input); try engine.start(); player.play()
+            let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+            let ceiling = Float(pow(10.0, -6.0/20))
+            var highest: Float = 0
+            for _ in 0..<16 {
+                let status = try engine.renderOffline(512, to: output); precondition(status == .success)
+                for i in 0..<Int(output.frameLength) {
+                    let left = output.floatChannelData![0][i]
+                    precondition(left.isFinite && abs(left) <= ceiling + 0.000001, "ceiling must hold for the very first sample and block boundaries")
+                    highest = max(highest, abs(left))
+                    if channels == 2 { precondition(abs(output.floatChannelData![1][i] + left*0.25) < 0.000001, "stereo linking preserves image and phase") }
+                }
+            }
+            precondition(highest > ceiling * 0.999)
+            let meters = JarasDynamics.takeCompressorPeaks(limiter).map(\.floatValue)
+            precondition(meters[0] > 2 && meters[2] <= ceiling + 0.000001 && meters[2] > 0.49)
+            JarasDynamics.configureLimiter(limiter, enabled: false, gain: 12, ceiling: -6, release: 0.01)
+            let bypassInput = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate))!
+            bypassInput.frameLength = AVAudioFrameCount(rate)
+            for ch in 0..<channels { for i in 0..<Int(rate) { bypassInput.floatChannelData![ch][i] = 0.75 } }
+            player.scheduleBuffer(bypassInput)
+            for _ in 0..<Int(rate/512)-1 { let status = try engine.renderOffline(512, to: output); precondition(status == .success) }
+            let expected: Float = 0.75
+            precondition(abs(output.floatChannelData![0][400] - expected) < 0.00001, "bypass restores unprocessed audio: \(output.floatChannelData![0][400]) expected \(expected)")
+            engine.stop()
+        }
+        var chainSettings = NativeFXSettings(); chainSettings.appendNative("Limiter")
+        chainSettings.limiterParameters.inputGain = 12; chainSettings.limiterParameters.ceiling = -6
+        let limited = try render(chainSettings, rate: rate)
+        precondition(limited[0].map(abs).max()! <= Float(pow(10.0,-6.0/20)) + 0.000001)
+        chainSettings.appendNative("Limiter"); chainSettings.instances?[0].settings.limiterParameters.ceiling = -12
+        let twice = try render(chainSettings, rate: rate)
+        precondition(twice[0].map(abs).max()! <= Float(pow(10.0,-12.0/20)) + 0.000001, "duplicate limiter is processed in chain")
+    }
+    print("JARAS_LIMITER_CEILING_TRANSIENTS_MONO_STEREO_BYPASS_INSTANCES_AND_PROJECT_ROUNDTRIP_OK")
+}
+
 @MainActor func run() throws {
+    try testLimiter()
+    setbuf(stdout, nil)
+    try testItemFades()
     try testIdleRouteGate()
     for rate in [44100.0,48000.0] {
         try testEQCapture(rate: rate)

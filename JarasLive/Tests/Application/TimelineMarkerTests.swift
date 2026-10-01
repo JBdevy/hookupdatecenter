@@ -2,6 +2,18 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineMarkerTests: XCTestCase {
+    func testLeftFacingTempoHeadsUseTheSpaceBeforeTheirOwnLine() {
+        let origin = TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0x999999, tempoBPM: 120)
+        let first = TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0x999999, tempoBPM: 120)
+        let second = TimelineMarker(id: UUID(), name: "Tempo", position: 12, color: 0x999999, tempoBPM: 120)
+        let measured = [origin.id: 50.0, first.id: 50.0, second.id: 50.0]
+        let heads = TimelineMarker.flagWidths([second, origin, first], scale: 20, widths: measured, facesLeft: true)
+        XCTAssertEqual(heads[origin.id], 60)
+        XCTAssertEqual(heads[first.id], 60)
+        XCTAssertEqual(heads[second.id], 37)
+        XCTAssertGreaterThanOrEqual(10 * 20 - heads[first.id]!, heads[origin.id]! + 3)
+        XCTAssertEqual(12 * 20 - heads[second.id]!, 10 * 20 + 3)
+    }
     func testLastFlagNeverCrossesItsNormalOrUnifiedRegionEnd() {
         var song = Project.empty(name: "Flags").songs[0]
         let ordinary = Part(id: UUID(), name: "Normal", startTime: 10, endTime: 15)

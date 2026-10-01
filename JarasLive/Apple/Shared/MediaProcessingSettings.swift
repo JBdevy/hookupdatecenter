@@ -5,11 +5,11 @@ struct MediaProcessingFormat {
     var format: AudioExportFormat
     var bitDepth: Int
     var bitrate: Int
-    var recordingKey: String { format == .mp3 ? "mp3-\(bitrate)" : format.fileExtension + (bitDepth == 32 ? "32pcm" : "24pcm") }
+    var recordingKey: String { format == .mp3 ? "mp3-\(bitrate)" : format.fileExtension + "\(bitDepth)pcm" }
     static func load(_ scope: String, preferences: UserDefaults = .standard) -> Self {
         let root = "jaras.media." + scope + "."
         return Self(format: AudioExportFormat(rawValue: preferences.string(forKey: root + "format") ?? "WAV") ?? .wav,
-                    bitDepth: preferences.integer(forKey: root + "bits") == 32 ? 32 : 24,
+                    bitDepth: [16,24,32].contains(preferences.integer(forKey: root + "bits")) ? preferences.integer(forKey: root + "bits") : 24,
                     bitrate: [128,160,192,224,256,320].contains(preferences.integer(forKey: root + "bitrate")) ? preferences.integer(forKey: root + "bitrate") : 320)
     }
     var encoding: AudioExportEncoding { AudioExportEncoding(format: format, bitDepth: bitDepth, bitrate: bitrate) }
@@ -31,7 +31,7 @@ struct MediaProcessingFormatEditor: View {
                 }.labelsHidden().frame(width: 160)
             } else {
                 Picker("Bit depth", selection: $bits) {
-                    Text("24-bit PCM").tag(24); Text("32-bit PCM").tag(32)
+                    Text("16-bit PCM").tag(16); Text("24-bit PCM").tag(24); Text("32-bit PCM").tag(32)
                 }.labelsHidden().frame(width: 160)
             }
         }.onAppear {

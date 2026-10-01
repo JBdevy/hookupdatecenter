@@ -159,7 +159,7 @@ struct RegionRightClick: NSViewRepresentable {
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
     func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.drag = drag; view.resizable = resizable; view.seek = seek }
 }
-final class RegionRightClickView: NSView {
+final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
     var detectBPM: (() -> Void)?
     var unify: (() -> Void)?
@@ -174,12 +174,26 @@ final class RegionRightClickView: NSView {
         }
     } }
     private var startX: CGFloat?
+    private var startY: CGFloat = 0
     private var edge = 0
     private var activeDrag: ((CGFloat, Bool, Int) -> Void)?
     private var activeSeek: (() -> Void)?
+    private var activeDelete: (() -> Void)?
     private var didDrag = false
     private var hoverEdge = 0 { didSet { if hoverEdge != oldValue { needsDisplay = true } } }
     private var tracking: NSTrackingArea?
+    private var inputAvailable: Bool { !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        timelineInputGateChanged(blocked: true)
+        if window != nil { NativeTimelineInputGate.shared.add(self) }
+    }
+    func timelineInputGateChanged(blocked: Bool) {
+        if blocked { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false }
+    }
+    func timelinePendingClickCancelled() {
+        if !didDrag { timelineInputGateChanged(blocked: true) }
+    }
     override var isFlipped: Bool { true }
     private var edgeWidth: CGFloat { min(34, max(0, (bounds.width - 8) / 2)) }
     private func edge(at x: CGFloat) -> Int {
@@ -233,30 +247,38 @@ final class RegionRightClickView: NSView {
     @objc private func editSelected() { edit?() }
     @objc private func disunifySelected() { disunify?() }
     override func mouseDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; rightMouseDown(with: event) }
+        guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
+        if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }
         else {
             startX = event.locationInWindow.x
+            startY = event.locationInWindow.y
             let x = convert(event.locationInWindow, from: nil).x
-            edge = edge(at: x)
+            let deleting = event.modifierFlags.contains(.option)
+            edge = deleting ? 0 : edge(at: x)
             hoverEdge = edge
-            activeDrag = drag
-            activeSeek = seek; didDrag = false
+            activeDelete = deleting ? delete : nil
+            activeDrag = deleting ? nil : drag
+            activeSeek = deleting ? nil : seek; didDrag = false
         }
     }
     override func mouseDragged(with event: NSEvent) {
+        guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         if let startX {
             let delta = event.locationInWindow.x - startX
-            if abs(delta) >= (edge == 0 ? 3 : 0.5) { didDrag = true }
+            if abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { didDrag = true }
             if didDrag { activeDrag?(delta, false, edge) }
         }
     }
     override func mouseUp(with event: NSEvent) {
+        guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         if let startX {
             let delta = event.locationInWindow.x - startX
-            if didDrag || abs(delta) >= (edge == 0 ? 3 : 0.5) { activeDrag?(delta, true, edge) }
-            else { activeSeek?() }
+            if didDrag || abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { activeDrag?(delta, true, edge) }
+            else if let activeDelete {
+                if bounds.contains(convert(event.locationInWindow, from: nil)) { activeDelete() }
+            } else { activeSeek?() }
         }
-        startX = nil; activeDrag = nil; activeSeek = nil; didDrag = false
+        startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false
         hoverEdge = edge(at: convert(event.locationInWindow, from: nil).x)
     }
 }
@@ -268,11 +290,18 @@ struct MarkerEditAnchor: NSViewRepresentable {
     func makeNSView(context: Context) -> MarkerEditClickView { MarkerEditClickView() }
     func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag }
 }
-final class MarkerEditClickView: RightClickTargetView {
+final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserver {
     private static let cursorTargets = NSHashTable<MarkerEditClickView>.weakObjects()
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { Self.cursorTargets.add(self) }
+        timelineInputGateChanged(blocked: true)
+        if window != nil { Self.cursorTargets.add(self); NativeTimelineInputGate.shared.add(self) }
+    }
+    func timelineInputGateChanged(blocked: Bool) {
+        if blocked { startX = nil; activeDrag = nil; activeSeek = nil; didDrag = false }
+    }
+    func timelinePendingClickCancelled() {
+        if !didDrag { timelineInputGateChanged(blocked: true) }
     }
     static func usesMoveCursor(for event: NSEvent) -> Bool {
         cursorTargets.allObjects.contains { view in
@@ -285,12 +314,13 @@ final class MarkerEditClickView: RightClickTargetView {
         if (drag != nil) != (oldValue != nil) { window?.invalidateCursorRects(for: self) }
     } }
     private var startX: CGFloat?
+    private var startY: CGFloat = 0
     private var activeDrag: ((CGFloat, Bool) -> Void)?
     private var activeSeek: (() -> Void)?
     private var didDrag = false
     private var tracking: NSTrackingArea?
     private var inputAvailable: Bool {
-        !interactionBlocked && !RightClickRouter.shared.interactionBlocked && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
+        !interactionBlocked && !RightClickRouter.shared.interactionBlocked && !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
     }
     override func resetCursorRects() {
         if drag != nil, inputAvailable { addCursorRect(bounds, cursor: .resizeLeftRight) }
@@ -320,28 +350,29 @@ final class MarkerEditClickView: RightClickTargetView {
         return self
     }
     override func mouseDown(with event: NSEvent) {
-        guard !interactionBlocked, !RightClickRouter.shared.interactionBlocked, window?.attachedSheet == nil,
+        timelineInputGateChanged(blocked: true)
+        guard inputAvailable,
               !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) else { return }
         // Capture the original callback and window coordinates: moving the
         // display during preview must never change the gesture's origin.
-        if let drag {
-            startX = event.locationInWindow.x
-            activeDrag = drag; activeSeek = seek; didDrag = false
-        } else { seek?() }
+        startX = event.locationInWindow.x
+        startY = event.locationInWindow.y
+        activeDrag = drag; activeSeek = seek; didDrag = false
     }
     override func mouseDragged(with event: NSEvent) {
+        guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
         guard let startX else { return }
         let delta = event.locationInWindow.x - startX
-        if abs(delta) >= 3 { didDrag = true }
+        if hypot(delta, event.locationInWindow.y - startY) >= 3 { didDrag = true }
         if didDrag { activeDrag?(delta, false) }
     }
     override func mouseUp(with event: NSEvent) {
         guard let startX else { return }
         let delta = event.locationInWindow.x - startX
         let finish = activeDrag, click = activeSeek
-        let moved = didDrag || abs(delta) >= 3
+        let moved = didDrag || hypot(delta, event.locationInWindow.y - startY) >= 3
         self.startX = nil; activeDrag = nil; activeSeek = nil; didDrag = false
-        if moved { finish?(delta, true) }
+        if moved && inputAvailable { finish?(delta, true) }
         else if inputAvailable { click?() }
     }
 }

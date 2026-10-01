@@ -4,6 +4,7 @@ import Foundation
 /// or EQ bands change order. They never identify a band by its array position.
 public struct NativeFXParameter: Codable, Equatable {
     public enum Key: String, Codable {
+        case limiterGain, limiterCeiling, limiterRelease
         case pitchSemitones
         case enabled, threshold, ratio, makeup, attack, release
         case delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut, reverbRoom
@@ -44,6 +45,9 @@ public struct NativeFXParameter: Codable, Equatable {
         switch key {
         case .enabled: settings.setEnabled(effect, enabled: enabled)
         case .pitchSemitones: settings.pitchSemitones = min(12, max(-12, value.rounded()))
+        case .limiterGain: settings.limiterParameters.inputGain = min(24, max(-24, value))
+        case .limiterCeiling: settings.limiterParameters.ceiling = min(0, max(-24, value))
+        case .limiterRelease: settings.limiterParameters.release = min(3, max(0.01, value))
         case .threshold: settings.threshold = value
         case .ratio: settings.ratio = value
         case .makeup: settings.makeup = value

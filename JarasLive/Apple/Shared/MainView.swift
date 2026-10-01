@@ -3,15 +3,34 @@ import UniformTypeIdentifiers
 import Combine
 enum SidebarWidthLimits {
     static let trackMixer: CGFloat = 230
-    static let setlist: CGFloat = 277
+    static let setlistDefault: CGFloat = 335.63671875
+    #if os(macOS)
+    static let setlist: CGFloat = setlistDefault - 30
+    #else
+    static let setlist: CGFloat = setlistDefault
+    #endif
+}
+private struct WorkspaceProjectIdentity: Hashable {
+    let project: UUID
+    let document: URL?
+    let missingAudioPaths: Set<String>
+    let remotePresentation: Bool
 }
 struct MainView: View {
     @ObservedObject private var recording = TrackRecording.shared
     @ObservedObject private var mappings = ControlMappings.shared
     let show: ShowController
-    @ObservedObject var auth: AuthService
+    var remotePresentation = false
+    let auth: AuthService
     let backend: MockBackendClient
     @ObservedObject var documents: ProjectDocuments
+    private var desktopExtras: Bool {
+        #if os(macOS)
+        return !remotePresentation
+        #else
+        return false
+        #endif
+    }
     private enum Panel: String, Identifiable { case projects, settings; var id: String { rawValue } }
     @State private var panel: Panel?
     @State private var trackEdit: TrackDetailsEditRequest?
@@ -31,8 +50,17 @@ struct MainView: View {
     #if os(macOS)
     @State private var setlistScrollController = SidebarScrollController()
     #endif
-    @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlist)
+    @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
     @AppStorage("jaras.setlistRestoreWidth") private var setlistRestoreWidth = 240.0
+    init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: MockBackendClient, documents: ProjectDocuments) {
+        self.show = show; self.remotePresentation = remotePresentation
+        self.auth = auth; self.backend = backend; self.documents = documents
+        let prefix = remotePresentation ? "jaras.remote." : "jaras."
+        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
+        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : 248, prefix + "trackColumnRestoreWidth")
+        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth")
+        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth")
+    }
     private func toggleMixer() {
         Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
     }
@@ -45,17 +73,22 @@ struct MainView: View {
     }
     var body: some View {
         HStack(spacing: 0) {
+            #if os(macOS)
+            leftToolRail
+            #endif
             VStack(spacing: 0) {
-                TransportView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
+                TransportView(show: show, remotePresentation: remotePresentation, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
                     #if os(macOS)
                     GeometryReader { geometry in
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
                             minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
+                            contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
+                                missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation),
                             onToggle: toggleSetlist, onEnd: { finalWidth in
                                 if finalWidth > 0 { setlistRestoreWidth = finalWidth }
                                 setlistWidth = finalWidth
                             }) {
-                            TimelineGridView(show: show, documents: documents, toggleMixer: toggleMixer)
+                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
                                 .foregroundStyle(JarasTheme.text)
                         } trailing: {
                             SongListView(show: show, sidebarScrollController: setlistScrollController)
@@ -64,33 +97,66 @@ struct MainView: View {
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #else
                     HStack(spacing: 1) {
-                        TimelineGridView(show: show, documents: documents, toggleMixer: toggleMixer)
+                        TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
                         SongListView(show: show).frame(width: 220)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #endif
-                FooterMixerPanel(show: show, active: footerMixerOpen, maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)))
+                // Preserve the mixer's established expansion range while leaving
+                // space for the transport and the top of the timeline/Setlist.
+                if desktopExtras {
+                FooterMixerPanel(show: show, active: footerMixerOpen,
+                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)))
                 FooterPianoKeyboard(active: keyboardOpen).frame(height: 108)
                     .frame(height: keyboardOpen ? 108 : 0, alignment: .top).clipped().allowsHitTesting(keyboardOpen).accessibilityHidden(!keyboardOpen)
+                }
                 GeometryReader { geometry in
-                    let displayWidth = min(300, max(0, geometry.size.width - 320))
+                    #if os(macOS)
+                    let displayWidth = min(300, geometry.size.width * 0.25)
                     let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
                     HStack(spacing: 0) {
-                        HStack(spacing: 10) {
-                            ResourceUsageView().fixedSize()
-                            Button { footerMixerOpen.toggle() } label: { Image(systemName: "slider.vertical.3").font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 25).contentShape(Rectangle()) }
-                                .foregroundStyle(footerMixerOpen ? JarasTheme.green : JarasTheme.text).jarasHelp("Barra Mixer").accessibilityLabel("Barra Mixer")
-                            Button { keyboardOpen.toggle() } label: { Image(systemName: "pianokeys").font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 25).contentShape(Rectangle()) }
-                                .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text).jarasHelp("Keyboard").accessibilityLabel("Keyboard")
-                                .immediateRightClick { keyboardSettings = true }
-                                .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
-                        }.buttonStyle(.plain).frame(width: sideWidth, alignment: .leading).clipped()
-                        FooterInformationDisplay(show: show, status: documents.importingAudio ? documents.status : "").frame(width: displayWidth)
+                        ResourceUsageView().frame(width: sideWidth, alignment: .leading)
+                        FooterInformationDisplay(show: show).frame(width: displayWidth)
                         AudioStatusView().frame(width: sideWidth, alignment: .trailing)
+                    }.buttonStyle(.plain).frame(height: 27)
+                    #else
+                    let displayWidth = min(300, max(0, geometry.size.width - 320))
+                    let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
+                    let audioWidth = min(230, max(100, sideWidth * 0.4))
+                    HStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            ResourceUsageView().frame(width: 114, alignment: .leading)
+                            #if os(macOS)
+                            Text(verbatim: "|").foregroundStyle(JarasTheme.secondary)
+                            AudioStatusView().frame(width: audioWidth, alignment: .leading)
+                            #endif
+                            FooterProjectNameDisplay(show: show, documents: documents)
+                                #if os(macOS)
+                                .frame(width: min(315, max(0, sideWidth - audioWidth - 154)), alignment: .leading)
+                                #else
+                                .frame(maxWidth: .infinity)
+                                #endif
+                        }.buttonStyle(.plain).padding(.trailing, 14).frame(width: sideWidth, alignment: .leading).clipped()
+                        FooterInformationDisplay(show: show).frame(width: displayWidth)
+                        #if os(macOS)
+                        Color.clear.frame(width: sideWidth)
+                        #else
+                        AudioStatusView().frame(width: sideWidth, alignment: .trailing)
+                        #endif
                     }.frame(height: 27)
+                    #endif
                 }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
 
             }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).scrollIndicators(.hidden)
+            #if os(macOS)
+            .background(ProjectTitlebarContent {
+                FooterProjectNameDisplay(show: show, documents: documents, titlebar: true)
+                    .foregroundStyle(JarasTheme.text)
+                    .environment(\.locale, Locale(identifier: language))
+                    .preferredColorScheme(.dark)
+            })
+            #endif
+            .overlay { ProjectNoticePresenter(show: show) }
             .background { GeometryReader { geometry in Color.clear.preference(key: MixerWorkspaceHeightKey.self, value: geometry.size.height) } }
             .onPreferenceChange(MixerWorkspaceHeightKey.self) { workspaceHeight = $0 }
             .overlay(alignment: .top) {
@@ -179,6 +245,10 @@ struct MainView: View {
                 #endif
             }
             .onAppear {
+                guard !remotePresentation else { return }
+                #if os(macOS)
+                DAWRemoteHostBridge.bind(show)
+                #endif
                 mappings.bind(show)
                 show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
                     Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.trackMixer)
@@ -189,10 +259,11 @@ struct MainView: View {
             }
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
                 #if os(macOS)
-                RightClickRouter.shared.interactionBlocked = blocked
+                if !remotePresentation { RightClickRouter.shared.interactionBlocked = blocked }
                 #endif
             }
             .onDisappear {
+                guard !remotePresentation else { return }
                 show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}
                 #if os(macOS)
                 FXWindows.shared.closeAll()
@@ -237,6 +308,60 @@ struct MainView: View {
                 .environment(\.locale, Locale(identifier: language))
             }
     }
+    #if os(macOS)
+    private var leftToolRail: some View {
+        VStack(spacing: 8) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() }
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16))
+                    .frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Menu")
+            .jarasHelp("Menu")
+            Button(action: toggleMixer) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(mixerWidth <= 0 ? Color(hex: 0xc44545) : JarasTheme.green)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
+            .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
+            Spacer(minLength: 0)
+            if desktopExtras {
+            Button { footerMixerOpen.toggle() } label: {
+                Image(systemName: "slider.vertical.3")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .foregroundStyle(footerMixerOpen ? JarasTheme.green : JarasTheme.text)
+            .accessibilityLabel("Barra Mixer")
+            .jarasHelp("Barra Mixer")
+            Button { keyboardOpen.toggle() } label: {
+                Image(systemName: "pianokeys")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text)
+            .accessibilityLabel("Keyboard")
+            .jarasHelp("Keyboard")
+            .immediateRightClick { keyboardSettings = true }
+            .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 7)
+        .frame(width: 32)
+        .frame(maxHeight: .infinity)
+        .background(JarasTheme.panel)
+        .overlay(alignment: .trailing) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(width: 1) }
+    }
+    #endif
     private var navigationLayer: some View {
         Group {
             if navigationOpen {
@@ -526,5 +651,101 @@ private struct KeyboardSettingsView: View {
             #if os(macOS)
             .onExitCommand { dismiss() }
             #endif
+    }
+}
+
+/// Observes transient modal notices without rebuilding the workspace for them.
+private struct ProjectNoticePresenter: View {
+    @ObservedObject var show: ShowController
+    var body: some View {
+        Color.clear.allowsHitTesting(false)
+            .alert(Text(verbatim: show.modalNotice.map { JarasLocalization.string($0) } ?? ""), isPresented: Binding(
+                get: { show.modalNotice != nil }, set: { if !$0 { show.modalNotice = nil } })) {
+                Button("OK") { show.modalNotice = nil }.keyboardShortcut(.defaultAction)
+            }
+    }
+}
+
+private struct FooterProjectNameDisplay: View {
+    @ObservedObject var show: ShowController
+    @ObservedObject var documents: ProjectDocuments
+    var titlebar = false
+    @State private var showingBackups = false
+    @State private var backups: [(url: URL, date: Date)] = []
+    @State private var loadingBackups = false
+    @State private var backupError = ""
+    @State private var savedDate = ""
+    private var timestamp: String { show.lastSavedAt ?? show.snapshot.project.updatedAt }
+    private var label: String { "\(JarasLocalization.string("Session")) - \(show.snapshot.project.name) - \(savedDate)" }
+    private static let iso = ISO8601DateFormatter()
+    private static let fractional: ISO8601DateFormatter = {
+        let value = ISO8601DateFormatter(); value.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return value
+    }()
+    private static let displayDate: DateFormatter = {
+        let value = DateFormatter(); value.locale = Locale(identifier: "en_US_POSIX"); value.dateFormat = "dd/MM/yyyy HH:mm"; return value
+    }()
+    private func updateDate() {
+        savedDate = (Self.iso.date(from: timestamp) ?? Self.fractional.date(from: timestamp)).map { Self.displayDate.string(from: $0) } ?? "—"
+    }
+    private func loadBackups() async {
+        guard let document = documents.currentURL else { backups = []; return }
+        loadingBackups = true; backupError = ""
+        defer { loadingBackups = false }
+        do {
+            backups = try await Task.detached(priority: .userInitiated) {
+                try ProjectBackups.migrateLegacyNames(for: document)
+                let folder = ProjectBackups.mediaDirectory(for: document).appendingPathComponent("backups", isDirectory: true)
+                guard FileManager.default.fileExists(atPath: folder.path) else { return [(url: URL, date: Date)]() }
+                let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])
+                return try entries.filter { $0.pathExtension.lowercased() == "bkjl" }.compactMap { url -> (url: URL, date: Date)? in
+                    let properties = try url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+                    guard properties.isRegularFile == true else { return nil }
+                    return (url, ProjectBackups.date(for: url))
+                }.sorted { $0.date == $1.date ? $0.url.lastPathComponent > $1.url.lastPathComponent : $0.date > $1.date }.prefix(10).map { $0 }
+            }.value
+        } catch { backupError = error.localizedDescription }
+    }
+    private var backupList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent backups").font(.headline)
+            if loadingBackups { ProgressView() }
+            else if !backupError.isEmpty { Text(verbatim: backupError).foregroundStyle(.red) }
+            else if backups.isEmpty { Text("No backups found").foregroundStyle(.secondary) }
+            else {
+                ScrollView {
+                    VStack(spacing: 5) {
+                        ForEach(backups, id: \.url) { backup in
+                            Button {
+                                showingBackups = false
+                                documents.open(backup.url)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(verbatim: backup.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                                    Text(verbatim: Self.displayDate.string(from: backup.date)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(documents.busy || show.isPlaying || TrackRecording.shared.recording || TrackRecording.shared.busy)
+                        }
+                    }
+                }.frame(height: min(410, CGFloat(backups.count) * 56))
+            }
+        }.padding(16).frame(width: 430).task { await loadBackups() }
+    }
+    var body: some View {
+        Button { showingBackups.toggle() } label: {
+        HStack(spacing: 3) {
+            Text("Session").fixedSize()
+            Text(verbatim: "-").fixedSize()
+            Text(verbatim: show.snapshot.project.name).lineLimit(1).truncationMode(.middle)
+            Text(verbatim: "- \(savedDate)").fixedSize()
+        }.font(.system(size: titlebar ? 11 : 10, weight: titlebar ? .medium : .bold)).lineLimit(1)
+            .padding(.horizontal, titlebar ? 0 : 7).frame(maxWidth: .infinity, alignment: .leading).frame(height: 21)
+            .background(titlebar ? Color.clear : JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(titlebar ? Color.clear : JarasTheme.line))
+            .jarasHelp(label)
+            .accessibilityElement(children: .ignore).accessibilityLabel("Project name").accessibilityValue(label)
+            .onAppear(perform: updateDate).onChange(of: timestamp) { _ in updateDate() }
+        }.buttonStyle(.plain)
+            .popover(isPresented: $showingBackups, arrowEdge: titlebar ? .bottom : .top) { backupList }
     }
 }

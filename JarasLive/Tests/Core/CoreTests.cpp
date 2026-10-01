@@ -276,15 +276,15 @@ int main() {
     expect(videoFolderRejected, "managed video media cannot be loaded as a standard audio item");
     Project capacityProject = editable;
     capacityProject.songs[0].tracks.clear();
-    for (int index = 0; index < 400; ++index) capacityProject.songs[0].tracks.push_back({"capacity-" + std::to_string(index), "Track", {"other"}});
+    for (int index = 0; index < 1000; ++index) capacityProject.songs[0].tracks.push_back({"capacity-" + std::to_string(index), "Track", {"other"}});
     validate(capacityProject);
     Engine trackCapacity; trackCapacity.loadProject(capacityProject);
     bool capacityRejected = false; try { trackCapacity.addTrack("extra-capacity", "Extra", {"other"}); } catch (...) { capacityRejected = true; }
-    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 400, "native track creation cannot exceed global 400 track capacity");
+    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "native track creation cannot exceed global 1000 track capacity");
     Track capacityImport{"extra-capacity", "Extra", {"other"}};
     capacityImport.clips.push_back({"capacity-clip", "Audio", 0, 1});
     capacityRejected = false; try { trackCapacity.insertAudioTracks("one", {capacityImport}); } catch (...) { capacityRejected = true; }
-    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 400, "audio import cannot bypass track capacity");
+    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "audio import cannot bypass track capacity");
     capacityProject.songs[1].tracks.push_back({"extra-capacity", "Extra", {"other"}});
     capacityRejected = false; try { validate(capacityProject); } catch (...) { capacityRejected = true; }
     expect(capacityRejected, "track capacity applies across the whole project");
@@ -346,8 +346,17 @@ int main() {
     expect(editor.project().songs[0].parts[0].name == "Edited region" && editor.project().songs[0].parts[0].color == 0x12ABEF, "region name and RGB color are editable");
     editor.regionFromClip("clip", "region-again");
     expect(editor.project().songs[0].parts.size() == 1, "reselecting does not duplicate a region");
+    editor.resizeRegion("region",2,4);
+    editor.regionFromClip("clip","same-start-different-end");
+    expect(editor.currentSong()->parts.size()==1 && editor.currentSong()->parts[0].endTime==4,"same region start is blocked even when the end differs");
+    editor.resizeRegion("region",2,5);
+
     editor.execute({CommandKind::play}); editor.advance(1);
     editor.setMarker("manual-delete", "Manual", 2, 0x00ff88);
+    bool duplicateMarker=false;
+    try { editor.setMarker("manual-duplicate","Duplicate",2,0x00ff88); } catch(...) { duplicateMarker=true; }
+    expect(duplicateMarker && editor.currentSong()->markers->size()==1,"duplicate marker creation is rejected atomically");
+
     const auto* unchangedTracks = editor.project().songs[0].tracks.data();
     editor.deleteManualMarker("manual-delete");
     expect(editor.project().songs[0].markers->empty() && editor.transport().playing && editor.transport().position == 1, "manual marker deletion preserves running transport");
@@ -436,6 +445,31 @@ int main() {
     regionLists.blocks = std::vector<SetlistBlock>{{"block1", "one", "playlist", "Bloco 01", 0x45c68b, "r2"}};
     regionShow.regionSetlist = regionLists;
     expect(!regionLists.prepareWithoutPlayback.value_or(false), "prepare without playback is off by default");
+    for (bool automaticQueue : {false, true}) {
+        auto clickProject = regionShow; clickProject.regionSetlist->autoAdvance = automaticQueue;
+        Engine clicks; clicks.loadProject(clickProject);
+        clicks.execute({CommandKind::selectRegion, "r1"}); clicks.execute({CommandKind::play});
+        if (!automaticQueue) clicks.execute({CommandKind::queueRegion, "r2"});
+        clicks.execute({CommandKind::loopStart, "", 2}); clicks.execute({CommandKind::loopEnd, "", 5}); clicks.execute({CommandKind::toggleLoop});
+        clicks.advance(0.25);
+        const auto before = clicks.transport();
+        clicks.execute({CommandKind::queueRegion, "r1"});
+        expect(clicks.transport().queuedRegionId == "r2" && clicks.transport().queueStartedAt == before.queueStartedAt &&
+               clicks.transport().position == before.position && clicks.transport().subPlay.position == before.subPlay.position,
+               "clicking the playing region preserves the manual/automatic queue, countdown and both cursors");
+        expect(clicks.project().regionSetlist->autoAdvance == automaticQueue, "playing region click preserves Auto");
+        clicks.execute({CommandKind::queueRegion, "r2"});
+        expect(!clicks.transport().queuedRegionId && !clicks.project().regionSetlist->autoAdvance,
+               "clicking the queued region removes it and disables Auto");
+        expect(clicks.transport().playing && clicks.transport().position == before.position && clicks.transport().regionId == "r1" &&
+               clicks.transport().loop.enabled && clicks.transport().loop.start == 2 && clicks.transport().loop.end == 5,
+               "queue cancellation preserves playback and Repeat, unlike Escape");
+        clicks.advance(0.25);
+        expect(!clicks.transport().queuedRegionId, "a cancelled automatic queue stays cancelled on the next transport tick");
+        clicks.execute({CommandKind::queueRegion, "r2"});
+        expect(clicks.transport().queuedRegionId == "r2" && !clicks.project().regionSetlist->autoAdvance,
+               "the cancelled song can be queued again manually without enabling Auto");
+    }
     for (bool automaticQueue : {false, true}) {
         auto crossProject = regionShow; crossProject.regionSetlist->autoAdvance = automaticQueue;
         crossProject.regionSetlist->automaticSubplay = true; crossProject.regionSetlist->automaticSubplaySeconds = 1;
@@ -667,16 +701,20 @@ int main() {
     expect(drawerPlayback.transport().queuedRegionId == "after-group", "Auto skips the whole unified drawer when playing a child");
     drawerPlayback.advance(35);
     expect(drawerPlayback.transport().playing && drawerPlayback.transport().position == 45 && drawerPlayback.transport().regionId == "child-one" && drawerPlayback.transport().queuedRegionId == "after-group", "internal marker and child end never trigger a queued jump");
-    bool sameDrawerRejected = false;
-    try { drawerPlayback.execute({CommandKind::queueRegion, "child-two"}); } catch (...) { sameDrawerRejected = true; }
-    expect(sameDrawerRejected && drawerPlayback.transport().queuedRegionId == "after-group", "same drawer queue rejects atomically during child playback");
+    drawerPlayback.execute({CommandKind::queueRegion, "child-two"});
+    drawerPlayback.execute({CommandKind::queueRegion, "unified"});
+    expect(drawerPlayback.transport().queuedRegionId == "after-group" && drawerPlayback.project().regionSetlist->autoAdvance,
+           "clicking the displayed playing child or collapsed parent preserves the external queue");
     drawerPlayback.execute({CommandKind::stopAll}); drawerPlayback.execute({CommandKind::selectRegion, "unified"}); drawerPlayback.execute({CommandKind::play});
-    sameDrawerRejected = false;
+    bool sameDrawerRejected = false;
     try { drawerPlayback.execute({CommandKind::queueRegion, "child-two"}); } catch (...) { sameDrawerRejected = true; }
     expect(sameDrawerRejected, "parent playback cannot queue its own child");
     drawerPlayback.execute({CommandKind::stopAll}); drawerPlayback.execute({CommandKind::selectRegion, "after-group"}); drawerPlayback.execute({CommandKind::play});
     drawerPlayback.execute({CommandKind::queueRegion, "child-two"});
     expect(drawerPlayback.transport().queuedRegionId == "child-two", "other regions can queue a drawer song");
+    drawerPlayback.execute({CommandKind::queueRegion, "unified"});
+    expect(!drawerPlayback.transport().queuedRegionId && !drawerPlayback.project().regionSetlist->autoAdvance,
+           "clicking the collapsed queued parent cancels its queued child and disables Auto");
     drawerPlayback.execute({CommandKind::stopAll}); drawerPlayback.execute({CommandKind::selectRegion, "child-one"});
     drawerList.stopAtRegionEnd = true; drawerPlayback.configureRegionSetlist(drawerList);
     drawerPlayback.execute({CommandKind::play}); drawerPlayback.execute({CommandKind::subPlay}); drawerPlayback.advance(55);
@@ -753,12 +791,48 @@ int main() {
         validate(engine.project());
         auto track = std::find_if(engine.currentSong()->tracks.begin(),engine.currentSong()->tracks.end(),[&](const auto& value){return value.id==video.id;});
         expect(track!=engine.currentSong()->tracks.end() && track->volume==0.5 && track->solo && track->mute,"video audio controls are persisted");
-        TimelineMarker a{"detected-a","TEMPO",0.123,0x999999}; a.tempoBPM=120; a.tempoBeats=4; a.tempoUnit=4; a.tempoTimebase="global";
+        TimelineMarker a{"detected-a","TEMPO",0.123,0x999999}; a.tempoBPM=120; a.tempoReferenceBPM=120; a.tempoBeats=4; a.tempoUnit=4; a.tempoTimebase="global";
         TimelineMarker b{"detected-b","TEMPO",8.123,0x999999}; b.tempoBPM=90; b.tempoBeats=4; b.tempoUnit=4; b.tempoTimebase="global";
         engine.setMarkers({a,b}); expect(engine.currentSong()->markers->size()==2,"tempo sections commit as one batch");
+        engine.setMarker(a.id, "TEMPO", a.position, a.color, 150, 4, 4, "global");
+        expect(engine.currentSong()->markers->front().tempoReferenceBPM == 120, "editing detected tempo preserves source reference");
         const auto saved = engine.currentSong()->markers->size(); b.id="invalid-tempo"; b.tempoBPM=400;
         bool rejected=false; try {engine.setMarkers({b});} catch(...) {rejected=true;}
         expect(rejected && engine.currentSong()->markers->size()==saved,"invalid tempo batch is atomic");
+    }
+    {
+        Project p; p.id="tempo-resize"; p.name="Tempo resize";
+        Song song{"resize-song","Song",30,120,{},{}};
+        song.timeSettings=ProjectTimeSettings{}; song.timeSettings->timebase=ProjectTimebase::relative;
+        song.parts={{"one","First",2,12},{"two","Second",17,27}};
+        Track track; track.id="audio";track.name="Audio";
+        AudioClip a; a.id="first";a.name="First";a.startTime=2;a.duration=10;a.sourceOffset=1;a.audioFile=AudioFile{"stems/first.wav"};a.gain=0.5;a.muted=true;
+        AudioClip b=a;b.id="second";b.name="Second";b.startTime=17;b.sourceOffset=0;
+        track.clips={a,b};song.tracks={track};p.songs={song};
+        Engine e;e.loadProject(p);
+        TimelineMarker first{"tempo-one","TEMPO",2,0x999999}; first.tempoBPM=120;first.tempoBeats=4;first.tempoUnit=4;first.tempoTimebase="global";first.tempoReferenceBPM=120;
+        TimelineMarker second=first;second.id="tempo-two";second.position=17;
+        e.setMarkers({first,second});e.execute({CommandKind::seek,"",10});
+        e.setMarker(first.id,"TEMPO",2,0x999999,240,4,4,"global");
+        const auto& changed=*e.currentSong();
+        expect(changed.parts[0].endTime==7 && changed.parts[1].startTime==12 && changed.parts[1].endTime==22,"tempo resizes regions while retaining the five-second gap");
+        expect(changed.tracks[0].clips[0].duration==5 && changed.tracks[0].clips[1].duration==10,"tempo edit preserves all source audio instead of cutting the tail");
+        expect(changed.tracks[0].clips[0].sourceOffset==1 && changed.tracks[0].clips[0].gain==0.5 && changed.tracks[0].clips[0].muted,"tempo warp preserves item edits");
+        expect(changed.markers->at(1).position==12 && e.transport().position==6,"following tempo markers and cursor follow the same map");
+        e.setMarker(first.id,"TEMPO",2,0x999999,120,4,4,"global");
+        expect(e.currentSong()->parts[0].endTime==12 && e.currentSong()->parts[1].startTime==17 && e.currentSong()->tracks[0].clips[0].duration==10,"reversing a tempo edit restores durations and gaps");
+        expect(e.transport().position==10,"cursor reverses the tempo mapping");
+        song.parts={{"one","First",0,12},{"two","Second",10,20},{"group","Special",0,20}};
+        song.parts[0].parentRegionID="group";song.parts[1].parentRegionID="group";
+        song.tracks[0].clips[0].startTime=0;song.tracks[0].clips[0].duration=12;
+        song.tracks[0].clips[1].startTime=10;song.tracks[0].clips[1].duration=10;
+        p.songs={song};e.loadProject(p);first.position=0;second.position=10;e.setMarkers({first,second});
+        e.setMarker(second.id,"TEMPO",10,0x999999,240,4,4,"global");
+        expect(e.currentSong()->tracks[0].clips[0].duration==12 && e.currentSong()->parts[0].endTime==12,"next song tempo cannot resize the preceding song tail");
+        expect(e.currentSong()->tracks[0].clips[1].duration==5 && e.currentSong()->parts[2].endTime==15,"drawer song and unified parent resize together");
+        e.setMarker(second.id,"TEMPO",10,0x999999,120,4,4,"global");
+        expect(e.currentSong()->tracks[0].clips[0].duration==12 && e.currentSong()->tracks[0].clips[1].duration==10,"drawer tempo reversal preserves independent tails");
+
     }
     std::cout << "JARAS_CORE_OK\n";
 }

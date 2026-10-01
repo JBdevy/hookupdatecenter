@@ -103,15 +103,19 @@ MainActor.assumeIsolated {
     replacement.close(); window.close()
     let editorWindow = makeWindow(size: NSSize(width: 600, height: 460))
     let editorAnchor = ProjectWindowAnchor(); editorAnchor.editor = true
-    editorWindow.contentView!.addSubview(editorAnchor); settle(editorWindow)
+    editorWindow.contentView!.addSubview(editorAnchor); editorAnchor.update(); settle(editorWindow)
     let screen = NSScreen.screens.last!.visibleFrame
-    let remembered = NSRect(x: screen.minX + 15, y: screen.minY + 20,
-                            width: min(1180, screen.width - 30), height: min(700, screen.height - 40))
+    // The flexible fixture host has no MainView minimum-width constraint.
+    // Use a legal editor width directly rather than its transient minSize.
+    let rememberedSize = NSSize(width: min(ProjectWindowAnchor.editorFrameSize.width, screen.width), height: min(700, screen.height))
+    let rememberedOrigin = NSPoint(x: screen.minX + min(15, screen.width - rememberedSize.width),
+                                    y: screen.minY + min(20, screen.height - rememberedSize.height))
+    let remembered = NSRect(origin: rememberedOrigin, size: rememberedSize)
     editorWindow.setFrame(remembered, display: false); settle(editorWindow)
     editorWindow.close()
     let reopened = makeWindow(size: NSSize(width: 600, height: 460))
     let reopenedAnchor = ProjectWindowAnchor(); reopenedAnchor.editor = true
-    reopened.contentView!.addSubview(reopenedAnchor); settle(reopened)
+    reopened.contentView!.addSubview(reopenedAnchor); reopenedAnchor.update(); settle(reopened)
     precondition(reopened.frame == remembered, "reopening restores the editor size and position on its previous screen")
     reopened.close()
     UserDefaults.standard.removeObject(forKey: "jaras.editorWindowFrame")

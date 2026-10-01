@@ -6,7 +6,7 @@ enum JarasTheme {
     static let line = Color(hex: 0x303944)
     static let text = Color(hex: 0xffffff)
     static let secondary = Color(hex: 0x9aa8b9)
-    static let grid = Color(hex: 0x1a2029)
+    static let grid = Color(hex: 0x181818)
     static let mixerHex: UInt32 = 0x202630
     static let mixer = Color(hex: mixerHex)
     static let display = Color(hex: 0x0c1117)
@@ -20,7 +20,7 @@ enum JarasTheme {
         return Color(red: color.red, green: color.green, blue: color.blue)
     }
     static func trackNameHex(_ track: Track, emphasized: Bool, silenced: Bool) -> UInt32 {
-        TrackNameContrast.foreground(track.color ?? roleHex(track.role), opacity: emphasized ? 0.95 : 0.5,
+        TrackNameContrast.foreground(track.color ?? roleHex(track.role), opacity: emphasized ? 0.65 : 0.5,
                                      background: mixerHex, emphasized: emphasized, desaturated: silenced)
     }
     static func masterNameHex(_ color: UInt32) -> UInt32 {
@@ -115,4 +115,36 @@ struct JarasBlink: ViewModifier {
                 }
             }
     }
+}
+
+/// A color drag publishes only to the views that paint that color. Persistence
+/// happens on confirmation, rather than broadcasting UserDefaults on every pixel.
+@MainActor final class AppearanceColor: ObservableObject {
+    private static var colors: [String: AppearanceColor] = [:]
+    static func shared(_ key: String, default fallback: Int) -> AppearanceColor {
+        if let color = colors[key] { return color }
+        let color = AppearanceColor(key: key, fallback: fallback)
+        colors[key] = color
+        return color
+    }
+    let key: String
+    @Published var value: Int
+    private init(key: String, fallback: Int) {
+        self.key = key
+        self.value = (UserDefaults.standard.object(forKey: key) as? NSNumber)?.intValue ?? fallback
+    }
+    func save(_ color: Int) {
+        if value != color { value = color }
+        UserDefaults.standard.set(color, forKey: key)
+    }
+}
+
+/// Factory timeline colors captured from the approved appearance.
+enum TimelineAppearanceDefaults {
+    static let background = 0x25211F
+    static let primaryGrid = 0x829C9C
+    static let secondaryGrid = 0x5F4163
+    static let playCursor = 0xF44336
+    static let editCursor = 0x00CFA0
+    static let subPlayCursor = 0xFF6F00
 }

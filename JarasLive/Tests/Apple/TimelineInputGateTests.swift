@@ -230,13 +230,14 @@ resetZoomInput(precise: false)
 event.delta = 2
 precondition(wheel.handleWheelEvent(event))
 let physicalTarget = exp(2 * TimelineZoomLimits.wheelSensitivity)
-precondition(zoomValues.count == 1 && zoomValues[0] > 1 && zoomValues[0] < physicalTarget,
-             "physical zoom responds immediately with a smooth first frame")
-let physicalStep = zoomValues[0]
+precondition(zoomValues.count == 1 && abs(zoomValues[0] - physicalTarget) < 1e-12,
+             "a physical wheel tick applies its exact target before the handler returns")
+wheel.acceptRenderedZoom(1)
+precondition(abs(wheel.zoom - physicalTarget) < 1e-12,
+             "an older SwiftUI update cannot rewind an immediate wheel step")
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-precondition(zoomValues.count > 1 && zoomValues.last! > physicalStep &&
-             abs(zoomValues.last! - physicalTarget) < 1e-10,
-             "physical zoom reaches its exact target without extra travel")
+precondition(zoomValues.count == 1 && abs(zoomValues.last! - physicalTarget) < 1e-12,
+             "mouse zoom has no interpolation frames or release animation")
 let physicalTailCount = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 precondition(zoomValues.count == physicalTailCount, "physical-wheel zoom settles without idle updates")
@@ -249,7 +250,16 @@ event.delta = -1; event.inputTime += 0.03
 precondition(wheel.handleWheelEvent(event))
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
 precondition(abs(zoomValues.last! - beforeReverse * exp(-TimelineZoomLimits.wheelSensitivity)) < 1e-10,
-             "reversal cancels old momentum and reaches the new target")
+             "mouse reversal immediately reaches its new target without momentum")
+precondition(zoomValues.count == 2)
+resetZoomInput()
+event.gesturePhase = []; event.delta = 2
+precondition(wheel.handleWheelEvent(event))
+precondition(zoomValues.count == 1 && abs(zoomValues[0] - exp(2 * TimelineZoomLimits.preciseSensitivity)) < 1e-12,
+             "a precise mouse event without gesture phases is immediate too")
+RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+precondition(zoomValues.count == 1)
+print("MOUSE_ZOOM_EXACT_IMMEDIATE_STEPS_NO_ANIMATION_AND_STALE_UPDATE_PROTECTION_OK")
 
 // Holding the left button converts only an unmodified physical wheel into pan.
 // A pending trackpad zoom/anchor is cancelled before the viewport moves.
@@ -327,6 +337,26 @@ document.setFrameSize(NSSize(width: 8000, height: 300))
 scroll.applyZoomAnchor()
 precondition(abs(scroll.contentView.bounds.minX - 3800) < 1 && scroll.zoomAnchor == nil,
              "the final layout centers and acknowledges the requested scale")
+
+// Reproduce tiny zoom changes at 37:51: an old host layout less than two
+// points from its target must not discard the pending fractional anchor.
+let farPosition = 37.0 * 60 + 51
+let farFraction = farPosition / 6000
+var previousWidth = 60000.0
+for delta in [0.125, 0.375, 0.75, -0.25, -0.875, 0.5, 0.0625] {
+    let targetWidth = previousWidth + delta
+    document.setFrameSize(NSSize(width: previousWidth, height: 300))
+    scroll.zoomAnchor = (farFraction, 200, targetWidth)
+    scroll.applyZoomAnchor()
+    precondition(scroll.zoomAnchor != nil,
+                 "an intermediate layout inside the old two-point tolerance must retain its target")
+    document.setFrameSize(NSSize(width: targetWidth, height: 300))
+    scroll.applyZoomAnchor()
+    precondition(scroll.zoomAnchor == nil && abs(targetWidth * farFraction - scroll.contentView.bounds.minX - 200) < 1e-7,
+                 "the final fractional scale and viewport keep the far-position needle at exactly the same screen point")
+    previousWidth = targetWidth
+}
+print("FRACTIONAL_ZOOM_37M51S_DELAYED_LAYOUT_ANCHOR_HAS_NO_ALTERNATING_PIXEL_ERROR_OK")
 document.setFrameSize(NSSize(width: 4000, height: 300))
 
 resetZoomInput()
@@ -401,6 +431,16 @@ precondition(seeks == 1, "the ruler resumes immediately after closing the modal"
 let shifted = NSEvent.mouseEvent(with: .leftMouseUp, location: ruler.convert(NSPoint(x: 113.75, y: 12),to: nil), modifierFlags: .shift, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
 ruler.mouseDown(with: shifted); ruler.mouseUp(with: shifted)
 precondition(rulerFreeSeeks.last == true, "Shift ruler clicks send a free-positioning request rather than grid snapping")
+let seeksBeforeVerticalDrag = seeks
+let verticalDrag = NSEvent.mouseEvent(with: .leftMouseDragged, location: ruler.convert(NSPoint(x: 100, y: 28), to: nil),
+    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+    context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+ruler.mouseDown(with: pointer(.leftMouseDown))
+precondition(seeks == seeksBeforeVerticalDrag, "ruler presses wait for release")
+ruler.mouseDragged(with: verticalDrag)
+ruler.mouseUp(with: pointer(.leftMouseUp))
+precondition(seeks == seeksBeforeVerticalDrag, "a vertical ruler drag returning to its origin cannot seek")
+print("RULER_PURE_RELEASE_ONLY_AND_VERTICAL_DRAG_NO_SEEK_OK")
 var intervals: [(Double, Double)] = []
 ruler.selectTime = { intervals.append(($0, $1)) }
 func selectionEvent(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {

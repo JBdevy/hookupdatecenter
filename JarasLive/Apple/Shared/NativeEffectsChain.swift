@@ -14,6 +14,7 @@ final class NativeEffectsChain {
     init(reorderable: Bool = true) { self.reorderable = reorderable }
     let equalizer = JarasEqualizer.makeNode()
     let compressor = JarasDynamics.makeCompressor()
+    private var limiter: AVAudioUnitEffect?
     private var pitch: AVAudioUnitTimePitch?
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
@@ -34,6 +35,7 @@ final class NativeEffectsChain {
                 case "Instruments": node = AVAudioMixerNode()
                 case "EQ": node = JarasEqualizer.makeNode()
                 case "Compressor": node = JarasDynamics.makeCompressor()
+                case "Limiter": node = JarasDynamics.makeLimiter()
                 case "Pitch": let pitch = AVAudioUnitTimePitch(); pitch.rate = 1; pitch.overlap = 8; node = pitch
                 case "Delay": node = AVAudioUnitDelay()
                 default: node = JarasDynamics.makeReverb()
@@ -46,6 +48,9 @@ final class NativeEffectsChain {
                 JarasEqualizer.configure(node as! AVAudioUnitEffect, coefficients: value.bands.flatMap { $0.coefficients(rate: rate) }.map { $0.map(NSNumber.init(value:)) }, enabled: value.eqEnabled)
             case "Compressor":
                 JarasDynamics.configureCompressor(node as! AVAudioUnitEffect, enabled: value.compressorEnabled, threshold: value.threshold, ratio: value.ratio, attack: value.attack, release: value.release, gain: value.makeup)
+            case "Limiter":
+                let parameters = value.limiterParameters
+                JarasDynamics.configureLimiter(node as! AVAudioUnitEffect, enabled: value.limiterEnabled == true, gain: parameters.inputGain, ceiling: parameters.ceiling, release: parameters.release)
             case "Pitch":
                 let pitch = node as! AVAudioUnitTimePitch
                 pitch.pitch = Float(value.semitones * 100); pitch.bypass = value.pitchEnabled != true || value.semitones == 0
@@ -106,13 +111,23 @@ final class NativeEffectsChain {
     #endif
     private var nodes: [AVAudioUnit] {
         #if os(macOS)
-        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? []) + Array(externalNodes.values)
+        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + Array(externalNodes.values)
         #else
-        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? [])
+        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
         #endif
     }
     var output: AVAudioNode { outputMix }
     func setSourceChannelMode(_ mode: Int) { JarasEqualizer.setInputChannelMode(equalizer, mode: Int32(mode)) }
+    private var itemFadeClock: (position: Double, host: UInt64, sample: Double) = (0, 0, 0)
+    func configureItemFade(_ clip: AudioClip, position: Double, hostTime: UInt64 = 0, sampleTime: Double = 0) {
+        itemFadeClock = (position - (clip.fadeTimelineStart ?? clip.startTime), hostTime, sampleTime)
+        updateItemFade(clip)
+    }
+    func updateItemFade(_ clip: AudioClip) {
+        JarasEqualizer.setInputFade(equalizer, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
+                                    duration: clip.fadeTimelineDuration ?? clip.duration, position: itemFadeClock.position,
+                                    hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample)
+    }
     func setSourceGain(_ gain: Double) { JarasEqualizer.setInputGain(equalizer, gain: gain) }
     var instrumentInput: AVAudioMixerNode {
         if let instrumentMix { return instrumentMix }
@@ -143,6 +158,7 @@ final class NativeEffectsChain {
             case "Instruments": return instrumentMix
             case "EQ": return equalizer
             case "Compressor": return compressor
+            case "Limiter": return limiter
             case "Pitch": return pitch
             case "Delay": return delay
             case "Reverb": return reverb
@@ -215,6 +231,14 @@ final class NativeEffectsChain {
             pitch.pitch = Float(next.semitones * 100)
             pitch.bypass = !next.inserted.contains("Pitch") || next.pitchEnabled != true || next.semitones == 0
         }
+        if next.inserted.contains("Limiter"), limiter == nil {
+            let node = JarasDynamics.makeLimiter(); limiter = node; engine?.attach(node)
+        }
+        if let limiter {
+            let parameters = next.limiterParameters
+            JarasDynamics.configureLimiter(limiter, enabled: next.inserted.contains("Limiter") && next.limiterEnabled == true,
+                gain: parameters.inputGain, ceiling: parameters.ceiling, release: parameters.release)
+        }
         configureInstances(next, rate: rate)
         connect(next)
         let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
@@ -253,7 +277,7 @@ final class NativeEffectsChain {
             let enabled = effects.contains(key)
             switch settings?.kind(of: key) {
             case "EQ": JarasEqualizer.setAnalysisEnabled(node as! AVAudioUnitEffect, enabled: enabled)
-            case "Compressor": JarasDynamics.setCompressorMeteringEnabled(node as! AVAudioUnitEffect, enabled: enabled)
+            case "Compressor", "Limiter": JarasDynamics.setCompressorMeteringEnabled(node as! AVAudioUnitEffect, enabled: enabled)
             case "Reverb":
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: true, enabled: enabled)
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: false, enabled: enabled)
@@ -267,6 +291,7 @@ final class NativeEffectsChain {
         }
         JarasEqualizer.setAnalysisEnabled(equalizer, enabled: effects.contains("EQ"))
         JarasDynamics.setCompressorMeteringEnabled(compressor, enabled: effects.contains("Compressor"))
+        if let limiter { JarasDynamics.setCompressorMeteringEnabled(limiter, enabled: effects.contains("Limiter")) }
         JarasDynamics.setAnalysisEnabled(reverb, input: true, enabled: effects.contains("Reverb"))
         JarasDynamics.setAnalysisEnabled(reverb, input: false, enabled: effects.contains("Reverb"))
         observesDelay = effects.contains("Delay"); updateDelayAnalysis()
@@ -297,7 +322,7 @@ final class NativeEffectsChain {
     func effectPeaks(_ effect: String) -> [Float] {
         if let node = instanceNodes[effect] {
             switch settings?.kind(of: effect) {
-            case "Compressor": return JarasDynamics.takeCompressorPeaks(node as! AVAudioUnitEffect).map(\.floatValue)
+            case "Compressor", "Limiter": return JarasDynamics.takeCompressorPeaks(node as! AVAudioUnitEffect).map(\.floatValue)
             case "Reverb": return JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: false).map(\.floatValue)
             case "Delay": return (instanceDelayProbes[effect]?.0.takePeaks().map(\.floatValue) ?? [0,0]) + (instanceDelayProbes[effect]?.1.takePeaks().map(\.floatValue) ?? [0,0])
             default: return [0,0,0,0]
@@ -311,7 +336,7 @@ final class NativeEffectsChain {
             let delayOut = delayOutputProbe?.takePeaks().map(\.floatValue) ?? [0, 0]
             let reverbIn = JarasDynamics.analysisPeaks(reverb, input: true).map(\.floatValue)
             let reverbOut = JarasDynamics.analysisPeaks(reverb, input: false).map(\.floatValue)
-            meterCache = ["Compressor":compressor, "Delay":delayIn+delayOut, "Reverb":reverbIn+reverbOut]
+            meterCache = ["Compressor":compressor, "Delay":delayIn+delayOut, "Reverb":reverbIn+reverbOut, "Limiter":limiter.map { JarasDynamics.takeCompressorPeaks($0).map(\.floatValue) } ?? [0,0,0,0]]
         }
         return meterCache[effect] ?? [0,0,0,0]
     }

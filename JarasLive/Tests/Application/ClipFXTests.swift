@@ -25,7 +25,7 @@ final class ClipFXTests: XCTestCase {
         let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(decoded, project)
         XCTAssertNil(decoded.songs[0].tracks[0].fx, "item processing remains independent of track processing")
-        XCTAssertEqual(decoded.songs[0].tracks[0].clips[0].fx?.inserted, NativeFXSettings.order.dropFirst().map { $0 })
+        XCTAssertEqual(decoded.songs[0].tracks[0].clips[0].fx?.inserted, project.songs[0].tracks[0].clips[0].fx?.inserted)
         var empty = project
         empty.songs[0].tracks[0].clips[0].fx = nil
         let json = try JSONEncoder().encode(empty)

@@ -647,8 +647,8 @@
 "Transmitter 2" = "Transmitter 2";
 "Invalid track routing" = "Invalid track routing";
 "This routing would create an audio feedback loop." = "This routing would create an audio feedback loop.";
-"Maximum of 400 tracks per project." = "Maximum of 400 tracks per project.";
-"A project supports at most 400 tracks" = "A project supports at most 400 tracks";
+"Maximum of 1000 tracks per project." = "Maximum of 1000 tracks per project.";
+"A project supports at most 1000 tracks" = "A project supports at most 1000 tracks";
 
 "Plugins" = "Plugins";
 "External" = "External";
@@ -950,3 +950,93 @@
 "Load click A" = "Load click A";
 "Load click B" = "Load click B";
 "Audio file" = "Audio file";
+
+"A marker already exists at this position." = "A marker already exists at this position.";
+"A region already starts at this position." = "A region already starts at this position.";
+
+"Loop armed" = "Loop armed";
+
+"A multiloop cannot exist inside another multiloop." = "A multiloop cannot exist inside another multiloop.";
+"Total Loop" = "Total Loop";
+
+"Session" = "Session";
+
+"Recent backups" = "Recent backups";
+"No backups found" = "No backups found";
+
+"Invert polarity" = "Invert polarity";
+
+"Timeline" = "Timeline";
+
+"Timeline background" = "Timeline background";
+
+"Primary grid color" = "Primary grid color";
+
+"Secondary grid color" = "Secondary grid color";
+
+"Playback cursor color" = "Playback cursor color";
+
+"Edit cursor color" = "Edit cursor color";
+
+"Sub Play cursor color" = "Sub Play cursor color";
+
+// Local-network Remote
+"Open Remote on the iPad and choose this computer." = "Open Remote on the iPad and choose this computer.";
+"Audio continues on the computer. Both devices must be on the same local network." = "Audio continues on the computer. Both devices must be on the same local network.";
+"Disable Remote" = "Disable Remote";
+"Waiting for iPad" = "Waiting for iPad";
+"Connected" = "Connected";
+"Searching for computers…" = "Searching for computers…";
+"Connecting…" = "Connecting…";
+"Connection failed. Check Remote on the computer and the local network." = "Connection failed. Check Remote on the computer and the local network.";
+"Tap the computer to connect." = "Tap the computer to connect.";
+"Unable to capture the Jaras window." = "Unable to capture the Jaras window.";
+"Search again" = "Search again";
+"Disconnect" = "Disconnect";
+"Waiting for the computer…" = "Waiting for the computer…";
+"Text for the selected field" = "Text for the selected field";
+"Touch to click · Drag to move · Two fingers to scroll · Hold for right click" = "Touch to click · Drag to move · Two fingers to scroll · Hold for right click";
+"Enable Remote on the computer." = "Enable Remote on the computer.";
+"Connect" = "Connect";
+
+"Jaras Limiter" = "Jaras Limiter";
+
+"Input gain" = "Input gain";
+
+"Ceiling" = "Ceiling";
+
+"Delete selected regions from the project?" = "Delete selected regions from the project?";
+
+"Remove selected items from this playlist?" = "Remove selected items from this playlist?";
+
+"Edit playlist" = "Edit playlist";
+
+"Connect to computer" = "Connect to computer";
+
+"Sair" = "Exit";
+"Choose a project to open on the Mac." = "Choose a project to open on the Mac.";
+"No recent projects on this Mac." = "No recent projects on this Mac.";
+"Stop recording on the Mac to open a project." = "Stop recording on the Mac to open a project.";
+"Stop playback to open a project." = "Stop playback to open a project.";
+"Resolve missing audio on the Mac to continue." = "Resolve missing audio on the Mac to continue.";
+"Could not open the project. Check the Mac for details." = "Could not open the project. Check the Mac for details.";
+"This project is no longer in the Mac’s recent projects." = "This project is no longer in the Mac’s recent projects.";
+"Update Jaras on the Mac to browse recent projects." = "Update Jaras on the Mac to browse recent projects.";
+
+"Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad." = "Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad.";
+
+"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no Jaras do Mac e escolha-o abaixo." = "Keep Wi-Fi and Bluetooth on on both devices.\nEnable Remote in Jaras on the Mac, then choose it below.";
+
+"Conexão direta · sem roteador ou internet" = "Direct connection · no router or internet needed";
+
+"Não foi possível conectar. Aproxime os aparelhos e confira o Remote no Mac." = "Unable to connect. Keep the devices nearby and check Remote on the Mac.";
+
+"Searching for nearby Macs…" = "Searching for nearby Macs…";
+
+"Connection failed. Keep the devices nearby and enable Remote on the Mac." = "Connection failed. Keep the devices nearby and enable Remote on the Mac.";
+
+"Item volume" = "Item volume";
+"Notices" = "Notices";
+"Stop" = "Stop";
+"Atualize o Jaras no Mac para usar este painel." = "Update Jaras on the Mac to use this panel.";
+"Atualize o Jaras no Mac para sincronizar o cronômetro." = "Update Jaras on the Mac to sync the timer.";

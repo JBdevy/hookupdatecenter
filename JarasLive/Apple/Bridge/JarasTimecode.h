@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithFormat:(AVAudioFormat *)format;
 - (void)setSections:(NSArray<NSDictionary *> *)sections soundA:(NSData *)soundA soundB:(NSData *)soundB mode:(NSInteger)mode;
 - (void)setGainA:(float)a gainB:(float)b;
-- (void)configurePosition:(double)position hostTime:(uint64_t)hostTime running:(BOOL)running loopStart:(double)loopStart loopEnd:(double)loopEnd;
+- (void)setEnabled:(BOOL)enabled;
+- (void)configurePosition:(double)position hostTime:(uint64_t)hostTime running:(BOOL)running loopStart:(double)loopStart loopEnd:(double)loopEnd sampleTime:(double)sampleTime;
 @end
 NS_ASSUME_NONNULL_END

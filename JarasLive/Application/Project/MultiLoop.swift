@@ -39,6 +39,20 @@ public struct MultiLoopPlayback: Codable, Equatable, Sendable {
     public var tracks: [MultiLoopTrack]
 }
 public extension Song {
+    func multiLoopsBypassed(in region: Part) -> Bool {
+        region.totalLoop == true || region.parentRegionID.map { parent in parts.contains { $0.id == parent && $0.totalLoop == true } } == true
+    }
+    func multiLoopConflicts(_ candidate: MultiLoop, replacingRegion: UUID? = nil, replacement: [MultiLoop]? = nil) -> Bool {
+        let positions = Dictionary(uniqueKeysWithValues: (markers ?? []).map { ($0.id, $0.position) })
+        guard let start = positions[candidate.marker1], let end = positions[candidate.marker2], start < end else { return false }
+        for region in parts {
+            for loop in (region.id == replacingRegion ? replacement : nil) ?? region.multiLoops ?? [] where loop.id != candidate.id {
+                guard let a = positions[loop.marker1], let b = positions[loop.marker2] else { continue }
+                if max(start, a) < min(end, b) - 0.000001 { return true }
+            }
+        }
+        return false
+    }
     func multiLoopMarkers(in region: Part) -> [TimelineMarker] {
         (markers ?? []).filter { !$0.isTempo && $0.sourceRegionID == nil && $0.unifiedRegionID == nil && $0.position >= region.startTime && $0.position <= region.endTime }
             .sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }

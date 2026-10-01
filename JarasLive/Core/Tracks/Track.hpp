@@ -10,7 +10,7 @@ struct TimecodeSettings { std::string mode = "mtc"; double frameRate = 30, offse
 inline bool isTeleprompterRole(const TrackRole& role) { return role.id == "teleprompt" || role.id == "teleprompt2"; }
 inline std::string fixedTrackName(const TrackRole& role) { return role.id == "timecode" ? "Timecode" : role.id == "video" ? "Video" : role.id == "teleprompt" ? "Teleprompter 1" : role.id == "teleprompt2" ? "Teleprompter 2" : role.id == "chords" ? "Chords" : ""; }
 struct AudioFile { std::string path; std::optional<std::string> sha256; };
-struct AudioClip { ID id; std::string name; double startTime = 0, duration = 0, sourceOffset = 0; std::vector<double> waveform; std::optional<AudioFile> audioFile; std::optional<double> gain; std::optional<double> normalizationGain; std::optional<int> channelMode; std::vector<std::vector<double>> waveformChannels; bool muted = false; double playbackRate = 1; std::optional<int> recordingLane; std::optional<double> loopStart, loopLength; std::optional<std::string> fxJSON; std::optional<double> timecodeStartOffset, timecodeEndOffset; std::optional<bool> fxBypassed; std::optional<std::string> text; };
+struct AudioClip { ID id; std::string name; double startTime = 0, duration = 0, sourceOffset = 0; std::vector<double> waveform; std::optional<AudioFile> audioFile; std::optional<double> gain; std::optional<double> normalizationGain; std::optional<double> fadeIn, fadeOut; std::optional<int> channelMode; std::vector<std::vector<double>> waveformChannels; bool muted = false; double playbackRate = 1; std::optional<int> recordingLane; std::optional<double> loopStart, loopLength; std::optional<std::string> fxJSON; std::optional<double> timecodeStartOffset, timecodeEndOffset; std::optional<bool> fxBypassed; std::optional<std::string> text; };
 struct Track {
     ID id; std::string name; TrackRole role;
     double volume = 1, pan = 0;
@@ -40,5 +40,6 @@ struct Track {
     std::optional<ID> stereoLinkPartner;
     bool stereoLinkLeft = false;
     std::optional<std::string> stereoLinkJSON;
+    std::optional<bool> phaseInverted;
 };
 }

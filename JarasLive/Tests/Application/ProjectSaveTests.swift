@@ -23,12 +23,14 @@ import XCTest
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: TransportState(playing: playing, songId: project.songs.first?.id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))) }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         if command == .selectRegion || command == .queueRegion, let target { regionSelections.append(target); regionCommands.append(command) }
-        if command == .clipGain || command == .clipNormalization, let target {
+        if [.clipGain, .clipNormalization, .clipFadeIn, .clipFadeOut].contains(command), let target {
             if failsGain { throw ProjectError.invalid("Gain command rejected") }
             for song in project.songs.indices {
                 for track in project.songs[song].tracks.indices {
                     if let index = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == target }) {
-                        if command == .clipNormalization { project.songs[song].tracks[track].clips[index].normalizationGain = value }
+                        if command == .clipFadeIn { project.songs[song].tracks[track].clips[index].fadeIn = value }
+                        else if command == .clipFadeOut { project.songs[song].tracks[track].clips[index].fadeOut = value }
+                        else if command == .clipNormalization { project.songs[song].tracks[track].clips[index].normalizationGain = value }
                         else { project.songs[song].tracks[track].clips[index].gain = value }; gainCommands += 1; return
                     }
                 }
@@ -41,8 +43,10 @@ import XCTest
               let item = project.songs[0].tracks[channel].clips.firstIndex(where: { $0.id == clip.id }) else { throw ProjectError.invalid("Missing item") }
         project.songs[0].tracks[channel].clips[item] = clip
     }
-    func setTempoMarkers(_ markers: [TimelineMarker]) throws {
+    func setTempoMarkers(_ markers: [TimelineMarker]) throws { try setTempoMarkers(markers, removing: []) }
+    func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
         if project.songs[0].markers == nil { project.songs[0].markers = [] }
+        project.songs[0].markers!.removeAll { removing.contains($0.id) || markers.map(\.id).contains($0.id) }
         project.songs[0].markers!.append(contentsOf: markers)
     }
     func applyProjectEdit(_ project: Project) throws { self.project = project; projectEditCount += 1 }
@@ -271,6 +275,35 @@ final class ProjectSaveTests: XCTestCase {
         show.setItemGain(clip.id, gain: 0.2)
         XCTAssertEqual(show.snapshot.project, unchanged); XCTAssertEqual(previewCount, 102)
     }
+    @MainActor func testItemFadesAreIncrementalSavedAndUndoable() throws {
+        var project = Project.demo()
+        var track = Track(id: UUID(), name: "Stem", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Repeated", startTime: 30, duration: 10, loopStart: 0, loopLength: 2)
+        track.clips = [clip]; project.songs[0].tracks = [track]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let snapshots = executor.snapshotCount
+        var previewed = 0
+        show.audioItemFade = { _,_,_ in previewed += 1 }
+        show.previewItemFade(clip.id, fadeIn: true, seconds: 3)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].fadeIn, nil)
+        XCTAssertFalse(show.hasUnsavedChanges)
+        show.setItemFade(clip.id, fadeIn: true, seconds: 100)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].fadeIn, 10)
+        XCTAssertEqual(executor.snapshotCount, snapshots)
+        XCTAssertEqual(previewed, 2)
+        XCTAssertTrue(show.canUndo)
+        let saved = try ProjectDocumentCodec.encode(show.snapshot.project)
+        let restored = try ProjectDocumentCodec.decode(saved)
+        XCTAssertEqual(restored.songs[0].tracks[0].clips[0].fadeIn, 10)
+        XCTAssertEqual(restored.songs[0].tracks[0].clips[0].loopLength, 2)
+        show.undo(); XCTAssertNil(show.current?.tracks[0].clips[0].fadeIn)
+        show.redo(); XCTAssertEqual(show.current?.tracks[0].clips[0].fadeIn, 10)
+        show.setItemFade(clip.id, fadeIn: false, seconds: 5)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].fadeOut, 5)
+        show.setItemFade(clip.id, fadeIn: false, seconds: .nan)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].fadeOut, 5)
+    }
     @MainActor func testItemGainSupportsPlus24WithoutChangingTrackVolumeOrReloading() throws {
         var project = Project.empty(name: "Gain")
         let clip = AudioClip(id: UUID(), name: "Item", startTime: 0, duration: 1)
@@ -425,6 +458,31 @@ final class ProjectSaveTests: XCTestCase {
         let appended = try XCTUnwrap(show.addTrack(name: "Appended", role: .click))
         XCTAssertEqual(show.current?.tracks.map(\.id), [first, inserted, last, afterLast, appended])
         XCTAssertTrue(show.hasUnsavedChanges)
+    }
+
+    @MainActor func testRenamePlaylistAndDeleteMultipleAllRegionsPreserveAudioAndUndo() throws {
+        var project = Project.empty(name: "Setlist editing")
+        let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0*10), endTime: Double($0*10+8)) }
+        project.songs[0].parts = regions; project.songs[0].duration = 40
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Original", selected: Set(regions.map(\.id))))
+        let list = try XCTUnwrap(show.selectedRegionPlaylist)
+        let edits = executor.projectEditCount
+        XCTAssertFalse(show.renameRegionPlaylist(list.id, name: "  "))
+        XCTAssertFalse(show.renameRegionPlaylist(UUID(), name: "Missing"))
+        XCTAssertTrue(show.renameRegionPlaylist(list.id, name: "  New name  "))
+        XCTAssertEqual(show.selectedRegionPlaylist?.name, "New name")
+        XCTAssertEqual(show.selectedRegionPlaylist?.regionIds, list.regionIds)
+        XCTAssertEqual(executor.projectEditCount, edits, "playlist rename must not rebuild audio")
+        show.undo(); XCTAssertEqual(show.selectedRegionPlaylist?.name, "Original")
+        show.selectRegionPlaylist(nil)
+        let before = show.snapshot.project
+        XCTAssertTrue(show.deleteSetlistEntries([regions[0].id, regions[1].id]))
+        XCTAssertEqual(show.current?.parts.map(\.id), [regions[2].id])
+        XCTAssertEqual(show.regionSetlist.playlists.first?.regionIds, [regions[2].id])
+        XCTAssertEqual(show.current?.tracks, before.songs[0].tracks)
+        show.undo(); XCTAssertEqual(show.snapshot.project, before)
     }
 
     @MainActor func testMixedSetlistDeleteIsAtomicUndoableAndProtectsDrawerSongs() throws {
@@ -596,9 +654,37 @@ final class ProjectSaveTests: XCTestCase {
         let markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0.123, color: 0x999999, tempoBPM: 120, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global),
                        TimelineMarker(id: UUID(), name: "TEMPO", position: 8.123, color: 0x999999, tempoBPM: 90, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global)]
         XCTAssertTrue(show.applyDetectedTempo(markers, project: project.id, song: project.songs[0].id))
-        XCTAssertEqual(show.current?.markers, markers)
+        let saved = try XCTUnwrap(show.current?.markers)
+        XCTAssertEqual(saved.first?.position, 0)
+        XCTAssertEqual(saved.first?.tempoBPM, 120)
+        XCTAssertEqual(Array(saved.dropFirst()), markers)
         show.undo(); XCTAssertTrue(show.current?.markers?.isEmpty ?? true)
-        show.redo(); XCTAssertEqual(show.current?.markers, markers)
+        show.redo(); XCTAssertEqual(show.current?.markers, saved)
+    }
+
+    @MainActor func testRedetectReplacesOnlyDetectedMarkersInTheRegionAndCanUndo() throws {
+        var project = Project.empty(name: "Redetect")
+        let region = Part(id: UUID(), name: "Song", startTime: 10, endTime: 40)
+        project.songs[0].parts = [region]; project.songs[0].duration = 50
+        func tempo(_ time: Double) -> TimelineMarker {
+            TimelineMarker(id: UUID(), name: "TEMPO", position: time, color: 0x999999,
+                tempoBPM: 140, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global, tempoReferenceBPM: 140)
+        }
+        let outside = tempo(42), wrong = tempo(25), first = tempo(11)
+        let manual = TimelineMarker(id: UUID(), name: "Cue", position: 22, color: 0xffffff)
+        project.songs[0].markers = [first, wrong, outside, manual]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let reads = executor.snapshotCount
+        let corrected = [tempo(11), tempo(24)]
+        XCTAssertTrue(show.applyDetectedTempo(corrected, project: project.id, song: project.songs[0].id, region: region.id))
+        let updated = try XCTUnwrap(show.current?.markers)
+        XCTAssertFalse(updated.contains(wrong)); XCTAssertTrue(updated.contains(outside)); XCTAssertTrue(updated.contains(manual))
+        XCTAssertEqual(updated.filter { $0.isTempo && $0.position >= 10 && $0.position < 40 }.map(\.position).sorted(), [11,24])
+        XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position }, show.current?.markers?.sorted { $0.position < $1.position })
+        XCTAssertEqual(executor.snapshotCount, reads, "detection publishes a batch without reloading the arrangement")
+        show.undo(); XCTAssertEqual(show.current?.markers, project.songs[0].markers)
+        show.redo(); XCTAssertEqual(show.current?.markers, updated)
     }
 
     @MainActor func testBlockIsInsertedImmediatelyAboveSelectedSong() throws {
@@ -675,6 +761,8 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.hasUnsavedChanges)
         try await show.flushProject()
         XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertNotNil(show.lastSavedAt)
+        XCTAssertNotNil(show.lastSavedAt.flatMap { ISO8601DateFormatter().date(from: $0) })
     }
 
     @MainActor func testHeldArrowOnlyCommitsAfterRelease() async throws {
@@ -885,5 +973,6 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.hasUnsavedChanges)
         XCTAssertFalse(show.saving)
         XCTAssertEqual(show.message, "Disk unavailable")
+        XCTAssertNil(show.lastSavedAt, "failed writes must not advance the displayed saved date")
     }
 }

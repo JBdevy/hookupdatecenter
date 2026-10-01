@@ -4,8 +4,8 @@ struct AdvancedView: View {
     @ObservedObject var show: ShowController
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case timeProject = "TimeProject", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
-        var icon: String { switch self { case .timeProject: return "metronome"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
+        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
+        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
     }
     @State private var tab = Tab.timeProject
     @State private var bpm: String
@@ -18,11 +18,11 @@ struct AdvancedView: View {
 
     init(show: ShowController) {
         self.show = show
-        let song = show.current
-        _bpm = State(initialValue: String(format: "%g", song?.bpm ?? 120))
-        _beats = State(initialValue: String(song?.meterBeats ?? 4))
-        _unit = State(initialValue: String(song?.meterUnit ?? 4))
-        _settings = State(initialValue: song?.projectTime ?? ProjectTimeSettings())
+        let timing = GlobalProjectTiming.load() ?? show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming()
+        _bpm = State(initialValue: String(format: "%g", timing.bpm))
+        _beats = State(initialValue: String(timing.beats))
+        _unit = State(initialValue: String(timing.unit))
+        _settings = State(initialValue: timing.settings)
     }
 
     var body: some View {
@@ -52,6 +52,7 @@ struct AdvancedView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(LocalizedStringKey(tab.rawValue)).font(.title3.bold())
                     if tab == .timeProject { timingControls }
+                    if tab == .timeline { AdvancedTimelineSettings() }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
@@ -82,11 +83,7 @@ struct AdvancedView: View {
                     Text(verbatim: "/")
                     timingField($unit, index: 2, width: 34, label: "Beat unit")
                 }
-                Text("Gridline")
-                Picker("Gridline", selection: Binding(get: { settings.divisions != 0 }, set: { settings.divisions = $0 ? 4 : 0 })) {
-                    Text("Enabled").tag(true)
-                    Text("Disabled").tag(false)
-                }.labelsHidden().frame(width: 108).accessibilityLabel("Gridline")
+
             }.font(.system(size: 12))
             HStack(spacing: 14) {
                 Text("Project timebase")
@@ -116,7 +113,10 @@ struct AdvancedView: View {
         guard let numerator = Int(beats), (1...32).contains(numerator) else { reject(1); return }
         guard let denominator = Int(unit), TimelineTempo.beatUnits.contains(denominator) else { reject(2); return }
         invalidField = nil
-        if show.configureProjectTime(bpm: tempo, beats: numerator, unit: denominator, settings: settings) { dismiss() }
+        if show.configureProjectTime(bpm: tempo, beats: numerator, unit: denominator, settings: settings) {
+            GlobalProjectTiming(bpm: tempo, beats: numerator, unit: denominator, settings: settings).save()
+            dismiss()
+        }
     }
 }
 
@@ -175,12 +175,27 @@ struct TempoMarkerEditor: View {
     }
 }
 
+private struct AdvancedTimelineSettings: View {
+    @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
+    var body: some View {
+        VStack(spacing: 18) {
+            Picker("Gridline", selection: $gridlines) {
+                Text("Enabled").tag(true)
+                Text("Disabled").tag(false)
+            }
+            SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background)
+            SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid)
+            SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid)
+            SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor)
+            SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor)
+            SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor)
+        }
+    }
+}
+
 private struct AdvancedSetlistColors: View {
     @AppStorage("jaras.setlist.idMode") private var idMode = "playlist"
     @AppStorage("jaras.setlist.fontStyle") private var fontStyle = 0
-    @AppStorage("jaras.setlist.allRegionsTextColor") private var allRegions = 0xffffff
-    @AppStorage("jaras.setlist.playlistTextColor") private var playlists = 0xb9e229
-    @AppStorage("jaras.setlist.unifiedTextColor") private var unified = 0xff6f00
     var body: some View {
         VStack(spacing: 18) {
             Picker("Setlist ID mode", selection: $idMode) {
@@ -192,30 +207,34 @@ private struct AdvancedSetlistColors: View {
                 Text("Bold").tag(1)
                 Text("Bold italic").tag(2)
             }
-            SetlistTextColorRow(title: "All Regions song text", value: $allRegions)
-            SetlistTextColorRow(title: "Playlist song text", value: $playlists)
-            SetlistTextColorRow(title: "Unified drawer song text", value: $unified)
+            SetlistTextColorRow(title: "All Regions song text", key: "jaras.setlist.allRegionsTextColor", defaultColor: 0xffffff)
+            SetlistTextColorRow(title: "Playlist song text", key: "jaras.setlist.playlistTextColor", defaultColor: 0x00ff9a)
+            SetlistTextColorRow(title: "Unified drawer song text", key: "jaras.setlist.unifiedTextColor", defaultColor: 0xffeb3b)
         }
     }
 }
 
 private struct SetlistTextColorRow: View {
     let title: String
-    @Binding var value: Int
+    @ObservedObject private var color: AppearanceColor
     @State private var editing = false
+    init(title: String, key: String, defaultColor: Int) {
+        self.title = title
+        self.color = AppearanceColor.shared(key, default: defaultColor)
+    }
     var body: some View {
         HStack {
             Text(LocalizedStringKey(title))
             Spacer()
             Button { editing = true } label: {
-                RoundedRectangle(cornerRadius: 3).fill(Color(hex: UInt32(value)))
+                RoundedRectangle(cornerRadius: 3).fill(Color(hex: UInt32(color.value)))
                     .frame(width: 44, height: 22)
                     .overlay(RoundedRectangle(cornerRadius: 3).stroke(JarasTheme.secondary))
             }.buttonStyle(.plain).accessibilityLabel(Text(LocalizedStringKey(title)))
                 .popover(isPresented: $editing) {
-                    NameColorEditor(title: title, initialName: "", initialColor: UInt32(value),
-                        save: { _, color in value = Int(color) }, close: { editing = false }, nameEditable: false, showsName: false,
-                        previewColor: { value = Int($0) })
+                    NameColorEditor(title: title, initialName: "", initialColor: UInt32(color.value),
+                        save: { _, value in color.save(Int(value)) }, close: { editing = false }, nameEditable: false, showsName: false,
+                        previewColor: { if color.value != Int($0) { color.value = Int($0) } })
                 }
         }
     }

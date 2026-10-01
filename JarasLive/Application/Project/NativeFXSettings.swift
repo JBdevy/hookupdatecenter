@@ -108,6 +108,17 @@ public struct NativeFXInstance: Codable, Equatable, Sendable {
     public var effectKey: String { "Native:" + id }
     public init(kind: String, settings: NativeFXSettings) { self.kind = kind; self.settings = settings }
 }
+public struct NativeLimiterSettings: Codable, Equatable, Sendable {
+    public var inputGain = 0.0
+    public var ceiling = -0.1
+    public var release = 0.1
+    public init() {}
+    public func validate() throws {
+        guard [inputGain, ceiling, release].allSatisfy(\.isFinite),
+              (-24...24).contains(inputGain), (-24...0).contains(ceiling), (0.01...3).contains(release)
+        else { throw ProjectError.invalid("Invalid limiter settings") }
+    }
+}
 public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instances: [NativeFXInstance]?
 
@@ -115,12 +126,18 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instrumentID: String?
     public var instrumentParameters: InstrumentParameters?
     public var inserted: [String] = []
-    public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb"]
+    public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
     public var eqEnabled = false
     public var bands = [EQBand(frequency: 30, type: "lowCut"), EQBand(frequency: 200), EQBand(frequency: 1000), EQBand(frequency: 5000), EQBand(frequency: 18000, type: "highCut")]
     public var instrumentBypassed: Bool?
     public var compressorEnabled = false
     public var threshold = -20.0, ratio = 4.0, attack = 0.005, release = 0.1, makeup = 0.0
+    public var limiterEnabled: Bool?
+    public var limiter: NativeLimiterSettings?
+    public var limiterParameters: NativeLimiterSettings {
+        get { limiter ?? NativeLimiterSettings() }
+        set { limiter = newValue }
+    }
     public var pitchEnabled: Bool?
     public var pitchSemitones: Double?
     public var semitones: Double { pitchSemitones ?? 0 }
@@ -135,9 +152,10 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         try validate()
         guard inserted.allSatisfy({ Self.order.dropFirst().contains($0) }),
               instances?.isEmpty != false, externalPlugins?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
-        else { throw ProjectError.invalid("Items support EQ, Compressor, Pitch, Delay and Reverb only") }
+        else { throw ProjectError.invalid("Items support EQ, Compressor, Pitch, Delay, Reverb and Limiter only") }
     }
     public func validate() throws {
+        try limiter?.validate()
         try instrumentParameters?.validate()
         guard semitones.isFinite, (-12...12).contains(semitones), semitones == semitones.rounded() else { throw ProjectError.invalid("Invalid pitch") }
         let native = instances ?? []
@@ -182,12 +200,12 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
-        switch effect { case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
+        switch effect { case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
-        switch effect { case "Instruments": instrumentBypassed = !enabled; case "EQ": eqEnabled = enabled; case "Compressor": compressorEnabled = enabled; case "Pitch": pitchEnabled = enabled; case "Delay": delayEnabled = enabled; case "Reverb": reverbEnabled = enabled; default: break }
+        switch effect { case "Instruments": instrumentBypassed = !enabled; case "EQ": eqEnabled = enabled; case "Compressor": compressorEnabled = enabled; case "Limiter": limiterEnabled = enabled; case "Pitch": pitchEnabled = enabled; case "Delay": delayEnabled = enabled; case "Reverb": reverbEnabled = enabled; default: break }
     }
     /// Editors for different effects can remain open; each updates only its own parameters.
     public func merging(effect: String, from draft: Self) -> Self {
@@ -202,6 +220,7 @@ extension NativeFXSettings {
         case "Compressor":
             next.compressorEnabled = draft.compressorEnabled; next.threshold = draft.threshold; next.ratio = draft.ratio
             next.attack = draft.attack; next.release = draft.release; next.makeup = draft.makeup
+        case "Limiter": next.limiterEnabled = draft.limiterEnabled; next.limiter = draft.limiter
         case "Pitch": next.pitchEnabled = draft.pitchEnabled; next.pitchSemitones = draft.pitchSemitones
         case "Delay": next.delayEnabled = draft.delayEnabled; next.delayTime = draft.delayTime; next.feedback = draft.feedback; next.delayMix = draft.delayMix
         case "Reverb": next.reverbEnabled = draft.reverbEnabled; next.reverbRoom = draft.reverbRoom; next.reverbMix = draft.reverbMix; next.reverbDecay = draft.reverbDecay; next.reverbLowCut = draft.reverbLowCut; next.reverbHighCut = draft.reverbHighCut
@@ -219,6 +238,7 @@ public enum EffectPresentation {
         case "Pitch": return "JarasPitch"
         case "Delay": return "JarasDelay"
         case "Compressor": return "JarasComp"
+        case "Limiter": return "Jaras Limiter"
         default: return "JarasInstruments"
         }
     }

@@ -2,11 +2,13 @@ import SwiftUI
 struct SidebarView: View {
     var close: () -> Void = {}
     var openProjects: () -> Void = {}
+    var exit: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             navigation("Projetos", icon: "square.stack.3d.up", active: false, action: openProjects)
             navigation("Live Session", icon: "waveform", active: true, action: {})
             Spacer(minLength: 0)
+            if let exit { navigation("Sair", icon: "rectangle.portrait.and.arrow.right", active: false, action: exit) }
         }.padding(.horizontal, 12).padding(.vertical, 12).background(Color(hex: 0x101419))
     }
     private func navigation(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {

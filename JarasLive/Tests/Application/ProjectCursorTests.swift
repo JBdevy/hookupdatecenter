@@ -6,6 +6,7 @@ import XCTest
     var loadCount = 0
     var snapshotCount = 0
     var regionCommands: [ShowCommand] = []
+    var regionCommandResult: TransportState?
     var transport = TransportState(playing: false, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
     func load(_ project: Project) throws {
         loadCount += 1
@@ -23,7 +24,9 @@ import XCTest
             transport.regionId = project.songs.first?.parts.filter {
                 $0.parentRegionID == nil && transport.position >= $0.startTime && transport.position < $0.endTime
             }.min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }?.id
-        case .selectRegion, .queueRegion: regionCommands.append(command)
+        case .selectRegion, .queueRegion:
+            regionCommands.append(command)
+            if let regionCommandResult { transport = regionCommandResult }
         case .subPlay: transport.subPlay.playing = transport.playing
         case .stop, .stopAll: transport.playing = false
         default: break
@@ -48,6 +51,72 @@ import XCTest
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testSelectingPlayingSongPreservesQueueForDesktopAndRemoteFocusAction() throws {
+        var project = Project.empty(name: "Queue clicks")
+        let parent = Part(id: UUID(), name: "Group", startTime: 10, endTime: 80)
+        let child = Part(id: UUID(), name: "Playing", startTime: 30, endTime: 80, parentRegionID: parent.id)
+        let queued = Part(id: UUID(), name: "Queued", startTime: 90, endTime: 100)
+        project.songs[0].parts = [parent, child, queued]; project.songs[0].duration = 110
+        project.regionSetlist = RegionSetlist(); project.regionSetlist?.autoAdvance = true
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        executor.transport.playing = true; executor.transport.position = 40
+        executor.transport.regionId = parent.id; executor.transport.queuedRegionId = queued.id
+        executor.transport.queueStartedAt = 20
+        show.send(.pause)
+        let commands = executor.regionCommands.count
+        for id in [parent.id, child.id] {
+            show.focusRegion(id)
+            XCTAssertEqual(show.focusedRegion, id)
+            XCTAssertEqual(show.snapshot.transport.queuedRegionId, queued.id)
+            XCTAssertEqual(show.snapshot.transport.queueStartedAt, 20)
+            XCTAssertTrue(show.regionSetlist.autoAdvance)
+            XCTAssertEqual(executor.regionCommands.count, commands, "playing selection must not send a queue replacement")
+        }
+        show.send(.stopAll)
+    }
+    @MainActor func testQueueCancellationPublishesAutoOffWithoutReloadingMediaOrStoppingPlayback() throws {
+        var project = Project.empty(name: "Cancel queue")
+        let playing = Part(id: UUID(), name: "Playing", startTime: 0, endTime: 60)
+        let queued = Part(id: UUID(), name: "Queued", startTime: 60, endTime: 120)
+        project.songs[0].parts = [playing, queued]; project.songs[0].duration = 120
+        project.regionSetlist = RegionSetlist(); project.regionSetlist?.autoAdvance = true
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        executor.transport.playing = true; executor.transport.position = 20
+        executor.transport.regionId = playing.id; executor.transport.queuedRegionId = queued.id
+        executor.transport.loop.enabled = true
+        show.send(.pause)
+        let loads = executor.loadCount, snapshots = executor.snapshotCount
+        var cancelled = executor.transport; cancelled.queuedRegionId = nil
+        executor.regionCommandResult = cancelled
+        show.focusRegion(queued.id)
+        XCTAssertEqual(executor.regionCommands.last, .queueRegion)
+        XCTAssertNil(show.snapshot.transport.queuedRegionId)
+        XCTAssertFalse(show.regionSetlist.autoAdvance, "Remote state and desktop Auto must reflect the engine's cancellation")
+        XCTAssertTrue(show.hasUnsavedChanges, "Auto preference change must be saved")
+        XCTAssertTrue(show.snapshot.transport.playing); XCTAssertTrue(show.snapshot.transport.loop.enabled)
+        XCTAssertEqual(executor.loadCount, loads); XCTAssertEqual(executor.snapshotCount, snapshots)
+        show.send(.stopAll)
+    }
+    @MainActor func testDuplicateMarkerCreationIsRejectedBeforeEditingAndAtCommit() throws {
+        var project = Project.empty(name: "Duplicate markers")
+        var marker = TimelineMarker(id: UUID(), name: "Verse", position: 10, color: 0x51ef93)
+        project.songs[0].markers = [marker]
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertFalse(show.canCreateMarker(at: 10))
+        XCTAssertEqual(show.modalNotice, "A marker already exists at this position.")
+        XCTAssertEqual(show.message, "", "duplicate warnings belong only to the modal")
+        var duplicate = marker; duplicate.id = UUID()
+        show.setMarker(duplicate)
+        XCTAssertEqual(show.current?.markers?.count, 1)
+        XCTAssertFalse(show.hasUnsavedChanges)
+        marker.name = "Chorus"; show.setMarker(marker)
+        XCTAssertEqual(show.current?.markers?.first?.name, "Chorus")
+        XCTAssertTrue(show.canCreateMarker(at: 11))
+        XCTAssertTrue(show.canCreateMarker(at: 10, tempo: true), "tempo lane and normal markers can coincide")
+    }
     @MainActor func testTempoButtonsEditMarkerUnderGreenCursorAndPreserveOtherTiming() throws {
         var project = Project.empty(name: "Tempo buttons")
         let first = TimelineMarker(id: UUID(), name: "A", position: 10, color: 0x999999, tempoBPM: 90, tempoBeats: 3, tempoUnit: 4)
@@ -72,7 +141,8 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertEqual(show.current?.activeTempoMarker(at: 25)?.tempoBPM, 60)
         show.send(.editSeek, value: 5)
         show.adjustTempo(1)
-        XCTAssertEqual(show.current?.bpm, 121)
+        XCTAssertEqual(show.current?.bpm, 120)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 5)?.tempoBPM, 121)
         XCTAssertEqual(show.current?.activeTempoMarker(at: 25)?.tempoBPM, 60)
         XCTAssertEqual(executor.loadCount, loads, "tempo edits must not reload the project")
     }
@@ -90,11 +160,12 @@ final class ProjectCursorTests: XCTestCase {
             show.setMarker(marker); XCTAssertEqual(audioRevisions, [0])
             var tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 340, color: 0x999999, tempoBPM: 180, tempoBeats: 3, tempoUnit: 8)
             show.setMarker(tempo)
-            XCTAssertEqual(show.current?.markers, [marker, tempo]); XCTAssertEqual(show.current?.duration, 340)
+            XCTAssertEqual(show.current?.markers?.first?.position, 0)
+            XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker, tempo]); XCTAssertEqual(show.current?.duration, 340)
             tempo.tempoBPM = 90; show.setMarker(tempo)
             show.deleteManualMarker(tempo.id)
             XCTAssertEqual(audioRevisions, mode == .relative ? [0, 1, 2, 3] : [0, 0, 0, 0])
-            XCTAssertEqual(show.current?.markers, [marker])
+            XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker])
             XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
             XCTAssertEqual(show.snapshot.transport, transport)
             XCTAssertTrue(show.hasUnsavedChanges)
@@ -102,6 +173,7 @@ final class ProjectCursorTests: XCTestCase {
     }
     @MainActor func testTimebaseSwitchRefreshesTempoPlaybackWithoutReloadingProjectOrMovingCursor() throws {
         var project = Project.empty(name: "Timebase switch")
+        project.songs[0].timeSettings = .legacy
         project.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 8, color: 0x999999, tempoBPM: 180)]
         var track = Track(id: UUID(), name: "Audio", role: .keys)
         let clip = AudioClip(id: UUID(), name: "Audio", startTime: 4, duration: 20, sourceOffset: 2, playbackRate: 1.25)
@@ -126,7 +198,8 @@ final class ProjectCursorTests: XCTestCase {
     }
     @MainActor func testLocalRelativeAndFreeMarkersRefreshOnlyAudioAffectedByTheirBoundaries() throws {
         let executor = CursorExecutor()
-        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: .empty(name: "Local timebase"))
+        var project = Project.empty(name: "Local timebase"); project.songs[0].timeSettings = .legacy
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
         let reads = executor.snapshotCount, loads = executor.loadCount, transport = show.snapshot.transport
         var revisions: [UInt64] = []; show.audioUpdate = { _,revision in revisions.append(revision) }
         let relative = TimelineMarker(id: UUID(), name: "TEMPO", position: 8, color: 0x999999, tempoBPM: 180, tempoTimebase: .relative)
@@ -141,7 +214,7 @@ final class ProjectCursorTests: XCTestCase {
         global.tempoTimebase = .free; show.setMarker(global)
         settings.timebase = .free
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(revisions, [1, 2, 3, 4, 4, 4, 5, 6, 6])
+        XCTAssertEqual(revisions, [1, 2, 3, 4, 4, 4, 5, 6, 7])
         XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
         XCTAssertEqual(show.snapshot.transport, transport)
         XCTAssertEqual(show.snapshot.project, executor.project)

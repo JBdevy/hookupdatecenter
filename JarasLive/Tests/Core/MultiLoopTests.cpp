@@ -49,7 +49,7 @@ int main() {
     manual.songs[0].parts.push_back({"next", "Next", 30, 60});
     manual.regionSetlist = RegionSetlist{}; manual.regionSetlist->autoAdvance = true;
     Engine escape; escape.loadProject(manual); escape.execute({CommandKind::play});
-    escape.execute({CommandKind::queueRegion,"next"});
+    assert(escape.transport().queuedRegionId == "next"); // Auto already armed it; selecting it again now cancels.
     escape.execute({CommandKind::toggleLoop});
     assert(escape.transport().loop.start == 0 && escape.transport().loop.end == 10);
     escape.advance(12); assert(near(escape.transport().position, 2));
@@ -69,5 +69,24 @@ int main() {
     outside.execute({CommandKind::loopStart,"",2}); outside.execute({CommandKind::loopEnd,"",5});
     outside.execute({CommandKind::toggleLoop}); outside.execute({CommandKind::play}); outside.advance(6);
     assert(outside.transport().loop.enabled && near(outside.transport().position,3));
+    auto totalProject=fixture();totalProject.songs[0].parts[0].totalLoop=true;
+    Engine total;total.loadProject(totalProject);total.execute({CommandKind::play});total.advance(65);
+    assert(near(total.transport().position,5) && total.transport().loop.start==0 && total.transport().loop.end==60);
+    assert(total.transport().multiLoop->id=="region" && total.transport().multiLoop->config.tracks.empty());
+    assert(total.project().songs[0].parts[0].multiLoops.size()==1);
+    total.execute({CommandKind::seek,"",12});total.execute({CommandKind::toggleLoop});total.advance(10);
+    assert(near(total.transport().position,22) && !total.transport().loop.enabled && total.transport().multiLoop->released);
+    total.execute({CommandKind::toggleLoop});assert(total.transport().loop.enabled);
+    total.execute({CommandKind::seek,"",12});
+    auto disabledTotal=total.project();disabledTotal.songs[0].parts[0].totalLoop=false;total.applyProjectEdit(disabledTotal);
+    assert(total.transport().multiLoop->id=="loop" && total.transport().loop.start==10 && total.transport().loop.end==20);
+    auto noMarkers=fixture();noMarkers.songs[0].markers.reset();noMarkers.songs[0].parts[0].multiLoops.clear();
+    noMarkers.songs[0].parts[0].startTime=5;noMarkers.songs[0].parts[0].endTime=30;noMarkers.songs[0].parts[0].totalLoop=true;
+    Engine crossing;crossing.loadProject(noMarkers);crossing.execute({CommandKind::play});crossing.advance(36);
+    assert(near(crossing.transport().position,11) && crossing.transport().loop.start==5 && crossing.transport().loop.end==30);
+    auto totalGroup=unified;totalGroup.songs[0].parts.back().totalLoop=true;
+    Engine groupedTotal;groupedTotal.loadProject(totalGroup);groupedTotal.execute({CommandKind::play});groupedTotal.advance(25);
+    assert(near(groupedTotal.transport().position,25) && groupedTotal.transport().multiLoop->id=="parent");
+    assert(groupedTotal.project().songs[0].parts[0].multiLoops.size()==1);
     std::cout<<"MULTILOOP_FADE_ARM_WRAP_RELEASE_REARM_STOP_PAUSE_LONG_TICK_UNIFIED_OK\n";
 }

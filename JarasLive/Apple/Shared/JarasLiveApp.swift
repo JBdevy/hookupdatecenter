@@ -20,7 +20,7 @@ import SwiftUI
             .defaultSize(width: ProjectWindowAnchor.editorFrameSize.width, height: ProjectWindowAnchor.editorFrameSize.height)
             .windowStyle(.hiddenTitleBar)
         #else
-        WindowGroup("Jaras Live") { appContent }
+        WindowGroup("Jaras Live") { appContent.statusBarHidden(true).persistentSystemOverlays(.hidden) }
         #endif
     }
 }

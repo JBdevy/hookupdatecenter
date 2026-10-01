@@ -139,7 +139,7 @@ void validate(const Project& p) {
     size_t trackCount = 0;
     for (const auto& song : p.songs) {
         trackCount += song.tracks.size();
-        require(trackCount <= 400, "A project supports at most 400 tracks");
+        require(trackCount <= Project::maximumTrackCount, "A project supports at most 1000 tracks");
     }
     auto validatePatch = [&](const OutputPatch& patch, bool masterAllowed, bool groupAllowed = false, bool noneAllowed = false) {
         if (patch.channelCount == 2 && ((noneAllowed && patch.firstChannel == -1) || (groupAllowed && patch.firstChannel == -2))) return;
@@ -227,6 +227,7 @@ void validate(const Project& p) {
                 require(!clip.loopLength || (finite(*clip.loopLength) && *clip.loopLength > 0), "Invalid loop length");
                 require(!clip.gain || (finite(*clip.gain) && *clip.gain >= 0), "Invalid clip gain");
                 require(!clip.channelMode || (*clip.channelMode >= 0 && *clip.channelMode <= 3), "Invalid item channel mode");
+                require((!clip.fadeIn || (finite(*clip.fadeIn) && *clip.fadeIn >= 0)) && (!clip.fadeOut || (finite(*clip.fadeOut) && *clip.fadeOut >= 0)), "Invalid item fade");
                 require(!clip.normalizationGain || (finite(*clip.normalizationGain) && *clip.normalizationGain >= 0 && *clip.normalizationGain <= std::pow(10.0, 24.0 / 20.0)), "Invalid normalization gain");
                 unique(clip.id);
                 require(finite(clip.startTime) && finite(clip.duration) && clip.startTime >= 0 && clip.duration > 0 && clip.startTime + clip.duration <= s.duration, "Invalid clip interval");
@@ -253,7 +254,8 @@ void validate(const Project& p) {
                 const int unit = marker.tempoUnit.value_or(4);
                 require(finite(*marker.tempoBPM) && *marker.tempoBPM >= 60 && *marker.tempoBPM <= 300 && marker.tempoBeats.value_or(4) >= 1 && marker.tempoBeats.value_or(4) <= 32 && (unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16 || unit == 32 || unit == 64) && !marker.unifiedRegionID && !marker.sourceRegionID, "Invalid tempo marker");
                 require(!marker.tempoTimebase || *marker.tempoTimebase == "global" || *marker.tempoTimebase == "free" || *marker.tempoTimebase == "relative", "Invalid tempo marker timebase");
-            } else require(!marker.tempoBeats && !marker.tempoUnit && !marker.tempoTimebase, "Invalid tempo marker");
+                require(!marker.tempoReferenceBPM || (finite(*marker.tempoReferenceBPM) && *marker.tempoReferenceBPM >= 60 && *marker.tempoReferenceBPM <= 300), "Invalid tempo reference");
+            } else require(!marker.tempoBeats && !marker.tempoUnit && !marker.tempoTimebase && !marker.tempoReferenceBPM, "Invalid tempo marker");
             unique(marker.id);
             require(marker.name.find_first_not_of(" \t\r\n") != std::string::npos && marker.color <= 0xffffff && finite(marker.position) && marker.position >= 0 && marker.position <= s.duration, "Invalid marker");
         }

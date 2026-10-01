@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PYTHON'
 from pathlib import Path
 import sys
 source = Path('Apple/Shared/ProjectDocuments.swift').read_text()
-start = source.index('final class ProjectWindowAnchor: NSView')
+start = source.index('/// Keep project controls in AppKit')
 end = source.index('\n#endif', start)
 stubs = '''import AppKit
 import SwiftUI

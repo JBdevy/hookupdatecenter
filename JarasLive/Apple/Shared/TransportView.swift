@@ -4,6 +4,7 @@ struct TransportView: View {
     @State private var showingExport = false
     @State private var showingAdvanced = false
     @ObservedObject var show: ShowController
+    var remotePresentation = false
     var mediaDirectory: URL? = nil
     var toggleNavigation: () -> Void = {}
     var openSettings: () -> Void = {}
@@ -14,7 +15,7 @@ struct TransportView: View {
     var body: some View {
         GeometryReader { geometry in
             #if os(macOS)
-            let width = max(1296, geometry.size.width)
+            let width = remotePresentation ? geometry.size.width : max(1296, geometry.size.width)
             #else
             let width = geometry.size.width
             #endif
@@ -29,7 +30,15 @@ struct TransportView: View {
         let transport = show.snapshot.transport
         let controlPadding = 5 + spacing / 2
         let controlFont = 11 + spacing / 8
+        #if os(macOS)
+        let playbackSpacing = spacing / 2 + 2
+        let remainingSpacing = max(0, spacing / 2 - 1)
+        #else
+        let playbackSpacing = spacing / 2
+        let remainingSpacing = spacing / 2
+        #endif
         return HStack(spacing: spacing) {
+            #if !os(macOS)
             VStack(spacing: 5) {
                 Button(action: toggleNavigation) {
                     Image(systemName: "line.3.horizontal").font(.system(size: 18)).frame(width: TransportControlMetrics.width, height: 25).contentShape(Rectangle())
@@ -37,6 +46,7 @@ struct TransportView: View {
                 PanelCollapseButton(collapsed: mixerCollapsed, title: "Tracks", label: mixerCollapsed ? "Expandir Track-Mixer" : "Recolher Track-Mixer", tooltip: mixerCollapsed ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer", action: toggleMixer)
                     .frame(height: 43)
             }.frame(width: TransportControlMetrics.width)
+            #endif
             MasterStrip(show: show).frame(width: 190)
             VStack(spacing: 5) {
                 HStack(spacing: spacing) {
@@ -48,11 +58,13 @@ struct TransportView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
                         #if os(macOS)
+                        if !remotePresentation {
                         ForEach(["GrandMA2", "Resolume"], id: \.self) { title in
                             Button {} label: {
                                 Text(verbatim: title).font(.system(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                             }.buttonStyle(.plain).accessibilityLabel(title)
+                        }
                         }
                         #endif
                         Button { showingExport = true } label: {
@@ -64,7 +76,8 @@ struct TransportView: View {
                         }.buttonStyle(.plain).accessibilityLabel("Configurações")
                     }
                 }
-                HStack(spacing: spacing / 2) {
+                HStack(spacing: remainingSpacing) {
+                    HStack(spacing: playbackSpacing) {
                     Button { show.send(transport.playing ? .stop : .play) } label: {
                         Label { Text(verbatim: transport.playing ? "Stop" : "Play") } icon: {
                             Image(systemName: transport.playing ? "stop.fill" : "play.fill").frame(width: 12)
@@ -82,11 +95,13 @@ struct TransportView: View {
                         .disabled(!transport.playing).jarasHelp(ControlMappings.shared.shortcutHelp(.subPlayStop))
                     RepeatControl(active: transport.loop.enabled) { show.send(.toggleLoop) }
                     TransportRecordButton(show: show)
-                    MetronomeControl()
+                    MetronomeControl(show: show)
+                    }.fixedSize(horizontal: true, vertical: false)
                     Spacer(minLength: 0)
                     TempoControl(show: show)
                     #if os(macOS)
                     Spacer(minLength: 0)
+                    if !remotePresentation {
                     TeleprompterTimerControl()
                     Spacer(minLength: 0)
                     TeleprompterToggleButton(show: show, directory: mediaDirectory, index: 1)
@@ -97,7 +112,8 @@ struct TransportView: View {
                     Spacer(minLength: 0)
                     VideoToggleButton()
                     Spacer(minLength: 0)
-                    RemoteToggleButton()
+                    RemoteToggleButton(show: show)
+                    }
                     #endif
                     Spacer(minLength: 0)
                     ProjectSaveButton(pending: show.hasUnsavedChanges, saving: show.saving, message: show.message) { Task { await show.save() } }
@@ -106,6 +122,7 @@ struct TransportView: View {
                         .frame(width: TransportControlMetrics.width, height: TransportControlMetrics.height)
                 }
             }.frame(maxWidth: .infinity)
+
 
         }
         .buttonStyle(TransportButtonStyle(horizontalPadding: controlPadding, fontSize: controlFont)).padding(.horizontal, 8).padding(.vertical, 6)
@@ -138,26 +155,22 @@ struct TransportView: View {
 
 struct FooterInformationDisplay: View {
     @ObservedObject var show: ShowController
-    var status = ""
     private var hasMultiLoop: Bool {
         guard let song = show.current else { return false }
         let transport = show.snapshot.transport
         let region = transport.playing ? show.pitchRegion : song.parts.first { $0.id == (show.focusedRegion ?? transport.regionId) }
         guard let region else { return false }
-        if !(region.multiLoops ?? []).isEmpty { return true }
+        if region.totalLoop == true || !(region.multiLoops ?? []).isEmpty { return true }
         if let parent = region.parentRegionID {
-            return song.parts.contains { $0.id == parent && !($0.multiLoops ?? []).isEmpty }
+            return song.parts.contains { $0.id == parent && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
         }
-        return song.parts.contains { $0.parentRegionID == region.id && !($0.multiLoops ?? []).isEmpty }
+        return song.parts.contains { $0.parentRegionID == region.id && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
     }
     private var information: String {
         if show.snapshot.transport.ignoreNextAfter != nil { return "Ignore Next" }
         if hasMultiLoop { return JarasLocalization.string("This song has an active multiloop") }
-        var messages: [String] = []
-        for message in [status, show.message] where !message.isEmpty {
-            messages.append(JarasLocalization.string(message))
-        }
-        return messages.joined(separator: " · ")
+        if show.snapshot.transport.loop.enabled { return JarasLocalization.string("Loop armed") }
+        return ""
     }
     // Follow the transport clock, so the pulse stays on the beat through
     // tempo changes, seeks and loop wraps without another UI timer.
@@ -184,10 +197,6 @@ struct FooterInformationDisplay: View {
                     .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             } else if message.isEmpty {
                 Text(verbatim: " ").frame(maxWidth: .infinity).frame(height: 21)
-                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
-            } else if show.message == "Projeto salvo.", status.isEmpty, show.snapshot.transport.ignoreNextAfter == nil, !hasMultiLoop {
-                Text(verbatim: message).foregroundStyle(JarasTheme.green)
-                    .frame(maxWidth: .infinity).frame(height: 21)
                     .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             } else {
                 TimelineView(.periodic(from: .now, by: 0.5)) { tick in
@@ -394,11 +403,20 @@ struct TransportButtonStyle: ButtonStyle {
 struct TransportPreview: PreviewProvider { static var previews: some View { TransportView(show: try! AppContainer(preview: true).show).frame(width: 980) } }
 
 private struct MetronomeControl: View {
+    @ObservedObject var show: ShowController
     @ObservedObject private var settings = MetronomeSettings.shared
     @State private var configuring = false
+    private var pulse: Bool {
+        guard settings.enabled, show.snapshot.transport.playing, let song = show.current else { return true }
+        let position = show.snapshot.transport.position
+        let section = song.tempoSection(at: position)
+        let beat = max(0, position - section.start) * section.bpm / 60 * Double(section.unit) / 4
+        return beat.truncatingRemainder(dividingBy: 1) < 0.35
+    }
     var body: some View {
         Button { settings.enabled.toggle() } label: { Image(systemName: "metronome") }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: settings.enabled, fontSize: TransportControlMetrics.font, width: 30, height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: 30, height: 35))
+            .opacity(pulse ? 1 : 0.45)
             .accessibilityLabel("Metronome").accessibilityValue(settings.enabled ? "On" : "Off")
             .jarasHelp("Metronome · Right-click to configure")
             .immediateRightClick { configuring = true }
@@ -407,6 +425,7 @@ private struct MetronomeControl: View {
 }
 private struct MetronomeEditor: View {
     @ObservedObject private var settings = MetronomeSettings.shared
+    @ObservedObject private var audio = AudioDeviceSettings.shared
     @Environment(\.dismiss) private var dismiss
     @State private var importing = false
     @State private var importingA = true
@@ -424,6 +443,13 @@ private struct MetronomeEditor: View {
                 Text("Only A").tag(1)
                 Text("Only B").tag(2)
             }.pickerStyle(.segmented)
+            Picker("Output", selection: $settings.output) {
+                let choices = OutputPatch.choices(channels: audio.channels, includeMaster: false)
+                if !choices.contains(settings.output) {
+                    Text(settings.output.title + " — " + JarasLocalization.string("Unavailable")).tag(settings.output)
+                }
+                ForEach(choices, id: \.self) { Text(verbatim: $0.title).tag($0) }
+            }
             if settings.preset == "User" {
                 fileRow(a: true)
                 fileRow(a: false)
@@ -466,7 +492,7 @@ private struct RepeatControl: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) { Image(systemName: "repeat") }
-            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : JarasTheme.panel, active: active, fontSize: TransportControlMetrics.font, width: 30, height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : .red, active: active, fontSize: TransportControlMetrics.font, width: 30, height: TransportControlMetrics.height))
             .modifier(JarasBlink(active: active, interval: 0.55, lowOpacity: 0.45))
             .accessibilityLabel("Repeat").jarasHelp("Repeat (R)")
     }
@@ -510,14 +536,26 @@ private final class VideoOptionsTarget: RightClickTargetView {
 #endif
 
 private struct RemoteToggleButton: View {
-    @State private var active = false
+    let show: ShowController
+    @ObservedObject private var remote = DAWRemoteSession.shared
+    @State private var settings = false
     var body: some View {
-        Button { active.toggle() } label: {
+        Button {
+            #if os(macOS)
+            if remote.enabled { remote.stop(); settings = false }
+            else { DAWRemoteHostBridge.bind(show); remote.startHost(); settings = true }
+            #endif
+        } label: {
             HStack(spacing: 2) {
                 Image(systemName: "network")
                 Text(verbatim: "Remote")
             }.lineLimit(1)
-        }.buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height))
-            .accessibilityLabel("Remote").accessibilityValue(active ? "On" : "Off")
+        }.buttonStyle(TransportButtonStyle(color: remote.enabled ? JarasTheme.green : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height))
+            .accessibilityLabel("Remote").accessibilityValue(remote.enabled ? "On" : "Off")
+            #if os(macOS)
+            .popover(isPresented: $settings) { DAWRemoteHostView() }
+            .immediateRightClick { if remote.enabled { settings = true } }
+            .onChange(of: remote.connected) { if $0 { settings = false } }
+            #endif
     }
 }

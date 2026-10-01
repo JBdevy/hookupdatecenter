@@ -6,8 +6,8 @@ import AppKit
     window.contentView = host
     let view = RegionRightClickView(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
     host.addSubview(view)
-    func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
     var original: [(CGFloat, Bool, Int)] = [], replacement: [(CGFloat, Bool, Int)] = []
     view.drag = { original.append(($0, $1, $2)) }
@@ -39,12 +39,40 @@ import AppKit
     var regionSeeks = 0
     view.seek = { regionSeeks += 1 }
     view.mouseDown(with: event(.leftMouseDown, 110))
+    precondition(regionSeeks == 0, "region seek waits for mouse-up")
     view.mouseUp(with: event(.leftMouseUp, 110))
     precondition(regionSeeks == 1, "ordinary region clicks seek its start")
     view.mouseDown(with: event(.leftMouseDown, 110))
     view.mouseDragged(with: event(.leftMouseDragged, 140))
     view.mouseUp(with: event(.leftMouseUp, 110))
     precondition(regionSeeks == 1, "a region drag returning to its origin must never become a seek")
+    for modal in [false, true] {
+        view.mouseDown(with: event(.leftMouseDown, 110))
+        if modal {
+            NativeTimelineInputGate.shared.setBlocked(true, for: window)
+            NativeTimelineInputGate.shared.setBlocked(false, for: window)
+        } else { NativeTimelineInputGate.shared.cancelPendingClicks(for: window) }
+        view.mouseUp(with: event(.leftMouseUp, 110))
+    }
+    precondition(regionSeeks == 1, "region presses cancelled by wheel or modal cannot seek on release")
+    view.mouseDown(with: event(.leftMouseDown, 110))
+    view.mouseDragged(with: event(.leftMouseDragged, 110, 18))
+    view.mouseUp(with: event(.leftMouseUp, 110))
+    precondition(regionSeeks == 1, "vertical region drags also leave the cursor unchanged")
+    let dragCount = replacement.count
+    view.mouseDown(with: event(.leftMouseDown, 110, flags: .option))
+    precondition(deletes == 0 && regionSeeks == 1, "Option click waits for release and does not seek")
+    view.mouseUp(with: event(.leftMouseUp, 110, flags: .option))
+    precondition(deletes == 1 && regionSeeks == 1)
+    view.mouseDown(with: event(.leftMouseDown, 110, flags: .option))
+    view.mouseDragged(with: event(.leftMouseDragged, 140, flags: .option))
+    view.mouseUp(with: event(.leftMouseUp, 110, flags: .option))
+    precondition(deletes == 1 && replacement.count == dragCount, "Option drag cannot delete, seek or move the region")
+    view.mouseDown(with: event(.leftMouseDown, 110, flags: .option))
+    NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
+    view.mouseUp(with: event(.leftMouseUp, 110, flags: .option))
+    precondition(deletes == 1, "cancelled Option clicks cannot delete")
+    deletes = 0
     let menu = view.regionMenu()
     precondition(menu.items.count == 2, "normal regions offer edit and delete before opening an editor")
     for item in menu.items { NSApp.sendAction(item.action!, to: item.target, from: item) }
@@ -55,13 +83,33 @@ import AppKit
     host.addSubview(marker)
     var markerEdits = 0, markerDeletes = 0
     marker.action = { markerEdits += 1 }; marker.optionClick = { markerDeletes += 1 }
-    func markerEvent(_ type: NSEvent.EventType, flags: NSEvent.ModifierFlags = [], x: CGFloat = 305) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 5), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    func markerEvent(_ type: NSEvent.EventType, flags: NSEvent.ModifierFlags = [], x: CGFloat = 305, y: CGFloat = 5) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
     let router = RightClickRouter.shared
     var markerSeeks = 0; marker.seek = { markerSeeks += 1 }
     marker.mouseDown(with: markerEvent(.leftMouseDown))
-    precondition(markerSeeks == 1, "marker flag clicks seek the marker itself")
+    precondition(markerSeeks == 0, "locked/unified marker flags also wait for release")
+    marker.mouseUp(with: markerEvent(.leftMouseUp))
+    precondition(markerSeeks == 1, "marker flag release seeks the marker itself")
+    marker.mouseDown(with: markerEvent(.leftMouseDown))
+    marker.mouseDragged(with: markerEvent(.leftMouseDragged, x: 330))
+    marker.mouseDragged(with: markerEvent(.leftMouseDragged))
+    marker.mouseUp(with: markerEvent(.leftMouseUp))
+    precondition(markerSeeks == 1, "dragging a locked marker never seeks, even after returning to its origin")
+    for modal in [false, true] {
+        marker.mouseDown(with: markerEvent(.leftMouseDown))
+        if modal {
+            NativeTimelineInputGate.shared.setBlocked(true, for: window)
+            NativeTimelineInputGate.shared.setBlocked(false, for: window)
+        } else { NativeTimelineInputGate.shared.cancelPendingClicks(for: window) }
+        marker.mouseUp(with: markerEvent(.leftMouseUp))
+    }
+    precondition(markerSeeks == 1, "marker cancellation cannot leave a latent seek")
+    marker.mouseDown(with: markerEvent(.leftMouseDown))
+    marker.mouseDragged(with: markerEvent(.leftMouseDragged, y: 18))
+    marker.mouseUp(with: markerEvent(.leftMouseUp))
+    precondition(markerSeeks == 1, "vertical locked-marker drags cannot become clicks")
     marker.mouseDown(with: markerEvent(.leftMouseDown, flags: .option))
     precondition(markerSeeks == 1, "marker deletion must not move the cursor")
     precondition(!router.handle(markerEvent(.leftMouseDown)), "ordinary clicks keep positioning the edit cursor")

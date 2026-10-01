@@ -11,8 +11,11 @@ struct MultiLoopsEditor: View {
     @State private var first: UUID?
     @State private var second: UUID?
     @State private var draft: MultiLoop?
+    @State private var pairWarning = false
     @FocusState private var nameFocused: Bool
     private var region: Part? { show.current?.parts.first { $0.id == regionID } }
+    private var totalLoop: Bool { region?.totalLoop == true }
+    private var bypassed: Bool { guard let song = show.current, let region else { return false }; return song.multiLoopsBypassed(in: region) }
     private var loops: [MultiLoop] { region?.multiLoops ?? [] }
     private var availableTracks: [Track] { (show.current?.tracks ?? []).filter { $0.kind == .standard } }
     private var markers: [TimelineMarker] { guard let song = show.current, let region else { return [] }; return song.multiLoopMarkers(in: region) }
@@ -35,19 +38,28 @@ struct MultiLoopsEditor: View {
                 if stage == 3 { Button("Save") { if let draft { commit(draft) } }.keyboardShortcut(.defaultAction) }
             }
         }.padding(20).frame(width: 660, height: 490)
+            .alert("A multiloop cannot exist inside another multiloop.", isPresented: $pairWarning) {
+                Button("OK", role: .cancel) { pairWarning = false }
+            }
     }
     private var loopList: some View {
         VStack {
             HStack {
                 Button { name = ""; invalid = false; first = nil; second = nil; stage = 1; nameFocused = true } label: { Image(systemName: "plus") }
-                    .help("Create multiloop")
+                    .help("Create multiloop").disabled(bypassed)
+                Button { show.setTotalLoop(!totalLoop, region: regionID) } label: {
+                    Text("Total Loop").font(.callout.bold()).padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(totalLoop ? JarasTheme.green : Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(totalLoop ? Color.black : Color.white)
+                }.buttonStyle(.plain).accessibilityValue(totalLoop ? "On" : "Off")
                 Spacer()
             }
             ScrollView {
                 LazyVStack {
                     ForEach(loops) { loop in
                         HStack {
-                            Text(loop.name).lineLimit(1)
+                            Text(loop.name).lineLimit(1).opacity(bypassed ? 0.45 : 1)
+                            if bypassed { Text("Bypass").font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             Button("Markers") { draft = loop; name = loop.name; first = loop.marker1; second = loop.marker2; stage = 2 }
                             Button("Edit") { editTracks(loop) }
@@ -85,20 +97,24 @@ struct MultiLoopsEditor: View {
             if markers.isEmpty { Text("No markers found").foregroundStyle(.secondary); Spacer() }
             else {
                 HStack(alignment: .top, spacing: 18) {
-                    markerColumn("Marker 1", selection: $first)
-                    markerColumn("Marker 2", selection: $second)
+                    markerColumn("Marker 1", selection: $first, isFirst: true)
+                    markerColumn("Marker 2", selection: $second, isFirst: false)
                 }
                 Text("Choose two different markers in chronological order").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
-    private func markerColumn(_ title: String, selection: Binding<UUID?>) -> some View {
+    private func markerColumn(_ title: String, selection: Binding<UUID?>, isFirst: Bool) -> some View {
         VStack(alignment: .leading) {
             Text(LocalizedStringKey(title)).bold()
             ScrollView {
                 LazyVStack(alignment: .leading) {
                     ForEach(markers) { marker in
-                        Button { selection.wrappedValue = marker.id } label: {
+                        Button {
+                            let a = isFirst ? marker.id : first, b = isFirst ? second : marker.id
+                            if conflicts(first: a, second: b) { pairWarning = true }
+                            else { selection.wrappedValue = marker.id }
+                        } label: {
                             HStack {
                                 Image(systemName: selection.wrappedValue == marker.id ? "largecircle.fill.circle" : "circle")
                                 Text(marker.name).lineLimit(1)
@@ -111,8 +127,15 @@ struct MultiLoopsEditor: View {
             }
         }.frame(maxWidth: .infinity)
     }
+    private func conflicts(first: UUID?, second: UUID?) -> Bool {
+        guard let first, let second else { return false }
+        var candidate = draft ?? MultiLoop(name: name, marker1: first, marker2: second)
+        candidate.marker1 = first; candidate.marker2 = second
+        return show.current?.multiLoopConflicts(candidate) == true
+    }
     private func acceptMarkers() {
-        guard validPair, let first, let second else { return }
+        guard validPair, let first, let second, !bypassed else { return }
+        if conflicts(first: first, second: second) { pairWarning = true; return }
         var next = draft ?? MultiLoop(name: name.trimmingCharacters(in: .whitespacesAndNewlines), marker1: first, marker2: second)
         next.marker1 = first; next.marker2 = second
         commit(next)

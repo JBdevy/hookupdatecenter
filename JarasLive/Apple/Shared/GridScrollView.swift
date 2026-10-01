@@ -57,6 +57,13 @@ private final class WorkspaceHostingView<Content: View>: NSHostingView<Content>,
     func commitSidebarResizeLayout() { layoutSubtreeIfNeeded() }
 }
 
+private struct WorkspaceHostingIdentity: Hashable {
+    let content: AnyHashable
+    let locale: String
+    let colorScheme: ColorScheme
+    let interactionBlocked: Bool
+}
+
 /// The workspace divider changes native sibling frames without publishing a
 /// new MainView layout for every pointer event. Both hosting roots stay alive.
 struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable {
@@ -64,6 +71,7 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
     let restoreWidth: CGFloat
     let minimum: CGFloat
     let scrollController: SidebarScrollController
+    var contentIdentity: AnyHashable? = nil
     let onToggle: () -> Void
     let onEnd: (CGFloat) -> Void
     @ViewBuilder let leading: () -> Leading
@@ -98,8 +106,10 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
     func updateNSView(_ native: NSView, context: Context) {
         guard let view = native as? WorkspaceSplitView<Leading, Trailing> else { return }
         updateActions(view.actions)
+        let identity = contentIdentity.map { AnyHashable(WorkspaceHostingIdentity(content: $0,
+            locale: locale.identifier, colorScheme: colorScheme, interactionBlocked: gridInteractionBlocked)) }
         view.updateContent(leading: hosted(leading(), actions: view.actions),
-                           trailing: hosted(trailing(), actions: view.actions))
+                           trailing: hosted(trailing(), actions: view.actions), identity: identity)
         view.configure(width: width, restoreWidth: restoreWidth, minimum: minimum,
                        scrollController: scrollController, onToggle: onToggle, onEnd: onEnd)
     }
@@ -158,9 +168,14 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
 
-    func updateContent(leading: GridHostedContent<Leading>, trailing: GridHostedContent<Trailing>) {
+    private var mountedContentIdentity: AnyHashable?
+    func updateContent(leading: GridHostedContent<Leading>, trailing: GridHostedContent<Trailing>, identity: AnyHashable? = nil) {
+        // ObservedObject descendants receive mixer/transport updates themselves.
+        // Replacing both roots on every parent publication forces AppKit to
+        // traverse the entire window layout before handling the next gesture.
+        if let identity, mountedContentIdentity == identity { return }
+        mountedContentIdentity = identity
         self.leading.rootView = leading; self.trailing.rootView = trailing
-        needsLayout = true
     }
     func configure(width: CGFloat, restoreWidth: CGFloat, minimum: CGFloat,
                    scrollController: SidebarScrollController, onToggle: @escaping () -> Void,
@@ -383,7 +398,11 @@ final class GridNativeScrollView: NSScrollView {
         reflectScrolledClipView(contentView)
         // SwiftUI may commit an intermediate scale after a newer wheel event.
         // Center that actual frame too, retaining the target for the next layout.
-        if abs(document.frame.width - anchor.width) < 2 { zoomAnchor = nil }
+        // Fractional zoom steps can be smaller than one point. A two-point
+        // tolerance acknowledged the previous layout as the new one, leaving
+        // the final cursor/waveform scale with its previous viewport origin.
+        let tolerance = max(1e-7, abs(anchor.width).ulp * 8)
+        if abs(document.frame.width - anchor.width) <= tolerance { zoomAnchor = nil }
     }
 
     override var hasHorizontalScroller: Bool {

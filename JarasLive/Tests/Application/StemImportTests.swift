@@ -63,7 +63,7 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(first.songs[0].parts.map(\.name), Array(names.reversed()))
         let click = try XCTUnwrap(first.songs[0].tracks.first { $0.name == "Click" })
         let clickGroup = try XCTUnwrap(first.songs[0].tracks.first { $0.id == click.parentTrackID })
-        XCTAssertEqual(click.color, clickGroup.color, "Imported groups keep their explicit taxonomy color")
+        XCTAssertNotEqual(click.color, clickGroup.color, "Folder colors remain stronger than their children")
         for pair in zip(first.songs[0].parts, first.songs[0].parts.dropFirst()) {
             XCTAssertEqual(pair.1.startTime - pair.0.endTime, 30, accuracy: 0.00001)
         }
@@ -254,13 +254,13 @@ final class StemImportTests: XCTestCase {
         let reference = try StemProjectImporter.call("analyzeImport", args: [virtual], context: js, as: ImportAudit.self)
         let first = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Audit"), destination: destination)
         let tracks = first.songs[0].tracks
-        XCTAssertEqual(tracks.filter { $0.parentTrackID == nil }.map(\.name), reference.groups.map(\.name))
+        XCTAssertEqual(tracks.filter { $0.parentTrackID == nil }.map(\.name), (reference.groups.filter { $0.key != "percussivo" } + reference.groups.filter { $0.key == "percussivo" }).map(\.name))
         XCTAssertEqual(tracks.filter { $0.parentTrackID == nil }.count, 9)
         for group in reference.groups {
             let folder = try XCTUnwrap(tracks.first { $0.name == group.name && $0.parentTrackID == nil })
             let members = tracks.filter { $0.parentTrackID == folder.id }
             XCTAssertEqual(members.map(\.name), group.tracks.map(\.name))
-            XCTAssertTrue(members.allSatisfy { $0.color == folder.color && $0.primaryOutput == .masterGroup })
+            XCTAssertTrue(members.allSatisfy { $0.color != folder.color && $0.primaryOutput == .masterGroup })
         }
         let second = try StemProjectImporter.build(scan: scan, remove: "", base: first, destination: destination)
         XCTAssertEqual(second.songs[0].tracks.map(\.id), tracks.map(\.id))

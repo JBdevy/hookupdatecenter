@@ -17,7 +17,7 @@ struct FXInsertEditor: View {
     @State private var browsingExternal = false
     #endif
     private var availableEffects: [String] {
-        var result = track == nil ? ["EQ", "Compressor"] : NativeFXSettings.order.filter { targets.count == 1 || $0 != "Instruments" }
+        var result = track == nil ? ["EQ", "Compressor", "Limiter"] : NativeFXSettings.order.filter { targets.count == 1 || $0 != "Instruments" }
         #if os(macOS)
         result.append("External")
         #endif
@@ -34,7 +34,7 @@ struct FXInsertEditor: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Insert effect").font(.headline)
                     Picker("Effect", selection: $effect) {
-                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0)).tag($0) }
+                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "Jaras Limiter" : $0)).tag($0) }
                     }.pickerStyle(.menu)
                     if effect == "Instruments" { InstrumentBrowser(selected: $instrument).frame(height: 330) }
                     #if os(macOS)

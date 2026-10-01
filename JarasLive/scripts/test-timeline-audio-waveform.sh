@@ -11,6 +11,7 @@ start = source.index('private func drawTimelineAudioWaveform(')
 end = source.index('private func drawTimelineItem(', start)
 stub = '''import SwiftUI
 struct AudioClip {
+    var id = UUID()
     var startTime: Double; var duration: Double; var sourceOffset: Double
     var playbackRate: Double; var gain: Double?
     var loopLength: Double? = nil; var loopStart: Double? = nil

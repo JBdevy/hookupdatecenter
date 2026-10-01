@@ -85,14 +85,14 @@ final class TrackCreationTests: XCTestCase {
     }
     @MainActor func testCreationRespectsProjectWideLimitAndDoesNotPartiallyInsert() throws {
         var project = Project.empty(name: "Limit")
-        project.songs[0].tracks = (0..<399).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = (0..<999).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
         let executor = BulkTrackExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
         XCTAssertTrue(show.addTracks(name: "Over limit", role: .other, count: 2).isEmpty)
         XCTAssertEqual(executor.editCount, 0)
-        XCTAssertEqual(show.current?.tracks.count, 399)
+        XCTAssertEqual(show.current?.tracks.count, 999)
         XCTAssertEqual(show.addTracks(name: "Last", role: .other, count: 1).count, 1)
-        XCTAssertEqual(show.current?.tracks.count, 400)
+        XCTAssertEqual(show.current?.tracks.count, 1000)
         XCTAssertTrue(show.addTracks(name: "Beyond", role: .other, count: 1).isEmpty)
         XCTAssertEqual(executor.editCount, 1)
     }

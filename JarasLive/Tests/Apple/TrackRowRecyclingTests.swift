@@ -30,14 +30,21 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(newSelections == 0, "a queued row click cannot cross a project switch")
 router.handle(pointer(.leftMouseUp))
 
-let record = TrackRecordSelectionExclusionView(frame: CGRect(x: 80, y: 40, width: 40, height: 40))
-host.addSubview(record)
-router.handle(pointer(.leftMouseDown))
-precondition(router.pinnedTracks == [newTrack], "REC button presses retain their row identity too")
+for (index, control) in ["REC", "M", "S", "Fader", "Pan"].enumerated() {
+    let excluded = TrackControlSelectionExclusionView(frame: CGRect(x: 30 + index * 45, y: 40, width: 40, height: 40))
+    host.addSubview(excluded)
+    precondition(excluded.hitTest(.zero) == nil, "Selection exclusion must not consume control gestures")
+    router.handle(pointer(.leftMouseDown, CGFloat(50 + index * 45), 60))
+    precondition(router.pinnedTracks == [newTrack], "Control presses retain their row identity")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    precondition(newSelections == 0, "Operating \(control) must preserve the previous track selection")
+    router.handle(pointer(.leftMouseUp))
+    excluded.removeFromSuperview()
+}
+router.handle(pointer(.leftMouseDown, 10, 60))
 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-precondition(newSelections == 0, "arming REC still does not select the track")
+precondition(newSelections == 1, "Clicking the track body still selects it")
 router.handle(pointer(.leftMouseUp))
-record.removeFromSuperview()
 
 var originalPatch = 0, replacementPatch = 0, originalFX = 0, replacementFX = 0
 row.patch = { originalPatch += 1 }; row.fx = { originalFX += 1 }

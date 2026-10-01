@@ -2,9 +2,9 @@ import XCTest
 @testable import JarasApplication
 
 final class SpecialTrackOrderingTests: XCTestCase {
-    func testGlobalTrackCapacityAcceptsFourHundredAndRejectsFourHundredOne() throws {
+    func testGlobalTrackCapacityAcceptsOneThousandAndRejectsOneThousandOne() throws {
         var project = Project.empty(name: "Capacity")
-        project.songs[0].tracks = (0..<400).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = (0..<1000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
         try project.validate()
         project.songs[0].tracks.append(Track(id: UUID(), name: "Extra", role: .other))
         XCTAssertThrowsError(try project.validate())

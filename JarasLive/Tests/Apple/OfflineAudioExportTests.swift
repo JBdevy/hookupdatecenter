@@ -109,6 +109,25 @@ let monoFolder = root.appendingPathComponent("mono32")
 try OfflineAudioExport.run(project:project,song:song,plan:monoWavePlan,mediaDirectory:root,outputDirectory:monoFolder,sampleRate:48000,encoding:AudioExportEncoding(bitDepth:32,channels:1),cancellation:AudioExportCancellation()) { _ in }
 let mono = try AVAudioFile(forReading:monoFolder.appendingPathComponent(monoWavePlan.jobs[0].fileName))
 precondition(mono.fileFormat.settings[AVLinearPCMBitDepthKey] as? Int == 32)
+// 16-bit PCM is an actual output encoding for WAV and AIFF, not only a UI label.
+for format: AudioExportFormat in [.wav, .aiff] {
+    let pcm16Plan = AudioExportPlan(project: project, song: song, source: .tracks, bounds: .area,
+        template: "%track", tracks: [a.id], clips: [], regions: [], area: 0...0.7, format: format)
+    let folder = root.appendingPathComponent("pcm16-" + format.rawValue)
+    try OfflineAudioExport.run(project: project, song: song, plan: pcm16Plan, mediaDirectory: root,
+        outputDirectory: folder, sampleRate: 44100, encoding: AudioExportEncoding(format: format, bitDepth: 16),
+        cancellation: AudioExportCancellation()) { _ in }
+    let file = try AVAudioFile(forReading: folder.appendingPathComponent(pcm16Plan.jobs[0].fileName))
+    precondition(file.fileFormat.settings[AVLinearPCMBitDepthKey] as? Int == 16)
+    precondition(file.fileFormat.settings[AVLinearPCMIsFloatKey] as? Bool == false)
+    precondition(file.length == 30870 && file.processingFormat.channelCount == 2)
+    let defaults = UserDefaults(suiteName: "jaras.test.pcm16." + UUID().uuidString)!
+    defaults.set(format.rawValue, forKey: "jaras.media.record.format")
+    defaults.set(16, forKey: "jaras.media.record.bits")
+    let recording = MediaProcessingFormat.load("record", preferences: defaults)
+    precondition(recording.bitDepth == 16 && recording.recordingKey == format.fileExtension + "16pcm")
+}
+print("WAV_AIFF_16BIT_PCM_AND_RECORDING_PREFERENCE_OK")
 // Folder routing, item/track effects and Master volume use the live chain order.
 var groupSong = song
 var folder = Track(id:UUID(),name:"Group",role:.other); folder.volume = 0.25
@@ -265,3 +284,36 @@ func verifyFrozenItem() throws {
     print("FREEZE_ITEM_GAIN_ONCE_SOURCE_PRESERVATION_EXACT_POSITION_AND_SEQUENTIAL_SUFFIX_OK")
 }
 try verifyFrozenItem()
+
+// Item envelopes span the complete repeated item, never restart at a source
+// wrap, and are baked exactly once by Re-render.
+do {
+    var fadedProject = Project.empty(name: "Fades")
+    var fadeTrack = Track(id: UUID(), name: "Fade", role: .other)
+    var clip = AudioClip(id: UUID(), name: "Repeated", startTime: 0.5, duration: 3, audioFile: AudioFile(path: "a.wav"), loopStart: 0, loopLength: 1)
+    fadeTrack.clips = [clip]; fadedProject.songs[0].tracks = [fadeTrack]
+    func exportFade(_ name: String) throws -> [Float] {
+        let song = fadedProject.songs[0]
+        let plan = AudioExportPlan(project: fadedProject, song: song, source: .stems, bounds: .project, template: name,
+                                   tracks: [fadeTrack.id], clips: [clip.id], regions: [])
+        try OfflineAudioExport.run(project: fadedProject, song: song, plan: plan, mediaDirectory: root, outputDirectory: output,
+                                   sampleRate: 48000, cancellation: AudioExportCancellation(), progress: { _ in })
+        return try renderedPCM(output.appendingPathComponent(plan.jobs[0].fileName))
+    }
+    let dry = try exportFade("fade-dry")
+    clip.fadeIn = 2.5; clip.fadeOut = 1.5
+    fadedProject.songs[0].tracks[0].clips = [clip]
+    let faded = try exportFade("fade-shaped")
+    precondition(dry.count == faded.count)
+    var error = 0.0
+    for i in 0..<dry.count {
+        let t = Double(i) / 48000
+        func curve(_ input: Double) -> Double { let x = min(1, max(0, input)); return x*x*(3-2*x) }
+        error = max(error, abs(Double(faded[i]) - Double(dry[i]) * curve(t/2.5) * curve((3-t)/1.5)))
+    }
+    precondition(error < 0.0002, "rendered fades match the whole-item envelope across source repeats: \(error)")
+    let frozen = try ItemReRender.render(project: fadedProject, song: fadedProject.songs[0], track: fadedProject.songs[0].tracks[0], clip: clip,
+                                         directory: root, settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation(), progress: { _ in })
+    precondition(frozen.fadeIn == nil && frozen.fadeOut == nil, "Re-render removes baked envelopes so they cannot be applied twice")
+    print("OFFLINE_ITEM_FADES_REPEAT_OVERLAP_AND_FREEZE_ONCE_OK")
+}

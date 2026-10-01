@@ -2,6 +2,26 @@ import XCTest
 @testable import JarasApplication
 
 final class NativeFXParameterTests: XCTestCase {
+    func testLimiterMIDITargetsOneInstanceAndPersistsIndependently() throws {
+        var fx = NativeFXSettings()
+        fx.appendNative("Limiter")
+        let key = fx.appendNative("Limiter")
+        let gain = NativeFXParameter(effect: key, key: .limiterGain, name: "Input gain", range: -24...24)
+        XCTAssertTrue(gain.apply(127, to: &fx))
+        XCTAssertEqual(fx.settings(for: key).limiterParameters.inputGain, 24)
+        XCTAssertEqual(fx.limiterParameters.inputGain, 0)
+        NativeFXParameter(effect: key, key: .limiterCeiling, name: "Ceiling", range: -24...0).apply(0, to: &fx)
+        NativeFXParameter(effect: key, key: .limiterRelease, name: "Release", range: 0.01...3, logarithmic: true).apply(127, to: &fx)
+        XCTAssertEqual(fx.settings(for: key).limiterParameters.ceiling, -24)
+        XCTAssertEqual(fx.settings(for: key).limiterParameters.release, 3)
+        NativeFXParameter(effect: key, key: .enabled, name: "Enabled", range: 0...1).apply(0, to: &fx)
+        XCTAssertFalse(fx.isEnabled(key)); XCTAssertTrue(fx.isEnabled("Limiter"))
+        try fx.validate()
+        XCTAssertEqual(try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx)), fx)
+        fx.limiterParameters.ceiling = 1
+        XCTAssertThrowsError(try fx.validate())
+    }
+
     func testContinuousParameterRangesAndEQBandIdentitySurviveReordering() throws {
         var fx = NativeFXSettings(); fx.inserted = ["EQ", "Compressor", "Delay"]
         let threshold = NativeFXParameter(effect: "Compressor", key: .threshold, name: "Threshold", range: -60...0)

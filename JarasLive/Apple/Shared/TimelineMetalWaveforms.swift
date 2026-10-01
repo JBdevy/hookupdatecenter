@@ -1,0 +1,237 @@
+import SwiftUI
+
+/// Audio coordinates remain independent of zoom. Only the small transform and
+/// clipping records change during a gesture; source vertices stay on the GPU.
+struct TimelineWaveformItem {
+    let clip: AudioClip
+    let fragments: [AudioClip]
+    let url: URL
+    let rect: CGRect
+    let gray: Float
+}
+
+final class TimelineWaveformVertexOwner {
+    private struct Pinned {
+        let blocks: [TimelineAudioWaveform.VertexBlock]
+        let source: String
+    }
+    private var pinned: [String: Pinned] = [:]
+    private var used = Set<String>()
+    func beginFrame() { used.removeAll(keepingCapacity: true) }
+    func endFrame() { pinned = pinned.filter { used.contains($0.key) } }
+    func blocks(cache: TimelineAudioWaveform, url: URL, header: TimelineAudioWaveform.Header,
+                start: Double, end: Double, scale: Double, key: String) -> [TimelineAudioWaveform.VertexBlock] {
+        used.insert(key)
+        let requested = cache.vertexDrawing(url, header: header, start: start, end: end, pixelsPerSecond: scale)
+        let source = header.cachePrefix ?? url.path
+        if requested.complete {
+            pinned[key] = Pinned(blocks: requested.blocks, source: source)
+            return requested.blocks
+        }
+        let previous = pinned[key].flatMap { $0.source == source ? $0 : nil }
+        // A retained sample-level curve must not turn into millions of overdrawn
+        // segments when zooming out. Use one already prepared coarser curve;
+        // never layer it underneath the retained drawing.
+        let fullCoverage = previous.map { entry in
+            let visible = entry.blocks.filter { Double($0.end) > start * header.rate && Double($0.start) < end * header.rate }
+            return visible.first.map { Double($0.start) <= start * header.rate } == true &&
+                visible.last.map { Double($0.end) >= end * header.rate } == true &&
+                zip(visible, visible.dropFirst()).allSatisfy { $0.end >= $1.start }
+        } ?? false
+        if !fullCoverage || previous!.blocks.allSatisfy({ $0.step < max(1, requested.requestedStep / 4) }) {
+            let overview = cache.cachedCoarserVertices(header, url: url, start: start, end: end, requestedStep: requested.requestedStep)
+            if !overview.isEmpty {
+                pinned[key] = Pinned(blocks: overview, source: source)
+                return overview
+            }
+        }
+        // Keep the completed source geometry while a different level is being
+        // prepared. Cache eviction must never blank an already visible item.
+        if let previous = pinned[key], previous.source == source {
+            let retained = previous.blocks.filter {
+                Double($0.end) > start * header.rate && Double($0.start) < end * header.rate
+            }
+            if !retained.isEmpty {
+                // Fill newly exposed intervals as they arrive. A partial first
+                // frame must not freeze later blocks until the entire viewport
+                // is ready. Never layer another level over retained geometry.
+                var combined = retained, cursor = 0
+                for block in requested.blocks {
+                    while cursor < retained.count && retained[cursor].end <= block.start { cursor += 1 }
+                    if cursor == retained.count || retained[cursor].start >= block.end { combined.append(block) }
+                }
+                combined.sort { $0.start < $1.start }
+                pinned[key] = Pinned(blocks: combined, source: source)
+                return combined
+            }
+        }
+        if !requested.blocks.isEmpty { pinned[key] = Pinned(blocks: requested.blocks, source: source) }
+        return requested.blocks
+    }
+}
+
+struct TimelineMetalWaveformSurface: View {
+    @ObservedObject private var cache = TimelineAudioWaveform.shared
+    @State private var owner = TimelineWaveformVertexOwner()
+    let items: [TimelineWaveformItem]
+    let viewport: CGRect
+    let scale: Double
+    var contentRevision: Int = 0
+    var body: some View {
+        MetalWaveformView(frame: TimelineMetalWaveformFrameBuilder.make(items: items, viewport: viewport,
+            scale: scale, cache: cache, owner: owner, contentRevision: contentRevision))
+            .frame(width: viewport.width, height: viewport.height)
+            .offset(x: viewport.minX, y: viewport.minY)
+            .allowsHitTesting(false)
+    }
+}
+
+enum TimelineMetalWaveformFrameBuilder {
+    private static let unitLine = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, 0), SIMD2<Float>(1, 0)]], start: 0, end: 1, step: 1, rate: 1, key: "timeline-centerline-unit")
+    static func make(items: [TimelineWaveformItem], viewport: CGRect, scale: Double,
+                     cache: TimelineAudioWaveform, owner: TimelineWaveformVertexOwner, contentRevision: Int = 0) -> MetalWaveformFrame {
+        owner.beginFrame()
+        defer { owner.endFrame() }
+        var strokes: [MetalWaveformStroke] = []
+        guard scale.isFinite, scale > 0, viewport.width > 0, viewport.height > 0 else {
+            return MetalWaveformFrame(size: viewport.size, strokes: [])
+        }
+        for item in items where item.rect.intersects(viewport) {
+            guard let header = cache.header(item.url, refresh: item.clip.recordingLane != nil), header.channels > 0 else { continue }
+            let rect = item.rect
+            let waveTop = rect.minY + min(14, rect.height * 0.35)
+            let mode = item.clip.channelMode ?? 0
+            let channels = mode == 0 ? header.channels : 1
+            let channelHeight = max(0, rect.maxY - waveTop - 2) / Double(channels)
+            guard channelHeight > 0 else { continue }
+            let amplitude = channelHeight * 0.98 * min(pow(10, 24.0 / 20), max(0, item.clip.gain ?? 1))
+            let localItem = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+            let visibleSeams = Array(ClipRepetitionBoundaries(clip: item.clip,
+                visible: max(item.clip.startTime, (viewport.minX - 4) / scale)...max(item.clip.startTime, (viewport.maxX + 4) / scale), minimumSpacing: 10 / scale))
+            let firstSeam = visibleSeams.first.map { CGFloat($0 * scale - viewport.minX) }
+            let seamSpacing = item.clip.loopLength.map { CGFloat(max(1, ceil(10 / ($0 / item.clip.audioRate * scale))) * $0 / item.clip.audioRate * scale) }
+            for (fragmentIndex, fragment) in item.fragments.enumerated() {
+                let rate = fragment.audioRate
+                guard rate.isFinite, rate > 0 else { continue }
+                let first = max(fragment.startTime, max(rect.minX, viewport.minX) / scale)
+                let last = min(fragment.startTime + fragment.duration, min(rect.maxX, viewport.maxX) / scale)
+                guard last > first else { continue }
+                let sourceScale = scale / rate
+                // A subpixel repetition is a continuous band at this scale.
+                // Bound work to one period instead of iterating millions of loops.
+                if let length = fragment.loopLength, length > 0, length * sourceScale < 1 {
+                    let start = max(0, fragment.loopStart ?? 0)
+                    let end = min(Double(header.frames) / header.rate, start + length)
+                    guard end > start else { continue }
+                    let blocks = owner.blocks(cache: cache, url: item.url, header: header, start: start, end: end,
+                        scale: 128 / length, key: "\(item.clip.id):\(fragmentIndex):subpixel")
+                    for channel in 0..<channels {
+                        let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
+                        var minimum: Float = 0, maximum: Float = 0
+                        for block in blocks where sourceChannel < block.channels.count {
+                            let points = block.channels[sourceChannel]
+                            if block.isPeakEnvelope {
+                                // Peaks describe intervals, not isolated sample
+                                // positions. A short loop can sit entirely
+                                // between both endpoints of the same interval.
+                                for index in stride(from: 0, to: points.count - 1, by: 2) {
+                                    let first = (Double(block.start) + Double(points[index].x)) / header.rate
+                                    let last = (Double(block.start) + Double(points[index + 1].x)) / header.rate
+                                    if last > start && first < end {
+                                        minimum = min(minimum, points[index].y, points[index + 1].y)
+                                        maximum = max(maximum, points[index].y, points[index + 1].y)
+                                    }
+                                }
+                            } else {
+                                for vertex in points {
+                                    let time = (Double(block.start) + Double(vertex.x)) / header.rate
+                                    if time >= start && time <= end { minimum = min(minimum, vertex.y); maximum = max(maximum, vertex.y) }
+                                }
+                            }
+                        }
+                        let channelRect = CGRect(x: first * scale, y: waveTop + channelHeight * Double(channel) + 0.5,
+                            width: (last - first) * scale, height: max(0, channelHeight - 1)).intersection(rect).intersection(viewport)
+                        guard !channelRect.isNull, !channelRect.isEmpty else { continue }
+                        let middle = waveTop + channelHeight * (Double(channel) + 0.5) - viewport.minY
+                        strokes.append(MetalWaveformStroke(block: unitLine, channel: 0,
+                            scale: SIMD2(Float((last - first) * scale), 1),
+                            translation: SIMD2(Float(first * scale - viewport.minX), Float(middle) + (minimum + maximum) * Float(amplitude) / 2),
+                            clip: channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY), color: SIMD4(repeating: item.gray).withAlpha(1), itemRect: localItem,
+                            firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: max(0.5, (maximum - minimum) * Float(amplitude))))
+                    }
+                    continue
+                }
+                // Repetitions share immutable source geometry. Resolve it once
+                // when a whole period fits the visible interval; querying and
+                // pinning the same tiny loop thousands of times wastes a frame.
+                // Long periods still request only their visible source range.
+                let loopBlocks: [TimelineAudioWaveform.VertexBlock]?
+                if let length = fragment.loopLength, length > 0, length / rate <= last - first {
+                    let start = max(0, fragment.loopStart ?? 0)
+                    let end = min(Double(header.frames) / header.rate, (fragment.loopStart ?? 0) + length)
+                    loopBlocks = end > start ? owner.blocks(cache: cache, url: item.url, header: header,
+                        start: start, end: end, scale: sourceScale, key: "\(item.clip.id):\(fragmentIndex):period") : []
+                } else { loopBlocks = nil }
+                var position = first
+                while position < last {
+                    let relative = fragment.sourceOffset + (position - fragment.startTime) * rate
+                    let source: Double, end: Double, repetition: Double
+                    if let length = fragment.loopLength, length > 0 {
+                        let origin = fragment.loopStart ?? 0
+                        let rawPhase = ((relative - origin).truncatingRemainder(dividingBy: length) + length).truncatingRemainder(dividingBy: length)
+                        // A computed boundary can land one floating-point ULP
+                        // before the loop end. Advancing by that tiny remainder
+                        // rounds back to `position`, which would truncate all
+                        // subsequent repetitions. Normalize only rounding noise.
+                        let tolerance = min(length * 0.000001,
+                            max(abs(position).ulp * rate * 8, abs(relative).ulp * 8, length.ulp * 8))
+                        let atBoundary = rawPhase <= tolerance || length - rawPhase <= tolerance
+                        let phase = atBoundary ? 0 : rawPhase
+                        source = origin + phase
+                        end = min(last, position + (length - phase) / rate)
+                        repetition = atBoundary ? ((relative - origin) / length).rounded() : floor((relative - origin) / length)
+                    } else { source = relative; end = last; repetition = 0 }
+                    guard end > position else { break }
+                    let sourceEnd = min(Double(header.frames) / header.rate, source + (end - position) * rate)
+                    if sourceEnd > source {
+                        let blocks: [TimelineAudioWaveform.VertexBlock]
+                        if let loopBlocks { blocks = loopBlocks }
+                        else {
+                            let key = "\(item.clip.id):\(fragmentIndex):\(fragment.startTime):\(fragment.sourceOffset):\(repetition)"
+                            blocks = owner.blocks(cache: cache, url: item.url, header: header, start: max(0, source), end: sourceEnd, scale: sourceScale, key: key)
+                        }
+                        for channel in 0..<channels {
+                            let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
+                            let middle = waveTop + channelHeight * (Double(channel) + 0.5) - viewport.minY
+                            let channelRect = CGRect(x: position * scale, y: waveTop + channelHeight * Double(channel) + 0.5,
+                                width: (end - position) * scale, height: max(0, channelHeight - 1)).intersection(rect).intersection(viewport)
+                            guard !channelRect.isNull, !channelRect.isEmpty else { continue }
+                            let localClip = channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+                            strokes.append(MetalWaveformStroke(block: unitLine, channel: 0,
+                                scale: SIMD2(Float(localClip.width), 1), translation: SIMD2(Float(localClip.minX), Float(middle)),
+                                clip: localClip, color: SIMD4(repeating: item.gray).withAlpha(0.5), itemRect: localItem,
+                                firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5))
+                            for block in blocks where sourceChannel < block.channels.count {
+                                let x = position * scale - viewport.minX + (Double(block.start) / header.rate - source) * sourceScale
+                                let right = x + Double(block.end - block.start) / header.rate * sourceScale
+                                guard right >= localClip.minX - 2, x <= localClip.maxX + 2 else { continue }
+                                strokes.append(MetalWaveformStroke(block: block, channel: sourceChannel,
+                                    scale: SIMD2(Float(sourceScale / header.rate), Float(amplitude)), translation: SIMD2(Float(x), Float(middle)),
+                                    clip: localClip, color: SIMD4(repeating: item.gray).withAlpha(1), itemRect: localItem,
+                                    firstSeamX: firstSeam, repeatSpacing: seamSpacing))
+                            }
+                        }
+                    }
+                    position = end
+                }
+            }
+        }
+        return MetalWaveformFrame(size: viewport.size, strokes: strokes,
+            coordinateSpace: MetalWaveformCoordinateSpace(documentOrigin: viewport.origin,
+                pixelsPerSecond: scale, contentRevision: contentRevision))
+    }
+}
+
+private extension SIMD4 where Scalar == Float {
+    func withAlpha(_ alpha: Float) -> Self { SIMD4(x, y, z, alpha) }
+}

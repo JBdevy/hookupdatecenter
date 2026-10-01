@@ -1,5 +1,5 @@
 import Foundation
-public enum ShowCommand: String, Sendable { case loopStart, loopEnd, escape, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
+public enum ShowCommand: String, Sendable { case clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
 @MainActor public protocol CommandExecutor {
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws
     func configureRegionSetlist(_ state: RegionSetlist) throws
@@ -32,6 +32,7 @@ public enum ShowCommand: String, Sendable { case loopStart, loopEnd, escape, mas
     func regionFromClip(_ id: UUID) throws
     func regionsFromClips(_ ids: [UUID]) throws
     func setTempoMarkers(_ markers: [TimelineMarker]) throws
+    func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws
     func setMarker(_ marker: TimelineMarker) throws
     func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws
     func deleteManualMarker(_ id: UUID) throws
@@ -56,6 +57,10 @@ public enum ShowCommand: String, Sendable { case loopStart, loopEnd, escape, mas
 public extension CommandExecutor {
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
+    func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
+        guard removing.isEmpty else { throw BackendFailure.notConfigured }
+        try setTempoMarkers(markers)
+    }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
     func applyProjectEdit(_ project: Project) throws { throw BackendFailure.notConfigured }
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws { throw BackendFailure.notConfigured }

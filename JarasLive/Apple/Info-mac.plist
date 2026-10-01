@@ -12,7 +12,8 @@
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
 <key>NSMicrophoneUsageDescription</key><string>Jaras Live records audio from the input selected for each armed track.</string>
-<key>NSLocalNetworkUsageDescription</key><string>Jaras Live shares the teleprompter with browsers on your local network when TP Remote is enabled.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Jaras Live connects directly to a nearby iPad for Remote control and shares the teleprompter on your local network when enabled.</string>
+<key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict>
 <key>CFBundleTypeName</key><string>Jaras Live Project</string>

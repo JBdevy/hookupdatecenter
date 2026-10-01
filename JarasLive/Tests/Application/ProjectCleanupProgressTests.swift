@@ -36,6 +36,53 @@ final class ProjectCleanupProgressTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Steams/shared.wav").path))
         for path in paths where path != "Steams/shared.wav" { XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path)) }
     }
+    func testBatchArchivesManySourcesAndPreservesAllBackupStatesAndDates() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("Stems"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("backups"), withIntermediateDirectories: true)
+        var original = Project.empty(name: "Many sources")
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        for index in 0..<32 {
+            let path = "Stems/take-\(index).wav"
+            try Data([UInt8(index), 42]).write(to: root.appendingPathComponent(path))
+            var clip = AudioClip(id: UUID(), name: String(index), startTime: Double(index), duration: 1, audioFile: AudioFile(path: path))
+            clip.gain = 0.5; clip.fadeIn = 0.25; clip.muted = index.isMultiple(of: 2)
+            track.clips.append(clip)
+        }
+        original.songs[0].tracks = [track]
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        var backupURLs: [URL] = []
+        for index in 0..<3 {
+            let url = root.appendingPathComponent("backups/Many sources-\(index).bkjl")
+            try ProjectDocumentCodec.write(original, to: url)
+            try fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+            backupURLs.append(url)
+        }
+        var current = original
+        current.songs[0].tracks[0].clips = [track.clips[0]]
+        try ProjectMediaCleanup.close(project: current, document: root.appendingPathComponent("Many sources.jl"), knownPaths: original.mediaPaths)
+        var archivedPaths: Set<String>?
+        for url in backupURLs {
+            let recovered = try ProjectDocumentCodec.decode(Data(contentsOf: url))
+            XCTAssertEqual(recovered.songs[0].tracks[0].clips.count, 32)
+            if let archivedPaths { XCTAssertEqual(recovered.mediaPaths, archivedPaths) }
+            archivedPaths = recovered.mediaPaths
+            for (index, clip) in recovered.songs[0].tracks[0].clips.enumerated() {
+                let path = try XCTUnwrap(clip.audioFile?.path)
+                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(path)), Data([UInt8(index), 42]))
+                XCTAssertEqual(clip.gain, 0.5); XCTAssertEqual(clip.fadeIn, 0.25)
+                XCTAssertEqual(clip.muted, index.isMultiple(of: 2))
+                if index > 0 {
+                    XCTAssertTrue(path.hasPrefix("backups/Media/"))
+                    XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Stems/take-\(index).wav").path))
+                }
+            }
+            XCTAssertEqual(try fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date, date)
+        }
+        XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("Stems/take-0.wav").path))
+    }
     func testUnreadableSiblingDoesNotDeleteMediaOrReportSuccess() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

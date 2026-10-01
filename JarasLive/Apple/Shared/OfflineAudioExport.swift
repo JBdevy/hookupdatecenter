@@ -147,7 +147,7 @@ final class OfflineAudioExport {
         for job in plan.jobs {
             guard !fm.fileExists(atPath: outputDirectory.appendingPathComponent(job.fileName).path) else { throw AudioExportFailure.exists(job.fileName) }
         }
-        guard [24,32].contains(encoding.bitDepth), [1,2].contains(encoding.channels), [128,160,192,224,256,320].contains(encoding.bitrate) else { throw AudioExportFailure.invalidFormat }
+        guard [16,24,32].contains(encoding.bitDepth), [1,2].contains(encoding.channels), [128,160,192,224,256,320].contains(encoding.bitrate) else { throw AudioExportFailure.invalidFormat }
         let stereo = AVAudioFormat(standardFormatWithSampleRate: sampleRate,channels: 2)!
         var writers: [Writer] = []
         var published: [URL] = []
@@ -235,7 +235,7 @@ final class OfflineAudioExport {
                 engine.connect(bus.gain, to: matrix, format: format)
                 engine.connect(matrix, to: bus.pan, format: format)
             } else { engine.connect(bus.gain,to: bus.pan,format: format) }
-            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false {
+            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false {
                 let effects = NativeEffectsChain(); bus.effects = effects
                 effects.attach(to: engine,input: bus.mix,format: format,destinations: [AVAudioConnectionPoint(node: bus.gain,bus: 0)])
                 effects.apply(fx)
@@ -290,10 +290,11 @@ final class OfflineAudioExport {
             gain.globalGain = Float(max(-96,min(24,20*log10(max(0.00000001,clip.gain ?? 1)))))
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
             let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
-            if (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true {
+            if (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true {
                 let effects = NativeEffectsChain()
                 effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
                 effects.apply(fx); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
+                effects.configureItemFade(clip, position: begin, sampleTime: (begin - start + Double(preroll) / format.sampleRate) * sourceFormat.sampleRate)
                 // The graph retains the configured Audio Units.
             } else { engine.connect(source,to: gain,format: sourceFormat) }
             engine.connect(gain,to: bus.mix,fromBus: 0,toBus: bus.mix.nextAvailableInputBus,format: sourceFormat)
