@@ -86,7 +86,7 @@ enum StemProjectImporter {
         }
         let fm = FileManager.default
         let batch = UUID().uuidString
-        var audioNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Steams"))
+        var audioNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Stems"))
         var videoNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Videos"))
         var folders: [URL] = []
         do {
@@ -99,7 +99,7 @@ enum StemProjectImporter {
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 progress?(index, sources.count, url.lastPathComponent)
                 let name = isVideo ? videoNames.allocate(url.lastPathComponent) : audioNames.allocate(url.lastPathComponent)
-                let relative = (isVideo ? "Videos/" : "Steams/") + batch
+                let relative = (isVideo ? "Videos/" : "Stems/") + batch
                 let folder = destination.deletingLastPathComponent().appendingPathComponent(relative, isDirectory: true)
                 if !folders.contains(folder) {
                     try fm.createDirectory(at: folder, withIntermediateDirectories: true); folders.append(folder)
@@ -183,7 +183,7 @@ enum StemProjectImporter {
         while audio.framePosition < audio.length {
             try Task.checkCancellation()
             let offset = audio.framePosition
-            try audio.read(into: buffer)
+            guard try AudioFileRead.read(audio, into: buffer) else { break }
             guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { throw ProjectError.invalid("Unreadable audio samples") }
             var local = 0
             while local < Int(buffer.frameLength) {
@@ -268,6 +268,7 @@ enum StemProjectImporter {
         return try results.map { guard let result = $0 else { throw ProjectError.invalid("Missing imported audio") }; return result }
     }
     static func build(scan: StemScan, remove: String, base: Project, destination: URL, progress: (@Sendable (Int, Int, String) -> Void)? = nil) throws -> Project {
+        try ProjectDirectoryPolicy.validate(destination)
         let js = try context(), fm = FileManager.default
         func clean(_ value: String, directory: Bool) throws -> String {
             guard !remove.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return value }
@@ -312,12 +313,12 @@ enum StemProjectImporter {
             arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role, color: Track.defaultStandardColor))
         }
         // A unique import directory makes rollback safe and keeps existing media untouched.
-        let relativeFolder = "Steams/" + UUID().uuidString
+        let relativeFolder = "Stems/" + UUID().uuidString
         let media = destination.deletingLastPathComponent().appendingPathComponent(relativeFolder)
         try fm.createDirectory(at: media, withIntermediateDirectories: true)
         do {
             var jobs: [MediaImportJob] = []
-            var fileNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Steams"))
+            var fileNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Stems"))
             for (songIndex, song) in audit.songs.enumerated() {
                 arrangement.parts.append(Part(id: UUID(), name: song.name, startTime: song.start + offset, endTime: song.end + offset, color: [0x53be8c,0xddad54,0x7a93dd,0xbf79b8,0x55acbe][songIndex % 5]))
                 for (fileIndex, stem) in song.files.enumerated() {

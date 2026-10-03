@@ -504,3 +504,73 @@ for scale in [0.003, 0.25, 12.3, 1000.0] {
     }
 }
 print("GRID_SPATIAL_INDEX_MATCHES_BRUTE_FORCE_OVERLAP_AND_ZOOM_ORACLE_OK")
+
+let menuGrid = GridSelectionView(frame: CGRect(x: 0, y: 0, width: 500, height: 300))
+let contextAudibleID = UUID(), contextMutedID = UUID(), contextVideoID = UUID(), contextTextID = UUID()
+menuGrid.items = [
+    GridSelectionItem(id: contextAudibleID, rect: CGRect(x: 0, y: 0, width: 100, height: 30)),
+    GridSelectionItem(id: contextMutedID, rect: CGRect(x: 0, y: 40, width: 100, height: 30), muted: true),
+    GridSelectionItem(id: contextVideoID, rect: CGRect(x: 0, y: 80, width: 100, height: 30), editable: false, audioExportable: false),
+    GridSelectionItem(id: contextTextID, rect: CGRect(x: 0, y: 120, width: 100, height: 30), editable: false, contextActions: false, audioExportable: false)
+]
+menuGrid.updateSelection([contextAudibleID, contextMutedID, contextVideoID, contextTextID])
+var exported = Set<UUID>(), toggled: [UUID] = []
+menuGrid.export = { exported = $0 }; menuGrid.mute = { toggled.append($0) }
+func invoke(_ menu: NSMenu, _ name: String) {
+    let item = menu.items.first { $0.action == NSSelectorFromString(name) }!
+    precondition(item.isEnabled)
+    precondition(NSApp.sendAction(item.action!, to: item.target, from: item))
+}
+let mixedMenu = menuGrid.itemContextMenu(for: contextTextID)
+precondition(mixedMenu.items.last?.action == NSSelectorFromString("exportSelection"))
+invoke(mixedMenu, "exportSelection")
+precondition(exported == [contextAudibleID, contextMutedID], "special items cannot enter audio export, even when right-clicked inside a mixed selection")
+invoke(mixedMenu, "muteSelection")
+precondition(toggled == [contextAudibleID], "mixed mute states become muted, without unmuting an already muted item")
+menuGrid.updateSelection([contextMutedID]); toggled = []
+invoke(menuGrid.itemContextMenu(for: contextMutedID), "muteSelection")
+precondition(toggled == [contextMutedID], "a muted selection can be unmuted")
+menuGrid.updateSelection([contextVideoID, contextTextID])
+precondition(menuGrid.itemContextMenu(for: contextVideoID).items.last?.isEnabled == false, "no audio means no export")
+print("ITEM_CONTEXT_MUTE_UNMUTE_AND_LAST_EXPORT_FILTER_MIXED_SELECTION_OK")
+
+menuGrid.updateSelection([contextAudibleID])
+let audioContext = menuGrid.itemContextMenu(for: contextAudibleID)
+precondition(!audioContext.items.contains { $0.action == NSSelectorFromString("separateSelection") }, "CatStem lives inside FX, never in the item context menu")
+precondition(audioContext.items.last?.action == NSSelectorFromString("exportSelection"))
+print("CATSTEM_REMOVED_FROM_CONTEXT_AND_EXPORT_REMAINS_LAST_OK")
+
+let contextMIDI = UUID(), contextMIDIMuted = UUID()
+menuGrid.items += [
+    GridSelectionItem(id: contextMIDI, rect: CGRect(x: 0, y: 160, width: 100, height: 30), audioExportable: false, midiEditable: true),
+    GridSelectionItem(id: contextMIDIMuted, rect: CGRect(x: 0, y: 200, width: 100, height: 30), audioExportable: false, midiEditable: true, muted: true)
+]
+menuGrid.updateSelection([contextMIDI, contextMIDIMuted, contextAudibleID])
+let midiContext = menuGrid.itemContextMenu(for: contextMIDI)
+precondition(midiContext.items.count == 4)
+precondition(midiContext.items.map(\.title) == ["Mute items", "Convert Mono", "Convert Stereo", "Unify items"])
+toggled = []; invoke(midiContext, "muteMIDISelection")
+precondition(toggled == [contextMIDI], "MIDI context actions must preserve selected audio items")
+var frozen = Set<UUID>(), frozenChannels = 0
+menuGrid.freezeMIDI = { frozen = $0; frozenChannels = $1 }
+for channels in [1, 2] {
+    let option = midiContext.items.first { $0.tag == channels }!
+    precondition(NSApp.sendAction(option.action!, to: option.target, from: option))
+    precondition(frozen == [contextMIDI, contextMIDIMuted] && frozenChannels == channels)
+}
+menuGrid.updateSelection([contextMIDIMuted]); toggled = []
+let unmuteMIDI = menuGrid.itemContextMenu(for: contextMIDIMuted)
+precondition(unmuteMIDI.items.first?.title == "Unmute items")
+invoke(unmuteMIDI, "muteMIDISelection")
+precondition(toggled == [contextMIDIMuted])
+print("MIDI_CONTEXT_ONLY_MUTE_UNMUTE_MONO_STEREO_AND_MIXED_SELECTION_FILTER_OK")
+
+var glued = Set<UUID>()
+menuGrid.glue = { glued = $0 }
+menuGrid.updateSelection([contextMIDI, contextAudibleID, contextVideoID, contextTextID])
+invoke(menuGrid.itemContextMenu(for: contextMIDI), "glueSelection")
+precondition(glued == [contextMIDI, contextAudibleID], "Glue preserves selected audio and MIDI across tracks for atomic validation")
+menuGrid.updateSelection([contextAudibleID])
+invoke(menuGrid.itemContextMenu(for: contextAudibleID), "glueSelection")
+precondition(glued == [contextAudibleID], "A single audio item can also be unified")
+print("AUDIO_MIDI_GLUE_MENU_COMPLETE_SELECTION_AND_SINGLE_ITEM_OK")

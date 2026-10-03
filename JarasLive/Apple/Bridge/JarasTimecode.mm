@@ -81,7 +81,7 @@ struct TimecodeSignal {
             *silence=!signal->active.load(std::memory_order_acquire); signal->render(timestamp,count,output); return noErr;
         }];
         _queue=dispatch_queue_create("live.jaras.timecode.midi",DISPATCH_QUEUE_SERIAL);
-        MIDIClientCreate(CFSTR("Jaras Live Timecode"),nullptr,nullptr,&_client);
+        MIDIClientCreate(CFSTR("CatLive Timecode"),nullptr,nullptr,&_client);
         MIDIOutputPortCreate(_client,CFSTR("MTC Output"),&_port);
     }
     return self;
@@ -153,10 +153,11 @@ struct TimecodeSignal {
 // Immutable sound/tempo programs are published with a hazard pointer. The render
 // callback neither locks nor allocates; retired programs are reclaimed by the UI.
 struct MetronomeProgram {
-    struct Tempo { double start, bpm; int beats, unit; };
+    struct Tempo { double start, bpm; int beats, unit; double end=INFINITY, origin=NAN; };
     std::vector<Tempo> sections;
     std::vector<float> a, b;
     int mode = 0;
+    bool bounded = false;
 };
 struct MetronomeSignal {
     std::atomic<MetronomeProgram*> program{nullptr}, reading{nullptr};
@@ -203,6 +204,7 @@ struct MetronomeSignal {
             if(std::isfinite(reference)) { anchorSample=reference; anchorPosition=position.load(); }
             else anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
             previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
+            if(p && p->bounded) for(auto& voice:voices) voice.active=false;
         }
         previousSample=time->mSampleTime;
         if(renderedProgram!=p) { renderedProgram=p; for(auto& voice:voices) voice.active=false; previousBeat=-1; }
@@ -213,12 +215,15 @@ struct MetronomeSignal {
         size_t section=0;
         for(unsigned sample=0;sample<count;++sample) {
             const double position=wrap(start+sample/sampleRate);
+            bool inside = !p || !p->bounded;
             if(p && !p->sections.empty() && active && position>=0 && start+sample/sampleRate>=first) {
                 if(position<previousPosition) { section=0; previousBeat=-1; previousPosition=-1; }
                 while(section+1<p->sections.size() && p->sections[section+1].start<=position) ++section;
                 const auto& tempo=p->sections[section];
+                inside = !p->bounded || (position>=tempo.start && position<tempo.end);
+                if(inside) {
                 const double beatSeconds=60.0/tempo.bpm*4.0/tempo.unit;
-                const double exact=(position-tempo.start)/beatSeconds;
+                const double exact=(position-(std::isfinite(tempo.origin) ? tempo.origin : tempo.start))/beatSeconds;
                 const int64_t beat=int64_t(std::floor(std::max(0.0,exact)+1e-9));
                 const double phase=(exact-double(beat))*beatSeconds;
                 if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
@@ -226,6 +231,11 @@ struct MetronomeSignal {
                     voice={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),true};
                 }
                 previousBeat=beat; previousSection=section; previousPosition=position;
+                }
+            }
+            if(!inside) {
+                for(auto& voice:voices) voice.active=false;
+                previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
             }
             gain=active ? std::min(1.0f,gain+step) : std::max(0.0f,gain-step);
             renderedA += (targetA-renderedA)*step;
@@ -262,6 +272,13 @@ struct MetronomeSignal {
     const auto* pa=static_cast<const float*>(a.bytes); const auto* pb=static_cast<const float*>(b.bytes);
     if(a.length) value->a.assign(pa,pa+a.length/sizeof(float));
     if(b.length) value->b.assign(pb,pb+b.length/sizeof(float));
+    _signal->publish(std::move(value));
+}
+- (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound {
+    auto value=std::make_unique<MetronomeProgram>(); value->mode=1; value->bounded=true;
+    for(NSDictionary* s in sections) value->sections.push_back({[s[@"start"] doubleValue],[s[@"bpm"] doubleValue],[s[@"beats"] intValue],[s[@"unit"] intValue],[s[@"end"] doubleValue],[s[@"origin"] doubleValue]});
+    const auto* samples=static_cast<const float*>(sound.bytes);
+    if(sound.length) value->a.assign(samples,samples+sound.length/sizeof(float));
     _signal->publish(std::move(value));
 }
 - (void)setEnabled:(BOOL)enabled { _signal->enabled.store(enabled, std::memory_order_release); }

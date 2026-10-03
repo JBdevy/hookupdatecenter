@@ -1,6 +1,42 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testTimeRulerUsesActualGridPositionsAcrossTempoAndMeterChanges() {
+        let sections = [TimelineTempoSection(start: 0, end: 5.3, bpm: 120, beats: 4, unit: 4, timebase: .free),
+                        TimelineTempoSection(start: 5.3, end: 12, bpm: 90, beats: 3, unit: 4, timebase: .free)]
+        let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 12, pixelsPerSecond: 300)
+        XCTAssertEqual(marks.filter { $0.primary }.map(\.time), [0, 2, 4, 5.3, 7.3, 9.3, 11.3])
+        XCTAssertTrue(marks.contains { abs($0.time - (5.3 + 2.0 / 3)) < 1e-9 && !$0.primary && $0.label == "00:00:05.967" })
+        XCTAssertFalse(marks.contains { abs($0.time - 6) < 1e-9 }, "round seconds must not introduce ticks outside the musical grid")
+        XCTAssertEqual(marks.filter { $0.time < 2 }.map(\.time), [0, 0.5, 1, 1.5])
+    }
+    func testRulerAndGridKeepSameCoordinatesAndLabelsAcrossTilesAndZoomLevels() {
+        let sections = [TimelineTempoSection(start: 0, end: 600, bpm: 123, beats: 7, unit: 8, timebase: .free)]
+        for scale in [0.5, 8, 40, 100, 1000, 81920.0] {
+            let end = min(500, 2400 / scale)
+            let full = TimelineTimeRuler.ticks(in: sections, from: 0, to: end, pixelsPerSecond: scale, divisions: 8)
+            let tile = TimelineTimeRuler.ticks(in: sections, from: end * 0.37, to: end * 0.83, pixelsPerSecond: scale, divisions: 8)
+            let expected = full.filter { $0.time >= end * 0.37 && $0.time <= end * 0.83 }
+            XCTAssertEqual(tile.map(\.time), expected.map(\.time))
+            XCTAssertEqual(tile.map(\.label), expected.map(\.label))
+            let grid = TimelineTimeRuler.ticks(in: sections, from: 0, to: end, pixelsPerSecond: scale, divisions: 8, labels: false)
+            XCTAssertEqual(grid.map(\.time), full.map(\.time))
+            XCTAssertTrue(grid.allSatisfy { $0.label.isEmpty })
+            let labels = full.filter { !$0.label.isEmpty }
+            for pair in zip(labels, labels.dropFirst()) {
+                XCTAssertGreaterThanOrEqual((pair.1.time - pair.0.time) * scale,
+                    TimelineTimeRuler.labelSpacing(through: 600) - 1e-6)
+            }
+        }
+    }
+    func testDistantGridRetainsExtraHalfwayLinesAndInvalidScaleIsRejected() {
+        let sections = [TimelineTempoSection(start: 0, end: 120, bpm: 120, beats: 4, unit: 4, timebase: .free)]
+        let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 8, pixelsPerSecond: 8)
+        XCTAssertEqual(marks.map(\.time), Array(0...8).map(Double.init))
+        XCTAssertEqual(marks.filter { $0.primary }.map(\.time), [0, 2, 4, 6, 8])
+        XCTAssertEqual(marks.first?.label, "00:00:00")
+        XCTAssertTrue(TimelineTimeRuler.ticks(in: sections, from: 0, to: 10, pixelsPerSecond: .nan).isEmpty)
+    }
     func testMeasureNumbersFollowTempoSectionsAndKeepTheirOriginalCountWhenZoomedOut() {
         let sections = [TimelineTempoSection(start: 0, end: 6, bpm: 120, beats: 4, unit: 4, timebase: .free),
                         TimelineTempoSection(start: 6, end: 9, bpm: 120, beats: 3, unit: 4, timebase: .free)]

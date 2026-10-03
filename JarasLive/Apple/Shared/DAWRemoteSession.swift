@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import Network
 import CryptoKit
 import ImageIO
@@ -18,7 +19,7 @@ private func remoteName(_ value: String) -> String {
         guard name.utf8.count + String(character).utf8.count <= 160 else { break }
         name.append(character)
     }
-    return name.isEmpty ? "Jaras" : name
+    return name.isEmpty ? "CatLive" : name
 }
 
 /// TCP may split a packet anywhere or deliver several together. Reject its
@@ -293,10 +294,52 @@ final class DAWRemoteImageCache {
     func clear() { values = [:]; order = []; bytes = 0 }
 }
 
-/// Nearby discovery, one encrypted client, and bounded state/ACK flow.
+/// The four-digit PIN is stored as a salted digest, never sent in snapshots.
+/// All peers share the retry budget so reconnecting cannot bypass the delay.
+final class DAWRemoteAccessPolicy {
+    private struct Credential: Codable { var salt: Data; var digest: Data }
+    private var credential: Credential?
+    private let preferences: UserDefaults?
+    private var failures = 0
+    private var blockedUntil = Date.distantPast
+    var requiresPIN: Bool { credential != nil }
+    init(preferences: UserDefaults? = nil) {
+        self.preferences = preferences
+        if let data = preferences?.data(forKey: "catlive.remote.directorPIN"),
+           let value = try? JSONDecoder().decode(Credential.self, from: data), value.salt.count == 16, value.digest.count == 32 {
+            credential = value
+        }
+    }
+    @discardableResult func setPIN(_ pin: String) -> Bool {
+        guard DAWRemoteAccessRequest(mode: .director, pin: pin).valid else { return false }
+        if pin.isEmpty { credential = nil; preferences?.removeObject(forKey: "catlive.remote.directorPIN") }
+        else {
+            let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+            let value = Credential(salt: salt, digest: Data(SHA256.hash(data: salt + Data(pin.utf8))))
+            credential = value
+            if let data = try? JSONEncoder().encode(value) { preferences?.set(data, forKey: "catlive.remote.directorPIN") }
+        }
+        failures = 0; blockedUntil = .distantPast
+        return true
+    }
+    func authorize(_ request: DAWRemoteAccessRequest, now: Date = Date()) -> DAWRemoteAccessStatus {
+        guard request.valid else { return .init(mode: nil, requiresPIN: requiresPIN, error: "Digite quatro números.") }
+        if request.mode == .observer || credential == nil { return .init(mode: request.mode, requiresPIN: requiresPIN) }
+        guard now >= blockedUntil else { return .init(mode: nil, requiresPIN: true, error: "Aguarde 30 segundos antes de tentar novamente.") }
+        let value = credential!
+        let received = Data(SHA256.hash(data: value.salt + Data(request.pin.utf8)))
+        let difference = zip(received, value.digest).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) }
+        if difference == 0 { failures = 0; return .init(mode: .director, requiresPIN: true) }
+        failures += 1
+        if failures >= 5 { failures = 0; blockedUntil = now.addingTimeInterval(30) }
+        return .init(mode: nil, requiresPIN: true, error: "Senha incorreta.")
+    }
+}
+
+/// Encrypted clients have independent access, TP subscriptions and state/ACK flow.
 final class DAWRemoteSession: NSObject, ObservableObject {
     #if os(macOS)
-    static let shared = DAWRemoteSession(role: .host, name: Host.current().localizedName ?? "Jaras Mac")
+    static let shared = DAWRemoteSession(role: .host, name: Host.current().localizedName ?? "CatLive Mac", policy: DAWRemoteAccessPolicy(preferences: .standard))
     #else
     static let shared = DAWRemoteSession(role: .client, name: UIDevice.current.name)
     #endif
@@ -307,6 +350,16 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     @Published private(set) var peerName = ""
     @Published private(set) var status = ""
     @Published private(set) var remoteState: DAWRemoteState?
+    @Published private(set) var accessMode: DAWRemoteAccess?
+    @Published private(set) var directorRequiresPIN = false
+    @Published private(set) var accessError = ""
+    @Published private(set) var authorizing = false
+    private let accessPolicy: DAWRemoteAccessPolicy
+    private var channelReady = false
+    private weak var parentHost: DAWRemoteSession?
+    private var clients: [UUID: DAWRemoteSession] = [:]
+    private(set) var requestedPanel = 0
+    var stateProviderForSession: ((DAWRemoteSession) -> DAWRemoteState?)?
     @Published private(set) var imageRevision: UInt64 = 0
     private let worker = DispatchQueue(label: "com.jaras.remote.state", qos: .userInitiated)
     private let imageWorker = DispatchQueue(label: "com.jaras.remote.still-images", qos: .utility)
@@ -337,8 +390,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     private var imageFailed: Set<UUID> = []
     private var imageQueue: [UUID] = []
 
-    init(role: DAWRemoteRole, name: String) {
-        self.role = role; self.name = remoteName(name)
+    init(role: DAWRemoteRole, name: String, policy: DAWRemoteAccessPolicy = DAWRemoteAccessPolicy()) {
+        self.role = role; self.name = remoteName(name); self.accessPolicy = policy
+        self.directorRequiresPIN = policy.requiresPIN
         super.init()
         #if os(iOS)
         NotificationCenter.default.addObserver(self, selector: #selector(suspend), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -446,7 +500,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     }
     func stop() {
         dispatchPrecondition(condition: .onQueue(.main))
-        connectionGeneration = UUID()
+        for child in clients.values { child.stop() }; clients.removeAll()
+        connectionGeneration = UUID(); channelReady = false
+        accessMode = nil; accessError = ""; authorizing = false; requestedPanel = 0
         stateTimer?.invalidate(); stateTimer = nil; waitingForState = nil; sendingState = false
         handledCommands.removeAll()
         listener?.cancel(); listener = nil; browser?.cancel(); browser = nil
@@ -490,9 +546,17 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     }
     private func accept(_ connection: NWConnection, from listener: NWListener) {
         invitationAttempts.removeAll { Date().timeIntervalSince($0) > 60 }
-        guard role == .host, enabled, self.listener === listener, channel == nil, invitationAttempts.count < 5 else { connection.cancel(); return }
+        guard role == .host, enabled, self.listener === listener, clients.count < 15, invitationAttempts.count < 30 else { connection.cancel(); return }
         invitationAttempts.append(Date())
-        attach(connection)
+        if channel == nil { attach(connection) }
+        else {
+            let id = UUID()
+            let child = DAWRemoteSession(role: .host, name: name, policy: accessPolicy)
+            child.parentHost = self; child.enabled = true
+            child.stateProvider = stateProvider; child.stateProviderForSession = stateProviderForSession
+            child.commandHandler = commandHandler
+            clients[id] = child; child.attach(connection)
+        }
     }
     func browse() {
         guard role == .client else { return }
@@ -534,8 +598,12 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         self.channel = channel; receivedStateSequence = 0; connecting = true; status = "Connecting…"
         channel.onReady = { [weak self, weak channel] name in
             guard let self, let channel, self.channel === channel, self.enabled else { return }
+            self.channelReady = true
             self.connected = true; self.connecting = false; self.peerName = name; self.status = "Connected"
+            self.accessMode = nil; self.requestedPanel = 0
+            self.parentHost?.refreshHostPresence()
             if self.role == .host {
+                self.sendAccessStatus(.init(mode: nil, requiresPIN: self.accessPolicy.requiresPIN))
                 let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.publishState() }
                 self.stateTimer = timer; RunLoop.main.add(timer, forMode: .common); self.publishState()
             } else {
@@ -551,13 +619,15 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         channel.onClose = { [weak self, weak channel] in
             guard let self, let channel, self.channel === channel else { return }
             let wasConnected = self.connected
-            self.channel = nil; self.connectionGeneration = UUID()
+            self.channel = nil; self.channelReady = false; self.connectionGeneration = UUID()
+            self.accessMode = nil; self.accessError = ""; self.authorizing = false; self.requestedPanel = 0
             self.connected = false; self.connecting = false; self.remoteState = nil; self.receivedStateSequence = 0
             self.stateTimer?.invalidate(); self.stateTimer = nil; self.waitingForState = nil; self.sendingState = false
             self.handledCommands.removeAll()
             self.setImageProject(nil)
             if self.role == .client { self.beginBrowsing() }
             self.status = wasConnected ? "Disconnected" : "Connection failed. Keep the devices nearby and enable Remote on the Mac."
+            if self.role == .host { self.refreshHostPresence(); self.parentHost?.refreshHostPresence() }
             #if os(iOS)
             UIApplication.shared.isIdleTimerDisabled = false
             #endif
@@ -565,20 +635,24 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         channel.start()
     }
     func send(_ command: DAWRemoteCommand) {
-        guard role == .client, connected, command.valid, let data = try? DAWRemoteWire.command(command) else { return }
+        guard role == .client, connected, DAWRemoteAccessRules.allows(command, mode: accessMode), let data = try? DAWRemoteWire.command(command) else { return }
         channel?.send(data)
     }
     private func received(_ packet: DAWRemoteWire.Packet, from source: DAWRemoteChannel) {
         guard channel === source, connected, enabled else { return }
         switch packet {
         case .command(let command):
-            guard role == .host, !handledCommands.contains(command.id) else { return }
+            guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode), !handledCommands.contains(command.id) else { return }
             handledCommands.append(command.id)
             if handledCommands.count > 512 { handledCommands.removeFirst() }
             if command.action == .requestImage { serveImage(command, to: source); return }
+            if command.action == .remotePanel {
+                guard command.project == imageProject else { return }
+                requestedPanel = Int(command.value); return
+            }
             commandHandler?(command)
         case .state(let state):
-            guard role == .client else { return }
+            guard role == .client, accessMode != nil else { return }
             if state.sequence > receivedStateSequence {
                 receivedStateSequence = state.sequence
                 setImageProject(state.project)
@@ -597,17 +671,60 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             if role == .host, sequence == waitingForState { waitingForState = nil }
         case .imageAsset(let asset):
             receiveImage(asset, from: source)
+        case .accessRequest(let request):
+            guard role == .host else { return }
+            let result = accessPolicy.authorize(request)
+            accessMode = result.mode; requestedPanel = 0
+            // The client discards the old workspace on an access change. Never
+            // wait for an ACK belonging to that discarded presentation.
+            waitingForState = nil; sendingState = false
+            sendAccessStatus(result)
+            if accessMode != nil { publishState() }
+        case .accessStatus(let result):
+            guard role == .client else { return }
+            directorRequiresPIN = result.requiresPIN; accessError = result.error ?? ""
+            accessMode = result.mode; authorizing = false
+            if result.mode == nil { remoteState = nil; setImageProject(nil) }
         }
     }
+    private func refreshHostPresence() {
+        clients = clients.filter { $0.value.channel != nil }
+        connected = channelReady || clients.values.contains { $0.connected }
+        connecting = (channel != nil && !channelReady) || clients.values.contains { $0.connecting }
+        if connected { status = "Connected" }
+    }
+    private func sendAccessStatus(_ status: DAWRemoteAccessStatus) {
+        if let data = try? DAWRemoteWire.accessStatus(status) { channel?.send(data) }
+    }
+    func requestAccess(_ mode: DAWRemoteAccess, pin: String = "") {
+        guard role == .client, connected,
+              let data = try? DAWRemoteWire.accessRequest(.init(mode: mode, pin: pin)) else { return }
+        accessError = ""; authorizing = true; channel?.send(data)
+    }
+    @discardableResult func setDirectorPIN(_ pin: String) -> Bool {
+        guard role == .host, accessPolicy.setPIN(pin) else { return false }
+        directorRequiresPIN = accessPolicy.requiresPIN
+        for session in [self] + Array(clients.values) where session.channelReady {
+            if session.accessMode == .director {
+                session.accessMode = nil; session.requestedPanel = 0
+                session.waitingForState = nil; session.sendingState = false
+            }
+            session.sendAccessStatus(.init(mode: session.accessMode, requiresPIN: accessPolicy.requiresPIN))
+        }
+        return true
+    }
     private func publishState() {
-        guard role == .host, connected, let channel, !sendingState else { return }
+        guard role == .host, connected, accessMode != nil, let channel, !sendingState else { return }
         if waitingForState != nil {
             if Date().timeIntervalSince(sentAt) > 10 { channel.close() }
             return
         }
         // DAWRemoteWire.state validates the immutable snapshot on the worker.
         // Walking every clip here repeats that work on the UI thread at 10 Hz.
-        guard var state = stateProvider?() else { return }
+        guard var state = stateProviderForSession?(self) ?? stateProvider?() else { return }
+        if accessMode == .observer {
+            state.tracks = []; state.playlists = nil; state.projects = nil; state.gridTempo = nil
+        }
         setImageProject(state.project)
         stateSequence &+= 1; state.sequence = stateSequence
         waitingForState = state.sequence; sentAt = Date(); sendingState = true

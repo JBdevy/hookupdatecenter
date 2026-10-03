@@ -10,6 +10,9 @@ import UIKit
 /// them once at the window's backing scale, then move the same image with the
 /// timeline. This avoids text layout and glyph drawing on every zoom frame.
 final class TimelineStaticText: NSObject {
+    // Same green as the native timeline/setlist scroll knobs (#54FF93).
+    private static let rulerInk = CGColor(srgbRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1)
+    static let rulerColor = Color(cgColor: rulerInk)
     enum Style: Int { case barNumber, regionIdentifier }
     private static let cache: NSCache<NSString, TimelineStaticText> = {
         let value = NSCache<NSString, TimelineStaticText>()
@@ -30,7 +33,7 @@ final class TimelineStaticText: NSObject {
         #endif
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             kCTFontAttributeName as NSAttributedString.Key: font,
-            kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(gray: 1, alpha: 1)
+            kCTForegroundColorAttributeName as NSAttributedString.Key: style == .barNumber ? Self.rulerInk : CGColor(gray: 1, alpha: 1)
         ]))
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
         width = ceil(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))

@@ -17,7 +17,7 @@ private final class HeaderSnapShow {
 }
 private enum TimelineTempo {
     static var lastCursor: Double?
-    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool, cursor: Double) -> Double {
+    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool, cursor: Double, gridTolerancePixels: Double = .infinity) -> Double {
         lastCursor = cursor
         return time
     }
@@ -69,6 +69,11 @@ MainActor.assumeIsolated {
         for width in stride(from: CGFloat(0), through: 1600, by: 61.25) {
             let covered = TimelineHeaderViewport.covering(offset: offset, width: width, height: 500)
             precondition(covered.minX <= offset && covered.maxX >= offset + width, "header reserve must cover every exposed pixel")
+            for delta: CGFloat in [-512, 511] {
+                let actual = max(0, floor(offset / 512) * 512 + delta)
+                precondition(covered.minX <= actual && covered.maxX >= actual + width, "header targets must cover subbucket travel and reversal")
+            }
+            precondition(covered.width <= width + 2048, "header reserve stays bounded")
         }
     }
     let state = HeaderTestState(), window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 550), styleMask: [.titled], backing: .buffered, defer: false)
@@ -82,9 +87,9 @@ MainActor.assumeIsolated {
     precondition(HeaderCounts.updates == initialUpdates && HeaderCounts.builds == initialBuilds, "small sidebar changes must retain existing controls and callbacks")
     precondition(targets(host).first { $0.target == 0 } === first, "the hit target must retain identity")
     first.invoke?(); precondition(state.edits == 1 && state.callbackValue.contains("Original"))
-    precondition(!targets(host).contains { $0.target == 16 })
+    precondition(!targets(host).contains { $0.target == 24 })
     state.width = 1250; host.layoutSubtreeIfNeeded()
-    precondition(targets(host).contains { $0.target == 16 }, "crossing a viewport bucket must mount newly exposed targets")
+    precondition(targets(host).contains { $0.target == 24 }, "crossing a viewport bucket must mount newly exposed targets")
     state.name = "Renamed"; state.revision += 1; host.layoutSubtreeIfNeeded()
     first.invoke?(); precondition(state.callbackValue.contains("Renamed"), "callbacks must update after a project edit")
     let nextProject = UUID(); state.project = nextProject; host.layoutSubtreeIfNeeded()

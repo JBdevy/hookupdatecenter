@@ -68,7 +68,7 @@ struct SongListView: View {
     @State private var missingPlaylistName = false
     @State private var nameShake = 0.0
     @FocusState private var playlistNameFocused: Bool
-    @State private var selection: Set<UUID> = []
+    @State private var selection: [UUID] = []
     @State private var selectionAnchor: UUID?
     @FocusState private var searchFocused: Bool
     private func requestRemoval(_ ids: Set<UUID>, keyboard: Bool) {
@@ -150,7 +150,7 @@ struct SongListView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(query.isEmpty ? .white : JarasTheme.green)
                         .frame(width: 27, height: 30).contentShape(Rectangle())
                 }.buttonStyle(.plain).jarasHelp("Search songs (Tab)").accessibilityLabel("Search songs")
-                    .popover(isPresented: $searching) { searchPanel }
+                    .popover(isPresented: $searching, attachmentAnchor: .rect(.bounds), arrowEdge: .top) { searchPanel }
                 Button { show.toggleRegionAuto() } label: {
                     Text("AUTO").font(.system(size: 9, weight: .bold))
                         .foregroundStyle(setlist.autoAdvance ? .black : JarasTheme.secondary)
@@ -377,7 +377,7 @@ struct SongListView: View {
                     }
                     if results.isEmpty { Text("No results").font(.caption).foregroundStyle(JarasTheme.secondary).padding(12) }
                 }
-            }.frame(height: min(300, CGFloat(max(1, results.count)) * 34))
+            }.frame(height: 300) // Keep the popover anchored while filtering results.
         }.padding(12).frame(width: 300).onAppear { searchFocused = true }
     }
     private var creationPanel: some View {
@@ -409,7 +409,7 @@ struct SongListView: View {
                 }
             HStack(spacing: 6) {
                 Button("All") {
-                    selection = Set(show.allRegions.map(\.id))
+                    selection = show.allRegions.map(\.id)
                     selectionAnchor = show.allRegions.first?.id
                 }
                 Button("Clear") { selection.removeAll(); selectionAnchor = nil }
@@ -421,6 +421,10 @@ struct SongListView: View {
                     ForEach(show.allRegions) { region in
                         Button { selectForPlaylist(region.id) } label: {
                             HStack(spacing: 5) {
+                                if let order = selection.firstIndex(of: region.id) {
+                                    Text("\(order + 1)").monospacedDigit().foregroundStyle(JarasTheme.green)
+                                        .frame(minWidth: 18)
+                                }
                                 Text(region.displayName).lineLimit(1)
                                 Spacer(minLength: 0)
                                 Text(regionDurationText(region.endTime - region.startTime)).font(.system(size: 9, design: .monospaced))
@@ -466,15 +470,16 @@ struct SongListView: View {
         let flags = NSEvent.modifierFlags
         if flags.contains(.shift), let anchor = selectionAnchor,
            let a = ids.firstIndex(of: anchor), let b = ids.firstIndex(of: id) {
-            let range = Set(ids[min(a,b)...max(a,b)])
-            selection = flags.contains(.command) || flags.contains(.control) ? selection.union(range) : range
+            let range = a <= b ? Array(ids[a...b]) : Array(ids[b...a].reversed())
+            selection = flags.contains(.command) || flags.contains(.control)
+                ? selection + range.filter { !selection.contains($0) } : range
             return
         }
         if flags.contains(.command) || flags.contains(.control) {
-            if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+            if selection.contains(id) { selection.removeAll { $0 == id } } else { selection.append(id) }
         } else { selection = [id] }
         #else
-        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+        if selection.contains(id) { selection.removeAll { $0 == id } } else { selection.append(id) }
         #endif
         selectionAnchor = id
     }
@@ -695,7 +700,6 @@ private struct RegionSetlistRow: View, Equatable {
     var body: some View {
         let color = Color(hex: region.color ?? 0x705264)
         let numberWidth = CGFloat(max(2, String(number).count)) * 6
-        HStack(spacing: 0) {
         Button(action: select) {
             #if os(macOS)
             NativeRegionSetlistLabel(number: number, name: region.displayName, duration: regionDurationText(Double(remaining)),
@@ -732,6 +736,9 @@ private struct RegionSetlistRow: View, Equatable {
             #endif
         }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityLabel(Text(verbatim: String(format: "%02d", number) + ", " + region.displayName + ", " + regionDurationText(Double(remaining))))
+            .frame(maxWidth: .infinity)
+            .padding(.trailing, 14)
+            .overlay(alignment: .trailing) {
             Group {
                 if let expanded, let toggleDrawer {
                     Button(action: toggleDrawer) {
@@ -742,7 +749,7 @@ private struct RegionSetlistRow: View, Equatable {
                 } else {
                     Color.clear.frame(width: 14, height: 34).allowsHitTesting(false)
                 }
-            }
+            }.frame(width: 14, height: 34).fixedSize()
         }
     }
 }
@@ -930,6 +937,7 @@ final class SetlistKeyView: NSView {
     var delete: (() -> Void)?
     private static weak var deleteOwner: SetlistKeyView?
     static func handleDelete(_ event: NSEvent) -> Bool {
+        if RegionShortcutView.handleSelectedObjectsDelete(event) { return true }
         guard [51,117].contains(event.keyCode), event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
               let owner = deleteOwner, event.window === owner.window, owner.acceptsNavigation,
               !(owner.window?.firstResponder is any TimelineGridKeyboardTarget),
@@ -1040,6 +1048,12 @@ private struct PlaylistSelectionClick: NSViewRepresentable {
 }
 private final class PlaylistSelectionClickView: NSView {
     var action: (() -> Void)?
+    override func scrollWheel(with event: NSEvent) {
+        // This native overlay handles selection modifiers. SwiftUI's hosting
+        // responder can swallow wheel events, so deliver them to the list.
+        if let scroll = enclosingScrollView { scroll.scrollWheel(with: event) }
+        else { super.scrollWheel(with: event) }
+    }
     override func mouseDown(with event: NSEvent) { action?() }
     override func rightMouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) { action?() }

@@ -1,0 +1,19 @@
+CatStemSeparation 5 — CatLive internal offline stem mixer
+
+The separation worker uses Demucs 4.0.1 and Meta's pretrained HTDemucs 6-source
+model, under the MIT license (see Demucs-LICENSE.txt).
+https://github.com/facebookresearch/demucs
+Model: 5c90dfd2-34c22ccb.th (htdemucs_6s).
+Outputs: vocals → Vocal; drums → Drum; bass → Bass; guitar → Guitar;
+other + piano → Other. Piano is retained, not discarded.
+
+Ultimate Vocal Remover GUI was used as an architectural reference.
+https://github.com/Anjok07/ultimatevocalremovergui
+The UVR GUI, name, artwork and denoise weights are not included.
+
+The relocatable CPython distributions are provided by python-build-standalone:
+https://github.com/astral-sh/python-build-standalone
+CPython and dependency licenses are retained in the bundled runtime, including
+site-packages/*.dist-info and the individual packages' license directories.
+Runtime dependencies and exact versions: scripts/catstem-requirements.lock.
+Audio is processed locally. No audio or project data is uploaded.

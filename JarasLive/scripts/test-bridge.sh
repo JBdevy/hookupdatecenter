@@ -14,7 +14,7 @@ project.songs[0].tracks[0].color = 0x20cc80
 project.songs[0].tracks[0].midiInput = 3
 project.songs[0].tracks[0].clips[0].waveformChannels = [[0.2, 0.3], [0.6, 0.7]]
 project.songs[0].tracks[0].clips[0].muted = true
-project.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "Steams/session/Click.wav")
+project.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "Stems/session/Click.wav")
 project.songs[0].tracks[0].clips[0].fadeIn = 2
 project.songs[0].tracks[0].clips[0].fadeOut = 3
 project.songs[0].tracks[0].clips[0].gain = 1.25
@@ -64,7 +64,7 @@ for song in project.songs.indices {
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
-swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
+swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
 build/bridge-tests/fixture build/bridge-tests/demo.json
 clang++ -std=c++17 -fobjc-arc -framework Foundation Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp Apple/Bridge/JarasCoreBridge.mm Tests/Core/BridgeTests.mm -o build/bridge-tests/test
 build/bridge-tests/test build/bridge-tests/demo.json

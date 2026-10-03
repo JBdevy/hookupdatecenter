@@ -19,6 +19,35 @@ enum WaveformPeakCodec {
     }
 }
 
+/// A bounded number of decoder owners prepare independent files concurrently.
+/// Results and completion notifications retain input order and monotonic progress;
+/// no preparation is left running after this function returns.
+enum WaveformPreparation {
+    static func map<Input, Output>(_ inputs: [Input],
+                                   concurrency: Int = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount - 1)),
+                                   progress: (Int, Int) -> Void = { _, _ in },
+                                   transform: (Input) -> Output) -> [Output] {
+        guard !inputs.isEmpty else { return [] }
+        let lock = NSLock()
+        var next = 0, completed = 0
+        var results = Array<Output?>(repeating: nil, count: inputs.count)
+        DispatchQueue.concurrentPerform(iterations: min(max(1, concurrency), inputs.count)) { _ in
+            while true {
+                lock.lock()
+                guard next < inputs.count else { lock.unlock(); return }
+                let index = next; next += 1
+                lock.unlock()
+                let result = autoreleasepool { transform(inputs[index]) }
+                lock.lock()
+                results[index] = result; completed += 1
+                progress(completed, inputs.count)
+                lock.unlock()
+            }
+        }
+        return results.map { $0! }
+    }
+}
+
 /// Project peak indices and a small complete overview are prepared before display.
 /// Unprepared/live sources use viewport blocks independently of playback.
 /// Immutable source geometry is shared by duplicates and zoom levels.
@@ -93,8 +122,24 @@ final class TimelineAudioWaveform: ObservableObject {
                 if vertices.isPeakEnvelope {
                     for index in stride(from: 0, to: points.count - 1, by: 2) {
                         let a = points[index], b = points[index + 1]
-                        path.addRect(CGRect(x: Double(a.x) / vertices.rate, y: Double(min(a.y, b.y)),
-                            width: Double(b.x - a.x) / vertices.rate, height: Double(abs(b.y - a.y))))
+                        let high = min(a.y, b.y), low = max(a.y, b.y)
+                        var leftHigh = high, leftLow = low, rightHigh = high, rightLow = low
+                        if index >= 2, points[index - 1].x == a.x {
+                            leftHigh = (high + min(points[index - 2].y, points[index - 1].y)) * 0.5
+                            leftLow = (low + max(points[index - 2].y, points[index - 1].y)) * 0.5
+                        }
+                        if index + 3 < points.count, points[index + 2].x == b.x {
+                            rightHigh = (high + min(points[index + 2].y, points[index + 3].y)) * 0.5
+                            rightLow = (low + max(points[index + 2].y, points[index + 3].y)) * 0.5
+                        }
+                        let left = Double(a.x) / vertices.rate, right = Double(b.x) / vertices.rate, center = (left + right) * 0.5
+                        path.move(to: CGPoint(x: left, y: Double(leftHigh)))
+                        path.addLine(to: CGPoint(x: center, y: Double(high)))
+                        path.addLine(to: CGPoint(x: right, y: Double(rightHigh)))
+                        path.addLine(to: CGPoint(x: right, y: Double(rightLow)))
+                        path.addLine(to: CGPoint(x: center, y: Double(low)))
+                        path.addLine(to: CGPoint(x: left, y: Double(leftLow)))
+                        path.closeSubpath()
                     }
                     return path
                 }
@@ -281,37 +326,41 @@ final class TimelineAudioWaveform: ObservableObject {
     /// Map compact .waveform peak levels and prepare a complete small overview.
     /// Detailed pages remain reclaimable file-backed memory; only visible GPU
     /// blocks occupy the bounded drawing cache.
-    @MainActor func preload(_ urls: [URL], progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
+    @MainActor func preload(_ urls: [URL], cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
         let files = Array(Set(urls.map { $0.standardizedFileURL })).sorted { $0.path < $1.path }
         // A complete fallback for every file fits a project-wide 32 MiB target.
         // It remains available when detailed vertex blocks are evicted.
         let overviewPixels = max(16, min(512, (32 * 1024 * 1024) / max(1, files.count) / 384))
         let prepared: ([String: Header], [String: VertexOverview], [String: WaveformSource]) = await withCheckedContinuation { continuation in
-            sourceWorker.async { [self] in
+            sourceWorker.async(qos: .userInitiated) { [self] in
+                typealias Prepared = (url: URL, header: Header, prefix: String, overview: VertexOverview, source: WaveformSource)
+                let entries: [Prepared?] = WaveformPreparation.map(files, progress: { done, total in
+                    DispatchQueue.main.async { if !cancelled() { progress(done, total) } }
+                }) { url in
+                    guard !cancelled(), let audio = try? AVAudioFile(forReading: url) else { return nil }
+                    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                    let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+                    let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
+                    let header = Header(rate: audio.processingFormat.sampleRate, frames: audio.length,
+                        channels: Int(audio.processingFormat.channelCount), sourcePath: url.path, sourceVersion: "\(size):\(modified)")
+                    guard let prefix = header.cachePrefix,
+                          let source = try? (pinnedSource(prefix) ?? WaveformSource.loadOrBuild(url, header: header, cancelled: cancelled)),
+                          let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return nil }
+                    headers.setObject(header, forKey: url.path as NSString)
+                    sources.setObject(source, forKey: prefix as NSString, cost: source.cost)
+                    return (url, header, prefix, overview, source)
+                }
                 var preparedHeaders: [String: Header] = [:], preparedOverviews: [String: VertexOverview] = [:]
                 var preparedSources: [String: WaveformSource] = [:]
-                for (index, url) in files.enumerated() {
-                    autoreleasepool {
-                        guard let audio = try? AVAudioFile(forReading: url) else { return }
-                        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-                        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-                        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
-                        let header = Header(rate: audio.processingFormat.sampleRate, frames: audio.length,
-                            channels: Int(audio.processingFormat.channelCount), sourcePath: url.path, sourceVersion: "\(size):\(modified)")
-                        guard let prefix = header.cachePrefix, let source = try? (pinnedSource(prefix) ?? WaveformSource.loadOrBuild(url, header: header)),
-                              let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return }
-                        preparedHeaders[url.path] = header; preparedOverviews[prefix] = overview
-                        preparedSources[prefix] = source
-                        headers.setObject(header, forKey: url.path as NSString)
-                        sources.setObject(source, forKey: prefix as NSString, cost: source.cost)
-                    }
-                    if index % 16 == 0 || index + 1 == files.count {
-                        DispatchQueue.main.async { progress(index + 1, files.count) }
-                    }
+                for entry in entries.compactMap({ $0 }) {
+                    preparedHeaders[entry.url.path] = entry.header
+                    preparedOverviews[entry.prefix] = entry.overview
+                    preparedSources[entry.prefix] = entry.source
                 }
                 continuation.resume(returning: (preparedHeaders, preparedOverviews, preparedSources))
             }
         }
+        guard !cancelled() else { return }
         installProjectCache(headers: prepared.0, overviews: prepared.1, sources: prepared.2)
         revision &+= 1
     }
@@ -1147,16 +1196,18 @@ private final class WaveformSource: NSObject {
         let directory = url.deletingLastPathComponent()
         var ancestor = directory
         while ancestor.path != "/" {
-            if ["steams", "stems"].contains(ancestor.lastPathComponent.lowercased()) {
+            if ancestor.lastPathComponent.lowercased() == "stems" {
                 let relative = String(url.path.dropFirst(ancestor.path.count + 1))
-                return ancestor.deletingLastPathComponent().appendingPathComponent("WF", isDirectory: true)
-                    .appendingPathComponent(relative + ".waveform")
+                return ancestor.deletingLastPathComponent().appendingPathComponent("Stems", isDirectory: true)
+                    .appendingPathComponent("WF", isDirectory: true).appendingPathComponent(relative + ".waveform")
             }
             ancestor.deleteLastPathComponent()
         }
-        return directory.appendingPathComponent("WF", isDirectory: true).appendingPathComponent(url.lastPathComponent + ".waveform")
+        return directory.appendingPathComponent("Stems", isDirectory: true).appendingPathComponent("WF", isDirectory: true)
+            .appendingPathComponent(url.lastPathComponent + ".waveform")
     }
-    static func loadOrBuild(_ url: URL, header: TimelineAudioWaveform.Header) throws -> WaveformSource {
+    static func loadOrBuild(_ url: URL, header: TimelineAudioWaveform.Header, cancelled: () -> Bool = { false }) throws -> WaveformSource {
+        if cancelled() { throw CancellationError() }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
@@ -1194,7 +1245,17 @@ private final class WaveformSource: NSObject {
         var data = Data(capacity: expectedBytes)
         func append(_ value: Float) { var packed = WaveformPeakCodec.encode(value).littleEndian; withUnsafeBytes(of: &packed) { data.append(contentsOf: $0) } }
         while data.count < expectedBytes {
-            try audio.read(into: buffer, frameCount: AVAudioFrameCount(TimelineAudioWaveform.blockFrames))
+            if cancelled() { throw CancellationError() }
+            guard try AudioFileRead.read(audio, into: buffer, frameCount: AVAudioFrameCount(TimelineAudioWaveform.blockFrames)) else {
+                if AudioFileRead.hasMP3Padding(audio) {
+                    // Only the absent tail of the final MP3 packet is silent.
+                    let maximumTailBytes = (Int(audio.fileFormat.streamDescription.pointee.mFramesPerPacket) / baseStep + 1) * storedChannels * recordBytes
+                    if expectedBytes - data.count <= maximumTailBytes {
+                        data.append(Data(repeating: 0, count: expectedBytes - data.count))
+                    }
+                }
+                break
+            }
             guard let pointers = buffer.floatChannelData, buffer.frameLength > 0 else { break }
             for offset in stride(from: 0, to: Int(buffer.frameLength), by: baseStep) {
                 let length = min(baseStep, Int(buffer.frameLength) - offset)

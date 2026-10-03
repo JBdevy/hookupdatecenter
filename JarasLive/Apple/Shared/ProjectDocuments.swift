@@ -9,7 +9,36 @@ import AppKit
     @Published var opened = UUID()
     @Published var currentURL: URL?
     @Published var recent: [URL] = []
-    @Published var busy = false
+    @Published var canCancelOpening = false
+    private var openingTask: Task<Void, Never>?
+    private var openingCancellation: ProjectOpeningCancellation?
+    func cancelOpening() {
+        guard canCancelOpening else { return }
+        canCancelOpening = false; status = "Canceling…"
+        openingCancellation?.cancel(); openingTask?.cancel()
+    }
+    func cancelOpeningAndWait() async -> Bool {
+        guard let task = openingTask,
+              canCancelOpening || openingCancellation?.cancelled == true else { return false }
+        cancelOpening()
+        // The opening task owns its cancellation cleanup and the busy state.
+        await task.value
+        return !busy
+    }
+    private func beginOpening(_ operation: @escaping @MainActor () async throws -> Void) {
+        busy = true; error = ""; status = "Opening project…"; canCancelOpening = true
+        openingCancellation = ProjectOpeningCancellation()
+        openingTask = Task {
+            defer { busy = false; canCancelOpening = false; openingTask = nil; openingCancellation = nil; status = "" }
+            do { try await operation() }
+            catch is CancellationError { missingAudioPrompt = nil }
+            catch { if Task.isCancelled { missingAudioPrompt = nil } else { self.error = error.localizedDescription } }
+        }
+    }
+    @Published var busy = false {
+        didSet { if !busy { closeNotice = "" } }
+    }
+    @Published var closeNotice = ""
     @Published var status = ""
     @Published var error = ""
     @Published var folderReview: [URL]?
@@ -27,6 +56,7 @@ import AppKit
     @Published var missingAudioPrompt: MissingAudioPrompt?
     @Published var importingAudio = false
     @Published var audioImportError = ""
+    @Published var migrationNotice = ""
     struct PendingAudioDrop: Identifiable {
         let id = UUID()
         let providers: [NSItemProvider]
@@ -37,14 +67,14 @@ import AppKit
     }
     @Published var pendingAudioDrop: PendingAudioDrop?
     func importAudio(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID, layout: AudioDropLayout? = nil, gap: Double = 0) -> Bool {
-        guard ready, !busy, !providers.isEmpty, let destination = currentURL,
+        guard show.canExecute(), ready, !busy, !providers.isEmpty, let destination = currentURL,
               let arrangement = show.snapshot.project.songs.first(where: { $0.id == song }) else { return false }
         let projectID = show.snapshot.project.id
         if let track, !arrangement.tracks.contains(where: { $0.id == track }) {
             audioImportError = "The destination track no longer exists"; return false
         }
         let destinationKind = track.flatMap { id in arrangement.tracks.first { $0.id == id }?.kind }
-        guard destinationKind != .timecode, destinationKind != .chords else {
+        guard destinationKind != .timecode, destinationKind != .chords, destinationKind != .click else {
             audioImportError = "Drop media on an audio, Video or Teleprompter track"; return false
         }
         if providers.count > 1, layout == nil {
@@ -171,47 +201,143 @@ import AppKit
         recent.removeAll { $0 == url }; recent.insert(url, at: 0); recent = Array(recent.prefix(20))
         UserDefaults.standard.set(recent.map(\.path), forKey: "jaras.recentProjects")
     }
-    func cleanupClosedProject(progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
-        guard ready, let currentURL, !show.hasUnsavedChanges else { progress(1); return }
+    @Published var pendingDeletion: ProjectFolderDeletion?
+    func requestDeletion(_ url: URL) {
+        guard !busy, !show.isPlaying, !show.saving, !TrackRecording.shared.recording,
+              !TrackRecording.shared.busy, !importingAudio else { return }
+        error = ""
+        if RecentProjectEntry.isMissing(url) {
+            recent.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
+            UserDefaults.standard.set(recent.map(\.path), forKey: "jaras.recentProjects")
+            return
+        }
+        do { pendingDeletion = try ProjectFolderDeletion(document: url) }
+        catch { self.error = error.localizedDescription }
+    }
+    func deleteProject(_ deletion: ProjectFolderDeletion) {
+        guard pendingDeletion?.id == deletion.id, deletion.remainingSeconds == 0,
+              !busy, !show.isPlaying, !show.saving, !TrackRecording.shared.recording,
+              !TrackRecording.shared.busy, !importingAudio else { return }
+        busy = true; error = ""; status = "Deleting project…"
+        Task {
+            let canExecute = show.canExecute
+            show.canExecute = { false }
+            defer { show.canExecute = canExecute; busy = false; status = "" }
+            do {
+                try deletion.validate()
+                // Preserve a different open project before returning to startup.
+                if ready, let currentURL, !deletion.contains(currentURL) { try await show.saveForClosing() }
+                show.send(.stopAll)
+                #if os(macOS)
+                FXWindows.shared.closeAll()
+                if TeleprompterWindow.shared.visible { TeleprompterWindow.shared.toggle(show: show) }
+                if TeleprompterWindow.second.visible { TeleprompterWindow.second.toggle(show: show) }
+                TeleprompterRemote.shared.setDirectory(nil)
+                #endif
+                VideoPlayback.shared.closeProject()
+                VideoPlayback.teleprompter.closeProject()
+                VideoPlayback.teleprompter2.closeProject()
+                StemAudioPlayback.shared.prepareForClosing()
+                TrackRecording.shared.closeProject()
+                await store.deselect()
+                try await Task.detached(priority: .userInitiated) { try deletion.remove() }.value
+                recent.removeAll { deletion.contains($0) }
+                UserDefaults.standard.set(recent.map(\.path), forKey: "jaras.recentProjects")
+                try show.replaceProject(.empty(name: "Untitled"))
+                currentURL = nil; ready = false; pendingDeletion = nil
+                scan = nil; folderReview = nil; addTarget = nil; adding = false
+                warnings = []; missingAudioPaths = []; missingAudioPrompt = nil
+                migrationNotice = ""; pendingAudioDrop = nil
+                opened = UUID()
+            } catch {
+                // Keep the session usable if saving, validation or deletion fails.
+                if let url = currentURL {
+                    await store.select(url: url, id: show.snapshot.project.id)
+                    let directory = url.deletingLastPathComponent()
+                    StemAudioPlayback.shared.open(directory: directory)
+                    VideoPlayback.shared.open(directory: directory)
+                    VideoPlayback.teleprompter.open(directory: directory)
+                    VideoPlayback.teleprompter2.open(directory: directory)
+                    TrackRecording.shared.open(directory: directory, project: show.snapshot.project.id)
+                    #if os(macOS)
+                    TeleprompterRemote.shared.setDirectory(directory)
+                    #endif
+                    show.preparePlayback()
+                }
+                self.error = error.localizedDescription
+            }
+        }
+    }
+    func rememberProjectMedia() async throws {
+        guard ready, let currentURL else { return }
         let project = show.snapshot.project, known = show.knownMediaPaths
-        show.send(.stopAll)
-        VideoPlayback.shared.open(directory: currentURL.deletingLastPathComponent())
-        VideoPlayback.teleprompter.open(directory: currentURL.deletingLastPathComponent())
-        VideoPlayback.teleprompter2.open(directory: currentURL.deletingLastPathComponent())
         try await Task.detached(priority: .utility) {
-            try ProjectMediaCleanup.close(project: project, document: currentURL, knownPaths: known, progress: progress)
+            try ProjectMediaCleanup.remember(project: project, document: currentURL, knownPaths: known)
         }.value
+    }
+    var canCleanTimelineMedia: Bool {
+        ready && currentURL != nil && !busy && !show.isPlaying && !show.saving &&
+        !TrackRecording.shared.recording && !TrackRecording.shared.busy && !importingAudio
+    }
+    func cleanTimelineMedia() async throws {
+        guard canCleanTimelineMedia, let currentURL else {
+            throw ProjectError.invalid("Stop playback, recording and imports before cleaning timeline files.")
+        }
+        busy = true
+        let canExecute = show.canExecute
+        show.canExecute = { false }
+        defer { busy = false; show.canExecute = canExecute }
+        try await show.saveForClosing()
+        let project = show.snapshot.project, known = show.knownMediaPaths
+        // Once deletion starts, undo cannot restore references to removed sources,
+        // including if a later filesystem operation fails halfway through.
         show.discardClosedHistory()
+        try await Task.detached(priority: .userInitiated) {
+            try ProjectMediaCleanup.remember(project: project, document: currentURL, knownPaths: known)
+            try ProjectMediaCleanup.removeDeletedFiles(project: project, document: currentURL, knownPaths: known)
+        }.value
     }
     private func preloadTimelineWaveforms(_ project: Project, at url: URL) async {
         #if os(macOS)
         let directory = url.deletingLastPathComponent()
+        let missing = await Task.detached(priority: .userInitiated) {
+            Set(ProjectAudioRecovery.missingPaths(in: project, directory: directory))
+        }.value
         let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
-            track.clips.compactMap { ($0.audioFile ?? track.audioFile).map { directory.appendingPathComponent($0.path) } }
+            track.clips.compactMap { clip -> URL? in
+                guard let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
+                return directory.appendingPathComponent(file.path)
+            }
         }
         status = "Preparing waveforms…"
-        await TimelineAudioWaveform.shared.preload(files) { done, total in
+        let cancellation = openingCancellation
+        await TimelineAudioWaveform.shared.preload(files, cancelled: { cancellation?.cancelled == true }) { done, total in
+            guard cancellation?.cancelled != true else { return }
             self.status = "Preparing waveforms… \(done)/\(total)"
         }
+        guard cancellation?.cancelled != true else { return }
         let groups = project.songs.flatMap { song in
             let folders = Set(song.tracks.compactMap(\.parentTrackID))
             return song.tracks.filter { folders.contains($0.id) }.map { folder in
-                (folder: folder.id, sources: FolderWaveformCache.sources(song: song, folder: folder, directory: directory, missing: []))
+                (folder: folder.id, sources: FolderWaveformCache.sources(song: song, folder: folder, directory: directory, missing: missing))
             }
         }
-        await FolderWaveformCache.shared.preload(groups) { done, total in
+        await FolderWaveformCache.shared.preload(groups, cancelled: { cancellation?.cancelled == true }) { done, total in
+            guard cancellation?.cancelled != true else { return }
             self.status = "Preparing folder waveforms… \(done * 100 / max(1, total))%"
         }
         #endif
     }
     private func activate(_ project: Project, at url: URL) async throws {
         var project = project
-        if let global = GlobalProjectTiming.load() { global.apply(to: &project) }
+        if let global = GlobalProjectTiming.load() { global.applyOnOpen(to: &project) }
         else if let song = project.songs.first { GlobalProjectTiming(song: song).save() }
         try project.validate()
         await preloadTimelineWaveforms(project, at: url)
+        try Task.checkCancellation()
+        canCancelOpening = false
         if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
-        if currentURL != url { try await cleanupClosedProject() }
+        if currentURL != url { try await rememberProjectMedia() }
         await store.select(url: url, id: project.id)
         try show.replaceProject(project)
         let missing = Set(ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent()))
@@ -231,34 +357,35 @@ import AppKit
     }
     private func finishOpening(_ project: Project, at url: URL) async throws {
         status = "Preparing waveforms…"
-        var enriched = try await Task.detached(priority: .userInitiated) {
+        var enriched = try await ProjectOpeningWork.run {
             try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent())
-        }.value
+        }
         for index in enriched.songs.indices { enriched.songs[index].ensureInitialTempoMarker() }
-        if enriched != project { try await ProjectStore(url: url).save(enriched) }
+        try Task.checkCancellation()
         try await activate(enriched, at: url)
+        if enriched != project { try await ProjectStore(url: url).save(enriched) }
     }
     func open(_ url: URL) {
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
-        busy = true; error = ""; status = "Opening project…"
-        Task {
-            defer { busy = false }
-            do {
-                guard ["jl", "bkjl"].contains(url.pathExtension.lowercased()) else { throw ProjectError.invalid("Select a .jl or .bkjl project") }
-                let url = try await Task.detached(priority: .userInitiated) {
-                    try url.pathExtension.lowercased() == "bkjl" ? ProjectBackups.restore(url) : url
-                }.value
-                guard let project = try await ProjectStore(url: url).load() else { throw ProjectError.invalid("Project not found") }
-                try project.validate()
-                let missing = await Task.detached(priority: .userInitiated) {
-                    ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent())
-                }.value
-                if !missing.isEmpty {
-                    missingAudioPrompt = MissingAudioPrompt(project: project, url: url, paths: missing)
-                    return
-                }
-                try await finishOpening(project, at: url)
-            } catch { self.error = error.localizedDescription }
+        #if os(macOS)
+        if ["logicx", "rpp"].contains(url.pathExtension.lowercased()) { importDAW(url); return }
+        #endif
+        beginOpening {
+            guard ["jl", "bkjl"].contains(url.pathExtension.lowercased()) else { throw ProjectError.invalid("Select a .jl or .bkjl project") }
+            let url = try await ProjectOpeningWork.run {
+                try url.pathExtension.lowercased() == "bkjl" ? ProjectBackups.restore(url) : url
+            }
+            guard let project = try await ProjectStore(url: url).load() else { throw ProjectError.invalid("Project not found") }
+            try Task.checkCancellation()
+            try project.validate()
+            let missing = try await ProjectOpeningWork.run {
+                ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent())
+            }
+            if !missing.isEmpty {
+                self.missingAudioPrompt = MissingAudioPrompt(project: project, url: url, paths: missing)
+                return
+            }
+            try await self.finishOpening(project, at: url)
         }
     }
     func searchMissingAudio(in folder: URL) {
@@ -287,21 +414,77 @@ import AppKit
     }
     func openWithMissingAudio() {
         guard !busy, let prompt = missingAudioPrompt else { return }
-        busy = true; status = "Opening project…"
+        beginOpening {
+            try await self.finishOpening(prompt.project, at: prompt.url)
+            self.missingAudioPrompt = nil
+        }
+    }
+    func cancelMissingAudioOpen() {
+        if canCancelOpening { cancelOpening() }
+        else if !busy { missingAudioPrompt = nil }
+    }
+    #if os(macOS)
+    func chooseMigration(_ fileExtension: String) {
+        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = fileExtension == "logicx"
+            ? [UTType("com.apple.logicx.project") ?? .package, .package, .folder]
+            : [UTType(filenameExtension: fileExtension) ?? .data]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = fileExtension == "logicx"
+        panel.treatsFilePackagesAsDirectories = false
+        panel.title = JarasLocalization.string(fileExtension == "rpp" ? "Import REAPER project" : "Import Logic project")
+        let validator = ProjectSourcePanelValidator(extensions: [fileExtension])
+        panel.delegate = validator
+        let response = withExtendedLifetime(validator) { panel.runModal() }
+        if response == .OK, let source = panel.url { importDAW(source) }
+    }
+    private func importDAW(_ source: URL) {
+        guard show.canExecute() else { return }
+        let isReaper = source.pathExtension.lowercased() == "rpp"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
+        panel.nameFieldStringValue = source.deletingPathExtension().lastPathComponent + ".jl"
+        panel.title = JarasLocalization.string(isReaper ? "Import REAPER project" : "Import Logic project")
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let selected = panel.url else { return }
+        let destination = selected.pathExtension.lowercased() == "jl" ? selected : selected.appendingPathExtension("jl")
+        guard !destination.standardizedFileURL.path.hasPrefix(source.standardizedFileURL.path + "/") else {
+            error = "Save the CatLive project outside the Logic package."; return
+        }
+        do { try ProjectDirectoryPolicy.validate(destination) }
+        catch { self.error = error.localizedDescription; return }
+        busy = true; error = ""; warnings = []; migrationNotice = ""
+        status = isReaper ? "Importing REAPER project…" : "Importing Logic project…"
         Task {
             defer { busy = false }
             do {
-                try await finishOpening(prompt.project, at: prompt.url)
-                missingAudioPrompt = nil
-            } catch { missingAudioPrompt?.errors = [error.localizedDescription] }
+                let result = try await Task.detached(priority: .userInitiated) {
+                    let result = try isReaper ? ReaperProjectImporter.read(source) : LogicProjectImporter.read(source)
+                    try ProjectMigration.save(result, to: destination)
+                    return result
+                }.value
+                warnings = result.warnings.map { JarasLocalization.string($0) }
+                let missing = ProjectAudioRecovery.missingPaths(in: result.project, directory: destination.deletingLastPathComponent())
+                if !missing.isEmpty {
+                    missingAudioPrompt = MissingAudioPrompt(project: result.project, url: destination, paths: missing)
+                } else {
+                    try await finishOpening(result.project, at: destination)
+                    migrationNotice = warnings.joined(separator: "\n\n")
+                }
+            } catch { self.error = error.localizedDescription }
         }
     }
-    func cancelMissingAudioOpen() { if !busy { missingAudioPrompt = nil } }
+    #endif
     func browse() {
         #if os(macOS)
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data, UTType(filenameExtension: "bkjl") ?? .data]
-        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        if panel.runModal() == .OK, let url = panel.url { open(url) }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data, UTType(filenameExtension: "bkjl") ?? .data, UTType(filenameExtension: "logicx") ?? .package, UTType(filenameExtension: "rpp") ?? .data, .package, .folder]
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = true
+        panel.treatsFilePackagesAsDirectories = false
+        let validator = ProjectSourcePanelValidator(extensions: ["jl", "bkjl", "logicx", "rpp"])
+        panel.delegate = validator
+        let response = withExtendedLifetime(validator) { panel.runModal() }
+        if response == .OK, let url = panel.url { open(url) }
         #endif
     }
     func addProject() {
@@ -349,7 +532,7 @@ import AppKit
     func createEmpty() { finish(scan: nil, detectBPM: false) }
     func confirmImport(detectBPM: Bool) { guard let scan else { return }; finish(scan: scan, detectBPM: detectBPM) }
     private func finish(scan: StemScan?, detectBPM: Bool) {
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard show.canExecute(), !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
         let append = scan != nil && adding && (ready || addTarget != nil)
         let url: URL
@@ -361,6 +544,8 @@ import AppKit
             url = selected.pathExtension.lowercased() == "jl" ? selected : selected.appendingPathExtension("jl")
             guard !FileManager.default.fileExists(atPath: url.path) else { error = "A project already exists at this location. Choose another name."; return }
         }
+        do { try ProjectDirectoryPolicy.validate(url) }
+        catch { self.error = error.localizedDescription; return }
         let base = append ? (addTarget?.project ?? show.snapshot.project) : Project.empty(name: url.deletingPathExtension().lastPathComponent)
         let remove = removal
         busy = true; error = ""; status = "Copying audio and saving project…"
@@ -406,7 +591,7 @@ import AppKit
                         throw error
                     }
                 }.value
-                if currentURL != url { try await cleanupClosedProject() }
+                if currentURL != url { try await rememberProjectMedia() }
                 // The new file is already saved. Do not save the old snapshot over it.
                 await store.select(url: url, id: result.0.id)
                 await preloadTimelineWaveforms(result.0, at: url)
@@ -449,18 +634,22 @@ struct MissingAudioRecoveryView: View {
                         }
                     }
                 }.frame(minHeight: 100, maxHeight: 300)
+                if !documents.warnings.isEmpty {
+                    Text(documents.warnings.joined(separator: "\n"))
+                        .font(.caption).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true)
+                }
                 if !prompt.errors.isEmpty {
                     Text(prompt.errors.joined(separator: "\n")).font(.caption).foregroundStyle(.red)
                         .lineLimit(3)
                 }
                 if documents.busy { HStack { ProgressView(); Text(LocalizedStringKey(documents.status)) }.font(.caption) }
                 HStack {
-                    Button("Cancel") { documents.cancelMissingAudioOpen() }.keyboardShortcut(.cancelAction)
+                    Button("Cancel") { documents.cancelMissingAudioOpen() }.keyboardShortcut(.cancelAction).disabled(documents.busy && !documents.canCancelOpening)
                     Spacer()
-                    Button("Open anyway") { documents.openWithMissingAudio() }
-                    Button("Search") { choosingFolder = true }
+                    Button("Open anyway") { documents.openWithMissingAudio() }.disabled(documents.busy)
+                    Button("Search") { choosingFolder = true }.disabled(documents.busy)
                         .buttonStyle(StageButtonStyle(color: JarasTheme.green))
-                }.disabled(documents.busy)
+                }
             }
             .padding(22).frame(minWidth: 500, minHeight: 310)
             .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
@@ -480,12 +669,15 @@ struct ProjectBrowserView: View {
     var completed: () -> Void = {}
     @State private var creating = false
     @State private var opening = false
+    @State private var recentSearch = ""
+    private var filteredRecent: [URL] { documents.recent.filter { RecentProjectEntry.matches($0, query: recentSearch) } }
     @State private var askingForBPM = false
     #if os(iOS)
     @State private var showingRemote = false
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            Group {
             if let folders = documents.folderReview {
                 FolderImportReview(folders: folders, cancel: { documents.folderReview = nil }, confirm: documents.confirmFolders)
             } else if let scan = documents.scan {
@@ -511,7 +703,15 @@ struct ProjectBrowserView: View {
                 Text("Original folders remain unchanged. Audio is copied beside the .jl project.").font(.caption2).foregroundStyle(JarasTheme.secondary)
                 HStack { Button("Back") { documents.scan = nil }; Spacer(); Button("Create / Add") { askingForBPM = true }.buttonStyle(StageButtonStyle(color: JarasTheme.green)).keyboardShortcut(.defaultAction) }
             } else {
-                Text("Jaras Live").font(.title2.bold())
+                Text("CatLive").font(.title2.bold())
+                #if os(iOS)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
+                    startupCard("Create Project", icon: "plus.rectangle", color: JarasTheme.green) { creating.toggle(); opening = false }
+                    startupCard("Add Project", icon: "folder.badge.plus", color: JarasTheme.purple) { documents.addProject() }
+                    startupCard("Open Project", icon: "folder", color: JarasTheme.purple) { opening = true; creating = false }
+                    startupCard("Remote", icon: "network", color: JarasTheme.green) { showingRemote = true }
+                }.padding(.vertical, 12)
+                #else
                 HStack(spacing: 10) {
                     action("Create Project", icon: "plus.rectangle") { creating.toggle(); opening = false }
                     action("Add Project", icon: "folder.badge.plus") {
@@ -522,33 +722,68 @@ struct ProjectBrowserView: View {
                     action("Remote", icon: "network") { showingRemote = true }
                     #endif
                 }
+                #endif
                 if creating {
                     HStack {
                         action("Add Stems", icon: "waveform") { documents.chooseStems(adding: false) }
                         action("Empty", icon: "doc") { documents.createEmpty() }
+                        #if os(macOS)
+                        action("REAPER", icon: "waveform.path") { documents.chooseMigration("rpp") }
+                        action("Logic", icon: "pianokeys") { documents.chooseMigration("logicx") }
+                        #endif
                     }
                 }
                 if opening {
                 HStack { Text("Recent projects").font(.caption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Browse…") { documents.browse() } }
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(JarasTheme.secondary)
+                    TextField("Search recent projects", text: $recentSearch).textFieldStyle(.plain)
+                    if !recentSearch.isEmpty {
+                        Button { recentSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).accessibilityLabel("Clear search")
+                    }
+                }.padding(9).background(JarasTheme.display).cornerRadius(6)
                 ScrollView {
                     VStack(spacing: 6) {
-                        ForEach(documents.recent, id: \.path) { url in
+                        ForEach(filteredRecent, id: \.path) { url in
                             Button { documents.open(url) } label: {
                                 HStack { VStack(alignment: .leading) { Text(url.deletingPathExtension().lastPathComponent).font(.body.bold()); Text(url.deletingLastPathComponent().path).font(.caption2).foregroundStyle(JarasTheme.secondary).lineLimit(1) }; Spacer(); Image(systemName: "chevron.right") }
                                     .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).contentShape(Rectangle())
                             }.buttonStyle(.plain)
+                                .contextMenu {
+                                    Button {} label: { Label("Export to app", systemImage: "square.and.arrow.up") }.disabled(true)
+                                    Button(role: .destructive) { documents.requestDeletion(url) } label: {
+                                        Label(RecentProjectEntry.isMissing(url) ? "Remove from recents" : "Delete project", systemImage: "trash")
+                                    }
+                                }
                         }
                     }
                 }.frame(maxHeight: 170)
+                if filteredRecent.isEmpty { Text("No recent projects found.").font(.caption).foregroundStyle(JarasTheme.secondary) }
                 }
             }
+            }.disabled(documents.busy || documents.show.isPlaying)
             if !documents.warnings.isEmpty { Text(documents.warnings.joined(separator: "\n")).font(.caption).foregroundStyle(JarasTheme.yellow).lineLimit(3).jarasHelp(documents.warnings.joined(separator: "\n")) }
             if !documents.error.isEmpty { Text(LocalizedStringKey(documents.error)).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-            if documents.busy { HStack { ProgressView().controlSize(.small); Text(LocalizedStringKey(documents.status)).font(.caption) } }
+            if documents.busy {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(LocalizedStringKey(documents.status)).font(.caption)
+                    Spacer()
+                    if documents.canCancelOpening {
+                        Button("Cancel") { documents.cancelOpening() }.keyboardShortcut(.cancelAction)
+                    }
+                }
+            }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
-            .disabled(documents.busy || documents.show.isPlaying)
-            .onChange(of: documents.opened) { _ in completed() }
+            .onChange(of: documents.opened) { _ in
+                if !documents.ready { opening = false; creating = false }
+                completed()
+            }
+            .sheet(item: $documents.pendingDeletion) { deletion in
+                ProjectDeletionConfirmation(documents: documents, deletion: deletion)
+            }
             #if os(iOS)
             .fullScreenCover(isPresented: $showingRemote) { DAWRemoteClientView() }
             #endif
@@ -560,6 +795,59 @@ struct ProjectBrowserView: View {
     }
     private func action(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Label(LocalizedStringKey(title), systemImage: icon).font(.system(size: 12, weight: .medium)).frame(maxWidth: .infinity, minHeight: 38).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle()) }.buttonStyle(.plain)
+    }
+    #if os(iOS)
+    private func startupCard(_ title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 22) {
+                Image(systemName: icon).font(.system(size: 30, weight: .medium)).foregroundStyle(color)
+                HStack {
+                    Text(LocalizedStringKey(title)).font(.system(size: 17, weight: .semibold)).lineLimit(2)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
+                }
+            }.padding(20).frame(maxWidth: .infinity, minHeight: 146, alignment: .leading)
+                .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(0.3)))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain)
+    }
+    #endif
+}
+
+private struct ProjectDeletionConfirmation: View {
+    @ObservedObject var documents: ProjectDocuments
+    let deletion: ProjectFolderDeletion
+    @State private var remaining = 3
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Delete project", systemImage: "trash").font(.title3.bold()).foregroundStyle(.red)
+            Text(verbatim: deletion.document.deletingPathExtension().lastPathComponent).font(.headline)
+            if deletion.deletesDirectory {
+                Text("The entire project folder, including audio and backups, will be permanently deleted. This cannot be undone.").font(.body)
+            } else {
+                Text("This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone.").font(.body)
+            }
+            Text(verbatim: deletion.target.path).font(.caption).textSelection(.enabled)
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.display).cornerRadius(5)
+            if !documents.error.isEmpty { Text(LocalizedStringKey(documents.error)).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Cancel") { documents.pendingDeletion = nil }.keyboardShortcut(.cancelAction).disabled(documents.busy)
+                Spacer()
+                if documents.busy { ProgressView().controlSize(.small) }
+                Button(role: .destructive) { documents.deleteProject(deletion) } label: {
+                    if remaining > 0 { Text("Delete in \(remaining)s") } else { Text("Delete project") }
+                }.buttonStyle(StageButtonStyle(color: .red)).disabled(remaining > 0 || documents.busy)
+            }
+        }.padding(24).frame(width: 460).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .interactiveDismissDisabled(documents.busy)
+            .task {
+                remaining = deletion.remainingSeconds
+                while remaining > 0, !Task.isCancelled {
+                    do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+                    remaining = deletion.remainingSeconds
+                }
+            }
     }
 }
 
@@ -615,7 +903,7 @@ private final class ProjectTitlebarHostingView<Content: View>: NSHostingView<Con
 }
 
 private final class ProjectTitlebarVersionView: NSView {
-    static let text = "Jaras Live Version 1.00"
+    static let text = "CatLive Version 1.00"
     private let label = NSTextField(labelWithString: text)
     var preferredWidth: CGFloat { ceil(label.intrinsicContentSize.width) + 20 }
     init() {
@@ -681,7 +969,7 @@ final class ProjectTitlebarAnchor<Content: View>: NSView {
         updateWidths()
         window.addTitlebarAccessoryViewController(leading)
         window.addTitlebarAccessoryViewController(trailing)
-        observers = [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification].map { name in
+        observers = [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification, .catliveTrialTitleChanged].map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.updateWidths() }
         }
     }
@@ -690,7 +978,9 @@ final class ProjectTitlebarAnchor<Content: View>: NSView {
         let versionWidth = version.preferredWidth
         let controlsRight = window.standardWindowButton(.zoomButton).map { $0.convert($0.bounds, to: nil).maxX } ?? 80
         let available = max(0, window.frame.width - controlsRight - versionWidth - 60)
-        let width = min(650, max(0, min(preferredWidth, available)))
+        let licenseLabel = window.standardWindowButton(.closeButton)?.superview?.subviews.first { $0.identifier?.rawValue == "catlive.trialTitle" && !$0.isHidden }
+        let leadingAvailable = licenseLabel.map { min(available, $0.frame.minX - 15 - controlsRight) } ?? available
+        let width = min(650, max(0, min(preferredWidth, leadingAvailable)))
         if abs(host.frame.width - width) > 0.5 { host.setFrameSize(NSSize(width: width, height: host.frame.height)) }
         if abs(version.frame.width - versionWidth) > 0.5 { version.setFrameSize(NSSize(width: versionWidth, height: version.frame.height)) }
     }
@@ -835,6 +1125,20 @@ final class ProjectWindowAnchor: NSView {
                 window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
             }
             if !isEditor { window.center() }
+        }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Some Logic bundles arrive as ordinary directories (ZIP/external disks).
+/// Let AppKit select either representation, validating the actual project suffix.
+private final class ProjectSourcePanelValidator: NSObject, NSOpenSavePanelDelegate {
+    let extensions: Set<String>
+    init(extensions: Set<String>) { self.extensions = extensions }
+    func panel(_ sender: Any, validate url: URL) throws {
+        guard extensions.contains(url.pathExtension.lowercased()) else {
+            throw ProjectError.invalid("Selecione um projeto " + extensions.sorted().map { "." + $0 }.joined(separator: ", ") + ".")
         }
     }
 }

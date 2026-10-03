@@ -254,6 +254,106 @@ struct AudioExportView: View {
     }
 }
 
+struct ItemAudioExportRequest: Identifiable {
+    let id = UUID()
+    let project: Project
+    let song: Song
+    let items: Set<UUID>
+    let mediaDirectory: URL?
+}
+
+struct ItemAudioExportView: View {
+    let request: ItemAudioExportRequest
+    @StateObject private var session = AudioExportSession()
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("jaras.export.format") private var format = AudioExportFormat.wav
+    @AppStorage("jaras.export.bits") private var bits = 24
+    @AppStorage("jaras.export.bitrate") private var bitrate = 320
+    @AppStorage("jaras.export.sampleRate") private var rate = 48000.0
+    @AppStorage("jaras.export.itemChannels") private var channels = 0
+    @AppStorage("jaras.export.directory") private var directory = ""
+    @State private var choosingDirectory = false
+    private var plan: AudioExportPlan {
+        AudioExportPlan(project: request.project, song: request.song, source: .stems, bounds: .project,
+                        template: "%stem", tracks: [], clips: request.items, regions: [], format: format)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Export audio items").font(.headline)
+                Spacer()
+                Text("\(plan.jobs.count) files").font(.caption).foregroundStyle(JarasTheme.secondary)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Picker("Format", selection: $format) {
+                        ForEach(AudioExportFormat.allCases, id: \.self) { Text(verbatim: $0.rawValue).tag($0) }
+                    }
+                    if format == .mp3 {
+                        Picker("Bitrate", selection: $bitrate) {
+                            ForEach([128, 160, 192, 224, 256, 320], id: \.self) { Text(verbatim: "\($0) kbps").tag($0) }
+                        }
+                    } else {
+                        Picker("Bit depth", selection: $bits) {
+                            ForEach([16, 24, 32], id: \.self) { Text(verbatim: "\($0) bit PCM").tag($0) }
+                        }
+                    }
+                }
+                HStack {
+                    Picker("Sample rate", selection: $rate) {
+                        Text(verbatim: "44.1 kHz").tag(44100.0); Text(verbatim: "48 kHz").tag(48000.0)
+                    }
+                    Picker("Channels", selection: $channels) { Text("Original").tag(0); Text("Stereo").tag(2); Text("Mono").tag(1) }
+                }
+                HStack {
+                    TextField("Directory", text: $directory).textFieldStyle(.roundedBorder)
+                    Button { choosingDirectory = true } label: { Image(systemName: "folder") }
+                        .accessibilityLabel("Choose folder").help("Choose folder")
+                }
+            }.disabled(session.running || session.finished)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(plan.jobs) { job in Text(verbatim: job.fileName).lineLimit(1).truncationMode(.middle) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }.frame(height: min(110, CGFloat(max(1, plan.jobs.count)) * 22 + 16))
+                .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
+            if session.running {
+                ProgressView(value: session.progress.map { (Double($0.completed) + $0.fraction) / Double(max(1, $0.total)) } ?? 0)
+            }
+            if !session.error.isEmpty { Text(verbatim: session.error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if session.finished { Text("Render complete.").foregroundStyle(JarasTheme.green) }
+            HStack {
+                Button(session.running ? "Cancel" : "Close") {
+                    if session.running { session.cancel() } else { dismiss() }
+                }.keyboardShortcut(.cancelAction)
+                Spacer()
+                if !session.finished {
+                    Button("Export") { start() }.buttonStyle(.borderedProminent).tint(JarasTheme.green)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(session.running || plan.jobs.isEmpty || directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || request.mediaDirectory == nil)
+                }
+            }
+        }.padding(20).frame(width: 520).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .interactiveDismissDisabled(session.running)
+            .onAppear {
+                if directory.isEmpty { directory = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path ?? "" }
+            }
+            .fileImporter(isPresented: $choosingDirectory, allowedContentTypes: [.folder]) {
+                switch $0 {
+                case .success(let url): directory = url.path
+                case .failure(let error): session.error = error.localizedDescription
+                }
+            }
+    }
+    private func start() {
+        guard let media = request.mediaDirectory else { return }
+        let output = URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
+        guard AudioDestinationSpace.confirm(at: output) else { return }
+        session.start(project: request.project, song: request.song, plan: plan, media: media, output: output, rate: rate,
+                      encoding: AudioExportEncoding(format: format, bitDepth: bits, channels: channels, bitrate: bitrate, sampleRate: rate), secondaryEncoding: nil)
+    }
+}
+
 // MARK: - Destination disk reserve
 /// Consult the destination volume, including a not-yet-created export directory.
 /// This preflight never runs from an audio callback and never writes a probe file.

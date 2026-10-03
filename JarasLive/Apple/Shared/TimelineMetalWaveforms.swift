@@ -1,5 +1,19 @@
 import SwiftUI
 
+/// File kind is already known. The default Foundation path append performs an
+/// lstat to infer it; doing that per item on every zoom frame stalls the UI.
+final class TimelineMediaURLCache {
+    private var directory: URL?
+    private var urls: [String: URL] = [:]
+    func resolve(_ path: String, directory: URL) -> URL {
+        if self.directory != directory { self.directory = directory; urls.removeAll(keepingCapacity: true) }
+        if let url = urls[path] { return url }
+        let url = directory.appendingPathComponent(path, isDirectory: false)
+        urls[path] = url
+        return url
+    }
+}
+
 /// Audio coordinates remain independent of zoom. Only the small transform and
 /// clipping records change during a gesture; source vertices stay on the GPU.
 struct TimelineWaveformItem {
@@ -96,7 +110,7 @@ enum TimelineMetalWaveformFrameBuilder {
         guard scale.isFinite, scale > 0, viewport.width > 0, viewport.height > 0 else {
             return MetalWaveformFrame(size: viewport.size, strokes: [])
         }
-        for item in items where item.rect.intersects(viewport) {
+        for item in items where item.rect.height > 26 && item.rect.intersects(viewport) {
             guard let header = cache.header(item.url, refresh: item.clip.recordingLane != nil), header.channels > 0 else { continue }
             let rect = item.rect
             let waveTop = rect.minY + min(14, rect.height * 0.35)

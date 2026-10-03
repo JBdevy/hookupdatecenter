@@ -12,15 +12,15 @@ import SwiftUI
     #endif
     @ViewBuilder private var appContent: some View {
         if let container = bootstrap.container { RootView(container: container) }
-        else { VStack(spacing: 20) { Text("Jaras Live").font(.largeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
+        else { VStack(spacing: 20) { Text("CatLive").font(.largeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
     }
     var body: some Scene {
         #if os(macOS)
-        Window("Jaras Live", id: "main") { appContent }
+        Window("CatLive", id: "main") { appContent }
             .defaultSize(width: ProjectWindowAnchor.editorFrameSize.width, height: ProjectWindowAnchor.editorFrameSize.height)
             .windowStyle(.hiddenTitleBar)
         #else
-        WindowGroup("Jaras Live") { appContent.statusBarHidden(true).persistentSystemOverlays(.hidden) }
+        WindowGroup("CatLive") { appContent.statusBarHidden(true).persistentSystemOverlays(.hidden) }
         #endif
     }
 }
@@ -34,7 +34,7 @@ struct RootView: View {
         #if os(iOS)
         true
         #else
-        auth.allowed
+        auth.workspaceAllowed
         #endif
     }
     var body: some View {
@@ -51,6 +51,7 @@ struct RootView: View {
         }
         #if os(macOS)
         .frame(minWidth: documents.ready ? 1408 : 600, minHeight: documents.ready ? 650 : 460)
+        .background(TrialTitlebar(auth: auth))
         .background(ProjectWindowSizing(editor: documents.ready, documents: documents))
         .overlay {
             GeometryReader { geometry in
@@ -64,11 +65,24 @@ struct RootView: View {
             }
             .allowsHitTesting(false)
         }
+        .overlay { if !container.starting { LicenseNotice(auth: auth, backend: container.backend) } }
         .background(FloatingStartup(active: container.starting, progress: container.startupProgress, stage: container.startupStage, language: language))
         #endif
-        .onOpenURL { url in if ["jl", "bkjl"].contains(url.pathExtension.lowercased()) { documents.open(url) } }
+        .onOpenURL { url in if ["jl", "bkjl", "logicx", "rpp"].contains(url.pathExtension.lowercased()) { documents.open(url) } }
         .sheet(item: $documents.missingAudioPrompt) { _ in
             MissingAudioRecoveryView(documents: documents)
+        }
+        .alert("Project migration", isPresented: Binding(get: { !documents.migrationNotice.isEmpty }, set: { if !$0 { documents.migrationNotice = "" } })) {
+            Button("OK") { documents.migrationNotice = "" }
+        } message: { Text(documents.migrationNotice) }
+        .overlay(alignment: .top) {
+            if !documents.closeNotice.isEmpty {
+                Text(LocalizedStringKey(documents.closeNotice)).font(.callout)
+                    .padding(12).background(JarasTheme.panel)
+                    .clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 20)
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .allowsHitTesting(false)
+            }
         }
         .preferredColorScheme(.dark)
         .scrollIndicators(.hidden)
@@ -86,8 +100,8 @@ struct StartupView: View {
         ZStack {
             if !transparent { JarasTheme.background.ignoresSafeArea() }
             VStack(spacing: 22) {
-                Image("JarasLogo").resizable().scaledToFit()
-                    .frame(width: 330, height: 330).accessibilityLabel("Jaras Live")
+                Image("CatLiveSplash").resizable().scaledToFit()
+                    .frame(width: 330, height: 330).accessibilityLabel("CatLive")
                 Group {
                     if let progress {
                         GeometryReader { geometry in
@@ -175,7 +189,7 @@ private final class FloatingStartupAnchor: NSView {
 @MainActor final class JarasApplicationDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let guardClose = ProjectCloseGuard.shared
-        guard !guardClose.pending else { return .terminateCancel }
+        guard !guardClose.pending else { guardClose.focusCurrentDialog(); return .terminateCancel }
         guard guardClose.attached else { return .terminateNow }
         Task { @MainActor in
             guardClose.request { allowed in sender.reply(toApplicationShouldTerminate: allowed) }
@@ -206,6 +220,11 @@ private final class FloatingStartupAnchor: NSView {
         panel.displayIfNeeded()
     }
     func advance(_ completed: Double) { remaining = min(remaining, max(0, 1 - completed)) }
+    func focus() -> Bool {
+        guard let panel else { return false }
+        panel.orderFrontRegardless()
+        return true
+    }
     func finish(restore: Bool) {
         panel?.orderOut(nil); panel?.contentView = nil; panel = nil
         if restore { hiddenWindows.forEach { $0.orderFront(nil) } }
@@ -217,7 +236,7 @@ private struct ClosingLogoView: View {
     var body: some View { StartupView(progress: state.remaining, stage: "Closing…", transparent: true) }
 }
 
-/// Both window close and application quit must finish saving before allowing closure.
+/// Window close and Quit share an explicit Save / Discard / Cancel decision.
 @MainActor final class ProjectCloseGuard: NSObject {
     static let shared = ProjectCloseGuard()
     private weak var window: NSWindow?
@@ -260,17 +279,46 @@ private struct ClosingLogoView: View {
     }
     @objc private func closeMainWindow(_ sender: Any?) {
         // FX windows keep their own normal Close behavior.
-        if sender is NSMenuItem, let key = NSApp.keyWindow, key !== window { key.performClose(sender); return }
-        guard !pending, window != nil else { return }
+        if sender is NSMenuItem, let key = NSApp.keyWindow, key !== window, key.sheetParent !== window { key.performClose(sender); return }
+        guard !pending else { focusCurrentDialog(); return }
+        guard window != nil else { return }
         NSApp.terminate(nil)
+    }
+    func focusCurrentDialog() {
+        NSApp.activate(ignoringOtherApps: true)
+        if closingLogo.focus() { return }
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
+        var sheet = window?.attachedSheet
+        while let current = sheet {
+            current.makeKeyAndOrderFront(nil)
+            sheet = current.attachedSheet
+        }
     }
     private func localized(_ key: String) -> String {
         JarasLocalization.string(key)
     }
     func request(completion: @escaping (Bool) -> Void) {
-        guard !pending, let documents, !documents.busy else { completion(false); return }
+        guard !pending else { focusCurrentDialog(); completion(false); return }
+        guard let documents else { completion(false); return }
         // Finish the current dialog before allowing a close request to open another sheet.
-        guard window?.attachedSheet == nil else { completion(false); return }
+        guard window?.attachedSheet == nil else { focusCurrentDialog(); completion(false); return }
+        if documents.busy {
+            pending = true
+            focusCurrentDialog()
+            Task { @MainActor in
+                let cancelled = await documents.cancelOpeningAndWait()
+                pending = false
+                if cancelled { request(completion: completion) }
+                else {
+                    documents.closeNotice = "Finish the current operation before closing."
+                    focusCurrentDialog()
+                    completion(false)
+                }
+            }
+            return
+        }
+        documents.closeNotice = ""
         pending = true
         if !needsConfirmation {
             finishClosing(documents: documents, save: false, completion: completion)
@@ -278,14 +326,19 @@ private struct ClosingLogoView: View {
         }
         let alert = NSAlert()
         alert.messageText = localized("Do you want to save this project?")
-        alert.addButton(withTitle: localized("Salvar")).keyEquivalent = "\r"
+        alert.addButton(withTitle: localized("Save")).keyEquivalent = "\r"
+        alert.addButton(withTitle: localized("Close without saving"))
         alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\u{1b}"
         let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self else { completion(false); return }
-            guard response == .alertFirstButtonReturn else {
-                self.pending = false; completion(false); return
+            switch response {
+            case .alertFirstButtonReturn:
+                self.finishClosing(documents: documents, save: true, completion: completion)
+            case .alertSecondButtonReturn:
+                self.finishClosing(documents: documents, save: false, completion: completion)
+            default:
+                self.pending = false; completion(false)
             }
-            self.finishClosing(documents: documents, save: true, completion: completion)
         }
         if let window { window.makeKeyAndOrderFront(nil); alert.beginSheetModal(for: window, completionHandler: answer) }
         else { answer(alert.runModal()) }
@@ -307,10 +360,7 @@ private struct ClosingLogoView: View {
                 closingLogo.advance(0.25)
                 FXWindows.shared.closeAll()
                 StemAudioPlayback.shared.prepareForClosing()
-                let logo = closingLogo
-                try await documents.cleanupClosedProject { [weak logo] progress in
-                    Task { @MainActor [weak logo] in logo?.advance(0.25 + progress * 0.7) }
-                }
+                try await documents.rememberProjectMedia()
                 closingLogo.advance(1)
                 await Task.yield()
                 closingLogo.finish(restore: false)

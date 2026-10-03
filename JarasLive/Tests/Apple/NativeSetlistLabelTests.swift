@@ -62,7 +62,7 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
  precondition(native.accessibilityLabel() == "107, FULL LONG REGION NAME THAT MUST REMAIN ACCESSIBLE, 2m 25s")
  precondition(native.hitTest(CGPoint(x:60,y:15)) == nil, "Drawing must not capture the selection button")
  let labelFrame = native.convert(native.bounds, to: host)
- precondition(labelFrame.maxX <= host.bounds.maxX - 16, "Reserve the complete drawer hit area and outer margin")
+ precondition(abs(labelFrame.maxX - (host.bounds.maxX - 16)) < 0.5, "Only the 14-point drawer and 2-point outer margin may remain to the right")
  func click(_ x: CGFloat) {
   let point=host.convert(CGPoint(x:x,y:17),to:nil)
   func event(_ type: NSEvent.EventType) -> NSEvent { NSEvent.mouseEvent(with:type,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)! }

@@ -3,6 +3,71 @@ import SwiftUI
 import AppKit
 import QuartzCore
 
+/// Apply the wheel's exact travel immediately; no animation or pending frames.
+enum TimelineTrackHeightInput {
+    static func height(from height: CGFloat, factor: Double) -> CGFloat {
+        guard factor.isFinite, factor > 0 else { return height }
+        return min(TimelineTrackHeightLimits.maximum, max(TimelineTrackHeightLimits.minimum, height + CGFloat(log(factor)) * TimelineTrackHeightLimits.defaultHeight))
+    }
+}
+
+/// Consume every input delta, but publish at most one new geometry per display
+/// frame. This is batching, not interpolation: the first event is immediate and
+/// the next frame receives the complete latest height, including reversals.
+final class TimelineTrackHeightMotion {
+    private var requested: CGFloat?
+    private var applied: CGFloat?
+    private var apply: ((CGFloat) -> Void)?
+    private var lastInput = 0.0
+    private var timer: Timer?
+    private var cancelDisplayLink: (() -> Void)?
+    private weak var window: NSWindow?
+    private var running: Bool { timer != nil || cancelDisplayLink != nil }
+
+    func change(factor: Double, current: CGFloat, apply: @escaping (CGFloat) -> Void) {
+        guard factor.isFinite, factor > 0 else { return }
+        self.apply = apply
+        requested = TimelineTrackHeightInput.height(from: requested ?? current, factor: factor)
+        lastInput = ProcessInfo.processInfo.systemUptime
+        guard !running else { return }
+        // A wheel can target the project while a teleprompter or FX window
+        // remains key. Follow the input's window for display and modal checks.
+        window = NSApp?.currentEvent?.window ?? NSApp?.keyWindow
+        applied = current
+        commit()
+        if #available(macOS 14.0, *), let host = window?.contentView, window?.isVisible == true {
+            let target = TimelineDisplayLinkTarget { [weak self] in self?.tick() }
+            let link = host.displayLink(target: target, selector: #selector(TimelineDisplayLinkTarget.tick))
+            link.add(to: .main, forMode: .common)
+            cancelDisplayLink = { link.invalidate() }
+        } else {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
+            self.timer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    private func commit() {
+        guard let requested, requested != applied else { return }
+        applied = requested
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { apply?(requested) }
+    }
+    private func tick() {
+        if let window, window.attachedSheet != nil || NativeTimelineInputGate.shared.isBlocked(window) {
+            cancel(); return
+        }
+        commit()
+        if ProcessInfo.processInfo.systemUptime - lastInput > 0.08 { cancel() }
+    }
+    func cancel() {
+        cancelDisplayLink?(); cancelDisplayLink = nil
+        timer?.invalidate(); timer = nil
+        requested = nil; applied = nil; apply = nil
+    }
+    deinit { timer?.invalidate(); cancelDisplayLink?() }
+}
+
 /// Command/Control + wheel changes row height even when the pointer is over the mixer.
 struct TimelineMixerHeightWheelInput: NSViewRepresentable {
     let change: (Double) -> Void
@@ -30,7 +95,7 @@ final class TimelineMixerHeightWheelView: NSView {
               !isHiddenOrHasHiddenAncestor,
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
         let amount = Double(event.scrollingDeltaY) * (event.hasPreciseScrollingDeltas ? TimelineTrackHeightLimits.preciseSensitivity : TimelineTrackHeightLimits.wheelSensitivity)
-        let factor = exp(min(0.08, max(-0.08, amount)))
+        let factor = exp(min(TimelineTrackHeightLimits.maximumWheelStep, max(-TimelineTrackHeightLimits.maximumWheelStep, amount)))
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { change?(factor) }
@@ -80,72 +145,44 @@ struct TimelineWheelInput: NSViewRepresentable {
         view.focus(request: focusRequest, x: focusX)
     }
 }
-/// Small motions keep a fine scale. A sustained, fast swipe progressively uses
-/// more range, independently of the trackpad's event frequency.
+/// Native deltas determine travel; changing event frequency cannot change gain.
 struct TimelineZoomResponse {
-    private var lastTime: Double?
-    private var direction = 0.0
-    private var velocity = 0.0
-    private var travel = 0.0
-
-    mutating func reset() { self = Self() }
+    mutating func reset() {}
     mutating func change(delta: Double, timestamp: Double, begins: Bool) -> Double {
-        guard delta != 0 else {
-            if begins { reset(); lastTime = timestamp }
-            return 0
-        }
-        let sign = delta > 0 ? 1.0 : -1.0
-        let fresh = begins || lastTime == nil || timestamp - (lastTime ?? timestamp) > 0.14 || (direction != 0 && direction != sign)
-        if fresh { velocity = 0; travel = 0 }
-        let elapsed = fresh ? 1.0 / 60 : min(0.05, max(1.0 / 240, timestamp - (lastTime ?? timestamp)))
-        let speed = abs(delta) / elapsed
-        velocity = fresh ? speed : velocity + (speed - velocity) * (1 - exp(-elapsed / 0.016))
-        travel += abs(delta)
-        lastTime = timestamp; direction = sign
-        func ease(_ value: Double) -> Double {
-            let bounded = min(1, max(0, value))
-            return bounded * bounded * (3 - 2 * bounded)
-        }
-        // Gentle gestures need more room for small corrections. A genuinely
-        // fast swipe still reaches the full zoom range in one movement.
-        let fast = ease((min(velocity, speed) - 200) / 1000)
-        let sustained = ease((travel - 2) / 18)
-        let sensitivity = TimelineZoomLimits.preciseSensitivity + (TimelineZoomLimits.maximumPreciseSensitivity - TimelineZoomLimits.preciseSensitivity) * fast * sustained
-        // Apply even the first fractional delta. Accumulating a minimum step
-        // delayed gentle gestures by several input events and made reversals
-        // feel stuck. Frame coalescing below already bounds the layout rate.
-        return delta * sensitivity
+        delta * TimelineZoomLimits.preciseSensitivity
     }
 }
 
 final class TimelineWheelView: NSView, NativeTimelineInputObserver {
-    var interactionBlocked = false { didSet { if interactionBlocked && !oldValue { stopZoomUpdates(); stopScrollCoast() } } }
+    var interactionBlocked = false { didSet { if interactionBlocked && !oldValue { stopZoomUpdates() } } }
     var horizontalOffsetChanged: ((CGFloat) -> Void)?
     private weak var observedHorizontal: NSClipView?
     private var horizontalObserver: NSObjectProtocol?
     private var lastHorizontalBucket: CGFloat?
-    private var horizontalNotificationPending = false
+    @discardableResult private func publishHorizontalOffset(_ offset: CGFloat) -> Bool {
+        let bucket = floor(max(0, offset) / 512) * 512
+        guard lastHorizontalBucket != bucket else { return false }
+        lastHorizontalBucket = bucket
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { horizontalOffsetChanged?(bucket) }
+        return true
+    }
     func observeHorizontalScroll() {
         guard let clip = scrollViews.first?.contentView, observedHorizontal !== clip else { return }
         if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }
         observedHorizontal = clip
+        lastHorizontalBucket = nil
+        (clip.superview as? GridNativeScrollView)?.prepareHorizontalScroll = { [weak self] offset in
+            self?.publishHorizontalOffset(offset) ?? false
+        }
         clip.postsBoundsChangedNotifications = true
         horizontalObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self, weak clip] _ in
             guard let self, let clip else { return }
-            let bucket = floor(clip.bounds.minX / 512) * 512
-            guard self.lastHorizontalBucket != bucket, !self.horizontalNotificationPending else { return }
-            self.horizontalNotificationPending = true
-            DispatchQueue.main.async { [weak self, weak clip] in
-                guard let self else { return }
-                self.horizontalNotificationPending = false
-                guard let clip else { return }
-                // Read the latest origin, never publish a queued stale position.
-                if let grid = clip.superview as? GridNativeScrollView, grid.zoomAnchor != nil { return }
-                let bucket = floor(clip.bounds.minX / 512) * 512
-                guard self.lastHorizontalBucket != bucket else { return }
-                self.lastHorizontalBucket = bucket
-                self.horizontalOffsetChanged?(bucket)
-            }
+            // Native clip hooks normally prepare before movement. Keep the
+            // notification fallback synchronous for other NSClipView hosts.
+            if let grid = clip.superview as? GridNativeScrollView, grid.zoomAnchor != nil { return }
+            if self.publishHorizontalOffset(clip.bounds.minX) { clip.documentView?.layoutSubtreeIfNeeded() }
         }
     }
     var verticalOffsetChanged: ((CGFloat) -> Void)?
@@ -199,11 +236,6 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     private var zoomRunning: Bool { zoomTimer != nil || cancelDisplayLink != nil }
     private weak var zoomGrid: GridNativeScrollView?
     private var lastZoomInput = 0.0
-    private var lastZoomAmount = 0.0
-    private var coastRemaining = 0.0
-    private var coastStarted = false
-    private var coastFrame = 0.0
-    private var nativeMomentumSeen = false
     private var zoomResponse = TimelineZoomResponse()
     private var documentUnitWidth = 1.0
     private var lastFocusRequest: UUID?
@@ -214,6 +246,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         // The native viewport already has its geometry. Revealing a cursor must
         // not synchronously lay out the whole window or wait for another turn.
         if let horizontal = scrollViews.first {
+            takeHorizontalControl(horizontal)
             let visible = horizontal.contentView.bounds
             // User-selected left limit: the region start is 14 points inside the grid.
             // At time zero there is no negative timeline available for that inset.
@@ -230,25 +263,16 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             }
             // Restoring a project can scroll before the bounds observer attaches.
             // Publish the final viewport as well, so its tiles are ready at startup.
-            DispatchQueue.main.async { [weak self, weak horizontal] in
-                guard let self, let horizontal, self.lastFocusRequest == request else { return }
-                let bucket = floor(horizontal.contentView.bounds.minX / 512) * 512
-                self.lastHorizontalBucket = bucket
-                self.horizontalOffsetChanged?(bucket)
-            }
+            if publishHorizontalOffset(horizontal.contentView.bounds.minX) { horizontal.documentView?.layoutSubtreeIfNeeded() }
         }
     }
     private var monitor: Any?
     private var trackpadHorizontal: Bool?
     private var horizontalLimiter = HorizontalScrollLimiter()
-    private var scrollCoastTimer: Timer?
-    private weak var scrollCoastView: NSScrollView?
-    private var scrollCoastRemaining: CGFloat = 0
-    private var scrollCoastFrame = 0.0
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { stopZoomUpdates(); stopScrollCoast(); flushSavedZoom() }
+        if window == nil { stopZoomUpdates(); flushSavedZoom() }
         DispatchQueue.main.async { [weak self] in self?.observeVerticalScroll(); self?.observeHorizontalScroll() }
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if window != nil {
@@ -259,7 +283,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         }
     }
     func timelineInputGateChanged(blocked: Bool) {
-        if blocked { stopZoomUpdates(); stopScrollCoast(); trackpadHorizontal = nil }
+        if blocked { stopZoomUpdates(); trackpadHorizontal = nil }
     }
     @discardableResult func handleWheelEvent(_ event: NSEvent, pressedMouseButtons: Int = NSEvent.pressedMouseButtons) -> Bool {
         guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
@@ -267,7 +291,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
         return handle(event, pressedMouseButtons: pressedMouseButtons)
     }
-    deinit { zoomPersistenceTimer?.invalidate(); cancelDisplayLink?(); zoomTimer?.invalidate(); scrollCoastTimer?.invalidate(); if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }; if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
+    deinit { zoomPersistenceTimer?.invalidate(); cancelDisplayLink?(); zoomTimer?.invalidate(); if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }; if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
     private var scrollViews: [NSScrollView] {
         var result: [NSScrollView] = []
         var parent = superview
@@ -277,74 +301,50 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         }
         return result
     }
+    private func takeHorizontalControl(_ view: NSScrollView) {
+        stopZoomUpdates()
+        // A pending scale may still lay out later, but this explicit pan or
+        // navigation now owns the viewport. It must prepare and keep its origin.
+        (view as? GridNativeScrollView)?.zoomAnchor = nil
+    }
     private func scroll(_ view: NSScrollView, x: CGFloat? = nil, y: CGFloat? = nil) {
         guard let document = view.documentView else { return }
         let clip = view.contentView
         var origin = clip.bounds.origin
         if let x { origin.x = min(max(0, x), max(0, document.frame.width - clip.bounds.width)) }
         if let y { origin.y = min(max(0, y), max(0, document.frame.height - clip.bounds.height)) }
+        if let grid = view as? GridNativeScrollView { grid.prepareHorizontalViewport(at: origin.x) }
+        else if x != nil, publishHorizontalOffset(origin.x) { document.layoutSubtreeIfNeeded() }
         clip.scroll(to: origin)
         view.reflectScrolledClipView(clip)
-    }
-    private func stopScrollCoast() {
-        scrollCoastTimer?.invalidate(); scrollCoastTimer = nil
-        scrollCoastView = nil; scrollCoastRemaining = 0
-    }
-    private func startScrollCoast(_ view: NSScrollView, distance: CGFloat) {
-        guard abs(distance) > 0.05 else { return }
-        scrollCoastView = view
-        scrollCoastRemaining = min(20, max(-20, distance * 0.22))
-        // The physical wheel's step is already visible. Only its release
-        // tail is scheduled; another event cancels it before applying a step.
-        scrollCoastFrame = ProcessInfo.processInfo.systemUptime + 0.025
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.advanceScrollCoast() }
-        timer.tolerance = 0
-        scrollCoastTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-    private func advanceScrollCoast() {
-        guard let view = scrollCoastView, window != nil, view.window === window, window?.attachedSheet == nil,
-              !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
-              abs(scrollCoastRemaining) >= 0.05 else { stopScrollCoast(); return }
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now > scrollCoastFrame else { return }
-        let elapsed = min(0.05, now - scrollCoastFrame)
-        scrollCoastFrame = now
-        let portion = scrollCoastRemaining * CGFloat(1 - exp(-elapsed / 0.065))
-        scrollCoastRemaining -= portion
-        let old = view.contentView.bounds.minX
-        scroll(view, x: old - portion)
-        if view.contentView.bounds.minX == old { stopScrollCoast() }
     }
     private func handle(_ event: NSEvent, pressedMouseButtons: Int) -> Bool {
         let views = scrollViews
         guard let horizontal = views.first else { return false }
         let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : event.scrollingDeltaX
-        let movement = delta * (event.hasPreciseScrollingDeltas ? 1 : 18)
+        let shifting = event.modifierFlags.contains(.shift)
+        let movement = delta * (event.hasPreciseScrollingDeltas ? (shifting ? 2 : 1) : (shifting ? 54 : 18))
         let heldLeftWheel = pressedMouseButtons & 1 != 0 && !event.hasPreciseScrollingDeltas &&
             event.momentumPhase.isEmpty &&
             event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty
-        stopScrollCoast()
         if !event.modifierFlags.intersection([.command, .control]).isEmpty {
             stopZoomUpdates()
             if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
                 let amount = Double(event.scrollingDeltaY) * (event.hasPreciseScrollingDeltas ? TimelineTrackHeightLimits.preciseSensitivity : TimelineTrackHeightLimits.wheelSensitivity)
-                changeTrackHeight?(exp(min(0.08, max(-0.08, amount))))
+                changeTrackHeight?(exp(min(TimelineTrackHeightLimits.maximumWheelStep, max(-TimelineTrackHeightLimits.maximumWheelStep, amount))))
             }
         } else if event.modifierFlags.contains(.shift) || heldLeftWheel {
-            stopZoomUpdates()
+            takeHorizontalControl(horizontal)
             if heldLeftWheel, delta != 0, let window {
-                // A delayed zoom anchor must not recenter a viewport now owned
-                // by this pan; a ruler/item press must not activate on release.
-                (horizontal as? GridNativeScrollView)?.zoomAnchor = nil
+                // A ruler/item press must not activate on release after panning.
                 NativeTimelineInputGate.shared.cancelPendingClicks(for: window)
             }
-            let limited = horizontalLimiter.limit(movement, timestamp: event.timestamp, begins: event.phase.contains(.began))
+            let limited = horizontalLimiter.limit(movement, timestamp: event.timestamp, begins: event.phase.contains(.began), speed: shifting ? 12600 : 4200)
             let origin = horizontal.contentView.bounds.minX
             let target = origin - limited
             if let document = horizontal.documentView, target + horizontal.contentView.bounds.width > document.frame.width - 160 { extend?() }
             scroll(horizontal, x: target)
-            if !event.hasPreciseScrollingDeltas { startScrollCoast(horizontal, distance: origin - horizontal.contentView.bounds.minX) }
+
         } else if event.hasPreciseScrollingDeltas && (!event.phase.isEmpty || !event.momentumPhase.isEmpty) {
             // Use the trackpad's own momentum deltas, with a time-based speed
             // ceiling. Do not queue excess distance or run an idle animation timer.
@@ -358,7 +358,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 }
             }
             if trackpadHorizontal == true {
-                stopZoomUpdates()
+                takeHorizontalControl(horizontal)
                 let limited = horizontalLimiter.limit(event.scrollingDeltaX, timestamp: event.timestamp, begins: event.phase.contains(.began))
                 let target = horizontal.contentView.bounds.minX - limited
                 if event.scrollingDeltaX < 0, let document = horizontal.documentView,
@@ -374,57 +374,22 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         return true
     }
     private func applyWheelZoom(_ event: NSEvent, delta: CGFloat, horizontal: NSScrollView) {
-        // Only a phased precise gesture uses display-link coalescing and a
-        // release tail. Mouse wheel steps reach their exact target immediately.
+        // Both devices use display-frame batching and exact input travel.
         let trackpad = event.hasPreciseScrollingDeltas && (!event.phase.isEmpty || !event.momentumPhase.isEmpty)
-        if !trackpad {
-            stopZoomUpdates()
-            guard delta != 0, let grid = horizontal as? GridNativeScrollView,
-                  let document = horizontal.documentView else { return }
-            let amount = Double(delta) * (event.hasPreciseScrollingDeltas
-                ? TimelineZoomLimits.preciseSensitivity : TimelineZoomLimits.wheelSensitivity)
-            let unitWidth = modelUnitWidth ?? ((grid.zoomAnchor?.width ?? document.frame.width) / zoom)
-            let fraction = min(1, max(0, position))
-            let screenX = grid.contentView.bounds.width / 2
-            let next = min(TimelineZoomLimits.maximum, max(TimelineZoomLimits.minimum, zoom * exp(amount)))
-            guard next != zoom else {
-                scroll(horizontal, x: CGFloat(fraction) * document.frame.width - screenX)
-                return
-            }
-            let width = unitWidth * next
-            let offset = min(max(0, CGFloat(fraction) * width - screenX), max(0, width - grid.contentView.bounds.width))
-            grid.zoomAnchor = (fraction, screenX, width)
-            zoom = next
-            awaitingRenderedZoom = next
-            changeZoom?(next, offset)
-            persistZoomAfterGesture(next)
-            return
-        }
         if event.phase.contains(.began), event.momentumPhase.isEmpty, zoomRunning { stopZoomUpdates() }
         if event.momentumPhase.contains(.ended) {
             if let zoomGrid { advanceZoom(zoomGrid) }
             stopZoomUpdates()
             return
         }
-        if !event.momentumPhase.isEmpty {
-            // The system has already calculated a decelerating trackpad tail.
-            // Do not add a second synthetic tail on top of it.
-            nativeMomentumSeen = true
-            coastRemaining = 0
-            coastStarted = true
-        }
-        let amount = event.hasPreciseScrollingDeltas
+        let amount = trackpad
             ? zoomResponse.change(delta: Double(delta), timestamp: event.timestamp, begins: event.phase.contains(.began))
-            : Double(delta) * TimelineZoomLimits.wheelSensitivity
+            : Double(delta) * (event.hasPreciseScrollingDeltas
+                ? TimelineZoomLimits.preciseSensitivity : TimelineZoomLimits.wheelSensitivity)
         guard delta != 0, let grid = horizontal as? GridNativeScrollView,
               let document = horizontal.documentView else { return }
-        // Input remains active at a zoom limit too. The release timer must not
-        // start a coast merely because this event could not change the scale.
+        // Keep the input burst alive even at a zoom limit.
         lastZoomInput = ProcessInfo.processInfo.systemUptime
-        if event.momentumPhase.isEmpty {
-            coastRemaining = 0
-            coastStarted = false
-        }
         if !zoomRunning {
             // Native geometry may lag a newer scale, especially after a fast
             // reversal. Derive the document target from the model, not that
@@ -445,7 +410,6 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         let next = min(TimelineZoomLimits.maximum, max(TimelineZoomLimits.minimum, base * exp(amount)))
         guard next != base else { if !zoomRunning { gestureAnchor = nil }; return }
         pendingZoom = next
-        lastZoomAmount = amount
         // Apply the first input immediately. Merge a burst into the next display
         // frame without interpolating toward an old target after the gesture.
         if zoomRunning { return }
@@ -478,40 +442,15 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         pendingZoom = nil
         gestureAnchor = nil
         zoomResponse.reset()
-        lastZoomAmount = 0
-        coastRemaining = 0
-        coastStarted = false
-        coastFrame = 0
-        nativeMomentumSeen = false
         awaitingRenderedZoom = nil
     }
     private func advanceZoom(_ grid: GridNativeScrollView) {
         guard let target = pendingZoom else { stopZoomUpdates(); return }
-        // Finger movement takes the full value in the next display frame.
-        // After release, a small ease-out is used only if no native trackpad
-        // momentum arrived. New input cancels the tail immediately.
+        // Commit only the distance requested by input. Display-frame batching
+        // smooths bursts without inventing additional zoom after release.
         if target == zoom {
-            let now = ProcessInfo.processInfo.systemUptime
-            let idle = now - lastZoomInput
-            if idle < 0.045 { return }
-            if !coastStarted && !nativeMomentumSeen {
-                let limit = 0.07
-                let fraction = 0.50
-                coastRemaining = copysign(min(limit, abs(lastZoomAmount) * fraction), lastZoomAmount)
-                coastStarted = true
-                coastFrame = now
-            }
-            if abs(coastRemaining) < 0.00025 {
-                if idle > 0.08 { stopZoomUpdates() }
-                return
-            }
-            let elapsed = min(0.05, max(1.0 / 240, now - coastFrame))
-            coastFrame = now
-            let portion = coastRemaining * (1 - exp(-elapsed / 0.045))
-            coastRemaining -= portion
-            let eased = min(TimelineZoomLimits.maximum, max(TimelineZoomLimits.minimum, zoom * exp(portion)))
-            guard eased != zoom else { stopZoomUpdates(); return }
-            pendingZoom = eased
+            if ProcessInfo.processInfo.systemUptime - lastZoomInput > 0.08 { stopZoomUpdates() }
+            return
         }
         let next = pendingZoom ?? target
         guard next != zoom else { return }
@@ -522,6 +461,10 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         grid.zoomAnchor = (fraction, screenX, width)
         zoom = next
         awaitingRenderedZoom = next
+        // changeZoom publishes this bucket with the scale. Native bounds
+        // notifications are suppressed until the anchor commits, so keep the
+        // deduplication state in sync with that publication as well.
+        lastHorizontalBucket = floor(max(0, offset) / 512) * 512
         changeZoom?(next, offset)
     }
 
@@ -675,7 +618,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
 /// The same maximum speed at 60 Hz or 120 Hz; small movements stay unchanged.
 struct HorizontalScrollLimiter {
     private var lastTimestamp: TimeInterval?
-    mutating func limit(_ distance: CGFloat, timestamp: TimeInterval, begins: Bool) -> CGFloat {
+    mutating func limit(_ distance: CGFloat, timestamp: TimeInterval, begins: Bool, speed: Double = 4200) -> CGFloat {
         let elapsed: TimeInterval
         if begins || lastTimestamp == nil {
             elapsed = 1.0 / 60
@@ -683,7 +626,7 @@ struct HorizontalScrollLimiter {
             elapsed = min(1.0 / 30, max(0, timestamp - lastTimestamp!))
         }
         lastTimestamp = timestamp
-        let maximum = CGFloat(elapsed * 4200)
+        let maximum = CGFloat(elapsed * speed)
         return min(maximum, max(-maximum, distance))
     }
 }

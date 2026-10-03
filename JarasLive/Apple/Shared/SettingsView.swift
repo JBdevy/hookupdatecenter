@@ -2,7 +2,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var auth: AuthService
     @ObservedObject var show: ShowController
-    let backend: MockBackendClient
+    let backend: any BackendClient
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject private var audio = AudioDeviceSettings.shared
     private enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
@@ -17,6 +17,8 @@ struct SettingsView: View {
     }
     @ObservedObject private var mappings = ControlMappings.shared
     @State private var section = Section.general
+    @State private var signingIn = false
+    @State private var pendingDevice: AuthorizedDevice?
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 6) {
@@ -90,18 +92,33 @@ struct SettingsView: View {
                         Text("VST3 plugins are available on desktop.").foregroundStyle(JarasTheme.secondary)
                         #endif
                     case .account:
-                        Text(auth.loginResult?.account.email ?? "Preview").foregroundStyle(JarasTheme.secondary)
-                        Text("\(auth.devices.filter { $0.status == .active }.count) / \(auth.loginResult?.entitlement.maxDevices ?? 2) dispositivos").font(.caption)
-                        ForEach(auth.devices) { device in
-                            HStack { Image(systemName: device.platform == "macOS" ? "desktopcomputer" : "ipad.landscape"); VStack(alignment: .leading) { Text(device.deviceName); Text(device.platform).font(.caption).foregroundStyle(JarasTheme.secondary) }; Spacer(); Text(LocalizedStringKey(device.status.rawValue)).font(.caption) }.padding(12).background(JarasTheme.panel).cornerRadius(6)
+                        Text(auth.licenseTitle ?? "Entre na sua conta").font(.headline)
+                        if let result = auth.loginResult, result.entitlement.planId != "trial" {
+                            Text(result.account.email).foregroundStyle(JarasTheme.secondary)
                         }
-                        Button("Validar agora") { Task { await auth.revalidate() } }.buttonStyle(StageButtonStyle())
+                        Button("Login / Trocar conta") { signingIn = true }.buttonStyle(StageButtonStyle()).disabled(auth.busy || show.isPlaying)
+                        Text("\(auth.devices.filter { $0.status == .active }.count) / \(auth.loginResult?.entitlement.maxDevices ?? 4) dispositivos").font(.caption)
+                        ForEach(auth.devices.filter { $0.status == .active }) { device in
+                            DeviceAccountRow(device: device, current: device.id == auth.installation.id) { pendingDevice = device }.disabled(auth.busy)
+                        }
+                        Button("Atualizar dispositivos") { Task { await auth.refreshDevices() } }.disabled(auth.busy)
+                        Button("Validar agora") { Task { await auth.revalidate() } }.buttonStyle(StageButtonStyle()).disabled(auth.busy)
                         Button("Sair e liberar dispositivo") { Task { await auth.logout() } }.buttonStyle(StageButtonStyle(color: .red)).disabled(show.isPlaying || auth.busy)
                         if !auth.message.isEmpty { Text(LocalizedStringKey(auth.message)).font(.caption).foregroundStyle(JarasTheme.yellow) }
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.foregroundStyle(JarasTheme.text)
+        .sheet(isPresented: $signingIn) {
+            LoginView(auth: auth, backend: backend, offersTrial: false, onAuthorized: { signingIn = false }).frame(width: 550, height: 620)
+        }
+        .task(id: section) { if section == .account { await auth.refreshDevices() } }
+        .alert("Remover dispositivo?", isPresented: Binding(get: { pendingDevice != nil }, set: { if !$0 { pendingDevice = nil } }), presenting: pendingDevice) { device in
+            Button("Cancelar", role: .cancel) { pendingDevice = nil }
+            Button("Remover", role: .destructive) { Task { await auth.removeDevice(device) }; pendingDevice = nil }
+        } message: { device in
+            Text(device.id == auth.installation.id ? "Você sairá da conta neste computador. O áudio será interrompido e a licença ficará disponível." : "Remover \(device.deviceName) e liberar sua licença para outro computador?")
+        }
         .overlay {
             if mappings.editing != nil {
                 ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }

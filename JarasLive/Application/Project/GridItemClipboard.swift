@@ -35,7 +35,7 @@ public struct GridItemClipboard: Equatable, Sendable {
         let start = values.map { $0.clip.startTime }.min()!
         for index in values.indices {
             values[index].clip.startTime = position + (values[index].clip.startTime - start)
-            if !moving { values[index].clip.id = UUID() }
+            if !moving { values[index].clip.id = UUID(); values[index].clip.separatedStemTracks = nil }
         }
         return values
     }

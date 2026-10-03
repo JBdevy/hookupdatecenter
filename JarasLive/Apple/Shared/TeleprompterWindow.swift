@@ -246,7 +246,7 @@ private struct LocalizedTeleprompterConfig: View {
         preferences = index == 1 ? .shared : .second
         super.init()
         minimizeObservation = NotificationCenter.default.addObserver(forName: NSWindow.didMiniaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "Jaras Live" else { return }
+            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
             MainActor.assumeIsolated {
                 guard let self, let window = self.window, !window.isProjectionFullscreen else { return }
                 self.minimizedWithMain = true
@@ -254,7 +254,7 @@ private struct LocalizedTeleprompterConfig: View {
             }
         }
         restoreObservation = NotificationCenter.default.addObserver(forName: NSWindow.didDeminiaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "Jaras Live" else { return }
+            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
             MainActor.assumeIsolated {
                 guard let self, self.minimizedWithMain else { return }
                 self.minimizedWithMain = false

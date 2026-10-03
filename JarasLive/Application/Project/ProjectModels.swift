@@ -9,9 +9,13 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
+}
+/// The existing persisted channel field also identifies a MIDI take (zero PCM channels).
+public enum TrackRecordingMode: Int, CaseIterable, Sendable {
+    case midi = 0, mono = 1, stereo = 2
 }
 public struct Track: Codable, Identifiable, Equatable, Sendable {
     /// Applied only by creation paths. Decoded nil/custom colors stay unchanged.
@@ -31,8 +35,10 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var stereoLink: TrackStereoLink?
     public var inputPatch: OutputPatch?
     public var recordingChannels: Int?
+    public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
     public var recordingFormat: String?
     public var timecode: TimecodeSettings?
+    public var importedTimecodeItems: Bool?
     public var color: UInt32?
     public var patch: OutputPatch?
     public var secondaryPatch: OutputPatch?
@@ -45,6 +51,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var secondaryOutput: OutputPatch { outputPatches.count > 1 ? outputPatches[1] : .none }
     public var audioFile: AudioFile?
     public var clips: [AudioClip] = []
+    public var clickSound: AudioFile?
 }
 public struct TrackStereoLink: Codable, Equatable, Sendable {
     public var partner: UUID
@@ -337,6 +344,8 @@ public extension RegionSetlist {
     }
 }
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Migrated arrangements retain their own timing when opening the document.
+    public var importedTimeline: Bool? = nil
     public static let maximumTrackCount = 1000
     public var id: UUID; public var name: String
     public var projectFormatVersion = 1, minimumJarasVersion = "1.0.0"
@@ -370,6 +379,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         for patch in masterOutputPatches { try patch.validate(allowMaster: false, allowNone: true) }
         var identifiers: Set<UUID> = [id]
         guard songs.flatMap(\.tracks).filter({ $0.kind == .timecode }).count <= 1 else { throw ProjectError.invalid("Only one Timecode track is allowed") }
+        guard songs.flatMap(\.tracks).filter({ $0.kind == .click }).count <= 1 else { throw ProjectError.invalid("Only one Click track is allowed") }
         func register(_ id: UUID) throws { guard identifiers.insert(id).inserted else { throw ProjectError.invalid("UUID duplicado.") } }
         for song in songs {
             try song.validateTrackRouting()
@@ -383,7 +393,9 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard parent == folder, parent != track.id else { throw ProjectError.invalid("Invalid track group") }
                 } else { folder = track.id }
                 try register(track.id)
-                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
+                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
+                guard track.clickSound == nil || track.kind == .click else { throw ProjectError.invalid("Custom click sound requires a Click track") }
+                if track.kind == .click { guard track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.inputPatch == nil, track.midiChannel == nil, track.recordingChannels == nil, track.recordingFormat == nil else { throw ProjectError.invalid("Click tracks cannot record or contain FX") } }
                 if track.kind.isText { guard !track.mute, track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.midiChannel == nil, track.recordingFormat == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Text tracks cannot contain audio controls") } }
                 if let link = track.stereoLink {
                     guard track.kind == .standard, let other = song.tracks.first(where: { $0.id == link.partner }),
@@ -409,13 +421,21 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 guard track.midiChannel == nil || (1...16).contains(track.midiChannel!) else { throw ProjectError.invalid("Invalid MIDI channel") }
                 guard track.midiInput == nil || (1...3).contains(track.midiInput!) else { throw ProjectError.invalid("Invalid MIDI input") }
                 try track.inputPatch?.validate(allowMaster: false)
-                guard track.recordingChannels == nil || [1, 2].contains(track.recordingChannels!) else { throw ProjectError.invalid("Invalid recording channel mode") }
+                guard track.recordingChannels == nil || TrackRecordingMode(rawValue: track.recordingChannels!) != nil else { throw ProjectError.invalid("Invalid recording channel mode") }
                 guard track.recordingFormat == nil || ["wav", "wav32", "mp3"].contains(track.recordingFormat!) else { throw ProjectError.invalid("Invalid recording format") }
                 try track.patch?.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true)
                 try track.secondaryPatch?.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true)
                 for patch in track.outputPatches { try patch.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true) }
                 guard track.volume.isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(track.volume), track.pan.isFinite, (-1...1).contains(track.pan), track.output > 0 else { throw ProjectError.invalid("Controle de pista inválido.") }
                 for clip in track.clips {
+                    if clip.frozenMIDI == true || clip.renderedTiming == true {
+                        guard track.kind == .standard, clip.audioFile != nil, clip.midi == nil else { throw ProjectError.invalid("Frozen MIDI requires an audio item") }
+                    }
+                    if let midi = clip.midi {
+                        guard track.kind == .standard, clip.audioFile == nil, clip.text == nil, clip.loopLength == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
+                        try midi.validate()
+                    }
+                    guard track.kind != .click || clip.audioFile == nil else { throw ProjectError.invalid("Click items use the built-in sound") }
                     guard clip.text == nil || track.kind.isText else { throw ProjectError.invalid("Text items require a Teleprompter or Chords track") }
                     if let text = clip.text { try AudioClip.validateText(text, maximum: track.kind.maximumTextLength ?? AudioClip.maximumTextLength) }
                     if clip.isProjectionMedia { guard track.kind == .video || track.kind.isTeleprompter else { throw ProjectError.invalid("Videos require a Video or Teleprompter track") } }
@@ -425,6 +445,10 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.fx == nil || track.kind == .standard else { throw ProjectError.invalid("Item FX requires an audio track") }
                     guard clip.fxBypassed == nil || track.kind == .standard else { throw ProjectError.invalid("Item FX requires an audio track") }
                     try clip.fx?.validateForClip()
+                    if let settings = clip.timecode {
+                        guard track.kind == .timecode else { throw ProjectError.invalid("Timecode settings require a Timecode item") }
+                        try settings.validate()
+                    }
                     let timecodeOffsets = [clip.timecodeStartOffset, clip.timecodeEndOffset].compactMap { $0 }
                     guard timecodeOffsets.allSatisfy(\.isFinite), timecodeOffsets.isEmpty || track.kind == .timecode else { throw ProjectError.invalid("Invalid Timecode span") }
                     guard track.kind != .timecode || (clip.loopStart == nil && clip.loopLength == nil) else { throw ProjectError.invalid("Timecode items cannot repeat their source") }
@@ -439,7 +463,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
                     guard clip.startTime.isFinite, clip.duration.isFinite, clip.startTime >= 0, clip.duration > 0, clip.startTime + clip.duration <= song.duration, clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.waveform.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw ProjectError.invalid("Bloco de áudio inválido.") }
                 }
-                for file in [track.audioFile].compactMap({ $0 }) + track.clips.compactMap(\.audioFile) {
+                for file in [track.audioFile, track.clickSound].compactMap({ $0 }) + track.clips.compactMap(\.audioFile) {
                     let parts = file.path.split(separator: "/", omittingEmptySubsequences: false)
                     guard !file.path.isEmpty, !file.path.contains("\\"), !file.path.contains(":"), parts.allSatisfy({ !$0.isEmpty && $0 != ".." && $0 != "." }) else { throw ProjectError.invalid("Use caminhos relativos para o áudio.") }
                     if let hash = file.sha256 { guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { throw ProjectError.invalid("SHA-256 inválido.") } }
@@ -589,8 +613,10 @@ public struct RegionLanes: Equatable {
 
 public enum TrackKind: String, CaseIterable, Sendable {
     case standard, video, timecode, teleprompt, teleprompt2, chords
+    case click = "generatedClick"
     public var defaultColor: UInt32? {
         switch self {
+        case .click: return 0x77d18b
         case .timecode: return 0xffdc52
         case .chords: return 0x529eff
         case .teleprompt, .teleprompt2: return 0x54ff93
@@ -598,7 +624,7 @@ public enum TrackKind: String, CaseIterable, Sendable {
         case .standard: return nil
         }
     }
-    public var title: String { switch self { case .standard: return "Standard"; case .video: return "Video"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    public var title: String { switch self { case .click: return "Click"; case .standard: return "Standard"; case .video: return "Video"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }
@@ -647,5 +673,100 @@ extension Track {
         let left = others.filter { $0.startTime + $0.duration <= item.startTime + 0.0000001 }.map { $0.startTime + $0.duration }.max() ?? 0
         let right = others.filter { $0.startTime >= item.startTime + item.duration - 0.0000001 }.map(\.startTime).min() ?? .infinity
         return (max(left, start), min(right, end))
+    }
+}
+
+public extension Song {
+    /// Visual counterpart of Engine::moveRegion. All positions are tested
+    /// against the original region before applying the same displacement once.
+    func previewMovingRegion(_ id: UUID, to start: Double) -> Song {
+        guard start.isFinite, start >= 0,
+              let region = parts.first(where: { $0.id == id && $0.parentRegionID == nil }) else { return self }
+        let delta = start - region.startTime
+        var result = self
+        for track in result.tracks.indices {
+            for index in result.tracks[track].clips.indices {
+                let clip = result.tracks[track].clips[index]
+                if result.tracks[track].kind == .timecode && result.tracks[track].importedTimecodeItems != true {
+                    // Native Timecode may extend past its owning region's edges.
+                    guard clip.id == Project.timecodeItemID(id) else { continue }
+                    let newStart = max(0, start + (clip.timecodeStartOffset ?? 0))
+                    let newEnd = max(newStart + 0.01, region.endTime + delta + (clip.timecodeEndOffset ?? 0))
+                    result.tracks[track].clips[index].startTime = newStart
+                    result.tracks[track].clips[index].duration = newEnd - newStart
+                    result.duration = max(result.duration, newEnd)
+                } else if clip.startTime >= region.startTime - 1e-8 && clip.startTime + clip.duration <= region.endTime + 1e-8 {
+                    result.tracks[track].clips[index].startTime = max(0, clip.startTime + delta)
+                }
+            }
+        }
+        for index in result.parts.indices where result.parts[index].id == id || result.parts[index].parentRegionID == id {
+            result.parts[index].startTime += delta
+            result.parts[index].endTime += delta
+            result.duration = max(result.duration, result.parts[index].endTime)
+        }
+        if var markers = result.markers {
+            for index in markers.indices {
+                let marker = markers[index]
+                let owned = marker.unifiedRegionID == id
+                let inside = marker.unifiedRegionID == nil && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8
+                if owned || inside {
+                    markers[index].position = max(0, marker.position + delta)
+                    result.duration = max(result.duration, markers[index].position)
+                }
+            }
+            result.markers = markers
+        }
+        return RegionLanes(parts: result.parts).count <= 2 ? result : self
+    }
+}
+
+/// Forbidden region-start intervals caused by moving marker points passing
+/// stationary points. Prepared once per drag, with a zoom-aware visual margin.
+public struct RegionMarkerRepulsion {
+    private var intervals: [ClosedRange<Double>] = []
+    private let originalStart: Double
+    private var minimumStart = 0.0
+    public init(song: Song, region: Part, minimumGap: Double = 0.01) {
+        originalStart = region.startTime
+        let gap = minimumGap.isFinite ? max(0.01, minimumGap) : 0.01
+        var offsets: [Double] = [], stationary: [Double] = []
+        for marker in song.markers ?? [] {
+            let owned = marker.unifiedRegionID == region.id
+            let inside = marker.unifiedRegionID == nil && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8
+            if owned || inside { offsets.append(marker.position - region.startTime) }
+            else { stationary.append(marker.position) }
+        }
+        minimumStart = max(0, -(offsets.min() ?? 0))
+        var ranges: [ClosedRange<Double>] = []
+        for offset in offsets {
+            for point in stationary {
+                let center = point - offset
+                if center + gap > minimumStart { ranges.append((center - gap)...(center + gap)) }
+            }
+        }
+        ranges.sort { $0.lowerBound < $1.lowerBound }
+        for range in ranges {
+            if let last = intervals.last, range.lowerBound < last.upperBound {
+                intervals[intervals.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
+            } else { intervals.append(range) }
+        }
+    }
+    public func resolve(_ proposed: Double) -> Double {
+        guard proposed.isFinite else { return originalStart }
+        let start = max(minimumStart, proposed)
+        // Binary search avoids rebuilding/scanning marker pairs on each frame.
+        var low = 0, high = intervals.count
+        while low < high {
+            let mid = (low + high) / 2
+            if intervals[mid].upperBound <= start + 1e-9 { low = mid + 1 } else { high = mid }
+        }
+        guard low < intervals.count else { return start }
+        let range = intervals[low]
+        guard start > range.lowerBound + 1e-9 && start < range.upperBound - 1e-9 else { return start }
+        if range.lowerBound < minimumStart { return range.upperBound }
+        let left = start - range.lowerBound, right = range.upperBound - start
+        if abs(left - right) <= 1e-9 { return proposed >= originalStart ? range.upperBound : range.lowerBound }
+        return left < right ? range.lowerBound : range.upperBound
     }
 }

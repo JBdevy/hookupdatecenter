@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import CoreMIDI
+import AVFoundation
 #if os(macOS)
 import AppKit
 #endif
@@ -42,6 +43,7 @@ struct MappingTransferRequest: Identifiable {
     @Published var candidate: ControlInput?
     @Published var error = ""
     private weak var show: ShowController?
+    var onMIDIReceived: ((Int32, UInt8, UInt8, UInt8, Double) -> Void)?
     private var client: MIDIClientRef = 0
     private var port: MIDIPortRef = 0
     private var sources: [MIDIEndpointRef: (id: Int32, name: String)] = [:]
@@ -74,14 +76,14 @@ struct MappingTransferRequest: Identifiable {
         }
         #endif
         if client == 0 {
-            let result = MIDIClientCreateWithBlock("Jaras Live Controls" as CFString, &client) { [weak self] _ in
+            let result = MIDIClientCreateWithBlock("CatLive Controls" as CFString, &client) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.refreshSources() }
             }
             guard result == noErr else { error = "MIDI initialization failed (\(result))"; return }
-            let resultPort = MIDIInputPortCreateWithProtocol(client, "Jaras Live Input" as CFString, ._1_0, &port) { [weak self] list, context in
+            let resultPort = MIDIInputPortCreateWithProtocol(client, "CatLive Input" as CFString, ._1_0, &port) { [weak self] list, context in
                 let endpoint = MIDIEndpointRef(UInt(bitPattern: context))
                 var packet = UnsafeRawPointer(list).advanced(by: MemoryLayout<MIDIEventList>.offset(of: \.packet)!).assumingMemoryBound(to: MIDIEventPacket.self)
-                var messages: [(UInt8, UInt8, UInt8)] = []
+                var messages: [(UInt8, UInt8, UInt8, Double)] = []
                 for _ in 0..<list.pointee.numPackets {
                     let words = UnsafeRawPointer(packet).advanced(by: MemoryLayout<MIDIEventPacket>.offset(of: \.words)!).assumingMemoryBound(to: UInt32.self)
                     var index = 0
@@ -89,13 +91,15 @@ struct MappingTransferRequest: Identifiable {
                         let word = words[index], type = word >> 28
                         if type == 2 {
                             let status = UInt8((word >> 16) & 0xff), kind = status & 0xf0
-                            if kind >= 0x80 && kind <= 0xe0 { messages.append((status, UInt8((word >> 8) & 0x7f), UInt8(word & 0x7f))) }
+                            let timestamp = packet.pointee.timeStamp
+                            let time = timestamp == 0 ? ProcessInfo.processInfo.systemUptime : AVAudioTime.seconds(forHostTime: timestamp)
+                            if kind >= 0x80 && kind <= 0xe0 { messages.append((status, UInt8((word >> 8) & 0x7f), UInt8(word & 0x7f), time)) }
                         }
                         index += type == 3 || type == 4 ? 2 : type == 5 || type == 0xd || type == 0xf ? 4 : 1
                     }
                     packet = UnsafePointer(MIDIEventPacketNext(packet))
                 }
-                if !messages.isEmpty { Task { @MainActor [weak self] in for message in messages { self?.receive(endpoint: endpoint, status: message.0, number: message.1, value: message.2) } } }
+                if !messages.isEmpty { Task { @MainActor [weak self] in for message in messages { self?.receive(endpoint: endpoint, status: message.0, number: message.1, value: message.2, timestamp: message.3) } } }
             }
             if resultPort != noErr { error = "MIDI input failed (\(resultPort))" }
         }
@@ -318,9 +322,10 @@ struct MappingTransferRequest: Identifiable {
             }
         }
     }
-    private func receive(endpoint: MIDIEndpointRef, status: UInt8, number: UInt8, value: UInt8) {
+    private func receive(endpoint: MIDIEndpointRef, status: UInt8, number: UInt8, value: UInt8, timestamp: Double = ProcessInfo.processInfo.systemUptime) {
         guard transferRequest == nil, let source = sources[endpoint] else { return }
         KeyboardMIDIMonitor.shared.receive(source: source.id, status: status, number: number, value: value)
+        if editing == nil { onMIDIReceived?(source.id, status, number, value, timestamp) }
         let kind: UInt8 = status & 0xf0 == 0xb0 ? 0xb0 : 0x90
         let channel = status & 0x0f
         let input = ControlInput(kind: "midi", label: "\(source.name) · CH \(channel + 1) · \(kind == 0xb0 ? "CC" : "Note") \(number)", device: source.id, channel: channel, status: kind, number: number)

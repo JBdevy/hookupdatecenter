@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import SwiftUI
 import CryptoKit
+import Accelerate
 
 /// A folder is a visual sum, never another playable item. Fixed time pages are
 /// mixed off the UI/audio threads and retained across scrolling and zoom.
@@ -220,7 +221,8 @@ final class FolderWaveformCache: ObservableObject {
         var readers: [URL: Reader] = [:]
         return loadEntry(request, key: key, readers: &readers)?.at(step: step)
     }
-    private static func loadEntry(_ request: Request, key: String, readers: inout [URL: Reader]) -> Entry? {
+    private static func loadEntry(_ request: Request, key: String, readers: inout [URL: Reader], cancelled: () -> Bool = { false }) -> Entry? {
+        guard !cancelled() else { return nil }
         let destination = diskCacheURL(request), version = fingerprint(request)
         let start = Int64(Double(request.page) * pageSeconds * rate), end = start + Int64(pageSeconds * rate)
         let activeRanges = prepare(folder: request.folder, sources: request.sources, page: request.page).activeRanges
@@ -244,7 +246,7 @@ final class FolderWaveformCache: ObservableObject {
             }
             if valid { base = TimelineAudioWaveform.VertexBlock(channels: channels, start: start, end: end, step: step, rate: rate, key: key) }
         }
-        guard let result = base ?? render(request, key: key, readers: &readers) else { return nil }
+        guard let result = base ?? render(request, key: key, readers: &readers, cancelled: cancelled) else { return nil }
         let identifier = version ?? String(repeating: "0", count: 64)
         let data = Entry.encoded(result, fingerprint: identifier)
         if let destination, version != nil, fingerprint(request) == version {
@@ -257,11 +259,16 @@ final class FolderWaveformCache: ObservableObject {
         }
         return Entry(data: data, start: start, key: key, fingerprint: identifier, activeRanges: activeRanges)
     }
-    @MainActor func preload(_ groups: [(folder: UUID, sources: [Source])], progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
+    @MainActor func preload(_ groups: [(folder: UUID, sources: [Source])], cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
         let prepared: ([String: Entry], [String: String]) = await withCheckedContinuation { continuation in
-            worker.async {
-                var pages: [String: Entry] = [:], keys: [String: String] = [:]
-                for (groupIndex, group) in groups.enumerated() {
+            worker.async(qos: .userInitiated) {
+                let progressLock = NSLock()
+                var percentages = Array(repeating: 0, count: groups.count)
+                // Each group owns its readers. Pages within a group stay ordered
+                // so compressed audio decodes sequentially instead of seeking.
+                let results = WaveformPreparation.map(Array(groups.enumerated())) { groupIndex, group in
+                    var pages: [String: Entry] = [:], keys: [String: String] = [:]
+                    guard !cancelled() else { return (pages, keys) }
                     var readers: [URL: Reader] = [:]
                     var indices = Set<Int>()
                     for source in group.sources where source.gain != 0 && source.duration > 0 {
@@ -270,23 +277,42 @@ final class FolderWaveformCache: ObservableObject {
                         indices.formUnion(first...last)
                     }
                     for (pageIndex, index) in indices.sorted().enumerated() {
+                        if cancelled() { break }
                         autoreleasepool {
                             let page = Self.prepare(folder: group.folder, sources: group.sources, page: index)
                             let active = Set(page.request.sources.map(\.url))
                             readers = readers.filter { active.contains($0.key) }
-                            guard let entry = Self.loadEntry(page.request, key: page.key, readers: &readers) else { return }
+                            guard let entry = Self.loadEntry(page.request, key: page.key, readers: &readers, cancelled: cancelled) else { return }
                             pages[page.key] = entry
                             keys["\(group.folder):\(index)"] = page.key
                         }
-                        if pageIndex % 32 == 0 || pageIndex + 1 == indices.count {
-                            let percent = (groupIndex * 100 + (pageIndex + 1) * 100 / max(1, indices.count))
-                            DispatchQueue.main.async { progress(percent, groups.count * 100) }
+                        let percent = (pageIndex + 1) * 100 / max(1, indices.count)
+                        progressLock.lock()
+                        if percent != percentages[groupIndex] {
+                            percentages[groupIndex] = percent
+                            let done = percentages.reduce(0, +)
+                            DispatchQueue.main.async { if !cancelled() { progress(done, groups.count * 100) } }
                         }
+                        progressLock.unlock()
                     }
+                    if indices.isEmpty {
+                        progressLock.lock()
+                        percentages[groupIndex] = 100
+                        let done = percentages.reduce(0, +)
+                        DispatchQueue.main.async { progress(done, groups.count * 100) }
+                        progressLock.unlock()
+                    }
+                    return (pages, keys)
+                }
+                var pages: [String: Entry] = [:], keys: [String: String] = [:]
+                for result in results {
+                    pages.merge(result.0) { _, next in next }
+                    keys.merge(result.1) { _, next in next }
                 }
                 continuation.resume(returning: (pages, keys))
             }
         }
+        guard !cancelled() else { return }
         projectPages = prepared.0; projectPageKeys = prepared.1
         failed.removeAll()
         revision &+= 1
@@ -408,12 +434,13 @@ final class FolderWaveformCache: ObservableObject {
         var readers: [URL: Reader] = [:]
         return render(request, key: key, readers: &readers)
     }
-    private static func render(_ request: Request, key: String, readers: inout [URL: Reader]) -> TimelineAudioWaveform.VertexBlock? {
+    private static func render(_ request: Request, key: String, readers: inout [URL: Reader], cancelled: () -> Bool = { false }) -> TimelineAudioWaveform.VertexBlock? {
         let start = Double(request.page) * pageSeconds
         let count = Int(pageSeconds * rate)
         var left = [Float](repeating: 0, count: count)
         var right = left
         for source in request.sources where source.gain != 0 && source.rate > 0 {
+            guard !cancelled() else { return nil }
             guard let reader = readers[source.url] ?? (try? Reader(source.url)) else { return nil }
             readers[source.url] = reader
             let first = max(0, Int(ceil((source.start - start) * rate)))
@@ -421,7 +448,18 @@ final class FolderWaveformCache: ObservableObject {
             guard last > first else { continue }
             let leftGain = Float(source.gain * (source.pan > 0 ? 1 - source.pan : 1))
             let rightGain = Float(source.gain * (source.pan < 0 ? 1 + source.pan : 1))
+            // Most imported stems have no loop/envelope. Mix a decoder page
+            // at a time with Accelerate, including sample-rate interpolation.
+            // Never invoke a Swift reader and ARC operations for every sample.
+            if source.loopLength == nil && source.fadeIn == 0 && source.fadeOut == 0 {
+                let initial = (source.offset + (start + Double(first) / rate - source.start) * source.rate) * reader.rate
+                guard reader.accumulate(initial: initial, increment: source.rate * reader.rate / rate,
+                                        range: first..<last, leftGain: leftGain, rightGain: rightGain,
+                                        mode: source.mode, leftOutput: &left, rightOutput: &right, cancelled: cancelled) else { return nil }
+                continue
+            }
             for index in first..<last {
+                if index % 4096 == 0 && cancelled() { return nil }
                 let time = start + Double(index) / rate
                 var position = source.offset + (time - source.start) * source.rate
                 if let length = source.loopLength, length > 0 {
@@ -490,6 +528,71 @@ final class FolderWaveformCache: ObservableObject {
                 pageStart = page; count = Int(buffer.frameLength)
                 return count > 0
             } catch { count = 0; failed = true; return false }
+        }
+        func accumulate(initial: Double, increment: Double, range: Range<Int>, leftGain: Float, rightGain: Float,
+                        mode: Int, leftOutput: inout [Float], rightOutput: inout [Float], cancelled: () -> Bool) -> Bool {
+            guard initial.isFinite, increment.isFinite, increment > 0 else { return false }
+            var output = range.lowerBound
+            var positions = [Float](repeating: 0, count: 65_536)
+            var precisePositions = [Double](repeating: 0, count: 65_536)
+            var l = positions, r = positions
+            return leftOutput.withUnsafeMutableBufferPointer { outL in
+                rightOutput.withUnsafeMutableBufferPointer { outR in
+                    while output < range.upperBound {
+                        if cancelled() { return false }
+                        let frame = initial + Double(output - range.lowerBound) * increment
+                        if frame < 0 { output += min(range.upperBound - output, max(1, Int(ceil(-frame / increment)))); continue }
+                        if frame >= Double(length) { break }
+                        let index = Int64(frame), page = index / capacity * capacity
+                        if index == overlapIndex && pageStart == index + 1 && count > 0 {
+                            let value = sample(frame)
+                            let a = mode == 2 ? value.1 : mode == 3 ? (value.0 + value.1) * 0.5 : value.0
+                            let b = mode == 1 ? value.0 : mode == 3 ? a : value.1
+                            outL[output] += a * leftGain; outR[output] += b * rightGain
+                            output += 1; continue
+                        }
+                        guard load(page) else { return !failed }
+                        let local = frame - Double(pageStart)
+                        let available = max(0, Int(floor((Double(count - 1) - local) / increment)))
+                        let n = min(65_536, range.upperBound - output, available)
+                        if n == 0 {
+                            let value = sample(frame)
+                            let a = mode == 2 ? value.1 : mode == 3 ? (value.0 + value.1) * 0.5 : value.0
+                            let b = mode == 1 ? value.0 : mode == 3 ? a : value.1
+                            outL[output] += a * leftGain; outR[output] += b * rightGain
+                            output += 1; continue
+                        }
+                        let length = vDSP_Length(n)
+                        if abs(increment - 1) < 1e-12 && abs(local - local.rounded()) < 1e-7 {
+                            let offset = Int(local.rounded()) * stride
+                            l.withUnsafeMutableBufferPointer { cblas_scopy(Int32(n), left + offset, Int32(stride), $0.baseAddress!, 1) }
+                            r.withUnsafeMutableBufferPointer { cblas_scopy(Int32(n), right + offset, Int32(stride), $0.baseAddress!, 1) }
+                        } else {
+                            // A long Float ramp accumulates enough error to
+                            // shift transients by a sample. Build coordinates in
+                            // Double, then convert once for vector interpolation.
+                            var origin = local, step = increment
+                            vDSP_vrampD(&origin, &step, &precisePositions, 1, length)
+                            vDSP_vdpsp(precisePositions, 1, &positions, 1, length)
+                            vDSP_vlint(left, &positions, 1, &l, 1, length, vDSP_Length(count))
+                            vDSP_vlint(right, &positions, 1, &r, 1, length, vDSP_Length(count))
+                        }
+                        switch mode {
+                        case 1: r = l
+                        case 2: l = r
+                        case 3:
+                            vDSP_vadd(l, 1, r, 1, &l, 1, length)
+                            var half: Float = 0.5; vDSP_vsmul(l, 1, &half, &l, 1, length); r = l
+                        default: break
+                        }
+                        var lg = leftGain, rg = rightGain
+                        l.withUnsafeBufferPointer { vDSP_vsma($0.baseAddress!, 1, &lg, outL.baseAddress! + output, 1, outL.baseAddress! + output, 1, length) }
+                        r.withUnsafeBufferPointer { vDSP_vsma($0.baseAddress!, 1, &rg, outR.baseAddress! + output, 1, outR.baseAddress! + output, 1, length) }
+                        output += n
+                    }
+                    return !failed
+                }
+            }
         }
         func sample(_ frame: Double) -> (Float, Float) {
             guard frame >= 0, frame < Double(length), frame.isFinite else { return (0, 0) }

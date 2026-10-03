@@ -10,5 +10,5 @@ cache = Path('Apple/Shared/SongListView.swift').read_text().split('struct SongLi
 test = Path('Tests/Apple/SetlistEntryCacheTests.swift').read_text()
 Path(sys.argv[1]).write_text(cache + '\n' + test)
 PY
-swiftc -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

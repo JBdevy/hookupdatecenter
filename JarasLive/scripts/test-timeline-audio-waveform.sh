@@ -22,5 +22,5 @@ struct AudioClip {
 '''
 Path(sys.argv[1]).write_text(stub + source[start:end] + Path('Tests/Apple/TimelineAudioWaveformTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

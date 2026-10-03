@@ -5,7 +5,8 @@ import SwiftUI
 import UIKit
 #endif
 @MainActor final class AppContainer: ObservableObject {
-    let auth: AuthService, show: ShowController, backend: MockBackendClient
+    let auth: AuthService, show: ShowController
+    let backend: any BackendClient
     @Published private(set) var starting = true
     @Published private(set) var startupProgress = 0.1
     @Published private(set) var startupStage = "Carregando projeto…"
@@ -15,8 +16,7 @@ import UIKit
     let preview: Bool
     init(preview: Bool = false) throws {
         self.preview = preview
-        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("JarasLive", isDirectory: true)
-        backend = MockBackendClient(file: preview ? nil : folder.appendingPathComponent("mock-server.json"))
+        backend = preview ? MockBackendClient() : RemoteBackendClient(baseURL: URL(string: "https://backcatlive.up.railway.app")!)
         let store: any SecureStore = preview ? MemorySecureStore() : KeychainStore(service: "com.hookdeveloper.jaraslive")
         #if os(macOS)
         let platform = "macOS", name = Host.current().localizedName ?? "Mac", feature = "desktop"
@@ -26,7 +26,7 @@ import UIKit
         // A Keychain failure must be visible; never replace the installation silently.
         do {
             let device = try DeviceAuthorizationService.installation(store: store, name: name, platform: platform)
-            auth = AuthService(backend: backend, store: store, installation: device, feature: feature)
+            auth = AuthService(backend: backend, store: store, installation: device, feature: feature, verifier: preview ? nil : .production)
             let persistence = DocumentProjectStore()
             show = try ShowController(executor: LocalCommandExecutor(), persistence: persistence, initialProject: preview ? .demo() : .empty(name: "Untitled"), cursorMemory: preview ? nil : ProjectCursorMemory())
             documents = ProjectDocuments(store: persistence, show: show, preview: preview)
@@ -47,6 +47,19 @@ import UIKit
         #endif
         if !preview {
             let audio = StemAudioPlayback.shared
+            #if os(macOS)
+            AudioLicenseAccess.shared.setAllowed(false)
+            audio.setLicenseAllowed(false)
+            auth.onAudioAuthorization = { [weak show] allowed in
+                AudioLicenseAccess.shared.setAllowed(allowed)
+                audio.setLicenseAllowed(allowed)
+                if !allowed {
+                    show?.send(.stopAll)
+                    TrackRecording.shared.finish()
+                }
+            }
+            #endif
+            TrackRecording.shared.bind(show)
             armedInstrumentObservation = TrackRecording.shared.$armed.sink { [weak show] _ in
                 // Published state is sent before the REC button redraws. Queue
                 // graph changes after the click, and only wake live instruments.
@@ -158,9 +171,14 @@ import UIKit
         startupStage = "Pronto"
         starting = false
         #if os(macOS)
+        var nextValidation = ProcessInfo.processInfo.systemUptime
         while !Task.isCancelled {
-            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
-            if auth.allowed { await auth.revalidate() }
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            auth.checkLocalExpiry()
+            if ProcessInfo.processInfo.systemUptime >= nextValidation {
+                nextValidation = ProcessInfo.processInfo.systemUptime + 30
+                Task { await auth.revalidate() }
+            }
         }
         #endif
     }

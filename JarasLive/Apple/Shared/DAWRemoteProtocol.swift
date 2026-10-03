@@ -6,7 +6,7 @@ enum DAWRemoteWire {
     static let service = "jaras-live"
     static let version: UInt8 = 2
     static let maximumPacket = 2 * 1024 * 1024
-    enum Packet { case command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), imageAsset(DAWRemoteImageAsset) }
+    enum Packet { case command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
     enum Failure: Error { case invalid }
     private static func encode<T: Encodable>(_ value: T, kind: UInt8) throws -> Data {
         var data = Data([0x4a, 0x4c, version, kind])
@@ -22,6 +22,11 @@ enum DAWRemoteWire {
         guard value.valid else { throw Failure.invalid }
         return try encode(value, kind: 2)
     }
+    static func accessRequest(_ request: DAWRemoteAccessRequest) throws -> Data {
+        guard request.valid else { throw Failure.invalid }
+        return try encode(request, kind: 5)
+    }
+    static func accessStatus(_ status: DAWRemoteAccessStatus) throws -> Data { try encode(status, kind: 6) }
     static func acknowledge(_ sequence: UInt64) throws -> Data { try encode(sequence, kind: 3) }
     static func imageAsset(_ asset: DAWRemoteImageAsset) throws -> Data {
         guard asset.data.count <= DAWRemoteImageAsset.maximumBytes else { throw Failure.invalid }
@@ -54,8 +59,35 @@ enum DAWRemoteWire {
                 return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
             }
             return .imageAsset(.init(project: uuid(at: 4), id: uuid(at: 20), data: Data(data.dropFirst(36))))
+        case 5:
+            guard data.count <= 256 else { throw Failure.invalid }
+            let request = try decoder.decode(DAWRemoteAccessRequest.self, from: payload)
+            guard request.valid else { throw Failure.invalid }; return .accessRequest(request)
+        case 6:
+            guard data.count <= 1024 else { throw Failure.invalid }
+            return .accessStatus(try decoder.decode(DAWRemoteAccessStatus.self, from: payload))
         default: throw Failure.invalid
         }
+    }
+}
+enum DAWRemoteAccess: String, Codable { case director, observer }
+struct DAWRemoteAccessRequest: Codable {
+    var mode: DAWRemoteAccess
+    var pin: String = ""
+    var valid: Bool { pin.isEmpty || (pin.utf8.count == 4 && pin.utf8.allSatisfy { (48...57).contains($0) }) }
+}
+struct DAWRemoteAccessStatus: Codable {
+    var mode: DAWRemoteAccess?
+    var requiresPIN: Bool
+    var error: String? = nil
+}
+/// An observer may only subscribe to a local TP view or fetch its still images.
+/// This whitelist is enforced by the Mac before any application command handler.
+enum DAWRemoteAccessRules {
+    static func allows(_ command: DAWRemoteCommand, mode: DAWRemoteAccess?) -> Bool {
+        guard command.valid, let mode else { return false }
+        if mode == .director { return true }
+        return command.action == .requestImage || (command.action == .remotePanel && (0...2).contains(command.value))
     }
 }
 struct DAWRemoteImageAsset: Equatable {
@@ -111,6 +143,14 @@ struct DAWRemoteCommand: Codable {
     }
 }
 struct DAWRemoteState: Codable, Equatable {
+    struct GridTempo: Codable, Equatable {
+        var start: Double; var end: Double; var bpm: Double; var beats: Int; var unit: Int
+        var valid: Bool {
+            start.isFinite && end.isFinite && start >= 0 && end > start &&
+            bpm.isFinite && (60...300).contains(bpm) && (1...32).contains(beats) &&
+            [1, 2, 4, 8, 16, 32, 64].contains(unit)
+        }
+    }
     struct Clip: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var start: Double; var duration: Double
         var gain: Double? = nil
@@ -198,8 +238,15 @@ struct DAWRemoteState: Codable, Equatable {
     var teleprompters: [DAWRemoteTeleprompter]? = nil
     var notices: DAWRemoteNotices? = nil
     var timer: DAWRemoteTimerState? = nil
+    var gridTempo: [GridTempo]? = nil
+    var gridDivisions: Int? = nil
+    var gridLines: Bool? = nil
+    var gridPrimaryColor: UInt32? = nil
+    var gridSecondaryColor: UInt32? = nil
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite &&
+        (gridTempo ?? []).count <= 32768 && (gridTempo ?? []).allSatisfy(\.valid) &&
+        (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
         (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
         (teleprompters ?? []).count <= 2 && (teleprompters ?? []).allSatisfy(\.valid) &&
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&

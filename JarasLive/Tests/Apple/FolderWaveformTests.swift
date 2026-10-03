@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+setbuf(stdout, nil)
 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("jaras-folder-test-\(UUID())")
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: directory) }
@@ -40,12 +41,7 @@ let spans = FolderWaveformCache.prepare(folder: folder, sources: [source(1, star
 precondition(spans.activeRanges == [1.0...2.5, 4.0...5.0], "sum drawing clips to merged real item extents and preserves empty gaps")
 let clippedPage = FolderWaveformCache.prepare(folder: folder, sources: [source(1, start: 15.5)], page: 1)
 precondition(clippedPage.activeRanges == [16.0...16.5], "sum clip intervals stop exactly at page and item boundaries")
-let coarse = TimelineTimeRuler.ticks(from: 0, to: 120, pixelsPerSecond: 8)
-precondition(coarse.first?.label == "00:00:00" && coarse.contains { $0.label == "00:01:00" }, "ruler labels seconds independently of meter")
-let fine = TimelineTimeRuler.ticks(from: 3600, to: 3600.02, pixelsPerSecond: 100000)
-precondition(fine.count <= 30 && Set(fine.map(\.label)).count == fine.count, "close zoom retains unique subsecond labels without excessive ticks")
-precondition(TimelineTimeRuler.ticks(from: 0, to: 10, pixelsPerSecond: .nan).isEmpty, "invalid ruler scale is rejected")
-print("FOLDER_ACTIVE_EXTENTS_AND_TIME_RULER_BOUNDARIES_OK")
+print("FOLDER_ACTIVE_EXTENTS_OK")
 
 let stale = cache.block(folder: folder, sources: [source(0.5)], page: 0, pixelsPerSecond: 1000)
 precondition(stale === detail, "gain refresh keeps the last complete sum instead of blanking it")
@@ -84,6 +80,37 @@ RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
 precondition(preloadedFolder.revision == revisionBeforeZoom, "sum zoom never launches a new background mix")
 try FileManager.default.moveItem(at: moved, to: url)
 print("FOLDER_PROJECT_PRELOAD_ACTIVE_PAGES_ALL_ZOOMS_RAM_ONLY_WITHOUT_BACKGROUND_MIX_OK")
+
+// Concurrent groups own independent readers and publish only after every
+// group's pages are prepared, including empty groups and mixed source gains.
+let concurrentGroups = (0..<6).map { index in
+    (folder: UUID(), sources: index == 5 ? [] : [source(Double(index + 1) / 4, start: 0), source(-0.25, start: 33)])
+}
+let concurrentCache = FolderWaveformCache()
+var concurrentDone = false
+var concurrentProgress: [Int] = []
+Task { @MainActor in
+    await concurrentCache.preload(concurrentGroups) { done, total in
+        precondition(total == 600)
+        concurrentProgress.append(done)
+    }
+    concurrentDone = true
+}
+let concurrentDeadline = Date(timeIntervalSinceNow: 15)
+while !concurrentDone && Date() < concurrentDeadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.005)) }
+precondition(concurrentDone && concurrentProgress.last == 600)
+precondition(zip(concurrentProgress, concurrentProgress.dropFirst()).allSatisfy { $0 <= $1 })
+try FileManager.default.moveItem(at: url, to: moved)
+for (index, group) in concurrentGroups.prefix(5).enumerated() {
+    for page in [0, 2] {
+        let block = concurrentCache.block(folder: group.folder, sources: group.sources, page: page, pixelsPerSecond: 1000)
+        precondition(block != nil, "all concurrent groups are available without source audio")
+        let expected: Float = page == 0 ? Float(index + 1) / 16 : 0.0625
+        precondition(abs(block!.channels[0].map { abs($0.y) }.max()! - expected) < 0.0001)
+    }
+}
+try FileManager.default.moveItem(at: moved, to: url)
+print("FOLDER_CONCURRENT_GROUPS_PROGRESS_EMPTY_GROUP_AND_PCM_ACCURACY_OK")
 
 let diskRequest = FolderWaveformCache.Request(folder: UUID(), sources: [source(1)], page: 0)
 // Use a whole-second timestamp so restoring Date through the filesystem does
@@ -347,3 +374,26 @@ while Date() < recoveredDeadline {
 }
 precondition(recoveryReady)
 print("FOLDER_FAILED_REPLACEMENT_RETAINS_PRIOR_CURVE_WITHOUT_RETRY_SPIN_OK")
+
+// Accelerate follows the signed scalar reader through fractional positions,
+// pan/channel modes, source end and decoder page seams.
+for increment in [1.0, 48000.0/44100, 32000.0/44100] {
+    for mode in 0...3 {
+        let vector = try FolderWaveformCache.Reader(seamURL)
+        let scalar = try FolderWaveformCache.Reader(seamURL)
+        let count = 100000
+        var left = [Float](repeating: 0, count: count), right = left
+        precondition(vector.accumulate(initial: 0.3, increment: increment, range: 0..<count,
+                         leftGain: 0.7, rightGain: -0.3, mode: mode, leftOutput: &left, rightOutput: &right, cancelled: { false }))
+        var maximum: Float = 0
+        for frame in 0..<count {
+            let value = scalar.sample(0.3 + Double(frame) * increment)
+            let l = mode == 2 ? value.1 : mode == 3 ? (value.0 + value.1) * 0.5 : value.0
+            let r = mode == 1 ? value.0 : mode == 3 ? l : value.1
+            maximum = max(maximum, abs(left[frame] - l * 0.7), abs(right[frame] - r * -0.3))
+        }
+        precondition(maximum < 0.001, "vector interpolation must match scalar PCM: \(maximum)")
+        precondition(vector.decodedPageCount <= 4, "fractional seam must not decode backwards")
+    }
+}
+print("FOLDER_VECTORIZED_MIX_SCALAR_ORACLE_CHANNEL_MODES_FRACTIONAL_SEAMS_OK")

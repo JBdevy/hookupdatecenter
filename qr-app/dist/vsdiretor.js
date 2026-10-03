@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.2-director-performance-v47'
+  const VERSION = '1.0.2-state-loading-v1'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300
@@ -4894,7 +4894,7 @@
     }
 
     const reportedBridgePage = normalizeSharedPage(
-      data?.activePage || data?.activeTab)
+      data?.activePage || data?.activeTab || data?.currentPage)
     // O app dos músicos acompanha as duas listas compartilhadas, mas não troca
     // para Mixer. Ao abrir Músicas na extensão ou no Diretor, ele passa a exibir
     // a mesma Lista Geral; ao voltar para Repertório, volta junto.

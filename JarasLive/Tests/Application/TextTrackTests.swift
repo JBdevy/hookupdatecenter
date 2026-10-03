@@ -18,7 +18,7 @@ final class TextTrackTests: XCTestCase {
         project.songs[0].tracks[2].clips.append(collision)
         XCTAssertThrowsError(try project.validate())
         project.songs[0].tracks[2].clips.removeLast()
-        project.songs[0].tracks[2].clips[0].audioFile = AudioFile(path: "Steams/audio.wav")
+        project.songs[0].tracks[2].clips[0].audioFile = AudioFile(path: "Stems/audio.wav")
         XCTAssertEqual(project.songs[0].tracks[2].clips[0].id, textID)
         XCTAssertThrowsError(try project.validate(), "teleprompter does not accept audio stems")
     }
@@ -67,7 +67,7 @@ final class TextTrackTests: XCTestCase {
         project.songs[0].tracks[1].clips = []
         XCTAssertThrowsError(try project.validate(), "text cannot be assigned to an audio track")
         project = fixture()
-        project.songs[0].tracks[1].clips[0].audioFile = AudioFile(path: "Steams/invalid.wav")
+        project.songs[0].tracks[1].clips[0].audioFile = AudioFile(path: "Stems/invalid.wav")
         XCTAssertThrowsError(try project.validate())
         project = fixture()
         project.songs[0].tracks[1].fx = NativeFXSettings()

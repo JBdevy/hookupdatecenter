@@ -5,6 +5,7 @@ let mappingTestApplicationActive = true
 // Only the external devices and project are replaced. The test compiles the
 // production MIDI learner, conflict detection, latch and continuous routing.
 enum ShowCommand: String { case mute, solo, volume, pan }
+enum Project { static let maximumTrackCount = 1000 }
 struct MappingTestTrack { let id: UUID; let name: String }
 struct MappingTestSong { var tracks: [MappingTestTrack] = [] }
 struct MappingTestProject { var id = UUID(); var songs: [MappingTestSong] = [] }
@@ -53,6 +54,10 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func releaseMIDINotes() {}
     func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) { forwarded += 1 }
 }
+@MainActor final class KeyboardMIDIMonitor {
+    static let shared = KeyboardMIDIMonitor()
+    func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {}
+}
 
 struct FXParameterMapping: Codable, Equatable {
     var clip: UUID?; var parameter: NativeFXParameter
@@ -85,6 +90,13 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack).trackNumber == 1)
         precondition(mappings.actions.binding(.muteMaster).midi?.number == 90, "legacy master mappings migrate without a project dependency")
         mappings.sources[100] = (123, "Test MIDI")
+        var recorded: [(Int32, UInt8, UInt8, UInt8, Double)] = []
+        mappings.onMIDIReceived = { recorded.append(($0, $1, $2, $3, $4)) }
+        mappings.receive(endpoint: 100, status: 0x95, number: 60, value: 100, timestamp: 10.125)
+        mappings.receive(endpoint: 100, status: 0x85, number: 60, value: 0, timestamp: 10.875)
+        precondition(recorded.count == 2 && recorded.allSatisfy { $0.0 == 123 })
+        precondition(recorded.map { $0.1 } == [0x95, 0x85] && recorded.map { $0.4 } == [10.125, 10.875], "capture preserves source, channel, note-off and original CoreMIDI time")
+        StemAudioPlayback.shared.forwarded = 0
         func cc(_ number: UInt8, _ value: UInt8, channel: UInt8 = 0) {
             mappings.receive(endpoint: 100, status: 0xb0 | channel, number: number, value: value)
         }
@@ -92,6 +104,7 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.mode == "midi")
         mappings.receive(endpoint: 100, status: 0x90, number: 60, value: 100)
         precondition(mappings.candidate == nil, "A note cannot be learned as a fader")
+        precondition(recorded.count == 2, "learning a mapping does not record MIDI notes")
         cc(7, 0)
         precondition(mappings.candidate?.number == 7, "CC zero can teach the fader")
         mappings.save()

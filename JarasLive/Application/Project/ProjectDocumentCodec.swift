@@ -1,6 +1,20 @@
 import Foundation
 import CryptoKit
 
+/// Each CatLive document owns its media and backup directory exclusively.
+public enum ProjectDirectoryPolicy {
+    public static func validate(_ document: URL) throws {
+        guard document.pathExtension.lowercased() == "jl" else { return }
+        let fm = FileManager.default
+        let folder = document.deletingLastPathComponent()
+        guard fm.fileExists(atPath: folder.path) else { return }
+        let others = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .contains { $0.pathExtension.lowercased() == "jl" && $0.standardizedFileURL != document.standardizedFileURL }
+        guard !others else {
+            throw ProjectError.invalid("This folder already contains another CatLive project. Choose or create a separate folder so Stems and backups are not shared.")
+        }
+    }
+}
 /// Portable application document protection, not a user-password vault.
 /// The application key is shared by installations so projects remain transferable.
 public enum ProjectDocumentCodec {
@@ -31,6 +45,7 @@ public enum ProjectDocumentCodec {
         return project
     }
     public static func writeEncoded(_ data: Data, to url: URL, exclusive: Bool = false) throws {
+        try ProjectDirectoryPolicy.validate(url)
         try data.write(to: url, options: exclusive ? .withoutOverwriting : .atomic)
         ProjectDocumentAppearance.apply(to: url)
     }

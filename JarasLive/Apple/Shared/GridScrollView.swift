@@ -353,6 +353,20 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView {
+    /// The destination bucket must exist before AppKit reveals its pixels.
+    /// Only the horizontal timeline installs this callback.
+    var prepareHorizontalScroll: ((CGFloat) -> Bool)?
+    private var preparingHorizontalScroll = false
+    func prepareHorizontalViewport(at x: CGFloat) {
+        guard !preparingHorizontalScroll, zoomAnchor == nil, let document = documentView,
+              let prepareHorizontalScroll else { return }
+        preparingHorizontalScroll = true
+        defer { preparingHorizontalScroll = false }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        if prepareHorizontalScroll(x) { document.layoutSubtreeIfNeeded() }
+    }
     var fileDrop: (([URL], CGPoint) -> Bool)?
     var fileDropPreview: ((CGPoint?) -> Void)?
     var fileDropModifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
@@ -435,10 +449,14 @@ private final class TimelineClipView: NSClipView {
     // Momentum scrolling can update bounds directly, bypassing the proposed
     // rectangle constraint. Enforce time zero on both AppKit entry points.
     override func setBoundsOrigin(_ newOrigin: NSPoint) {
-        super.setBoundsOrigin(boundedOrigin(newOrigin))
+        let origin = boundedOrigin(newOrigin)
+        if origin.x != bounds.minX { (superview as? GridNativeScrollView)?.prepareHorizontalViewport(at: origin.x) }
+        super.setBoundsOrigin(origin)
     }
     override func scroll(to newOrigin: NSPoint) {
-        super.scroll(to: boundedOrigin(newOrigin))
+        let origin = boundedOrigin(newOrigin)
+        if origin.x != bounds.minX { (superview as? GridNativeScrollView)?.prepareHorizontalViewport(at: origin.x) }
+        super.scroll(to: origin)
     }
 
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
@@ -566,10 +584,6 @@ struct SidebarScrollMetrics: Equatable {
     private(set) var metrics = SidebarScrollMetrics()
 
     private var wheelMonitor: Any?
-    private var wheelTimer: Timer?
-    private var wheelDestination: CGFloat?
-    private var wheelFrame = 0.0
-    private func stopWheel() { wheelTimer?.invalidate(); wheelTimer = nil; wheelDestination = nil }
     @discardableResult func handleWheel(_ event: NSEvent) -> Bool {
         guard let scroll = scrollView, event.window === scroll.window, scroll.window?.attachedSheet == nil,
               !scroll.isHiddenOrHasHiddenAncestor,
@@ -577,7 +591,7 @@ struct SidebarScrollMetrics: Equatable {
         // Trackpad/modified wheel events belong to the timeline or native scroll.
         // Reject them before traversing the entire SwiftUI document for hit testing.
         guard !event.hasPreciseScrollingDeltas,
-              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { stopWheel(); return false }
+              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return false }
         var hit = scroll.contentView.hitTest(scroll.convert(event.locationInWindow, from: nil))
         var nearest: NSScrollView?
         while let current = hit {
@@ -588,33 +602,19 @@ struct SidebarScrollMetrics: Equatable {
         let movement = -event.scrollingDeltaY * 16
         guard movement != 0 else { return false }
         refresh()
-        if let destination = wheelDestination, (destination - metrics.offset) * movement < 0 { stopWheel() }
-        wheelDestination = min(metrics.maximumOffset, max(0, (wheelDestination ?? metrics.offset) + movement))
-        if wheelTimer == nil {
-            wheelFrame = ProcessInfo.processInfo.systemUptime - 1.0 / 60
-            advanceWheel()
-            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.advanceWheel() }
-            wheelTimer = timer; RunLoop.main.add(timer, forMode: .common)
-        }
+        // Physical wheels have no native momentum. Apply their complete step
+        // now, as Logic does; trackpads retain AppKit's own scrolling behavior.
+        applyScroll(to: metrics.offset + movement)
         return true
-    }
-    private func advanceWheel() {
-        guard let target = wheelDestination, scrollView?.window != nil, scrollView?.window?.attachedSheet == nil else { stopWheel(); return }
-        let difference = target - metrics.offset
-        if abs(difference) < 0.1 { applyScroll(to: target); stopWheel(); return }
-        let now = ProcessInfo.processInfo.systemUptime
-        let elapsed = min(0.05, max(0, now - wheelFrame)); wheelFrame = now
-        applyScroll(to: metrics.offset + difference * (1 - exp(-elapsed / 0.055)))
     }
     func attach(_ scroll: NSScrollView?, owner: NSView? = nil) {
         attachmentOwner = owner
         guard scrollView !== scroll else { refresh(); return }
-        stopWheel()
         if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor); self.wheelMonitor = nil }
         if scroll != nil {
             wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown, .rightMouseDown]) { [weak self] event in
                 guard let self else { return event }
-                if event.type != .scrollWheel { self.stopWheel(); return event }
+                if event.type != .scrollWheel { return event }
                 return self.handleWheel(event) ? nil : event
             }
         }
@@ -667,7 +667,7 @@ struct SidebarScrollMetrics: Equatable {
         metrics = next
         for changed in Array(listeners.values) { changed() }
     }
-    func scroll(to offset: CGFloat) { stopWheel(); applyScroll(to: offset) }
+    func scroll(to offset: CGFloat) { applyScroll(to: offset) }
     private func applyScroll(to offset: CGFloat) {
         guard offset.isFinite, let scroll = scrollView, let document = scroll.documentView else { return }
         let clip = scroll.contentView
@@ -691,7 +691,6 @@ struct SidebarScrollMetrics: Equatable {
         refresh()
     }
     deinit {
-        wheelTimer?.invalidate()
         if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
         notifications.forEach(NotificationCenter.default.removeObserver)
         if let documentNotification { NotificationCenter.default.removeObserver(documentNotification) }

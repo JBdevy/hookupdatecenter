@@ -73,11 +73,15 @@ import AppKit
     func open(directory: URL) {
         reset(); self.directory = directory; snapshot = nil
     }
+    func closeProject() {
+        window?.close(); projectionEnabled = false
+        reset(); directory = nil; snapshot = nil; message = ""
+    }
     func toggle() {
         if visible { window?.close(); return }
         let window = ProjectionWindow(contentRect: NSRect(x: 0,y: 0,width: 800,height: 450), styleMask: [.titled,.closable,.resizable,.miniaturizable], backing: .buffered, defer: false)
         window.closesOnRightDoubleClick = true
-        window.title = "Jaras Video"; window.isReleasedWhenClosed = false
+        window.title = "CatLive Video"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
         window.level = .normal; window.delegate = self
         window.contentView = NSHostingView(rootView: VideoSurface(controller: self))
@@ -254,6 +258,7 @@ private final class VideoLayerView: NSView {
     static let teleprompter = VideoPlayback()
     static let teleprompter2 = VideoPlayback()
     func open(directory: URL) {}
+    func closeProject() {}
     func update(_ snapshot: ShowSnapshot) {}
 }
 #endif

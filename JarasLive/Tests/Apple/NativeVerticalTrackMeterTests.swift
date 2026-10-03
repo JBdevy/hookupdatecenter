@@ -160,6 +160,33 @@ import Foundation
     let hiddenDrawingState = meter.needsDisplay, hiddenLayoutState = meter.needsLayout
     replacement.reset()
     precondition(meter.needsDisplay == hiddenDrawingState && meter.needsLayout == hiddenLayoutState, "hidden-window level changes must not add AppKit invalidations")
+    // No new level value is sent after the window returns. The window event
+    // itself must flush the cached value; moving to another screen is unnecessary.
+    window.orderFront(nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    precondition(meterLayer("meter-level-0").frame.height == 0 && meterLayer("meter-level-1").frame.height == 0,
+                 "Window reveal must flush cached silence without an audio tick")
+    replacement.update(left: 0.1, right: 0.5, elapsed: 1)
+    let retainedLeft = meterLayer("meter-level-0")
+    meter.layer = CALayer()
+    precondition(retainedLeft.superlayer === meter.layer && retainedLeft.frame.height > 0,
+                 "Replacing the backing layer must restore bars immediately, without resizing or a new audio tick")
+    meter.needsLayout = true; meter.layoutSubtreeIfNeeded()
+    precondition(meterLayer("meter-level-0") === retainedLeft && retainedLeft.frame.height > 0,
+                 "A replaced AppKit backing layer reattaches the retained meter without new audio")
+    // Master is outside a scroll container and needs the same wake-up path.
+    let masterWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 40, height: 80), styleMask: [.borderless], backing: .buffered, defer: false)
+    let masterModel = TrackMeterLevel()
+    let masterView = NativeVerticalTrackMeterView(frame: NSRect(x: 0, y: 0, width: 12, height: 70))
+    masterView.bind(masterModel, showScale: false); masterWindow.contentView = masterView
+    masterModel.update(left: 0.5, right: 1, elapsed: 1)
+    masterWindow.orderFront(nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    let masterLevel = masterView.layer!.sublayers!.first { $0.name == "meter-level-1" }!
+    precondition(masterLevel.frame.height == masterView.bounds.height && masterLevel.frame.height > 0,
+                 "Master created while its window is hidden appears on reveal without changing screen")
+    masterWindow.orderOut(nil); window.orderOut(nil)
+    print("NATIVE_MASTER_METER_WINDOW_REVEAL_AND_BACKING_LAYER_RECOVERY_OK")
     print("NATIVE_STEREO_METER_DRAW_VISIBLE_CLIP_REVEAL_SUBSCRIPTION_AND_ZERO_OFFSCREEN_LAYOUT_OK")
     print("NATIVE_METER_95_OFFSCREEN_300_TICKS_MS=\(elapsed * 1_000) per_tick_ms=\(elapsed * 1_000 / 300)")
 }

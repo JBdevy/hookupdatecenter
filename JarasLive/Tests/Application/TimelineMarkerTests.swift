@@ -2,6 +2,13 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineMarkerTests: XCTestCase {
+    func testForwardTempoHeadsUseSpaceUntilNextMarker() {
+        let first = TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0x999999, tempoBPM: 120)
+        let second = TimelineMarker(id: UUID(), name: "Tempo", position: 12, color: 0x999999, tempoBPM: 90)
+        let heads = TimelineMarker.flagWidths([second, first], scale: 20, widths: [first.id: 50, second.id: 50])
+        XCTAssertEqual(heads[first.id], 37); XCTAssertEqual(heads[second.id], 60)
+        XCTAssertLessThan(first.position * 20 + heads[first.id]!, second.position * 20)
+    }
     func testLeftFacingTempoHeadsUseTheSpaceBeforeTheirOwnLine() {
         let origin = TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0x999999, tempoBPM: 120)
         let first = TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0x999999, tempoBPM: 120)

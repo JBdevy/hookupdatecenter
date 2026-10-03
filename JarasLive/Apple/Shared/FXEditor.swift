@@ -241,7 +241,13 @@ struct TabbedClipFXEditor: View {
     let close: () -> Void
     @State private var page = "EQ"
     @State private var enabledEffects: Set<String> = []
-    private let pages = ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
+    private var pages: [String] {
+        #if os(macOS)
+        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatStemSeparation 5"]
+        #else
+        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
+        #endif
+    }
     private func color(_ effect: String) -> Color {
         switch effect {
         case "EQ": return JarasTheme.green
@@ -255,17 +261,17 @@ struct TabbedClipFXEditor: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Jaras FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")).font(.headline).lineLimit(1)
+                Text("CatLive FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")).font(.headline).lineLimit(1)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
             HStack(spacing: 4) {
                 ForEach(pages, id: \.self) { effect in
-                    let active = enabledEffects.contains(effect)
+                    let active = effect == "CatStemSeparation 5" || enabledEffects.contains(effect)
                     let tint = color(effect)
                     Button { page = effect } label: {
-                        Text(LocalizedStringKey(effect == "Limiter" ? "Jaras Limiter" : effect)).font(.system(size: 12, weight: .semibold))
+                        Text(LocalizedStringKey(effect == "Limiter" ? "CatLive Limiter" : effect)).font(.system(size: 12, weight: .semibold))
                             .frame(maxWidth: .infinity).frame(height: 30)
                             .background(tint.opacity(active ? 0.30 : 0.06))
                             .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(page == effect ? 0.95 : active ? 0.55 : 0.14), lineWidth: page == effect ? 1.5 : 1))
@@ -275,8 +281,15 @@ struct TabbedClipFXEditor: View {
                         .accessibilityValue(Text(active ? "Enabled" : "Disabled"))
                 }
             }
-            FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close)
-                .id(page)
+            #if os(macOS)
+            if page == "CatStemSeparation 5" {
+                CatStemFXEditor(show: show, track: nil, clip: clip)
+            } else {
+                FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close).id(page)
+            }
+            #else
+            FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close).id(page)
+            #endif
         }.padding(20).frame(minWidth: 640, idealWidth: 740, maxWidth: .infinity, minHeight: 540, idealHeight: 560, maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onReceive(show.$snapshot.map { snapshot -> Set<String> in

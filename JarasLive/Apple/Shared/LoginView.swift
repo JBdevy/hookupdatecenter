@@ -1,52 +1,186 @@
 import SwiftUI
 struct LoginView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var auth: AuthService
-    let backend: MockBackendClient
-    @State private var email = "demo@jaras.live"
-    @State private var password = ""
-    @State private var name = ""
-    @State private var mode = "Entrar"
-    @State private var licenses = 2
-    @State private var scenario: MockScenario = .valid
+    let backend: any BackendClient
+    @State private var email = ""
+    @State private var cpf = ""
+    @State private var login = false
+    @State private var managingDevices = false
+    var offersTrial = true
+    var onAuthorized: () -> Void = {}
     @FocusState private var field: Int?
     var body: some View {
-        ZStack {
-            JarasTheme.background.ignoresSafeArea()
-            HStack(spacing: 65) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("JARAS").font(.system(size: 52, weight: .black, design: .rounded)).tracking(4)
-                    Text("LIVE").font(.system(size: 23, weight: .bold, design: .monospaced)).tracking(12).foregroundStyle(JarasTheme.accent)
-                    Rectangle().fill(JarasTheme.accent).frame(width: 64, height: 4)
-                    Text("Seu show.\nNo seu controle.").font(.system(size: 25, weight: .medium))
-                    Text("MULTITRACK · REPERTÓRIOS · SUB PLAY").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
-                }.frame(maxWidth: 340, alignment: .leading)
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(LocalizedStringKey(mode)).font(.title2.bold())
-                    if mode == "Criar conta" { TextField("Nome", text: $name).focused($field, equals: 0) }
-                    TextField("E-mail", text: $email).focused($field, equals: 1).textContentType(.username).onSubmit { field = 2 }
-                    if mode != "Recuperar senha" { SecureField("Senha", text: $password).focused($field, equals: 2).textContentType(.password).onSubmit { submit() } }
-                    if !auth.message.isEmpty { Text(LocalizedStringKey(auth.message)).font(.footnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
-                    Button(action: submit) { HStack { Spacer(); Text(LocalizedStringKey(auth.busy ? "Aguarde…" : mode)); Spacer() } }.buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: true)).disabled(auth.busy)
-                    HStack { Button("Entrar") { mode = "Entrar" }; Spacer(); Button("Criar conta") { mode = "Criar conta" }; Spacer(); Button("Esqueci a senha") { mode = "Recuperar senha" } }.font(.caption).buttonStyle(.plain).foregroundStyle(JarasTheme.secondary)
-                    Divider().overlay(JarasTheme.line)
-                    Text("AMBIENTE DE DEMONSTRAÇÃO").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(JarasTheme.accent)
-                    Text("demo@jaras.live · senha: jaras123").font(.caption).foregroundStyle(JarasTheme.secondary)
-                    Picker("Licenças", selection: $licenses) { ForEach(1...3, id: \.self) { count in Group { if count == 1 { Text("1 dispositivo") } else { Text("\(count) dispositivos") } }.tag(count) } }.pickerStyle(.segmented)
-                    Picker("Cenário", selection: $scenario) { Text("Normal").tag(MockScenario.valid); Text("Bloqueada").tag(MockScenario.blocked); Text("Expirada").tag(MockScenario.expired); Text("Revogada").tag(MockScenario.revoked) }
-                }.textFieldStyle(.roundedBorder).padding(28).frame(width: 390).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 12))
-            }.padding(32)
-        }
+        VStack(spacing: 22) {
+            Image("CatLiveSplash").resizable().scaledToFit().frame(width: 160, height: 160)
+            Text("Bem-vindo ao CatLive").font(.title2.bold())
+            HStack(spacing: 12) {
+                Button("Login") { login = true; field = 1 }
+                    .buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: login))
+                if offersTrial { Button("Trial teste · 7 dias") {
+                    Task { if await auth.startTrial(hardwareID: hardwareID) { onAuthorized() } }
+                }.buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: false)) }
+                if !offersTrial { Button("Fechar") { dismiss() }.buttonStyle(StageButtonStyle()) }
+            }.disabled(auth.busy)
+            if login || !offersTrial {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("E-mail cadastrado", text: $email).textContentType(.username).focused($field, equals: 1).onSubmit { field = 2 }
+                    SecureField("CPF", text: $cpf).focused($field, equals: 2).onSubmit { submit() }
+                    Button(auth.busy ? "Aguarde…" : "Entrar") { submit() }
+                        .buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: true)).disabled(auth.busy || email.isEmpty || cpf.isEmpty)
+                    Button("Gerenciar dispositivos") { managingDevices = true }
+                        .disabled(auth.busy || email.isEmpty || cpf.isEmpty)
+                }.textFieldStyle(.roundedBorder)
+            }
+            if auth.busy { ProgressView().controlSize(.small) }
+            if !auth.message.isEmpty { Text(auth.message).font(.footnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
+            Text(offersTrial ? "Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo." : "Use o e-mail e o CPF da sua compra.")
+                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+        }.padding(30).frame(width: 440).background(JarasTheme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 16)).padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
+            .sheet(isPresented: $managingDevices) {
+                CredentialDevicesView(auth: auth, backend: backend, email: email, cpf: cpf)
+            }
     }
+    private var hardwareID: String { DeviceAuthorizationService.hardwareID(fallback: auth.installation.id) }
     private func submit() {
         Task {
-            await backend.configure(maxDevices: licenses, scenario: scenario)
-            if mode == "Criar conta" { await auth.signup(name: name, email: email, password: password) }
-            else if mode == "Recuperar senha" { await auth.resetPassword(email: email) }
-            else { await auth.login(email: email, password: password) }
-            password = ""
+            if await auth.login(email: email, password: cpf) { cpf = ""; onAuthorized() }
         }
+    }
+}
+struct CredentialDevicesView: View {
+    @ObservedObject var auth: AuthService
+    let backend: any BackendClient
+    let email: String
+    let cpf: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var devices: [AuthorizedDevice] = []
+    @State private var pending: AuthorizedDevice?
+    @State private var busy = false
+    @State private var loaded = false
+    @State private var message = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("Dispositivos conectados").font(.title2.bold()); Spacer(); Button("Fechar") { dismiss() }.disabled(busy) }
+            Text(email).foregroundStyle(JarasTheme.secondary)
+            Text("Remova um computador para liberar sua licença e entrar em outro.").font(.callout)
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(devices) { device in
+                        DeviceAccountRow(device: device, current: device.id == auth.installation.id) { pending = device }.disabled(busy)
+                    }
+                    if loaded && devices.isEmpty { Text("Nenhum dispositivo conectado.").foregroundStyle(JarasTheme.secondary) }
+                }
+            }.frame(minHeight: 160, maxHeight: 300)
+            if busy { ProgressView().controlSize(.small) }
+            if !message.isEmpty { Text(message).font(.caption).foregroundStyle(JarasTheme.yellow) }
+            Button("Atualizar lista") { Task { await load() } }.disabled(busy)
+        }.padding(24).frame(width: 520).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .task { await load() }
+            .alert("Remover dispositivo?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), presenting: pending) { device in
+                Button("Cancelar", role: .cancel) { pending = nil }
+                Button("Remover", role: .destructive) { Task { await remove(device) } }
+            } message: { device in
+                Text(device.id == auth.installation.id ? "Você sairá da conta neste computador e a licença ficará disponível." : "A licença de \(device.deviceName) ficará disponível. Ele precisará entrar novamente para usar a conta.")
+            }
+    }
+    private func load() async {
+        guard !busy else { return }; busy = true; defer { busy = false }
+        do { devices = try await backend.credentialDevices(email: email, cpf: cpf); loaded = true; message = "" }
+        catch { message = error.localizedDescription }
+    }
+    private func remove(_ device: AuthorizedDevice) async {
+        guard !busy else { return }; busy = true; defer { busy = false }; pending = nil
+        do {
+            try await backend.revokeDevice(email: email, cpf: cpf, installationId: device.id)
+            devices.removeAll { $0.id == device.id }; auth.removedAtLogin(device, email: email)
+            message = "Dispositivo removido. A licença está disponível."
+        } catch { message = error.localizedDescription }
+    }
+}
+struct DeviceAccountRow: View {
+    let device: AuthorizedDevice
+    let current: Bool
+    var remove: () -> Void
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: device.platform == "macOS" ? "desktopcomputer" : "laptopcomputer").font(.title2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(device.deviceName).font(.headline)
+                Text(device.platform + (current ? " · Este computador" : "")).font(.caption).foregroundStyle(JarasTheme.secondary)
+                Text("Último acesso: " + device.lastSeenAt.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(JarasTheme.secondary)
+            }
+            Spacer()
+            Button("Remover", role: .destructive, action: remove)
+        }.padding(12).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 struct LoginPreview: PreviewProvider {
     static var previews: some View { let container = try! AppContainer(preview: true); LoginView(auth: container.auth, backend: container.backend).frame(width: 1100, height: 720) }
+}
+/// One reusable notice, reopened every five seconds while access is restricted.
+/// The audio gate is independent of this UI, including while the notice is closed.
+struct LicenseNotice: View {
+    @ObservedObject var auth: AuthService
+    let backend: any BackendClient
+    @State private var visible = true
+    @State private var signingIn = false
+    @State private var showingGrace = false
+    @State private var graceSeconds = 5
+    var body: some View {
+        Group {
+            if showingGrace && !auth.graceNotice.isEmpty && auth.restriction.isEmpty && !signingIn {
+                VStack(spacing: 18) {
+                    Image(systemName: "clock.badge.exclamationmark").font(.system(size: 25)).foregroundStyle(JarasTheme.yellow)
+                    Text("Prazo de tolerância").font(.title2.bold())
+                    Text(auth.graceNotice).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    Text("Este aviso fecha em \(graceSeconds)s").font(.caption).foregroundStyle(JarasTheme.secondary)
+                }.padding(26).frame(width: 440).background(JarasTheme.panel)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(JarasTheme.yellow.opacity(0.5)))
+                    .shadow(color: .black.opacity(0.5), radius: 22)
+            }
+            if visible && !auth.restriction.isEmpty && auth.workspaceAllowed && !signingIn {
+                VStack(spacing: 18) {
+                    Image(systemName: "speaker.slash.fill").font(.system(size: 25)).foregroundStyle(JarasTheme.yellow)
+                    Text("CatLive").font(.title2.bold())
+                    Text(auth.restriction).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button("Fechar") { visible = false }
+                        Button("Login") { signingIn = true }
+                        Button("Verificar licença") { Task { await auth.revalidate() } }.disabled(auth.busy)
+                    }.buttonStyle(.bordered)
+                }.padding(26).frame(width: 420).background(JarasTheme.panel)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(JarasTheme.yellow.opacity(0.5)))
+                    .shadow(color: .black.opacity(0.5), radius: 22)
+            }
+        }
+        .sheet(isPresented: $signingIn) {
+            LoginView(auth: auth, backend: backend, offersTrial: false, onAuthorized: { signingIn = false }).frame(width: 550, height: 620)
+        }
+        .task(id: auth.graceNotice) {
+            showingGrace = !auth.graceNotice.isEmpty; graceSeconds = 5
+            guard showingGrace else { return }
+            for seconds in stride(from: 5, through: 1, by: -1) {
+                graceSeconds = seconds
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            }
+            showingGrace = false
+        }
+        .task(id: auth.restriction) {
+            visible = true
+            guard !auth.restriction.isEmpty else { return }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    visible = false
+                    try await Task.sleep(nanoseconds: 80_000_000)
+                    visible = true
+                } catch { return }
+            }
+        }
+    }
 }

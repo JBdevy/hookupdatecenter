@@ -125,11 +125,11 @@ import Combine
         list.backgroundColor = NSColor(calibratedWhite: 0.105, alpha: 1); list.style = .plain
         list.dataSource = self; list.delegate = self; list.allowsEmptySelection = false
         list.bypassRow = { [weak self] row in
-            guard let self, self.rows.indices.contains(row) else { return }
+            guard let self, self.rows.indices.contains(row), self.rows[row].effect != "CatStemSeparation 5" else { return }
             self.show.toggleFXBypass(self.track, effect: self.rows[row].effect)
         }
         list.removeRow = { [weak self] row in
-            guard let self, self.rows.indices.contains(row) else { return }
+            guard let self, self.rows.indices.contains(row), self.rows[row].effect != "CatStemSeparation 5" else { return }
             self.show.removeFX(self.track, effect: self.rows[row].effect)
         }
         list.registerForDraggedTypes([Self.dragType]); list.setDraggingSourceOperationMask(.move, forLocal: true)
@@ -156,14 +156,15 @@ import Combine
         editor?.frame = editorArea.bounds
     }
     private func refresh(_ settings: NativeFXSettings, preferred: String? = nil) {
-        let next = settings.effectKeys.map { effect in
+        var next = settings.effectKeys.map { effect in
             Row(effect: effect, name: settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
                 ?? (settings.kind(of: effect) == "Instruments" ? InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) : JarasLocalization.string(settings.kind(of: effect))), enabled: settings.isEnabled(effect))
         }
+        if track != nil { next.append(Row(effect: "CatStemSeparation 5", name: "CatStemSeparation 5", enabled: true)) }
         if next != rows { rows = next; refreshing = true; list.reloadData(); refreshing = false }
         let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
-        removeButton.isEnabled = selected != nil
+        removeButton.isEnabled = selected != nil && selected != "CatStemSeparation 5"
         guard let selected else { editor?.removeFromSuperview(); editor = nil; selection = nil; return }
         select(selected)
         if let index = rows.firstIndex(where: { $0.effect == selected }) {
@@ -175,7 +176,7 @@ import Combine
         if let previous = selection, let plugin = show.fxSettings(track).externalPlugins?.first(where: { $0.effectKey == previous }) {
             ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
         }
-        selection = effect; editor?.removeFromSuperview()
+        selection = effect; removeButton.isEnabled = effect != "CatStemSeparation 5"; editor?.removeFromSuperview()
         let content: NSView
         let size: NSSize
         if effect.hasPrefix("External:"), let native = ExternalPluginEditor.nativeEditor(show: show, track: track, effect: effect) {
@@ -183,7 +184,9 @@ import Combine
             panel?.contentMinSize = NSSize(width: sidebarWidth + 64, height: 64)
         } else {
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
-            if effect.hasPrefix("External:") {
+            if effect == "CatStemSeparation 5" {
+                content = NSHostingView(rootView: CatStemFXEditor(show: show, track: track).preferredColorScheme(.dark))
+            } else if effect.hasPrefix("External:") {
                 content = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
             } else {
                 content = NSHostingView(rootView: FXEditor(show: show, track: track, effect: effect, close: { [weak panel] in panel?.close() }).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
@@ -211,6 +214,7 @@ import Combine
         guard rows.indices.contains(row) else { return nil }
         let value = rows[row]
         if tableColumn?.identifier.rawValue == "enabled" {
+            if value.effect == "CatStemSeparation 5" { return NSTextField(labelWithString: "") }
             let button = NSButton(title: "By", target: self, action: #selector(toggle(_:)))
             button.isBordered = false; button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
             button.identifier = NSUserInterfaceItemIdentifier(value.effect)
@@ -259,7 +263,7 @@ import Combine
         insert.makeKeyAndOrderFront(nil)
     }
     @objc private func removeSelectedEffect() {
-        guard let selection else { return }
+        guard let selection, selection != "CatStemSeparation 5" else { return }
         show.removeFX(track, effect: selection)
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -267,7 +271,7 @@ import Combine
         select(rows[list.selectedRow].effect)
     }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard rows.indices.contains(row) else { return nil }
+        guard rows.indices.contains(row), rows[row].effect != "CatStemSeparation 5" else { return nil }
         let item = NSPasteboardItem(); item.setString(rows[row].effect, forType: Self.dragType); return item
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
@@ -275,8 +279,8 @@ import Combine
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard let effect = info.draggingPasteboard.string(forType: Self.dragType), rows.contains(where: { $0.effect == effect }) else { return false }
-        show.reorderFX(track, effect: effect, before: rows.indices.contains(row) ? rows[row].effect : nil)
+        guard let effect = info.draggingPasteboard.string(forType: Self.dragType), effect != "CatStemSeparation 5", rows.contains(where: { $0.effect == effect }) else { return false }
+        show.reorderFX(track, effect: effect, before: rows.indices.contains(row) && rows[row].effect != "CatStemSeparation 5" ? rows[row].effect : nil)
         return true
     }
 }

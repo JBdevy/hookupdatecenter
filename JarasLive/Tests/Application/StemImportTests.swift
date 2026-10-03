@@ -3,6 +3,28 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testOverviewAcceptsMP3WithShortOverstatedGaplessTail() throws {
+        guard let path = ProcessInfo.processInfo.environment["JARAS_MP3_EOF_FIXTURE"] else {
+            throw XCTSkip("Set JARAS_MP3_EOF_FIXTURE to exercise a real MP3 gapless-header mismatch")
+        }
+        let url = URL(fileURLWithPath: path), file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        let overview = try StemProjectImporter.audioOverview(url, duration: Double(file.length) / file.processingFormat.sampleRate)
+        XCTAssertGreaterThan(overview.peak, 0)
+        XCTAssertEqual(overview.channels.count, Int(file.processingFormat.channelCount))
+        XCTAssertTrue(overview.channels.allSatisfy { !$0.isEmpty })
+    }
+    func testOverviewStillRejectsDamagedFilesAndDoesNotTreatPCMErrorsAsMP3Padding() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try fixture(root, folder: "Source", file: "Normal.wav")
+        let file = try AVAudioFile(forReading: directory.appendingPathComponent("Normal.wav"))
+        file.framePosition = file.length - 17
+        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 65536)!
+        XCTAssertFalse(AudioFileRead.toleratesEnd(NSError(domain: NSOSStatusErrorDomain, code: -39), file: file, buffer: buffer))
+        let corrupt = directory.appendingPathComponent("Damaged.mp3")
+        try Data("invalid audio".utf8).write(to: corrupt)
+        XCTAssertThrowsError(try StemProjectImporter.audioOverview(corrupt, duration: 1))
+    }
     func fixture(_ root: URL, folder: String, file: String, seconds: Double = 0.1) throws -> URL {
         let directory = root.appendingPathComponent(folder)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -94,9 +116,9 @@ final class StemImportTests: XCTestCase {
         }
         let bad = root.appendingPathComponent("bad.wav")
         try Data("not audio".utf8).write(to: bad)
-        let existing = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Steams").path)
+        let existing = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Stems").path)
         XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([one, bad], start: 0, destinationTracks: [], destination: destination))
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Steams").path), existing)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Project/Stems").path), existing)
     }
     func testSameTrackDropUsesGapAndExtensionFreeNames() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -175,7 +197,7 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(song.tracks.filter { !$0.clips.isEmpty }.map { $0.clips.count }, [2, 2])
         for clip in song.tracks.flatMap(\.clips) {
             XCTAssertNotNil(clip.audioFile)
-            XCTAssertTrue(clip.audioFile!.path.hasPrefix("Steams/"))
+            XCTAssertTrue(clip.audioFile!.path.hasPrefix("Stems/"))
             XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(clip.audioFile!.path).path))
             XCTAssertGreaterThan(clip.waveform.max()!, 0)
         }
@@ -287,7 +309,7 @@ final class StemImportTests: XCTestCase {
         _ = try fixture(root, folder: "Song", file: "Piano.wav")
         let scan = try StemProjectImporter.scan([folder])
         try FileManager.default.removeItem(at: folder.appendingPathComponent("Piano.wav"))
-        let existing = root.appendingPathComponent("Steams/old.wav")
+        let existing = root.appendingPathComponent("Stems/old.wav")
         try FileManager.default.createDirectory(at: existing.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data([1]).write(to: existing)
         XCTAssertThrowsError(try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Rollback"), destination: root.appendingPathComponent("Show.jl")))
@@ -300,6 +322,6 @@ final class StemImportTests: XCTestCase {
         _ = try fixture(root, folder: "Song", file: "Provider Click.wav")
         let scan = try StemProjectImporter.scan([folder])
         XCTAssertThrowsError(try StemProjectImporter.build(scan: scan, remove: "Provider", base: .empty(name: "Show"), destination: root.appendingPathComponent("Show.jl")))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Steams").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Stems").path))
     }
 }

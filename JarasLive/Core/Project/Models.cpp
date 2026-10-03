@@ -9,7 +9,7 @@
 namespace jaras {
 void orderSpecialTracks(Project& project) {
     const auto rank = [](const Track& track) {
-        return track.role.id == "timecode" ? 0 : track.role.id == "chords" ? 1 : track.role.id == "teleprompt" ? 2 : track.role.id == "teleprompt2" ? 3 : track.role.id == "video" ? 4 : 5;
+        return track.role.id == "timecode" ? 0 : track.role.id == "generatedClick" ? 1 : track.role.id == "chords" ? 2 : track.role.id == "teleprompt" ? 3 : track.role.id == "teleprompt2" ? 4 : track.role.id == "video" ? 5 : 6;
     };
     for (auto& song : project.songs) {
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };
@@ -153,7 +153,7 @@ void validate(const Project& p) {
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
     if (p.masterOutputs) for (const auto& patch : *p.masterOutputs) validatePatch(patch, false, false, true);
     std::set<ID> ids{p.id}, songIds;
-    int timecodeTracks = 0;
+    int timecodeTracks = 0, clickTracks = 0;
     auto unique = [&](const ID& id) { require(!id.empty() && ids.insert(id).second, "Duplicate or empty UUID"); };
     for (const auto& s : p.songs) {
         validateRouting(s);
@@ -167,7 +167,7 @@ void validate(const Project& p) {
             else folder = t.id;
             unique(t.id);
             const auto fixed = fixedTrackName(t.role);
-            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video") && !t.parentTrackID), "Invalid special track");
+            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick") && !t.parentTrackID), "Invalid special track");
             const bool textTrack = isTeleprompterRole(t.role) || t.role.id == "chords";
             if (textTrack || t.role.id == "video") {
                 std::vector<const AudioClip*> ordered;
@@ -185,6 +185,10 @@ void validate(const Project& p) {
             }
             require(!textTrack || (!t.mute && !t.fxJSON && !t.audioFile && !t.midiInput && !t.midiChannel && !t.recordingFormat && !t.recordingChannels), "Text tracks cannot contain audio controls");
             if (t.role.id == "timecode") require(++timecodeTracks <= 1, "Only one Timecode track is allowed");
+            if (t.role.id == "generatedClick") {
+                require(++clickTracks <= 1, "Only one Click track is allowed");
+                require(!t.fxJSON && !t.audioFile && !t.midiInput && !t.midiChannel && !t.inputPatch && !t.recordingFormat && !t.recordingChannels, "Click tracks cannot record or contain FX");
+            }
             if (t.timecode) {
                 const auto& tc = *t.timecode;
                 require((tc.mode == "mtc" || tc.mode == "ltc") && (tc.frameRate == 24 || tc.frameRate == 25 || tc.frameRate == 29.97 || tc.frameRate == 30) && finite(tc.offset) && tc.offset >= 0 && tc.offset < 86400, "Invalid timecode settings");
@@ -200,7 +204,7 @@ void validate(const Project& p) {
                 require(t.inputPatch && partner->inputPatch && t.inputPatch->channelCount == 1 && partner->inputPatch->channelCount == 1 && partner->inputPatch->firstChannel == t.inputPatch->firstChannel + (t.stereoLinkLeft ? 1 : -1), "Linked tracks require consecutive mono inputs");
                 require(t.volume == partner->volume && t.pan == -partner->pan, "Linked track controls must match");
             }
-            require(!t.recordingChannels || *t.recordingChannels == 1 || *t.recordingChannels == 2, "Invalid recording channel mode");
+            require(!t.recordingChannels || (*t.recordingChannels >= 0 && *t.recordingChannels <= 2), "Invalid recording channel mode");
             require(!t.recordingFormat || *t.recordingFormat == "wav" || *t.recordingFormat == "wav32" || *t.recordingFormat == "mp3", "Invalid recording format");
             if (t.patch) validatePatch(*t.patch, true, t.parentTrackID.has_value(), true);
             if (t.secondaryPatch) validatePatch(*t.secondaryPatch, true, t.parentTrackID.has_value(), true);
@@ -209,7 +213,22 @@ void validate(const Project& p) {
             require(finite(t.pan) && t.pan >= -1 && t.pan <= 1 && t.output > 0, "Invalid routing");
             std::vector<AudioFile> files;
             if (t.audioFile) files.push_back(*t.audioFile);
+            require(!t.clickSound || t.role.id == "generatedClick", "Custom click sound requires a Click track");
+            if (t.clickSound) files.push_back(*t.clickSound);
             for (const auto& clip : t.clips) {
+                require((clip.frozenMIDI != true && clip.renderedTiming != true) || (fixed.empty() && clip.audioFile && !clip.midi), "Printed timing requires an audio item");
+                if(clip.midi) {
+                    const auto& m=*clip.midi;
+                    require(fixed.empty() && !clip.audioFile && !clip.text && !clip.loopLength, "MIDI items require an instrument track");
+                    require(finite(m.sourceBPM) && m.sourceBPM>=1 && m.sourceBPM<=1000 && m.notes.size()<=100000, "Invalid MIDI item");
+                    require(m.division>=1 && m.division<=128 && (m.division&(m.division-1))==0 && finite(m.swing) && m.swing>=0 && m.swing<=.95, "Invalid MIDI grid");
+                    require(m.mode=="straight" || m.mode=="triplet" || m.mode=="dotted" || m.mode=="swing", "Invalid MIDI grid mode");
+                    std::set<ID> noteIDs;
+                    for(const auto& n:m.notes) {
+                        require(!n.id.empty() && noteIDs.insert(n.id).second && finite(n.start) && finite(n.length) && n.start>=0 && n.length>0 && n.start+n.length<=10000000 && n.pitch>=0 && n.pitch<=127 && n.velocity>=1 && n.velocity<=127 && n.channel>=1 && n.channel<=16, "Invalid MIDI note");
+                    }
+                }
+                require(t.role.id != "generatedClick" || !clip.audioFile, "Click items use the built-in sound");
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
                 if (clip.text) validateClipText(*clip.text, t.role.id == "chords" ? 30 : 400);
                 const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
@@ -219,6 +238,10 @@ void validate(const Project& p) {
                 require(!clip.fxJSON || fixed.empty(), "Item FX requires an audio track");
                 require(!clip.fxBypassed || fixed.empty(), "Item FX requires an audio track");
                 if (clip.fxJSON) validateClipFXJSON(*clip.fxJSON);
+                if (clip.timecode) {
+                    const auto& tc = *clip.timecode;
+                    require(t.role.id == "timecode" && (tc.mode == "mtc" || tc.mode == "ltc") && (tc.frameRate == 24 || tc.frameRate == 25 || tc.frameRate == 29.97 || tc.frameRate == 30) && finite(tc.offset) && tc.offset >= 0 && tc.offset < 86400, "Invalid item timecode settings");
+                }
                 require(!clip.timecodeStartOffset || (finite(*clip.timecodeStartOffset) && t.role.id == "timecode"), "Invalid Timecode start span");
                 require(!clip.timecodeEndOffset || (finite(*clip.timecodeEndOffset) && t.role.id == "timecode"), "Invalid Timecode end span");
                 require(t.role.id != "timecode" || (!clip.loopStart && !clip.loopLength), "Timecode items cannot repeat their source");
@@ -290,6 +313,7 @@ void validate(const Project& p) {
 }
 void synchronizeTimecode(Project& project) {
     for (auto& song : project.songs) for (auto& track : song.tracks) if (track.role.id == "timecode") {
+        if (track.importedTimecodeItems) continue;
         std::unordered_map<ID, AudioClip> previous;
         previous.reserve(track.clips.size());
         for (auto& clip : track.clips) { const auto id = clip.id; previous.emplace(id, std::move(clip)); }

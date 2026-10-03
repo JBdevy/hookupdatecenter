@@ -110,11 +110,12 @@ func peakStroke(clip: CGRect = item, block: TimelineAudioWaveform.VertexBlock = 
         clip: clip, color: SIMD4(repeating: 1), itemRect: item)
 }
 let peaks = render([peakStroke()])
-precondition(peaks.alpha(20, 41) > 240 && peaks.alpha(60, 79) > 240 && peaks.alpha(80, 57) > 240)
+precondition(peaks.alpha(20, 41) > 240 && peaks.alpha(60, 75) > 240 && peaks.alpha(80, 57) > 240)
 precondition(peaks.alpha(80, 45) == 0, "a later interval must preserve its own smaller extrema")
+precondition(peaks.alpha(32, 41) > 240 && peaks.alpha(60, 42) == 0, "real peak remains at center while neighboring bins join with a sloped contour")
 let trimmedPeak = render([peakStroke(clip: CGRect(x: 34, y: 10, width: 3, height: 108))])
-precondition(trimmedPeak.alpha(35, 41) > 240 && trimmedPeak.alpha(35, 79) > 240,
-             "a trim wholly inside one bucket must display its full min/max range")
+precondition(trimmedPeak.alpha(35, 41) > 240 && trimmedPeak.alpha(35, 78) > 240,
+             "a trim inside one bucket must retain its continuous peak contour")
 precondition(trimmedPeak.alpha(33, 64) == 0 && trimmedPeak.alpha(37, 64) == 0)
 let equalPeaks = TimelineAudioWaveform.VertexBlock(channels: [
     [SIMD2(0, -0.5), SIMD2(64.5, 0.5), SIMD2(64.5, -0.5), SIMD2(128, 0.5)]
@@ -302,66 +303,24 @@ func locatedFrame(origin: CGPoint, scale: Double, revision: Int = 1) -> MetalWav
     MetalWaveformFrame(size: size, strokes: [waveform(scale: SIMD2(Float(scale), 32))],
         coordinateSpace: MetalWaveformCoordinateSpace(documentOrigin: origin, pixelsPerSecond: scale, contentRevision: revision))
 }
-let oldFrame = locatedFrame(origin: CGPoint(x: 2000, y: 512), scale: 10)
-let movedFrame = locatedFrame(origin: CGPoint(x: 2700, y: 256), scale: 14)
-let projection = MetalWaveformSurface.projectedContentFrame(previous: oldFrame, latest: movedFrame)
-for oldPoint in [CGPoint.zero, CGPoint(x: 40.5, y: 63), CGPoint(x: 128, y: 128)] {
-    let reprojected = CGPoint(x: projection.minX + oldPoint.x * projection.width / oldFrame.size.width,
-                             y: projection.minY + oldPoint.y)
-    let trueTimelinePosition = CGPoint(x: (2000 + oldPoint.x) * 1.4 - 2700, y: 512 + oldPoint.y - 256)
-    precondition(abs(reprojected.x - trueTimelinePosition.x) < 0.000001 && reprojected.y == trueTimelinePosition.y,
-                 "a retained waveform point must follow the newest zoom and viewport without a GPU frame")
-}
-precondition(MetalWaveformSurface.projectedContentFrame(previous: oldFrame,
-    latest: locatedFrame(origin: .zero, scale: 14, revision: 2)) == CGRect(origin: .zero, size: size),
-    "non-affine item/row edits must never reuse an old waveform projection")
-
-// Hold the actual Metal queue, fill both asynchronous slots, and then move the
-// viewport once more. No new waveform texture can complete during this check.
-let baselineFrame = locatedFrame(origin: CGPoint(x: 2000, y: 512), scale: 10)
-surface.submit(baselineFrame)
-RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+// Zoom redraws vertices into the current viewport. No cached texture may be
+// scaled, including large jumps and immediate reversals before the next layout.
 let sharedEngine = MetalWaveformEngine.shared
-let gate = sharedEngine.device!.makeSharedEvent()!
-let blockedCommand = sharedEngine.commandQueue!.makeCommandBuffer()!
-blockedCommand.encodeWaitForEvent(gate, value: 1)
-blockedCommand.commit()
-// A failure must not leave a permanently blocked GPU queue in the test process.
-DispatchQueue.global().asyncAfter(deadline: .now() + 2) { gate.signaledValue = 1 }
-let firstQueued = locatedFrame(origin: CGPoint(x: 2200, y: 512), scale: 11)
-let secondQueued = locatedFrame(origin: CGPoint(x: 2400, y: 512), scale: 12)
-surface.submit(firstQueued)
-surface.submit(secondQueued)
-let fullCount = surface.submittedFrameCount
-let pendingFrame = locatedFrame(origin: CGPoint(x: 2700, y: 256), scale: 14)
-surface.submit(pendingFrame)
-precondition(surface.submittedFrameCount == fullCount, "the latest affine frame must coalesce while both GPU slots are occupied")
-precondition(surface.presentedContentFrame == MetalWaveformSurface.projectedContentFrame(previous: baselineFrame, latest: pendingFrame),
-             "old drawable must be repositioned immediately, even while the GPU queue is deliberately blocked")
-gate.signaledValue = 1
-let settledDeadline = Date().addingTimeInterval(3)
-while (surface.submittedFrameCount == fullCount || surface.presentedContentFrame != CGRect(origin: .zero, size: size)) && Date() < settledDeadline {
-    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+var nativeZoomTimes: [Double] = []
+for scale in [1.0, 200.0, 0.1, 80.0, 2.0, 400.0, 1.0] {
+    let before = surface.submittedFrameCount
+    let begin = CACurrentMediaTime()
+    surface.submit(locatedFrame(origin: CGPoint(x: scale * 12, y: 256), scale: scale))
+    nativeZoomTimes.append((CACurrentMediaTime() - begin) * 1000)
+    precondition(surface.submittedFrameCount == before + 1,
+                 "a coordinate change must submit a current-scale vertex frame immediately")
+    precondition(surface.presentedContentFrame == CGRect(origin: .zero, size: size),
+                 "zoom must never stretch or translate a previous waveform bitmap")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 }
-precondition(surface.submittedFrameCount > fullCount && surface.presentedContentFrame == CGRect(origin: .zero, size: size),
-             "new drawable submission must atomically remove the temporary reprojection")
 surface.submit(locatedFrame(origin: .zero, scale: 14, revision: 2))
-precondition(surface.presentedContentFrame == CGRect(origin: .zero, size: size), "vertical geometry edits always submit the matching item layout")
-RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-let editGate = sharedEngine.device!.makeSharedEvent()!
-let editBlocked = sharedEngine.commandQueue!.makeCommandBuffer()!
-editBlocked.encodeWaitForEvent(editGate, value: 1); editBlocked.commit()
-surface.submit(locatedFrame(origin: CGPoint(x: 30, y: 0), scale: 15, revision: 2))
-surface.submit(locatedFrame(origin: CGPoint(x: 40, y: 0), scale: 16, revision: 2))
-DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { editGate.signaledValue = 1 }
-let editStarted = CACurrentMediaTime()
-surface.submit(locatedFrame(origin: .zero, scale: 16, revision: 3))
-precondition(CACurrentMediaTime() - editStarted < 0.75,
-             "a synchronous item edit cannot deadlock waiting for drawables retained by its own main-queue callbacks")
-RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-precondition(surface.presentedContentFrame == CGRect(origin: .zero, size: size),
-             "superseded scheduled callbacks cannot restore old geometry after a newer edit has been presented")
-print("METAL_BACKPRESSURE_REPROJECTION_ZOOM_PAN_AND_ATOMIC_NEW_FRAME_OK")
+precondition(surface.presentedContentFrame == CGRect(origin: .zero, size: size))
+print("METAL_ZOOM_REDRAWS_SOURCE_VERTICES_WITHOUT_TEXTURE_REPROJECTION_OK ms=\(nativeZoomTimes)")
 
 // Read the compositor's actual window pixels. Rendering into an offscreen MTL
 // texture alone cannot catch MTKView handing its delegate a previous-size
@@ -404,5 +363,44 @@ if let baseline = visibleWhitePixels(), baseline > 0 {
     }
     print("METAL_NATIVE_DRAWABLE_RESIZE_VISIBLE_PIXEL_COVERAGE_OK pixels=\(counts)")
 } else { print("METAL_NATIVE_DRAWABLE_RESIZE_PIXEL_CAPTURE_UNAVAILABLE") }
+// Regression for the visible failure: a large zoom jump must not leave any
+// waveform pixels before/after the item's current clipping rectangle.
+func nativeWhiteBounds() -> CGRect? {
+    guard let image = CGWindowListCreateImage(.null, .optionIncludingWindow,
+        CGWindowID(testWindow.windowNumber), [.boundsIgnoreFraming, .bestResolution]) else { return nil }
+    var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    bytes.withUnsafeMutableBytes { raw in
+        let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height,
+            bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    }
+    var left = image.width, right = -1, top = image.height, bottom = -1
+    for y in 0..<image.height { for x in 0..<image.width {
+        let i = (y * image.width + x) * 4
+        if bytes[i] > 220 && bytes[i + 1] > 220 && bytes[i + 2] > 220 {
+            left = min(left, x); right = max(right, x); top = min(top, y); bottom = max(bottom, y)
+        }
+    } }
+    guard right >= left else { return .null }
+    return CGRect(x: Double(left) / Double(image.width) * 128,
+                  y: Double(top) / Double(image.height) * 128,
+                  width: Double(right - left + 1) / Double(image.width) * 128,
+                  height: Double(bottom - top + 1) / Double(image.height) * 128)
+}
+let itemClip = CGRect(x: 64, y: 32, width: 32, height: 64)
+for zoom in [1.0, 100.0, 0.1, 2800.0, 2.0] {
+    surface.submit(MetalWaveformFrame(size: size, strokes: [MetalWaveformStroke(block: filledInterval,
+        channel: 0, scale: SIMD2(128, 64), translation: SIMD2(0, 64), clip: itemClip,
+        color: SIMD4(repeating: 1), itemRect: itemClip, itemCornerRadius: 0)],
+        coordinateSpace: MetalWaveformCoordinateSpace(documentOrigin: CGPoint(x: zoom * 10, y: 0),
+            pixelsPerSecond: zoom, contentRevision: 8)))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+    if let visible = nativeWhiteBounds() {
+        precondition(!visible.isNull && visible.width >= 30 && visible.minX >= 63 && visible.maxX <= 97,
+                     "zoom must keep the complete sharp waveform inside its current item: \(visible)")
+    }
+}
+print("METAL_NATIVE_HIGH_ZOOM_REVERSALS_STAY_INSIDE_ITEM_PIXEL_BOUNDS_OK")
 testWindow.close()
 #endif

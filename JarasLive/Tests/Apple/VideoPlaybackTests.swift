@@ -31,7 +31,7 @@ import AVFoundation
     precondition(VideoPlayback(preferences: preferences).stretch, "Stretch persists without changing the transport or decoder")
     controller.open(directory: directory)
     controller.toggle()
-    for window in NSApp.windows where window.title == "Jaras Video" { window.orderOut(nil) }
+    for window in NSApp.windows where window.title == "CatLive Video" { window.orderOut(nil) }
     var snapshot = ShowSnapshot(project: restored,transport: TransportState(playing: false,songId: restored.songs[0].id,position: 30,queue: QueueState(),loop: LoopState(enabled: false),subPlay: SubPlayState(playing: false,position: 0)))
     controller.update(snapshot)
     for _ in 0..<100 {

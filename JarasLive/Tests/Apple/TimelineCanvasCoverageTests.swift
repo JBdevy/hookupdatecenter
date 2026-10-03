@@ -34,3 +34,16 @@ for height: CGFloat in [256, 360, 512, 720, 768, 1024, 1500] {
 }
 print("TIMELINE_VERTICAL_SUBBUCKET_COVERAGE_OK positions=\(checked)")
 print("TIMELINE_VERTICAL_FAST_SCROLL_REVERSE_AND_DOCUMENT_END_COVERAGE_OK")
+
+for width: CGFloat in [256, 512, 840, 1024, 1600] {
+    let maximum = document.width - width
+    for anchor in stride(from: CGFloat.zero, through: maximum, by: 512) {
+        let prepared = TimelineCanvasCoverage.preparedRect(visibleRect: CGRect(x: anchor, y: 0, width: width, height: 600), documentSize: document)
+        for phase in -512..<512 {
+            let x = min(maximum, max(0, anchor + CGFloat(phase)))
+            precondition(prepared.contains(CGRect(x: x, y: 0, width: width, height: 600)), "horizontal reserve must cover unpublished travel and immediate reversal")
+        }
+        precondition(prepared.width <= width + 4 * 512, "horizontal coverage must remain independent of project length")
+    }
+}
+print("TIMELINE_HORIZONTAL_SUBBUCKET_AND_REVERSE_COVERAGE_BOUNDED_OK")

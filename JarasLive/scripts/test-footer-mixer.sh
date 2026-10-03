@@ -13,7 +13,10 @@ a = s.index('@MainActor final class TrackMIDIActivity'); b = s.index('@MainActor
 s = Path('Apple/Shared/TrackMixerRow.swift').read_text()
 a = s.index('private final class FooterMixerGreenScroller:'); b = s.index('\n#endif', a)
 body = s[a:b].replace('private func smoothWheel(', 'fileprivate func smoothWheel(')
-(out / 'scroll.swift').write_text('import SwiftUI\nimport AppKit\n' + body + '\n' + Path('Tests/Apple/FooterMixerScrollTests.swift').read_text())
+meter = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
+model = meter[meter.index('@MainActor final class TrackMeterLevel'):meter.index('/// Item edges')]
+native = meter[meter.index('/// Uses the existing stereo readings'):meter.index('private final class PreparedSoundFont')]
+(out / 'scroll.swift').write_text('import SwiftUI\nimport AppKit\nimport Combine\n' + model + '\n' + native + '\n' + body + '\n' + Path('Tests/Apple/FooterMixerScrollTests.swift').read_text())
 PYTHON
 swiftc -parse-as-library "$build_dir/midi.swift" -o "$build_dir/midi"
 "$build_dir/midi"

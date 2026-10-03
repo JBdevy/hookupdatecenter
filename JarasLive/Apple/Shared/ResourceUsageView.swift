@@ -41,7 +41,7 @@ struct ResourceUsageView: View {
     var body: some View {
         HStack(spacing: 14) {
             Text("CPU \(percent(usage.cpu))")
-            Text("RAM \(percent(usage.ram))").jarasHelp("RAM used by Jaras Live")
+            Text("RAM \(percent(usage.ram))").jarasHelp("RAM used by CatLive")
         }.monospacedDigit().foregroundStyle(JarasTheme.secondary)
             .task { await usage.run() }
     }

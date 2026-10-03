@@ -16,6 +16,6 @@ swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasVST3.h "$build_dir
 
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
 cp Tests/Apple/VST3/OrderedChainTests.swift "$build_dir/main.swift"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift Apple/Shared/NativeEffectsChain.swift "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/ordered-test"
+swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift Apple/Shared/NativeEffectsChain.swift "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/ordered-test"
 "$build_dir/ordered-test" "$plugin"
 JARAS_TEST_VST3="$plugin" bash scripts/test-live-instrument.sh Tests/Apple/VST3/StandbyMeterTests.swift

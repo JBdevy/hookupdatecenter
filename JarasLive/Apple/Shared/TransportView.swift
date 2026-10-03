@@ -4,6 +4,7 @@ struct TransportView: View {
     @State private var showingExport = false
     @State private var showingAdvanced = false
     @ObservedObject var show: ShowController
+    var documents: ProjectDocuments? = nil
     var remotePresentation = false
     var mediaDirectory: URL? = nil
     var toggleNavigation: () -> Void = {}
@@ -24,7 +25,7 @@ struct TransportView: View {
                 .frame(width: width, height: 86, alignment: .leading)
         }.frame(height: 86).clipped()
             .sheet(isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
-            .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show) }
+            .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show, documents: documents) }
     }
     private func transportContent(spacing: CGFloat) -> some View {
         let transport = show.snapshot.transport
@@ -153,8 +154,43 @@ struct TransportView: View {
     }
 }
 
+#if os(macOS)
+struct FooterPlaylistDisplay: View {
+    @ObservedObject var show: ShowController
+    private var duration: String {
+        // listedRegions contains the selected playlist's root regions only;
+        // children inside a special region already belong to its full span.
+        let total = show.listedRegions.reduce(0.0) { sum, region in
+            let seconds = region.endTime - region.startTime
+            return sum + (seconds.isFinite ? max(0, seconds) : 0)
+        }
+        let seconds = Int(min(Double(Int.max / 2), total))
+        return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                FooterInformationDisplay(show: show, embedded: true)
+                    .frame(width: max(0, (geometry.size.width - 1) * 0.7))
+                Rectangle().fill(JarasTheme.line).frame(width: 1)
+                Text(verbatim: duration).font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit().foregroundStyle(JarasTheme.yellow)
+                    .frame(width: max(0, (geometry.size.width - 1) * 0.3), height: 25)
+                    .accessibilityLabel("Playlist duration")
+                    .jarasHelp("Playlist duration")
+            }
+        }.frame(height: 25).background(JarasTheme.display)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
+    }
+}
+#endif
+
 struct FooterInformationDisplay: View {
     @ObservedObject var show: ShowController
+    var documents: ProjectDocuments? = nil
+    var embedded = false
+    private var displayHeight: CGFloat { embedded ? 25 : 21 }
     private var hasMultiLoop: Bool {
         guard let song = show.current else { return false }
         let transport = show.snapshot.transport
@@ -189,33 +225,34 @@ struct FooterInformationDisplay: View {
                 let yellow = phase == 0
                 Text(verbatim: message)
                     .foregroundStyle(yellow ? Color.red : phase == 1 ? JarasTheme.green : JarasTheme.yellow)
-                    .frame(maxWidth: .infinity).frame(height: 21)
-                    .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: 4))
+                    .frame(maxWidth: .infinity).frame(height: displayHeight)
+                    .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
             } else if hasMultiLoop, show.snapshot.transport.ignoreNextAfter == nil {
                 Text(verbatim: message).foregroundStyle(JarasTheme.green)
-                    .frame(maxWidth: .infinity).frame(height: 21)
-                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
+                    .frame(maxWidth: .infinity).frame(height: displayHeight)
+                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
             } else if message.isEmpty {
-                Text(verbatim: " ").frame(maxWidth: .infinity).frame(height: 21)
-                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
+                Text(verbatim: " ").frame(maxWidth: .infinity).frame(height: displayHeight)
+                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
             } else {
                 TimelineView(.periodic(from: .now, by: 0.5)) { tick in
                     let phase = Int(tick.date.timeIntervalSinceReferenceDate * 2) % 4
                     let yellow = phase.isMultiple(of: 2)
                     Text(verbatim: message)
                         .foregroundStyle(yellow ? Color.red : phase == 1 ? JarasTheme.green : JarasTheme.yellow)
-                        .frame(maxWidth: .infinity).frame(height: 21)
-                        .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: 4))
+                        .frame(maxWidth: .infinity).frame(height: displayHeight)
+                        .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
                 }
             }
         }.font(.system(size: 10, weight: .bold)).lineLimit(1).truncationMode(.tail)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
+            .overlay { if !embedded { RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false) } }
             .accessibilityLabel("Information").accessibilityValue(message)
     }
 }
 
 private struct UpcomingSongDisplay: View {
     @ObservedObject var show: ShowController
+    var documents: ProjectDocuments? = nil
     var body: some View {
         let transport = show.snapshot.transport
         let parts = show.current?.parts ?? []
@@ -248,6 +285,7 @@ private struct PanelCollapseButton: View {
 
 private struct TempoControl: View {
     @ObservedObject var show: ShowController
+    var documents: ProjectDocuments? = nil
     @State private var editing = false
     @State private var bpmDraft = "120"
     @State private var beats = "4"
@@ -404,6 +442,7 @@ struct TransportPreview: PreviewProvider { static var previews: some View { Tran
 
 private struct MetronomeControl: View {
     @ObservedObject var show: ShowController
+    var documents: ProjectDocuments? = nil
     @ObservedObject private var settings = MetronomeSettings.shared
     @State private var configuring = false
     private var pulse: Bool {
@@ -554,7 +593,7 @@ private struct RemoteToggleButton: View {
             .accessibilityLabel("Remote").accessibilityValue(remote.enabled ? "On" : "Off")
             #if os(macOS)
             .popover(isPresented: $settings) { DAWRemoteHostView() }
-            .immediateRightClick { if remote.enabled { settings = true } }
+            .immediateRightClick { settings = true }
             .onChange(of: remote.connected) { if $0 { settings = false } }
             #endif
     }

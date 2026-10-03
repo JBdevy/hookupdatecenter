@@ -65,8 +65,8 @@ final class ReceivedMTC: @unchecked Sendable {
 }
 let receiver = ReceivedMTC()
 var client: MIDIClientRef = 0, destination: MIDIEndpointRef = 0
-precondition(MIDIClientCreateWithBlock("Jaras Test Receiver" as CFString,&client,nil) == noErr)
-precondition(MIDIDestinationCreateWithBlock(client,"Jaras Test MTC" as CFString,&destination,{ packets,_ in receiver.accept(packets) }) == noErr)
+precondition(MIDIClientCreateWithBlock("CatLive Test Receiver" as CFString,&client,nil) == noErr)
+precondition(MIDIDestinationCreateWithBlock(client,"CatLive Test MTC" as CFString,&destination,{ packets,_ in receiver.accept(packets) }) == noErr)
 defer { MIDIEndpointDispose(destination); MIDIClientDispose(client) }
 var uid: Int32 = 0
 MIDIObjectGetIntegerProperty(destination,kMIDIPropertyUniqueID,&uid)

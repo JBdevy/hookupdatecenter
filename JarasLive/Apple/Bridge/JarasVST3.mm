@@ -1,5 +1,6 @@
 #import "JarasVST3.h"
 #if TARGET_OS_OSX
+#include "CatMIDISequenceBridge.h"
 #include "pluginterfaces/base/ipluginbase.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ustring.h"
@@ -80,7 +81,7 @@ class Host final: public IHostApplication {
 public:
     FIXED_REF
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override { *out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IHostApplication>(id)){*out=this;return kResultOk;}return kNoInterface; }
-    tresult PLUGIN_API getName(String128 name) override { UString(name,128).fromAscii("Jaras Live");return kResultOk; }
+    tresult PLUGIN_API getName(String128 name) override { UString(name,128).fromAscii("CatLive");return kResultOk; }
     tresult PLUGIN_API createInstance(TUID cid,TUID iid,void **out) override {
         *out=nullptr;
         if(iidIs<IMessage>(cid)&&iidIs<IMessage>(iid)) *out=new Message;
@@ -141,11 +142,11 @@ public:
 };
 class EventList final: public IEventList {
 public:
-    Event events[256];int count=0;FIXED_REF
+    Event events[18432];int count=0;FIXED_REF
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override {*out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IEventList>(id)){*out=this;return kResultOk;}return kNoInterface;}
     int32 PLUGIN_API getEventCount() override{return count;}
     tresult PLUGIN_API getEvent(int32 index,Event &event) override{if(index<0||index>=count)return kInvalidArgument;event=events[index];return kResultOk;}
-    tresult PLUGIN_API addEvent(Event &event) override{if(count==256)return kResultFalse;events[count++]=event;return kResultOk;}
+    tresult PLUGIN_API addEvent(Event &event) override{if(count==18432)return kResultFalse;events[count++]=event;return kResultOk;}
 };
 struct MIDI {uint8 status,data1,data2;};
 class Instance final: public IComponentHandler, public IComponentHandler2 {
@@ -209,7 +210,7 @@ public:
         if(write-read>=midi.size()){panic=true;return;}
         midi[write%midi.size()]={status,data1,data2};midiWrite.store(write+1,std::memory_order_release);
     }
-    void process(AudioBufferList *buffer,unsigned count,double position,double tempo,int beats,int unit,bool playing){
+    void process(AudioBufferList *buffer,unsigned count,double position,double tempo,int beats,int unit,bool playing,const CatMIDIEvent* sequence,unsigned sequenceCount){
         if(bypass.load()||count>frames)return;
         for(auto &bus:inputs){bus.silenceFlags=0;for(int c=0;c<bus.numChannels;c++)memset(bus.channelBuffers32[c],0,count*sizeof(float));}
         if(mainIn>=0){auto &bus=inputs[mainIn];for(int c=0;c<std::min<int>(2,bus.numChannels);c++)if(c<(int)buffer->mNumberBuffers&&buffer->mBuffers[c].mData)memcpy(bus.channelBuffers32[c],buffer->mBuffers[c].mData,count*sizeof(float));}
@@ -218,8 +219,18 @@ public:
         events.count=0;
         if(panic.load()){bool remaining=false;for(int channel=0;channel<16;channel++)for(int note=0;note<128;note++)if(held[channel][note]){Event event{};event.type=Event::kNoteOffEvent;event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;if(events.addEvent(event)==kResultOk)held[channel][note]=false;else remaining=true;}panic=remaining;}
         auto read=midiRead.load(std::memory_order_relaxed),write=midiWrite.load(std::memory_order_acquire);
-        while(read!=write&&events.count<256){auto message=midi[read++%midi.size()];Event event{};int channel=message.status&15,note=message.data1&127;bool on=(message.status&0xf0)==0x90&&message.data2>0;event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.data2/127.f;event.noteOn.noteId=-1;}else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.velocity=message.data2/127.f;event.noteOff.noteId=-1;}events.addEvent(event);held[channel][note]=on;}
+        while(read!=write&&events.count<18432){auto message=midi[read++%midi.size()];Event event{};int channel=message.status&15,note=message.data1&127;bool on=(message.status&0xf0)==0x90&&message.data2>0;event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.data2/127.f;event.noteOn.noteId=-1;}else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.velocity=message.data2/127.f;event.noteOff.noteId=-1;}events.addEvent(event);held[channel][note]=on;}
         midiRead.store(read,std::memory_order_release);
+        for(unsigned i=0;i<sequenceCount;++i) {
+            const auto& message=sequence[i];Event event{};event.sampleOffset=message.offset;
+            const int channel=message.status&15,note=message.pitch;
+            const bool on=(message.status&0xf0)==0x90;
+            event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;
+            if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.velocity/127.f;event.noteOn.noteId=-1;}
+            else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;}
+            events.addEvent(event);held[channel][note]=on;
+        }
+        std::sort(events.events,events.events+events.count,[](const Event&a,const Event&b){return a.sampleOffset==b.sampleOffset ? a.type==Event::kNoteOffEvent && b.type==Event::kNoteOnEvent : a.sampleOffset<b.sampleOffset;});
         ProcessContext context{};context.sampleRate=rate;context.projectTimeSamples=llround(position*rate);context.tempo=tempo;context.timeSigNumerator=beats;context.timeSigDenominator=unit;context.projectTimeMusic=position*tempo/60.;context.state=ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(playing?ProcessContext::kPlaying:0);
         ProcessData data;data.processMode=processMode;data.numSamples=count;data.numInputs=(int)inputs.size();data.numOutputs=(int)outputs.size();data.inputs=inputs.data();data.outputs=outputs.data();data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
         if(processor->process(data)==kResultOk){auto &bus=outputs[mainOut];for(int c=0;c<(int)std::min(2u,buffer->mNumberBuffers);c++)if(buffer->mBuffers[c].mData){auto dest=(float *)buffer->mBuffers[c].mData;auto source=bus.channelBuffers32[std::min(c,bus.numChannels-1)];if(bus.silenceFlags&(1ull<<std::min(c,bus.numChannels-1))){if(!instrument)memset(dest,0,count*sizeof(float));}else for(unsigned f=0;f<count;f++){const float generated=std::isfinite(source[f])?source[f]:0;dest[f]=(instrument?dest[f]:0)+generated;}}}
@@ -238,16 +249,18 @@ public:
 };
 struct Chain {std::vector<std::shared_ptr<Instance>> instances;};
 struct Kernel {
+    CatMIDISequence sequence;
     std::atomic<bool> instrumentMIDIInput{false};
     std::atomic<double> position{0},tempo{120};std::atomic<int> beats{4},unit{4};std::atomic<bool> playing{false};
     std::atomic<uint64_t> clockGeneration{0}; uint64_t seenClock=0; int64 clockFrames=0; std::atomic<double> sampleRate{48000};
     std::atomic<Chain *> published{nullptr}; std::atomic<unsigned> readers{0}; std::unique_ptr<Chain> current;std::vector<std::unique_ptr<Chain>> retired;
-    void process(AudioBufferList *b,unsigned n){
+    void process(AudioBufferList *b,unsigned n,const AudioTimeStamp* timestamp){
+        sequence.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n);
         if(!published.load())return;
         readers.fetch_add(1);auto chain=published.load();auto generation=clockGeneration.load(std::memory_order_acquire);
         if(generation!=seenClock){clockFrames=0;seenClock=generation;}
         double time=position.load()+clockFrames/sampleRate.load();
-        if(chain)for(auto &i:chain->instances)i->process(b,n,time,tempo.load(),beats.load(),unit.load(),playing.load());
+        if(chain)for(auto &i:chain->instances)i->process(b,n,time,tempo.load(),beats.load(),unit.load(),playing.load(),sequence.events.data(),sequence.count);
         clockFrames+=n;readers.fetch_sub(1);
     }
     void replace(std::unique_ptr<Chain> next){auto old=std::move(current);current=std::move(next);published.store(current.get());if(old)retired.push_back(std::move(old));if(readers.load()==0)retired.clear();}
@@ -285,7 +298,7 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 - (AUAudioUnitBusArray *)inputBusses{return _inputs;}
 - (AUAudioUnitBusArray *)outputBusses{return _outputs;}
 - (NSTimeInterval)latency {double seconds=0;if(kernel.current)for(auto &i:kernel.current->instances)if(!i->bypass.load())seconds+=i->processor->getLatencySamples()/i->rate;return seconds;}
-- (AUInternalRenderBlock)internalRenderBlock {Kernel *state=&kernel;return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *t,AVAudioFrameCount n,NSInteger bus,AudioBufferList *out,const AURenderEvent *events,AURenderPullInputBlock pull){if(!pull)return kAudioUnitErr_NoConnection;auto result=pull(flags,t,n,0,out);if(result==noErr)state->process(out,n);if(state->published.load())*flags&=~kAudioUnitRenderAction_OutputIsSilence;return result;};}
+- (AUInternalRenderBlock)internalRenderBlock {Kernel *state=&kernel;return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *t,AVAudioFrameCount n,NSInteger bus,AudioBufferList *out,const AURenderEvent *events,AURenderPullInputBlock pull){if(!pull)return kAudioUnitErr_NoConnection;auto result=pull(flags,t,n,0,out);if(result==noErr)state->process(out,n,t);if(state->published.load())*flags&=~kAudioUnitRenderAction_OutputIsSilence;return result;};}
 @end
 @interface JarasVSTEditorView: NSView { @public std::shared_ptr<Instance> instance; IPlugView *plugView; std::unique_ptr<Frame> frame; BOOL attached; }
 @end
@@ -358,8 +371,10 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
         return @[];
     }
 }
-+ (AVAudioUnitEffect *)makeNode {static dispatch_once_t once;AudioComponentDescription d={kAudioUnitType_Effect,'JLV3','Jara',0,0};dispatch_once(&once,^{[AUAudioUnit registerSubclass:JarasVSTAudioUnit.class asComponentDescription:d name:@"Jaras VST3" version:1];});return [[AVAudioUnitEffect alloc]initWithAudioComponentDescription:d];}
++ (AVAudioUnitEffect *)makeNode {static dispatch_once_t once;AudioComponentDescription d={kAudioUnitType_Effect,'JLV3','Jara',0,0};dispatch_once(&once,^{[AUAudioUnit registerSubclass:JarasVSTAudioUnit.class asComponentDescription:d name:@"CatLive VST3" version:1];});return [[AVAudioUnitEffect alloc]initWithAudioComponentDescription:d];}
 + (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;try{if(plugins.count==0){k.replace(nullptr);return YES;}auto next=std::make_unique<Chain>();double rate=[node outputFormatForBus:0].sampleRate;k.sampleRate=rate;for(NSDictionary *spec in plugins){auto i=k.find(spec[@"id"]);if(!i||fabs(i->rate-rate)>0.01)i=std::make_shared<Instance>(spec,rate,node.AUAudioUnit.isRenderingOffline);i->restore(spec);bool bypass=[spec[@"bypassed"]boolValue];if(bypass!=i->bypass.load())i->panic=true;i->bypass=bypass;next->instances.push_back(i);}k.replace(std::move(next));return YES;}catch(const std::exception &e){if(error)*error=failure(e);return NO;}}
++ (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.setNotes(catMIDINotes(notes)); }
++ (void)sequenceClock:(AVAudioUnitEffect *)node head:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.configure(head,position,clock,running,start,end); }
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2 {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)if(!i->instrument||k.instrumentMIDIInput.load()||(status&0xf0)!=0x90||data2==0)i->enqueue(status,data1,data2);}
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.instrumentMIDIInput.store(enabled);}
 + (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->panic=true;}

@@ -246,6 +246,7 @@ rejects("zero-length frame rejected") { _ = try emptyFramer.receive(Data(repeati
 rejects("oversized output frame rejected") { _ = try DAWRemoteFrames.encode(Data(repeating: 0, count: DAWRemoteFrames.maximum + 1)) }
 print("REMOTE_DIRECT_EPHEMERAL_ENCRYPTION_TAMPER_REPLAY_DIRECTION_AND_BOUNDED_TCP_FRAMING_OK")
 
+var remoteTestSubscriptions: [AnyCancellable] = []
 extension DAWRemoteSession {
     func testListen() throws -> NWEndpoint {
         stop(); enabled = true
@@ -257,8 +258,13 @@ extension DAWRemoteSession {
         waitFor("isolated loopback listener becomes ready") { (listener.port?.rawValue ?? 0) > 0 }
         return .hostPort(host: "127.0.0.1", port: listener.port!)
     }
-    func testConnect(_ endpoint: NWEndpoint) {
+    func testConnect(_ endpoint: NWEndpoint, access: DAWRemoteAccess? = .director, pin: String = "") {
         stop(); enabled = true
+        if let access {
+            remoteTestSubscriptions.append($connected.filter { $0 }.prefix(1).sink { [weak self] _ in
+                DispatchQueue.main.async { self?.requestAccess(access, pin: pin) }
+            })
+        }
         let peer = DAWRemotePeer(id: "loopback-only", displayName: "Direct loopback Mac")
         peers = [peer]; endpoints[peer.id] = endpoint
         connect(peer)
@@ -324,7 +330,7 @@ host.commandHandler = { command in
 client.testConnect(endpoint)
 waitFor("direct loopback peers complete encrypted handshake") { host.connected && client.connected && client.remoteState != nil }
 require(host.peerName == "Direct test iPad" && client.peerName == "Direct test Mac", "handshake carries device names")
-host.testGate(endpoint, occupied: true)
+// Multiple independently authorized iPads may now share the same host.
 host.testIsolation(endpoint)
 require(commandCount == 0, "packets from another channel do not execute")
 let play = DAWRemoteCommand(project: project, song: song, action: .play)
@@ -488,3 +494,126 @@ require(imageClient.imageData(id: registeredImage, project: project) == nil && i
 imageClient.stop(); imageHost.stop()
 require(imageHost.imageData(id: registeredImage, project: project) == nil, "disconnect clears prepared image cache and registrations")
 print("REMOTE_ON_DEMAND_STILL_IMAGE_REQUEST_DEDUP_CACHE_REUSE_UNKNOWN_REJECTION_PROJECT_RESET_AND_DISCONNECT_OK")
+
+// Switching documents on the Mac keeps the encrypted connection alive and
+// publishes a complete replacement, even when copied projects reuse item IDs.
+let switchHost = DAWRemoteSession(role: .host, name: "Switch test Mac")
+let switchClient = DAWRemoteSession(role: .client, name: "Switch test iPad")
+var switchFixture = fixture
+switchFixture.playing = false
+switchHost.stateProvider = { switchFixture }
+let switchEndpoint = try switchHost.testListen()
+switchClient.testConnect(switchEndpoint)
+waitFor("first project arrives") { switchClient.remoteState?.project == switchFixture.project }
+let oldProject = switchFixture.project
+switchFixture.project = UUID(); switchFixture.projectName = "Second session"
+switchFixture.tracks[0].name = "Second session track"
+switchFixture.position = 0
+waitFor("Mac project switch reaches iPad without reconnecting") {
+    switchClient.remoteState?.project == switchFixture.project &&
+    switchClient.remoteState?.projectName == "Second session" &&
+    switchClient.remoteState?.tracks.first?.name == "Second session track"
+}
+require(switchHost.connected && switchClient.connected && switchClient.remoteState?.project != oldProject,
+        "document switch preserves the connection and replaces the old project")
+switchClient.stop(); switchHost.stop()
+print("REMOTE_MAC_DOCUMENT_SWITCH_REPLACES_PROJECT_WITHOUT_RECONNECT_OK")
+
+var gridTimingFixture = fixture
+gridTimingFixture.gridTempo = [.init(start: 0, end: 5.3, bpm: 120, beats: 4, unit: 4),
+                         .init(start: 5.3, end: 10, bpm: 90, beats: 3, unit: 4)]
+gridTimingFixture.gridDivisions = 8
+gridTimingFixture.gridLines = true
+gridTimingFixture.gridPrimaryColor = 0x414141
+gridTimingFixture.gridSecondaryColor = 0x282828
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(gridTimingFixture)) {
+    require(decoded.gridTempo == gridTimingFixture.gridTempo && decoded.gridDivisions == 8, "remote preserves absolute tempo boundaries and subdivisions")
+    require(decoded.gridPrimaryColor == 0x414141 && decoded.gridSecondaryColor == 0x282828 && decoded.gridLines == true, "remote preserves grid appearance")
+} else { fatalError("grid state packet") }
+gridTimingFixture.gridTempo![0].bpm = 0
+require(!gridTimingFixture.valid, "invalid grid tempo must be rejected before calculating ticks")
+gridTimingFixture.gridTempo = []
+gridTimingFixture.gridDivisions = 3
+require(!gridTimingFixture.valid, "unsupported grid subdivisions must be rejected")
+print("REMOTE_GRID_TEMPO_DIVISIONS_COLORS_ROUNDTRIP_AND_VALIDATION_OK")
+
+// Roles are authenticated on the host. A forged client packet cannot bypass UI restrictions.
+let rolesHost = DAWRemoteSession(role: .host, name: "Roles Mac")
+require(rolesHost.setDirectorPIN("0123"), "four digit PIN accepts leading zero")
+let rolesEndpoint = try rolesHost.testListen()
+var rolesFixture = fixture
+var roleCommandCount = 0
+rolesHost.stateProviderForSession = { session in
+    var state = rolesFixture; state.message = "panel-\(session.requestedPanel)"; return state
+}
+rolesHost.commandHandler = { command in
+    roleCommandCount += 1
+    if command.action == .play { rolesFixture.playing = true }
+}
+extension DAWRemoteSession {
+    func testUnchecked(_ command: DAWRemoteCommand) { channel?.send(try! DAWRemoteWire.command(command)) }
+    func testPendingAccessSnapshot() { waitingForState = 123456789; sentAt = Date() }
+    func testNoPendingAccessSnapshot() { require(waitingForState == nil, "revocation clears the old ACK wait") }
+}
+let director = DAWRemoteSession(role: .client, name: "Director")
+let observer = DAWRemoteSession(role: .client, name: "Observer")
+director.testConnect(rolesEndpoint, access: nil)
+waitFor("mode picker waits for host PIN requirement") { director.connected && director.directorRequiresPIN }
+require(director.remoteState == nil, "no workspace before selecting an authorized role")
+director.testUnchecked(.init(project: project, action: .play))
+director.requestAccess(.director, pin: "9999")
+waitFor("incorrect PIN rejected") { !director.authorizing && !director.accessError.isEmpty }
+require(director.accessMode == nil && roleCommandCount == 0, "unauthenticated packet never controls host")
+director.requestAccess(.director, pin: "0123")
+waitFor("correct PIN opens director") { director.accessMode == .director && director.remoteState != nil }
+observer.testConnect(rolesEndpoint, access: .observer)
+waitFor("observer joins alongside director without PIN") { observer.accessMode == .observer && observer.remoteState != nil }
+require(observer.remoteState!.tracks.isEmpty && observer.remoteState!.playlists == nil && observer.remoteState!.projects == nil, "observer receives no mixer or project controls")
+observer.testUnchecked(.init(project: project, action: .play))
+observer.testUnchecked(.init(project: project, action: .selectPlaylist))
+observer.send(.init(project: project, action: .remotePanel, value: 2))
+director.send(.init(project: project, action: .remotePanel, value: 1))
+waitFor("independent local teleprompter subscriptions") { observer.remoteState?.message == "panel-2" && director.remoteState?.message == "panel-1" }
+require(roleCommandCount == 0, "observer cannot control Mac even with raw packets")
+director.send(.init(project: project, action: .play))
+waitFor("director changes are mirrored to observer") { director.remoteState?.playing == true && observer.remoteState?.playing == true && roleCommandCount == 1 }
+let observerNext = UUID()
+rolesFixture.regions.append(.init(id: observerNext, name: "Next", start: 12, end: 20, color: 0x123456))
+rolesFixture.regions.reverse(); rolesFixture.focusedRegion = observerNext; rolesFixture.queuedRegion = observerNext
+waitFor("observer mirrors host setlist order, focus and queue") {
+    observer.remoteState?.regions.first?.id == observerNext && observer.remoteState?.focusedRegion == observerNext && observer.remoteState?.queuedRegion == observerNext
+}
+rolesHost.testPendingAccessSnapshot()
+require(rolesHost.setDirectorPIN("4567"), "host updates PIN")
+rolesHost.testNoPendingAccessSnapshot()
+waitFor("PIN change revokes old director grant") { director.accessMode == nil }
+require(observer.accessMode == .observer, "PIN change does not interrupt observers")
+director.testUnchecked(.init(project: project, action: .stop))
+require(rolesHost.setDirectorPIN(""), "empty PIN disables password")
+director.requestAccess(.director)
+waitFor("director without password after explicit removal") { director.accessMode == .director }
+director.stop()
+waitFor("observer survives director disconnect") { rolesHost.connected && observer.connected }
+rolesFixture.position = 2
+waitFor("remaining observer continues receiving states") { observer.remoteState?.position == 2 }
+observer.stop(); rolesHost.stop()
+let policy = DAWRemoteAccessPolicy()
+require(policy.setPIN("0123") && !policy.setPIN("12") && !policy.setPIN("abcd"), "PIN format exact ASCII four digits or empty")
+let now = Date()
+for _ in 0..<5 { require(policy.authorize(.init(mode: .director, pin: "9999"), now: now).mode == nil, "bad PIN rejected") }
+require(policy.authorize(.init(mode: .director, pin: "0123"), now: now).mode == nil, "shared retry budget blocks guessing")
+require(policy.authorize(.init(mode: .observer), now: now).mode == .observer, "observer stays available during PIN delay")
+require(policy.authorize(.init(mode: .director, pin: "0123"), now: now.addingTimeInterval(31)).mode == .director, "correct PIN works after delay")
+print("REMOTE_DIRECTOR_PIN_HOST_AUTHORITY_OBSERVER_READ_ONLY_MULTICLIENT_INDEPENDENT_TP_AND_RECONNECT_OK")
+
+let credentialSuite = "catlive.remote.credentials-test-" + UUID().uuidString
+let credentialPreferences = UserDefaults(suiteName: credentialSuite)!
+defer { credentialPreferences.removePersistentDomain(forName: credentialSuite) }
+let persistedPolicy = DAWRemoteAccessPolicy(preferences: credentialPreferences)
+require(persistedPolicy.setPIN("0742"), "PIN can be saved")
+let storedCredential = credentialPreferences.data(forKey: "catlive.remote.directorPIN")!
+require(String(data: storedCredential, encoding: .utf8)?.contains("0742") == false, "preferences contain digest and salt, not the PIN")
+let loadedPolicy = DAWRemoteAccessPolicy(preferences: credentialPreferences)
+require(loadedPolicy.requiresPIN && loadedPolicy.authorize(.init(mode: .director, pin: "0742")).mode == .director, "PIN survives app restart")
+require(loadedPolicy.setPIN("") && !DAWRemoteAccessPolicy(preferences: credentialPreferences).requiresPIN, "empty PIN removes stored credential")
+print("REMOTE_DIRECTOR_PIN_PERSISTENCE_REMOVAL_AND_OBSERVER_SETLIST_SELECTION_QUEUE_OK")

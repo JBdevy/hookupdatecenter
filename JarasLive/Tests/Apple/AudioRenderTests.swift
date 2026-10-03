@@ -832,6 +832,13 @@ let leftSpan = TimecodePlaybackSpan(song: spanProject.songs[0], track: spanTrack
 let rightSpan = TimecodePlaybackSpan(song: spanProject.songs[0], track: spanTrack, position: 2.25, settings: spanSettings, preferredRegion: spanRegion.id)!
 precondition(leftSpan.time == 9.75 && rightSpan.time == 11.25, "timecode advances monotonically through both extended edges without modulo")
 precondition(TimecodePlaybackSpan(song: spanProject.songs[0], track: spanTrack, position: 2.6, settings: spanSettings, preferredRegion: spanRegion.id) == nil, "timecode item ends independently of its region")
+var importedSpanSettings = TimecodeSettings()
+importedSpanSettings.mode = "mtc"; importedSpanSettings.frameRate = 25; importedSpanSettings.offset = 3602
+var importedSpanTrack = spanTrack
+importedSpanTrack.clips[0].id = UUID()
+importedSpanTrack.clips[0].timecode = importedSpanSettings
+let importedSpan = TimecodePlaybackSpan(song: spanProject.songs[0], track: importedSpanTrack, position: 1.3, settings: spanSettings, preferredRegion: nil)!
+precondition(abs(importedSpan.time - 3602.8) < 0.000001 && importedSpan.end == 3604, "imported generator uses its own item origin and clock settings")
 var spanState = ShowSnapshot(project: spanProject, transport: TransportState(playing: true, songId: spanProject.songs[0].id, position: 0.3, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 let spanBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 func timecodeSpanPeak(at position: Double, revision: UInt64) throws -> Float {
@@ -868,6 +875,15 @@ _ = try timecodeSpanPeak(at: 1.3, revision: 3)
 precondition(timecodeMeter.levels.x == 0 && timecodeMeter.levels.y == 0, "MTC immediately clears the LTC audio meter")
 spanState.project.songs[0].tracks[0].timecode?.mode = "ltc"
 _ = try timecodeSpanPeak(at: 1.3, revision: 4)
+spanState.project.songs[0].tracks[0].clips[0].timecode = importedSpanSettings
+let importedMTCPeak = try timecodeSpanPeak(at: 1.3, revision: 5)
+precondition(importedMTCPeak < 0.000001, "per-item MTC overrides LTC track mode without sending LTC audio")
+spanState.project.songs[0].tracks[0].clips[0].timecode?.mode = "ltc"
+let importedLTCPeak = try timecodeSpanPeak(at: 1.3, revision: 6)
+precondition(importedLTCPeak > 0.2, "per-item LTC is regenerated natively")
+spanState.project.songs[0].tracks[0].clips[0].muted = true
+let importedMutedPeak = try timecodeSpanPeak(at: 1.3, revision: 7)
+precondition(importedMutedPeak < 0.000001, "muted imported generator emits no timecode")
 spanState.project.songs[0].tracks = []
 let deletedTimecodePeak = try timecodeSpanPeak(at: 1.3, revision: 5)
 precondition(deletedTimecodePeak < 0.000001, "deleting the Timecode track must stop the still-running LTC generator")

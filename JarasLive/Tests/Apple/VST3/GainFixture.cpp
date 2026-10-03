@@ -58,9 +58,16 @@ public:
     tresult PLUGIN_API setupProcessing(ProcessSetup&) override{return kResultOk;}
     tresult PLUGIN_API setProcessing(TBool) override{return kResultOk;}
     tresult PLUGIN_API process(ProcessData &data) override{
-        if(data.inputEvents)for(int i=0;i<data.inputEvents->getEventCount();i++){Event e{};data.inputEvents->getEvent(i,e);if(e.type==Event::kNoteOnEvent){held=true;note=true;}if(e.type==Event::kNoteOffEvent){held=false;note=pedal;}}
+
         if(data.inputParameterChanges)for(int i=0;i<data.inputParameterChanges->getParameterCount();i++){auto q=data.inputParameterChanges->getParameterData(i);int32 offset;double value;if(q->getPoint(0,offset,value)==kResultOk){if(q->getParameterId()==1){pedal=value>=0.5;if(!pedal&&!held)note=false;}else gain=value;}}
-        for(int c=0;c<2;c++)for(int f=0;f<data.numSamples;f++)data.outputs[0].channelBuffers32[c][f]=data.inputs[0].channelBuffers32[c][f]*gain.load()+(note?0.125f:0);
+        int nextEvent=0;
+        for(int f=0;f<data.numSamples;f++) {
+            while(data.inputEvents && nextEvent<data.inputEvents->getEventCount()) {
+                Event e{};data.inputEvents->getEvent(nextEvent,e);if(e.sampleOffset>f)break;++nextEvent;
+                if(e.type==Event::kNoteOnEvent){held=true;note=true;}if(e.type==Event::kNoteOffEvent){held=false;note=pedal;}
+            }
+            for(int c=0;c<2;c++)data.outputs[0].channelBuffers32[c][f]=data.inputs[0].channelBuffers32[c][f]*gain.load()+(note?0.125f:0);
+        }
         return kResultOk;
     }
     uint32 PLUGIN_API getTailSamples() override{return 0;}
@@ -81,7 +88,7 @@ class Factory final: public IPluginFactory {
 public:
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override{*out=nullptr;if(FUnknownPrivate::iidEqual(id,FUnknown_iid)||FUnknownPrivate::iidEqual(id,IPluginFactory_iid)){*out=this;return kResultOk;}return kNoInterface;}
     uint32 PLUGIN_API addRef() override{return 1;}uint32 PLUGIN_API release() override{return 1;}
-    tresult PLUGIN_API getFactoryInfo(PFactoryInfo *info) override{*info=PFactoryInfo("Jaras test fixture","","",0);return kResultOk;}
+    tresult PLUGIN_API getFactoryInfo(PFactoryInfo *info) override{*info=PFactoryInfo("CatLive test fixture","","",0);return kResultOk;}
     int32 PLUGIN_API countClasses() override{return 1;}
     tresult PLUGIN_API getClassInfo(int32,PClassInfo *info) override{*info=PClassInfo(cid,PClassInfo::kManyInstances,kVstAudioEffectClass,"Gain fixture");return kResultOk;}
     tresult PLUGIN_API createInstance(FIDString uid,FIDString iid,void **out) override{if(!FUnknownPrivate::iidEqual(uid,cid))return kResultFalse;auto gain=new Gain;auto result=gain->queryInterface(iid,out);gain->release();return result;}

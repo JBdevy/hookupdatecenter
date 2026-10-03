@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AdvancedView: View {
     @ObservedObject var show: ShowController
+    let documents: ProjectDocuments?
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
         case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
@@ -16,8 +17,8 @@ struct AdvancedView: View {
     @State private var shake = 0.0
     @FocusState private var focus: Int?
 
-    init(show: ShowController) {
-        self.show = show
+    init(show: ShowController, documents: ProjectDocuments? = nil) {
+        self.show = show; self.documents = documents
         let timing = GlobalProjectTiming.load() ?? show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming()
         _bpm = State(initialValue: String(format: "%g", timing.bpm))
         _beats = State(initialValue: String(timing.beats))
@@ -52,7 +53,7 @@ struct AdvancedView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(LocalizedStringKey(tab.rawValue)).font(.title3.bold())
                     if tab == .timeProject { timingControls }
-                    if tab == .timeline { AdvancedTimelineSettings() }
+                    if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
@@ -176,6 +177,8 @@ struct TempoMarkerEditor: View {
 }
 
 private struct AdvancedTimelineSettings: View {
+    let documents: ProjectDocuments?
+    @State private var confirmingCleanup = false
     @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
     var body: some View {
         VStack(spacing: 18) {
@@ -189,6 +192,16 @@ private struct AdvancedTimelineSettings: View {
             SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor)
             SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor)
             SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor)
+            if let documents {
+                Divider()
+                HStack {
+                    Text("Clean up files deleted from the timeline")
+                    Spacer()
+                    Button("Delete", role: .destructive) { confirmingCleanup = true }
+                        .disabled(!documents.canCleanTimelineMedia)
+                }
+                .sheet(isPresented: $confirmingCleanup) { TimelineMediaCleanupConfirmation(documents: documents) }
+            }
         }
     }
 }
@@ -236,6 +249,53 @@ private struct SetlistTextColorRow: View {
                         save: { _, value in color.save(Int(value)) }, close: { editing = false }, nameEditable: false, showsName: false,
                         previewColor: { if color.value != Int($0) { color.value = Int($0) } })
                 }
+        }
+    }
+}
+
+private struct TimelineMediaCleanupConfirmation: View {
+    @ObservedObject var documents: ProjectDocuments
+    @Environment(\.dismiss) private var dismiss
+    @State private var availableAt = ProcessInfo.processInfo.systemUptime + 3
+    @State private var remaining = 3
+    @State private var working = false
+    @State private var error = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Clean up files deleted from the timeline", systemImage: "trash")
+                .font(.headline).foregroundStyle(.red)
+            Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.")
+            if let url = documents.currentURL {
+                Text(verbatim: url.deletingLastPathComponent().path).font(.caption)
+                    .textSelection(.enabled).foregroundStyle(JarasTheme.secondary)
+            }
+            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
+                Spacer()
+                if working { ProgressView().controlSize(.small) }
+                Button(role: .destructive, action: clean) {
+                    if remaining > 0 { Text("Delete in \(remaining)s") } else { Text("Delete") }
+                }.buttonStyle(StageButtonStyle(color: .red))
+                    .disabled(remaining > 0 || working || !documents.canCleanTimelineMedia)
+            }
+        }.padding(24).frame(width: 480).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .interactiveDismissDisabled(working)
+            .task {
+                while !Task.isCancelled {
+                    remaining = max(0, Int(ceil(availableAt - ProcessInfo.processInfo.systemUptime)))
+                    if remaining == 0 { break }
+                    do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+                }
+            }
+    }
+    private func clean() {
+        guard ProcessInfo.processInfo.systemUptime >= availableAt, !working else { return }
+        working = true; error = ""
+        Task { @MainActor in
+            do { try await documents.cleanTimelineMedia(); dismiss() }
+            catch { self.error = error.localizedDescription }
+            working = false
         }
     }
 }

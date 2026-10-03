@@ -56,7 +56,7 @@ empty.finish(start: 0) { items,error in
     emptyFinished.signal()
 }
 precondition(emptyFinished.wait(timeout: .now()+3) == .success,"empty take finalization completes")
-let wavs = try FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("Steams/Recordings"),includingPropertiesForKeys: nil).filter { $0.pathExtension == "wav" }
+let wavs = try FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("Stems/Recordings"),includingPropertiesForKeys: nil).filter { $0.pathExtension == "wav" }
 precondition(wavs.count == 3,"a take without audio must not leave an empty WAV")
 print("RECORDING_MISSING_INPUT_HANDLED_OK")
 

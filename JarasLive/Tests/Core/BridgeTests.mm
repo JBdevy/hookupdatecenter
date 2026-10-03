@@ -360,5 +360,18 @@ int main(int argc,char**argv){@autoreleasepool{
     [bank recordPeak:0.75f slot:2000]; [bank recordPeak:1.0f slot:2001];
     expect([bank takePeak:1998]==0.5f && [bank takePeak:1999]==0.25f, "track 1000 has independent stereo meter slots");
     expect([bank takePeak:2000]==0.75f && [bank takePeak:2001]==1.0f, "Master meter does not collide with track 1000");
+    // Imported Timecode must survive Swift -> native core -> metadata snapshot.
+    NSMutableDictionary* importedTimecodeProject=[NSJSONSerialization JSONObjectWithData:input options:NSJSONReadingMutableContainers error:&error];
+    NSDictionary* tcSettings=@{@"mode":@"mtc",@"frameRate":@25,@"offset":@3602,@"regionRelative":@YES,@"midiDestination":@0};
+    NSDictionary* tcClip=@{@"id":@"AA111111-1111-4111-8111-111111111111",@"name":@"MTC",@"startTime":@5,@"duration":@7,@"sourceOffset":@0,@"waveform":@[],@"timecode":tcSettings};
+    NSDictionary* tcTrack=@{@"id":@"BB111111-1111-4111-8111-111111111111",@"name":@"Timecode",@"role":@"timecode",@"volume":@1,@"pan":@0,@"mute":@NO,@"solo":@NO,@"output":@1,@"importedTimecodeItems":@YES,@"timecode":tcSettings,@"clips":@[tcClip]};
+    [importedTimecodeProject[@"songs"][0][@"tracks"] insertObject:tcTrack atIndex:0];
+    JarasCoreBridge* migrated=[JarasCoreBridge new];
+    expect([migrated loadProjectData:[NSJSONSerialization dataWithJSONObject:importedTimecodeProject options:0 error:&error] error:&error],"load imported Timecode");
+    NSDictionary* migratedSnapshot=[NSJSONSerialization JSONObjectWithData:[migrated metadataSnapshotWithError:&error] options:0 error:&error];
+    NSDictionary* tcResult=migratedSnapshot[@"project"][@"songs"][0][@"tracks"][0];
+    expect([tcResult[@"importedTimecodeItems"] boolValue] && [tcResult[@"clips"] count]==1,"imported generator edges are not replaced by automatic region items");
+    expect(equalJSON(tcResult[@"clips"][0][@"timecode"],tcSettings),"per-item Timecode settings survive metadata bridge");
+    expect([tcResult[@"clips"][0][@"startTime"] doubleValue]==5 && [tcResult[@"clips"][0][@"duration"] doubleValue]==7,"generator position/duration survive native load");
     std::cout<<"JARAS_BRIDGE_OK\n";
 }}

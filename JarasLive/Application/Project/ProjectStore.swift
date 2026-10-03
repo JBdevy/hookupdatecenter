@@ -1,4 +1,5 @@
 import Foundation
+
 public protocol ProjectPersistence: Sendable {
     func load() async throws -> Project?
     func save(_ project: Project) async throws
@@ -29,6 +30,7 @@ public actor DocumentProjectStore: ProjectPersistence {
     private var projectID: UUID?
     public init() {}
     public func select(url: URL, id: UUID) { self.url = url; projectID = id }
+    public func deselect() { url = nil; projectID = nil }
     public func load() async throws -> Project? {
         guard let url else { return nil }
         return try await ProjectStore(url: url).load()
@@ -98,9 +100,15 @@ public enum ProjectBackups {
         }
     }
     public static func save(_ project: Project, to document: URL) throws {
+        try ProjectDirectoryPolicy.validate(document)
         let data = try ProjectDocumentCodec.encode(project)
         let folder = document.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var known = project.mediaPaths
+        if FileManager.default.fileExists(atPath: document.path) {
+            known.formUnion(try ProjectDocumentCodec.decode(Data(contentsOf: document)).mediaPaths)
+        }
+        try ProjectMediaCleanup.remember(project: project, document: document, knownPaths: known)
         try migrateLegacyNames(for: document)
         let previous = try files(for: document)
         let backup = availableBackup(for: document, date: Date())
@@ -116,16 +124,37 @@ public enum ProjectBackups {
     /// Recovery never overwrites either the original project or its history.
     public static func restore(_ backup: URL) throws -> URL {
         let data = try Data(contentsOf: backup)
-        _ = try ProjectDocumentCodec.decode(data)
+        let project = try ProjectDocumentCodec.decode(data)
         let root = mediaDirectory(for: backup)
         let base = backup.deletingPathExtension().lastPathComponent + "-Recovered"
-        var destination = root.appendingPathComponent(base).appendingPathExtension("jl")
+        let fm = FileManager.default
+        var folder = root.deletingLastPathComponent().appendingPathComponent(base, isDirectory: true)
         var suffix = 1
-        while FileManager.default.fileExists(atPath: destination.path) {
-            destination = root.appendingPathComponent(base + "-\(suffix)").appendingPathExtension("jl")
+        while fm.fileExists(atPath: folder.path) {
+            folder = root.deletingLastPathComponent().appendingPathComponent(base + "-\(suffix)", isDirectory: true)
             suffix += 1
         }
-        try ProjectDocumentCodec.writeEncoded(data, to: destination, exclusive: true)
-        return destination
+        try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        folder = folder.resolvingSymlinksInPath().standardizedFileURL
+        do {
+            // Independent copies: deleting the original project cannot break a
+            // recovered document, and both keep separate future backup histories.
+            for path in project.mediaPaths {
+                let source = root.appendingPathComponent(path).standardizedFileURL
+                let target = folder.appendingPathComponent(path).standardizedFileURL
+                guard target.path.hasPrefix(folder.standardizedFileURL.path + "/") else {
+                    throw ProjectError.invalid("Invalid imported media path.")
+                }
+                guard fm.fileExists(atPath: source.path) else { continue }
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: source, to: target)
+            }
+            let destination = folder.appendingPathComponent(base).appendingPathExtension("jl")
+            try ProjectDocumentCodec.writeEncoded(data, to: destination, exclusive: true)
+            return destination
+        } catch {
+            try? fm.removeItem(at: folder)
+            throw error
+        }
     }
 }

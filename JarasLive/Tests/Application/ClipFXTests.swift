@@ -12,7 +12,7 @@ final class ClipFXTests: XCTestCase {
         effects.delayEnabled = true; effects.feedback = 42
         effects.reverbEnabled = true; effects.reverbDecay = 6
         let clip = AudioClip(id: UUID(), name: "Take", startTime: 30, duration: 60,
-                             sourceOffset: 2, waveform: [0.1, 0.5], audioFile: AudioFile(path: "Steams/take.wav"),
+                             sourceOffset: 2, waveform: [0.1, 0.5], audioFile: AudioFile(path: "Stems/take.wav"),
                              gain: 0.5, waveformChannels: [[0.1,0.5],[0.4,0.2]], muted: true,
                              playbackRate: 1.5, recordingLane: 2, loopStart: 1, loopLength: 3, fx: effects)
         var track = Track(id: UUID(), name: "Audio", role: .keys)

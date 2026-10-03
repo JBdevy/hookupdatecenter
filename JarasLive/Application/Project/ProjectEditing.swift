@@ -114,7 +114,7 @@ public extension Project {
     }
     /// Special tracks keep a stable prefix; normal tracks and their groups retain their order.
     mutating func orderSpecialTracks() {
-        let order: [TrackKind] = [.timecode, .chords, .teleprompt, .teleprompt2, .video, .standard]
+        let order: [TrackKind] = [.timecode, .click, .chords, .teleprompt, .teleprompt2, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
             let ranks = tracks.map { order.firstIndex(of: $0.kind)! }
@@ -131,6 +131,12 @@ public extension Project {
                 guard let index = songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
                 if songs[song].tracks[track].kind == .timecode {
+                    if songs[song].tracks[track].importedTimecodeItems == true {
+                        songs[song].tracks[track].clips[index].startTime = start
+                        songs[song].tracks[track].clips[index].duration = end - start
+                        songs[song].duration = max(songs[song].duration, end)
+                        return
+                    }
                     guard let region = songs[song].parts.first(where: { Self.timecodeItemID($0.id) == id }) else { return }
                     songs[song].tracks[track].clips[index].timecodeStartOffset = start - region.startTime
                     songs[song].tracks[track].clips[index].timecodeEndOffset = end - region.endTime
@@ -261,7 +267,7 @@ public extension Project {
         }
     }
     var mediaPaths: Set<String> {
-        Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path].compactMap { $0 } })
+        Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } })
     }
 }
 
@@ -319,6 +325,13 @@ public extension AudioClip {
     func resized(start: Double, end: Double) -> AudioClip {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return self }
         var clip = self
+        if var midi = clip.midi {
+            let offset = clip.sourceOffset + (start - clip.startTime) * clip.audioRate
+            if offset < 0 { for index in midi.notes.indices { midi.notes[index].start -= offset * midi.sourceBPM / 60 } }
+            clip.sourceOffset = max(0, offset); clip.midi = midi
+            clip.startTime = start; clip.duration = end - start
+            return clip
+        }
         let loopStart = clip.loopStart ?? clip.sourceOffset
         let loopLength = clip.loopLength ?? clip.duration * clip.audioRate
         clip.loopStart = loopStart; clip.loopLength = loopLength
@@ -339,8 +352,8 @@ public enum ProjectAudioRecovery {
     }
 
     public static func missingPaths(in project: Project, directory: URL) -> [String] {
-        let paths = Set(project.songs.flatMap(\.tracks).filter { $0.kind == .standard || $0.kind == .timecode }.flatMap { track in
-            [track.audioFile?.path].compactMap { $0 } + track.clips.compactMap { $0.audioFile?.path }
+        let paths = Set(project.songs.flatMap(\.tracks).flatMap { track in
+            [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } + track.clips.compactMap { $0.audioFile?.path }
         })
         return paths.filter { path in
             let url = directory.appendingPathComponent(path)

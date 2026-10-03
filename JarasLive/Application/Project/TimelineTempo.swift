@@ -256,6 +256,8 @@ public extension Song {
     /// Temporary playback fragments preserve item edits and source continuity.
     /// They do not split project items or create additional media files.
     func tempoAudioSegments(_ clip: AudioClip, sections: [TimelineTempoSection]? = nil) -> [AudioClip] {
+        // Printed performances already contain their tempo changes.
+        guard clip.frozenMIDI != true, clip.renderedTiming != true else { return [clip] }
         guard tempoMarkersAffectAudio else { return [clip] }
         let end = clip.startTime + clip.duration
         var source = clip.sourceOffset, result: [AudioClip] = []
@@ -448,32 +450,110 @@ public struct GlobalProjectTiming: Codable, Equatable, Sendable {
         guard let data = try? JSONEncoder().encode(self) else { return }
         preferences.set(data, forKey: "jaras.advanced.globalTiming")
     }
+    public func applyOnOpen(to project: inout Project) {
+        guard project.importedTimeline != true else { return }
+        apply(to: &project)
+    }
     public func apply(to project: inout Project) {
         for i in project.songs.indices { project.songs[i].configureTiming(bpm: bpm, beats: beats, unit: unit, settings: settings) }
     }
 }
 
-/// A viewport-bounded time ruler independent of BPM and meter changes.
+/// One set of musical positions for both the grid and its elapsed-time ruler.
 public enum TimelineTimeRuler {
-    public struct Tick { public let time: Double; public let label: String }
-    public static func ticks(from start: Double, to end: Double, pixelsPerSecond: Double) -> [Tick] {
-        guard start.isFinite, end.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0, end >= start else { return [] }
-        let minimum = 80 / pixelsPerSecond
-        let intervals: [Double] = [0.000001, 0.000002, 0.000005, 0.00001, 0.00002, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400]
-        let step = intervals.first { $0 >= minimum } ?? minimum
-        let first = max(0, floor(start / step)), last = ceil(end / step)
-        guard last >= first, last - first <= 4096 else { return [] }
-        let precision = min(6, max(0, Int(ceil(-log10(step)))))
-        return (0...Int(last - first)).map { index in
-            let time = (first + Double(index)) * step
-            let whole = Int(time)
-            var label = String(format: "%02d:%02d:%02d", whole / 3600, whole / 60 % 60, whole % 60)
-            if precision > 0 {
-                let divisor = pow(10.0, Double(precision))
-                let fraction = Int((time - Double(whole)) * divisor + 0.0001)
-                label += String(format: ".%0*d", precision, fraction)
+    public static let labelGap = 14.0
+    /// Monospaced ruler text can include milliseconds and more than two hour
+    /// digits. Use the whole timeline's width so scrolling never changes labels.
+    public static func labelSample(through end: Double) -> String {
+        // Include a possible carry when a fractional second rounds to the next hour.
+        let hours = end.isFinite ? Int(max(0, min((end + 0.001) / 3600, Double(Int.max / 3600)))) : 0
+        let hourText = String(hours)
+        return (hourText.count < 2 ? "0" + hourText : hourText) + ":59:59.999"
+    }
+    public static func labelSpacing(through end: Double, measuredWidth: Double? = nil) -> Double {
+        // The shared renderer uses a 9-point monospaced font. Six points per
+        // character plus image padding is conservative when no font is available.
+        let estimate = Double(labelSample(through: end).count) * 6 + 2
+        let width = measuredWidth.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? estimate
+        return max(72, ceil(width) + labelGap)
+    }
+    public struct Tick {
+        public let time: Double
+        public let primary: Bool
+        /// Empty when the next label would be too close. The tick is still drawn.
+        public let label: String
+    }
+    public static func ticks(in sections: [TimelineTempoSection], from start: Double, to end: Double,
+                             pixelsPerSecond scale: Double, divisions: Int = 4, labels: Bool = true,
+                             minimumLabelSpacing: Double? = nil) -> [Tick] {
+        guard start.isFinite, end.isFinite, scale.isFinite, scale > 0, end >= start else { return [] }
+        let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? labelSpacing(through: sections.map(\.end).max() ?? end)
+        let labelSeconds = spacing / scale
+        var result: [Tick] = []
+        var previousLabel = -Double.infinity
+        for section in sections where section.start <= end {
+            if !labels && section.end < start { continue }
+            let bar = section.barSeconds
+            guard bar.isFinite, bar > 0, section.start.isFinite, section.end.isFinite,
+                  section.end > section.start else { continue }
+            let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
+            let first = max(0, Int(floor((start - section.start) / bar)) / strideBars * strideBars)
+            let last = max(first, Int(ceil((min(section.end, end) - section.start) / bar)))
+            let distant = bar * scale < TimelineTempo.minimumGridSpacing * 4
+            let minor = distant ? bar * Double(strideBars) / 2 :
+                TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
+                                       divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
+            guard minor > 0, minor.isFinite else { continue }
+            let labelBars = max(strideBars, Int(pow(2, max(0, ceil(log2(spacing / (bar * scale)))))))
+            let labelMinor = max(1, Int(ceil(spacing / (minor * scale))))
+            let firstAllowedLabel = previousLabel + labelSeconds
+            // Account for earlier sections without scanning their offscreen bars.
+            // Candidates within a section already have the required separation;
+            // only its first candidates can conflict with the preceding section.
+            if labels {
+                let lastBar = max(0, Int(ceil((section.end - section.start) / bar)) - 1)
+                var lastCandidate = section.start + Double(lastBar / labelBars * labelBars) * bar
+                if !distant {
+                    let labelStep = minor * Double(labelMinor)
+                    for index in stride(from: lastBar, through: max(0, lastBar - 1), by: -1) {
+                        let origin = section.start + Double(index) * bar
+                        let available = min(bar - labelSeconds, (section.end - origin).nextDown)
+                        if available >= labelStep {
+                            lastCandidate = max(lastCandidate, origin + floor(available / labelStep) * labelStep)
+                        }
+                    }
+                }
+                if lastCandidate >= firstAllowedLabel { previousLabel = lastCandidate }
             }
-            return Tick(time: time, label: label)
+            guard section.end >= start else { continue }
+            func append(_ time: Double, primary: Bool, labeled: Bool) {
+                guard time >= max(0, start), time <= end, time < section.end else { return }
+                result.append(Tick(time: time, primary: primary,
+                                   label: labels && labeled && time >= firstAllowedLabel ? timeLabel(time) : ""))
+            }
+            for index in stride(from: first, through: last, by: strideBars) {
+                let time = section.start + Double(index) * bar
+                guard time < section.end else { continue }
+                append(time, primary: true, labeled: index % labelBars == 0)
+                if distant {
+                    append(time + minor, primary: false, labeled: false)
+                } else {
+                    var subdivision = 1
+                    for offset in stride(from: minor, to: min(bar, section.end - time) - 1e-9, by: minor) {
+                        append(time + offset, primary: false,
+                               labeled: subdivision % labelMinor == 0 && (bar - offset) * scale >= spacing)
+                        subdivision += 1
+                    }
+                }
+            }
         }
+        return result
+    }
+    private static func timeLabel(_ time: Double) -> String {
+        let milliseconds = Int((time * 1000).rounded())
+        let whole = milliseconds / 1000
+        let base = String(format: "%02d:%02d:%02d", whole / 3600, whole / 60 % 60, whole % 60)
+        return milliseconds % 1000 == 0 ? base : base + String(format: ".%03d", milliseconds % 1000)
     }
 }

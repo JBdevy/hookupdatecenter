@@ -19,6 +19,7 @@ try MainActor.assumeIsolated {
     track.fx = fx; track.volume = 0.5
     project.songs[0].tracks = [track]; project.masterVolume = 0.25
     let snapshot = ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    audio.setArmedInstrumentTracks([track.id]) // Live input follows REC; item MIDI does not.
     let meter = audio.meter(for: track.id)
     try audio.update(snapshot, revision: 1)
     let node = audio.effects(for: track.id)!.externalNode(instance.id)!

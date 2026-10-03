@@ -77,3 +77,64 @@ versions[999] = 3000
 refreshStrips()
 precondition(updatedStrips.isEmpty, "offscreen scalar changes never rebuild visible controls")
 print("MIXER_SCALAR_EDITS_UPDATE_ONLY_CHANGED_HOST_WITHOUT_WINDOW_WIDE_RELAYOUT_OK")
+
+
+// Real native meters inside the separately hosted, virtualized footer strips.
+// Constant readings expose reveal failures hidden by a fresh audio update.
+private struct FooterMeterFixture: View {
+    let meter: TrackMeterLevel
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                Color.clear.frame(height: max(0, geometry.size.height - 200))
+                HStack(spacing: 2) {
+                    Color.gray.frame(width: 27)
+                    VerticalTrackMeter(meter: meter, showScale: false).frame(width: 8)
+                }.frame(height: min(160, max(0, geometry.size.height - 40)))
+                Text("Track").frame(height: 22)
+            }.padding(4)
+        }.frame(width: 83).padding(5)
+    }
+}
+@MainActor private func nativeMeters(_ view: NSView) -> [NativeVerticalTrackMeterView] {
+    (view as? NativeVerticalTrackMeterView).map { [$0] } ?? view.subviews.flatMap(nativeMeters)
+}
+@MainActor private func verifyFooterMeters() {
+let meterModels = (0..<100).map { _ in TrackMeterLevel() }
+for model in meterModels { model.update(left: 1, right: 0.5, elapsed: 1) }
+view.update(width: 100 * 86 + 7, stride: 86, count: 100) { range in
+    AnyView(FooterMeterFixture(meter: meterModels[range.lowerBound]))
+}
+window.orderFront(nil)
+view.layoutSubtreeIfNeeded()
+RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+func checkVisibleMeters(_ stage: String) {
+    let visible = nativeMeters(view).filter { !$0.isHiddenOrHasHiddenAncestor && !$0.bounds.intersection($0.visibleRect).isEmpty }
+    precondition(visible.count >= 4, "footer fixture needs multiple visible meters: \(stage)")
+    for meter in visible {
+        let backgrounds = meter.layer?.sublayers?.filter { $0.name?.hasPrefix("meter-background-") == true } ?? []
+        let levels = meter.layer?.sublayers?.filter { $0.name?.hasPrefix("meter-level-") == true } ?? []
+        precondition(backgrounds.count == 2 && backgrounds.allSatisfy { $0.bounds.width > 0 && $0.bounds.height == meter.bounds.height },
+                     "footer meter backgrounds must remain visible: \(stage)")
+        precondition(levels.count == 2 && levels.allSatisfy { $0.bounds.width > 0 && $0.bounds.height > 0 },
+                     "cached signal must appear without another audio update: \(stage)")
+    }
+}
+for fraction in [0.0, 0.7, 0.2, 1.0, 0.0] {
+    bar.doubleValue = fraction; bar.sendAction(bar.action, to: bar.target)
+    view.layoutSubtreeIfNeeded()
+    checkVisibleMeters("horizontal scroll \(fraction)")
+}
+for height: CGFloat in [232, 400, 260, 232] {
+    view.setFrameSize(NSSize(width: 500, height: height)); view.layoutSubtreeIfNeeded()
+    checkVisibleMeters("resize \(height)")
+}
+view.isHidden = true
+for model in meterModels { model.reset(); model.update(left: 0.3, right: 0.4, elapsed: 1) }
+view.isHidden = false; view.layoutSubtreeIfNeeded()
+checkVisibleMeters("panel revealed")
+window.orderOut(nil)
+print("FOOTER_NATIVE_METERS_CONSTANT_SIGNAL_SCROLL_RESIZE_AND_REVEAL_OK")
+
+}
+MainActor.assumeIsolated { verifyFooterMeters() }

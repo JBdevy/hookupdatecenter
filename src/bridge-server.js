@@ -345,6 +345,8 @@ let nativeBridgeLastProbeAt = 0
 let nativeBridgeLastProbeOk = false
 let nativeBridgeConsecutiveFailures = 0
 let nativeBridgeRefreshInFlight = null
+let nativeBridgeRefreshIsDiscovery = false
+let nativeBridgeLastReaderRequestAt = 0
 let nativeBridgeBackgroundPollTimer = null
 const nativeBridgeLicenseChecks = new Set()
 const optimizedTelepromptImageCache = new Map()
@@ -602,7 +604,24 @@ function requestNativeBridgeJson(pathname, options = {}) {
   const body = options.body ? String(options.body) : ''
   const timeoutMs = Number(options.timeoutMs || 220)
   return new Promise((resolve) => {
-    const req = http.request({
+    let settled = false
+    let req = null
+    let deadline = null
+    const finish = (result, destroy = false) => {
+      if (settled) return
+      settled = true
+      if (deadline) clearTimeout(deadline)
+      if (req) {
+        req.setTimeout(0)
+        if (destroy) req.destroy()
+      }
+      resolve(result)
+    }
+    const fail = () => finish({ ok: false, status: 0, data: null }, true)
+    // Socket timeout measures inactivity, not total response time. A partial
+    // response must neither extend this deadline nor leave refresh in flight.
+    deadline = setTimeout(fail, timeoutMs)
+    req = http.request({
       hostname: '127.0.0.1',
       port: NATIVE_BRIDGE_PORT,
       path: pathname,
@@ -615,41 +634,56 @@ function requestNativeBridgeJson(pathname, options = {}) {
     }, (res) => {
       let raw = ''
       res.setEncoding('utf8')
-      res.on('data', (chunk) => { raw += chunk })
+      res.on('data', (chunk) => { if (!settled) raw += chunk })
+      res.on('aborted', fail)
+      res.on('error', fail)
+      res.on('close', () => { if (!res.readableEnded) fail() })
       res.on('end', () => {
         try {
           const parsed = raw ? JSON.parse(raw) : {}
-          resolve({
+          finish({
             ok: res.statusCode >= 200 && res.statusCode < 300,
             status: Number(res.statusCode || 0),
             data: parsed,
           })
         } catch (_) {
-          resolve({ ok: false, status: Number(res.statusCode || 0), data: null })
+          finish({ ok: false, status: Number(res.statusCode || 0), data: null })
         }
       })
     })
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, data: null }) })
-    req.on('error', () => resolve({ ok: false, status: 0, data: null }))
+    req.on('timeout', fail)
+    req.on('error', fail)
     if (body) req.write(body)
     req.end()
   })
 }
 
 
-async function refreshNativeBridgeState(force = false) {
+async function refreshNativeBridgeState(force = false, { discoveryOnly = false } = {}) {
+  if (nativeBridgeRefreshInFlight) {
+    if (!discoveryOnly && nativeBridgeRefreshIsDiscovery) {
+      // Discovery must not swallow the first real reader: /state registers
+      // passive demand in the extension even when its cached lists are empty.
+      await nativeBridgeRefreshInFlight
+      return refreshNativeBridgeState(force, { discoveryOnly: false })
+    }
+    return nativeBridgeRefreshInFlight
+  }
   if (!force && nativeBridgeStateCache &&
       (Date.now() - nativeBridgeStateCacheAt) <
-        NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS) {
+        NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS &&
+      (discoveryOnly || (Date.now() - nativeBridgeLastReaderRequestAt) <
+        NATIVE_BRIDGE_MIN_REFRESH_INTERVAL_MS)) {
     return nativeBridgeStateCache
   }
-  if (nativeBridgeRefreshInFlight) return nativeBridgeRefreshInFlight
+  nativeBridgeRefreshIsDiscovery = discoveryOnly
+  if (!discoveryOnly) nativeBridgeLastReaderRequestAt = Date.now()
   const refreshPromise = (async () => {
     // O snapshot pode ser grande e o macOS 10.13 possui buffers/CPU bem mais
-    // lentos. Como a conexão é somente localhost, dois segundos evitam tratar
+    // lentos. Como a conexão é somente localhost, três segundos evitam tratar
     // uma resposta válida ainda em trânsito como "REAPER fechado".
     const result = await requestNativeBridgeJson(
-      '/state', { timeoutMs: 3000 })
+      discoveryOnly ? '/state?discovery=1' : '/state', { timeoutMs: 3000 })
     nativeBridgeLastProbeAt = Date.now()
     nativeBridgeLastProbeOk = !!(result.ok && result.data && result.data.connected)
     if (result.ok && result.data && result.data.connected) {
@@ -667,7 +701,22 @@ async function refreshNativeBridgeState(force = false) {
   } finally {
     if (nativeBridgeRefreshInFlight === refreshPromise) {
       nativeBridgeRefreshInFlight = null
+      nativeBridgeRefreshIsDiscovery = false
     }
+  }
+}
+
+async function waitForPublicNativeBridgeState(options = {}) {
+  // The mobile poll has a 2200ms deadline. Keep its HTTP response within that
+  // budget while a slow localhost snapshot finishes and warms the next poll.
+  let deadline = null
+  try {
+    await Promise.race([
+      refreshNativeBridgeState(false, options).catch(() => null),
+      new Promise(resolve => { deadline = setTimeout(resolve, 1800) }),
+    ])
+  } finally {
+    if (deadline) clearTimeout(deadline)
   }
 }
 
@@ -718,7 +767,7 @@ function retainNativeBridgeBackgroundPolling(licenseCheck) {
         .some((check) => {
           try { return check() === true } catch (_) { return false }
         })
-      if (enabled) refreshNativeBridgeState().catch(() => {})
+      if (enabled) refreshNativeBridgeState(false, { discoveryOnly: true }).catch(() => {})
     }, NATIVE_BRIDGE_BACKGROUND_POLL_MS)
     if (nativeBridgeBackgroundPollTimer.unref) {
       nativeBridgeBackgroundPollTimer.unref()
@@ -1902,7 +1951,7 @@ function createBridgeServer(options) {
         sendJson(res, 200, buildPublicStatePayload(state))
         return
       }
-      refreshNativeBridgeState().catch(() => {}).finally(() => {
+      waitForPublicNativeBridgeState().finally(() => {
         const rawState = mergeHookCenterRecadosAuth(readEffectiveState())
         const state = applyLyricsToState(rawState, lyricsFile)
         sendJson(res, 200, buildPublicStatePayload(state))
@@ -1925,7 +1974,7 @@ function createBridgeServer(options) {
         })
         return
       }
-      refreshNativeBridgeState().catch(() => {}).finally(() => {
+      waitForPublicNativeBridgeState({ discoveryOnly: true }).finally(() => {
         const state = mergeHookCenterRecadosAuth(readEffectiveState())
         sendJson(res, 200, {
         ok: true,
@@ -2248,7 +2297,7 @@ function createBridgeServer(options) {
                 isBridgeLicenseActive)
           }
           if (isBridgeLicenseActive()) {
-            refreshNativeBridgeState().catch(() => {})
+            refreshNativeBridgeState(false, { discoveryOnly: true }).catch(() => {})
           }
           const ip = publicBridgeHost || getLanIp()
           resolve({

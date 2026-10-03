@@ -22,10 +22,10 @@ final class GridItemClipboardTests: XCTestCase {
         var fx = NativeFXSettings(); fx.inserted = ["EQ", "Compressor"]; fx.eqEnabled = true; fx.bands[1].gain = 5
         var first = Track(id: UUID(), name: "First", role: .keys)
         first.clips = [AudioClip(id: UUID(), name: "Stem", startTime: 10, duration: 5, sourceOffset: 1,
-            waveform: [0.1, 0.3], audioFile: AudioFile(path: "Steams/original.wav"), gain: 0.5,
+            waveform: [0.1, 0.3], audioFile: AudioFile(path: "Stems/original.wav"), gain: 0.5,
             waveformChannels: [[0.1, 0.3], [0.2, 0.4]], muted: true, playbackRate: 1.2, loopStart: 1, loopLength: 3, fx: fx, fxBypassed: true)]
         var second = Track(id: UUID(), name: "Second", role: .bass)
-        second.clips = [AudioClip(id: UUID(), name: "Other", startTime: 20, duration: 5, audioFile: AudioFile(path: "Steams/other.wav"))]
+        second.clips = [AudioClip(id: UUID(), name: "Other", startTime: 20, duration: 5, audioFile: AudioFile(path: "Stems/other.wav"))]
         project.songs[0].tracks = [first, second]; project.songs[0].duration = 40
         return project
     }
@@ -37,7 +37,7 @@ final class GridItemClipboardTests: XCTestCase {
         var expected = original; expected.id = entries[0].clip.id; expected.startTime = 100
         XCTAssertEqual(project.songs[0].tracks[0].clips[1], expected)
         XCTAssertNotEqual(expected.id, original.id)
-        XCTAssertEqual(project.mediaPaths, ["Steams/original.wav", "Steams/other.wav"])
+        XCTAssertEqual(project.mediaPaths, ["Stems/original.wav", "Stems/other.wav"])
         let copiedWave = expected.waveform.withUnsafeBufferPointer { $0.baseAddress }
         XCTAssertEqual(copiedWave, original.waveform.withUnsafeBufferPointer { $0.baseAddress })
         project.songs[0].tracks[0].clips[1].gain = 0.25

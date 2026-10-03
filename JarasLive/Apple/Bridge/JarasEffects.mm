@@ -247,7 +247,7 @@ struct EQKernel {
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
     AudioComponentDescription d={kAudioUnitType_Effect,'JLEQ','Jara',0,0};
-    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasEQAudioUnit.class asComponentDescription:d name:@"Jaras Live EQ" version:1]; });
+    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasEQAudioUnit.class asComponentDescription:d name:@"CatLive EQ" version:1]; });
     return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
 }
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)values enabled:(BOOL)enabled {
@@ -466,7 +466,7 @@ struct DynamicsKernel {
     dispatch_once(&once, ^{
         for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM')]) {
             AudioComponentDescription d={kAudioUnitType_Effect,type.unsignedIntValue,'Jara',0,0};
-            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"Jaras Live Compressor":(type.unsignedIntValue=='JLLM'?@"Jaras Limiter":@"Jaras Live Reverb") version:1];
+            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":@"CatLive Reverb") version:1];
         }
     });
     AudioComponentDescription d={kAudioUnitType_Effect,subtype,'Jara',0,0};
@@ -631,7 +631,7 @@ struct ChannelRouteKernel {
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
     AudioComponentDescription d={kAudioUnitType_Effect,'JLrt','Jara',0,0};
-    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasChannelRouteUnit.class asComponentDescription:d name:@"Jaras Channel Route" version:1]; });
+    dispatch_once(&once, ^{ [AUAudioUnit registerSubclass:JarasChannelRouteUnit.class asComponentDescription:d name:@"CatLive Channel Route" version:1]; });
     return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
 }
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
@@ -727,7 +727,7 @@ struct ChannelRouteKernel {
         static NSMutableSet<NSNumber *> *registered;
         if(!registered) registered=[NSMutableSet set];
         if(![registered containsObject:@(count)]) {
-            [AUAudioUnit registerSubclass:JarasExportUnit.class asComponentDescription:d name:@"Jaras Offline Export" version:1];
+            [AUAudioUnit registerSubclass:JarasExportUnit.class asComponentDescription:d name:@"CatLive Offline Export" version:1];
             [registered addObject:@(count)];
         }
     }

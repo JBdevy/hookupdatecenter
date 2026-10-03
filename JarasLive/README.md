@@ -1,11 +1,11 @@
-# Jaras Live 1.0.0
+# CatLive 1.0.0
 
 Fundação nativa de um software de multitracks para palco. O foco atual é o
 **desktop**. A etapa de tablet foi adiada por orientação do produto: terminar
 primeiro o desktop; depois implementar Standalone e Live Control **somente em
 tablets**, sem interface de celular.
 
-![Desktop do Jaras Live](Docs/Desktop.png)
+![CatLive](CatLiveLogo.png)
 
 ## O que funciona nesta entrega
 
@@ -40,15 +40,15 @@ clipes. Os controles alteram estado real do núcleo; não simulam som inexistent
 
 ## Abrir e executar
 
-Abra `Jaras Live.xcodeproj` no Xcode e selecione o scheme **Jaras Live macOS**,
+Abra `CatLive.xcodeproj` no Xcode e selecione o scheme **CatLive macOS**,
 destino My Mac, e Run. A versão permanece 1.0.0. A equipe de desenvolvimento
 atualmente configurada é 573QZX9H7Y; outro desenvolvedor deve escolher sua própria
 equipe em Signing & Capabilities.
 
 Também é possível abrir `run macos.command`. Ele compila, instala em
-`~/Applications/Jaras Live.app` e abre o app. Não envia nada ao GitHub.
+`~/Applications/CatLive.app` e abre o app. Não envia nada ao GitHub.
 
-Existe um target **Jaras Live iPadOS**, configurado exclusivamente para iPad,
+Existe um target **CatLive iPadOS**, configurado exclusivamente para iPad,
 landscape, iPadOS 16+. Está reservado para a próxima etapa: não foi instalado
 nem homologado em tablet nesta entrega, conforme a nova prioridade do produto.
 Quando essa etapa começar, selecione o scheme iPadOS e o iPad físico no Xcode;
@@ -62,8 +62,8 @@ memória, sem escrever sessão no Keychain ou projeto em disco.
 
 Credenciais públicas exclusivamente para o mock:
 
-- E-mail: `demo@jaras.live`
-- Senha: `jaras123`
+- E-mail: `demo@catlive.app`
+- Senha: `catlive123`
 
 Escolha 1, 2 ou 3 dispositivos e o cenário Normal, Blocked, Expired ou Revoked
 antes de entrar. Senha incorreta exercita o login inválido. Cadastro cria outra
@@ -183,9 +183,9 @@ desenvolvimento verificada. Testes C++, bridge real e seis XCTest passaram.
 Na janela real foram verificados login mock, restauração de sessão, arraste
 independente das duas agulhas, Play/Sub Play simultâneos, Stop All, criação de
 pista e alternância English/Português. O app foi instalado em
-`~/Applications/Jaras Live.app`. A captura acima é da aplicação nativa.
+`~/Applications/CatLive.app`. A logo acima é a identidade visual atual do aplicativo.
 
-Não foi feita publicação/notarização do Jaras Live nem homologação em iPad
+Não foi feita publicação/notarização do CatLive nem homologação em iPad
 nesta etapa. O código está dentro do repositório da Hook Center, sem embutir
 certificados ou copiar secrets para o projeto.
 

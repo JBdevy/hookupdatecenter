@@ -23,5 +23,5 @@ enum JarasLocalization { static func string(_ value: String) -> String { value }
 flag = source[source.index('private func drawMarkerFlag('):]
 Path(sys.argv[1]).write_text(stub + source[start:end] + source[surface:surface_end] + flag + Path('Tests/Apple/TimelineMarkerLaneTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/TimelineStaticText.swift Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/TimelineStaticText.swift Application/Project/AudioFileRead.swift Apple/Shared/TimelineAudioWaveform.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

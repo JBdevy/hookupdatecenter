@@ -1,4 +1,5 @@
 #import "JarasSoundFont.h"
+#include "CatMIDISequenceBridge.h"
 #include <atomic>
 #include <array>
 #include <memory>
@@ -10,6 +11,7 @@
 namespace {
 struct MIDIMessage { uint8_t status, a, b; };
 struct InstrumentRenderer {
+    CatMIDISequence sequence;
     tsf *font = nullptr;
     std::array<MIDIMessage,2048> messages{};
     std::atomic<unsigned> written{0}, read{0};
@@ -129,7 +131,9 @@ struct InstrumentRenderer {
             if(active) tsf_voice_lowpass_setup(&filter,std::min(frequency/font->outSampleRate,.45f));
         }
     }
-    void render(AudioBufferList *output, unsigned frames) {
+    void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr) {
+        if(time) sequence.render(catMIDIClock(time,font->outSampleRate),font->outSampleRate,frames);
+        else sequence.count=0;
         const bool mono=monophonic.load();
         if(mono!=previousMono) {
             previousMono=mono; held.fill(0); pressed.fill(false); monoKey=-1;
@@ -171,8 +175,14 @@ struct InstrumentRenderer {
         read.store(r,std::memory_order_release);
         float buffer[256];
         const float targetGain=gain.load(), targetPan=pan.load();
-        for(unsigned offset=0;offset<frames;offset+=64) {
-            const unsigned count=std::min(64u,frames-offset);
+        unsigned midiIndex=0;
+        for(unsigned offset=0;offset<frames;) {
+            while(midiIndex<sequence.count && sequence.events[midiIndex].offset<=offset) {
+                const auto& e=sequence.events[midiIndex++];
+                if((e.status&0xf0)==0x90) noteOn(e.status&15,e.pitch,e.velocity);else noteOff(e.status&15,e.pitch);
+            }
+            unsigned count=std::min(64u,frames-offset);
+            if(midiIndex<sequence.count) count=std::min(count,sequence.events[midiIndex].offset-offset);
             controllersForBlock(count);
             filtersForBlock(count);
             tsf_render_float(font,buffer,int(count),0);
@@ -188,6 +198,7 @@ struct InstrumentRenderer {
                     ((float*)output->mBuffers[0].mData)[(offset+i)*2+1]=right;
                 }
             }
+            offset+=count;
         }
     }
 };
@@ -212,12 +223,14 @@ struct InstrumentRenderer {
         _renderer=renderer;
         AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:sampleRate channels:2];
         _node=[[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL* silent,const AudioTimeStamp* time,AVAudioFrameCount frames,AudioBufferList* output) {
-            renderer->render(output,frames); *silent=NO; return noErr;
+            renderer->render(output,frames,time); *silent=NO; return noErr;
         }];
     }
     return self;
 }
 - (AVAudioSourceNode*)node { return _node; }
+- (void)setSequenceNotes:(NSArray<NSDictionary *> *)notes { _renderer->sequence.setNotes(catMIDINotes(notes)); }
+- (void)sequenceHead:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { _renderer->sequence.configure(head,position,clock,running,start,end); }
 - (void)sendStatus:(uint8_t)status data1:(uint8_t)a data2:(uint8_t)b { _renderer->enqueue({status,uint8_t(a&127),uint8_t(b&127)}); }
 - (void)setGain:(double)decibels pan:(double)pan {
     _renderer->gain.store(decibels<=-90?0:powf(10,float(std::clamp(decibels,-90.0,24.0))/20));

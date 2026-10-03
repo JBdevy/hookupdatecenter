@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic,readonly) AVAudioSourceNode *node;
 - (instancetype)initWithFormat:(AVAudioFormat *)format;
 - (void)setSections:(NSArray<NSDictionary *> *)sections soundA:(NSData *)soundA soundB:(NSData *)soundB mode:(NSInteger)mode;
+- (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound;
 - (void)setGainA:(float)a gainB:(float)b;
 - (void)setEnabled:(BOOL)enabled;
 - (void)configurePosition:(double)position hostTime:(uint64_t)hostTime running:(BOOL)running loopStart:(double)loopStart loopEnd:(double)loopEnd sampleTime:(double)sampleTime;

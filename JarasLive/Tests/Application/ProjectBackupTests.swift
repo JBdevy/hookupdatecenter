@@ -6,7 +6,7 @@ final class ProjectBackupTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let document = root.appendingPathComponent("Show.jl")
-        let other = root.appendingPathComponent("Other.jl")
+        let other = root.appendingPathComponent("Other/Other.jl")
         var project = Project.empty(name: "Show")
         try ProjectBackups.save(.empty(name: "Other"), to: other)
         for index in 1...12 {
@@ -25,12 +25,57 @@ final class ProjectBackupTests: XCTestCase {
         XCTAssertThrowsError(try JSONSerialization.jsonObject(with: Data(contentsOf: backups.last!)))
         let original = try Data(contentsOf: document)
         let recovered = try ProjectBackups.restore(backups[0])
-        XCTAssertEqual(recovered.deletingLastPathComponent().resolvingSymlinksInPath().path, root.resolvingSymlinksInPath().path)
+        XCTAssertNotEqual(recovered.deletingLastPathComponent().resolvingSymlinksInPath().path, root.resolvingSymlinksInPath().path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: recovered.deletingLastPathComponent()) }
         XCTAssertEqual(recovered.pathExtension, "jl")
         XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: recovered)).name, "Save 3")
         XCTAssertEqual(try Data(contentsOf: document), original)
         XCTAssertEqual(try ProjectBackups.files(for: document).count, 10)
-        XCTAssertNotEqual(try ProjectBackups.restore(backups[0]), recovered)
+        let another = try ProjectBackups.restore(backups[0])
+        addTeardownBlock { try? FileManager.default.removeItem(at: another.deletingLastPathComponent()) }
+        XCTAssertNotEqual(another, recovered)
+    }
+    func testSharedDirectoryRejectedBeforeBackupOrMediaWritesAndOwnDocumentCanSave() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let existing = root.appendingPathComponent("First.jl"), next = root.appendingPathComponent("Second.jl")
+        let project = Project.empty(name: "First")
+        try ProjectDocumentCodec.write(project, to: existing)
+        let before = try Data(contentsOf: existing)
+        XCTAssertThrowsError(try ProjectDocumentCodec.write(.empty(name: "Second"), to: next))
+        XCTAssertThrowsError(try ProjectBackups.save(.empty(name: "Second"), to: next))
+        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("backups").path))
+        XCTAssertFalse(fm.fileExists(atPath: next.path))
+        XCTAssertEqual(try Data(contentsOf: existing), before)
+        try ProjectBackups.save(project, to: existing)
+        XCTAssertEqual(try ProjectBackups.files(for: existing).count, 1)
+        #if os(macOS)
+        let result = ProjectMigration.Result(project: .empty(name: "Import"), media: [], warnings: [])
+        XCTAssertThrowsError(try ProjectMigration.save(result, to: next))
+        #endif
+    }
+    func testRecoveryCopiesMediaIntoIndependentFolder() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("Stems"), withIntermediateDirectories: true)
+        let document = root.appendingPathComponent("Show.jl")
+        var project = Project.empty(name: "Show")
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        track.clips = [AudioClip(id: UUID(), name: "Take", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/take.wav"))]
+        project.songs[0].tracks = [track]
+        try Data([1, 2, 3]).write(to: root.appendingPathComponent("Stems/take.wav"))
+        try ProjectBackups.save(project, to: document)
+        let restored = try ProjectBackups.restore(XCTUnwrap(ProjectBackups.files(for: document).first))
+        let recoveredRoot = restored.deletingLastPathComponent()
+        defer { try? fm.removeItem(at: recoveredRoot) }
+        XCTAssertNotEqual(recoveredRoot, root)
+        try fm.removeItem(at: root)
+        XCTAssertEqual(try Data(contentsOf: recoveredRoot.appendingPathComponent("Stems/take.wav")), Data([1, 2, 3]))
+        try ProjectBackups.save(project, to: restored)
+        XCTAssertEqual(try ProjectBackups.files(for: restored).count, 1)
     }
     func testLegacyBackupNamesMigrateWithoutChangingContentsAndContinueNumbering() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

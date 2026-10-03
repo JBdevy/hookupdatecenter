@@ -190,7 +190,7 @@ final class ClickTempoTests: XCTestCase {
             song.timeSettings?.timebase = mode
             let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 20)
             var track = Track(id: UUID(), name: "Click", role: .click)
-            let clip = AudioClip(id: UUID(), name: "Click", startTime: 0, duration: 20, audioFile: AudioFile(path: "Steams/click.wav"), gain: 0.5, muted: true)
+            let clip = AudioClip(id: UUID(), name: "Click", startTime: 0, duration: 20, audioFile: AudioFile(path: "Stems/click.wav"), gain: 0.5, muted: true)
             track.clips = [clip]; song.tracks = [track]; song.parts = [region]
             let before = song
             let detection = try ClickTempoDetector.markersWithMeter(song: song, region: region, transientsFor: { _ in

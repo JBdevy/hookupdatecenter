@@ -19,6 +19,7 @@ struct FXInsertEditor: View {
     private var availableEffects: [String] {
         var result = track == nil ? ["EQ", "Compressor", "Limiter"] : NativeFXSettings.order.filter { targets.count == 1 || $0 != "Instruments" }
         #if os(macOS)
+        if track != nil && targets.count == 1 { result.append("CatStemSeparation 5") }
         result.append("External")
         #endif
         return result
@@ -34,7 +35,7 @@ struct FXInsertEditor: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Insert effect").font(.headline)
                     Picker("Effect", selection: $effect) {
-                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "Jaras Limiter" : $0)).tag($0) }
+                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0)).tag($0) }
                     }.pickerStyle(.menu)
                     if effect == "Instruments" { InstrumentBrowser(selected: $instrument).frame(height: 330) }
                     #if os(macOS)
@@ -58,6 +59,9 @@ struct FXInsertEditor: View {
                         Button("Apply") {
                             guard availableEffects.contains(effect) else { return }
                             #if os(macOS)
+                            if effect == "CatStemSeparation 5" {
+                                dismiss(); open(track, effect); return
+                            }
                             if effect == "External" {
                                 guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
                                 var prepared: [(UUID?, NativeFXSettings, String)] = []
@@ -131,6 +135,7 @@ private struct LocalizedClipFXEditor: View {
 }
 @MainActor final class FXWindows: NSObject, NSWindowDelegate {
     static let shared = FXWindows()
+    weak var documents: ProjectDocuments?
     private enum Target: Hashable {
         case track(UUID?, String)
         case clip(UUID)
@@ -158,7 +163,7 @@ private struct LocalizedClipFXEditor: View {
     }
     private func title(_ key: WindowKey, in show: ShowController) -> String {
         switch key.target {
-        case .clip(let clip): return "Jaras FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
+        case .clip(let clip): return "CatLive FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
         case .track(let track, let effect):
             let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
             if effect == "Chain" { return JarasLocalization.string("FX Manager") }

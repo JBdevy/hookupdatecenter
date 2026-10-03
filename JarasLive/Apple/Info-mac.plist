@@ -4,28 +4,50 @@
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>CFBundleName</key><string>Jaras Live</string>
+<key>CFBundleName</key><string>CatLive</string>
+<key>CFBundleDisplayName</key><string>CatLive</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
-<key>CFBundleIconFile</key><string>JarasLiveIcon</string>
+<key>CFBundleIconFile</key><string>CatLiveIcon</string>
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
-<key>NSMicrophoneUsageDescription</key><string>Jaras Live records audio from the input selected for each armed track.</string>
-<key>NSLocalNetworkUsageDescription</key><string>Jaras Live connects directly to a nearby iPad for Remote control and shares the teleprompter on your local network when enabled.</string>
+<key>NSMicrophoneUsageDescription</key><string>CatLive records audio from the input selected for each armed track.</string>
+<key>NSLocalNetworkUsageDescription</key><string>CatLive connects directly to a nearby iPad for Remote control and shares the teleprompter on your local network when enabled.</string>
 <key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict>
-<key>CFBundleTypeName</key><string>Jaras Live Project</string>
-<key>CFBundleTypeIconFile</key><string>JarasLiveIcon.icns</string>
+<key>CFBundleTypeName</key><string>CatLive Project</string>
+<key>CFBundleTypeIconFile</key><string>CatLiveIcon.icns</string>
 <key>CFBundleTypeRole</key><string>Editor</string>
 <key>LSHandlerRank</key><string>Owner</string>
 <key>LSItemContentTypes</key><array><string>com.hookdeveloper.jaraslive.project</string></array>
+</dict><dict>
+<key>CFBundleTypeName</key><string>Logic Pro Project</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>LSItemContentTypes</key><array><string>com.apple.logicx.project</string></array>
+</dict><dict>
+<key>CFBundleTypeName</key><string>REAPER Project</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>LSItemContentTypes</key><array><string>com.hookdeveloper.jaraslive.reaper-import</string></array>
+</dict></array>
+<key>UTImportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>com.apple.logicx.project</string>
+<key>UTTypeDescription</key><string>Logic Pro Project</string>
+<key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>logicx</string></dict>
+</dict><dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.jaraslive.reaper-import</string>
+<key>UTTypeDescription</key><string>REAPER Project</string>
+<key>UTTypeConformsTo</key><array><string>public.plain-text</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>rpp</string></dict>
 </dict></array>
 <key>UTExportedTypeDeclarations</key><array><dict>
 <key>UTTypeIdentifier</key><string>com.hookdeveloper.jaraslive.project</string>
-<key>UTTypeIconFile</key><string>JarasLiveIcon.icns</string>
-<key>UTTypeDescription</key><string>Jaras Live Project</string>
+<key>UTTypeIconFile</key><string>CatLiveIcon.icns</string>
+<key>UTTypeDescription</key><string>CatLive Project</string>
 <key>UTTypeConformsTo</key><array><string>public.data</string></array>
 <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jl</string><string>bkjl</string></array></dict>
 </dict></array>

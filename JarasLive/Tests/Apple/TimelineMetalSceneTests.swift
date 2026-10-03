@@ -2,6 +2,16 @@ import Foundation
 import AVFoundation
 
 setbuf(stdout, nil)
+let mediaURLs = TimelineMediaURLCache()
+let projectA = URL(fileURLWithPath: "/tmp/CatLive A", isDirectory: true)
+let projectB = URL(fileURLWithPath: "/tmp/CatLive B", isDirectory: true)
+let mediaPath = "Stems/Música #1/Violão 50%.wav"
+let firstURL = mediaURLs.resolve(mediaPath, directory: projectA)
+precondition(firstURL.path == projectA.path + "/" + mediaPath)
+for _ in 0..<1000 { precondition(mediaURLs.resolve(mediaPath, directory: projectA) == firstURL) }
+precondition(mediaURLs.resolve(mediaPath, directory: projectB).path == projectB.path + "/" + mediaPath)
+precondition(mediaURLs.resolve(mediaPath, directory: projectA) == firstURL)
+print("TIMELINE_MEDIA_URL_CACHE_UNICODE_AND_PROJECT_SWITCH_OK")
 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("jaras-metal-scene-\(UUID())")
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: directory) }
@@ -129,6 +139,9 @@ precondition(Set(tempo.map { Int(($0.scale.x * Float(rate)).rounded()) }) == Set
              "tempo fragments must use their independent playback rates")
 let seamX = (start + 1) * scale - viewport.minX
 precondition(tempo.contains { abs($0.clip.maxX - seamX) < 0.001 } && tempo.contains { abs($0.clip.minX - seamX) < 0.001 })
+let collapsed = scene(clip, rectangle: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: 18))
+precondition(collapsed.strokes.isEmpty, "thin items must not draw waveforms or centerlines")
+precondition(!scene(clip).strokes.isEmpty, "expanding the track restores its cached waveform")
 let absent = scene(clip, window: CGRect(x: 0, y: 0, width: 200, height: 200))
 precondition(absent.strokes.isEmpty, "offscreen items must not emit waveform work")
 print("METAL_SCENE_TEMPO_FRAGMENTS_AND_OFFSCREEN_CULLING_OK")

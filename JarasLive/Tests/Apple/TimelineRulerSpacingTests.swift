@@ -1,0 +1,68 @@
+// Compiled with the production ruler model and native cached text renderer.
+_ = NSApplication.shared
+let end = 1_000_000_000.0
+let steady = [TimelineTempoSection(start: 0, end: end, bpm: 123, beats: 7, unit: 8, timebase: .free)]
+var dense = (0..<160).map { index in
+    TimelineTempoSection(start: Double(index) * 0.15, end: Double(index + 1) * 0.15,
+        bpm: [60.0, 90, 123, 299][index % 4], beats: index % 7 + 1, unit: [4, 8, 16][index % 3], timebase: .free)
+}
+dense.append(TimelineTempoSection(start: 24, end: end, bpm: 120, beats: 4, unit: 4, timebase: .free))
+let scales = [0.01, 0.02, 0.05, 0.1, 0.5, 1, 8, 40, 100, 1000, 81920.0]
+    + (0...90).map { 0.01 * pow(81920 / 0.01, Double($0) / 90) }
+let origins: [Double] = [0, 9 * 3600, 99 * 3600, 99_999 * 3600]
+var checked = 0
+var labelCount = 0
+for backingScale in [1.0, 2.0, 3.0] {
+    let sample = TimelineTimeRuler.labelSample(through: end)
+    precondition(sample.hasPrefix("277777:"), "large hours remain complete")
+    let measuredWidth = Double(TimelineStaticText.label(sample, style: .barNumber, displayScale: backingScale)!.size.width)
+    let spacing = TimelineTimeRuler.labelSpacing(through: end, measuredWidth: measuredWidth)
+    precondition(TimelineTimeRuler.labelSpacing(through: end) >= spacing, "font-free estimate covers the real font")
+    for sections in [steady, dense] {
+        for scale in scales {
+            for origin in origins {
+                let limit = origin + 2400 / scale
+                let marks = TimelineTimeRuler.ticks(in: sections, from: origin, to: limit,
+                    pixelsPerSecond: scale, divisions: 8, minimumLabelSpacing: spacing)
+                let grid = TimelineTimeRuler.ticks(in: sections, from: origin, to: limit,
+                    pixelsPerSecond: scale, divisions: 8, labels: false)
+                precondition(marks.map(\.time) == grid.map(\.time), "adaptive text cannot remove or move grid ticks")
+                precondition(marks.map(\.primary) == grid.map(\.primary), "primary/secondary line weights remain unchanged")
+                var previousRight = -Double.infinity
+                for tick in marks where !tick.label.isEmpty {
+                    let text = TimelineStaticText.label(tick.label, style: .barNumber, displayScale: backingScale)!
+                    let left = floor(tick.time * scale * backingScale) / backingScale + 0.5 / backingScale + 2
+                    precondition(left - previousRight >= TimelineTimeRuler.labelGap - 1.01,
+                        "rendered text overlaps at scale \(scale), time \(tick.time), label \(tick.label)")
+                    previousRight = left + Double(text.size.width)
+                    labelCount += 1
+                }
+                for fraction in [0.013, 0.37, 0.79] {
+                    let a = origin + (limit - origin) * fraction
+                    let b = origin + (limit - origin) * min(1, fraction + 0.2)
+                    let tile = TimelineTimeRuler.ticks(in: sections, from: a, to: b,
+                        pixelsPerSecond: scale, divisions: 8, minimumLabelSpacing: spacing)
+                    let expected = marks.filter { $0.time >= a && $0.time <= b }
+                    precondition(tile.map(\.time) == expected.map(\.time), "scrolling preserves tick positions")
+                    precondition(tile.map(\.label) == expected.map(\.label), "tile boundaries cannot change which labels are visible")
+                }
+                checked += 1
+            }
+        }
+    }
+}
+let tiny = TimelineTimeRuler.ticks(in: dense, from: 0, to: 24, pixelsPerSecond: 0.01)
+precondition(tiny.filter { !$0.label.isEmpty }.count == 1, "nearby section starts share the same collision rule")
+precondition(tiny.count >= 160, "dense tempo changes retain their grid lines")
+let simple = [TimelineTempoSection(start: 0, end: 1000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
+var previousInterval = 0.0
+for scale in [100.0, 40, 8, 1, 0.5, 0.1] {
+    let labels = TimelineTimeRuler.ticks(in: simple, from: 0, to: 999, pixelsPerSecond: scale).filter { !$0.label.isEmpty }
+    if labels.count >= 2 {
+        let interval = labels[1].time - labels[0].time
+        precondition(interval >= previousInterval, "zooming out progressively increases the label interval")
+        previousInterval = interval
+    }
+}
+precondition(labelCount > 10_000, "exercise actual native glyph bounds rather than empty viewports")
+print("TIMELINE_RULER_NATIVE_WIDTH_NO_OVERLAP_TILES_AND_GRID_OK cases=\(checked) labels=\(labelCount)")

@@ -180,10 +180,12 @@ import Combine
         state.blocks = (state.blocks ?? []).filter { !visible.contains($0.id) } + blocks.reversed()
         _ = configureRegionSetlist(state)
     }
-    public func createRegionPlaylist(name: String, selected: Set<UUID>) -> Bool {
+    public func createRegionPlaylist(name: String, selected: [UUID]) -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !selected.isEmpty, let song = current else { return false }
-        let ids = allRegions.filter { selected.contains($0.id) }.map(\.id)
+        let available = Set(allRegions.map(\.id))
+        var seen = Set<UUID>()
+        let ids = selected.filter { available.contains($0) && seen.insert($0).inserted }
         guard !ids.isEmpty else { return false }
         var state = regionSetlist
         let list = RegionPlaylist(id: UUID(), name: name, songId: song.id, regionIds: ids)
@@ -339,7 +341,10 @@ import Combine
         if action.needsTrack && track == nil { message = "Track unavailable"; return }
         switch action {
         case .selectTrack:
-            if let track { selectedTrackForActions = track.id; trackSelectionRequest = TrackSelectionRequest(id: UUID(), track: track.id) }
+            if let track {
+                setMixerTrackSelection([track.id], anchor: track.id)
+                trackSelectionRequest = TrackSelectionRequest(id: UUID(), track: track.id)
+            }
         case .muteTrack: send(.mute, target: track?.id)
         case .soloTrack: send(.solo, target: track?.id)
         case .muteMaster: send(.mute)
@@ -478,6 +483,30 @@ import Combine
             } catch { message = error.localizedDescription; return false }
         }
         message = "The audio item changed during Re-render."; return false
+    }
+    @discardableResult public func replaceGluedItems(_ replacements: [GluedItemReplacement], project: UUID, song: UUID) -> Bool {
+        guard canExecute(), !finishing, snapshot.project.id == project, current?.id == song, !replacements.isEmpty,
+              Set(replacements.map(\.track)).count == replacements.count,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == song }) else { return false }
+        var next = snapshot.project
+        for replacement in replacements {
+            guard let channel = next.songs[index].tracks.firstIndex(where: { $0.id == replacement.track }),
+                  next.songs[index].tracks[channel].kind == .standard, !replacement.originals.isEmpty,
+                  Set(replacement.originals.map(\.id)).count == replacement.originals.count,
+                  replacement.originals.allSatisfy({ original in next.songs[index].tracks[channel].clips.contains(original) }) else {
+                message = "The selected items changed while unifying."; return false
+            }
+            let ids = Set(replacement.originals.map(\.id))
+            next.songs[index].tracks[channel].clips.removeAll { ids.contains($0.id) }
+            next.songs[index].tracks[channel].clips.append(replacement.rendered)
+            next.songs[index].tracks[channel].clips.sort { $0.startTime < $1.startTime }
+        }
+        do {
+            try next.validate()
+            tick(); try executor.applyProjectEdit(next)
+            snapshot = try executor.snapshot(); markChanged(); onProjectEdited(); message = ""
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     public func previewItemFade(_ id: UUID, fadeIn: Bool, seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
@@ -1051,11 +1080,16 @@ import Combine
         catch { message = error.localizedDescription }
     }
     public func setRecordingChannels(_ track: UUID, channel: Int) {
-        guard canExecute(), !finishing else { return }
+        guard canExecute(), !finishing, TrackRecordingMode(rawValue: channel) != nil else { return }
         guard let location = trackLocation(track), snapshot.project.songs[location.song].tracks[location.track].recordingChannels != channel else { return }
         do {
             try executor.setRecordingChannels(track, channel: channel)
             snapshot.project.songs[location.song].tracks[location.track].recordingChannels = channel
+            if channel == TrackRecordingMode.midi.rawValue, snapshot.project.songs[location.song].tracks[location.track].midiInput == nil {
+                try executor.setMIDIInput(track, slot: 1)
+                snapshot.project.songs[location.song].tracks[location.track].midiInput = 1
+                audioMIDIInput(track, 1)
+            }
             markChanged(refreshAudio: false)
         }
         catch { message = error.localizedDescription }
@@ -1130,6 +1164,16 @@ import Combine
         }
         catch { message = error.localizedDescription }
     }
+    public func insertSeparatedStems(_ tracks: [Track], song: UUID, sourceTrack: UUID, original: AudioClip, project: UUID) throws {
+        guard canExecute(), !finishing, snapshot.project.id == project else {
+            throw ProjectError.invalid("The destination project is no longer available.")
+        }
+        var updated = snapshot.project
+        try updated.insertSeparatedStems(tracks, song: song, sourceTrack: sourceTrack, original: original)
+        try executor.applyProjectEdit(updated)
+        snapshot = try executor.snapshot()
+        markChanged(); onProjectEdited()
+    }
     public func insertAudioTracks(_ tracks: [Track], song: UUID, project: UUID) throws {
         guard canExecute(), !finishing, snapshot.project.id == project,
               let index = snapshot.project.songs.firstIndex(where: { $0.id == song }) else {
@@ -1156,6 +1200,40 @@ import Combine
             markChanged()
         }
         catch { message = "Recording saved, but could not insert item: " + error.localizedDescription }
+    }
+    @discardableResult public func addMIDIItem(track: UUID, start: Double? = nil, duration: Double? = nil) -> UUID? {
+        guard canExecute(), !finishing, let current, let row = current.tracks.first(where: { $0.id == track }), row.kind == .standard else { return nil }
+        let position = max(0, start ?? snapshot.transport.editPosition ?? snapshot.transport.position)
+        let bpm = current.activeTempoMarker(at: position)?.tempoBPM ?? current.bpm
+        let length = duration ?? (60 / bpm * Double(current.meterBeats) * 4 / Double(current.meterUnit))
+        guard position.isFinite, length.isFinite, length > 0 else { return nil }
+        let clip = AudioClip(id: UUID(), name: "MIDI", startTime: position, duration: length, midi: MIDIItem(sourceBPM: bpm / (current.tempoAudioSegments(AudioClip(id: UUID(), name: "", startTime: position, duration: length)).first?.audioRate ?? 1)))
+        editProject { project in
+            guard let song = project.songs.firstIndex(where: { $0.id == current.id }),
+                  let index = project.songs[song].tracks.firstIndex(where: { $0.id == track }) else { return }
+            project.songs[song].tracks[index].clips.append(clip)
+            project.songs[song].duration = max(project.songs[song].duration, position + length)
+        }
+        return self.current?.tracks.contains(where: { $0.clips.contains(where: { $0.id == clip.id }) }) == true ? clip.id : nil
+    }
+    public func setMIDIItem(_ id: UUID, midi: MIDIItem) {
+        do { try midi.validate() } catch { message = error.localizedDescription; return }
+        editProject { project in
+            for song in project.songs.indices { for track in project.songs[song].tracks.indices {
+                if let clip = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id && $0.midi != nil }) {
+                    let original = project.songs[song].tracks[track].clips[clip]
+                    let previous = Dictionary(uniqueKeysWithValues: (original.midi?.notes ?? []).map { ($0.id, $0) })
+                    let changedEnd = midi.notes.filter { previous[$0.id] != $0 }.map(\.end).max()
+                    project.songs[song].tracks[track].clips[clip].midi = midi
+                    if let changedEnd {
+                        let duration = max(original.duration, (changedEnd * 60 / midi.sourceBPM - original.sourceOffset) / original.audioRate)
+                        project.songs[song].tracks[track].clips[clip].duration = duration
+                        project.songs[song].duration = max(project.songs[song].duration, original.startTime + duration)
+                    }
+                    return
+                }
+            } }
+        }
     }
     @discardableResult public func addTextItem(track: UUID) -> UUID? {
         guard canExecute(), !finishing,
@@ -1438,6 +1516,26 @@ import Combine
             return id
         } catch { message = error.localizedDescription; return nil }
     }
+    public func setClickSound(track id: UUID, file: AudioFile?) {
+        guard current?.tracks.contains(where: { $0.id == id && $0.kind == .click }) == true else { return }
+        editProject { project in
+            for song in project.songs.indices {
+                if let track = project.songs[song].tracks.firstIndex(where: { $0.id == id }) {
+                    project.songs[song].tracks[track].clickSound = file
+                }
+            }
+        }
+    }
+    public func insertClickItems(track id: UUID) {
+        guard canExecute(), !finishing else { return }
+        var project = snapshot.project
+        guard project.insertClickItems(track: id) > 0 else { return }
+        do {
+            try project.validate()
+            tick(); try executor.applyProjectEdit(project)
+            snapshot = try executor.snapshot(); markChanged(); onProjectEdited(); message = ""
+        } catch { message = error.localizedDescription }
+    }
     public func resizeRegion(_ id: UUID, start: Double, end: Double) {
         guard canExecute(), !finishing, let region = current?.parts.first(where: { $0.id == id }),
               region.parentRegionID == nil, current?.parts.contains(where: { $0.parentRegionID == id }) != true else { return }
@@ -1664,6 +1762,23 @@ import Combine
             focusedRegion = members.first; regionFocusRequest = UUID(); message = ""
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+    public func regionFromTimeSelection(song: UUID, start: Double, end: Double) {
+        guard canExecute(), !finishing, song == current?.id,
+              start.isFinite, end.isFinite, start >= 0, end > start,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == song }) else { return }
+        guard current?.parts.contains(where: { abs($0.startTime - start) < 0.000001 }) != true else {
+            modalNotice = "A region already starts at this position."; return
+        }
+        let region = Part(id: UUID(), name: NSLocalizedString("New region", comment: "Region created from a time selection"),
+                          startTime: start, endTime: end, color: 0x55cc88)
+        editProject { project in
+            project.songs[index].parts.append(region)
+            project.songs[index].parts.sort { $0.startTime < $1.startTime }
+        }
+        if current?.parts.contains(where: { $0.id == region.id }) == true {
+            focusedRegion = region.id; regionFocusRequest = UUID(); message = ""
+        }
     }
     public func regionsFromSelection(_ ids: Set<UUID>) {
         guard canExecute(), !finishing, let track = current?.tracks.first(where: { $0.kind != .timecode && $0.clips.contains { ids.contains($0.id) } }) else { return }

@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import ImageIO
 @testable import JarasApplication
 
 final class MediaDropRestrictionsTests: XCTestCase {
@@ -52,12 +53,32 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertEqual(clips.count, 2)
         XCTAssertEqual(clips[1].startTime, clips[0].startTime + clips[0].duration + 3, accuracy: 0.00001)
         XCTAssertTrue(clips.allSatisfy { $0.audioFile?.path.hasPrefix("Videos/") == true && $0.waveform.isEmpty })
-        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().appendingPathComponent("Steams").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().appendingPathComponent("Stems").path))
         let tp = try StemProjectImporter.prepareDroppedAudio([source], start: 10, destinationTracks: [UUID()], destination: destination, destinationKind: .teleprompt)
         XCTAssertEqual(tp.tracks[0].kind, .teleprompt)
         XCTAssertEqual(tp.tracks[0].name, "Teleprompter 1")
         XCTAssertTrue(tp.tracks[0].clips[0].isProjectionMedia)
         XCTAssertEqual(try Data(contentsOf: source), try Data(contentsOf: destination.deletingLastPathComponent().appendingPathComponent(clips[0].audioFile!.path)))
+    }
+    func testImageAndVideoCopiesRemainUsableAfterOriginalRemoval() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let movie = try await video(root.appendingPathComponent("Source"))
+        let picture = root.appendingPathComponent("Source/image.png")
+        let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let image = context.makeImage()!
+        let writer = CGImageDestinationCreateWithURL(picture as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(writer, image, nil); XCTAssertTrue(CGImageDestinationFinalize(writer))
+        let document = root.appendingPathComponent("Project/Show.jl")
+        for original in [movie, picture] {
+            let data = try Data(contentsOf: original)
+            let imported = try StemProjectImporter.prepareDroppedAudio([original], start: 0, destinationTracks: [UUID()], destination: document, layout: .sameTrack, destinationKind: .video)
+            let path = try XCTUnwrap(imported.tracks.first?.clips.first?.audioFile?.path)
+            XCTAssertTrue(path.hasPrefix("Videos/"))
+            try FileManager.default.removeItem(at: original)
+            XCTAssertEqual(try Data(contentsOf: document.deletingLastPathComponent().appendingPathComponent(path)), data)
+        }
     }
     func testAudioCannotEnterSpecialTracksAndUnknownFilesMakeNoProjectDirectories() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -89,7 +110,7 @@ final class MediaDropRestrictionsTests: XCTestCase {
         try FileManager.default.moveItem(at: audio, to: movie)
         let imported = try StemProjectImporter.prepareDroppedAudio([movie], start: 0, destinationTracks: [], destination: root.appendingPathComponent("Project/Show.jl"))
         XCTAssertEqual(imported.tracks[0].kind, .standard)
-        XCTAssertTrue(imported.tracks[0].clips[0].audioFile!.path.hasPrefix("Steams/"))
+        XCTAssertTrue(imported.tracks[0].clips[0].audioFile!.path.hasPrefix("Stems/"))
         XCTAssertFalse(imported.tracks[0].clips[0].waveform.isEmpty)
     }
 }

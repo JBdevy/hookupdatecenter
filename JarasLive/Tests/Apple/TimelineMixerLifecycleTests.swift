@@ -400,3 +400,29 @@ NotificationCenter.default.removeObserver(observer)
 print("TIMELINE_MIXER_VIEWPORT_HEIGHT_BUCKET_IDENTITY_AND_VISIBLE_COVERAGE_OK")
 print("TIMELINE_MIXER_LIFECYCLE_OK rows=200 created=" + String(counters.created) + " contentEvaluations=" + String(counters.contentEvaluations) + " canvasBuckets=" + String(visitedBuckets.count) + " dismantled=" + String(counters.dismantled) + " detached=" + String(counters.detached))
 window.close()
+
+// Warm a full thin-track reserve, then expand. Offscreen geometry must stay
+// dormant, while every track that scrolling can expose receives exact heights.
+private let heightPool = TimelineMixerRowPool<Int>()
+private let heightIDs = Array(0..<200)
+private func heightSlots(_ height: CGFloat, visibleY: CGFloat = 0, pinned: Set<Int> = []) -> [TimelineMixerSlot] {
+    heightPool.slots(ids: heightIDs, offsets: heightIDs.map { CGFloat($0) * height },
+                    heights: Array(repeating: height, count: 200), top: 71,
+                    visibleY: visibleY, viewportHeight: 1024, pinned: pinned)
+}
+private let thinSlots = heightSlots(24)
+private let expandedSlots = heightSlots(240)
+precondition(expandedSlots.count == thinSlots.count, "height changes retain warm controls")
+private let resizedCount = expandedSlots.filter { $0.height != 24 }.count
+precondition(resizedCount < 10 && expandedSlots.count > 100,
+             "expanding a thin pool resizes visible controls, not a hundred dormant rows")
+for y: CGFloat in [0, 512, 4096, 12800, 1024, 0] {
+    let slots = heightSlots(240, visibleY: y)
+    for slot in slots where 71 + CGFloat(slot.index) * 240 + 240 >= y && 71 + CGFloat(slot.index) * 240 <= y + 1536 {
+        precondition(slot.height == 240, "every row in the scroll coverage has the current height before entering view")
+    }
+}
+private let pinnedHeights = heightSlots(120, pinned: [100])
+precondition(pinnedHeights.first { $0.index == 100 }?.height == 120,
+             "an offscreen row with an active control gesture retains current geometry")
+print("MIXER_HEIGHT_RESIZE_COVERAGE_OK updated=\(resizedCount) retained=\(expandedSlots.count)")

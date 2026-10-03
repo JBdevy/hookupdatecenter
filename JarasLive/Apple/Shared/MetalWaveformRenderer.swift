@@ -74,10 +74,9 @@ typealias MetalWaveformContainerBase = NSView
 typealias MetalWaveformContainerBase = UIView
 #endif
 
-/// The viewport can move before the GPU has a free drawable. Keep the existing
-/// texture in its own child and reproject that child into the newest timeline
-/// coordinates immediately. Replacing the drawable and resetting the child
-/// happen in the same CA transaction, so old samples never jump to new origins.
+/// Each zoom frame draws source peak vertices at the current scale. The child
+/// always uses the viewport's native pixel size; a previous bitmap is never
+/// enlarged or translated to impersonate a waveform at another scale.
 final class MetalWaveformSurface: MetalWaveformContainerBase {
     private let renderer = MetalWaveformRenderView()
     private var latest: MetalWaveformFrame?
@@ -116,28 +115,17 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
     func submit(_ frame: MetalWaveformFrame) {
         latest = frame
         applyPresentationGeometry()
-        // Layout/gain edits cannot be represented by one texture transform.
-        // Submit those immediately instead of ever displaying wrong row data.
-        let affine = presented.map { Self.canReproject($0, to: frame) } ?? false
-        renderer.submit(frame, allowCoalescing: affine)
-    }
-    private static func canReproject(_ previous: MetalWaveformFrame, to latest: MetalWaveformFrame) -> Bool {
-        guard let old = previous.coordinateSpace, let new = latest.coordinateSpace else { return false }
-        return old.contentRevision == new.contentRevision && old.pixelsPerSecond > 0 && new.pixelsPerSecond > 0 &&
-            old.pixelsPerSecond.isFinite && new.pixelsPerSecond.isFinite
-    }
-    static func projectedContentFrame(previous: MetalWaveformFrame, latest: MetalWaveformFrame) -> CGRect {
-        guard canReproject(previous, to: latest), let old = previous.coordinateSpace, let new = latest.coordinateSpace else {
-            return CGRect(origin: .zero, size: latest.size)
-        }
-        let ratio = CGFloat(new.pixelsPerSecond / old.pixelsPerSecond)
-        return CGRect(x: old.documentOrigin.x * ratio - new.documentOrigin.x,
-                      y: old.documentOrigin.y - new.documentOrigin.y,
-                      width: previous.size.width * ratio, height: previous.size.height)
+        // Only source-detail replacements with identical geometry may wait for
+        // a free slot. Zoom, pan and edits present their new vertices in the
+        // same transaction as the items and ruler, without bitmap reprojection.
+        let sameGeometry = presented.map {
+            $0.coordinateSpace != nil && $0.coordinateSpace == frame.coordinateSpace && $0.size == frame.size
+        } ?? false
+        renderer.submit(frame, allowCoalescing: sameGeometry)
     }
     private func applyPresentationGeometry() {
         guard let latest else { return }
-        let rect = presented.map { Self.projectedContentFrame(previous: $0, latest: latest) } ?? CGRect(origin: .zero, size: latest.size)
+        let rect = CGRect(origin: .zero, size: latest.size)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         if renderer.frame != rect { renderer.frame = rect }
         CATransaction.commit()
@@ -281,8 +269,8 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             drawableSize = pixels
             rendering = false
         }
-        // Encode on demand. Scheduled presentation is asynchronous for affine
-        // zoom/pan; the container reprojects its currently displayed texture.
+        // Encode peak vertices at this frame's scale. Geometry changes submit
+        // within the current layout transaction; no old texture is scaled.
         draw()
     }
 
@@ -362,9 +350,8 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         committed = true
         command.commit()
         if synchronous {
-            // A non-affine edit changes individual row/item geometry and cannot
-            // use a global texture transform. Keep that edit and its drawable
-            // atomic; ordinary zoom/pan never waits here.
+            // Coordinate changes and their drawable must commit atomically.
+            // Wait for command scheduling, not GPU completion or audio decoding.
             command.waitUntilScheduled()
             lastScheduleMilliseconds = (CACurrentMediaTime() - scheduled) * 1000
             present(frame, drawable: drawable, sequence: sequence, lease: lease)
@@ -557,14 +544,14 @@ final class MetalWaveformEngine {
                 item: SIMD4(Float(stroke.itemRect.minX), Float(stroke.itemRect.minY), Float(stroke.itemRect.maxX), Float(stroke.itemRect.maxY)),
                 notch: SIMD4(seam, spacing.isFinite && spacing > 0 ? spacing : 0, 4, 5),
                 colour: stroke.color,
-                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), stroke.block.isPeakEnvelope ? 1 : 0, 0, 0))
+                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), stroke.block.isPeakEnvelope ? 1 : 0, Float(stroke.block.channels[stroke.channel].count / 2), Float(range.lowerBound)))
             let pointsPerInstance = stroke.block.isPeakEnvelope ? 2 : 1
-            encoder.setVertexBuffer(source.buffer, offset: range.lowerBound * pointsPerInstance * MemoryLayout<SIMD2<Float>>.stride, index: 0)
+            encoder.setVertexBuffer(source.buffer, offset: stroke.block.isPeakEnvelope ? 0 : range.lowerBound * pointsPerInstance * MemoryLayout<SIMD2<Float>>.stride, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             // One quad per sample segment or min/max interval. Envelopes cover
             // the entire source interval, including a trim inside one bucket.
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: range.count)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: stroke.block.isPeakEnvelope ? 12 : 6, instanceCount: range.count)
             lastEncodedSegmentCount += range.count
             lastEncodedStrokeCount += 1
         }
@@ -630,7 +617,7 @@ final class MetalWaveformEngine {
         float2 local;
         float2 screen;
         float length [[flat]];
-        float peakHalfHeight [[flat]];
+        float peakHalfHeight;
     };
     vertex WaveformRaster waveformVertex(uint vertexID [[vertex_id]], uint segment [[instance_id]],
                                          const device float2 *points [[buffer(0)]],
@@ -638,21 +625,39 @@ final class MetalWaveformEngine {
         const float2 corners[6] = {float2(0,-1),float2(1,-1),float2(0,1),
                                     float2(0,1),float2(1,-1),float2(1,1)};
         WaveformRaster out;
-        float2 corner = corners[vertexID];
+        float2 corner = corners[vertexID % 6];
         if (u.corner.y > 0) {
-            float2 a = points[segment * 2] * u.transform.xy + u.transform.zw;
-            float2 b = points[segment * 2 + 1] * u.transform.xy + u.transform.zw;
-            float2 center = (a + b) * 0.5;
-            float2 halfSize = max(abs(b - a) * 0.5, float2(0.5 / u.viewportAndWidth.w));
-            float2 local = float2(mix(-halfSize.x, halfSize.x, corner.x),
-                                  corner.y * (halfSize.y + 1.0 / u.viewportAndWidth.w));
-            float2 screen = center + local;
+            uint bucket = segment + uint(u.corner.w);
+            float2 a = points[bucket * 2] * u.transform.xy + u.transform.zw;
+            float2 b = points[bucket * 2 + 1] * u.transform.xy + u.transform.zw;
+            float centerX = (a.x + b.x) * 0.5;
+            float halfWidth = max(abs(b.x - a.x) * 0.5, 0.5 / u.viewportAndWidth.w);
+            a.x = centerX - halfWidth; b.x = centerX + halfWidth;
+            float2 extrema = float2(min(a.y, b.y), max(a.y, b.y));
+            float2 leftEdge = extrema, rightEdge = extrema;
+            // Two half-bins join neighbouring peak centers. Retain each real
+            // min/max at its center rather than flattening it into a rectangle.
+            if (bucket > 0 && points[bucket * 2 - 1].x == points[bucket * 2].x) {
+                float2 previous = float2(points[bucket * 2 - 2].y, points[bucket * 2 - 1].y) * u.transform.y + u.transform.w;
+                leftEdge = (extrema + float2(min(previous.x, previous.y), max(previous.x, previous.y))) * 0.5;
+            }
+            if (bucket + 1 < uint(u.corner.z) && points[bucket * 2 + 2].x == points[bucket * 2 + 1].x) {
+                float2 next = float2(points[bucket * 2 + 2].y, points[bucket * 2 + 3].y) * u.transform.y + u.transform.w;
+                rightEdge = (extrema + float2(min(next.x, next.y), max(next.x, next.y))) * 0.5;
+            }
+            bool second = vertexID >= 6;
+            float2 edge = second ? mix(extrema, rightEdge, corner.x) : mix(leftEdge, extrema, corner.x);
+            float x = mix(a.x, b.x, (corner.x + (second ? 1.0 : 0.0)) * 0.5);
+            float centerY = (edge.x + edge.y) * 0.5;
+            float halfHeight = max((edge.y - edge.x) * 0.5, 0.5 / u.viewportAndWidth.w);
+            float y = corner.y * (halfHeight + 1.0 / u.viewportAndWidth.w);
+            float2 screen = float2(x, centerY + y);
             out.position = float4(screen.x / u.viewportAndWidth.x * 2.0 - 1.0,
                                   1.0 - screen.y / u.viewportAndWidth.y * 2.0, 0, 1);
-            out.local = local;
+            out.local = float2(0, y);
             out.screen = screen;
             out.length = 0;
-            out.peakHalfHeight = halfSize.y;
+            out.peakHalfHeight = halfHeight;
             return out;
         }
         float2 a = points[segment] * u.transform.xy + u.transform.zw;

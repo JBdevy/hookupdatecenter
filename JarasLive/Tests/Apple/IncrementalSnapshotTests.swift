@@ -18,7 +18,7 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     var project = Project.empty(name: "Waveform cache")
     var track = Track(id: UUID(), name: "Audio", role: .keys)
     let source = (0..<10_000).map { Double($0 % 100) / 100 }
-    var clip = AudioClip(id: UUID(), name: "Recorded audio", startTime: 0, duration: 30, waveform: source, audioFile: AudioFile(path: "Steams/recording.wav"))
+    var clip = AudioClip(id: UUID(), name: "Recorded audio", startTime: 0, duration: 30, waveform: source, audioFile: AudioFile(path: "Stems/recording.wav"))
     clip.waveformChannels = [source, Array(source.reversed())]
     track.clips = [clip]; project.songs[0].tracks = [track]
     let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
@@ -86,11 +86,11 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     let beforeTransport = try encoder.encode(beforeEdits.transport), afterTransport = try encoder.encode(afterEdits.transport)
     precondition(beforeTransport == afterTransport, "metadata reads and scalar edits preserve both running clocks")
     var imported = Track(id: UUID(), name: "Imported", role: .guitar)
-    let importedClip = AudioClip(id: UUID(), name: "Imported clip", startTime: 50, duration: 10, waveform: [0.8, 0.4], audioFile: AudioFile(path: "Steams/import.wav"), waveformChannels: [[0.1, 0.2], [0.6, 0.7]])
+    let importedClip = AudioClip(id: UUID(), name: "Imported clip", startTime: 50, duration: 10, waveform: [0.8, 0.4], audioFile: AudioFile(path: "Stems/import.wav"), waveformChannels: [[0.1, 0.2], [0.6, 0.7]])
     imported.clips = [importedClip]
     try executor.insertAudioTracks([imported], song: project.songs[0].id)
     _ = try matchesFull()
-    let recorded = AudioClip(id: UUID(), name: "New take", startTime: 40, duration: 5, waveform: [0.3, 0.9], audioFile: AudioFile(path: "Steams/take.wav"), waveformChannels: [[0.4, 0.5]])
+    let recorded = AudioClip(id: UUID(), name: "New take", startTime: 40, duration: 5, waveform: [0.3, 0.9], audioFile: AudioFile(path: "Stems/take.wav"), waveformChannels: [[0.4, 0.5]])
     try executor.addRecordedClip(recorded, track: track.id)
     _ = try matchesFull()
     var draft = try executor.snapshot().project
@@ -123,7 +123,7 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     var original = Project.empty(name: "Paste metadata")
     var pasteTrack = Track(id: UUID(), name: "Audio", role: .keys)
     var pasteFX = NativeFXSettings(); pasteFX.inserted = ["EQ"]; pasteFX.eqEnabled = true
-    pasteTrack.clips = [AudioClip(id: UUID(), name: "Original", startTime: 0, duration: 10, waveform: Array(repeating: 0.25, count: 4096), audioFile: AudioFile(path: "Steams/original.wav"), gain: 0.75, muted: true, fx: pasteFX)]
+    pasteTrack.clips = [AudioClip(id: UUID(), name: "Original", startTime: 0, duration: 10, waveform: Array(repeating: 0.25, count: 4096), audioFile: AudioFile(path: "Stems/original.wav"), gain: 0.75, muted: true, fx: pasteFX)]
     original.songs[0].tracks = [pasteTrack]; original.songs[0].duration = 10
     try pasteExecutor.load(original)
     let songID = original.songs[0].id
@@ -208,7 +208,7 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     let channelsCore = LocalCommandExecutor()
     var channelsProject = Project.empty(name: "Channel modes")
     var channelTrack = Track(id: UUID(), name: "Stereo source", role: .keys)
-    let channelClip = AudioClip(id: UUID(), name: "Original", startTime: 0, duration: 1, audioFile: AudioFile(path: "Steams/original.wav"), gain: 0.4, muted: true)
+    let channelClip = AudioClip(id: UUID(), name: "Original", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/original.wav"), gain: 0.4, muted: true)
     channelTrack.clips = [channelClip]; channelsProject.songs[0].tracks = [channelTrack]
     try channelsCore.load(channelsProject)
     let channelBaseline = try channelsCore.snapshot().project.songs[0].tracks[0].clips[0]
@@ -228,6 +228,17 @@ final class MeasuringSnapshotCore: JarasCoreBridge {
     precondition(stereoState.masterMono != true)
     precondition(stereoState.songs[0].tracks[0].clips[0] == channelBaseline)
     print("CHANNEL_MODE_NATIVE_SAVE_REOPEN_AND_ORIGINAL_STEREO_RESTORE_OK")
+    var stemProject = try channelsCore.snapshot().project
+    let stemIDs = (0..<5).map { _ in UUID() }
+    stemProject.songs[0].tracks[0].clips[0].separatedStemTracks = stemIDs
+    try channelsCore.applyProjectEdit(stemProject)
+    try channelsCore.execute(.volume, target: channelTrack.id, value: 0.4)
+    let stemState = try channelsCore.snapshot().project
+    precondition(stemState.songs[0].tracks[0].clips[0].separatedStemTracks == stemIDs)
+    try reopenedChannels.load(stemState)
+    let reopenedStems = try reopenedChannels.snapshot().project
+    precondition(reopenedStems.songs[0].tracks[0].clips[0].separatedStemTracks == stemIDs)
+    print("CATSTEM_NATIVE_BRIDGE_EDIT_MIXER_SAVE_REOPEN_ASSOCIATIONS_OK")
     print("LOCAL_METADATA_SNAPSHOT_CACHE_COW_IMPORT_RECORD_SPLIT_UNDO_FAILURE_AND_TRANSPORT_OK fullBytes=\(fullSize) metadataBytes=\(metadataSize) retainedEditBytes=\(retainedEditBytes)")
 }
 try MainActor.assumeIsolated { try runSnapshotCacheTests() }

@@ -53,7 +53,7 @@ precondition(heights.count == 2 && heights.allSatisfy { abs($0 - exp(3 * Timelin
 precondition(zoomUpdates == 0, "Cmd/Ctrl wheel changes track height without starting horizontal grid zoom")
 event.delta = -100
 precondition(wheel.handleWheelEvent(event))
-precondition(abs(heights.last! - exp(-0.08)) < 0.00001, "extreme wheel input remains bounded")
+precondition(abs(heights.last! - exp(-TimelineTrackHeightLimits.maximumWheelStep)) < 0.00001, "extreme wheel input remains bounded")
 event.momentum = .changed
 _ = wheel.handleWheelEvent(event)
 precondition(heights.count == 3, "track height does not drift from trackpad momentum")
@@ -66,10 +66,10 @@ precondition(rowHeight == 240, "repeated expansion remains at the maximum track 
 scroll.contentView.scroll(to: NSPoint(x: 200,y: 0))
 event.modifiers = .shift; event.delta = -10
 let heightAfterVerticalZoom = rowHeight, updatesBeforePan = zoomUpdates
-precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 210)
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 220)
 precondition(rowHeight == heightAfterVerticalZoom && zoomUpdates == updatesBeforePan, "Shift pans without changing either zoom")
 event.modifiers = []; event.delta = 0; event.horizontalDelta = -8
-precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 218, "a horizontal trackpad gesture remains independent of track-height zoom")
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 228, "a horizontal trackpad gesture remains independent of track-height zoom")
 event.horizontalDelta = 0
 
 // AppKit lazily initializes run-loop sources and view layout. Finish that work
@@ -216,15 +216,8 @@ precondition(zoomValues.count == 1,"a burst of trackpad input coalesces instead 
 requireZoomFrame(after: burstInput,callbackCount: 2)
 precondition(abs(zoomValues.last! - exp(expectedLog)) < 1e-10,"the next display frame consumes the latest accumulated gesture completely")
 RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-precondition(zoomValues.count > 2,"the released gesture has a short decelerating tail")
-let tail = Array(zoomValues.dropFirst(2))
-precondition(tail.last! > exp(expectedLog) && tail.last! <= exp(expectedLog + 0.071),
-             "release animation stays within seven percent of the finger-selected scale")
-let tailIncrements = zip(tail.dropFirst(),tail).map { log($0.0 / $0.1) }
-precondition(tailIncrements.allSatisfy { $0 > 0 } && tailIncrements.last! < tailIncrements.first!,
-             "the release tail slows down")
-precondition(zoomTimes.last! - burstInput > 0.13,
-             "trackpad release continues gently beyond the shorter physical-wheel tail")
+precondition(zoomValues.count == 2 && abs(zoomValues.last! - exp(expectedLog)) < 1e-10,
+             "releasing the trackpad without native momentum adds no movement")
 
 resetZoomInput(precise: false)
 let savedBeforeWheel = UserDefaults.standard.double(forKey: "jaras.timelineZoom")
@@ -240,8 +233,8 @@ precondition(abs(wheel.zoom - physicalTarget) < 1e-12,
              "an older SwiftUI update cannot rewind an immediate wheel step")
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
 precondition(zoomValues.count == 1 && abs(zoomValues.last! - physicalTarget) < 1e-12,
-             "mouse zoom has no interpolation frames or release animation")
-precondition(abs(UserDefaults.standard.double(forKey: "jaras.timelineZoom") - physicalTarget) < 1e-12,
+             "a physical tick ends at its exact input target")
+precondition(abs(UserDefaults.standard.double(forKey: "jaras.timelineZoom") - zoomValues.last!) < 1e-12,
              "the final zoom preference is persisted after the gesture settles")
 let physicalTailCount = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.1))
@@ -254,9 +247,10 @@ let beforeReverse = zoomValues.last!
 event.delta = -1; event.inputTime += 0.03
 precondition(wheel.handleWheelEvent(event))
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-precondition(abs(zoomValues.last! - beforeReverse * exp(-TimelineZoomLimits.wheelSensitivity)) < 1e-10,
-             "mouse reversal immediately reaches its new target without momentum")
-precondition(zoomValues.count == 2)
+let reverseTarget = beforeReverse * exp(-TimelineZoomLimits.wheelSensitivity)
+precondition(zoomValues.count == 2 && abs(zoomValues.last! - reverseTarget) < 1e-12,
+             "mouse reversal applies only the reverse input")
+precondition(zip(zoomValues.dropFirst(2), zoomValues.dropFirst()).allSatisfy { $0.0 < $0.1 })
 resetZoomInput()
 event.gesturePhase = []; event.delta = 2
 precondition(wheel.handleWheelEvent(event))
@@ -264,7 +258,7 @@ precondition(zoomValues.count == 1 && abs(zoomValues[0] - exp(2 * TimelineZoomLi
              "a precise mouse event without gesture phases is immediate too")
 RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(zoomValues.count == 1)
-print("MOUSE_ZOOM_EXACT_IMMEDIATE_STEPS_NO_ANIMATION_AND_STALE_UPDATE_PROTECTION_OK")
+print("MOUSE_ZOOM_RELEASE_ANIMATION_REVERSAL_AND_STALE_UPDATE_PROTECTION_OK")
 
 // Holding the left button converts only an unmodified physical wheel into pan.
 // A pending trackpad zoom/anchor is cancelled before the viewport moves.
@@ -282,8 +276,8 @@ let panStep = scroll.contentView.bounds.minX
 precondition(panStep == 536 && scroll.zoomAnchor == nil && zoomValues.count == zoomBeforeHeldPan,
              "left-held physical wheel pans immediately and discards a pending zoom anchor")
 RunLoop.main.run(until: Date().addingTimeInterval(0.55))
-precondition(scroll.contentView.bounds.minX > panStep && scroll.contentView.bounds.minX <= panStep + 16.2 &&
-             zoomValues.count == zoomBeforeHeldPan, "physical pan has a bounded tail without leaking queued zoom")
+precondition(scroll.contentView.bounds.minX == panStep &&
+             zoomValues.count == zoomBeforeHeldPan, "physical pan adds no movement after release")
 let settledPan = scroll.contentView.bounds.minX
 RunLoop.main.run(until: Date().addingTimeInterval(0.06))
 precondition(scroll.contentView.bounds.minX == settledPan, "physical pan adds no idle frames after settling")
@@ -296,7 +290,7 @@ precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1))
 precondition(scroll.contentView.bounds.minX < beforePanReversal, "reversal cancels the old pan tail in the same event")
 let panReversalStep = scroll.contentView.bounds.minX
 RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-precondition(scroll.contentView.bounds.minX < panReversalStep, "only the newest pan direction coasts")
+precondition(scroll.contentView.bounds.minX == panReversalStep, "pan reversal ends at its input target")
 event.modifiers = .command; event.inputTime += 1
 let heldHeightCount = heights.count, heldOffset = scroll.contentView.bounds.minX
 precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1) && heights.count == heldHeightCount + 1 &&
@@ -310,10 +304,10 @@ precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 1) && zoomValues
 resetZoomInput(precise: false)
 event.modifiers = .shift; event.delta = -2; event.inputTime += 1
 scroll.contentView.scroll(to: NSPoint(x: 500, y: 0))
-precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0) && scroll.contentView.bounds.minX == 536,
+precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0) && scroll.contentView.bounds.minX == 608,
              "Shift applies the physical horizontal step immediately")
 RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-precondition(scroll.contentView.bounds.minX > 536 && zoomValues.isEmpty, "Shift physical-wheel pan uses the same short coast")
+precondition(scroll.contentView.bounds.minX == 608 && zoomValues.isEmpty, "Shift physical-wheel pan adds no synthetic coast")
 event.inputTime += 1
 precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
 let beforePanModal = scroll.contentView.bounds.minX
@@ -331,6 +325,73 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(scroll.contentView.bounds.minX == sheetPan, "a native sheet outside the timeline gate also stops pan inertia")
 window.endSheet(nativeSheet); nativeSheet.orderOut(nil)
 print("HELD_LEFT_PHYSICAL_WHEEL_PAN_PRIORITY_REVERSAL_AND_SHORT_COAST_OK")
+
+// The pending zoom layout cannot reclaim an explicit horizontal gesture or
+// navigation. All destinations deliberately remain in the pre-zoom bucket:
+// this also catches stale deduplication after changeZoom publishes a new one.
+let previousZoomCallback = wheel.changeZoom
+let previousOffsetCallback = wheel.horizontalOffsetChanged
+var preparedHorizontalBucket: CGFloat = -1
+wheel.observeHorizontalScroll()
+wheel.horizontalOffsetChanged = { preparedHorizontalBucket = $0 }
+wheel.changeZoom = { next, offset in
+    zoomValues.append(next)
+    preparedHorizontalBucket = floor(offset / 512) * 512
+}
+func beginPendingHorizontalZoom() -> CGFloat {
+    resetZoomInput(precise: false)
+    document.setFrameSize(NSSize(width: 4000, height: 300))
+    wheel.position = 1300.0 / 4000.0
+    wheel.modelUnitWidth = 4000
+    scroll.contentView.scroll(to: NSPoint(x: 1100, y: 0))
+    event.delta = CGFloat(log(8) / TimelineZoomLimits.wheelSensitivity)
+    precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+    precondition(scroll.zoomAnchor != nil && preparedHorizontalBucket > 9000)
+    return scroll.zoomAnchor!.width
+}
+for mode in ["shift", "trackpad", "focus"] {
+    let targetWidth = beginPendingHorizontalZoom()
+    // Keep another input waiting for a display frame. Taking horizontal control
+    // must stop this request as well as discard the already-published anchor.
+    event.delta = 0.2; event.inputTime += 1.0 / 120
+    precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+    let updates = zoomValues.count
+    if mode == "focus" {
+        wheel.focus(request: UUID(), x: 1450)
+    } else {
+        event.inputTime += 1
+        if mode == "shift" {
+            event.modifiers = .shift; event.delta = -2
+        } else {
+            event.precise = true; event.gesturePhase = .began
+            event.delta = 0; event.horizontalDelta = -30
+        }
+        precondition(wheel.handleWheelEvent(event, pressedMouseButtons: 0))
+    }
+    let destination = scroll.contentView.bounds.minX
+    precondition(destination > 1100 && destination < 1536 && scroll.zoomAnchor == nil,
+                 "\(mode) takes horizontal ownership before a pending zoom layout")
+    precondition(preparedHorizontalBucket == 1024,
+                 "\(mode) prepares the old bucket again in the same input event")
+    document.setFrameSize(NSSize(width: targetWidth, height: 300))
+    scroll.applyZoomAnchor()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.025))
+    precondition(scroll.contentView.bounds.minX == destination && zoomValues.count == updates,
+                 "\(mode) cannot be recentered by the old anchor or a queued zoom frame")
+}
+let committedZoomWidth = beginPendingHorizontalZoom()
+document.setFrameSize(NSSize(width: committedZoomWidth, height: 300))
+scroll.applyZoomAnchor()
+precondition(scroll.zoomAnchor == nil && preparedHorizontalBucket > 9000)
+scroll.contentView.scroll(to: NSPoint(x: 1100, y: 0))
+precondition(preparedHorizontalBucket == 1024,
+             "native pan back to the pre-zoom bucket must republish after a committed zoom")
+resetZoomInput()
+wheel.modelUnitWidth = nil
+wheel.changeZoom = previousZoomCallback
+wheel.horizontalOffsetChanged = previousOffsetCallback
+document.setFrameSize(NSSize(width: 4000, height: 300))
+print("PENDING_ZOOM_SHIFT_TRACKPAD_FOCUS_OWNERSHIP_AND_BUCKET_RETURN_OK")
 
 // A pending newer scale must not prevent centering an intermediate frame.
 scroll.zoomAnchor = (0.5, 200, 8000)
@@ -498,15 +559,16 @@ let fullRange = log(TimelineZoomLimits.maximum / TimelineZoomLimits.minimum)
 for sign in [-1.0, 1.0] {
     var response = TimelineZoomResponse(), movement = 0.0, amount = 0.0
     _ = response.change(delta: 0, timestamp: 10, begins: true)
-    for index in 1...30 {
+    for index in 1...60 {
         amount += response.change(delta: sign * 10, timestamp: 10 + Double(index) / 120, begins: false)
         movement += 10
         if abs(amount) >= fullRange { break }
     }
-    precondition(abs(amount) >= fullRange && movement >= 160 && movement <= 440, "one fast swipe must traverse the full range in either direction")
-    let correction = response.change(delta: sign * 0.2, timestamp: 10.26, begins: false)
+    precondition(abs(abs(amount) - movement * TimelineZoomLimits.preciseSensitivity) < 1e-10, "zoom travel stays proportional to input")
+    let lastSwipeTime = 10 + movement / 1200
+    let correction = response.change(delta: sign * 0.2, timestamp: lastSwipeTime + 0.01, begins: false)
     precondition(abs(correction) <= 0.002, "slowing down immediately restores fine control")
-    let reversal = response.change(delta: -sign * 0.2, timestamp: 10.27, begins: false)
+    let reversal = response.change(delta: -sign * 0.2, timestamp: lastSwipeTime + 0.02, begins: false)
     precondition(abs(reversal) <= 0.002, "a small reversal cannot inherit the previous swipe acceleration")
     print("FAST_ZOOM_FULL_RANGE_MOVEMENT=\(movement) FINE_CORRECTION=\(abs(correction))")
 }
@@ -523,7 +585,7 @@ for frequency in [60.0, 120.0, 240.0] {
     }
     totals.append(total)
 }
-precondition(totals.min()! >= fullRange && totals.max()! / totals.min()! < 1.15, "swipe response must remain consistent across event frequencies")
+precondition(abs(totals.max()! - totals.min()!) < 1e-10, "same physical travel produces the same zoom at 60/120/240Hz")
 print("ADAPTIVE_ZOOM_PRECISION_SPEED_REVERSAL_AND_EVENT_FREQUENCY_OK")
 for tinyDelta in [0.0001, 0.1, 0.2, -0.0001, -0.1, -0.2] {
     var fine = TimelineZoomResponse(), total = 0.0
@@ -543,7 +605,7 @@ for index in 1...20 {
     let amount = fine.change(delta: 10, timestamp: 60 + Double(index) / 120, begins: false)
     if amount > 10 * TimelineZoomLimits.preciseSensitivity { accelerated = true }
 }
-precondition(accelerated, "a sustained fast swipe retains its existing acceleration")
+precondition(!accelerated, "sustained input never adds a second software acceleration")
 let fineAfterFast = fine.change(delta: -0.1, timestamp: 60.18, begins: false)
 precondition(abs(fineAfterFast + 0.1 * TimelineZoomLimits.preciseSensitivity) < 1e-14,
              "a fine reversal responds immediately without inheriting fast-swipe acceleration")

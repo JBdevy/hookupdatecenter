@@ -1,18 +1,19 @@
 import SwiftUI
 enum JarasTheme {
-    static let background = Color(hex: 0x11151b)
-    static let panelHex: UInt32 = 0x1b212a
+    static let background = Color(hex: 0x1e1e1e)
+    static let panelHex: UInt32 = 0x252525
     static let panel = Color(hex: panelHex)
-    static let line = Color(hex: 0x303944)
+    static let line = Color(hex: 0x444444)
     static let text = Color(hex: 0xffffff)
-    static let secondary = Color(hex: 0x9aa8b9)
-    static let grid = Color(hex: 0x181818)
-    static let mixerHex: UInt32 = 0x202630
+    static let secondary = Color(hex: 0xb9b9b9)
+    static let grid = Color(hex: 0x1e1e1e)
+    static let mixerHex: UInt32 = 0x252525
     static let mixer = Color(hex: mixerHex)
-    static let display = Color(hex: 0x0c1117)
-    static let titlebar = Color(hex: 0x272e38)
-    static let accent = Color(hex: 0xd8fb66)
-    static let green = Color(hex: 0x54ff93)
+    static let display = Color(hex: 0x141414)
+    static let titlebar = Color(hex: 0x2b2b2b)
+    static let accent = Color(hex: 0x79f59a)
+    static let green = Color(hex: 0x69ed91)
+    static let purple = Color(hex: 0xb8b8b8)
     static let yellow = Color(hex: 0xffdc52)
     static func track(_ track: Track, emphasized: Bool = false) -> Color {
         let hex = track.color ?? roleHex(track.role)
@@ -139,12 +140,12 @@ struct JarasBlink: ViewModifier {
     }
 }
 
-/// Factory timeline colors captured from the approved appearance.
+/// CatLive factory colors. Explicit user timeline choices remain intact.
 enum TimelineAppearanceDefaults {
-    static let background = 0x25211F
-    static let primaryGrid = 0x829C9C
-    static let secondaryGrid = 0x5F4163
-    static let playCursor = 0xF44336
-    static let editCursor = 0x00CFA0
+    static let background = 0x1E1E1E
+    static let primaryGrid = 0x414141
+    static let secondaryGrid = 0x282828
+    static let playCursor = 0x7548DD
+    static let editCursor = 0xB9E229
     static let subPlayCursor = 0xFF6F00
 }

@@ -19,7 +19,15 @@ public actor MockBackendClient: BackendClient {
         self.file = file
         state = file.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(State.self, from: $0) } ?? State()
         if state.accounts.isEmpty {
-            state.accounts = [Account(user: UserAccount(id: UUID(), name: "Equipe Jaras", email: "demo@jaras.live"), passwordHash: Self.hash("jaras123"), maxDevices: 2)]
+            state.accounts = [Account(user: UserAccount(id: UUID(), name: "Equipe CatLive", email: "demo@catlive.app"), passwordHash: Self.hash("catlive123"), maxDevices: 2)]
+        }
+        // Keep the existing development account, devices and sessions when
+        // updating its displayed demo credentials to the new product name.
+        for index in state.accounts.indices where state.accounts[index].user.email == "demo@jaras.live" &&
+            state.accounts[index].passwordHash == Self.hash("jaras123") {
+            state.accounts[index].user.email = "demo@catlive.app"
+            if state.accounts[index].user.name == "Equipe Jaras" { state.accounts[index].user.name = "Equipe CatLive" }
+            state.accounts[index].passwordHash = Self.hash("catlive123")
         }
     }
     private static func hash(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }

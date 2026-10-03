@@ -22,7 +22,7 @@ struct MainView: View {
     let show: ShowController
     var remotePresentation = false
     let auth: AuthService
-    let backend: MockBackendClient
+    let backend: any BackendClient
     @ObservedObject var documents: ProjectDocuments
     private var desktopExtras: Bool {
         #if os(macOS)
@@ -52,7 +52,7 @@ struct MainView: View {
     #endif
     @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
     @AppStorage("jaras.setlistRestoreWidth") private var setlistRestoreWidth = 240.0
-    init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: MockBackendClient, documents: ProjectDocuments) {
+    init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: any BackendClient, documents: ProjectDocuments) {
         self.show = show; self.remotePresentation = remotePresentation
         self.auth = auth; self.backend = backend; self.documents = documents
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
@@ -77,7 +77,7 @@ struct MainView: View {
             leftToolRail
             #endif
             VStack(spacing: 0) {
-                TransportView(show: show, remotePresentation: remotePresentation, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
+                TransportView(show: show, documents: documents, remotePresentation: remotePresentation, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
                     #if os(macOS)
                     GeometryReader { geometry in
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
@@ -111,12 +111,10 @@ struct MainView: View {
                 }
                 GeometryReader { geometry in
                     #if os(macOS)
-                    let displayWidth = min(300, geometry.size.width * 0.25)
-                    let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
-                    HStack(spacing: 0) {
-                        ResourceUsageView().frame(width: sideWidth, alignment: .leading)
-                        FooterInformationDisplay(show: show).frame(width: displayWidth)
-                        AudioStatusView().frame(width: sideWidth, alignment: .trailing)
+                    HStack(spacing: 14) {
+                        ResourceUsageView().fixedSize(horizontal: true, vertical: false)
+                        FooterPlaylistDisplay(show: show).frame(maxWidth: .infinity)
+                        AudioStatusView().fixedSize(horizontal: true, vertical: false)
                     }.buttonStyle(.plain).frame(height: 27)
                     #else
                     let displayWidth = min(300, max(0, geometry.size.width - 320))
@@ -157,8 +155,16 @@ struct MainView: View {
             })
             #endif
             .overlay { ProjectNoticePresenter(show: show) }
-            .background { GeometryReader { geometry in Color.clear.preference(key: MixerWorkspaceHeightKey.self, value: geometry.size.height) } }
-            .onPreferenceChange(MixerWorkspaceHeightKey.self) { workspaceHeight = $0 }
+            .background {
+                GeometryReader { geometry in
+                    // Only the workspace size controls the footer's limit. A
+                    // preference on the whole workspace made every track resize
+                    // traverse the complete descendant layout to collect it.
+                    Color.clear
+                        .onAppear { workspaceHeight = geometry.size.height }
+                        .onChange(of: geometry.size.height) { workspaceHeight = $0 }
+                }
+            }
             .overlay(alignment: .top) {
                 if documents.importingAudio {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(LocalizedStringKey(documents.status)).font(.caption).lineLimit(1) }
@@ -179,6 +185,7 @@ struct MainView: View {
 
             .environment(\.openFX, { track, effect in
                 #if os(macOS)
+                FXWindows.shared.documents = documents
                 FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
                 #else
                 let target = FXTarget(track: track, effect: effect)
@@ -187,6 +194,7 @@ struct MainView: View {
             })
             .environment(\.openClipFXChain, { clip in
                 #if os(macOS)
+                FXWindows.shared.documents = documents
                 FXWindows.shared.openClipChain(show: show, clip: clip)
                 #else
                 if !clipFXTargets.contains(clip) { clipFXTargets.append(clip) }
@@ -330,6 +338,7 @@ struct MainView: View {
             }
             .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
             .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
+            MacProjectionRail(show: show)
             Spacer(minLength: 0)
             if desktopExtras {
             Button { footerMixerOpen.toggle() } label: {
@@ -614,11 +623,6 @@ private struct FooterPianoKeyboard: View {
             #endif
             .accessibilityLabel("88-key keyboard")
     }
-}
-
-private struct MixerWorkspaceHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 900
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct KeyboardSettingsView: View {

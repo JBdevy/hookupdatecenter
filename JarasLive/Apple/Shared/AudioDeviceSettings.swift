@@ -46,7 +46,7 @@ struct MIDIInputDevice: Identifiable, Equatable {
     #endif
     var deviceName: String { devices.first { $0.id == selectedUID }?.name ?? JarasLocalization.string("No output device") }
     private init() {
-        MIDIClientCreateWithBlock("Jaras Live Devices" as CFString, &midiClient) { [weak self] _ in
+        MIDIClientCreateWithBlock("CatLive Devices" as CFString, &midiClient) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshMIDI() }
         }
         refresh()

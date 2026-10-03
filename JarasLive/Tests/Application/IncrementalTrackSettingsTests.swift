@@ -189,8 +189,8 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         var audio = Track(id: UUID(),name: "Keys",role: .keys)
         let waveform = (0..<4096).map { Double($0 % 64) / 64 }
         audio.clips = [
-            AudioClip(id: UUID(),name: "Stereo",startTime: 30,duration: 20,waveform: waveform,audioFile: AudioFile(path: "Steams/stereo.wav"),gain: 1,waveformChannels: [waveform,waveform.reversed().map { $0 }]),
-            AudioClip(id: UUID(),name: "Mono",startTime: 50,duration: 10,waveform: waveform,audioFile: AudioFile(path: "Steams/mono.wav"),gain: 0.75)
+            AudioClip(id: UUID(),name: "Stereo",startTime: 30,duration: 20,waveform: waveform,audioFile: AudioFile(path: "Stems/stereo.wav"),gain: 1,waveformChannels: [waveform,waveform.reversed().map { $0 }]),
+            AudioClip(id: UUID(),name: "Mono",startTime: 50,duration: 10,waveform: waveform,audioFile: AudioFile(path: "Stems/mono.wav"),gain: 0.75)
         ]
         project.songs[0].parts = [region]; project.songs[0].tracks = [timecode,audio]
         project.songs[0].duration = 120
@@ -558,6 +558,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         var audioRefreshes: [UInt64] = []; show.audioUpdate = { _, revision in audioRefreshes.append(revision) }
         show.performAction(.selectTrack, trackNumber: 2)
         let firstRequest = show.trackSelectionRequest
+        XCTAssertEqual(show.mixerTrackSelection, [track], "actions publish selection immediately for automatic REC, even without a mounted grid")
         XCTAssertEqual(firstRequest?.track, track)
         show.performAction(.selectTrack, trackNumber: 2)
         XCTAssertNotEqual(show.trackSelectionRequest?.id, firstRequest?.id)

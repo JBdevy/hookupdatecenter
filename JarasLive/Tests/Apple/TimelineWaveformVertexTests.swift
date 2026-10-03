@@ -12,6 +12,36 @@ let directory = FileManager.default.temporaryDirectory.appendingPathComponent("j
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: directory) }
 
+if let fixture = ProcessInfo.processInfo.environment["JARAS_MP3_EOF_FIXTURE"] {
+    // Only the disposable copy may acquire a .waveform cache.
+    let copy = directory.appendingPathComponent("gapless-tail.mp3")
+    try FileManager.default.copyItem(at: URL(fileURLWithPath: fixture), to: copy)
+    let audio = try AVAudioFile(forReading: copy)
+    let header = TimelineAudioWaveform.Header(rate: audio.processingFormat.sampleRate,
+        frames: audio.length, channels: Int(audio.processingFormat.channelCount))
+    let source = try WaveformSource.loadOrBuild(copy, header: header)
+    let cacheURL = TimelineAudioWaveform.diskCacheURL(copy)
+    let persisted = try Data(contentsOf: cacheURL)
+    precondition(!persisted.isEmpty)
+    let reopened = try WaveformSource.loadOrBuild(copy, header: header)
+    let span = 65_536
+    let start = max(0, (header.frames / Int64(span)) * Int64(span))
+    let before = source.vertices(start: start, step: 256, span: span, key: "tail")
+    let after = reopened.vertices(start: start, step: 256, span: span, key: "tail")
+    precondition(before.channels == after.channels && !before.channels.isEmpty)
+    let persistedAgain = try Data(contentsOf: cacheURL)
+    precondition(persistedAgain == persisted,
+        "An MP3 tail mismatch must produce a complete reusable disk cache")
+    print("MP3_GAPLESS_TAIL_WAVEFORM_BUILD_AND_REOPEN_OK")
+}
+
+// All new caches live beneath the canonical project Stems directory.
+let projectRoot = directory.appendingPathComponent("Layout")
+let nestedAudio = projectRoot.appendingPathComponent("Stems/Batch/Guitar.wav")
+precondition(TimelineAudioWaveform.diskCacheURL(nestedAudio) == projectRoot.appendingPathComponent("Stems/WF/Batch/Guitar.wav.waveform"))
+precondition(TimelineAudioWaveform.diskCacheURL(directory.appendingPathComponent("source.wav")) == directory.appendingPathComponent("Stems/WF/source.wav.waveform"))
+print("WF_INSIDE_STEMS_PRESERVES_SOURCE_SUBDIRECTORIES_OK")
+
 func awaitValue<T>(_ body: () -> T?) -> T {
     let deadline = Date().addingTimeInterval(12)
     while Date() < deadline {
@@ -121,7 +151,7 @@ for rate in [44_100.0, 48_000.0] {
     let fractional = cache.vertexDrawing(url, header: header, start: 500.25 / rate, end: 512.5 / rate, pixelsPerSecond: rate)
     precondition(fractional.complete && fractional.blocks.count == 2,
                  "fractional-sample zoom boundaries need coverage from both neighboring blocks")
-    let cacheURL = directory.appendingPathComponent("WF").appendingPathComponent(url.lastPathComponent + ".waveform")
+    let cacheURL = TimelineAudioWaveform.diskCacheURL(url)
     let persisted = try Data(contentsOf: cacheURL)
     func u64(_ data: Data, _ offset: Int) -> UInt64 { data.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) } }
     func u32(_ data: Data, _ offset: Int) -> UInt32 { data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) } }
@@ -236,6 +266,41 @@ extension TimelineAudioWaveform {
                 projectOverviews.values.reduce(0) { $0 + $1.cost })
     }
 }
+// Cold preparation must finish every unique file before exposing the project.
+// A missing file cannot stop the batch, and reopening must not rewrite caches.
+let coldDirectory = directory.appendingPathComponent("Concurrent/Stems")
+try FileManager.default.createDirectory(at: coldDirectory, withIntermediateDirectories: true)
+let coldURLs = try (0..<8).map { index -> URL in
+    let target = coldDirectory.appendingPathComponent("source-\(index).wav")
+    try FileManager.default.copyItem(at: directory.appendingPathComponent("source-44100.wav"), to: target)
+    return target
+}
+let missingURL = coldDirectory.appendingPathComponent("missing.wav")
+var coldDone = false
+var coldProgress: [Int] = []
+let coldCache = TimelineAudioWaveform()
+Task { @MainActor in
+    await coldCache.preload(coldURLs + coldURLs + [missingURL]) { done, total in
+        precondition(total == 9)
+        coldProgress.append(done)
+    }
+    coldDone = true
+}
+let _: Bool = awaitValue { coldDone ? true : nil }
+precondition(coldProgress == Array(1...9), "progress is ordered, deduplicated and includes failed inputs")
+precondition(coldCache.projectPinnedCountForTest() == 8)
+let cacheDates = try coldURLs.map { try FileManager.default.attributesOfItem(atPath: TimelineAudioWaveform.diskCacheURL($0).path)[.modificationDate] as! Date }
+let cacheBytes = try coldURLs.map { try Data(contentsOf: TimelineAudioWaveform.diskCacheURL($0)) }
+precondition(cacheBytes.allSatisfy { $0 == cacheBytes[0] }, "concurrent decoding produces identical peaks for identical audio")
+coldDone = false
+let reopenedCache = TimelineAudioWaveform()
+Task { @MainActor in await reopenedCache.preload(coldURLs); coldDone = true }
+let _: Bool = awaitValue { coldDone ? true : nil }
+let reopenedDates = try coldURLs.map { try FileManager.default.attributesOfItem(atPath: TimelineAudioWaveform.diskCacheURL($0).path)[.modificationDate] as! Date }
+precondition(cacheDates == reopenedDates && reopenedCache.projectPinnedCountForTest() == 8,
+             "a fresh project cache reuses every persistent waveform without rebuilding")
+print("GPU_CONCURRENT_COLD_PRELOAD_DEDUP_FAILURE_PROGRESS_AND_WARM_DISK_REUSE_OK")
+
 let preloadedDecode = DispatchQueue(label: "jaras.preload.test.decode")
 let preloadedCache = TimelineAudioWaveform(worker: preloadedDecode)
 let preloadedURLs = [44100, 48000].map { directory.appendingPathComponent("source-\($0).wav") }
@@ -277,3 +342,13 @@ Task { @MainActor in await preloadedCache.preload([]); preloadFinished = true }
 let _: Bool = awaitValue { preloadFinished ? true : nil }
 precondition(preloadedCache.projectPinnedCountForTest() == 0, "changing projects releases the preceding project's strong RAM curves")
 print("GPU_PROJECT_PRELOAD_ALL_ZOOMS_IMMEDIATE_COMPLETE_RAM_NO_BACKGROUND_WORK_AND_RELEASE_OK")
+
+let cancelledCache = TimelineAudioWaveform()
+var cancelledPreloadDone = false, cancelledProgress = false
+Task { @MainActor in
+    await cancelledCache.preload(coldURLs, cancelled: { true }) { _, _ in cancelledProgress = true }
+    cancelledPreloadDone = true
+}
+let _: Bool = awaitValue { cancelledPreloadDone ? true : nil }
+precondition(!cancelledProgress && cancelledCache.projectPinnedCountForTest() == 0, "cancelled preparation must not install caches or report stale progress")
+print("CANCELLED_PROJECT_PRELOAD_DOES_NOT_INSTALL_OR_REPORT_PROGRESS_OK")

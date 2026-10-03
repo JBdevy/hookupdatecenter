@@ -1,14 +1,29 @@
 import Foundation
 
 public enum ProjectMediaCleanup {
+    private static func inventoryURL(project: Project, document: URL) -> URL {
+        document.deletingLastPathComponent().appendingPathComponent(".catlive-media-\(project.id.uuidString).json")
+    }
+    private static func rememberedPaths(project: Project, document: URL) throws -> Set<String> {
+        let url = inventoryURL(project: project, document: document)
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: url))
+    }
+    /// Records ownership without removing any media, including across restarts.
+    public static func remember(project: Project, document: URL, knownPaths: Set<String>) throws {
+        let previous = try rememberedPaths(project: project, document: document)
+        let paths = previous.union(knownPaths).union(project.mediaPaths)
+        guard paths != previous else { return }
+        try JSONEncoder().encode(paths).write(to: inventoryURL(project: project, document: document), options: .atomic)
+    }
     /// Only files previously owned by this document can become candidates.
     /// Other documents are protected. Backup-only sources are kept with backups,
-    /// so closing the editor does not make the ten recovery saves unusable.
-    public static func close(project: Project, document: URL, knownPaths: Set<String>, progress: @Sendable (Double) -> Void = { _ in }) throws {
+    /// so manual cleanup does not make recovery saves unusable.
+    public static func removeDeletedFiles(project: Project, document: URL, knownPaths: Set<String>, progress: @Sendable (Double) -> Void = { _ in }) throws {
         progress(0)
         let fm = FileManager.default
         let root = document.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-        var candidates = knownPaths.subtracting(project.mediaPaths)
+        var candidates = try rememberedPaths(project: project, document: document).union(knownPaths).subtracting(project.mediaPaths)
         guard !candidates.isEmpty else { progress(1); return }
         let siblings = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         for url in siblings where url.pathExtension.lowercased() == "jl" && url.standardizedFileURL != document.standardizedFileURL {
@@ -39,7 +54,7 @@ public enum ProjectMediaCleanup {
         for (index, path) in paths.enumerated() {
             defer { report(20 + (index + 1) * 35 / paths.count) }
             let components = path.split(separator: "/", omittingEmptySubsequences: false)
-            guard components.count > 1, ["Steams", "Stems", "Videos"].contains(String(components[0])),
+            guard components.count > 1, ["Stems", "Videos"].contains(String(components[0])),
                   components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }), !path.contains("\\") else { continue }
             let source = root.appendingPathComponent(path)
             guard source.standardizedFileURL == source.resolvingSymlinksInPath(), fm.fileExists(atPath: source.path),
@@ -65,6 +80,9 @@ public enum ProjectMediaCleanup {
                 for track in backup.songs[song].tracks.indices {
                     if let path = backup.songs[song].tracks[track].audioFile?.path, let relative = replacements[path] {
                         backup.songs[song].tracks[track].audioFile?.path = relative; changed = true
+                    }
+                    if let path = backup.songs[song].tracks[track].clickSound?.path, let relative = replacements[path] {
+                        backup.songs[song].tracks[track].clickSound?.path = relative; changed = true
                     }
                     for clip in backup.songs[song].tracks[track].clips.indices {
                         if let path = backup.songs[song].tracks[track].clips[clip].audioFile?.path, let relative = replacements[path] {

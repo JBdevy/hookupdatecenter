@@ -9,7 +9,7 @@
 "Seu show.\nNo seu controle." = "Your show.\nYour control.";
 "MULTITRACK · REPERTÓRIOS · SUB PLAY" = "MULTITRACK · SETLISTS · SUB PLAY";
 "AMBIENTE DE DEMONSTRAÇÃO" = "DEMO ENVIRONMENT";
-"demo@jaras.live · senha: jaras123" = "demo@jaras.live · password: jaras123";
+"demo@catlive.app · senha: catlive123" = "demo@catlive.app · password: catlive123";
 "Licenças" = "Device licenses";
 "Cenário" = "Scenario";
 "Normal" = "Normal";
@@ -607,7 +607,7 @@
 "The render produced invalid audio samples." = "The render produced invalid audio samples.";
 "Choose 44.1 kHz or 48 kHz." = "Choose 44.1 kHz or 48 kHz.";
 "A file already exists:" = "A file already exists:";
-"RAM used by Jaras Live" = "RAM used by Jaras Live";
+"RAM used by CatLive" = "RAM used by CatLive";
 "%lld files" = "%lld files";
 "%lld / %lld files" = "%lld / %lld files";
 "Primary output format" = "Primary output format";
@@ -990,7 +990,7 @@
 "Connecting…" = "Connecting…";
 "Connection failed. Check Remote on the computer and the local network." = "Connection failed. Check Remote on the computer and the local network.";
 "Tap the computer to connect." = "Tap the computer to connect.";
-"Unable to capture the Jaras window." = "Unable to capture the Jaras window.";
+"Unable to capture the CatLive window." = "Unable to capture the CatLive window.";
 "Search again" = "Search again";
 "Disconnect" = "Disconnect";
 "Waiting for the computer…" = "Waiting for the computer…";
@@ -999,7 +999,7 @@
 "Enable Remote on the computer." = "Enable Remote on the computer.";
 "Connect" = "Connect";
 
-"Jaras Limiter" = "Jaras Limiter";
+"CatLive Limiter" = "CatLive Limiter";
 
 "Input gain" = "Input gain";
 
@@ -1021,11 +1021,11 @@
 "Resolve missing audio on the Mac to continue." = "Resolve missing audio on the Mac to continue.";
 "Could not open the project. Check the Mac for details." = "Could not open the project. Check the Mac for details.";
 "This project is no longer in the Mac’s recent projects." = "This project is no longer in the Mac’s recent projects.";
-"Update Jaras on the Mac to browse recent projects." = "Update Jaras on the Mac to browse recent projects.";
+"Update CatLive on the Mac to browse recent projects." = "Update CatLive on the Mac to browse recent projects.";
 
 "Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad." = "Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad.";
 
-"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no Jaras do Mac e escolha-o abaixo." = "Keep Wi-Fi and Bluetooth on on both devices.\nEnable Remote in Jaras on the Mac, then choose it below.";
+"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do Mac e escolha-o abaixo." = "Keep Wi-Fi and Bluetooth on on both devices.\nEnable Remote in CatLive on the Mac, then choose it below.";
 
 "Conexão direta · sem roteador ou internet" = "Direct connection · no router or internet needed";
 
@@ -1038,5 +1038,100 @@
 "Item volume" = "Item volume";
 "Notices" = "Notices";
 "Stop" = "Stop";
-"Atualize o Jaras no Mac para usar este painel." = "Update Jaras on the Mac to use this panel.";
-"Atualize o Jaras no Mac para sincronizar o cronômetro." = "Update Jaras on the Mac to sync the timer.";
+"Atualize o CatLive no Mac para usar este painel." = "Update CatLive on the Mac to use this panel.";
+"Atualize o CatLive no Mac para sincronizar o cronômetro." = "Update CatLive on the Mac to sync the timer.";
+
+/* Logic project migration */
+"Import Logic project" = "Import Logic project";
+"Importing Logic project…" = "Importing Logic project…";
+"Logic migration" = "Logic migration";
+"Save the CatLive project outside the Logic package." = "Save the CatLive project outside the Logic package.";
+"Logic MIDI regions and instruments were not converted to audio. Export them as audio from Logic to migrate their sound." = "Logic MIDI regions and instruments were not converted to audio. Export them as audio from Logic to migrate their sound.";
+"Logic Flex processing and region automation are not applied. Audio items retain their source bounds." = "Logic Flex processing and region automation are not applied. Audio items retain their source bounds.";
+"Nested Logic groups were placed inside their top-level group." = "Nested Logic groups were placed inside their top-level group.";
+
+// DAW project migration
+"Import REAPER project" = "Import REAPER project";
+"Importing REAPER project…" = "Importing REAPER project…";
+"Project migration" = "Project migration";
+"REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix." = "REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix.";
+"REAPER mixer volumes above +12 dB were limited to the CatLive mixer range." = "REAPER mixer volumes above +12 dB were limited to the CatLive mixer range.";
+"Nested REAPER folders were placed inside their top-level group." = "Nested REAPER folders were placed inside their top-level group.";
+"Only the active REAPER take is imported for each item." = "Only the active REAPER take is imported for each item.";
+"Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files." = "Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files.";
+"REAPER MIDI, video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound." = "REAPER MIDI, video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound.";
+"Regions beyond the two supported overlap lanes were converted to start and end markers." = "Regions beyond the two supported overlap lanes were converted to start and end markers.";
+"Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged." = "Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged.";
+"REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged." = "REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged.";
+
+"Close without saving" = "Close without saving";
+
+"Mute items" = "Mute items";
+
+"Unmute items" = "Unmute items";
+
+"Export audio items" = "Export audio items";
+
+// Recent project deletion
+"Export to app" = "Export to app";
+"Delete project" = "Delete project";
+"Delete in %llds" = "Delete in %llds";
+"Deleting project…" = "Deleting project…";
+"The entire project folder, including audio and backups, will be permanently deleted. This cannot be undone." = "The entire project folder, including audio and backups, will be permanently deleted. This cannot be undone.";
+"Choose a CatLive project to delete." = "Choose a CatLive project to delete.";
+"Wait 3 seconds before deleting the project." = "Wait 3 seconds before deleting the project.";
+"The project folder changed. Open the confirmation again." = "The project folder changed. Open the confirmation again.";
+"This project is in a shared or system folder. Move it into its own folder before deleting it." = "This project is in a shared or system folder. Move it into its own folder before deleting it.";
+"This folder contains other CatLive projects. Move this project into its own folder before deleting it." = "This folder contains other CatLive projects. Move this project into its own folder before deleting it.";
+"New region" = "New region";
+
+"Search recent projects" = "Search recent projects";
+
+"Clear search" = "Clear search";
+
+"Remove from recents" = "Remove from recents";
+
+"No recent projects found." = "No recent projects found.";
+
+"Canceling…" = "Canceling…";
+
+"Automatic record arm" = "Automatic record arm";
+"Armed" = "Armed";
+"Record arm: Off → Armed → Automatic (selected track)" = "Record arm: Off → Armed → Automatic (selected track)";
+
+// Manual timeline media cleanup
+"Clean up files deleted from the timeline" = "Clean up files deleted from the timeline";
+"This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone." = "This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.";
+"Stop playback, recording and imports before cleaning timeline files." = "Stop playback, recording and imports before cleaning timeline files.";
+
+"This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone." = "This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone.";
+
+"This folder already contains another CatLive project. Choose or create a separate folder so Stems and backups are not shared." = "This folder already contains another CatLive project. Choose or create a separate folder so Stems and backups are not shared.";
+
+"Playlist duration" = "Playlist duration";
+
+"Original" = "Original";
+
+"Delete track" = "Delete track";
+"Delete tracks" = "Delete tracks";
+"MIDI recording" = "MIDI recording";
+"Channel" = "Channel";
+"Show notes from all channels or only the selected channel" = "Show notes from all channels or only the selected channel";
+"Click the ruler to set the playback position" = "Click the ruler to set the playback position";
+"Delete selected tracks and their items?" = "Delete selected tracks and their items?";
+"Convert Mono" = "Convert Mono";
+"Download the instrument before converting this MIDI item." = "Download the instrument before converting this MIDI item.";
+
+"Finish the current operation before closing." = "Finish the current operation before closing.";
+
+"Unify items" = "Unify items";
+
+"Select audio or MIDI items to unify." = "Select audio or MIDI items to unify.";
+
+"Select MIDI items to unify." = "Select MIDI items to unify.";
+
+"Unify audio and MIDI separately on each track." = "Unify audio and MIDI separately on each track.";
+
+"Unify converted MIDI audio separately from other audio on the same track." = "Unify converted MIDI audio separately from other audio on the same track.";
+
+"The selected items changed while unifying." = "The selected items changed while unifying.";

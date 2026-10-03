@@ -6,6 +6,7 @@ public enum AudioExportFormat: String, CaseIterable, Sendable { case wav = "WAV"
 public struct AudioExportEncoding: Sendable {
     public var format: AudioExportFormat = .wav
     public var bitDepth = 24
+    /// 0 preserves each exported item's source channel count; 1/2 force mono/stereo.
     public var channels = 2
     public var bitrate = 320
     public var sampleRate = 48000.0

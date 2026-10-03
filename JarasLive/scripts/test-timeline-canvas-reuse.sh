@@ -38,5 +38,5 @@ private struct ViewportTimelineCanvas''', '''        }.drawingGroup(opaque: fals
 private struct ViewportTimelineCanvas''', 1)
 Path(sys.argv[1]).write_text(stubs + surface + '\n' + Path('Tests/Apple/TimelineCanvasReuseTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/GridScrollView.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Apple/Shared/TimelineRenderDiagnostics.swift -swift-version 5 Apple/Shared/GridScrollView.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

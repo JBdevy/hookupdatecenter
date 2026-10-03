@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSArray<NSDictionary *> *)scan:(NSString *)path error:(NSError **)error;
 + (AVAudioUnitEffect *)makeNode;
 + (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error;
++ (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes;
++ (void)sequenceClock:(AVAudioUnitEffect *)node head:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end;
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2;
 + (void)silence:(AVAudioUnitEffect *)node;
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;

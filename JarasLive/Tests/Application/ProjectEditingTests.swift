@@ -63,7 +63,7 @@ final class ProjectEditingTests: XCTestCase {
         var parent = Track(id: UUID(), name: "Keys", role: .keys)
         var child = Track(id: UUID(), name: "Piano", role: .keys)
         child.parentTrackID = parent.id; child.patch = .masterGroup; child.secondaryPatch = .stereo
-        parent.clips = [AudioClip(id: UUID(), name: "Take", startTime: 30, duration: 20, waveform: [0.1,0.2,0.3,0.4], audioFile: AudioFile(path: "Steams/take.wav"), playbackRate: 2)]
+        parent.clips = [AudioClip(id: UUID(), name: "Take", startTime: 30, duration: 20, waveform: [0.1,0.2,0.3,0.4], audioFile: AudioFile(path: "Stems/take.wav"), playbackRate: 2)]
         project.songs[0].tracks = [parent, child]
         return project
     }
@@ -135,11 +135,11 @@ final class ProjectEditingTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips[1].waveform, original.waveform)
         try project.validate()
     }
-    func testCleanupOnlyAtCloseKeepsUndoAndRecoverableBackups() throws {
+    func testManualCleanupKeepsRecoverableBackups() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var project = fixture(); let document = root.appendingPathComponent("Show.jl")
-        let source = root.appendingPathComponent("Steams/take.wav")
+        let source = root.appendingPathComponent("Stems/take.wav")
         try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data([1,2,3,4]).write(to: source)
         try ProjectBackups.save(project, to: document)
@@ -147,7 +147,7 @@ final class ProjectEditingTests: XCTestCase {
         project.deleteItems([project.songs[0].tracks[0].clips[0].id])
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
         try ProjectBackups.save(project, to: document)
-        try ProjectMediaCleanup.close(project: project, document: document, knownPaths: known)
+        try ProjectMediaCleanup.removeDeletedFiles(project: project, document: document, knownPaths: known)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
         let backup = try ProjectDocumentCodec.decode(Data(contentsOf: ProjectBackups.files(for: document)[0]))
         let archived = try XCTUnwrap(backup.mediaPaths.first)

@@ -110,6 +110,17 @@ settle(1.05)
 precondition(divider.scrollIndicatorVisible, "pointer exit and prolonged inactivity never hide the permanent scrollbar")
 divider.mouseMoved(with: hover)
 precondition(NSCursor.current.image.size == NSSize(width: 24, height: 24), "hover uses the cached four-arrow move cursor")
+divider.mouseExited(with: pointer(divider, .mouseMoved, CGPoint(x: 90, y: 50)))
+precondition(NSCursor.current == NSCursor.arrow, "leaving the scrollbar restores the pointer without needing a click")
+divider.cursorUpdate(with: hover)
+precondition(NSCursor.current.image.size == NSSize(width: 24, height: 24), "AppKit cursor updates restore the divider cursor on reentry")
+divider.mouseDown(with: pointer(divider, .leftMouseDown, CGPoint(x: 6, y: 50)))
+divider.mouseDragged(with: pointer(divider, .leftMouseDragged, CGPoint(x: 60, y: 80)))
+divider.mouseExited(with: pointer(divider, .mouseMoved, CGPoint(x: 60, y: 80)))
+precondition(NSCursor.current.image.size == NSSize(width: 24, height: 24), "an active divider drag keeps its cursor outside the narrow rail")
+divider.mouseUp(with: pointer(divider, .leftMouseUp, CGPoint(x: 60, y: 80)))
+precondition(NSCursor.current == NSCursor.arrow, "releasing outside the rail clears the drag cursor")
+
 
 let listDivider = MixerDividerView(frame: CGRect(x: 390, y: 0, width: 6, height: 400))
 listDivider.scrollController = setlistController; listDivider.direction = -1

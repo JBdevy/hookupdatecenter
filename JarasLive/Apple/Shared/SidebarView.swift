@@ -9,7 +9,7 @@ struct SidebarView: View {
             navigation("Live Session", icon: "waveform", active: true, action: {})
             Spacer(minLength: 0)
             if let exit { navigation("Sair", icon: "rectangle.portrait.and.arrow.right", active: false, action: exit) }
-        }.padding(.horizontal, 12).padding(.vertical, 12).background(Color(hex: 0x101419))
+        }.padding(.horizontal, 12).padding(.vertical, 12).background(JarasTheme.background)
     }
     private func navigation(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button { close(); action() } label: {

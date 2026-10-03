@@ -114,7 +114,7 @@ int main() {
     bool pitchRejected = false; try { ignore.setRegionPitch("ignore-first", 7, {"track"}, {}); } catch (...) { pitchRejected = true; }
     expect(pitchRejected && ignore.project().songs[0].parts[1].pitchSemitones == 6, "region pitch rejects out of range without changing state");
     Project editable = p;
-    editable.songs[0].tracks[0].clips.push_back({"clip", "Clip", 2, 3, 0, {0.5}});
+    editable.songs[0].tracks[0].clips.push_back({"clip", {}, "Clip", 2, 3, 0, {0.5}});
     Project trackOrderProject = editable;
     trackOrderProject.songs[0].parts = {{"track-order-region", "Song", 2, 5}};
     trackOrderProject.songs[0].tracks.push_back({"second-normal", "Keys", {"keys"}});
@@ -147,7 +147,7 @@ int main() {
     expect(trackIDs(loadOldTrackOrder) == trackIDs(fixedTrackOrder), "loading older track order normalizes without rejecting the document");
     validate(loadOldTrackOrder.project());
     Track importedVideo{"video-import", "Video", {"video"}};
-    importedVideo.clips.push_back({"video-import-clip", "Video", 6, 2});
+    importedVideo.clips.push_back({"video-import-clip", {}, "Video", 6, 2});
     fixedTrackOrder.insertAudioTracks("one", {importedVideo});
     expect(trackIDs(fixedTrackOrder) == std::vector<ID>({"timecode", "teleprompter", "video-first", "video-second", "video-import", "second-normal", "track"}), "imported special tracks enter their canonical prefix slot");
     auto deletedSpecialOrder = fixedTrackOrder.project();
@@ -160,7 +160,7 @@ int main() {
     textTracks.addTrack("chords-two", "Ignored", {"chords"});
     textTracks.addTrack("text-video", "Ignored", {"video"});
     expect(trackIDs(textTracks) == std::vector<ID>({"chords-one", "chords-two", "lyrics", "text-video", "track"}), "Chords tracks precede teleprompter and video and allow multiple instances");
-    AudioClip textItem{"text-item", "Chords", 2, 10}; textItem.text = u8"C♯m / G♭ — Refrão 🎵";
+    AudioClip textItem{"text-item", {}, "Chords", 2, 10}; textItem.text = u8"C♯m / G♭ — Refrão 🎵";
     textTracks.addRecordedClip("chords-one", textItem);
     textTracks.execute({CommandKind::play}); textTracks.advance(0.5);
     textTracks.execute({CommandKind::subSeek, "", 4}); textTracks.execute({CommandKind::subPlay});
@@ -180,14 +180,14 @@ int main() {
     textTracks.moveClip("text-item", 3, "chords-one");
     bool crossedTextKind = false; try { textTracks.moveClip("text-item", 4, "lyrics"); } catch (...) { crossedTextKind = true; }
     expect(crossedTextKind && textTracks.project().songs[0].tracks[0].clips[0].startTime == 3, "text item cannot cross into a different special kind");
-    bool textMediaRejected = false; Track textMedia{"chords-one", "Chords", {"chords"}}; textMedia.clips.push_back({"invalid-media", "Audio", 0, 1});
+    bool textMediaRejected = false; Track textMedia{"chords-one", "Chords", {"chords"}}; textMedia.clips.push_back({"invalid-media", {}, "Audio", 0, 1});
     try { textTracks.insertAudioTracks("one", {textMedia}); } catch (...) { textMediaRejected = true; }
     expect(textMediaRejected && textTracks.project().songs[0].tracks[0].clips.size() == 1, "media import cannot populate a Chords text track");
     auto textAudio = textItem; textAudio.id = "text-audio"; textAudio.audioFile = AudioFile{"Steams/invalid.wav", {}};
     textMediaRejected = false; try { textTracks.addRecordedClip("lyrics", textAudio); } catch (...) { textMediaRejected = true; }
     expect(textMediaRejected && textTracks.project().songs[0].tracks[2].clips.empty(), "text insertion rejects audio metadata before committing");
     std::string lyricsMaximum; for (int n=0; n<400; ++n) lyricsMaximum += u8"🎵";
-    AudioClip lyricsItem{"lyrics-item","Teleprompter",2,10}; lyricsItem.text=lyricsMaximum;
+    AudioClip lyricsItem{"lyrics-item", {}, "Teleprompter",2,10}; lyricsItem.text=lyricsMaximum;
     textTracks.addRecordedClip("lyrics",lyricsItem);
     expect(textTracks.project().songs[0].tracks[2].clips[0].text==lyricsMaximum,"Teleprompter permits 400 Unicode characters");
     bool lyricsTooLong=false;
@@ -203,7 +203,7 @@ int main() {
         auto singleLane = editable;
         auto& track = singleLane.songs[0].tracks[0];
         track.role = {role}; track.name = fixedTrackName(track.role);
-        track.clips = {{"lane-first", "First", 1, 2}, {"lane-second", "Second", 5, 2}};
+        track.clips = {{"lane-first", {}, "First", 1, 2}, {"lane-second", {}, "Second", 5, 2}};
         if (std::string(role) != "video") for (auto& item : track.clips) item.text = "Text";
         singleLane.songs[0].tracks.push_back({"same-kind-destination", track.name, {role}});
         Engine lane; lane.loadProject(singleLane); lane.execute({CommandKind::play}); lane.advance(0.25);
@@ -250,7 +250,7 @@ int main() {
     Project mediaMoveProject = editable;
     mediaMoveProject.songs[0].tracks[0].clips[0].audioFile = AudioFile{"Steams/audio.wav", {}};
     Track videoMoveTrack{"video-move", "Video", {"video"}};
-    videoMoveTrack.clips.push_back({"video-move-item", "Movie", 2, 3});
+    videoMoveTrack.clips.push_back({"video-move-item", {}, "Movie", 2, 3});
     videoMoveTrack.clips[0].audioFile = AudioFile{"Videos/movie.mov", {}};
     mediaMoveProject.songs[0].tracks.push_back(videoMoveTrack);
     mediaMoveProject.songs[0].tracks.push_back({"audio-move", "Audio", {"other"}});
@@ -282,7 +282,7 @@ int main() {
     bool capacityRejected = false; try { trackCapacity.addTrack("extra-capacity", "Extra", {"other"}); } catch (...) { capacityRejected = true; }
     expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "native track creation cannot exceed global 1000 track capacity");
     Track capacityImport{"extra-capacity", "Extra", {"other"}};
-    capacityImport.clips.push_back({"capacity-clip", "Audio", 0, 1});
+    capacityImport.clips.push_back({"capacity-clip", {}, "Audio", 0, 1});
     capacityRejected = false; try { trackCapacity.insertAudioTracks("one", {capacityImport}); } catch (...) { capacityRejected = true; }
     expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "audio import cannot bypass track capacity");
     capacityProject.songs[1].tracks.push_back({"extra-capacity", "Extra", {"other"}});
@@ -331,7 +331,7 @@ int main() {
     expect(invalidItemFXLoad, "project load rejects item instruments");
     Project batchProject = editable;
     batchProject.songs[0].tracks[0].clips[0].name = "Song.One.MP3";
-    batchProject.songs[0].tracks[0].clips.push_back({"later-clip", "Second.wav", 6, 3});
+    batchProject.songs[0].tracks[0].clips.push_back({"later-clip", {}, "Second.wav", 6, 3});
     Engine batch; batch.loadProject(batchProject);
     batch.regionsFromClips({{"clip", "first-region"}, {"later-clip", "second-region"}});
     expect(batch.project().songs[0].parts.size() == 2 && batch.project().songs[0].parts[0].name == "Song.One" && batch.project().songs[0].parts[1].name == "Second", "batch region creation strips only audio extensions and preserves horizontal items");
@@ -371,9 +371,9 @@ int main() {
     bool invalidMove = false; try { editor.moveClip("clip", -1); } catch (...) { invalidMove = true; }
     expect(invalidMove && editor.project().songs[0].tracks[0].clips[0].startTime == 600, "invalid move is atomic");
     Project stacked = editable;
-    stacked.songs[0].tracks[0].clips.push_back({"clip2", "Second", 2, 3});
-    stacked.songs[0].tracks[0].clips.push_back({"clip3", "Third", 2, 3});
-    stacked.songs[0].tracks[0].clips.push_back({"clip4", "Fourth", 5, 3});
+    stacked.songs[0].tracks[0].clips.push_back({"clip2", {}, "Second", 2, 3});
+    stacked.songs[0].tracks[0].clips.push_back({"clip3", {}, "Third", 2, 3});
+    stacked.songs[0].tracks[0].clips.push_back({"clip4", {}, "Fourth", 5, 3});
     validate(stacked);
     Engine editingState; editingState.loadProject(stacked);
     editingState.execute({CommandKind::play}); editingState.advance(1);
@@ -402,9 +402,9 @@ int main() {
     importing.execute({CommandKind::play}); importing.advance(0.5);
     Track addition{"track", "Must not replace track settings", {"other"}};
     addition.volume = 0.1;
-    addition.clips.push_back({"imported", "Imported", 20, 4});
+    addition.clips.push_back({"imported", {}, "Imported", 20, 4});
     Track newTrack{"new-track", "New", {"keys"}};
-    newTrack.clips.push_back({"new-clip", "New clip", 20, 5});
+    newTrack.clips.push_back({"new-clip", {}, "New clip", 20, 5});
     importing.insertAudioTracks("one", {addition, newTrack});
     expect(importing.project().songs[0].tracks[0].name == stacked.songs[0].tracks[0].name && importing.project().songs[0].tracks[0].volume == stacked.songs[0].tracks[0].volume, "audio drop preserves destination track settings");
     expect(importing.project().songs[0].duration == 25 && importing.project().songs[0].tracks.size() == 2, "audio drop extends timeline and inserts new tracks");
@@ -422,6 +422,45 @@ int main() {
     expect(group.project().songs[0].tracks[0].clips[0].startTime == 0, "region and item can return to timeline start");
     bool invalidRegionMove = false; try { group.moveRegion("group-region", -1); } catch (...) { invalidRegionMove = true; }
     expect(invalidRegionMove && group.project().songs[0].parts[0].startTime == 0, "invalid region move changes nothing");
+    // Moving a region moves every contained media type and its tempo/cue flags.
+    Project cargo; cargo.id="cargo-project"; cargo.name="Region contents";
+    Song cargoSong; cargoSong.id="cargo-song"; cargoSong.name="Song"; cargoSong.duration=100;
+    cargoSong.parts={{"cargo-root","Root",10,20},{"cargo-child","Child",12,18},{"cargo-next","Next",20,30}};
+    cargoSong.parts[1].parentRegionID="cargo-root";
+    for (const std::string role : {"other","video","teleprompt","teleprompt2","chords","timecode"}) {
+        Track track; track.id="cargo-track-"+role; track.role={role};
+        track.name=role=="other" ? "Audio" : fixedTrackName(track.role);
+        AudioClip clip; clip.id="cargo-item-"+role; clip.name="Inside"; clip.startTime=12; clip.duration=4;
+        if (isTeleprompterRole(track.role) || role=="chords") clip.text="Text";
+        if (role=="video") { clip.audioFile=AudioFile{"Videos/source.mov"}; clip.sourceOffset=1; }
+        if (role=="other") { clip.audioFile=AudioFile{"Stems/source.wav"}; clip.sourceOffset=2; clip.gain=0.5; }
+        if (role=="timecode") { track.importedTimecodeItems=true; clip.timecode=TimecodeSettings{}; clip.timecode->offset=3600; }
+        track.clips={clip}; cargoSong.tracks.push_back(track);
+    }
+    TimelineMarker cargoTempo{"cargo-tempo","Tempo",13,0}; cargoTempo.tempoBPM=140; cargoTempo.tempoTimebase="relative";
+    cargoSong.markers=std::vector<TimelineMarker>{{"cargo-start","Start",10,0},cargoTempo,{"cargo-cue","Cue",16,0},{"cargo-owned","Child",12,0,"cargo-root"},{"cargo-edge","Next",20,0},{"cargo-outside","Outside",5,0}};
+    cargo.songs={cargoSong}; Engine cargoEngine; cargoEngine.loadProject(cargo);
+    cargoEngine.moveRegion("cargo-root",40);
+    const auto& movedCargo=cargoEngine.project().songs[0];
+    expect(movedCargo.parts[0].startTime==40 && movedCargo.parts[1].startTime==42 && movedCargo.parts[2].startTime==20,"root and child move once while neighboring region stays");
+    const std::vector<double> cargoPositions{40,43,46,42,20,5};
+    for(size_t index=0;index<cargoPositions.size();++index) expect(movedCargo.markers->at(index).position==cargoPositions[index],"tempo and ordinary markers follow region, end boundary stays with next region");
+    expect(movedCargo.markers->at(1).tempoBPM==140 && movedCargo.markers->at(1).tempoTimebase=="relative","moving tempo flag preserves BPM/timebase and does not stretch items");
+    for(const auto& track:movedCargo.tracks) {
+        expect(track.clips[0].startTime==42 && track.clips[0].duration==4,"all contained track kinds move with the same displacement");
+        if(track.role.id=="timecode") expect(track.clips[0].timecode->offset==3600,"regenerated imported timecode retains its clock configuration");
+        if(track.role.id=="other") expect(track.clips[0].sourceOffset==2 && track.clips[0].gain==0.5,"audio source trim and gain remain unchanged");
+    }
+    cargoEngine.moveRegion("cargo-root",10);
+    for(const auto& track:cargoEngine.project().songs[0].tracks) expect(track.clips[0].startTime==12,"return movement restores relative media positions");
+    cargo.songs[0].markers->push_back({"cargo-obstacle","Obstacle",43,0});
+    cargoEngine.loadProject(cargo); cargoEngine.moveRegion("cargo-root",40);
+    const auto& repelled=cargoEngine.project().songs[0];
+    expect(std::abs(repelled.parts[0].startTime-40.01)<1e-8,"marker collision repels the whole region to nearest free side");
+    expect(std::abs(repelled.markers->at(1).position-43.01)<1e-8 && repelled.markers->back().position==43,"tempo marker is separated from stationary normal marker");
+    for(const auto& track:repelled.tracks) expect(std::abs(track.clips[0].startTime-42.01)<1e-8,"repulsion preserves offsets of every media item");
+    cargoEngine.loadProject(cargo); cargoEngine.moveRegion("cargo-root",39.999);
+    expect(std::abs(cargoEngine.project().songs[0].parts[0].startTime-39.99)<1e-8,"repulsion can choose the left side without moving stationary marker");
     Engine sizing; sizing.loadProject(editable); sizing.regionFromClip("clip", "resize");
     sizing.resizeRegion("resize", 1, 50);
     expect(sizing.project().songs[0].parts[0].startTime == 1 && sizing.project().songs[0].parts[0].endTime == 50, "both region boundaries resize");
@@ -752,8 +791,8 @@ int main() {
     expect(missingMove && clipboardEngine.project().songs[0].tracks[0].clips.size() == pastedBeforeFailure, "failed move is atomic");
     Project tpMediaProject = editable;
     Track tpMedia{"tp-media", "Teleprompter", {"teleprompt"}};
-    AudioClip lyric{"lyric-item", "Text", 0, 5}; lyric.text = "Lyrics";
-    AudioClip tpMovie{"tp-movie", "Movie", 0, 10}; tpMovie.audioFile = AudioFile{"Videos/teleprompter.mov", {}};
+    AudioClip lyric{"lyric-item", {}, "Text", 0, 5}; lyric.text = "Lyrics";
+    AudioClip tpMovie{"tp-movie", {}, "Movie", 0, 10}; tpMovie.audioFile = AudioFile{"Videos/teleprompter.mov", {}};
     tpMedia.clips = {lyric, tpMovie}; tpMediaProject.songs[0].tracks.push_back(tpMedia);
     validate(tpMediaProject);
     Engine tpMediaEngine; tpMediaEngine.loadProject(tpMediaProject);

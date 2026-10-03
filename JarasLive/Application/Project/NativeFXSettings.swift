@@ -233,13 +233,13 @@ extension NativeFXSettings {
 public enum EffectPresentation {
     public static func title(_ effect: String) -> String {
         switch effect {
-        case "EQ": return "Jaras EQ"
-        case "Reverb": return "JarasVerb"
-        case "Pitch": return "JarasPitch"
-        case "Delay": return "JarasDelay"
-        case "Compressor": return "JarasComp"
-        case "Limiter": return "Jaras Limiter"
-        default: return "JarasInstruments"
+        case "EQ": return "CatLive EQ"
+        case "Reverb": return "CatLive Reverb"
+        case "Pitch": return "CatLive Pitch"
+        case "Delay": return "CatLive Delay"
+        case "Compressor": return "CatLive Compressor"
+        case "Limiter": return "CatLive Limiter"
+        default: return "CatLive Instruments"
         }
     }
 }

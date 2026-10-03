@@ -9,7 +9,7 @@ enum ProjectDocumentAppearance {
     static func apply(to url: URL) {
         #if os(macOS)
         guard ["jl", "bkjl"].contains(url.pathExtension.lowercased()),
-              let iconURL = Bundle.main.url(forResource: "JarasLiveIcon", withExtension: "icns") else { return }
+              let iconURL = Bundle.main.url(forResource: "CatLiveIcon", withExtension: "icns") else { return }
         let apply = {
             guard let icon = NSImage(contentsOf: iconURL) else { return }
             _ = NSWorkspace.shared.setIcon(icon, forFile: url.path, options: [])

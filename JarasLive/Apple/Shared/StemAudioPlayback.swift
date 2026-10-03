@@ -191,6 +191,7 @@ struct TimecodePlaybackSpan {
         }
         guard let clip = current ?? upcoming else { return nil }
         self.clip = clip
+        let settings = clip.timecode ?? settings
         // XOR namespace is reversible; avoid converting every region UUID.
         let regionID = Project.timecodeItemID(clip.id)
         let region = song.parts.first { $0.id == regionID }
@@ -205,6 +206,13 @@ struct TimecodePlaybackSpan {
 @MainActor final class StemAudioPlayback {
     static let shared = StemAudioPlayback(engine: AudioDeviceSettings.shared.engine)
     private let engine: AVAudioEngine
+    private var licenseAllowed = true
+    func setLicenseAllowed(_ allowed: Bool) {
+        licenseAllowed = allowed
+        // Every hardware channel (master, direct outs, click, LTC and instruments)
+        // converges here. Track/master controls never write this final gain.
+        engine.mainMixerNode.outputVolume = allowed ? 1 : 0
+    }
     // An independent silent source keeps the hardware rendering even with an
     // empty project, a muted Master, or no transport voices scheduled.
     private let deviceSilence = AVAudioSourceNode { silent, _, _, buffers in
@@ -218,6 +226,11 @@ struct TimecodePlaybackSpan {
     private var deviceSessionActive = false
     private var lastDeviceHealthCheck = 0.0
     private var deviceActivity: NSObjectProtocol?
+    private var clickGenerators: [JarasMetronomeGenerator] = []
+    private var clickTrackID: UUID?
+    private var clickSections: [ClickTrackSection] = []
+    private var clickSample: Data?
+    private var clickSoundPath: String?
     private var metronome: JarasMetronomeGenerator?
     private let metronomeRoute = JarasChannelRouter.makeNode()
     private var metronomeSoundRevision: UInt64?
@@ -281,6 +294,9 @@ struct TimecodePlaybackSpan {
     private var instrumentRenderPending = false
     @MainActor private struct TrackBus {
         let mix = AVAudioMixerNode()
+        // Merge printed MIDI after the ordered track FX, before live controls.
+        let processedMix = AVAudioMixerNode()
+        func input(for clip: AudioClip) -> AVAudioMixerNode { clip.frozenMIDI == true ? processedMix : mix }
         // Keep each route alive between clips, including tracks entering later regions.
         let silence = AVAudioSourceNode { silent, _, _, buffers in
             silent.pointee = true
@@ -432,7 +448,8 @@ struct TimecodePlaybackSpan {
         if rebuild { beforeAudioGraphReset() }
         stop(); engine.stop()
         if rebuild { configureGraph(directory: directory) }
-        else { engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardwareFormat) }
+        else { engine.mainMixerNode.outputVolume = licenseAllowed ? 1 : 0
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardwareFormat) }
         defer { if rebuild { afterAudioGraphReset() } }
         if let prepareAfterDeviceChange { try prepareAfterDeviceChange() }
         else if let previous { try update(previous.snapshot, revision: previous.revision) }
@@ -455,9 +472,11 @@ struct TimecodePlaybackSpan {
         engine.stop()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
         for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeAll()
+        detachClickTrack()
+        clickSample = nil; clickSoundPath = nil
         for bus in trackBuses.values {
             bus.pan.removeTap(onBus: 0)
-            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.gain); engine.detach(bus.pan); engine.detach(bus.polarity); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
+            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.gain); engine.detach(bus.pan); engine.detach(bus.polarity); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         trackBuses.removeAll(); groupConnections.removeAll()
         if let metronome { engine.detach(metronome.node); engine.detach(metronomeRoute) }; metronome = nil; metronomeSoundRevision = nil; metronomeTiming = []
@@ -478,7 +497,7 @@ struct TimecodePlaybackSpan {
     private func trackBus(for id: UUID) -> TrackBus {
         if let bus = trackBuses[id] { return bus }
         let bus = TrackBus()
-        engine.attach(bus.silence); engine.attach(bus.mix); engine.attach(bus.masterSend); engine.attach(bus.groupSend)
+        engine.attach(bus.silence); engine.attach(bus.mix); engine.attach(bus.processedMix); engine.attach(bus.masterSend); engine.attach(bus.groupSend)
         engine.attach(bus.gain); engine.attach(bus.pan); engine.attach(bus.polarity); engine.attach(bus.internalSend)
         for route in bus.hardware {
             JarasChannelRouter.setRenderEnabled(route, enabled: !realtime || renderEnabled)
@@ -495,7 +514,8 @@ struct TimecodePlaybackSpan {
         engine.connect(bus.pan, to: destinations, fromBus: 0, format: format)
         engine.connect(bus.gain, to: bus.pan, format: format)
         engine.connect(bus.polarity, to: bus.gain, format: format)
-        bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.polarity, bus: 0)])
+        engine.connect(bus.processedMix, to: bus.polarity, format: format)
+        bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)])
         engine.connect(bus.silence, to: bus.mix, fromBus: 0, toBus: 0, format: format)
         bus.effects.apply(tracks[id]?.fx ?? NativeFXSettings())
         #if os(macOS)
@@ -574,6 +594,7 @@ struct TimecodePlaybackSpan {
     }
     private func configureMaster() {
         guard !masterConfigured else { return }
+        engine.mainMixerNode.outputVolume = licenseAllowed ? 1 : 0
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardwareFormat)
         if realtime {
             if !deviceSilenceAttached { engine.attach(deviceSilence); deviceSilenceAttached = true }
@@ -629,7 +650,7 @@ struct TimecodePlaybackSpan {
             deviceSessionActive = true
             #if os(macOS)
             if deviceActivity == nil, !engine.isInManualRenderingMode {
-                deviceActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Jaras Live realtime audio")
+                deviceActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "CatLive realtime audio")
             }
             #endif
         }
@@ -703,6 +724,9 @@ struct TimecodePlaybackSpan {
         let meter = TrackMeterLevel(); meters[id] = meter; return meter
     }
     func stop() {
+        stopMIDISequences()
+        midiPlanRevision = nil
+        for click in clickGenerators { click.configurePosition(0, hostTime: mach_absolute_time(), running: false, loopStart: 0, loopEnd: 0, sampleTime: .nan) }
         metronome?.configurePosition(0, hostTime: mach_absolute_time(), running: false, loopStart: 0, loopEnd: 0, sampleTime: .nan)
         cancelVoicePreparation()
         if realtime {
@@ -803,7 +827,7 @@ struct TimecodePlaybackSpan {
         let usesStretch = !realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
         configureStretch(stretch, rate: Float(clip.audioRate), pitch: pitch); stretch.overlap = 8
         engine.attach(player); engine.attach(gain); engine.attach(stretch)
-        let bus = trackBus(for: track).mix
+        let bus = trackBus(for: track).input(for: clip)
         let occupied = Set(voices.values.filter { $0.track == track }.map(\.mixInputBus) +
                            effectTails.values.filter { $0.voice.track == track }.map { $0.voice.mixInputBus } +
                            (idleVoices[track] ?? []).map(\.mixInputBus) + retiredVoices.filter { $0.track == track }.map(\.mixInputBus))
@@ -817,12 +841,12 @@ struct TimecodePlaybackSpan {
         return voice
     }
     private func takeVoice(track: UUID, clip: AudioClip, file: AVAudioFile) throws -> Voice {
-        if let index = idleVoices[track]?.firstIndex(where: { $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001 && $0.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001) }) {
+        if let index = idleVoices[track]?.firstIndex(where: { ($0.clip.frozenMIDI == true) == (clip.frozenMIDI == true) && $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001 && $0.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001) }) {
             var voice = idleVoices[track]!.remove(at: index)
             if voice.file.url != file.url { voice.file = try AVAudioFile(forReading: file.url) }
             voice.clip = clip
             if suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain)) != nil {
-                engine.connect(voice.gain, to: trackBus(for: track).mix, fromBus: 0, toBus: voice.mixInputBus, format: file.processingFormat)
+                engine.connect(voice.gain, to: trackBus(for: track).input(for: clip), fromBus: 0, toBus: voice.mixInputBus, format: file.processingFormat)
             }
             voice.effects?.observe(analysisEffects[clip.id.uuidString] ?? [])
             applyClipFX(clip.fx ?? emptyFX, to: &voice)
@@ -887,7 +911,7 @@ struct TimecodePlaybackSpan {
                 let prepared = self.idleVoices.values.flatMap { $0 }.filter { !($0.player.isPlaying) && self.trackBuses[$0.track] != nil }
                 for voice in prepared {
                     if self.suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain)) != nil, let bus = self.trackBuses[voice.track] {
-                        self.engine.connect(voice.gain, to: bus.mix, fromBus: 0, toBus: voice.mixInputBus, format: voice.file.processingFormat)
+                        self.engine.connect(voice.gain, to: bus.input(for: voice.clip), fromBus: 0, toBus: voice.mixInputBus, format: voice.file.processingFormat)
                     }
                 }
                 // Prepared players receive I/O cycles even while transport is stopped.
@@ -1304,6 +1328,8 @@ struct TimecodePlaybackSpan {
                         guard let instrument = bus.effects.instrumentInput(for: id.effect) else { self.engine.detach(sampler.node); self.instrumentRequests[id] = nil; self.instrumentNames[id] = nil; return }
                         self.engine.connect(sampler.node, to: instrument, fromBus: 0, toBus: 1, format: format)
                         self.samplers[id] = sampler
+                        sampler.setSequenceNotes(self.midiPlans[id.track] ?? [])
+                        if let playback = self.latestPlayback { self.updateMIDISequenceClocks(playback.snapshot.transport) }
                         self.instrumentRequests[id] = nil
                         self.applyLevels()
                         if !self.engine.isRunning { try self.prepareDevice() }
@@ -1322,8 +1348,53 @@ struct TimecodePlaybackSpan {
             return samplers[key] != nil && instrumentRequests[key] == nil
         }
     }
+    private var midiPlanRevision: UInt64?
+    private var midiPlanSong: UUID?
+    private var midiPlans: [UUID: [[String: Double]]] = [:]
+    private func prepareMIDISequences(song: Song) {
+        var plans: [UUID: [[String: Double]]] = [:]
+        for track in song.tracks where track.kind == .standard {
+            let notes = track.clips.flatMap { clip -> [MIDIPlaybackNote] in
+                guard clip.midi != nil else { return [] }
+                return song.midiPlaybackNotes(in: clip)
+            }
+            let values = notes.map { ["start": $0.start, "end": $0.end, "pitch": Double($0.pitch), "velocity": Double($0.velocity), "channel": Double($0.channel)] }
+            plans[track.id] = values
+            if midiPlans[track.id] != values {
+                for (key, sampler) in samplers where key.track == track.id { sampler.setSequenceNotes(values) }
+            }
+            #if os(macOS)
+            trackBuses[track.id]?.effects.setMIDISequence(values)
+            #endif
+        }
+        midiPlans = plans
+    }
+    private func updateMIDISequenceClocks(_ transport: TransportState) {
+        for head in 0..<2 {
+            let position = head == 0 ? transport.position : transport.subPlay.position
+            let running = head == 0 ? transport.playing : transport.subPlay.playing
+            let host = audioHostTime(position: position, head: head) ?? mach_absolute_time()
+            let clock = realtime ? AVAudioTime.seconds(forHostTime: host) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
+            let start = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
+            let end = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
+            for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
+            #if os(macOS)
+            for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
+            #endif
+        }
+    }
+    private func stopMIDISequences() {
+        for head in 0..<2 {
+            for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
+            #if os(macOS)
+            for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
+            #endif
+        }
+    }
     private var virtualNoteTargets: [UInt8: Set<UUID>] = [:]
+    var onLiveKeyboardMIDI: ((UUID, UInt8, UInt8, UInt8) -> Void)?
     func releaseMIDINotes() {
+        releaseKeyboardNotes()
         virtualNoteTargets.removeAll(); InstrumentKeyboardState.shared.reset()
         #if os(macOS)
         for bus in trackBuses.values { bus.effects.silenceExternal() }
@@ -1357,6 +1428,7 @@ struct TimecodePlaybackSpan {
         let targets = armedInstrumentTracks.filter { tracks[$0]?.kind == .standard }
         virtualNoteTargets[note] = targets
         for id in targets {
+            onLiveKeyboardMIDI?(id, 0x90, note, velocity)
             #if os(macOS)
             trackBuses[id]?.effects.sendExternalMIDI(status: 0x90, number: note, value: velocity)
             #endif
@@ -1366,6 +1438,7 @@ struct TimecodePlaybackSpan {
     }
     func releaseKeyboardNote(_ note: UInt8) {
         for id in virtualNoteTargets.removeValue(forKey: note) ?? [] {
+            onLiveKeyboardMIDI?(id, 0x80, note, 0)
             #if os(macOS)
             trackBuses[id]?.effects.sendExternalMIDI(status: 0x80, number: note, value: 0)
             #endif
@@ -1452,15 +1525,16 @@ struct TimecodePlaybackSpan {
             timecodeGenerator = generator; timecodeRoutes = routes
         }
         timecodeTrackID = track.id
-        let settings = track.timecode ?? TimecodeSettings()
+        var settings = track.timecode ?? TimecodeSettings()
         let position = transport.playing || transport.paused == true ? transport.position : transport.editPosition ?? transport.position
         let span = TimecodePlaybackSpan(song: song, track: track, position: position, settings: settings, preferredRegion: transport.regionId)
+        settings = span?.clip.timecode ?? settings
         let now = ProcessInfo.processInfo.systemUptime
         let delay = span?.delay ?? 0
         let time = span?.time ?? position + settings.offset
         let end = span?.end ?? time
-        let active = transport.playing && span != nil && !track.mute
-        let mode = track.mute || span == nil ? "" : settings.mode
+        let active = transport.playing && span != nil && !track.mute && span?.clip.muted != true
+        let mode = track.mute || span == nil || span?.clip.muted == true ? "" : settings.mode
         let destination = AudioDeviceSettings.shared.resolvedMIDIDestination(settings.midiDestination)
         let key = "\(span?.clip.id.uuidString ?? "")-\(span?.clip.startTime ?? 0)-\(active)-\(mode)-\(settings.frameRate)-\(destination)-\(settings.regionRelative)-\(settings.offset)-\(end)"
         let changed = timecodeAnchor.map { $0.key != key || (!mode.isEmpty && abs(time - ($0.position + (active ? now + delay - $0.host : 0))) > (active ? 0.08 : 0.000001)) } ?? true
@@ -1520,6 +1594,52 @@ struct TimecodePlaybackSpan {
         }
         updateMetronome(song: song, transport: transport)
     }
+    private func detachClickTrack() {
+        for click in clickGenerators { engine.detach(click.node) }
+        clickGenerators.removeAll(); clickTrackID = nil; clickSections = []
+    }
+    private func prepareClickTrack(song: Song) throws {
+        guard let track = song.tracks.first(where: { $0.kind == .click }) else {
+            if clickTrackID != nil { detachClickTrack() }
+            return
+        }
+        let soundChanged = clickSoundPath != track.clickSound?.path || clickSample == nil
+        if soundChanged {
+            let url = track.clickSound.map { directory!.appendingPathComponent($0.path) }
+            if let url, !FileManager.default.fileExists(atPath: url.path) {
+                clickSample = Data() // Opening with missing media keeps the custom click silent.
+            } else { clickSample = try ClickAudioSample.load(sampleRate: hardwareFormat.sampleRate, url: url) }
+            clickSoundPath = track.clickSound?.path
+        }
+        if clickTrackID != track.id {
+            detachClickTrack()
+            let bus = trackBus(for: track.id)
+            let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
+            for _ in 0..<2 {
+                let click = JarasMetronomeGenerator(format: format)
+                engine.attach(click.node)
+                engine.connect(click.node, to: bus.mix, fromBus: 0, toBus: bus.mix.nextAvailableInputBus, format: format)
+                clickGenerators.append(click)
+            }
+            clickTrackID = track.id
+        }
+        let sections = ClickTrackProgram.sections(song: song, track: track)
+        if soundChanged || clickSections != sections {
+            let values = sections.map { ["start": $0.start, "end": $0.end, "origin": $0.origin, "bpm": $0.bpm, "beats": Double($0.beats), "unit": Double($0.unit)] }
+            for click in clickGenerators { click.setClickSections(values, sound: clickSample ?? Data()) }
+            clickSections = sections
+        }
+    }
+    private func updateClickPosition(_ transport: TransportState, only head: Int? = nil) {
+        for (index, click) in clickGenerators.enumerated() where head == nil || head == index {
+            let position = index == 0 ? transport.position : transport.subPlay.position
+            let host = audioHostTime(position: position, head: index) ?? mach_absolute_time()
+            let sample = realtime ? nodeSampleTime(host: host, anchor: click.node.lastRenderTime ?? engine.outputNode.lastRenderTime).map(Double.init) ?? .nan : Double(engine.manualRenderingSampleTime)
+            click.configurePosition(position, hostTime: host, running: index == 0 ? transport.playing : transport.subPlay.playing,
+                loopStart: index == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0,
+                loopEnd: index == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0, sampleTime: sample)
+        }
+    }
     private func updateMetronome(song: Song, transport: TransportState) {
         guard let metronome else { return }
         let settings = MetronomeSettings.shared
@@ -1572,7 +1692,7 @@ struct TimecodePlaybackSpan {
             lastVideoNoAudio = VideoMediaSettings.shared.noAudio
             if songID != song.id { stop() }
             if song.tracks.contains(where: { tracks[$0.id]?.midiInput != $0.midiInput || tracks[$0.id]?.midiChannel != $0.midiChannel }) { releaseMIDINotes() }
-            tracks = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.kind == .standard || $0.kind == .video }.map { ($0.id, $0) })
+            tracks = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.kind == .standard || $0.kind == .video || $0.kind == .click }.map { ($0.id, $0) })
             allowsTempoChanges = song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio
             let tempoSections = song.tempoSections(until: song.duration)
             clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true)
@@ -1589,7 +1709,7 @@ struct TimecodePlaybackSpan {
             }
             unifiedPlaybackStarts = Dictionary(uniqueKeysWithValues: song.parts.filter { $0.parentRegionID != nil }.map { ($0.id, $0.startTime) })
             clipIndices = Dictionary(uniqueKeysWithValues: clips.enumerated().map { ($0.element.1.id, $0.offset) })
-            let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .video }
+            let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .video || $0.kind == .click }
             let activeIDs = Set(metered.map(\.id))
             slots = slots.filter { activeIDs.contains($0.key) }
             var usedSlots = Set(slots.values)
@@ -1597,7 +1717,8 @@ struct TimecodePlaybackSpan {
                 if let index = (0..<Project.maximumTrackCount).first(where: { !usedSlots.contains($0 * 2) }) { let slot = index * 2; slots[track.id] = slot; usedSlots.insert(slot) }
             }
             // Prepare routing before Play so starting a file only adds its source.
-            for track in song.tracks where track.kind == .standard || track.kind == .video { _ = trackBus(for: track.id) }
+            for track in song.tracks where track.kind == .standard || track.kind == .video || track.kind == .click { _ = trackBus(for: track.id) }
+            try prepareClickTrack(song: song)
             connectGroups(); connectTracks()
             for id in Array(idleVoices.keys) where tracks[id] == nil {
                 for voice in idleVoices.removeValue(forKey: id) ?? [] { detach(voice) }
@@ -1614,7 +1735,8 @@ struct TimecodePlaybackSpan {
                       abs(current.1.startTime - voice.clip.startTime * timelineScale) < 0.000001,
                       abs(current.1.duration - voice.clip.duration * timelineScale) < 0.000001,
                       current.1.sourceOffset == voice.clip.sourceOffset, current.1.loopStart == voice.clip.loopStart, current.1.loopLength == voice.clip.loopLength,
-                      current.1.audioFile?.path == voice.clip.audioFile?.path else { remove(key); continue }
+                      current.1.audioFile?.path == voice.clip.audioFile?.path,
+                      (current.1.frozenMIDI == true) == (voice.clip.frozenMIDI == true) else { remove(key); continue }
                 // A scheduled future onset has a wall-clock deadline, so only
                 // that pending voice needs a new deadline after a tempo edit.
                 let position = key.head == 0 ? transport.position : transport.subPlay.position
@@ -1631,7 +1753,8 @@ struct TimecodePlaybackSpan {
 
             }
             for key in Array(effectTails.keys) {
-                guard var tail = effectTails[key], let current = byID[key.clip], current.0 == tail.voice.track else {
+                guard var tail = effectTails[key], let current = byID[key.clip], current.0 == tail.voice.track,
+                      (current.1.frozenMIDI == true) == (tail.voice.clip.frozenMIDI == true) else {
                     if let tail = effectTails.removeValue(forKey: key) { recycle(tail.voice) }; continue
                 }
                 tail.voice.clip = current.1; applyClipFX(current.1.fx ?? emptyFX, to: &tail.voice)
@@ -1644,7 +1767,7 @@ struct TimecodePlaybackSpan {
         if pitchParts != song.parts || pitchClipRevision != revision {
             pitchParts = song.parts; pitchClipRevision = revision
             clipPitches = Dictionary(uniqueKeysWithValues: clips.map { track, clip in
-                (clip.id, Float(song.pitch(for: track, region: song.pitchRegion(at: fragmentStarts[clip.id] ?? clip.startTime)) * 100))
+                (clip.id, clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Float(song.pitch(for: track, region: song.pitchRegion(at: fragmentStarts[clip.id] ?? clip.startTime)) * 100))
             })
         }
         if running { cancelVoicePreparation() }
@@ -1673,6 +1796,7 @@ struct TimecodePlaybackSpan {
             for key in Array(effectTails.keys) where key.head == 1 {
                 effectTails[VoiceKey(clip: key.clip, head: 0)] = effectTails.removeValue(forKey: key)
             }
+            if clickGenerators.count == 2 { clickGenerators.swapAt(0, 1) }
             headAudioClock[0] = headAudioClock[1]; headAudioClock[1] = nil
             lastPosition[0] = lastPosition[1]
             lastPosition[1] = nil
@@ -1805,6 +1929,7 @@ struct TimecodePlaybackSpan {
                 headAudioClock[head] = (position, base + AVAudioTime.hostTime(forSeconds: 0.05 + preroll))
             }
             if head == 0 { updateMetronome(song: song, transport: transport) }
+            updateClickPosition(transport, only: head)
             var startCommands: [@Sendable () -> Void] = []
             for (index, entry) in scheduled.enumerated() {
                 let (key, prepared, first, count, delay) = entry
@@ -1845,6 +1970,11 @@ struct TimecodePlaybackSpan {
             if !realtime { for (_, voice, _, _, _) in scheduled { voice.player.play() } }
         }
         updateMetronome(song: song, transport: transport)
+        updateClickPosition(transport)
+        if midiPlanRevision != revision || midiPlanSong != song.id {
+            prepareMIDISequences(song: song); midiPlanRevision = revision; midiPlanSong = song.id
+        }
+        updateMIDISequenceClocks(transport)
         if !transport.playing && !transport.subPlay.playing {
             prepareIdleVoices(position: transport.editPosition ?? transport.position, revision: revision)
             for voice in retiredVoices { recycle(voice) }
@@ -1928,6 +2058,41 @@ struct VerticalTrackMeter: NSViewRepresentable {
     deinit { if let token { NotificationCenter.default.removeObserver(token) } }
 }
 
+/// Window visibility changes must wake cached meters even when the amplitude
+/// is constant and Combine has no new value to publish (notably the Master).
+@MainActor private final class NativeMeterWindowObserver {
+    private static let observers = NSMapTable<NSWindow, NativeMeterWindowObserver>.weakToStrongObjects()
+    private let views = NSHashTable<NativeVerticalTrackMeterView>.weakObjects()
+    private var tokens: [NSObjectProtocol] = []
+    private var visibility: NSKeyValueObservation?
+    static func forWindow(_ window: NSWindow) -> NativeMeterWindowObserver {
+        if let observer = observers.object(forKey: window) { return observer }
+        let observer = NativeMeterWindowObserver(window)
+        observers.setObject(observer, forKey: window)
+        return observer
+    }
+    private init(_ window: NSWindow) {
+        visibility = window.observe(\.isVisible, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                for view in self?.views.allObjects ?? [] { view.resumeVisibleDrawing() }
+            }
+        }
+        let events: [Notification.Name] = [NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didDeminiaturizeNotification, NSWindow.didExposeNotification, NSWindow.didChangeScreenNotification,
+            NSWindow.didChangeBackingPropertiesNotification, NSWindow.didResizeNotification]
+        tokens = events.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    for view in self?.views.allObjects ?? [] { view.resumeVisibleDrawing() }
+                }
+            }
+        }
+    }
+    func add(_ view: NativeVerticalTrackMeterView) { views.add(view) }
+    func remove(_ view: NativeVerticalTrackMeterView) { views.remove(view) }
+    deinit { for token in tokens { NotificationCenter.default.removeObserver(token) } }
+}
+
 @MainActor final class NativeVerticalTrackMeterView: NSView {
     private weak var meter: TrackMeterLevel?
     private var subscription: AnyCancellable?
@@ -1937,6 +2102,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private var showScale = false
     private var pendingDrawing = true
     private var pendingPeak = true
+    private weak var observedWindow: NSWindow?
+    private weak var windowObserver: NativeMeterWindowObserver?
+    private weak var installedLayer: CALayer?
     private weak var observedClip: NSClipView?
     private weak var clipObserver: NativeMeterClipObserver?
     private let backgrounds = [CALayer(), CALayer()]
@@ -1981,10 +2149,23 @@ struct VerticalTrackMeter: NSViewRepresentable {
         }
         peakLabel.name = "meter-peak"; peakLabel.isHidden = true
         layer?.addSublayer(peakLabel)
+        installedLayer = layer
         setAccessibilityRole(.image)
         setAccessibilityLabel("Stereo meter, L and R")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var layer: CALayer? {
+        didSet {
+            // SwiftUI/AppKit can replace a channel host's backing surface while
+            // scrolling or revealing the footer, without resizing the meter or
+            // publishing another amplitude. Reattach retained bars right here.
+            if installedLayer !== layer { refreshVisibleDrawing() }
+        }
+    }
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        refreshVisibleDrawing()
+    }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     func bind(_ meter: TrackMeterLevel, showScale: Bool) {
         if self.showScale != showScale { self.showScale = showScale; pendingDrawing = true; pendingPeak = true }
@@ -2006,7 +2187,16 @@ struct VerticalTrackMeter: NSViewRepresentable {
         super.viewDidMoveToSuperview(); updateClipObserver(); refreshVisibleDrawing()
     }
     override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow(); updateClipObserver(); refreshVisibleDrawing()
+        super.viewDidMoveToWindow()
+        if observedWindow !== window {
+            windowObserver?.remove(self); observedWindow = window
+            windowObserver = window.map { NativeMeterWindowObserver.forWindow($0) }
+            windowObserver?.add(self)
+        }
+        updateClipObserver(); resumeVisibleDrawing()
+    }
+    override func viewDidUnhide() {
+        super.viewDidUnhide(); resumeVisibleDrawing()
     }
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
@@ -2048,7 +2238,20 @@ struct VerticalTrackMeter: NSViewRepresentable {
         peakLabel.contentsScale = scale
         pendingDrawing = true; pendingPeak = true
     }
+    fileprivate func resumeVisibleDrawing() {
+        geometryScale = 0; pendingDrawing = true; pendingPeak = true
+        refreshVisibleDrawing()
+    }
     fileprivate func refreshVisibleDrawing() {
+        if let layer, installedLayer !== layer || backgrounds.contains(where: { $0.superlayer !== layer }) || levelClips.contains(where: { $0.superlayer !== layer }) {
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            layer.masksToBounds = true
+            for channel in 0..<2 { layer.addSublayer(backgrounds[channel]); layer.addSublayer(levelClips[channel]) }
+            for label in scaleLabels { layer.addSublayer(label) }
+            layer.addSublayer(peakLabel); installedLayer = layer
+            geometryScale = 0; pendingDrawing = true; pendingPeak = true
+            CATransaction.commit()
+        }
         guard pendingDrawing || pendingPeak || geometrySize != bounds.size || geometryShowsScale != showScale,
               let window, window.isVisible, !window.isMiniaturized,
               !isHiddenOrHasHiddenAncestor, !visibleRect.isEmpty else { return }

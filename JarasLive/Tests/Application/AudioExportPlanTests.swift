@@ -28,7 +28,7 @@ final class AudioExportPlanTests: XCTestCase {
     func testSelectedRegionsWithNoSelectionProduceNoPreviewOrRenderJobs() {
         var project = Project.empty(name: "Selection")
         var track = Track(id: UUID(), name: "Track", role: .other)
-        track.clips = [AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 10, audioFile: AudioFile(path: "Steams/audio.wav"))]
+        track.clips = [AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 10, audioFile: AudioFile(path: "Stems/audio.wav"))]
         project.songs[0].tracks = [track]
         let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 10)
         project.songs[0].parts = [region]
@@ -40,6 +40,32 @@ final class AudioExportPlanTests: XCTestCase {
             XCTAssertEqual(selected.jobs.count, source == .masterAndTracks ? 2 : 1)
         }
     }
+    func testItemExportFiltersSpecialTracksAndUsesEachAudioItemsBounds() {
+        var project = Project.empty(name: "Mixed selection")
+        var tracks: [Track] = []
+        for kind in TrackKind.allCases {
+            var track = Track(id: UUID(), name: kind.rawValue, role: TrackRole(rawValue: kind.rawValue))
+            track.clips = [AudioClip(id: UUID(), name: "Same.wav", startTime: 10, duration: 2, sourceOffset: 3, audioFile: AudioFile(path: "source.wav"))]
+            tracks.append(track)
+        }
+        var inherited = Track(id: UUID(), name: "Inherited", role: .other)
+        inherited.audioFile = AudioFile(path: "track.wav")
+        inherited.clips = [AudioClip(id: UUID(), name: "Same.wav", startTime: 35, duration: 4)]
+        tracks.append(inherited)
+        project.songs[0].tracks = tracks
+        let original = project
+        let selection = Set(tracks.flatMap(\.clips).map(\.id))
+        for format in AudioExportFormat.allCases {
+            let plan = AudioExportPlan(project: project, song: project.songs[0], source: .stems, bounds: .project, template: "%stem", tracks: [], clips: selection, regions: [], format: format)
+            XCTAssertEqual(plan.jobs.count, 2)
+            XCTAssertEqual(plan.jobs.map(\.fileName), ["Same." + format.fileExtension, "Same (2)." + format.fileExtension])
+            XCTAssertEqual(plan.jobs.map(\.start), [10, 35])
+            XCTAssertEqual(plan.jobs.map(\.duration), [2, 4])
+            XCTAssertTrue(plan.jobs.allSatisfy { job in tracks.first { $0.id == job.track }?.kind == .standard })
+        }
+        XCTAssertEqual(project, original)
+    }
+
     func testTokensLiteralSuffixSelectionAndUniqueNames() {
         var project = Project.empty(name: "Sunday")
         var track = Track(id: UUID(),name: "Click",role: .click)

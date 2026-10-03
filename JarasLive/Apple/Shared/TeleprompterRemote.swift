@@ -155,7 +155,7 @@ final class TeleprompterHTTPServer {
         } catch { try? file.close(); connection.cancel() }
     }
     private static let page = #"""
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Jaras Teleprompter</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>CatLive Teleprompter</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:white;font-family:Arial,sans-serif}
 #screen{position:relative;display:flex;flex-direction:column;height:100dvh;padding:6px;border:2px solid transparent;border-radius:6px}
@@ -235,7 +235,7 @@ setInterval(()=>{if(!current)return;const s=current.settings;
     private var heartbeat: Timer?
     private var lastPublish = 0.0
     func configure(directory: URL?, refresh: @escaping () -> Void) { self.directory = directory; self.refresh = refresh }
-    func setDirectory(_ directory: URL) { self.directory = directory; clear() }
+    func setDirectory(_ directory: URL?) { self.directory = directory; clear() }
     func setEnabled(_ value: Bool) {
         guard value != enabled else { return }
         if !value {

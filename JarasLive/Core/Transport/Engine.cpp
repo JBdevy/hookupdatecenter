@@ -196,18 +196,60 @@ void Engine::resizeRegion(const ID& id, double start, double end) {
     }
     throw std::invalid_argument("Unknown region");
 }
+// Commit-time counterpart of RegionMarkerRepulsion. The grid uses a larger
+// zoom-aware margin; direct/native callers still cannot stack marker points.
+static double repelRegionMarkers(const Song& song, const Part& region, double proposed) {
+    constexpr double gap = 0.01;
+    std::vector<double> offsets, stationary;
+    double minimumStart = 0;
+    if (song.markers) for (const auto& marker : *song.markers) {
+        const bool owned = marker.unifiedRegionID == region.id;
+        const bool inside = !marker.unifiedRegionID && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8;
+        if (owned || inside) { offsets.push_back(marker.position - region.startTime); minimumStart = std::max(minimumStart, region.startTime - marker.position); }
+        else stationary.push_back(marker.position);
+    }
+    std::vector<std::pair<double,double>> ranges, merged;
+    for (const auto offset : offsets) for (const auto point : stationary) {
+        const double center = point - offset;
+        if (center + gap > minimumStart) ranges.emplace_back(center - gap, center + gap);
+    }
+    std::sort(ranges.begin(), ranges.end());
+    for (const auto& range : ranges) {
+        if (!merged.empty() && range.first < merged.back().second) merged.back().second = std::max(merged.back().second, range.second);
+        else merged.push_back(range);
+    }
+    const double start = std::max(minimumStart, proposed);
+    for (const auto& range : merged) if (start > range.first + 1e-9 && start < range.second - 1e-9) {
+        if (range.first < minimumStart) return range.second;
+        const double left = start - range.first, right = range.second - start;
+        if (std::abs(left - right) <= 1e-9) return proposed >= region.startTime ? range.second : range.first;
+        return left < right ? range.first : range.second;
+    }
+    return start;
+}
 void Engine::moveRegion(const ID& id, double start) {
     if (!std::isfinite(start) || start < 0) throw std::invalid_argument("Invalid region position");
     Project next = project_;
     for (auto& song : next.songs) if (song.id == transport_.songId) {
         for (auto& region : song.parts) if (region.id == id) {
             if (region.parentRegionID) throw std::invalid_argument("Unified songs cannot be moved independently");
+            start = repelRegionMarkers(song, region, start);
             const double oldStart = region.startTime, oldEnd = region.endTime, delta = start - oldStart;
             for (auto& track : song.tracks) for (auto& clip : track.clips)
                 if (clip.startTime >= oldStart - 1e-8 && clip.startTime + clip.duration <= oldEnd + 1e-8)
                     clip.startTime = std::max(0.0, clip.startTime + delta);
             for (auto& child : song.parts) if (child.parentRegionID == id) { child.startTime += delta; child.endTime += delta; }
-            if (song.markers) for (auto& marker : *song.markers) if (marker.unifiedRegionID == id) marker.position = std::max(0.0, marker.position + delta);
+            // Marker ownership takes precedence in overlapping special regions.
+            // Unowned flags (including tempo) travel with [start, end), so a flag
+            // at the next song's start is never taken along with this region.
+            if (song.markers) for (auto& marker : *song.markers) {
+                const bool owned = marker.unifiedRegionID == id;
+                const bool inside = !marker.unifiedRegionID && marker.position >= oldStart - 1e-8 && marker.position < oldEnd - 1e-8;
+                if (owned || inside) {
+                    marker.position = std::max(0.0, marker.position + delta);
+                    song.duration = std::max(song.duration, marker.position);
+                }
+            }
             region.startTime = start; region.endTime = oldEnd + delta;
             song.duration = std::max(song.duration, region.endTime);
             orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next); return;
@@ -400,6 +442,14 @@ void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
         !std::isfinite(settings.offset) || settings.offset < 0 || settings.offset >= 86400)
         throw std::invalid_argument("Invalid timecode settings");
     for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == id && track.role.id == "timecode") {
+        const auto previous = track.timecode.value_or(TimecodeSettings{});
+        for (auto& clip : track.clips) if (clip.timecode) {
+            if (settings.mode != previous.mode) clip.timecode->mode = settings.mode;
+            if (settings.frameRate != previous.frameRate) clip.timecode->frameRate = settings.frameRate;
+            if (settings.offset != previous.offset) clip.timecode->offset = settings.offset;
+            if (settings.regionRelative != previous.regionRelative) clip.timecode->regionRelative = settings.regionRelative;
+            if (settings.midiDestination != previous.midiDestination) clip.timecode->midiDestination = settings.midiDestination;
+        }
         track.timecode = std::move(settings);
         for (auto& clip : track.clips) clip.name = "TIMECODE";
         return;
@@ -409,7 +459,7 @@ void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
 void Engine::setFX(const ID& id, std::string json) {
     if(json.empty() || json.size()>65536) throw std::invalid_argument("Invalid FX data");
     if(id.empty()) { project_.masterFXJSON=std::move(json); return; }
-    for(auto& song:project_.songs) for(auto& track:song.tracks) if(track.id==id) { if (isTeleprompterRole(track.role) || track.role.id == "chords") throw std::invalid_argument("Text tracks cannot contain audio controls"); track.fxJSON=std::move(json); return; }
+    for(auto& song:project_.songs) for(auto& track:song.tracks) if(track.id==id) { if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX"); track.fxJSON=std::move(json); return; }
     throw std::invalid_argument("Unknown FX track");
 }
 void Engine::setClipFX(const ID& id, std::string json) {
@@ -440,7 +490,7 @@ void Engine::setClipText(const ID& id, std::string text) {
 void Engine::setMIDIInput(const ID& id, int slot) {
     if(slot < 0 || slot > 3) throw std::invalid_argument("Invalid MIDI input");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
-        if (isTeleprompterRole(track.role) || track.role.id == "chords") throw std::invalid_argument("Text tracks cannot contain audio controls");
+        if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
         track.midiInput = slot == 0 ? std::nullopt : std::optional<int>(slot); return;
     }
     throw std::invalid_argument("Unknown MIDI track");
@@ -448,22 +498,22 @@ void Engine::setMIDIInput(const ID& id, int slot) {
 void Engine::setMIDIChannel(const ID& id, int channel) {
     if(channel < 0 || channel > 16) throw std::invalid_argument("Invalid MIDI channel");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
-        if (isTeleprompterRole(track.role) || track.role.id == "chords") throw std::invalid_argument("Text tracks cannot contain audio controls");
+        if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
         track.midiChannel = channel == 0 ? std::nullopt : std::optional<int>(channel); return;
     }
     throw std::invalid_argument("Unknown MIDI track");
 }
 void Engine::setRecordingChannels(const ID& id, int channel) {
-    if(channel < 1 || channel > 2) throw std::invalid_argument("Invalid recording channel mode");
+    if(channel < 0 || channel > 2) throw std::invalid_argument("Invalid recording channel mode");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
-        if (isTeleprompterRole(track.role) || track.role.id == "chords") throw std::invalid_argument("Text tracks cannot contain audio controls");
+        if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
         track.recordingChannels = channel; return;
     }
     throw std::invalid_argument("Unknown MIDI track");
 }
 void Engine::setRecording(const ID& id, int first, int count, std::string format) {
     if(first < 1 || count < 1 || count > 2 || (format != "wav" && format != "wav32" && format != "mp3")) throw std::invalid_argument("Invalid recording settings");
-    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { if (isTeleprompterRole(track.role) || track.role.id == "chords") throw std::invalid_argument("Text tracks cannot contain audio controls"); if (track.stereoLinkPartner) {
+    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX"); if (track.stereoLinkPartner) {
         const int top = std::clamp(first - (track.stereoLinkLeft ? 0 : 1), 1, 1023);
         track.inputPatch = OutputPatch{top + (track.stereoLinkLeft ? 0 : 1), 1};
         for (auto& other : song.tracks) if (other.id == *track.stereoLinkPartner && other.stereoLinkPartner == track.id)
@@ -860,7 +910,7 @@ void Engine::execute(const Command& c) {
         if (c.target.empty() && c.kind == CommandKind::masterMono) { project_.masterMono = !project_.masterMono; return; }
         if (c.target.empty() && c.kind == CommandKind::solo) { project_.masterSolo = !project_.masterSolo; return; }
         for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == c.target) {
-            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume || c.kind == CommandKind::phase))) throw std::invalid_argument("This control is unavailable on a special track");
+            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && track.role.id != "generatedClick" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume || c.kind == CommandKind::phase))) throw std::invalid_argument("This control is unavailable on a special track");
             if (c.kind == CommandKind::volume) track.volume = std::clamp(c.value, 0.0, std::pow(10.0, 12.0 / 20.0));
             if (c.kind == CommandKind::pan) track.pan = std::clamp(c.value, -1.0, 1.0);
             if (c.kind == CommandKind::phase) track.phaseInverted = !track.phaseInverted.value_or(false);

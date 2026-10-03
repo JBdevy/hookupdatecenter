@@ -106,6 +106,25 @@ private actor SaveTestStore: ProjectPersistence {
     }
 }
 final class ProjectSaveTests: XCTestCase {
+    @MainActor func testRegionFromTimeSelectionPreservesExactBoundsAndSupportsUndo() throws {
+        let project = Project.empty(name: "Time selection")
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let song = project.songs[0].id
+        show.regionFromTimeSelection(song: song, start: 12.125, end: 21.875)
+        let region = try XCTUnwrap(show.current?.parts.first)
+        XCTAssertEqual(region.startTime, 12.125); XCTAssertEqual(region.endTime, 21.875)
+        XCTAssertEqual(show.focusedRegion, region.id); XCTAssertTrue(show.hasUnsavedChanges)
+        XCTAssertEqual(show.current?.tracks, project.songs[0].tracks)
+        show.undo(); XCTAssertEqual(show.current?.parts, [])
+        show.redo(); XCTAssertEqual(show.current?.parts, [region])
+        show.regionFromTimeSelection(song: song, start: 12.125, end: 50)
+        XCTAssertEqual(show.current?.parts, [region]); XCTAssertNotNil(show.modalNotice)
+        for (start, end) in [(0.0, 0.0), (20, 10), (-1, 10), (.nan, 10), (0, .infinity)] {
+            show.regionFromTimeSelection(song: song, start: start, end: end)
+        }
+        show.regionFromTimeSelection(song: UUID(), start: 30, end: 40)
+        XCTAssertEqual(show.current?.parts, [region])
+    }
     @MainActor func testTabbedItemFXDefaultsAreStableDisabledAndDoNotEditProject() throws {
         var project = Project.empty(name: "Tabbed effects")
         var track = Track(id: UUID(), name: "Audio", role: .other)
@@ -404,6 +423,20 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(slow.tap(at: 2), 60)
     }
 
+    @MainActor func testPlaylistCreationPreservesChosenOrderAndDeduplicates() throws {
+        var project = Project.empty(name: "Selection order")
+        let regions = (0..<4).map { index in
+            Part(id: UUID(), name: "Song \(index)", startTime: Double(index * 10), endTime: Double(index * 10 + 5))
+        }
+        project.songs[0].parts = regions; project.songs[0].duration = 40
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let order = [regions[2].id, regions[0].id, regions[3].id, regions[1].id]
+        XCTAssertTrue(show.createRegionPlaylist(name: "Chosen", selected: order + [regions[2].id, UUID()]))
+        XCTAssertEqual(show.selectedRegionPlaylist?.regionIds, order)
+        let restored = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
+        XCTAssertEqual(restored.regionSetlist?.playlists.last?.regionIds, order)
+    }
+
     @MainActor func testGlobalSearchKeepsContainingPlaylistAndFallsBackToAllRegions() throws {
         var project = Project.empty(name: "Search")
         let regions = [Part(id: UUID(), name: "Canção First", startTime: 0, endTime: 5),
@@ -466,7 +499,7 @@ final class ProjectSaveTests: XCTestCase {
         project.songs[0].parts = regions; project.songs[0].duration = 40
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Original", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Original", selected: regions.map(\.id)))
         let list = try XCTUnwrap(show.selectedRegionPlaylist)
         let edits = executor.projectEditCount
         XCTAssertFalse(show.renameRegionPlaylist(list.id, name: "  "))
@@ -517,10 +550,10 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         let globalBlock = UUID()
         XCTAssertNil(show.addSetlistBlock())
-        XCTAssertTrue(show.createRegionPlaylist(name: "First", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "First", selected: regions.map(\.id)))
         let other = try XCTUnwrap(show.selectedRegionPlaylist)
         let otherBlock = try XCTUnwrap(show.addSetlistBlock())
-        XCTAssertTrue(show.createRegionPlaylist(name: "Second", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Second", selected: regions.map(\.id)))
         let block1 = try XCTUnwrap(show.addSetlistBlock()), block2 = try XCTUnwrap(show.addSetlistBlock())
         let before = show.snapshot.project
         var audioRefreshes = 0
@@ -545,7 +578,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertNil(show.addSetlistBlock())
         XCTAssertEqual(show.snapshot.project, unchanged)
         XCTAssertFalse(show.hasUnsavedChanges)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: regions.map(\.id)))
         let initialList = try XCTUnwrap(show.selectedRegionPlaylist).id
         let first = try XCTUnwrap(show.addSetlistBlock())
         let second = try XCTUnwrap(show.addSetlistBlock())
@@ -561,7 +594,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(decoded.regionSetlist?.blocks?.first(where: { $0.id == first })?.name, "Opening")
         XCTAssertEqual(decoded.regionSetlist?.blocks?.first(where: { $0.id == first })?.color, 0x123abc)
         XCTAssertEqual(show.setlistEntries.compactMap { entry -> Int? in if case .region(_, let number) = entry { return number }; return nil }, [1,2,3])
-        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: regions.map(\.id)))
         XCTAssertTrue(show.listedBlocks.isEmpty, "blocks belong to their list")
         _ = show.addSetlistBlock()
         XCTAssertEqual(show.listedBlocks.map(\.name), ["Bloco 01"])
@@ -634,11 +667,11 @@ final class ProjectSaveTests: XCTestCase {
     @MainActor func testFreezeUndoRedoAndStaleRenderRejection() throws {
         var project = Project.empty(name: "Freeze")
         var track = Track(id: UUID(), name: "Keys", role: .keys)
-        let old = AudioClip(id: UUID(), name: "Keys", startTime: 4, duration: 5, audioFile: AudioFile(path: "Steams/Keys.wav"), gain: 0.5)
+        let old = AudioClip(id: UUID(), name: "Keys", startTime: 4, duration: 5, audioFile: AudioFile(path: "Stems/Keys.wav"), gain: 0.5)
         track.clips = [old]; project.songs[0].tracks = [track]; project.songs[0].duration = 10
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
-        var frozen = old; frozen.audioFile = AudioFile(path: "Steams/Keys-01.wav"); frozen.gain = 1
+        var frozen = old; frozen.audioFile = AudioFile(path: "Stems/Keys-01.wav"); frozen.gain = 1
         let reads = executor.snapshotCount
         XCTAssertTrue(show.replaceRenderedItem(frozen, original: old, track: track.id, project: project.id))
         XCTAssertEqual(reads, executor.snapshotCount, "publishing a render does not reload the project")
@@ -646,7 +679,7 @@ final class ProjectSaveTests: XCTestCase {
         show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], old)
         show.redo(); XCTAssertEqual(show.current?.tracks[0].clips[0], frozen)
         XCTAssertFalse(show.replaceRenderedItem(frozen, original: old, track: track.id, project: project.id))
-        XCTAssertTrue(show.knownMediaPaths.contains("Steams/Keys.wav")); XCTAssertTrue(show.knownMediaPaths.contains("Steams/Keys-01.wav"))
+        XCTAssertTrue(show.knownMediaPaths.contains("Stems/Keys.wav")); XCTAssertTrue(show.knownMediaPaths.contains("Stems/Keys-01.wav"))
     }
     @MainActor func testDetectedTempoBatchHasOneUndo() throws {
         let project = Project.empty(name: "Tempo")
@@ -692,7 +725,7 @@ final class ProjectSaveTests: XCTestCase {
         let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0*10), endTime: Double($0*10+5)) }
         project.songs[0].parts = regions; project.songs[0].duration = 30
         let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: regions.map(\.id)))
         show.focusRegion(regions[1].id)
         let first = try XCTUnwrap(show.addSetlistBlock())
         let second = try XCTUnwrap(show.addSetlistBlock())
@@ -712,7 +745,7 @@ final class ProjectSaveTests: XCTestCase {
         project.songs[0].parts = regions; project.songs[0].duration = 40
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Initial", selected: regions.map(\.id)))
         let reads = executor.snapshotCount, revision = show.projectRevision
         var audioChanges = 0, displayChanges = 0
         show.audioUpdate = { _, _ in audioChanges += 1 }
@@ -720,7 +753,7 @@ final class ProjectSaveTests: XCTestCase {
         let block = try XCTUnwrap(show.addSetlistBlock())
         show.editSetlistBlock(block, name: "Intro", color: 0x123456)
         show.moveSetlistBlock(block, relativeTo: regions[1].id, after: false)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: regions.map(\.id)))
         show.moveSetlistEntries([regions[0].id, regions[2].id], relativeTo: regions[3].id, after: true)
         XCTAssertEqual(show.listedRegions.map(\.id), [regions[1].id, regions[3].id, regions[0].id, regions[2].id])
         XCTAssertEqual(executor.snapshotCount, reads)
@@ -737,7 +770,7 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
         show.moveSetlistEntries([regions[0].id], relativeTo: regions[3].id, after: true)
         XCTAssertEqual(show.listedRegions, regions)
-        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: Set(regions.map(\.id))))
+        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: regions.map(\.id)))
         let block = try XCTUnwrap(show.addSetlistBlock())
         show.moveSetlistEntries([block, regions[0].id, regions[2].id], relativeTo: regions[3].id, after: true)
         XCTAssertEqual(show.setlistEntries.map(\.id), [regions[1].id, regions[3].id, block, regions[0].id, regions[2].id])

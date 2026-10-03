@@ -69,7 +69,7 @@ for rate in [44_100.0, 48_000.0] {
     var closed = false
     far.paths[0].forEach { if case .closeSubpath = $0 { closed = true } }
     precondition(closed && far.isPeakEnvelope, "far zoom uses signed peak rectangles spanning each full interval")
-    let persistentURL = url.deletingLastPathComponent().appendingPathComponent("WF").appendingPathComponent(url.lastPathComponent + ".waveform")
+    let persistentURL = TimelineAudioWaveform.diskCacheURL(url)
     let persistentData = try Data(contentsOf: persistentURL)
     let reopened = TimelineAudioWaveform()
     let reopenedHeader = waitFor { reopened.header(url) }

@@ -5,7 +5,7 @@ private var counts: [String:Int] = [:]
 private struct Fixture: View {
  @ObservedObject var position: Position
  var body: some View {
-  ViewportTimelineCanvas(visibleRect: CGRect(x: position.x, y: 0, width: 840, height: 600), synchronized: true, documentWidth: 6000, identity: TimelineTileIdentity()) { context, _, rect, _ in
+  ViewportTimelineCanvas(visibleRect: CGRect(x: position.x, y: 0, width: 840, height: 600), synchronized: true, documentWidth: 6000, identity: TimelineTileIdentity(), tileIdentity: { _, _ in TimelineTileIdentity() }) { context, _, rect, _ in
    let key = "\(rect.minX):\(rect.minY):\(rect.width):\(rect.height)"
    counts[key, default: 0] += 1
    context.fill(Path(rect), with: .color(.green))

@@ -86,5 +86,26 @@ int main() {
     try { live.setTimecode("live-tc",settings); } catch(...) { rejected=true; }
     assert(rejected && live.project().songs[0].tracks[0].timecode->mode==oldMode);
     assert(live.project().songs[0].tracks[1].clips[0].waveform.data()==overview);
+    // Imported generator items have independent edges/settings, never replaced
+    // by the normal automatic region-bound Timecode items when the core opens.
+    Project imported = project;
+    Track importedTrack; importedTrack.id="imported-tc"; importedTrack.name="Timecode"; importedTrack.role={"timecode"};
+    importedTrack.importedTimecodeItems=true;
+    AudioClip generated; generated.id="imported-generator"; generated.name="MTC";
+    generated.startTime=12; generated.duration=9; generated.timecode=TimecodeSettings{};
+    generated.timecode->mode="mtc"; generated.timecode->offset=3602; generated.timecode->frameRate=25;
+    importedTrack.timecode=generated.timecode; importedTrack.clips={generated};
+    imported.songs[0].tracks={importedTrack};
+    Engine migrated; migrated.loadProject(imported);
+    assert(migrated.project().songs[0].tracks[0].clips.size()==1);
+    const auto& preserved=migrated.project().songs[0].tracks[0].clips[0];
+    assert(preserved.id==generated.id && preserved.startTime==12 && preserved.duration==9);
+    assert(preserved.timecode->offset==3602 && preserved.timecode->frameRate==25);
+    auto routed=*importedTrack.timecode; routed.midiDestination=123;
+    migrated.setTimecode(importedTrack.id,routed);
+    assert(migrated.project().songs[0].tracks[0].clips[0].timecode->offset==3602);
+    assert(migrated.project().songs[0].tracks[0].clips[0].timecode->midiDestination==123);
+    imported.songs[0].tracks[0].clips.clear(); migrated.loadProject(imported);
+    assert(migrated.project().songs[0].tracks[0].clips.empty());
     std::cout<<"TIMECODE_MTC_LTC_FIELDS_UNIQUE_TRACK_REGION_BINDING_INCREMENTAL_SETTINGS_OK\n";
 }

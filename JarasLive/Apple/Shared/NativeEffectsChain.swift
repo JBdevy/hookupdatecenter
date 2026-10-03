@@ -96,7 +96,17 @@ final class NativeEffectsChain {
         let data = try JSONEncoder().encode([plugin])
         try JarasVST3.configure(node, plugins: JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? [])
         JarasVST3.instrumentMIDIInput(node, enabled: instrumentMIDIInput)
+        JarasVST3.setSequence(node, notes: midiSequenceNotes)
         return node
+    }
+    private var midiSequenceNotes: [[String: Double]] = []
+    func setMIDISequence(_ notes: [[String: Double]]) {
+        guard midiSequenceNotes != notes else { return }
+        midiSequenceNotes = notes
+        for node in externalNodes.values { JarasVST3.setSequence(node, notes: notes) }
+    }
+    func setMIDISequenceClock(head: Int, position: Double, clock: Double, running: Bool, loopStart: Double, loopEnd: Double) {
+        for node in externalNodes.values { JarasVST3.sequenceClock(node, head: Int32(head), position: position, clock: clock, running: running, loopStart: loopStart, loopEnd: loopEnd) }
     }
     func sendExternalMIDI(status: UInt8, number: UInt8, value: UInt8) {
         for node in externalNodes.values { JarasVST3.sendMIDI(node, status: status, data1: number, data2: value) }
