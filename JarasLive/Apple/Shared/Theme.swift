@@ -1,4 +1,19 @@
 import SwiftUI
+
+extension View {
+    /// Native timeline scrollers and individual ScrollViews configure their own
+    /// indicators on Monterey; newer systems also inherit this root preference.
+    @ViewBuilder func jarasHideScrollIndicators() -> some View {
+        if #available(macOS 13, iOS 16, *) { scrollIndicators(.hidden) }
+        else { self }
+    }
+    /// Used for content that already fits its viewport. On Monterey it cannot
+    /// scroll, while its contained buttons must remain interactive.
+    @ViewBuilder func jarasScrollDisabled(_ disabled: Bool) -> some View {
+        if #available(macOS 13, iOS 16, *) { scrollDisabled(disabled) }
+        else { self }
+    }
+}
 enum JarasTheme {
     static let background = Color(hex: 0x1e1e1e)
     static let panelHex: UInt32 = 0x252525

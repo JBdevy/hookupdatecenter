@@ -42,6 +42,9 @@ import AppKit
     @Published var status = ""
     @Published var error = ""
     @Published var folderReview: [URL]?
+    @Published private(set) var folders: [URL] = []
+    @Published private(set) var selectedFolders: [URL] = []
+    @Published var showingOpenProjectAlert = false
     @Published var scan: StemScan?
     @Published var removal = ""
     @Published var warnings: [String] = []
@@ -156,8 +159,8 @@ import AppKit
         _ = importAudio(panel.urls.map { NSItemProvider(item: $0 as NSURL, typeIdentifier: UTType.fileURL.identifier) }, start: show.snapshot.transport.editPosition ?? show.snapshot.transport.position, track: track, song: song.id, layout: .sameTrack)
         #endif
     }
-    private var adding = false
-    private var addTarget: (project: Project, url: URL)?
+    @Published private(set) var adding = false
+    private var appendDestination: (project: UUID, url: URL)?
     private let store: DocumentProjectStore
     let show: ShowController
     #if os(macOS)
@@ -245,7 +248,7 @@ import AppKit
                 UserDefaults.standard.set(recent.map(\.path), forKey: "jaras.recentProjects")
                 try show.replaceProject(.empty(name: "Untitled"))
                 currentURL = nil; ready = false; pendingDeletion = nil
-                scan = nil; folderReview = nil; addTarget = nil; adding = false
+                clearImportSelection()
                 warnings = []; missingAudioPaths = []; missingAudioPrompt = nil
                 migrationNotice = ""; pendingAudioDrop = nil
                 opened = UUID()
@@ -314,17 +317,6 @@ import AppKit
         await TimelineAudioWaveform.shared.preload(files, cancelled: { cancellation?.cancelled == true }) { done, total in
             guard cancellation?.cancelled != true else { return }
             self.status = "Preparing waveforms… \(done)/\(total)"
-        }
-        guard cancellation?.cancelled != true else { return }
-        let groups = project.songs.flatMap { song in
-            let folders = Set(song.tracks.compactMap(\.parentTrackID))
-            return song.tracks.filter { folders.contains($0.id) }.map { folder in
-                (folder: folder.id, sources: FolderWaveformCache.sources(song: song, folder: folder, directory: directory, missing: missing))
-            }
-        }
-        await FolderWaveformCache.shared.preload(groups, cancelled: { cancellation?.cancelled == true }) { done, total in
-            guard cancellation?.cancelled != true else { return }
-            self.status = "Preparing folder waveforms… \(done * 100 / max(1, total))%"
         }
         #endif
     }
@@ -489,34 +481,47 @@ import AppKit
     }
     func addProject() {
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
-        if ready { addTarget = nil; chooseStems(adding: true); return }
-        #if os(macOS)
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        busy = true; error = ""
-        Task {
-            do {
-                guard let project = try await ProjectStore(url: url).load() else { throw ProjectError.invalid("Project not found") }
-                addTarget = (project, url); busy = false; chooseStems(adding: true)
-            } catch { busy = false; self.error = error.localizedDescription }
+        guard ready, currentURL != nil else {
+            clearImportSelection(); showingOpenProjectAlert = true; return
         }
-        #endif
+        chooseStems(adding: true)
     }
     func chooseStems(adding: Bool) {
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        if adding {
+            guard ready, currentURL != nil else {
+                clearImportSelection(); showingOpenProjectAlert = true; return
+            }
+        }
         #if os(macOS)
+        let destination = adding ? currentURL.map { (project: show.snapshot.project.id, url: $0) } : nil
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = true
-        guard panel.runModal() == .OK else { return }
-        self.adding = adding; error = ""; warnings = []; scan = nil
+        guard panel.runModal() == .OK else { cancelImport(); return }
+        clearImportSelection()
+        self.adding = adding; appendDestination = destination; error = ""; warnings = []
         let urls = panel.urls
-        if urls.count > 1 { folderReview = urls }
-        else { analyzeFolders(urls) }
+        folders = urls
+        if adding || urls.count > 1 { folderReview = urls }
+        else { selectedFolders = urls; analyzeFolders(urls) }
         #endif
     }
     func confirmFolders(_ urls: [URL]) {
         guard let available = folderReview, !urls.isEmpty, urls.allSatisfy(available.contains), !busy else { return }
+        selectedFolders = urls
         folderReview = nil
         analyzeFolders(urls)
+    }
+    func reviewFolderOrder() {
+        guard !busy, !folders.isEmpty else { return }
+        scan = nil; folderReview = folders
+    }
+    func cancelImport() {
+        guard !busy else { return }
+        clearImportSelection(); warnings = []; error = ""; status = ""; showingOpenProjectAlert = false
+    }
+    private func clearImportSelection() {
+        scan = nil; folderReview = nil; folders = []; selectedFolders = []
+        removal = ""; adding = false; appendDestination = nil
     }
     private func analyzeFolders(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
@@ -534,10 +539,16 @@ import AppKit
     private func finish(scan: StemScan?, detectBPM: Bool) {
         guard show.canExecute(), !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
-        let append = scan != nil && adding && (ready || addTarget != nil)
+        let append = scan != nil && adding
         let url: URL
-        if append, let target = addTarget?.url ?? currentURL { url = target }
-        else {
+        if append {
+            guard ready, let currentURL else { showingOpenProjectAlert = true; return }
+            guard let destination = appendDestination, currentURL == destination.url,
+                  show.snapshot.project.id == destination.project else {
+                error = "The open project changed. Start Add Project again."; return
+            }
+            url = currentURL
+        } else {
             let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
             panel.nameFieldStringValue = "Untitled.jl"; panel.canCreateDirectories = true
             guard panel.runModal() == .OK, let selected = panel.url else { return }
@@ -546,7 +557,7 @@ import AppKit
         }
         do { try ProjectDirectoryPolicy.validate(url) }
         catch { self.error = error.localizedDescription; return }
-        let base = append ? (addTarget?.project ?? show.snapshot.project) : Project.empty(name: url.deletingPathExtension().lastPathComponent)
+        let base = append ? show.snapshot.project : Project.empty(name: url.deletingPathExtension().lastPathComponent)
         let remove = removal
         busy = true; error = ""; status = "Copying audio and saving project…"
         Task {
@@ -606,7 +617,7 @@ import AppKit
                 VideoPlayback.shared.update(show.snapshot)
                 TrackRecording.shared.open(directory: url.deletingLastPathComponent(), project: show.snapshot.project.id)
                 show.preparePlayback()
-                currentURL = url; remember(url); ready = true; opened = UUID(); self.scan = nil; addTarget = nil
+                currentURL = url; remember(url); ready = true; clearImportSelection(); opened = UUID()
                 warnings += result.1
             } catch { self.error = error.localizedDescription }
         }
@@ -679,7 +690,8 @@ struct ProjectBrowserView: View {
         VStack(alignment: .leading, spacing: 16) {
             Group {
             if let folders = documents.folderReview {
-                FolderImportReview(folders: folders, cancel: { documents.folderReview = nil }, confirm: documents.confirmFolders)
+                FolderImportReview(folders: folders, selectedFolders: documents.selectedFolders, appending: documents.adding,
+                                   cancel: documents.cancelImport, confirm: documents.confirmFolders)
             } else if let scan = documents.scan {
                 Text("Review stems").font(.title3.bold())
                 Text("\(scan.folders.count) song folders · \(scan.folders.reduce(0) { $0 + $1.files.count }) audio files").font(.caption)
@@ -701,7 +713,7 @@ struct ProjectBrowserView: View {
                 }
                 TextField("Names to remove, separated by commas", text: $documents.removal).textFieldStyle(.roundedBorder)
                 Text("Original folders remain unchanged. Audio is copied beside the .jl project.").font(.caption2).foregroundStyle(JarasTheme.secondary)
-                HStack { Button("Back") { documents.scan = nil }; Spacer(); Button("Create / Add") { askingForBPM = true }.buttonStyle(StageButtonStyle(color: JarasTheme.green)).keyboardShortcut(.defaultAction) }
+                HStack { Button("Back", action: documents.reviewFolderOrder); Spacer(); Button("Create / Add") { askingForBPM = true }.buttonStyle(StageButtonStyle(color: JarasTheme.green)).keyboardShortcut(.defaultAction) }
             } else {
                 Text("CatLive").font(.title2.bold())
                 #if os(iOS)
@@ -787,7 +799,11 @@ struct ProjectBrowserView: View {
             #if os(iOS)
             .fullScreenCover(isPresented: $showingRemote) { DAWRemoteClientView() }
             #endif
-            .onChange(of: documents.scan == nil) { done in if done && documents.ready { completed() } }
+            .alert("Open a project first", isPresented: $documents.showingOpenProjectAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Open a project before using Add Project.")
+            }
             .confirmationDialog("Detect BPM for each song?", isPresented: $askingForBPM, titleVisibility: .visible) {
                 Button("Yes") { documents.confirmImport(detectBPM: true) }
                 Button("No") { documents.confirmImport(detectBPM: false) }
@@ -938,7 +954,7 @@ final class ProjectTitlebarAnchor<Content: View>: NSView {
     init(content: Content) {
         host = ProjectTitlebarHostingView(rootView: ProjectTitlebarHostedContent(content: content))
         super.init(frame: .zero)
-        host.sizingOptions = [.intrinsicContentSize]
+        if #available(macOS 13, *) { host.sizingOptions = [.intrinsicContentSize] }
         host.frame = NSRect(x: 0, y: 0, width: preferredWidth, height: 22)
         host.widthChanged = { [weak self] width in self?.preferredWidth = width; self?.updateWidths() }
         leading.layoutAttribute = .left; leading.view = host; leading.interactive = true

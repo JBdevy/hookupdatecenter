@@ -470,12 +470,17 @@ public enum TimelineTimeRuler {
         let hourText = String(hours)
         return (hourText.count < 2 ? "0" + hourText : hourText) + ":59:59.999"
     }
-    public static func labelSpacing(through end: Double, measuredWidth: Double? = nil) -> Double {
+    public static func labelSpacing(through end: Double, measuredWidth: Double? = nil,
+                                    pixelsPerSecond scale: Double? = nil) -> Double {
         // The shared renderer uses a 9-point monospaced font. Six points per
         // character plus image padding is conservative when no font is available.
         let estimate = Double(labelSample(through: end).count) * 6 + 2
         let width = measuredWidth.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? estimate
-        return max(72, ceil(width) + labelGap)
+        // More distant views should show a few useful time references, even
+        // when many short regions each introduce a new tempo section. Keep
+        // the same musical ticks and thin only their elapsed-time labels.
+        let distance = scale.flatMap { $0.isFinite && $0 > 0 ? min(1, max(0, -log10($0))) : nil } ?? 0
+        return max(130 + 50 * distance, ceil(width) + labelGap)
     }
     public struct Tick {
         public let time: Double
@@ -488,7 +493,7 @@ public enum TimelineTimeRuler {
                              minimumLabelSpacing: Double? = nil) -> [Tick] {
         guard start.isFinite, end.isFinite, scale.isFinite, scale > 0, end >= start else { return [] }
         let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-            ?? labelSpacing(through: sections.map(\.end).max() ?? end)
+            ?? labelSpacing(through: sections.map(\.end).max() ?? end, pixelsPerSecond: scale)
         let labelSeconds = spacing / scale
         var result: [Tick] = []
         var previousLabel = -Double.infinity

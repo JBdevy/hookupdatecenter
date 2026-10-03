@@ -94,6 +94,73 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(Array(appended.songs[0].parts.suffix(2)).map(\.name), [names[3], names[0]])
         XCTAssertEqual(appended.songs[0].parts[12].startTime - first.songs[0].parts.last!.endTime, 30, accuracy: 0.00001)
     }
+    func testAppendPreservesOpenProjectAndChosenOrderAfterLastRegionOrItem() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let originalFolder = try fixture(root, folder: "Existing", file: "Piano.wav", seconds: 0.25)
+        let zulu = try fixture(root, folder: "Zulu", file: "Piano.wav", seconds: 0.2)
+        let alpha = try fixture(root, folder: "Alpha", file: "Piano.wav", seconds: 0.3)
+        let destination = root.appendingPathComponent("Open Project/Show.jl")
+        let original = try StemProjectImporter.build(scan: StemProjectImporter.scan([originalFolder]),
+            remove: "", base: .empty(name: "My existing show"), destination: destination)
+        let pianoIndex = try XCTUnwrap(original.songs[0].tracks.firstIndex { $0.name == "Piano" })
+        let media = destination.deletingLastPathComponent().appendingPathComponent(
+            try XCTUnwrap(original.songs[0].tracks[pianoIndex].clips[0].audioFile).path)
+        let originalMedia = try Data(contentsOf: media)
+        // Selection order is deliberate: sorting folder names would reverse it.
+        let scan = try StemProjectImporter.scan([zulu, alpha])
+        XCTAssertEqual(scan.folders.map(\.url), [zulu, alpha])
+
+        for (regionEnd, itemEnd) in [(80.0, 110.0), (140.0, 90.0), (0.0, 120.0)] {
+            var base = original
+            base.masterVolume = 0.63
+            base.masterMono = true
+            base.songs[0].name = "Edited arrangement"
+            base.songs[0].bpm = 137
+            // Empty timeline space must not determine where appended songs start.
+            base.songs[0].duration = 900
+            base.songs[0].markers = [TimelineMarker(id: UUID(), name: "Existing cue", position: 12, color: 0x336699)]
+            if regionEnd == 0 { base.songs[0].parts = [] }
+            else {
+                base.songs[0].parts[0].startTime = 10
+                base.songs[0].parts[0].endTime = regionEnd
+                base.songs[0].parts[0].name = "Edited old region"
+            }
+            base.songs[0].tracks[pianoIndex].volume = 0.42
+            base.songs[0].tracks[pianoIndex].pan = -0.35
+            base.songs[0].tracks[pianoIndex].color = 0x13579B
+            base.songs[0].tracks[pianoIndex].clips[0].name = "Edited old item"
+            base.songs[0].tracks[pianoIndex].clips[0].startTime = itemEnd - 0.25
+            base.songs[0].tracks[pianoIndex].clips[0].gain = 0.71
+            base.songs[0].tracks[pianoIndex].clips[0].fadeIn = 0.03
+            try base.validate()
+
+            let appended = try StemProjectImporter.build(scan: scan, remove: "", base: base, destination: destination)
+            let arrangement = appended.songs[0]
+            let additions = Array(arrangement.parts.dropFirst(base.songs[0].parts.count))
+            XCTAssertEqual(additions.map(\.name), ["Zulu", "Alpha"])
+            XCTAssertEqual(additions.count, 2)
+            let first = try XCTUnwrap(additions.first), last = try XCTUnwrap(additions.last)
+            XCTAssertEqual(first.startTime, max(regionEnd, itemEnd) + 30, accuracy: 0.00001)
+            XCTAssertEqual(last.startTime, first.endTime + 30, accuracy: 0.00001)
+            XCTAssertEqual(arrangement.tracks.map(\.id), base.songs[0].tracks.map(\.id), "Append must reuse the existing tracks")
+            let addedClips = Array(arrangement.tracks[pianoIndex].clips.dropFirst(1))
+            XCTAssertEqual(addedClips.map(\.startTime), additions.map(\.startTime))
+            XCTAssertEqual(Set(arrangement.tracks[pianoIndex].clips.map(\.id)).count, 3)
+            XCTAssertEqual(Set(arrangement.parts.map(\.id)).count, arrangement.parts.count)
+
+            // Removing only the newly appended entities must recover every prior
+            // field and ID, including edited audio items, mixer settings and cues.
+            var recovered = appended
+            recovered.updatedAt = base.updatedAt
+            recovered.songs[0].duration = base.songs[0].duration
+            recovered.songs[0].parts.removeLast(2)
+            recovered.songs[0].tracks[pianoIndex].clips.removeLast(2)
+            XCTAssertEqual(recovered, base)
+            XCTAssertEqual(try Data(contentsOf: media), originalMedia, "Existing media must remain unchanged")
+            try appended.validate()
+        }
+    }
     func testDroppedAudioCopiesMediaAndKeepsPlacement() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

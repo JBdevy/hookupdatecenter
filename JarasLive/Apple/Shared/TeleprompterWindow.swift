@@ -133,8 +133,8 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                     ForEach(block.rows) { song in
                         Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
                             .font(tpFont(settings.previewFontFamily,size: font))
-                            .foregroundStyle(Color(hex: song.color))
-                            .underline(settings.previewUnderlineEnabled).lineLimit(2)
+                            .underline(settings.previewUnderlineEnabled)
+                            .foregroundStyle(Color(hex: song.color)).lineLimit(2)
                     }
                 }.frame(maxWidth: .infinity,alignment: .leading).padding(6)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))

@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ -e /tmp/catlive-perf-measurement.lock ]]; then
+  echo "Performance measurement is active; ruler compilation deferred." >&2
+  exit 2
+fi
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/catlive-ruler-spacing.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/main.swift" <<'PY'

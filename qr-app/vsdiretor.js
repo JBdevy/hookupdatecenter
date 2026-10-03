@@ -37,6 +37,7 @@
   const musicPaneCache = new Map()
   const musicPaneScrollState = new Map()
   const premixFullScreenCache = new Map()
+  const premixStructureSignatureCache = new WeakMap()
   const mixerTimelineProjectCache = new Map()
   let mixerTimelineCatalogLoading = false
   let mixerTimelineCatalogRetryAt = 0
@@ -1715,13 +1716,15 @@
   // Faixas técnicas não são controles de mixagem para o Diretor. O nome é
   // normalizado para cobrir variações de espaço, pontuação e acentuação.
   function isAppHiddenMixerTrack(item) {
-    const names = [
+    const trackNames = [
       item?.trackName,
       item?.track_name,
       item?.trackLabel,
       item?.track,
-      getName(item),
-    ]
+    ].filter((name) => typeof name === 'string' && name.trim())
+    // Em linhas de item, name pertence ao take; a pista tem nome próprio.
+    // O fallback atende às linhas do Mixer, que usam name para a pista.
+    const names = trackNames.length ? trackNames : [getName(item)]
     return names.some((rawName) => {
       const normalizedName = String(rawName || '')
         .normalize('NFD')
@@ -8888,15 +8891,14 @@
     </div>`
   }
 
-  function getPremixFullScreenCacheKey(data = state.snapshot || {}) {
-    const scopeId = String(state.premixSongId || '')
-    const snapshotId = getPremixSnapshotSongId(data)
-    const ready = !!scopeId && snapshotId === scopeId
-    const target = getPremixEffectiveTarget(data)
-    const sections = ready ? getPremixSongSections(data) : []
+  function getPremixStructureSignature(data = state.snapshot || {}) {
+    if (!data || typeof data !== 'object') return ''
+    const cached = premixStructureSignatureCache.get(data)
+    if (cached !== undefined) return cached
+    const sections = getPremixSongSections(data)
     const structure = sections.length
       ? sections.map((section) => {
-          const sectionTarget = getPremixSectionTarget(section)
+          const sectionTarget = getPremixSectionTarget(section, data)
           return [
             sectionTarget?.id,
             sectionTarget?.name,
@@ -8910,12 +8912,25 @@
             ].join('\u001f')).join('\u001e'),
           ].join('\u001d')
         }).join('\u001c')
-      : (ready ? getPremixItemRows(data) : []).map((item) => [
+      : getPremixItemRows(data).map((item) => [
           getPremixItemId(item),
           getPremixItemTrackId(item),
           getName(item),
           item?.trackName || item?.track || '',
         ].join('\u001f')).join('\u001e')
+    const signature = `${structure.length}-${simpleHash(structure)}`
+    premixStructureSignatureCache.set(data, signature)
+    return signature
+  }
+
+  function getPremixFullScreenCacheKey(data = state.snapshot || {}) {
+    const scopeId = String(state.premixSongId || '')
+    const snapshotId = getPremixSnapshotSongId(data)
+    const ready = !!scopeId && snapshotId === scopeId
+    const target = getPremixEffectiveTarget(data)
+    // Compartilha a estrutura com a assinatura de render, sem percorrer os
+    // itens novamente nas várias leituras do mesmo snapshot.
+    const structure = ready ? getPremixStructureSignature(data) : ''
     const signature = [
       scopeId,
       snapshotId,
@@ -13644,7 +13659,7 @@
   }
 
   function getAppRenderSignature() {
-    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.telepromptFullscreen}|${state.telepromptListOpen}|${state.telepromptPartsOpen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
+    return `${state.activeTab}|${state.tabletPartsSplit}|${state.tabletPreviewPage}|${state.showTabletSearch}|${state.showMenu}|${state.showMarkersOverlay}|${state.showPlaylistModal}|${state.showProjectModal}|${state.showMixerVolume}|${state.mixerVolumeTarget}|${state.showTimerModal}|${state.showTunerScreen}|${state.showTelepromptScreen}|${state.telepromptFullscreen}|${state.telepromptListOpen}|${state.telepromptPartsOpen}|${state.showRecadosScreen}|${state.showTransportSeekModal}|${getTransportSeekTargetKey()}|${getHashDrawersRenderSignature()}|${state.showPremixScreen}|${state.showPremixScreen ? getPremixFullScreenCacheKey() : ''}|${state.premixSongId}|${state.premixPlaySongId}|${getPremixSnapshotSongId()}|${getPremixSongSections().length}|${getPremixAllItemRows().length}|${state.showTabletSongToolsModal}|${state.tabletSongToolsChoice}|${state.showTabletMultiLoopsModal}|${state.tabletMultiLoopTracksSlot}|${state.tabletMultiLoopAutoLimitTarget ? `${state.tabletMultiLoopAutoLimitTarget.id}:${state.tabletMultiLoopAutoLimitTarget.valueDb}` : ''}|${state.showTabletLiveResetConfirm}|${state.numberOrderConfirmKind}|${state.numberOrderConfirmContext}|${state.numberOrderConfirmUseRegionId}|${state.numberOrderConfirmDescending}|${getTabletMultiLoopsRenderSignature()}|${state.telepromptSlot}|${getDirectorTelepromptContentKey()}|${getDirectorTechnicalNoticeKey()}|${state.tunerSourceTab}|${getTunerValuesSignature()}|${getBorderColorMode()}|${getNumberColumnMode()}|${getNumberSortDirection()}|${getAppliedNumberSortDirection()}|${getPlayProtectionEnabled()}|${state.authAuthenticated}|${JSON.stringify(compactRenderState())}`
   }
 
   function isDirectorListScrolling(sampledAt = now()) {

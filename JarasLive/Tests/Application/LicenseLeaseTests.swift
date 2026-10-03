@@ -1,5 +1,6 @@
 import XCTest
 import CryptoKit
+import Combine
 @testable import JarasApplication
 private func signedLease(_ source: Entitlement, key: Curve25519.Signing.PrivateKey, account: UUID, device: UUID) throws -> Entitlement {
     let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -92,6 +93,48 @@ final class LicenseLeaseTests: XCTestCase {
         await auth.startTrial(hardwareID: "hardware-test")
         XCTAssertFalse(auth.allowed); XCTAssertFalse(enabled)
     }
+    @MainActor func testStableLocalExpiryHeartbeatDoesNotPublishForPaidTrialOrGrace() async throws {
+        var services: [(String, AuthService, SignedTrialBackend, Int)] = []
+        var publications: [String: Int] = [:], audioCallbacks: [String: Int] = [:]
+        var subscriptions: [AnyCancellable] = []
+        defer { subscriptions.forEach { $0.cancel() } }
+        for state in ["paid", "trial", "grace"] {
+            var (result, verifier) = try fixture(plan: state == "trial" ? "trial" : "6-meses")
+            if state == "grace" {
+                let key = Curve25519.Signing.PrivateKey(), now = Date()
+                result.entitlement.status = "overdue"
+                result.entitlement.expiresAt = now.addingTimeInterval(-86400)
+                result.entitlement.graceStartsAt = now.addingTimeInterval(-86400)
+                result.entitlement.graceUntil = now.addingTimeInterval(6*86400)
+                result.entitlement.graceReason = "overdue"
+                result.entitlement = try signedLease(result.entitlement, key: key, account: result.account.id, device: result.device.id)
+                verifier = LicenseLeaseVerifier(publicKey: key.publicKey.rawRepresentation)
+            }
+            let backend = SignedTrialBackend(result: result)
+            let auth = AuthService(backend: backend, store: MemorySecureStore(), installation: result.device, feature: "desktop", verifier: verifier)
+            let success: Bool
+            if state == "trial" { success = await auth.startTrial(hardwareID: "heartbeat-test") }
+            else { success = await auth.login(email: "heartbeat@test.invalid", password: "cpf") }
+            XCTAssertTrue(success); XCTAssertTrue(auth.allowed)
+            XCTAssertEqual(auth.graceNotice.isEmpty, state != "grace")
+            services.append((state, auth, backend, await backend.requests))
+            subscriptions.append(auth.objectWillChange.sink { publications[state, default: 0] += 1 })
+            auth.onAudioAuthorization = { _ in audioCallbacks[state, default: 0] += 1 }
+        }
+        // Exercise the real one-second cadence, including the trial clock checkpoint.
+        for tick in 0..<3 {
+            for (_, auth, _, _) in services { auth.checkLocalExpiry() }
+            if tick < 2 { try await Task.sleep(nanoseconds: 1_000_000_000) }
+        }
+        for (state, auth, backend, initialRequests) in services {
+            XCTAssertEqual(publications[state, default: 0], 0, "Stable \(state) must not invalidate observers")
+            XCTAssertEqual(audioCallbacks[state, default: 0], 0)
+            XCTAssertTrue(auth.allowed); XCTAssertTrue(auth.restriction.isEmpty)
+            XCTAssertEqual(auth.graceNotice.isEmpty, state != "grace")
+            let requests = await backend.requests
+            XCTAssertEqual(requests, initialRequests, "The local heartbeat must remain offline")
+        }
+    }
 }
 
 extension LicenseLeaseTests {
@@ -135,16 +178,32 @@ extension LicenseLeaseTests {
         let verifier = LicenseLeaseVerifier(publicKey: key.publicKey.rawRepresentation)
         let store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
         let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
+        var notices: [String] = []
+        let noticeSubscription = auth.$graceNotice.dropFirst().sink { notices.append($0) }
+        defer { noticeSubscription.cancel() }
         await auth.login(email: "maria@test.invalid", password: "cpf")
         XCTAssertTrue(auth.allowed); XCTAssertFalse(auth.graceNotice.isEmpty)
+        XCTAssertEqual(notices, [auth.graceNotice], "Entering grace still publishes its notice")
         XCTAssertTrue(auth.licenseTitle?.contains("Maria — 1 dia de tolerância") == true)
         let restarted = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
         await restarted.restore(); XCTAssertTrue(restarted.allowed); XCTAssertFalse(restarted.graceNotice.isEmpty)
         var tampered = result.entitlement; tampered.graceUntil = now.addingTimeInterval(100000)
         XCTAssertFalse(verifier.verify(tampered, account: result.account.id, installation: result.device.id))
+        var publications = 0, audioCallbacks: [Bool] = []
+        let subscription = auth.objectWillChange.sink { publications += 1 }
+        defer { subscription.cancel() }
+        auth.onAudioAuthorization = { audioCallbacks.append($0) }
+        auth.checkLocalExpiry()
+        XCTAssertEqual(publications, 0, "An unchanged grace notice must not publish again")
         try await Task.sleep(nanoseconds: 900_000_000)
         auth.checkLocalExpiry(); XCTAssertFalse(auth.allowed); XCTAssertTrue(auth.graceNotice.isEmpty)
         XCTAssertTrue(auth.restriction.contains("atraso"))
+        XCTAssertGreaterThan(publications, 0, "Expiry must still invalidate observers")
+        XCTAssertEqual(notices.count, 2); XCTAssertEqual(notices.last, "")
+        XCTAssertEqual(audioCallbacks, [false], "Expiry must still close the audio gate")
+        let expiredPublications = publications
+        auth.checkLocalExpiry()
+        XCTAssertEqual(publications, expiredPublications, "An already blocked heartbeat must stay quiet")
     }
 }
 

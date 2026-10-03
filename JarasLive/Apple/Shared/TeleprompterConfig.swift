@@ -116,7 +116,7 @@ struct TeleprompterConfig: View {
                 Text("Night").tag(TeleprompterPreset.night); Text("Day").tag(TeleprompterPreset.day)
             }.pickerStyle(.segmented)
             GeometryReader { geometry in
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(spacing: 12) {
                         ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
                             VStack(alignment: .leading,spacing: 10) {
@@ -131,7 +131,7 @@ struct TeleprompterConfig: View {
                             }.padding(10).background(JarasTheme.background).cornerRadius(6)
                         }
                     }.padding(.trailing,2).padding(.bottom,10)
-                }.scrollIndicators(.hidden)
+                }
             }
             HStack {
                 #if os(macOS)

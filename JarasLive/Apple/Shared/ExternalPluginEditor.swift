@@ -36,7 +36,7 @@ struct ExternalPluginEditor: View {
     }
     var body: some View {
         VStack(spacing: 8) {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
                         if !failure.isEmpty { Text(LocalizedStringKey(failure)).foregroundStyle(.red) }
                         ForEach(Array(parameters.enumerated()), id: \.offset) { _, parameter in
@@ -52,7 +52,7 @@ struct ExternalPluginEditor: View {
                             }
                         }
                     }.padding(18)
-                }.scrollIndicators(.hidden)
+                }
         }.background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear {
                 guard let plugin else { failure = "Plugin settings are unavailable"; return }

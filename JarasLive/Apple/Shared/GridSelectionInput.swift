@@ -213,6 +213,53 @@ final class GridSelectionLayout {
 #if os(macOS)
 import AppKit
 
+/// Header text keeps the original AppKit drawing and metrics. Scroll and cursor
+/// updates reuse the measured title instead of running the typesetter again.
+enum GridSelectionHeaderText {
+    final class Title {
+        let text: NSAttributedString
+        let width: CGFloat
+        init(_ text: NSAttributedString) { self.text = text; width = text.size().width }
+    }
+    private static let font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+    private static func attributes(centered: Bool? = nil, color: NSColor = .white) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        if let centered { paragraph.alignment = centered ? .center : .left }
+        return [.font: font, .foregroundColor: color, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
+    }
+    private static let titleAttributes = attributes()
+    private static let gainAttributes = attributes(centered: false)
+    private static let centeredAttributes = attributes(centered: true)
+    private static let activeAttributes = attributes(centered: true, color: .systemGreen)
+    private static let titles: NSCache<NSString, Title> = {
+        let cache = NSCache<NSString, Title>()
+        cache.countLimit = 1024; cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
+    private static let gains: NSCache<NSString, NSAttributedString> = {
+        let cache = NSCache<NSString, NSAttributedString>()
+        cache.countLimit = 256; cache.totalCostLimit = 64 * 1024
+        return cache
+    }()
+    static let mute = NSAttributedString(string: "M", attributes: centeredAttributes)
+    static let fx = NSAttributedString(string: "FX", attributes: centeredAttributes)
+    static let activeFX = NSAttributedString(string: "FX", attributes: activeAttributes)
+    static let edit = NSAttributedString(string: "Edit", attributes: centeredAttributes)
+    static func title(_ name: String) -> Title {
+        if let cached = titles.object(forKey: name as NSString) { return cached }
+        let value = Title(NSAttributedString(string: name, attributes: titleAttributes))
+        titles.setObject(value, forKey: name as NSString, cost: name.utf8.count * 8 + 128)
+        return value
+    }
+    static func gain(_ text: String) -> NSAttributedString {
+        if let cached = gains.object(forKey: text as NSString) { return cached }
+        let value = NSAttributedString(string: text, attributes: gainAttributes)
+        gains.setObject(value, forKey: text as NSString, cost: text.utf8.count * 8 + 128)
+        return value
+    }
+}
+
 struct GridSelectionInput: NSViewRepresentable {
     let origin: CGPoint
     let headerHeight: CGFloat
@@ -284,15 +331,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     private var headerScrolls: [NSClipView] = []
     private var headerScrollObservers: [NSObjectProtocol] = []
     private var liveHeaderGain: (id: UUID, value: Double)?
-    private static let headerNames = NSCache<NSString, NSAttributedString>()
-    private static let headerFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
-    private static func headerName(_ name: String) -> NSAttributedString {
-        if let value = headerNames.object(forKey: name as NSString) { return value }
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
-        let value = NSAttributedString(string: name, attributes: [.font: headerFont, .foregroundColor: NSColor.white, .paragraphStyle: paragraph])
-        headerNames.setObject(value, forKey: name as NSString, cost: name.utf8.count * 8 + 128)
-        return value
-    }
     var itemGuide: CGRect? { didSet { if itemGuide != oldValue && heldItemGuide != nil { needsDisplay = true } } }
     private(set) var heldItemGuide: CGRect? { didSet { if heldItemGuide != oldValue { needsDisplay = true } } }
     var selected = Set<UUID>()
@@ -393,7 +431,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         if let liveFade, liveFade.id == item.id {
             if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
         }
-        return item.visibleLeftHeader(in: CGRect(origin: space.origin, size: space.viewport.size), titleWidth: Self.headerName(name).size().width)
+        return item.visibleLeftHeader(in: CGRect(origin: space.origin, size: space.viewport.size), titleWidth: GridSelectionHeaderText.title(name).width)
     }
     // Use native scroll bounds, not the delayed SwiftUI offset from its last render.
     private var coordinates: (viewport: CGRect, origin: CGPoint) {
@@ -818,11 +856,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: CGRect(x: viewport.minX, y: viewport.minY + headerHeight, width: viewport.width, height: max(0, viewport.height - headerHeight))).addClip()
         defer { NSGraphicsContext.restoreGraphicsState() }
-        func label(_ text: String, _ rect: CGRect, _ color: NSColor = .white, centered: Bool = false) {
-            let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
-            paragraph.alignment = centered ? .center : .left
-            (text as NSString).draw(in: rect.insetBy(dx: 1, dy: 0), withAttributes: [.font: Self.headerFont, .foregroundColor: color, .paragraphStyle: paragraph])
-        }
         for source in candidates(in: visible) where source.name != nil && source.rect.width >= 20 && source.rect.maxX >= visible.minX && source.rect.minX <= visible.maxX {
                 var item = positionedHeader(source)
                 let dx = viewport.minX - origin.x, dy = viewport.minY - origin.y
@@ -830,15 +863,16 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 item.visibleHeader = item.visibleHeader?.offsetBy(dx: dx, dy: dy)
                 if let rect = item.muteRect {
                     (item.muted ? NSColor.systemRed : NSColor.black.withAlphaComponent(0.28)).setFill(); rect.fill()
-                    label("M", rect, centered: true)
+                    GridSelectionHeaderText.mute.draw(in: rect.insetBy(dx: 1, dy: 0))
                 }
                 if let rect = item.fxRect {
                     (item.fxBypassed ? NSColor.systemRed : NSColor.black.withAlphaComponent(0.28)).setFill(); rect.fill()
-                    label("FX", rect, item.hasFX && !item.fxBypassed ? .systemGreen : .white, centered: true)
+                    (item.hasFX && !item.fxBypassed ? GridSelectionHeaderText.activeFX : GridSelectionHeaderText.fx)
+                        .draw(in: rect.insetBy(dx: 1, dy: 0))
                 }
                 if let rect = item.editRect {
                     NSColor.black.withAlphaComponent(0.28).setFill(); rect.fill()
-                    label("Edit", rect, centered: true)
+                    GridSelectionHeaderText.edit.draw(in: rect.insetBy(dx: 1, dy: 0))
                 }
                 if let rect = item.gainKnobRect {
                     let center = CGPoint(x: rect.midX, y: rect.midY), radius = 4.5
@@ -849,10 +883,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                     needle.line(to: CGPoint(x: center.x + cos(angle) * 3.5, y: center.y + sin(angle) * 3.5))
                     NSColor.white.setStroke(); needle.lineWidth = 1.2; needle.stroke()
                 }
-                if let rect = item.gainLabelRect { label(item.gainLabel, rect) }
+                if let rect = item.gainLabelRect { GridSelectionHeaderText.gain(item.gainLabel).draw(in: rect.insetBy(dx: 1, dy: 0)) }
                 let nameRect = CGRect(x: item.headerRect.minX + item.titleInset + 4, y: item.rect.minY + 1,
                                       width: max(0, item.headerRect.width - item.titleInset - 8), height: 12)
-                if nameRect.width >= 10 { Self.headerName(item.name ?? "").draw(in: nameRect) }
+                if nameRect.width >= 10 { GridSelectionHeaderText.title(item.name ?? "").text.draw(in: nameRect) }
                 drawItemFades(item)
         }
     }

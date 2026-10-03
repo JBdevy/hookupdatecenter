@@ -552,7 +552,7 @@ private struct PlaylistSelectionPanel: View {
                 .background(PlaylistPersistentScrollbar(visible: needsScroll))
                 #endif
             }
-            .scrollDisabled(!needsScroll)
+            .jarasScrollDisabled(!needsScroll)
             .frame(height: min(contentHeight, maximumListHeight))
         }.padding(10).background(JarasTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -777,6 +777,7 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
         view.configure(number: number, name: name, duration: duration, color: color, selected: selected,
                        active: active, queued: queued, prepareOnly: prepareOnly, progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor)
     }
+    @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeRegionSetlistLabelView, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 0, height: 34)
     }

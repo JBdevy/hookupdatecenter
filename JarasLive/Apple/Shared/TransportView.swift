@@ -171,11 +171,11 @@ struct FooterPlaylistDisplay: View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 FooterInformationDisplay(show: show, embedded: true)
-                    .frame(width: max(0, (geometry.size.width - 1) * 0.7))
+                    .frame(width: max(0, (geometry.size.width - 1) * 0.8))
                 Rectangle().fill(JarasTheme.line).frame(width: 1)
                 Text(verbatim: duration).font(.system(size: 12, weight: .semibold))
                     .monospacedDigit().foregroundStyle(JarasTheme.yellow)
-                    .frame(width: max(0, (geometry.size.width - 1) * 0.3), height: 25)
+                    .frame(width: max(0, (geometry.size.width - 1) * 0.2), height: 25)
                     .accessibilityLabel("Playlist duration")
                     .jarasHelp("Playlist duration")
             }

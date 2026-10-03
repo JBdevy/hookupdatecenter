@@ -143,12 +143,14 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         let drawable: CAMetalDrawable
         let lease: FrameLease
         let requestedAt: Double
+        let frameRequestedAt: Double
     }
     private var scheduledPresentations: [UInt64: ScheduledPresentation] = [:]
     private var requiresImmediateSubmission = false
     private let engine = MetalWaveformEngine.shared
     private var latestFrame: MetalWaveformFrame?
     private var pending: MetalWaveformFrame?
+    private var pendingRequestedAt: Double = 0
     private var visibleBuffers: [String: MetalWaveformEngine.SourceBuffer] = [:]
     private let flights = FrameGate()
     private var rendering = false
@@ -226,6 +228,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         pending = latestFrame
+        pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
         renderLatest()
     }
     #else
@@ -233,6 +236,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         pending = latestFrame
+        pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
         renderLatest()
     }
     #endif
@@ -254,6 +258,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         }
         if pending != nil { coalescedFrameCount &+= 1 }
         pending = frame
+        pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
         renderLatest()
     }
 
@@ -322,6 +327,12 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         pass.colorAttachments[0].clearColor = clearColor
         guard engine.encode(frame, pass: pass, command: command, density: Float(density), retaining: &visibleBuffers) else { return }
         lastEncodeMilliseconds = (CACurrentMediaTime() - begin) * 1000
+        let frameRequestedAt = pendingRequestedAt
+        let pixelWidth = Double(drawable.texture.width), pixelHeight = Double(drawable.texture.height)
+        if TimelineRenderDiagnostics.enabled {
+            TimelineRenderDiagnostics.record("metal.encode", width: pixelWidth, height: pixelHeight,
+                milliseconds: lastEncodeMilliseconds)
+        }
         pending = nil
         drawableRetryUsed = false
         submittedFrameCount &+= 1
@@ -332,18 +343,30 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             flights.end()
             DispatchQueue.main.async { self?.renderLatest() }
         }
-        command.addCompletedHandler { _ in lease.finish(1) }
+        command.addCompletedHandler { completed in
+            lease.finish(1)
+            if TimelineRenderDiagnostics.enabled, completed.gpuStartTime > 0,
+               completed.gpuEndTime >= completed.gpuStartTime {
+                TimelineRenderDiagnostics.record("metal.gpu", width: pixelWidth, height: pixelHeight,
+                    milliseconds: (completed.gpuEndTime - completed.gpuStartTime) * 1000)
+            }
+        }
         let scheduled = CACurrentMediaTime()
         if !synchronous {
             scheduledPresentations[sequence] = ScheduledPresentation(frame: frame, drawable: drawable,
-                lease: lease, requestedAt: scheduled)
+                lease: lease, requestedAt: scheduled, frameRequestedAt: frameRequestedAt)
             command.addScheduledHandler { [weak self] _ in
                 DispatchQueue.main.async {
                     guard let self, let presentation = self.scheduledPresentations.removeValue(forKey: sequence) else {
                         lease.finish(2); return
                     }
                     self.lastScheduleMilliseconds = (CACurrentMediaTime() - presentation.requestedAt) * 1000
-                    self.present(presentation.frame, drawable: presentation.drawable, sequence: sequence, lease: lease)
+                    if TimelineRenderDiagnostics.enabled {
+                        TimelineRenderDiagnostics.record("metal.schedule", width: pixelWidth, height: pixelHeight,
+                            milliseconds: self.lastScheduleMilliseconds)
+                    }
+                    self.present(presentation.frame, drawable: presentation.drawable, sequence: sequence, lease: lease,
+                        requestedAt: presentation.frameRequestedAt)
                 }
             }
         }
@@ -354,16 +377,31 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             // Wait for command scheduling, not GPU completion or audio decoding.
             command.waitUntilScheduled()
             lastScheduleMilliseconds = (CACurrentMediaTime() - scheduled) * 1000
-            present(frame, drawable: drawable, sequence: sequence, lease: lease)
+            if TimelineRenderDiagnostics.enabled {
+                TimelineRenderDiagnostics.record("metal.schedule", width: pixelWidth, height: pixelHeight,
+                    milliseconds: lastScheduleMilliseconds)
+            }
+            present(frame, drawable: drawable, sequence: sequence, lease: lease, requestedAt: frameRequestedAt)
         }
     }
 
-    private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64, lease: FrameLease) {
+    private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64,
+                         lease: FrameLease, requestedAt: Double) {
         guard sequence > lastPresentedSequence else { lease.finish(2); return }
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.
-        drawable.addPresentedHandler { _ in lease.finish(2) }
+        let pixelWidth = Double(drawable.texture.width), pixelHeight = Double(drawable.texture.height)
+        drawable.addPresentedHandler { presented in
+            let timestamp = TimelineRenderDiagnostics.enabled ? presented.presentedTime : 0
+            lease.finish(2)
+            if TimelineRenderDiagnostics.enabled, timestamp > 0, requestedAt > 0 {
+                // Read the display timestamp in this callback. Dispatching to
+                // the main queue would measure busy-run-loop delay instead.
+                TimelineRenderDiagnostics.record("metal.present", width: pixelWidth, height: pixelHeight,
+                    milliseconds: max(0, timestamp - requestedAt) * 1000, eventTime: timestamp)
+            }
+        }
         lastPresentedSequence = sequence
         // Join the run loop's implicit transaction. Starting and committing a
         // root explicit transaction from each GPU callback forces AppKit to

@@ -145,7 +145,7 @@ struct MainView: View {
                 }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
 
             }
-        }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).scrollIndicators(.hidden)
+        }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).jarasHideScrollIndicators()
             #if os(macOS)
             .background(ProjectTitlebarContent {
                 FooterProjectNameDisplay(show: show, documents: documents, titlebar: true)
@@ -557,14 +557,14 @@ private struct RegionPitchTargets: View {
                     for track in visibleTracks { setSelected(track, selected) }
                 }.disabled(visibleTracks.isEmpty)
             }
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleTracks) { track in
                         Toggle(track.name, isOn: Binding(get: { isSelected(track) }, set: { setSelected(track, $0) }))
                             .toggleStyle(.automatic).tint(JarasTheme.green)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            }.frame(height: 245).scrollIndicators(.hidden)
+            }.frame(height: 245)
             HStack { Spacer(); Button("Cancel", action: close).keyboardShortcut(.cancelAction); Button("Apply") {
                 let current = show.current?.parts.first { $0.id == region.id } ?? region
                 show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: groups); close()

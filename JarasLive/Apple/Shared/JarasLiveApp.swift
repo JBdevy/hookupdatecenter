@@ -16,9 +16,13 @@ import SwiftUI
     }
     var body: some Scene {
         #if os(macOS)
-        Window("CatLive", id: "main") { appContent }
-            .defaultSize(width: ProjectWindowAnchor.editorFrameSize.width, height: ProjectWindowAnchor.editorFrameSize.height)
-            .windowStyle(.hiddenTitleBar)
+        // ProjectWindowSizing owns the editor/browser frame on every supported
+        // OS. Reuse the workspace for opened projects and omit New Window.
+        WindowGroup("CatLive", id: "main") {
+            appContent.handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        }
+        .windowStyle(.hiddenTitleBar)
+        .commands { CommandGroup(replacing: .newItem) {} }
         #else
         WindowGroup("CatLive") { appContent.statusBarHidden(true).persistentSystemOverlays(.hidden) }
         #endif
@@ -85,7 +89,7 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .scrollIndicators(.hidden)
+        .jarasHideScrollIndicators()
         .environment(\.locale, Locale(identifier: language)).task { await container.start() }
     }
 }
@@ -187,6 +191,9 @@ private final class FloatingStartupAnchor: NSView {
 
 #if os(macOS)
 @MainActor final class JarasApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let guardClose = ProjectCloseGuard.shared
         guard !guardClose.pending else { guardClose.focusCurrentDialog(); return .terminateCancel }

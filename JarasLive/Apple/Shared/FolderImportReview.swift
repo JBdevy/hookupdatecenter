@@ -3,11 +3,16 @@ import SwiftUI
 struct FolderImportReview: View {
     @State private var selection: FolderImportSelection
     @State private var query = ""
+    let appending: Bool
     let cancel: () -> Void
     let confirm: ([URL]) -> Void
 
-    init(folders: [URL], cancel: @escaping () -> Void, confirm: @escaping ([URL]) -> Void) {
-        _selection = State(initialValue: FolderImportSelection(folders))
+    init(folders: [URL], selectedFolders: [URL] = [], appending: Bool = false,
+         cancel: @escaping () -> Void, confirm: @escaping ([URL]) -> Void) {
+        var selection = FolderImportSelection(folders)
+        for folder in selectedFolders where selection.position(of: folder) == nil { selection.toggle(folder) }
+        _selection = State(initialValue: selection)
+        self.appending = appending
         self.cancel = cancel; self.confirm = confirm
     }
     var body: some View {
@@ -26,12 +31,14 @@ struct FolderImportReview: View {
                 Spacer()
                 Text("\(selection.selected.count) / \(selection.folders.count)").font(.caption.monospacedDigit()).foregroundStyle(JarasTheme.secondary)
             }
-            Text("Folders will be placed on the grid in the order you check them.")
+            Text(LocalizedStringKey(appending
+                ? "Songs will be added in this order after the last song in the open project."
+                : "Folders will be placed on the grid in the order you check them."))
                 .font(.caption).foregroundStyle(JarasTheme.secondary)
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Folders").font(.caption.bold()).foregroundStyle(JarasTheme.secondary)
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 4) {
                     ForEach(selection.matching(query), id: \.self) { folder in
                         let order = selection.position(of: folder)
@@ -51,12 +58,12 @@ struct FolderImportReview: View {
                             .jarasHelp(folder.path)
                     }
                 }
-            }.scrollIndicators(.hidden).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Rectangle().fill(JarasTheme.line).frame(width: 1)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("All regions preview").font(.caption.bold()).foregroundStyle(JarasTheme.secondary)
-                    ScrollView {
+                    ScrollView(showsIndicators: false) {
                         LazyVStack(spacing: 4) {
                             ForEach(Array(selection.selected.enumerated()), id: \.element) { entry in
                                 HStack(spacing: 6) {
@@ -71,7 +78,7 @@ struct FolderImportReview: View {
                                     .jarasHelp(entry.element.path)
                             }
                         }
-                    }.scrollIndicators(.hidden).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {

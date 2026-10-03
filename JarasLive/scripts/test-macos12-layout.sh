@@ -10,7 +10,7 @@ mixer=Path('Apple/Shared/TrackMixerRow.swift').read_text()
 start=mixer.index('struct TrackMixerHeightGeometry {')
 mixer=mixer[start:mixer.index('\n#endif',start)]
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
-start=grid.index('private struct TimelineColumnsContainer<')
+start=grid.index('@available(macOS 13, *)\nprivate struct TimelineColumnsLayout:')
 grid=grid[start:grid.index('private struct TimelineMixerIdentity:',start)]
 Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n' + mixer + '\n' + grid + '\n' + Path('Tests/Apple/MacOS12LayoutTests.swift').read_text())
 PY

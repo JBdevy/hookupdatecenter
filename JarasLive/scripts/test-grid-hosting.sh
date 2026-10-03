@@ -24,7 +24,7 @@ notification = next(line.strip() for line in source.splitlines() if '.onReceive(
 tests = Path('Tests/Apple/GridHostingIntegrationTests.swift').read_text()
 tests = tests.replace('NORMALIZATION_NOTIFICATION', notification)
 zoom = source[source.index('private final class TimelineZoomState:'):source.index('private struct TimelineViewportLayer<')]
-limits = source[source.index('enum TimelineZoomLimits'):source.index('enum TimelineTrackHeightLimits')]
+limits = source[source.index('enum TimelineZoomLimits'):source.index('private let markerLaneHeight')]
 Path(sys.argv[1]).write_text(limits + zoom + tests + '\nextension NormalizationFixtureContent {\n' + source[start:end] + '\n}\n')
 PYTEST
 swiftc -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift Apple/Shared/GridScrollView.swift "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"

@@ -296,6 +296,7 @@ enum StemProjectImporter {
         var project = base
         guard !project.songs.isEmpty else { throw ProjectError.invalid("Missing arrangement") }
         var arrangement = project.songs[0]
+        let existingTrackCount = arrangement.tracks.count
         let oldEnd = max(arrangement.parts.map(\.endTime).max() ?? 0, arrangement.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0)
         let offset = oldEnd
         let existingFolders = Set(arrangement.tracks.compactMap(\.parentTrackID)).union(arrangement.tracks.filter {
@@ -354,7 +355,9 @@ enum StemProjectImporter {
                         arrangement.tracks[index].patch = .masterGroup
                         arrangement.tracks[index].secondaryPatch = nil; arrangement.tracks[index].outputs = nil
                     }
-                    // Keep the folder saturated; its children use the same hue softened toward white.
+                    // Appending media must keep colors chosen on existing tracks.
+                    guard index >= existingTrackCount else { continue }
+                    // Keep the folder saturated; new children use its softened hue.
                     let r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255
                     func soft(_ value: UInt32) -> UInt32 { value + (255 - value) * 28 / 100 }
                     arrangement.tracks[index].color = soft(r) << 16 | soft(g) << 8 | soft(b)

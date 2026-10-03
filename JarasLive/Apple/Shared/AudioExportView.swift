@@ -103,15 +103,15 @@ struct AudioExportView: View {
             }.pickerStyle(.menu)
             if source != .master || bounds == .regions { selectionList }
             GroupBox("Output") {
-                Grid(alignment: .leading,horizontalSpacing: 10,verticalSpacing: 10) {
-                    GridRow {
-                        Text("Directory:")
-                        HStack {
-                            TextField("Directory",text: $directory)
-                            Button { choosingDirectory = true } label: { Image(systemName: "folder").frame(width: 24,height: 20) }.accessibilityLabel("Choose folder")
-                        }
+                LazyVGrid(columns: [GridItem(.flexible(minimum: 80, maximum: 120), spacing: 10, alignment: .leading),
+                                    GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
+                    Text("Directory:")
+                    HStack {
+                        TextField("Directory",text: $directory)
+                        Button { choosingDirectory = true } label: { Image(systemName: "folder").frame(width: 24,height: 20) }.accessibilityLabel("Choose folder")
                     }
-                    GridRow { Text("File name:"); TextField("%project",text: $fileName) }
+                    Text("File name:")
+                    TextField("%project",text: $fileName)
                 }.textFieldStyle(.roundedBorder).padding(10)
             }
             HStack(spacing: 8) {
@@ -120,7 +120,7 @@ struct AudioExportView: View {
                         .buttonStyle(.bordered).help(token)
                 }
             }
-            ScrollView {
+            ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading,spacing: 4) {
                     ForEach(plan.jobs) { job in
                         HStack {
@@ -130,7 +130,7 @@ struct AudioExportView: View {
                         }.font(.system(size: 12)).padding(.vertical,3)
                     }
                 }.padding(8)
-            }.scrollIndicators(.hidden).frame(height: 155).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
+            }.frame(height: 155).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
             if plan.jobs.isEmpty { Text("Select files to render.").font(.caption).foregroundStyle(JarasTheme.yellow) }
             formatOptions
             HStack {
@@ -173,35 +173,35 @@ struct AudioExportView: View {
         VStack(alignment: .leading,spacing: 4) {
             if source == .stems {
                 selectionHeader("Items",all: Set(song?.tracks.flatMap(\.clips).filter { $0.audioFile != nil }.map(\.id) ?? []),value: $clips)
-                ScrollView { LazyVStack(alignment: .leading) {
+                ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
                     ForEach(song?.tracks.filter { $0.kind == .standard } ?? []) { track in
                         ForEach(track.clips.filter { $0.audioFile != nil }) { clip in
                             Toggle(isOn: selected(clip.id,in: $clips)) { Text(verbatim: track.name + " · " + clip.name).lineLimit(1) }
                         }
                     }
-                } }.scrollIndicators(.hidden).frame(height: 90)
+                } }.frame(height: 90)
             } else {
                 HStack(alignment: .top, spacing: 20) {
                 if source != .master {
                     VStack(alignment: .leading, spacing: 4) {
                     selectionHeader("Tracks",all: Set(song?.tracks.filter { $0.kind == .standard }.map(\.id) ?? []),value: $tracks)
-                    ScrollView { LazyVStack(alignment: .leading) {
+                    ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
                         ForEach(song?.tracks.filter { $0.kind == .standard } ?? []) { track in
                             Toggle(isOn: selected(track.id,in: $tracks)) { Text(verbatim: track.name).lineLimit(1) }
                         }
-                    } }.scrollIndicators(.hidden).frame(height: 115)
+                    } }.frame(height: 115)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if bounds == .regions {
                     VStack(alignment: .leading, spacing: 4) {
                     selectionHeader("Regions",all: Set(song?.parts.map(\.id) ?? []),value: $regions)
-                    ScrollView { LazyVStack(alignment: .leading) {
+                    ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
                         ForEach(exportRegions) { region in
                             Toggle(isOn: selected(region.id,in: $regions)) {
                                 Text(verbatim: region.displayName).lineLimit(1)
                             }.padding(.leading, region.parentRegionID == nil ? 0 : 16)
                         }
-                    } }.scrollIndicators(.hidden).frame(height: 115)
+                    } }.frame(height: 115)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 }

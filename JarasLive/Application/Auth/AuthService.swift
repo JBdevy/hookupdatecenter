@@ -45,8 +45,10 @@ public final class AuthService: ObservableObject {
         try await Task.detached(priority: .utility) { try store.write(data, key: "catlive.production.session") }.value
     }
     private func setAudio(_ value: Bool, reason: String = "") {
-        audioAllowed = value; restriction = value ? "" : reason
-        if !value { graceNotice = "" }
+        audioAllowed = value
+        let nextRestriction = value ? "" : reason
+        if restriction != nextRestriction { restriction = nextRestriction }
+        if !value, !graceNotice.isEmpty { graceNotice = "" }
         onAudioAuthorization(value)
     }
     private var serverNow: Date {
@@ -67,12 +69,17 @@ public final class AuthService: ObservableObject {
     }
     private func updateGraceNotice() {
         guard audioAllowed, let result = loginResult,
-              let days = result.entitlement.graceDaysRemaining(at: serverNow) else { graceNotice = ""; return }
+              let days = result.entitlement.graceDaysRemaining(at: serverNow) else {
+            // The local expiry heartbeat must not invalidate the UI without a change.
+            if !graceNotice.isEmpty { graceNotice = "" }
+            return
+        }
         let key = result.account.id.uuidString + ":" + String(result.entitlement.graceStartsAt!.timeIntervalSince1970)
         guard announcedGrace != key else { return }
         announcedGrace = key
         let reason = result.entitlement.graceReason == "overdue" ? "Seu pagamento está atrasado." : "Sua licença venceu. Renove sua licença."
-        graceNotice = reason + " Você tem \(days) \(days == 1 ? "dia" : "dias") de tolerância para regularizar. O CatLive continua liberado nesse período. Ao terminar, o áudio e os comandos serão bloqueados até a confirmação do pagamento."
+        let notice = reason + " Você tem \(days) \(days == 1 ? "dia" : "dias") de tolerância para regularizar. O CatLive continua liberado nesse período. Ao terminar, o áudio e os comandos serão bloqueados até a confirmação do pagamento."
+        if graceNotice != notice { graceNotice = notice }
     }
     private func requireVerified(_ result: LoginResult) throws {
         guard result.device.installationId == installation.installationId,

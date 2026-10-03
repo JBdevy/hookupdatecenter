@@ -287,6 +287,7 @@ final class TimelineAudioWaveform: ObservableObject {
 
     private let vertexBlocks = NSCache<NSString, VertexBlock>()
     private let headers = NSCache<NSString, Header>()
+    private let headerAliases = NSCache<NSString, NSURL>()
     private let pcm = NSCache<NSString, PCM>()
     private let geometries = NSCache<NSString, Geometry>()
     private let joinedDrawings = NSCache<NSString, RetainedDrawing>()
@@ -393,6 +394,7 @@ final class TimelineAudioWaveform: ObservableObject {
         vertexBlocks.totalCostLimit = 64 * 1024 * 1024
         vertexOverviews.totalCostLimit = 32 * 1024 * 1024
         headers.countLimit = 512
+        headerAliases.countLimit = 4096
         pcm.totalCostLimit = 48 * 1024 * 1024
         geometries.totalCostLimit = 24 * 1024 * 1024
         // Bound bytes, not tile count: a wide viewport can need more than 512
@@ -402,7 +404,32 @@ final class TimelineAudioWaveform: ObservableObject {
     }
 
     func header(_ url: URL, refresh: Bool = false) -> Header? {
-        let url = url.standardizedFileURL
+        // Timeline items already retain canonical URLs. Reuse their loaded
+        // header before Foundation repeats filesystem path normalization.
+        let path = url.path
+        if let value = headers.object(forKey: path as NSString) ?? pinnedHeader(path),
+           !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
+            return value.rate > 0 ? value : nil
+        }
+        // A document opened through /var, /tmp or another alias can retain
+        // noncanonical item URLs while preloading installs canonical headers.
+        // Remember only that path mapping, never a separate/stale header.
+        let alias = headerAliases.object(forKey: path as NSString).map { $0 as URL }
+        if let alias, let value = headers.object(forKey: alias.path as NSString) ?? pinnedHeader(alias.path),
+           !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
+            return value.rate > 0 ? value : nil
+        }
+        let resolvedURL: URL
+        if let alias, !refresh {
+            resolvedURL = alias
+        } else {
+            // An aged explicit refresh re-resolves the original path, so an
+            // alias moved to another source cannot keep its previous target.
+            resolvedURL = url.standardizedFileURL
+            if resolvedURL.path != path { headerAliases.setObject(resolvedURL as NSURL, forKey: path as NSString) }
+            else { headerAliases.removeObject(forKey: path as NSString) }
+        }
+        let url = resolvedURL
         let key = url.path as NSString
         let previous = headers.object(forKey: key) ?? pinnedHeader(url.path)
         if let value = previous, !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {

@@ -1135,3 +1135,11 @@
 "Unify converted MIDI audio separately from other audio on the same track." = "Unify converted MIDI audio separately from other audio on the same track.";
 
 "The selected items changed while unifying." = "The selected items changed while unifying.";
+
+"Open a project first" = "Open a project first";
+
+"Open a project before using Add Project." = "Open a project before using Add Project.";
+
+"The open project changed. Start Add Project again." = "The open project changed. Start Add Project again.";
+
+"Songs will be added in this order after the last song in the open project." = "Songs will be added in this order after the last song in the open project.";

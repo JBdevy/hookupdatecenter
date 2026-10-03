@@ -12,7 +12,7 @@ import UIKit
 final class TimelineStaticText: NSObject {
     // Same green as the native timeline/setlist scroll knobs (#54FF93).
     private static let rulerInk = CGColor(srgbRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1)
-    static let rulerColor = Color(cgColor: rulerInk)
+    static let rulerColor = Color(.sRGB, red: 84.0 / 255, green: 1, blue: 147.0 / 255, opacity: 1)
     enum Style: Int { case barNumber, regionIdentifier }
     private static let cache: NSCache<NSString, TimelineStaticText> = {
         let value = NSCache<NSString, TimelineStaticText>()

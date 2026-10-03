@@ -403,4 +403,5 @@ for zoom in [1.0, 100.0, 0.1, 2800.0, 2.0] {
 }
 print("METAL_NATIVE_HIGH_ZOOM_REVERSALS_STAY_INSIDE_ITEM_PIXEL_BOUNDS_OK")
 testWindow.close()
+
 #endif

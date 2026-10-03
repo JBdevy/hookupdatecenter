@@ -9,7 +9,7 @@ tablets**, sem interface de celular.
 
 ## O que funciona nesta entrega
 
-- Aplicativo macOS 13+ em SwiftUI, com núcleo C++17 e bridge Objective-C++.
+- Aplicativo macOS 12 Monterey ou superior em SwiftUI, com núcleo C++17 e bridge Objective-C++.
 - Grid horizontal com pistas à esquerda, régua de compassos, partes, blocos
   coloridos e overview demonstrativo de waveform. O desenho está separado das
   agulhas para não reconstruir todas as formas de onda a cada frame.
