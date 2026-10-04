@@ -113,7 +113,7 @@ jobs:
           INSTALLER_ID="$(security find-identity -v -p basic "$CATLIVE_KEYCHAIN" | sed -n 's/.*"\(Developer ID Installer:.*\)"/\1/p' | head -1)"
           test -n "$INSTALLER_ID"
           mkdir -p dist
-          productbuild --component "$APP" /Applications --sign "$INSTALLER_ID" "dist/CatLive-$VERSION-macOS.pkg"
+          productbuild --component "$APP" /Applications --component-compression auto --sign "$INSTALLER_ID" "dist/CatLive-$VERSION-macOS.pkg"
           pkgutil --check-signature "dist/CatLive-$VERSION-macOS.pkg" | grep -q 'Developer ID Installer:'
 
       - name: Notarize and staple PKG
