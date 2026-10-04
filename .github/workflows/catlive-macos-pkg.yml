@@ -55,11 +55,12 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/catlive-build" \
+            -jobs 2 \
             ARCHS='arm64 x86_64' \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="$VERSION" \
-            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CURRENT_PROJECT_VERSION="$((1000 + GITHUB_RUN_NUMBER))" \
             build
           APP="$RUNNER_TEMP/catlive-build/Build/Products/Release/CatLive.app"
           test -d "$APP"
