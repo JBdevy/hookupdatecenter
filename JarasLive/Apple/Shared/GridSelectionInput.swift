@@ -50,7 +50,14 @@ struct GridSelectionItem {
     }
     var editRect: CGRect? { textEditable && headerRect.width >= 33 ? CGRect(x: controlStart, y: rect.minY, width: 30, height: 13) : nil }
     var titleInset: CGFloat {
-        (gainLabelRect ?? gainKnobRect ?? fxRect ?? muteRect ?? editRect).map { $0.maxX - headerRect.minX + 1 } ?? 2
+        let rightEdge: CGFloat
+        if let label = gainLabelRect { rightEdge = label.maxX }
+        else if let knob = gainKnobRect { rightEdge = knob.maxX }
+        else if let fx = fxRect { rightEdge = fx.maxX }
+        else if let mute = muteRect { rightEdge = mute.maxX }
+        else if let edit = editRect { rightEdge = edit.maxX }
+        else { return 2 }
+        return rightEdge - headerRect.minX + 1
     }
     func visibleLeftHeader(in viewport: CGRect, titleWidth: CGFloat) -> Self {
         var item = self
