@@ -2024,7 +2024,10 @@ private final class FooterMixerScrollView: NSView {
         wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === self.window, self.window?.attachedSheet == nil,
                   self.visibleRect.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
-            let horizontal = event.modifierFlags.contains(.shift)
+            // A physical mouse wheel browses the mixer channels directly. Keep
+            // trackpad gestures native, including their horizontal axis.
+            let horizontal = event.modifierFlags.contains(.shift) ||
+                (!event.hasPreciseScrollingDeltas && event.modifierFlags.intersection([.command, .control, .option]).isEmpty)
             if horizontal {
                 let delta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
                 if event.hasPreciseScrollingDeltas { self.stopCoast(); self.move(to: self.scroll.contentView.bounds.minX - delta) }
