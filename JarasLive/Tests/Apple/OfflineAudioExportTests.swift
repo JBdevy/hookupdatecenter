@@ -659,3 +659,51 @@ do {
     precondition(track.clips == clips && multiple.tracks[0].clips == clips)
     print("AUDIO_GLUE_SUM_GAPS_ITEM_FX_TRACK_FX_ONCE_TEMPO_REOPEN_SINGLE_ITEM_CANCEL_ERROR_ROLLBACK_OK")
 }
+
+do {
+    var fixture = Project.empty(name: "Item tuner print")
+    var track = Track(id: UUID(), name: "Tuned", role: .keys)
+    var clip = AudioClip(id: UUID(), name: "a.wav", startTime: 0, duration: 1, audioFile: AudioFile(path: "a.wav"))
+    clip.pitchSemitones = 12; track.clips = [clip]; fixture.songs[0].tracks = [track]
+    let rerendered = try ItemReRender.render(project: fixture, song: fixture.songs[0], track: track, clip: clip, directory: root,
+        settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
+    let glued = try ItemReRender.glue(project: fixture, song: fixture.songs[0], track: track, clips: [clip], directory: root,
+        cancellation: AudioExportCancellation())
+    for printed in [rerendered, glued] {
+        precondition(printed.pitchSemitones == nil, "Tuner resets after printing")
+        let pcm = try renderedPCM(root.appendingPathComponent(printed.audioFile!.path))
+        let begin = 14400, end = 38400
+        var crossings = 0
+        for index in (begin + 1)..<end { if pcm[index - 1] < 0 && pcm[index] >= 0 { crossings += 1 } }
+        let frequency = Double(crossings) * 48000 / Double(end - begin)
+        precondition(abs(frequency - 0.13 * 48000 / (2 * .pi) * 2) < 10, "Printed octave must be audible: \(frequency)")
+    }
+    let midi = AudioClip(id: UUID(), name: "Later MIDI", startTime: 1.2, duration: 0.5,
+        midi: MIDIItem(notes: [MIDINote(start: 0, length: 0.5, pitch: 60, velocity: 100)]))
+    track.clips = [clip, midi]; fixture.songs[0].tracks = [track]
+    let mixed = try ItemReRender.glue(project: fixture, song: fixture.songs[0], track: track, clips: [midi, clip], directory: root,
+        cancellation: AudioExportCancellation())
+    precondition(mixed.midi == nil && mixed.audioFile != nil && mixed.frozenMIDI == true && mixed.pitchSemitones == nil)
+    precondition(abs(mixed.duration - 1.7) < 0.000001 && mixed.startTime == 0, "Mixed glue spans items and gaps")
+    let pcm = try renderedPCM(root.appendingPathComponent(mixed.audioFile!.path))
+    precondition(pcm[14400..<38400].contains { abs($0) > 0.001 }, "Mixed glue preserves the audio item")
+    precondition(pcm[65000..<78000].allSatisfy { abs($0) < 0.00001 }, "MIDI without an instrument prints silence")
+    let notes = try ItemReRender.glue(project: fixture, song: fixture.songs[0], track: track, clips: [midi], directory: root,
+        cancellation: AudioExportCancellation())
+    precondition(notes.midi != nil && notes.audioFile == nil, "MIDI-only glue remains editable MIDI")
+    if let source = ProcessInfo.processInfo.environment["JARAS_TEST_SF2"] {
+        var fx = NativeFXSettings()
+        var parameters = InstrumentParameters()
+        parameters.attack = 0.001; parameters.hold = 0; parameters.decay = 0.001; parameters.sustain = 1; parameters.release = 0.01
+        let key = fx.appendNative("Instruments", instrument: "fixture", parameters: parameters)
+        track.fx = fx; fixture.songs[0].tracks = [track]
+        let instruments = [key: OfflineMIDIInstrument(url: URL(fileURLWithPath: source), parameters: parameters, drums: false, monophonic: false)]
+        let mixedWithInstrument = try ItemReRender.glue(project: fixture, song: fixture.songs[0], track: track, clips: [midi, clip], directory: root,
+            cancellation: AudioExportCancellation(), instruments: instruments)
+        let played = try renderedPCM(root.appendingPathComponent(mixedWithInstrument.audioFile!.path))
+        precondition(played[65000..<68000].contains { abs($0) > 0.0001 }, "Mixed glue renders the instrument at the later MIDI position")
+        precondition(mixedWithInstrument.frozenMIDI == true, "Printed track FX cannot apply twice")
+        print("MIXED_GLUE_WITH_LIVE_INSTRUMENT_OK")
+    }
+    print("ITEM_TUNER_PRINT_RESET_AND_MIXED_GLUE_AUDIO_MIDI_GAPS_OK")
+}

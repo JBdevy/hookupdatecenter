@@ -12,12 +12,17 @@ public final class AuthService: ObservableObject {
     @Published public private(set) var graceNotice = ""
     private var announcedGrace: String?
     @Published public private(set) var workspaceAllowed = false
-    public let installation: AuthorizedDevice
+    @Published public private(set) var installation: AuthorizedDevice
+    @Published public private(set) var requiresDeviceName = false
+    private var pendingLogin: (email: String, password: String)?
+    public var onDeviceNameChanged: (String) -> Void = { _ in }
     private let backend: any BackendClient, store: any SecureStore
     private let entitlements: EntitlementService, authorization: DeviceAuthorizationService
     private let feature: String
     private let verifier: LicenseLeaseVerifier?
     private var trustedCache: SessionCache?
+    private var checkingOnlineAccess = false
+    private let quarantineNoticeKey = "catlive.production.quarantineNotice"
     private var clockWrite: Task<Void, Error>?
     private var lastClockWrite = 0.0
     private let trialClockKey = "catlive.production.trialClock"
@@ -133,7 +138,11 @@ public final class AuthService: ObservableObject {
         guard !busy else { return }; busy = true; defer { busy = false }
         phase = .checkingSession
         do {
-            guard let data = try await readSessionData() else { phase = .unauthenticated; return }
+            guard let data = try await readSessionData() else {
+                phase = .unauthenticated
+                if try store.read(quarantineNoticeKey) != nil { message = BackendFailure.quarantined.localizedDescription }
+                return
+            }
             let cache = try JSONDecoder().decode(SessionCache.self, from: data)
             guard cache.login.device.installationId == installation.installationId else { throw BackendFailure.invalidSession }
             loginResult = cache.login; workspaceAllowed = true; trustedCache = cache
@@ -153,14 +162,55 @@ public final class AuthService: ObservableObject {
             } else { try await validate(cache: cache) }
         } catch { await deny(error) }
     }
+    /// Validate credentials before asking for a name, without occupying a seat
+    /// or consuming a trial until the user completes the mandatory second step.
+    @discardableResult public func beginLogin(email: String, password: String) async -> Bool {
+        guard !busy else { return false }
+        do {
+            if let name = try DeviceDisplayName.saved(in: store) {
+                installation.deviceName = name
+                return await login(email: email, password: password)
+            }
+            busy = true; defer { busy = false }
+            message = ""
+            _ = try await backend.credentialDevices(email: email, cpf: password)
+            pendingLogin = (email, password)
+            requiresDeviceName = true
+            return false
+        } catch { message = error.localizedDescription; return false }
+    }
+    public func cancelDeviceNaming() {
+        guard !busy else { return }
+        pendingLogin = nil; requiresDeviceName = false; message = ""
+    }
+    @discardableResult public func completeDeviceNaming(_ value: String) async -> Bool {
+        guard !busy, let credentials = pendingLogin else { return false }
+        guard let name = DeviceDisplayName.validated(value) else {
+            message = "Digite um nome válido e curto para o dispositivo, sem quebras de linha."
+            return false
+        }
+        var device = installation; device.deviceName = name
+        return await signIn(email: credentials.email, password: credentials.password, device: device, chosenName: name)
+    }
     @discardableResult public func login(email: String, password: String) async -> Bool {
+        await signIn(email: email, password: password, device: installation)
+    }
+    private func signIn(email: String, password: String, device: AuthorizedDevice, chosenName: String? = nil) async -> Bool {
         guard !busy else { return false }; busy = true; defer { busy = false }
         message = ""
         do {
-            let result = try await backend.login(email: email, password: password, device: installation)
+            let result = try await backend.login(email: email, password: password, device: device)
             try requireVerified(result)
             try await prepareTrialState(result)
+            if let chosenName {
+                guard result.device.deviceName == chosenName else { throw BackendFailure.invalidSession }
+                try store.write(Data(chosenName.utf8), key: DeviceDisplayName.storageKey)
+            }
+            try store.delete(quarantineNoticeKey)
             try await writeSessionData(JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())))
+            installation.deviceName = device.deviceName
+            pendingLogin = nil; requiresDeviceName = false
+            onDeviceNameChanged(device.deviceName)
             accept(result, validatedAt: Date(), offline: false)
             devices = (try? await backend.devices(result.session)) ?? [result.device]
             return true
@@ -224,21 +274,37 @@ public final class AuthService: ObservableObject {
             try await validate(cache: cache)
         } catch { await deny(error) }
     }
+    /// This check can revoke access, never extend a lease or restart a trial.
+    /// Network failures leave the existing signed offline authorization intact.
+    public func checkOnlineAccess() async {
+        guard !busy, !checkingOnlineAccess, let result = loginResult else { return }
+        checkingOnlineAccess = true; defer { checkingOnlineAccess = false }
+        do { try await backend.accessStatus(result.session) }
+        catch {
+            guard !busy, loginResult?.session.refreshToken == result.session.refreshToken,
+                  let failure = error as? BackendFailure,
+                  [.quarantined, .blocked, .revoked, .invalidSession].contains(failure) else { return }
+            await deny(failure)
+        }
+    }
     private func deny(_ error: Error) async {
         message = error.localizedDescription
         phase = .unauthorized; revokedPending = false; onPendingRevocation(false)
-        setAudio(false, reason: loginResult.map { result in
+        setAudio(false, reason: (error as? BackendFailure) == .quarantined ? error.localizedDescription : loginResult.map { result in
             if !result.entitlement.permits(feature, at: serverNow) { return reason(result.entitlement) }
             return error.localizedDescription + " O áudio está desativado."
         } ?? "")
-        if let failure = error as? BackendFailure, [.revoked, .blocked, .expired, .invalidSession].contains(failure), var result = loginResult {
+        if let failure = error as? BackendFailure, [.revoked, .blocked, .quarantined, .expired, .invalidSession].contains(failure), var result = loginResult {
             result.device.status = .revoked; loginResult = result
             trustedCache = SessionCache(login: result, validatedAt: Date())
             if let data = try? JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())) {
                 try? await writeSessionData(data)
             }
         }
-        if (error as? BackendFailure) == .invalidSession {
+        if (error as? BackendFailure) == .quarantined {
+            try? store.write(Data([1]), key: quarantineNoticeKey)
+        }
+        if let failure = error as? BackendFailure, [.invalidSession, .quarantined].contains(failure) {
             // The server no longer recognizes these credentials (for example,
             // after deleting the account). Keep the editor alive for saving,
             // but discard its login, devices and old signed plan together.
@@ -255,7 +321,7 @@ public final class AuthService: ObservableObject {
         }
     }
     private func handleAccountRequestFailure(_ error: Error) async {
-        if let failure = error as? BackendFailure, [.invalidSession, .revoked, .blocked, .expired].contains(failure) {
+        if let failure = error as? BackendFailure, [.invalidSession, .revoked, .blocked, .quarantined, .expired].contains(failure) {
             await deny(error)
         } else { message = error.localizedDescription }
     }

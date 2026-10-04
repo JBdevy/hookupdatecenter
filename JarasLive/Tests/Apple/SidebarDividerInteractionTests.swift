@@ -154,7 +154,7 @@ precondition(unflipped.contentView.bounds.minY == 800 && otherController.metrics
 otherController.scroll(to: 800)
 precondition(unflipped.contentView.bounds.minY == 0 && otherController.metrics.offset == 800)
 
-// A physical wheel interpolates its exact destination; trackpad keeps native momentum.
+// A physical wheel applies its exact step immediately; trackpad keeps native momentum.
 final class SidebarWheelEvent: NSEvent {
     var targetWindow: NSWindow!
     var point = NSPoint.zero
@@ -172,7 +172,7 @@ physicalWheel.targetWindow = window
 physicalWheel.point = mixerScroll.convert(NSPoint(x: 100, y: 100), to: nil)
 precondition(mixerController.handleWheel(physicalWheel))
 let firstWheelPosition = mixerController.metrics.offset
-precondition(firstWheelPosition > 0 && firstWheelPosition < 64, "wheel starts immediately without jumping the entire step")
+precondition(abs(firstWheelPosition - 64) < 0.001, "physical wheel applies its complete step immediately")
 settle(0.65)
 precondition(abs(mixerController.metrics.offset - 64) < 0.001, "wheel settles at its exact distance")
 physicalWheel.delta = -8
@@ -190,7 +190,7 @@ for _ in 0..<120 {
     precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
 }
 precondition(hitProbe.hitCount == previousHits, "trackpad zoom must not hit-test the sidebar's entire hosted document")
-print("SIDEBAR_PHYSICAL_WHEEL_SMOOTH_EXACT_TARGET_AND_REVERSAL_OK")
+print("SIDEBAR_PHYSICAL_WHEEL_IMMEDIATE_EXACT_TARGET_AND_REVERSAL_OK")
 
 // Every thumb event commits immediately, including reversal and mouse-up.
 mixerController.scroll(to: 0)

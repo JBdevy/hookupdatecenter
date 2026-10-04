@@ -19,6 +19,10 @@ struct MIDIInputDevice: Identifiable, Equatable {
 }
 @MainActor final class AudioDeviceSettings: ObservableObject {
     static let shared = AudioDeviceSettings()
+    @Published private(set) var inputDevices: [OutputDevice] = []
+    @Published private(set) var inputUID = UserDefaults.standard.string(forKey: "catlive.audioInputUID") ?? ""
+    var inputDeviceChanged: (() -> Void)?
+    var inputDevice: OutputDevice? { inputDevices.first { $0.id == inputUID } }
     @Published private(set) var devices: [OutputDevice] = []
     @Published private(set) var selectedUID = UserDefaults.standard.string(forKey: "jaras.audioOutputUID") ?? ""
     @Published private(set) var channels = 0
@@ -131,9 +135,17 @@ struct MIDIInputDevice: Identifiable, Equatable {
         devices = ids.compactMap { id in
             let count = outputChannels(id)
             let uid = stringProperty(id, kAudioDevicePropertyDeviceUID)
-            guard count > 0, isSelectableOutput(id, uid: uid) else { return nil }
-            return OutputDevice(id: uid, name: stringProperty(id, kAudioObjectPropertyName), channels: count, hardwareID: id)
+            let name = stringProperty(id, kAudioObjectPropertyName).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard count > 0, !name.isEmpty, !uid.isEmpty, isSelectableOutput(id, uid: uid) else { return nil }
+            return OutputDevice(id: uid, name: name, channels: count, hardwareID: id)
         }
+        inputDevices = ids.compactMap { id in
+            let count = outputChannels(id, scope: kAudioDevicePropertyScopeInput)
+            guard count > 0 else { return nil }
+            return OutputDevice(id: stringProperty(id, kAudioDevicePropertyDeviceUID), name: stringProperty(id, kAudioObjectPropertyName), channels: count, hardwareID: id)
+        }
+        inputDeviceChanged?()
+        if selectedUID == "none" { channels = 0; return }
         if let selected = devices.first(where: { $0.id == selectedUID }) { channels = selected.channels; if configuredUID != selected.id { select(selected.id) } }
         else {
             var defaultID: AudioDeviceID = 0
@@ -149,7 +161,17 @@ struct MIDIInputDevice: Identifiable, Equatable {
         selectedUID = devices.first?.id ?? ""; channels = devices.first?.channels ?? 0
         #endif
     }
+    func selectInput(_ uid: String) {
+        guard uid.isEmpty || inputDevices.contains(where: { $0.id == uid }) else { return }
+        inputUID = uid; UserDefaults.standard.set(uid, forKey: "catlive.audioInputUID")
+        inputDeviceChanged?()
+    }
     func select(_ uid: String) {
+        if uid == "none" {
+            selectedUID = uid; channels = 0; configuredUID = nil
+            UserDefaults.standard.set(uid, forKey: "jaras.audioOutputUID")
+            engine.mainMixerNode.outputVolume = 0; deviceChanged?(); return
+        }
         guard let device = devices.first(where: { $0.id == uid }) else { return }
         if configuredUID == uid {
             if !engine.isRunning { deviceChanged?() }
@@ -285,8 +307,8 @@ struct MIDIInputDevice: Identifiable, Equatable {
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &text) == noErr else { return "Device \(id)" }
         return text as String
     }
-    private func outputChannels(_ id: AudioDeviceID) -> Int {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+    private func outputChannels(_ id: AudioDeviceID, scope: AudioObjectPropertyScope = kAudioDevicePropertyScopeOutput) -> Int {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: scope, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
         let storage = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)

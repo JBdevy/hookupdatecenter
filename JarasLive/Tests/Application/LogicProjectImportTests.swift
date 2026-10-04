@@ -48,6 +48,7 @@ final class LogicProjectImportTests: XCTestCase {
         text("Trimmed guitar", in: &region, at: 74)
         records.append(record("gRuA", body: region, kind: 11))
         var event = Data(count: 80); event[0] = 0x24
+        event[53] = UInt8(bitPattern: -5); event[50] = 25
         put(34560 + 8 * 960, in: &event, at: 4)
         put(0x100, in: &event, at: 12)
         put(2, in: &event, at: 20)
@@ -89,6 +90,7 @@ final class LogicProjectImportTests: XCTestCase {
         let clip = try XCTUnwrap(song.tracks[1].clips.first)
         XCTAssertEqual(clip.startTime, 6, accuracy: 0.000001) // 4 beats at 60 + 4 at 120.
         XCTAssertEqual(clip.duration, 10)
+        XCTAssertEqual(clip.pitchSemitones, -4.75)
         XCTAssertEqual(clip.sourceOffset, 1)
         XCTAssertEqual(clip.muted, true)
         XCTAssertEqual(song.parts[0].name, "Introduction")

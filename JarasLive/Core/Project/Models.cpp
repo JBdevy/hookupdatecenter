@@ -8,6 +8,11 @@
 #include <unordered_map>
 namespace jaras {
 void orderSpecialTracks(Project& project) {
+    for (auto& song : project.songs) if (song.markers) {
+        std::set<ID> endpoints;
+        for (const auto& part : song.parts) for (const auto& loop : part.multiLoops) { endpoints.insert(loop.marker1); endpoints.insert(loop.marker2); }
+        for (auto& marker : *song.markers) if (!marker.tempoBPM && endpoints.count(marker.id)) { marker.section = true; marker.loopSection = true; }
+    }
     const auto rank = [](const Track& track) {
         return track.role.id == "timecode" ? 0 : track.role.id == "generatedClick" ? 1 : track.role.id == "chords" ? 2 : track.role.id == "teleprompt" ? 3 : track.role.id == "teleprompt2" ? 4 : track.role.id == "video" ? 5 : 6;
     };
@@ -136,11 +141,6 @@ void validate(const Project& p) {
     auto finite = [](double x) { return std::isfinite(x); };
     require(p.projectFormatVersion == 1 && p.minimumJarasVersion == "1.0.0", "Unsupported project version");
     require(!p.id.empty() && !p.name.empty(), "Missing project identity");
-    size_t trackCount = 0;
-    for (const auto& song : p.songs) {
-        trackCount += song.tracks.size();
-        require(trackCount <= Project::maximumTrackCount, "A project supports at most 1000 tracks");
-    }
     auto validatePatch = [&](const OutputPatch& patch, bool masterAllowed, bool groupAllowed = false, bool noneAllowed = false) {
         if (patch.channelCount == 2 && ((noneAllowed && patch.firstChannel == -1) || (groupAllowed && patch.firstChannel == -2))) return;
         require(patch.firstChannel >= (masterAllowed ? 0 : 1) && patch.firstChannel <= 1024 &&
@@ -161,10 +161,16 @@ void validate(const Project& p) {
         require(finite(s.duration) && s.duration > 0 && finite(s.bpm) && s.bpm > 0, "Invalid song timing");
         require(s.beatsPerBar >= 1 && s.beatsPerBar <= 32 && s.beatUnit >= 1 && s.beatUnit <= 64 && (s.beatUnit & (s.beatUnit - 1)) == 0, "Invalid time signature");
         require(!s.timeSettings || validProjectTimeSettings(*s.timeSettings), "Invalid project timebase");
-        std::optional<ID> folder;
+        std::vector<ID> ancestors;
+        std::set<ID> audioTracks;
+        for (const auto& t : s.tracks) if (fixedTrackName(t.role).empty()) audioTracks.insert(t.id);
         for (const auto& t : s.tracks) {
-            if (t.parentTrackID) require(folder && *folder == *t.parentTrackID && t.id != *folder, "Invalid track group");
-            else folder = t.id;
+            if (t.parentTrackID) {
+                const auto parent = std::find(ancestors.begin(), ancestors.end(), *t.parentTrackID);
+                require(parent != ancestors.end() && t.id != *t.parentTrackID && audioTracks.count(*t.parentTrackID), "Invalid track group");
+                ancestors.erase(parent + 1, ancestors.end());
+            } else ancestors.clear();
+            ancestors.push_back(t.id);
             unique(t.id);
             const auto fixed = fixedTrackName(t.role);
             require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick") && !t.parentTrackID), "Invalid special track");
@@ -251,6 +257,7 @@ void validate(const Project& p) {
                 require(!clip.gain || (finite(*clip.gain) && *clip.gain >= 0), "Invalid clip gain");
                 require(!clip.channelMode || (*clip.channelMode >= 0 && *clip.channelMode <= 3), "Invalid item channel mode");
                 require((!clip.fadeIn || (finite(*clip.fadeIn) && *clip.fadeIn >= 0)) && (!clip.fadeOut || (finite(*clip.fadeOut) && *clip.fadeOut >= 0)), "Invalid item fade");
+                require(!clip.pitchSemitones || (finite(*clip.pitchSemitones) && *clip.pitchSemitones >= -12 && *clip.pitchSemitones <= 12), "Invalid item pitch");
                 require(!clip.normalizationGain || (finite(*clip.normalizationGain) && *clip.normalizationGain >= 0 && *clip.normalizationGain <= std::pow(10.0, 24.0 / 20.0)), "Invalid normalization gain");
                 unique(clip.id);
                 require(finite(clip.startTime) && finite(clip.duration) && clip.startTime >= 0 && clip.duration > 0 && clip.startTime + clip.duration <= s.duration, "Invalid clip interval");
@@ -290,7 +297,7 @@ void validate(const Project& p) {
                 std::set<ID> targets;
                 for (const auto& track : loop.tracks) require(targets.insert(track.id).second && finite(track.gain) && track.gain >= 0 && track.gain <= std::pow(10.0, 12.0 / 20.0), "Invalid multiloop track");
             }
-            require(!part.pitchSemitones || (*part.pitchSemitones >= -6 && *part.pitchSemitones <= 6), "Invalid region pitch");
+            require(!part.pitchSemitones || (*part.pitchSemitones >= -12 && *part.pitchSemitones <= 12), "Invalid region pitch");
             unique(part.id);
             if (!part.parentRegionID) { regionEdges.emplace_back(part.startTime, 1); regionEdges.emplace_back(part.endTime, -1); }
             else {

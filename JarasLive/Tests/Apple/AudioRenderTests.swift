@@ -194,26 +194,36 @@ let restoredMaster = try peak()
 precondition(abs(restoredMaster - leftOnly) < 0.001 && abs(output.floatChannelData![1][256]) < 0.0001)
 renderer.previewPan(id, pan: 0)
 print("MASTER_POST_FX_MONO_SUM_AND_LIVE_STEREO_RESTORE_PCM_OK")
-// Transient multiloop mix must alter PCM without changing the project faders.
+// Multiloops now use the normal mixer path. The controller regression verifies
+// the commands and visible state; here those same callbacks must alter PCM once.
 var loopRule = MultiLoopTrack(id: id, gain: 0.2); loopRule.autoFader = true
 snapshot.transport.multiLoop = MultiLoopPlayback(id: UUID(), start: 1, end: 9, amount: 1, gates: true, released: false, tracks: [loopRule])
+snapshot.project.songs[0].tracks[0].volume = 0.2
+renderer.previewVolume(id, gain: 0.2)
 try renderer.update(snapshot, revision: 1)
 let loopQuiet = try peak()
 precondition(abs(loopQuiet - mainPeak * 0.2) < 0.001, "multiloop target gain reaches actual PCM")
 snapshot.transport.multiLoop?.amount = 0.5; snapshot.transport.multiLoop?.released = true
+snapshot.project.songs[0].tracks[0].volume = 0.6
+renderer.previewVolume(id, gain: 0.6)
 try renderer.update(snapshot, revision: 1)
 let loopRecovering = try peak()
 precondition(abs(loopRecovering - mainPeak * 0.6) < 0.001, "release fade restores proportionally without reload")
 snapshot.transport.multiLoop?.amount = 1; snapshot.transport.multiLoop?.tracks[0].mute = true
+snapshot.project.songs[0].tracks[0].mute = true
+renderer.previewMute(id, muted: true)
 try renderer.update(snapshot, revision: 1)
 let loopMuted = try peak()
 precondition(loopMuted < 0.0001, "multiloop mute reaches actual PCM")
 snapshot.transport.multiLoop = nil
+snapshot.project.songs[0].tracks[0].volume = 1
+snapshot.project.songs[0].tracks[0].mute = false
+renderer.previewVolume(id, gain: 1); renderer.previewMute(id, muted: false)
 try renderer.update(snapshot, revision: 1)
 let loopRestored = try peak()
 precondition(abs(loopRestored - mainPeak) < 0.001, "leaving multiloop restores gain and mute")
-precondition(snapshot.project.songs[0].tracks[0].volume == 1 && !snapshot.project.songs[0].tracks[0].mute, "multiloop never writes project mixer state")
-print("MULTILOOP_TRANSIENT_GAIN_RELEASE_MUTE_RESTORE_PCM_OK")
+precondition(snapshot.project.songs[0].tracks[0].volume == 1 && !snapshot.project.songs[0].tracks[0].mute, "leaving the loop restores the visible mixer state")
+print("MULTILOOP_NORMAL_MIXER_GAIN_RELEASE_MUTE_RESTORE_PCM_OK")
 let heldPeak = TrackMeterLevel()
 heldPeak.update(peak: 0.99, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == nil)
 heldPeak.update(peak: 1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 0)
@@ -222,15 +232,15 @@ heldPeak.update(peak: 1.1, elapsed: 0.03); precondition(heldPeak.peakHold.decibe
 heldPeak.reset(); precondition(heldPeak.peakHold.decibels == 3, "Stop retains the maximum clip peak")
 var automaticMutes: [UUID] = []
 renderer.onPeakLimit = { automaticMutes.append($0) }
-renderer.observeTrackPeak(id, left: pow(10, 9.99 / 20), right: 0, elapsed: 0.03)
+renderer.observeTrackPeak(id, left: pow(10, 19.99 / 20), right: 0, elapsed: 0.03)
 precondition(automaticMutes.isEmpty)
-renderer.observeTrackPeak(id, left: 0, right: TrackMeterLevel.PeakHold.muteThreshold, elapsed: 0.03)
+renderer.observeTrackPeak(id, left: 0, right: pow(10, 20.0 / 20), elapsed: 0.03)
 precondition(automaticMutes == [id])
 let protectionSilence = try peak(); precondition(protectionSilence < 0.0001)
-renderer.observeTrackPeak(id, left: 4, right: 4, elapsed: 0.03)
+renderer.observeTrackPeak(id, left: 11, right: 11, elapsed: 0.03)
 precondition(automaticMutes == [id], "An already-muted track cannot toggle back on")
 renderer.onPeakLimit = nil; renderer.previewMute(id, muted: false)
-print("TRACK_PEAK_HOLD_MAXIMUM_AND_10_DB_AUTOMUTE_BOTH_CHANNELS_OK")
+print("TRACK_PEAK_HOLD_MAXIMUM_AND_20_DB_AUTOMUTE_BOTH_CHANNELS_OK")
 let missingEngine = AVAudioEngine()
 try missingEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
 let missingRenderer = StemAudioPlayback(engine: missingEngine, realtime: false)
@@ -1339,6 +1349,14 @@ precondition(Array(UnsafeBufferPointer(start: pitchBuffer.floatChannelData![0], 
 pitchState.transport.playing = true; try pitchAudio.update(pitchState, revision: 2)
 precondition(pitchEngine.attachedNodes.count == warmedNodes, "repeated Play reuses the prepared sources")
 try expectFrequency(440)
+pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = 12
+try pitchAudio.update(pitchState, revision: 3); try expectFrequency(880)
+pitchState.project.songs[0].tracks[0].clips[0].renderedTiming = true
+pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = -12
+try pitchAudio.update(pitchState, revision: 4); try expectFrequency(220)
+pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = nil
+try pitchAudio.update(pitchState, revision: 5); try expectFrequency(440)
+print("ITEM_TUNER_LIVE_AND_PRINTED_AUDIO_PITCH_OK")
 pitchAudio.prepareForClosing()
 print("NATIVE_PITCH_REGION_TARGETS_LAZY_ALLOCATION_AND_TRANSPORT_REUSE_PCM_OK")
 
@@ -1511,6 +1529,109 @@ if let path = ProcessInfo.processInfo.environment["JARAS_TEST_SF2"] {
     instrumentAudio.prepareForClosing()
     print("REPEATED_SF2_INDEPENDENT_MIDI_BYPASS_AND_CONTROLLER_VOLUME_PCM_OK")
 }
+
+// Live input uses the same track graph while stored clips stay independent.
+for route in [0, 1, 2] {
+    let liveEngine = AVAudioEngine()
+    let liveFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4)!)
+    try liveEngine.enableManualRenderingMode(.offline, format: liveFormat, maximumFrameCount: 512)
+    let liveAudio = StemAudioPlayback(engine: liveEngine, realtime: false)
+    liveAudio.open(directory: directory)
+    var p = Project.empty(name: "Live monitoring")
+    var inputTrack = Track(id: UUID(), name: "Input", role: .other)
+    inputTrack.volume = 0.5
+    var destination = Track(id: UUID(), name: "Bus", role: .other)
+    if route == 1 { inputTrack.outputs = [OutputPatch(firstChannel: 3, channelCount: 2)] }
+    if route == 2 { inputTrack.parentTrackID = destination.id; destination.volume = 0.5 }
+    p.songs[0].tracks = route == 2 ? [destination, inputTrack] : [inputTrack]
+    var state = ShowSnapshot(project: p, transport: TransportState(playing: true, songId: p.songs[0].id, position: 0,
+        queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try liveAudio.update(state, revision: 1)
+    let sourceFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let source = AVAudioSourceNode(format: sourceFormat) { silent, _, frames, buffers in
+        silent.pointee = false
+        for (channel, buffer) in UnsafeMutableAudioBufferListPointer(buffers).enumerated() {
+            buffer.mData!.assumingMemoryBound(to: Float.self).update(repeating: channel == 0 ? 0.2 : 0.4, count: Int(frames))
+        }
+        return noErr
+    }
+    liveAudio.setInputMonitor(inputTrack.id, source: source, format: sourceFormat)
+    let pcm = AVAudioPCMBuffer(pcmFormat: liveFormat, frameCapacity: 512)!
+    func livePeaks() throws -> [Float] {
+        var peaks = [Float](repeating: 0, count: 4)
+        for _ in 0..<48 {
+            let rendered = try liveEngine.renderOffline(512, to: pcm); precondition(rendered == .success)
+            for c in 0..<4 { for f in 0..<512 { peaks[c] = max(peaks[c], abs(pcm.floatChannelData![c][f])) } }
+        }
+        return peaks
+    }
+    let on = try livePeaks(), first = route == 1 ? 2 : 0
+    precondition(on[first] > 0.01 && on[first+1] > on[first], "monitor follows stereo channels through Master, group or hardware route")
+    if route == 1 { precondition(on[0] < 0.00001 && on[1] < 0.00001, "direct monitoring does not leak to Master") }
+    let i = state.project.songs[0].tracks.firstIndex { $0.id == inputTrack.id }!
+    state.project.songs[0].tracks[i].inputMonitoring = false
+    try liveAudio.update(state, revision: 2)
+    _ = try livePeaks()
+    let off = try livePeaks(); precondition(off.max()! < 0.00001, "Monitor Off silences the attached live input through the actual setting")
+    precondition(liveAudio.hasInputMonitor(inputTrack.id), "Monitor Off keeps the capture route attached")
+    state.project.songs[0].tracks[i].inputMonitoring = true
+    try liveAudio.update(state, revision: 3)
+    let resumed = try livePeaks()
+    precondition(resumed[first] > 0.01, "Monitor On resumes the same source without rearming")
+    state.project.songs[0].tracks[i].inputMonitoring = false
+    try liveAudio.update(state, revision: 4)
+    _ = try livePeaks()
+    let offAgain = try livePeaks(); precondition(offAgain.max()! < 0.00001, "Monitor Off works repeatedly during playback")
+    state.project.songs[0].tracks[i].clips = [AudioClip(id: UUID(), name: "Recorded", startTime: 0, duration: 5, audioFile: AudioFile(path: "tone.wav"))]
+    try liveAudio.update(state, revision: 5)
+    let recorded = try livePeaks(); print("MONITOR_RECORDED_PCM", route, recorded); precondition(recorded[first] > 0.001, "Monitor Off never silences recorded clips")
+    var captured: [UInt8] = []
+    liveAudio.armedMIDIRecordingTracks = [inputTrack.id]
+    liveAudio.onLiveKeyboardMIDI = { _, status, _, _ in captured.append(status) }
+    liveAudio.playKeyboardNote(60); liveAudio.releaseKeyboardNote(60)
+    precondition(captured == [0x90, 0x80], "virtual keyboard records MIDI on tracks without an instrument")
+    liveAudio.prepareForClosing()
+}
+print("INPUT_MONITOR_MASTER_GROUP_HARDWARE_OFF_RECORDED_AUDIO_AND_MIDI_CAPTURE_OK")
+
+// Folder inside folder: every gain stage is audible, and child Solo keeps the
+// complete path alive without admitting siblings outside the selected subtree.
+do {
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: engine, realtime: false)
+    audio.open(directory: directory)
+    var p = Project.empty(name: "Nested folders PCM")
+    var outer = Track(id: UUID(), name: "Outer", role: .keys); outer.volume = 0.5
+    var inner = Track(id: UUID(), name: "Inner", role: .keys); inner.volume = 0.5; inner.parentTrackID = outer.id
+    let leaf = scalarTrack("Leaf", volume: 1, parent: inner.id)
+    let sibling = scalarTrack("Sibling", volume: 1, parent: outer.id)
+    p.songs[0].tracks = [outer, inner, leaf, sibling]
+    try p.validate()
+    let snapshot = ShowSnapshot(project: p, transport: TransportState(playing: true, songId: p.songs[0].id, position: 0,
+        queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try audio.update(snapshot, revision: 1)
+    let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+    func check(_ expected: Float) throws {
+        var peak: Float = 0
+        for block in 0..<16 {
+            let status = try engine.renderOffline(512, to: pcm)
+            precondition(status == .success)
+            if block > 8 { for frame in 0..<512 { peak = max(peak, abs(pcm.floatChannelData![0][frame])) } }
+        }
+        precondition(abs(peak - expected) < 0.002, "Nested chain PCM: expected \(expected), got \(peak)")
+    }
+    try check(0.075)
+    audio.previewSolo(leaf.id, solo: true); try check(0.025)
+    audio.previewSolo(leaf.id, solo: false)
+    audio.previewSolo(inner.id, solo: true); try check(0.025)
+    audio.previewMute(outer.id, muted: true); try check(0)
+    audio.previewMute(outer.id, muted: false)
+    audio.previewVolume(inner.id, gain: 0.25); try check(0.0125)
+    audio.prepareForClosing()
+    print("NESTED_FOLDER_PARENT_GAIN_CHILD_AND_FOLDER_SOLO_MUTE_PCM_OK")
+}
+
 
 }
 try MainActor.assumeIsolated { try run() }

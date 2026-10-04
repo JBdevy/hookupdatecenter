@@ -17,6 +17,10 @@ public struct MultiLoop: Codable, Equatable, Identifiable, Sendable {
     public var marker2: UUID
     public var fadeSeconds: Double = 3
     public var tracks: [MultiLoopTrack] = []
+    public var enabled: Bool?
+    public var mixerEnabled: Bool?
+    public var isEnabled: Bool { enabled ?? true }
+    public var usesMixer: Bool { mixerEnabled ?? true }
     public init(name: String, marker1: UUID, marker2: UUID) {
         self.name = name; self.marker1 = marker1; self.marker2 = marker2
     }
@@ -45,16 +49,23 @@ public extension Song {
     func multiLoopConflicts(_ candidate: MultiLoop, replacingRegion: UUID? = nil, replacement: [MultiLoop]? = nil) -> Bool {
         let positions = Dictionary(uniqueKeysWithValues: (markers ?? []).map { ($0.id, $0.position) })
         guard let start = positions[candidate.marker1], let end = positions[candidate.marker2], start < end else { return false }
+        let saved = parts.flatMap { $0.multiLoops ?? [] }
+        let unchangedCandidate = saved.contains { $0.id == candidate.id && $0.marker1 == candidate.marker1 && $0.marker2 == candidate.marker2 }
         for region in parts {
             for loop in (region.id == replacingRegion ? replacement : nil) ?? region.multiLoops ?? [] where loop.id != candidate.id {
                 guard let a = positions[loop.marker1], let b = positions[loop.marker2] else { continue }
+                // Imported VS Hook slots may overlap. Editing their activation or
+                // mixer presets preserves those pairs; new overlapping pairs are
+                // still rejected by the CatLive editor.
+                if unchangedCandidate && saved.contains(where: { $0.id == loop.id && $0.marker1 == loop.marker1 && $0.marker2 == loop.marker2 }) { continue }
                 if max(start, a) < min(end, b) - 0.000001 { return true }
             }
         }
         return false
     }
     func multiLoopMarkers(in region: Part) -> [TimelineMarker] {
-        (markers ?? []).filter { !$0.isTempo && $0.sourceRegionID == nil && $0.unifiedRegionID == nil && $0.position >= region.startTime && $0.position <= region.endTime }
+        guard !parts.contains(where: { $0.parentRegionID == region.id }) else { return [] }
+        return (markers ?? []).filter { $0.isLoopSection && $0.position >= region.startTime && $0.position <= region.endTime }
             .sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
     }
 }
@@ -75,5 +86,25 @@ public extension MultiLoopPlayback {
             result.tracks[i].volume = gain(result.tracks[i].volume, rule: rule)
         }
         return result
+    }
+}
+
+public extension Project {
+    /// Existing saved loops keep their endpoints after the marker-type change.
+    mutating func promoteLoopSectionMarkers() {
+        for s in songs.indices {
+            let ids = Set(songs[s].parts.flatMap { $0.multiLoops ?? [] }.flatMap { [$0.marker1, $0.marker2] })
+            guard var markers = songs[s].markers else { continue }
+            for i in markers.indices where ids.contains(markers[i].id) && !markers[i].isTempo { markers[i].section = true; markers[i].loopSection = true }
+            songs[s].markers = markers
+        }
+    }
+}
+
+public extension Song {
+    /// A region ID addresses its current start, including after moving the region.
+    func sectionDestinationPosition(_ id: UUID) -> Double? {
+        if let region = parts.first(where: { $0.id == id }) { return region.startTime }
+        return markers?.first(where: { $0.id == id && $0.isSection && !$0.isTempo })?.position
     }
 }

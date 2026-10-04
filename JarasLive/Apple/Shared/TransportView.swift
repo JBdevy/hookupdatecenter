@@ -60,7 +60,7 @@ struct TransportView: View {
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
                         #if os(macOS)
                         if !remotePresentation {
-                        ForEach(["GrandMA2", "Resolume"], id: \.self) { title in
+                        ForEach(["Resolume"], id: \.self) { title in
                             Button {} label: {
                                 Text(verbatim: title).font(.system(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
@@ -131,20 +131,20 @@ struct TransportView: View {
     }
     private var transportDisplay: some View {
         let transport = show.snapshot.transport
-        let parts = show.current?.parts ?? []
-        let selected = parts.first { $0.id == (transport.playing ? transport.regionId : show.focusedRegion ?? transport.regionId) }
-        let rootID = selected?.parentRegionID ?? selected?.id
-        let running = transport.playing ? show.current?.playingSetlistRegion(transport.regionId, position: transport.position, expanded: Set(rootID.map { [$0] } ?? [])) : nil
-        let current = transport.ignoreNextRegionId.flatMap { id in parts.first { $0.id == id } } ?? running ?? selected
+        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion)
         let seconds = max(0, Int(transport.position))
         return HStack(spacing: 0) {
-            Text(current?.displayName ?? show.current?.name ?? "—")
-                .foregroundStyle(transport.playing ? JarasTheme.green : JarasTheme.text)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9)
-                .accessibilityLabel("Current song")
-            Rectangle().fill(JarasTheme.line).frame(width: 1)
-            UpcomingSongDisplay(show: show)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 9)
+            GeometryReader { geometry in
+                HStack(spacing: 0) {
+                    SongNameDisplay(title: transport.playing ? "Now playing" : "Selected song", name: displays.current?.displayName ?? show.current?.name,
+                        bpm: displays.currentBPM, color: transport.playing ? JarasTheme.green : JarasTheme.text)
+                        .frame(width: max(0, (geometry.size.width - 1) * 0.75))
+                        .accessibilityLabel("Current song")
+                    Rectangle().fill(JarasTheme.line).frame(width: 1)
+                    FooterInformationDisplay(show: show, embedded: true)
+                        .frame(width: max(0, (geometry.size.width - 1) * 0.25))
+                }
+            }
             Rectangle().fill(JarasTheme.line).frame(width: 1)
             Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
                 .monospacedDigit().frame(width: 100).accessibilityLabel("Transport time")
@@ -157,6 +157,7 @@ struct TransportView: View {
 #if os(macOS)
 struct FooterPlaylistDisplay: View {
     @ObservedObject var show: ShowController
+    var height: CGFloat = 25
     private var duration: String {
         // listedRegions contains the selected playlist's root regions only;
         // children inside a special region already belong to its full span.
@@ -168,20 +169,10 @@ struct FooterPlaylistDisplay: View {
         return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
     }
     var body: some View {
-        GeometryReader { geometry in
-            HStack(spacing: 0) {
-                FooterInformationDisplay(show: show, embedded: true)
-                    .frame(width: max(0, (geometry.size.width - 1) * 0.8))
-                Rectangle().fill(JarasTheme.line).frame(width: 1)
-                Text(verbatim: duration).font(.system(size: 12, weight: .semibold))
-                    .monospacedDigit().foregroundStyle(JarasTheme.yellow)
-                    .frame(width: max(0, (geometry.size.width - 1) * 0.2), height: 25)
-                    .accessibilityLabel("Playlist duration")
-                    .jarasHelp("Playlist duration")
-            }
-        }.frame(height: 25).background(JarasTheme.display)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
+        let transport = show.snapshot.transport
+        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion)
+        FooterSongDisplays(next: displays.next?.displayName, nextBPM: displays.nextBPM,
+            queued: displays.queued?.displayName, queuedBPM: displays.queuedBPM, subPlaying: transport.subPlay.playing, duration: duration, height: height)
     }
 }
 #endif
@@ -203,65 +194,107 @@ struct FooterInformationDisplay: View {
         return song.parts.contains { $0.parentRegionID == region.id && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
     }
     private var information: String {
+        if show.snapshot.transport.loop.enabled { return "Loop Ativo" }
         if show.snapshot.transport.ignoreNextAfter != nil { return "Ignore Next" }
         if hasMultiLoop { return JarasLocalization.string("This song has an active multiloop") }
-        if show.snapshot.transport.loop.enabled { return JarasLocalization.string("Loop armed") }
         return ""
     }
     // Follow the transport clock, so the pulse stays on the beat through
     // tempo changes, seeks and loop wraps without another UI timer.
-    private var loopBeatPhase: Int? {
-        let transport = show.snapshot.transport
+    static func loopBeatPhase(transport: TransportState, song: Song?) -> Int? {
         guard transport.playing, transport.loop.enabled,
-              let marker = show.current?.activeTempoMarker(at: transport.position), let bpm = marker.tempoBPM else { return nil }
+              let marker = song?.activeTempoMarker(at: transport.position), let bpm = marker.tempoBPM else { return nil }
         let beat = max(0, transport.position - marker.position) * bpm / 60
         let index = Int(beat)
         return beat - Double(index) < 0.45 ? 0 : (index.isMultiple(of: 2) ? 1 : 3)
     }
     var body: some View {
         let message = information
-        Group {
-            if let phase = loopBeatPhase {
-                let yellow = phase == 0
-                Text(verbatim: message)
-                    .foregroundStyle(yellow ? Color.red : phase == 1 ? JarasTheme.green : JarasTheme.yellow)
-                    .frame(maxWidth: .infinity).frame(height: displayHeight)
-                    .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
-            } else if hasMultiLoop, show.snapshot.transport.ignoreNextAfter == nil {
-                Text(verbatim: message).foregroundStyle(JarasTheme.green)
-                    .frame(maxWidth: .infinity).frame(height: displayHeight)
-                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
-            } else if message.isEmpty {
-                Text(verbatim: " ").frame(maxWidth: .infinity).frame(height: displayHeight)
-                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
-            } else {
-                TimelineView(.periodic(from: .now, by: 0.5)) { tick in
-                    let phase = Int(tick.date.timeIntervalSinceReferenceDate * 2) % 4
-                    let yellow = phase.isMultiple(of: 2)
-                    Text(verbatim: message)
-                        .foregroundStyle(yellow ? Color.red : phase == 1 ? JarasTheme.green : JarasTheme.yellow)
-                        .frame(maxWidth: .infinity).frame(height: displayHeight)
-                        .background(yellow ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: embedded ? 0 : 4))
-                }
-            }
-        }.font(.system(size: 10, weight: .bold)).lineLimit(1).truncationMode(.tail)
+        TransportInformationMessage(message: message,
+            beatPhase: Self.loopBeatPhase(transport: show.snapshot.transport, song: show.current),
+            steady: hasMultiLoop && show.snapshot.transport.ignoreNextAfter == nil && !show.snapshot.transport.loop.enabled,
+            height: displayHeight, cornerRadius: embedded ? 0 : 4)
+        .font(.system(size: 10, weight: .bold)).lineLimit(1).truncationMode(.tail)
             .overlay { if !embedded { RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false) } }
             .accessibilityLabel("Information").accessibilityValue(message)
     }
 }
 
-private struct UpcomingSongDisplay: View {
-    @ObservedObject var show: ShowController
-    var documents: ProjectDocuments? = nil
+/// Shared notice colors and pulse for the Mac, iPad and iPhone.
+struct TransportInformationMessage: View {
+    let message: String
+    var beatPhase: Int? = nil
+    var steady = false
+    var height: CGFloat = 25
+    var cornerRadius: CGFloat = 0
     var body: some View {
-        let transport = show.snapshot.transport
-        let parts = show.current?.parts ?? []
-        let internalNext = transport.playing && transport.ignoreNextAfter == nil ? show.current?.nextDrawerRegion(transport.regionId, position: transport.position) : nil
-        let queued = transport.subPlay.playing
-            ? parts.first { transport.subPlay.position >= $0.startTime && transport.subPlay.position < $0.endTime }
-            : parts.first { $0.id == transport.queuedRegionId }
-        return Text((internalNext ?? queued)?.displayName ?? "—").foregroundStyle(JarasTheme.yellow)
-            .accessibilityLabel(internalNext != nil ? "Next song" : transport.subPlay.playing ? "Sub Play" : "Queued song")
+        Group {
+            if let phase = beatPhase {
+                pulse(bright: phase == 0, green: phase == 1)
+            } else if steady || message.isEmpty {
+                Text(verbatim: message.isEmpty ? " " : message).foregroundStyle(JarasTheme.green)
+                    .frame(maxWidth: .infinity).frame(height: height)
+                    .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: cornerRadius))
+            } else {
+                TimelineView(.periodic(from: .now, by: 0.5)) { tick in
+                    let phase = Int(tick.date.timeIntervalSinceReferenceDate * 2) % 4
+                    pulse(bright: phase.isMultiple(of: 2), green: phase == 1)
+                }
+            }
+        }
+    }
+    private func pulse(bright: Bool, green: Bool) -> some View {
+        Text(verbatim: message)
+            .foregroundStyle(bright ? Color.red : green ? JarasTheme.green : JarasTheme.yellow)
+            .frame(maxWidth: .infinity).frame(height: height)
+            .background(bright ? JarasTheme.yellow : Color.black, in: RoundedRectangle(cornerRadius: cornerRadius))
+    }
+}
+
+struct SongNameDisplay: View {
+    let title: String
+    let name: String?
+    let bpm: Double?
+    var color: Color = JarasTheme.yellow
+    var fontScale: CGFloat = 1
+    var labelFontScale: CGFloat? = nil
+    var body: some View {
+        HStack(spacing: 5 * fontScale) {
+            Text(LocalizedStringKey(title)).font(.system(size: 10 * (labelFontScale ?? fontScale), weight: .bold, design: .rounded)).italic()
+                .foregroundStyle(JarasTheme.secondary).fixedSize()
+            Image(systemName: "chevron.right").font(.system(size: 9 * (labelFontScale ?? fontScale), weight: .bold)).foregroundStyle(JarasTheme.secondary)
+            Text(verbatim: (name ?? "—") + (bpm.map { " - " + String(format: "%g", $0) + " bpm" } ?? ""))
+                .font(.system(size: 12 * fontScale, weight: .semibold)).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, 8).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading).clipped()
+    }
+}
+
+struct FooterSongDisplays: View {
+    let next: String?
+    let nextBPM: Double?
+    let queued: String?
+    let queuedBPM: Double?
+    let subPlaying: Bool
+    let duration: String
+    var height: CGFloat = 25
+    // Grow text continuously, keeping room for song names in each column.
+    private var fontScale: CGFloat { max(1, sqrt(height / 25)) }
+    private var labelFontScale: CGFloat { 1 + (fontScale - 1) * 0.35 }
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(0, geometry.size.width - 2)
+            HStack(spacing: 0) {
+                SongNameDisplay(title: "Next song label", name: next, bpm: nextBPM, fontScale: fontScale, labelFontScale: labelFontScale).frame(width: width * 0.45)
+                Rectangle().fill(JarasTheme.line).frame(width: 1)
+                SongNameDisplay(title: subPlaying ? "Sub Play" : "Queued", name: queued, bpm: queuedBPM, fontScale: fontScale, labelFontScale: labelFontScale).frame(width: width * 0.45)
+                Rectangle().fill(JarasTheme.line).frame(width: 1)
+                Text(verbatim: duration).font(.system(size: 12 * fontScale, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(JarasTheme.yellow).lineLimit(1).minimumScaleFactor(0.3)
+                    .frame(width: width * 0.10, height: height).accessibilityLabel("Playlist duration")
+            }
+        }.frame(height: height).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
     }
 }
 
@@ -295,8 +328,7 @@ private struct TempoControl: View {
     @FocusState private var meterFocus: Int?
     @FocusState private var bpmFocus: Bool
     private var bpmText: String {
-        let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
-        return String(format: "%g", show.current?.tempoSection(at: position).bpm ?? 120)
+        String(format: "%g", show.tempoControlBPM)
     }
     var body: some View {
         HStack(spacing: 3) {
@@ -545,9 +577,16 @@ private struct VideoToggleButton: View {
             HStack(spacing: 2) {
                 Image(systemName: "video")
                 Text("Video")
-            }.lineLimit(1)
+            }
+            .font(.system(size: TransportControlMetrics.font, weight: .semibold))
+            .lineLimit(1)
+            .frame(width: TransportControlMetrics.width, height: TransportControlMetrics.height)
+            .foregroundStyle(video.visible ? Color.black : JarasTheme.text)
+            .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : Color(hex: 0xc44545)))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : Color(hex: 0xc44545)))
+            .contentShape(Rectangle())
         }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: video.visible, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height))
+            .buttonStyle(.plain)
             .overlay(VideoOptionsInput(controller: video))
             .jarasHelp(ControlMappings.shared.shortcutHelp(.toggleVideo))
     }
@@ -581,8 +620,8 @@ private struct RemoteToggleButton: View {
     var body: some View {
         Button {
             #if os(macOS)
-            if remote.enabled { remote.stop(); settings = false }
-            else { DAWRemoteHostBridge.bind(show); remote.startHost(); settings = true }
+            if remote.enabled { remote.setHostEnabled(false); settings = false }
+            else { DAWRemoteHostBridge.bind(show); remote.setHostEnabled(true) }
             #endif
         } label: {
             HStack(spacing: 2) {
@@ -596,5 +635,37 @@ private struct RemoteToggleButton: View {
             .immediateRightClick { settings = true }
             .onChange(of: remote.connected) { if $0 { settings = false } }
             #endif
+    }
+}
+
+struct DesktopMultiLoopBypassButton: View {
+    @ObservedObject var show: ShowController
+    var body: some View {
+        MultiLoopBypassButton(active: show.snapshot.transport.multiLoopsBypassed == true) {
+            show.send(.toggleMultiLoopBypass)
+        }
+    }
+}
+struct MultiLoopBypassButton: View {
+    let active: Bool
+    let action: () -> Void
+    private var buttonColor: Color {
+        Color(hex: active ? 0xffd600 : 0xff3030)
+    }
+    var body: some View {
+        Button(action: action) {
+            Text(verbatim: "B\nY\nP\nA\nS\nS")
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Color.black)
+                .frame(width: 30, height: 82)
+                .background(buttonColor)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .contentShape(Rectangle())
+                .modifier(JarasBlink(active: active, interval: 0.15, lowOpacity: 0.2))
+        }.buttonStyle(.plain)
+            .accessibilityLabel("Bypass de todos os Multiloops")
+            .accessibilityValue(active ? "Ligado" : "Desligado")
+            .jarasHelp("Bypass de todos os Multiloops")
     }
 }

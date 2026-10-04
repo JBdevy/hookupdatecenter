@@ -58,7 +58,10 @@ struct MultiLoopsEditor: View {
                 LazyVStack {
                     ForEach(loops) { loop in
                         HStack {
-                            Text(loop.name).lineLimit(1).opacity(bypassed ? 0.45 : 1)
+                            flag(loop.isEnabled ? "On" : "Off", active: loop.isEnabled, color: JarasTheme.green) {
+                                var next = loop; next.enabled = !loop.isEnabled; commit(next)
+                            }.help("Enable multiloop").disabled(bypassed)
+                            Text(loop.name).lineLimit(1).opacity(bypassed || !loop.isEnabled ? 0.45 : 1)
                             if bypassed { Text("Bypass").font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             Button("Markers") { draft = loop; name = loop.name; first = loop.marker1; second = loop.marker2; stage = 2 }
@@ -157,6 +160,8 @@ struct MultiLoopsEditor: View {
         VStack(alignment: .leading) {
             Text(loop.name).font(.headline)
             HStack {
+                flag("M/S", active: loop.usesMixer, color: .yellow) { draft?.mixerEnabled = !loop.usesMixer }
+                    .help("Apply saved mute and solo settings")
                 Text("Auto Fader")
                 Button("−") { draft?.fadeSeconds = max(1, loop.fadeSeconds - 1) }.disabled(loop.fadeSeconds <= 1)
                 Text("\(Int(loop.fadeSeconds))s").monospacedDigit().frame(width: 32)
@@ -182,7 +187,7 @@ struct MultiLoopsEditor: View {
         }.padding(.vertical, 5)
     }
     private func flag(_ label: String, active: Bool, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Text(label).font(.caption.bold()).padding(5).background(active ? color : Color.white.opacity(0.1)).foregroundStyle(active ? .black : .white).cornerRadius(3) }.buttonStyle(.plain)
+        Button(action: action) { Text(LocalizedStringKey(label)).font(.caption.bold()).padding(5).background(active ? color : Color.white.opacity(0.1)).foregroundStyle(active ? .black : .white).cornerRadius(3) }.buttonStyle(.plain)
     }
     private func change(_ id: UUID, edit: (inout MultiLoopTrack) -> Void) {
         guard var next = draft, let i = next.tracks.firstIndex(where: { $0.id == id }) else { return }

@@ -213,6 +213,7 @@ public enum LogicProjectImporter {
         guard !song.tracks.isEmpty else { throw invalid("No arrangement tracks were found.") }
         var media: [String: Media] = [:]
         var midiItems = 0, extendedItems = 0
+        var unsupportedItemPitch = false
         var unsupportedMIDIEvents = false
         var trimmedMIDINotes = false
         let sequenceEvents = Dictionary(grouping: records.filter { $0.tag == "qSvE" && $0.kind == 23 }, by: \.owner)
@@ -315,6 +316,12 @@ public enum LogicProjectImporter {
                 media[path] = Media(relativePath: path, source: file.source)
                 var clip = AudioClip(id: UUID(), name: try region.text(74), startTime: max(0, start), duration: end - max(0, start),
                                      sourceOffset: sourceFrame / file.rate + max(0, -start), audioFile: AudioFile(path: path))
+                // Logic's audio arrangement event stores signed transpose at +53
+                // and signed fine tuning (cents) at +50. Confirmed with positive
+                // and negative region edits saved by Logic 10.7.6.
+                let itemPitch = Double(Int8(bitPattern: event.data[53])) + Double(Int8(bitPattern: event.data[50])) / 100
+                if (-12...12).contains(itemPitch) { clip.pitchSemitones = itemPitch == 0 ? nil : itemPitch }
+                else { unsupportedItemPitch = true }
                 // Region mute is represented independently of selection flags.
                 clip.muted = (try event.int(12) & 0x100) != 0
                 if musicTracks.contains(trackIndex) {
@@ -349,6 +356,7 @@ public enum LogicProjectImporter {
         for index in song.tracks.indices { song.tracks[index].clips.sort { $0.startTime < $1.startTime } }
         project.songs = [song]
         var warnings: [String] = []
+        if unsupportedItemPitch { warnings.append("Item pitch outside the supported ±12 semitone range was not converted.") }
         if missingMixerSettings { warnings.append("Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks.") }
         if midiItems > 0 { warnings.append("MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated.") }
         if unsupportedMIDIEvents { warnings.append("Logic MIDI controller, expression and nested sequence events are not migrated; review those regions.") }

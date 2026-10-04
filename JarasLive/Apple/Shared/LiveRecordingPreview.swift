@@ -8,14 +8,35 @@ struct RecordingPreviewTake {
     static let shared = LiveRecordingPreview()
     @Published var takes: [UUID: RecordingPreviewTake] = [:]
 }
-/// Layout changes only at arm/disarm completion, independent of waveform updates.
+/// Waveform updates do not invalidate the grid; only a change of lane does.
 @MainActor final class RecordingLaneLayout: ObservableObject {
     static let shared = RecordingLaneLayout()
-    struct Reservation { let track: UUID; var clip: AudioClip }
+    struct Reservation {
+        let track: UUID
+        var clip: AudioClip
+        let existing: [AudioClip]
+        let layout: TrackLanes
+    }
     private(set) var items: [UUID: Reservation] = [:]
     @Published private(set) var revision: UInt64 = 0
-    func reserve(track: UUID, clip: AudioClip) { items[clip.id] = Reservation(track: track, clip: clip); revision &+= 1 }
-    func move(_ id: UUID, start: Double) { items[id]?.clip.startTime = start; revision &+= 1 }
+    func reserve(track: Track, clip: AudioClip) {
+        var base = track
+        base.clips += items.values.filter { $0.track == track.id }.map(\.clip)
+        let layout = TrackLanes(track: base)
+        var clip = clip
+        clip.recordingLane = layout.recordingLane(start: clip.startTime, duration: clip.duration, clips: base.clips)
+        items[clip.id] = Reservation(track: track.id, clip: clip, existing: base.clips, layout: layout)
+        revision &+= 1
+    }
+    func update(_ id: UUID, start: Double? = nil, duration: Double? = nil) {
+        guard var item = items[id] else { return }
+        let oldLane = item.clip.recordingLane
+        if let start { item.clip.startTime = start }
+        if let duration { item.clip.duration = max(0.01, duration) }
+        item.clip.recordingLane = item.layout.recordingLane(start: item.clip.startTime, duration: item.clip.duration, clips: item.existing)
+        items[id] = item
+        if item.clip.recordingLane != oldLane { revision &+= 1 }
+    }
     func remove(_ id: UUID) { items[id] = nil; revision &+= 1 }
     func clear() { items = [:]; revision &+= 1 }
     func count(for track: UUID, existing: Int) -> Int {
@@ -40,11 +61,19 @@ struct RecordingGridOverlay: View {
                 let channels = take.channels
                 let rect = CGRect(x: take.start*scale,y: rulerHeight+offsets[index]+CGFloat(reservation.clip.recordingLane ?? 0)*laneHeight+3,width: max(3,take.duration*scale),height: laneHeight-6)
                 guard rect.intersects(visibleRect) else { continue }
-                let shape = Path(roundedRect: rect,cornerRadius: 3)
-                context.fill(shape,with: .color(.red.opacity(0.32)))
-                context.stroke(shape,with: .color(.red),lineWidth: 1)
-                context.fill(Path(CGRect(x: rect.minX,y: rect.minY,width: rect.width,height: 14)),with: .color(.red.opacity(0.6)))
-                if rect.width > 40 { context.draw(Text(verbatim: "REC").font(.system(size: 9,weight: .bold)).foregroundColor(.white),at: CGPoint(x: rect.minX+5,y: rect.minY+2),anchor: .topLeading) }
+                let shape = Path(roundedRect: rect, cornerRadius: 3)
+                let color = JarasTheme.track(tracks[index], emphasized: false)
+                context.fill(shape, with: .linearGradient(Gradient(colors: [color, color.opacity(0.78)]), startPoint: rect.origin, endPoint: CGPoint(x: rect.minX, y: rect.maxY)))
+                context.stroke(shape, with: .color(color.opacity(0.75)), lineWidth: 0.6)
+                var ink = context
+                ink.clip(to: shape)
+                let headerHeight: CGFloat = rect.height <= 26 ? rect.height : 13
+                ink.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: headerHeight)), with: .color(.black.opacity(0.16)))
+                if rect.width > 8 {
+                    let title = Text(verbatim: reservation.clip.name).font(.system(size: 9, weight: .bold)).foregroundColor(.white)
+                    ink.draw(title, in: CGRect(x: max(rect.minX, visibleRect.minX) + 4, y: rect.minY + 1, width: max(0, min(rect.maxX, visibleRect.maxX) - max(rect.minX, visibleRect.minX) - 8), height: headerHeight))
+                }
+                guard rect.height > 26 else { continue }
                 let channelHeight = (rect.height-18)/Double(max(1,channels.count))
                 var wave = Path()
                 for (channel,peaks) in channels.enumerated() {
@@ -55,7 +84,7 @@ struct RecordingGridOverlay: View {
                         wave.addLine(to: CGPoint(x: x,y: middle+peak*channelHeight*0.45))
                     }
                 }
-                context.stroke(wave,with: .color(.white.opacity(0.85)),lineWidth: 1)
+                ink.stroke(wave,with: .color(.white.opacity(0.85)),lineWidth: 1)
             }
         }.frame(width: visibleRect.width,height: visibleRect.height).offset(x: visibleRect.minX,y: visibleRect.minY).allowsHitTesting(false)
     }

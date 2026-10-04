@@ -34,7 +34,7 @@ struct GridScrollView<Content: View>: View {
     let contentWidth: CGFloat
     let contentHeight: CGFloat
     var fileDrop: (([URL], CGPoint) -> Bool)? = nil
-    var fileDropPreview: ((CGPoint?) -> Void)? = nil
+    var fileDropPreview: (([URL], CGPoint?) -> Void)? = nil
     @ViewBuilder let content: () -> Content
     var body: some View {
         #if os(macOS)
@@ -568,7 +568,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
     let contentWidth: CGFloat
     let contentHeight: CGFloat
     let fileDrop: (([URL], CGPoint) -> Bool)?
-    let fileDropPreview: ((CGPoint?) -> Void)?
+    let fileDropPreview: (([URL], CGPoint?) -> Void)?
     let content: Content
     @Environment(\.openFX) private var openFX
     @Environment(\.openClipFXChain) private var openClipFXChain
@@ -721,8 +721,10 @@ final class GridNativeScrollView: NSScrollView {
         if prepareHorizontalScroll(x) { document.layoutSubtreeIfNeeded() }
     }
     var fileDrop: (([URL], CGPoint) -> Bool)?
-    var fileDropPreview: ((CGPoint?) -> Void)?
+    var fileDropPreview: (([URL], CGPoint?) -> Void)?
     var fileDropModifierFlags: () -> NSEvent.ModifierFlags = { NSEvent.modifierFlags }
+    private var fileDropURLs: [URL] = []
+    private var fileDropPasteboardChange: Int?
     private var lastFileDropPreview: CGPoint?
     private var lastFileDropModifierFlags: NSEvent.ModifierFlags = []
     private func updateFileDropPreview(_ point: CGPoint?) {
@@ -731,7 +733,8 @@ final class GridNativeScrollView: NSScrollView {
         guard point != lastFileDropPreview || (point != nil && modifiers != lastFileDropModifierFlags) else { return }
         lastFileDropPreview = point
         lastFileDropModifierFlags = modifiers
-        fileDropPreview?(point)
+        fileDropPreview?(point == nil ? [] : fileDropURLs, point)
+        if point == nil { fileDropURLs = []; fileDropPasteboardChange = nil }
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard fileDrop != nil, let documentView,
@@ -739,6 +742,11 @@ final class GridNativeScrollView: NSScrollView {
               sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else {
             updateFileDropPreview(nil)
             return []
+        }
+        if fileDropPasteboardChange != sender.draggingPasteboard.changeCount {
+            fileDropURLs = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            fileDropPasteboardChange = sender.draggingPasteboard.changeCount
+            lastFileDropPreview = nil
         }
         updateFileDropPreview(documentView.convert(sender.draggingLocation, from: nil))
         return .copy
@@ -755,6 +763,13 @@ final class GridNativeScrollView: NSScrollView {
         return fileDrop(urls, documentView.convert(sender.draggingLocation, from: nil))
     }
 
+    // A committed layout clears zoomAnchor between frames, but the gesture
+    // still owns the viewport until its animation and quiet period finish.
+    var playbackFollowSuspendedUntil: TimeInterval = 0
+    var permitsPlaybackFollow: Bool {
+        zoomAnchor == nil && ProcessInfo.processInfo.systemUptime >= playbackFollowSuspendedUntil
+    }
+    func prioritizeZoom() { playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 0.18 }
     var zoomAnchor: (fraction: Double, screenX: CGFloat, width: CGFloat)?
     func applyZoomAnchor() {
         guard let anchor = zoomAnchor, let document = documentView else { return }
@@ -955,7 +970,12 @@ struct SidebarScrollMetrics: Equatable {
         // Reject them before traversing the entire SwiftUI document for hit testing.
         guard !event.hasPreciseScrollingDeltas,
               event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return false }
-        var hit = scroll.contentView.hitTest(scroll.convert(event.locationInWindow, from: nil))
+        // Start at the window, not the covered scroll view: playlist creation
+        // and Add regions are sibling overlays above the ordinary Setlist.
+        // Hit-testing only our own clip would steal their physical-wheel events.
+        guard let root = scroll.window?.contentView else { return false }
+        let point = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        var hit = root.hitTest(point)
         var nearest: NSScrollView?
         while let current = hit {
             if let candidate = current as? NSScrollView { nearest = candidate; break }

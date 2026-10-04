@@ -5,6 +5,7 @@ struct LoginView: View {
     let backend: any BackendClient
     @State private var email = ""
     @State private var cpf = ""
+    @State private var deviceName = ""
     @State private var login = false
     @State private var managingDevices = false
     var offersTrial = true
@@ -13,6 +14,24 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: 22) {
             Image("CatLiveSplash").resizable().scaledToFit().frame(width: 160, height: 160)
+            if auth.requiresDeviceName {
+                Text("Nome deste dispositivo").font(.title2.bold())
+                Text("Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular.")
+                    .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                TextField("Ex.: PC do palco", text: $deviceName)
+                    .textFieldStyle(.roundedBorder).focused($field, equals: 3).onSubmit { finishNaming() }
+                Text(deviceName.isEmpty || DeviceDisplayName.validated(deviceName) != nil
+                     ? "O nome é obrigatório. Use um nome curto e fácil de reconhecer."
+                     : "Use um nome mais curto, com letras ou números, sem quebras de linha.")
+                    .font(.caption).foregroundStyle(JarasTheme.secondary)
+                HStack(spacing: 12) {
+                    Button("Voltar") { auth.cancelDeviceNaming(); cpf = ""; field = 2 }
+                        .buttonStyle(StageButtonStyle())
+                    Button(auth.busy ? "Aguarde…" : "Salvar e continuar") { finishNaming() }
+                        .buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: true))
+                        .disabled(DeviceDisplayName.validated(deviceName) == nil)
+                }.disabled(auth.busy)
+            } else {
             Text("Bem-vindo ao CatLive").font(.title2.bold())
             HStack(spacing: 12) {
                 Button("Login") { login = true; field = 1 }
@@ -32,21 +51,30 @@ struct LoginView: View {
                         .disabled(auth.busy || email.isEmpty || cpf.isEmpty)
                 }.textFieldStyle(.roundedBorder)
             }
+            }
             if auth.busy { ProgressView().controlSize(.small) }
             if !auth.message.isEmpty { Text(auth.message).font(.footnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
-            Text(offersTrial ? "Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo." : "Use o e-mail e o CPF da sua compra.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+            if !auth.requiresDeviceName { Text(offersTrial ? "Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo." : "Use o e-mail e o CPF da sua compra.")
+                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center) }
         }.padding(30).frame(width: 440).background(JarasTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16)).padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
+            .onChange(of: auth.requiresDeviceName) { naming in
+                if naming { cpf = ""; field = 3 }
+            }
+            .onDisappear { auth.cancelDeviceNaming() }
+            .interactiveDismissDisabled(auth.busy || auth.requiresDeviceName)
             .sheet(isPresented: $managingDevices) {
                 CredentialDevicesView(auth: auth, backend: backend, email: email, cpf: cpf)
             }
     }
+    private func finishNaming() {
+        Task { if await auth.completeDeviceNaming(deviceName) { deviceName = ""; onAuthorized() } }
+    }
     private var hardwareID: String { DeviceAuthorizationService.hardwareID(fallback: auth.installation.id) }
     private func submit() {
         Task {
-            if await auth.login(email: email, password: cpf) { cpf = ""; onAuthorized() }
+            if await auth.beginLogin(email: email, password: cpf) { cpf = ""; onAuthorized() }
         }
     }
 }

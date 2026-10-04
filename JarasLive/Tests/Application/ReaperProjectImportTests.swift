@@ -87,7 +87,7 @@ final class ReaperProjectImportTests: XCTestCase {
               POSITION 4.25
               LENGTH 6.5
               SOFFS 1.125
-              PLAYRATE 1.25 1 0
+              PLAYRATE 1.25 1 -3.25
               VOLPAN 0.8 0 2 -1
               MUTE 1
               NAME "Guitar item"
@@ -113,6 +113,7 @@ final class ReaperProjectImportTests: XCTestCase {
         let clip = try XCTUnwrap(song.tracks[2].clips.first)
         XCTAssertEqual(clip.startTime, 4.25)
         XCTAssertEqual(clip.duration, 6.5)
+        XCTAssertEqual(clip.pitchSemitones, -3.25)
         XCTAssertEqual(clip.sourceOffset, 1.125)
         XCTAssertEqual(clip.audioRate, 1.25)
         XCTAssertEqual(clip.gain, 1.6)

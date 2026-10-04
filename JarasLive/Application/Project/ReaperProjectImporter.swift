@@ -55,6 +55,9 @@ public enum ReaperProjectImporter {
             guard count <= 2_000_000 else { throw invalid("Project is too large.") }
             let line = raw.drop(while: \.isWhitespace)
             if line.isEmpty { continue }
+            if stack.last?.header.first == "BIN", line != ">" {
+                stack.last?.notes.append(String(line)); continue
+            }
             if stack.last?.header.first == "NOTES", line.first == "|" { stack.last?.notes.append(String(line.dropFirst())); continue }
             if line.first == "<" {
                 let header = try tokens(line.dropFirst())
@@ -75,7 +78,8 @@ public enum ReaperProjectImporter {
             } else {
                 guard let parent = stack.last else { throw invalid("Data outside project.") }
                 let key = String(line.prefix(while: { !$0.isWhitespace }))
-                guard keys.contains(key) else { continue }
+                let hookSection = ["CHATGPT_REGION_PLAYLIST", "VS_HOOK_MULTILOOPS"].contains(parent.header.first ?? "")
+                guard keys.contains(key) || hookSection else { continue }
                 let row = try tokens(line)
                 if key == "TAKE", parent.header.first == "ITEM" || parent.header.first == "TAKE_INLINE" {
                     if parent.header.first == "TAKE_INLINE" { stack.removeLast() }
@@ -97,6 +101,18 @@ public enum ReaperProjectImporter {
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) else { throw invalid("Invalid text encoding.") }
         let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")))
+        var hookState: [String: [String: String]] = [:]
+        for section in root.child("EXTSTATE")?.children ?? [] where ["CHATGPT_REGION_PLAYLIST", "VS_HOOK_MULTILOOPS"].contains(section.header.first ?? "") {
+            var values: [String: String] = [:]
+            for row in section.lines where row.count >= 2 { values[row[0]] = row.dropFirst().joined(separator: " ") }
+            for binary in section.children where binary.header.first == "BIN" && binary.header.count == 2 {
+                if let data = Data(base64Encoded: binary.notes.joined()), let value = String(data: data, encoding: .utf8) {
+                    values[binary.header[1]] = value.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                } else { throw invalid("Invalid VS Hook project metadata.") }
+            }
+            hookState[section.header[0]] = values
+        }
+        var hook = VSHookProjectMigration(state: hookState)
         var project = Project.empty(name: source.deletingPathExtension().lastPathComponent)
         project.importedTimeline = true
         var song = project.songs[0]
@@ -112,7 +128,7 @@ public enum ReaperProjectImporter {
             for child in chunk.children { collectPools(child) }
         }
         collectPools(root)
-        let unsupported = "REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix."
+        let unsupported = "REAPER effects, automation, sends, pitch envelopes and advanced playback settings are not converted. Review the migrated mix."
         func limitedVolume(_ value: Double) -> Double {
             let limited = min(pow(10, 12.0 / 20), max(0, value))
             if limited != value { warnings.insert("REAPER mixer volumes above +12 dB were limited to the CatLive mixer range.") }
@@ -145,7 +161,6 @@ public enum ReaperProjectImporter {
         }
         var folders: [UUID] = []
         let tracks = root.children.filter { $0.header.first == "TRACK" }
-        guard tracks.count <= Project.maximumTrackCount else { throw invalid("A project supports at most 1000 tracks") }
         for node in tracks {
             try Task.checkCancellation()
             var track = Track(id: UUID(), name: node.value("NAME").flatMap { $0.isEmpty ? nil : $0 } ?? "Track \(song.tracks.count + 1)", role: .other)
@@ -156,6 +171,8 @@ public enum ReaperProjectImporter {
             track.color = color(node.value("PEAKCOL"))
             track.parentTrackID = folders.first
             let special = specialKind(track.name)
+            hook.trackIDs["TRACK_\(song.tracks.count + 1)"] = track.id
+            if let guid = node.header.dropFirst().first { hook.trackIDs[guid.uppercased()] = track.id }
             if let special {
                 track.role = TrackRole(rawValue: special.rawValue); track.name = special.title
                 track.parentTrackID = nil; track.color = special.defaultColor
@@ -213,6 +230,9 @@ public enum ReaperProjectImporter {
                     track.clips.append(clip)
                     continue
                 }
+                let itemPitch = try take.number("PLAYRATE", 3)
+                if (-12...12).contains(itemPitch) { clip.pitchSemitones = itemPitch == 0 ? nil : itemPitch }
+                else { warnings.insert("Item pitch outside the supported ±12 semitone range was not converted.") }
                 clip.sourceOffset = try take.number("SOFFS")
                 clip.playbackRate = try take.number("PLAYRATE", default: 1)
                 clip.gain = abs(try take.number("VOLPAN", default: 1) * take.number("VOLPAN", 3, default: 1))
@@ -221,7 +241,7 @@ public enum ReaperProjectImporter {
                 clip.fadeOut = try item.number("FADEOUT", 2)
                 let mode = try take.integer("CHANMODE")
                 clip.channelMode = [0: 0, 2: 3, 3: 1, 4: 2][mode] ?? 0
-                if try ![0, 2, 3, 4].contains(mode) || take.child("TAKEFX") != nil || take.number("PLAYRATE", 3) != 0 || take.number("VOLPAN", 2) != 0 || !take.line("SM").isEmpty || item.number("ALLTAKES") != 0 { warnings.insert(unsupported) }
+                if try ![0, 2, 3, 4].contains(mode) || take.child("TAKEFX") != nil || take.number("VOLPAN", 2) != 0 || !take.line("SM").isEmpty || item.number("ALLTAKES") != 0 { warnings.insert(unsupported) }
                 var audio = take.child("SOURCE"), sectionStart = 0.0, sectionLength: Double?
                 if let section = audio, section.header.dropFirst().first == "SECTION" {
                     sectionStart = try section.number("STARTPOS")
@@ -284,10 +304,14 @@ public enum ReaperProjectImporter {
             if flags & 1 != 0 {
                 if let begin = regionStarts.removeValue(forKey: row[1]) {
                     guard position > begin.0 else { throw invalid("Invalid region length.") }
-                    song.parts.append(Part(id: UUID(), name: begin.1, startTime: begin.0, endTime: position, color: begin.2))
+                    let part = Part(id: UUID(), name: begin.1, startTime: begin.0, endTime: position, color: begin.2)
+                    song.parts.append(part)
+                    hook.regionIDs[row[1]] = part.id
                 } else { regionStarts[row[1]] = (position, row[3].isEmpty ? "Region " + row[1] : row[3], tint) }
             } else {
-                song.markers?.append(TimelineMarker(id: UUID(), name: title, position: position, color: tint ?? 0xC7AB40))
+                let marker = TimelineMarker(id: UUID(), name: title, position: position, color: tint ?? 0xC7AB40)
+                song.markers?.append(marker)
+                hook.sourceMarkers.append(.init(number: row[1], marker: marker))
             }
         }
         guard regionStarts.isEmpty else { throw invalid("Incomplete region.") }
@@ -304,7 +328,42 @@ public enum ReaperProjectImporter {
             }
         }
         song.parts = accepted
-        convertSpecialRegions(in: &song)
+        // VS Hook accepts a closing point within half a millisecond of the end.
+        for index in song.markers?.indices ?? 0..<0 where hook.isTechnicalMarker(song.markers![index].name) {
+            let position = song.markers![index].position
+            if let end = song.parts.map(\.endTime).filter({ abs($0 - position) <= 0.0005 }).min(by: { abs($0 - position) < abs($1 - position) }) {
+                song.markers![index].position = end
+            }
+        }
+        // Loop endpoints and VS Hook commands are not songs in a unified region.
+        let technical = (song.markers ?? []).filter { hook.isTechnicalMarker($0.name) }
+        song.markers?.removeAll { hook.isTechnicalMarker($0.name) }
+        let hookMarkerParents = hook.hasMetadata ? Set(song.parts.filter {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("--")
+        }.map(\.id)) : nil
+        convertSpecialRegions(in: &song, markerParentIDs: hookMarkerParents)
+        for original in technical {
+            var marker = original
+            let label = marker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if label.hasPrefix("*") || label.hasPrefix("$") {
+                // Source names remain intact in hook.sourceMarkers for loop pairing.
+                let slotPrefix = (1...4).contains { label.hasPrefix("*\($0)") }
+                let suffix = slotPrefix ? label.dropFirst(2) : label.dropFirst()
+                let name = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+                marker.name = name.isEmpty ? "Trecho" : name
+                if song.parts.contains(where: { marker.position >= $0.startTime && marker.position <= $0.endTime }) { marker.section = true; marker.loopSection = label.hasPrefix("*") }
+                else { warnings.insert("VS Hook: um marcador de trecho fora de uma música foi mantido como marcador comum.") }
+            }
+            if let index = song.markers?.firstIndex(where: { abs($0.position - marker.position) <= 0.000001 }) {
+                if marker.isSection {
+                    song.markers?[index].section = true
+                    if marker.isLoopSection { song.markers?[index].loopSection = true }
+                }
+            } else {
+                marker.name = String((marker.isSection ? marker.name.uppercased() : marker.name).prefix(marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength))
+                song.markers?.append(marker)
+            }
+        }
         if let tempo = root.child("TEMPOENVEX") {
             for row in tempo.lines where row.first == "PT" {
                 guard row.count >= 3 else { throw invalid("Invalid tempo point.") }
@@ -323,6 +382,7 @@ public enum ReaperProjectImporter {
         song.duration = max(1, song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0, song.parts.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0)
         if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: song.name, startTime: 0, endTime: song.duration)] }
         project.songs = [song]
+        hook.apply(to: &project, warnings: &warnings)
         project.orderSpecialTracks()
         try project.validate()
         return ProjectMigration.Result(project: project, media: media.values.sorted { $0.relativePath < $1.relativePath }, warnings: warnings.sorted())
@@ -498,7 +558,7 @@ public enum ReaperProjectImporter {
     }
     /// REAPER can describe a special region either with child regions or with
     /// marker starts. Materialize both as CatLive drawer entries and linked flags.
-    private static func convertSpecialRegions(in song: inout Song) {
+    private static func convertSpecialRegions(in song: inout Song, markerParentIDs: Set<UUID>? = nil) {
         let epsilon = 0.000001
         func samePoint(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= epsilon }
         let ordered = (song.markers ?? []).enumerated().sorted {
@@ -515,6 +575,7 @@ public enum ReaperProjectImporter {
         for root in roots {
             // At a shared edge, the marker belongs to the region that starts there.
             let inside = markers.filter { marker in
+                if let markerParentIDs, !markerParentIDs.contains(root.id) { return false }
                 guard marker.position >= root.startTime && marker.position < root.endTime else { return false }
                 let owner = roots.filter { marker.position >= $0.startTime && marker.position < $0.endTime }
                     .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
@@ -553,7 +614,7 @@ public enum ReaperProjectImporter {
         for entry in sorted {
             var marker = entry.element
             if let last = result.last, samePoint(last.position, marker.position) { continue }
-            if marker.unifiedRegionID == nil { marker.name = String(marker.name.prefix(TimelineMarker.maximumNameLength)) }
+            if marker.unifiedRegionID == nil { marker.name = String((marker.isSection ? marker.name.uppercased() : marker.name).prefix(marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)) }
             result.append(marker)
         }
         song.markers = result

@@ -308,7 +308,7 @@ final class OfflineAudioExport {
             engine.attach(player); engine.attach(gain)
             let sourceFormat = file.processingFormat
             var source: AVAudioNode = player
-            let semitones = clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : song.pitch(for: track.id, region: song.pitchRegion(at: pitchStart ?? clip.startTime))
+            let semitones = (clip.pitchSemitones ?? 0) + (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track.id, region: song.pitchRegion(at: pitchStart ?? clip.startTime))))
             if abs(clip.audioRate - 1) > 0.0000001 || semitones != 0 {
                 let stretch = AVAudioUnitTimePitch(); stretch.rate = Float(clip.audioRate); stretch.pitch = Float(semitones * 100); stretch.overlap = 8
                 engine.attach(stretch); engine.connect(player,to: stretch,format: sourceFormat); source = stretch
@@ -387,8 +387,12 @@ final class OfflineAudioExport {
             }
             for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
                 for clip in track.clips where writers[0].job.includes(clip) {
-                    for fragment in song.tempoAudioSegments(clip) {
-                        try addClip(fragment,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end,pitchStart: clip.startTime)
+                    if clip.midi != nil {
+                        try addMIDI(clip, track: track, bus: buses[track.id]!, start: writers[0].job.start)
+                    } else {
+                        for fragment in song.tempoAudioSegments(clip) {
+                            try addClip(fragment,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end,pitchStart: clip.startTime)
+                        }
                     }
                 }
             }

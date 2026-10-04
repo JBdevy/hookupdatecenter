@@ -1,5 +1,6 @@
 // Compiled with the production protocol/session sources by test-daw-remote.sh.
 import AppKit
+setbuf(stdout, nil)
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }
 }
@@ -118,6 +119,12 @@ var laneFixture = fixture
 laneFixture.tracks[0].laneCount = 2; laneFixture.tracks[0].clips[0].lane = 1
 require(abs(DAWRemoteItemLayout.rowHeight(laneFixture.tracks[0]) - 120.4) < 0.000001, "overlapping item lanes expand matching mixer/grid row height")
 require(DAWRemoteItemLayout.laneHeight(fixture.tracks[0]) == 86, "single item fills full track height")
+for scale in [0.35, 0.5, 1.0, 2.0, 3.0] {
+    let track = laneFixture.tracks[0]
+    require(DAWRemoteItemLayout.laneHeight(track, scale: scale) >= 28, "pinch keeps item mute/name header visible")
+    require(abs(DAWRemoteItemLayout.rowHeight(track, scale: scale) - DAWRemoteItemLayout.laneHeight(track, scale: scale) * Double(track.laneCount ?? 1)) < 0.000001, "pinch scales every overlapping lane and mixer row together")
+}
+require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.35 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
 var visibleLaneTrack = fixture.tracks[0]
 visibleLaneTrack.laneCount = 8
 visibleLaneTrack.clips = [
@@ -149,16 +156,32 @@ if case .state(let state) = try DAWRemoteWire.decode(DAWRemoteWire.state(fixture
 for data in [Data(), Data([0x4a,0x4c,1,1]), Data([0x4a,0x4c,2,99]), Data(repeating: 0, count: DAWRemoteWire.maximumPacket + 1)] {
     require((try? DAWRemoteWire.decode(data)) == nil, "reject old mirroring protocol and malformed packets")
 }
+for semitones in [-12.0, -7, 7, 12] {
+    let pitch = DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: semitones)
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(pitch)) {
+        require(decoded.value == semitones && decoded.target == regionID, "remote preserves the full VS Hook tuner range")
+    } else { fatalError("pitch command packet") }
+}
 for command in [DAWRemoteCommand(project: project, action: .volume, value: -.infinity),
                 DAWRemoteCommand(project: project, action: .volume, value: 5),
                 DAWRemoteCommand(project: project, action: .pan, target: trackID, value: 2),
                 DAWRemoteCommand(project: project, action: .selectRegion),
                 DAWRemoteCommand(project: project, action: .seek, value: -1),
-                DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: 7),
+                DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: 13),
+                DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: -13),
                 DAWRemoteCommand(project: project, action: .pitch, target: regionID, value: 0.5),
                 DAWRemoteCommand(project: project, action: .pitch, value: 1)] {
     require((try? DAWRemoteWire.command(command)) == nil, "reject invalid command values")
 }
+for phase in [0, 1, 3] {
+    var pulse = fixture; pulse.loop = true; pulse.footerInformation = "Loop Ativo"; pulse.footerLoopBeatPhase = phase
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(pulse)) {
+        require(decoded.footerLoopBeatPhase == phase && decoded.footerInformation == "Loop Ativo", "notice pulse and exact loop text roundtrip")
+    } else { fatalError("notice pulse packet") }
+}
+var invalidPulse = fixture; invalidPulse.footerLoopBeatPhase = 2
+require((try? DAWRemoteWire.state(invalidPulse)) == nil, "reject unknown notice pulse phase")
+print("REMOTE_LOOP_NOTICE_PULSE_ROUNDTRIP_OK")
 var malformed = fixture; malformed.position = .nan
 require((try? DAWRemoteWire.state(malformed)) == nil, "reject nonfinite presentation state")
 var catalog = DAWRemoteProjectCatalog()
@@ -596,7 +619,48 @@ director.stop()
 waitFor("observer survives director disconnect") { rolesHost.connected && observer.connected }
 rolesFixture.position = 2
 waitFor("remaining observer continues receiving states") { observer.remoteState?.position == 2 }
+let reboundProject = UUID()
+rolesHost.stateProviderForSession = { session in
+    var state = rolesFixture; state.project = reboundProject; state.message = "rebound-\(session.requestedPanel)"; return state
+}
+waitFor("secondary client follows replacement project provider instead of waiting on stale binding") {
+    observer.remoteState?.project == reboundProject && observer.remoteState?.message == "rebound-2"
+}
 observer.stop(); rolesHost.stop()
+// A notices login is independent from the director and never controls transport.
+let noticesHost = DAWRemoteSession(role: .host, name: "Notices Mac")
+require(noticesHost.setDirectorPIN("0123") && noticesHost.setNoticesPIN("9876"), "independent role PINs saved")
+var noticeCommands: [DAWRemoteCommand.Action] = []
+noticesHost.stateProviderForSession = { session in
+    var state = fixture; state.message = "panel-\(session.requestedPanel)"; return state
+}
+noticesHost.commandHandler = { noticeCommands.append($0.action) }
+let noticesEndpoint = try noticesHost.testListen()
+let noticesClient = DAWRemoteSession(role: .client, name: "Notices phone")
+noticesClient.testConnect(noticesEndpoint, access: nil)
+waitFor("both PIN requirements advertised") { noticesClient.directorRequiresPIN && noticesClient.noticesRequiresPIN }
+noticesClient.requestAccess(.notices, pin: "0123")
+waitFor("director PIN cannot unlock notices") { !noticesClient.authorizing && !noticesClient.accessError.isEmpty }
+require(noticesClient.accessMode == nil, "wrong role credential rejected")
+noticesClient.requestAccess(.notices, pin: "9876")
+waitFor("notices joins with own PIN") { noticesClient.accessMode == .notices && noticesClient.remoteState != nil }
+require(noticesClient.remoteState!.tracks.isEmpty && noticesClient.remoteState!.regions.isEmpty && noticesClient.remoteState!.projects == nil, "notices has no workspace controls")
+noticesClient.testUnchecked(.init(project: project, action: .play))
+noticesClient.testUnchecked(.init(project: project, action: .remotePanel, value: 1))
+noticesClient.testUnchecked(.init(project: project, action: .timerStart, value: 60))
+noticesClient.send(.init(project: project, action: .remotePanel, value: 3))
+noticesClient.send(.init(project: project, action: .noticeSend, value: -1, text: "Stage ready"))
+waitFor("notices subscribes and sends") { noticesClient.remoteState?.message == "panel-3" && noticeCommands == [.noticeSend] }
+require(noticesHost.setNoticesPIN("4567"), "notices PIN can change")
+waitFor("changed notices PIN revokes grant") { noticesClient.accessMode == nil }
+noticesClient.testUnchecked(.init(project: project, action: .noticeClear))
+require(noticesHost.setNoticesPIN(""), "empty notices PIN removes protection")
+noticesClient.requestAccess(.notices)
+waitFor("unprotected notices access") { noticesClient.accessMode == .notices }
+require(noticeCommands == [.noticeSend], "revoked notice commands were rejected")
+noticesClient.stop(); noticesHost.stop()
+print("PASS: independent notices authentication, restricted commands and revocation")
+
 let policy = DAWRemoteAccessPolicy()
 require(policy.setPIN("0123") && !policy.setPIN("12") && !policy.setPIN("abcd"), "PIN format exact ASCII four digits or empty")
 let now = Date()
@@ -611,9 +675,194 @@ let credentialPreferences = UserDefaults(suiteName: credentialSuite)!
 defer { credentialPreferences.removePersistentDomain(forName: credentialSuite) }
 let persistedPolicy = DAWRemoteAccessPolicy(preferences: credentialPreferences)
 require(persistedPolicy.setPIN("0742"), "PIN can be saved")
+require(persistedPolicy.setPIN("0987", mode: .notices), "notices PIN can be saved separately")
 let storedCredential = credentialPreferences.data(forKey: "catlive.remote.directorPIN")!
 require(String(data: storedCredential, encoding: .utf8)?.contains("0742") == false, "preferences contain digest and salt, not the PIN")
 let loadedPolicy = DAWRemoteAccessPolicy(preferences: credentialPreferences)
+require(loadedPolicy.authorize(.init(mode: .notices, pin: "0987")).mode == .notices, "notices PIN survives restart")
+require(loadedPolicy.authorize(.init(mode: .notices, pin: "0742")).mode == nil, "director PIN cannot access notices after restart")
 require(loadedPolicy.requiresPIN && loadedPolicy.authorize(.init(mode: .director, pin: "0742")).mode == .director, "PIN survives app restart")
 require(loadedPolicy.setPIN("") && !DAWRemoteAccessPolicy(preferences: credentialPreferences).requiresPIN, "empty PIN removes stored credential")
 print("REMOTE_DIRECTOR_PIN_PERSISTENCE_REMOVAL_AND_OBSERVER_SETLIST_SELECTION_QUEUE_OK")
+
+// Section selection is a director command, with the same authoritative playback banks as the Mac.
+let sectionID = UUID(), nextSectionRegion = UUID()
+let sectionCommand = DAWRemoteCommand(project: project, song: song, action: .queueSection, target: sectionID)
+require(sectionCommand.valid, "section command requires a valid target")
+require(!DAWRemoteCommand(project: project, song: song, action: .queueSection).valid, "section target cannot be absent")
+require(DAWRemoteAccessRules.allows(sectionCommand, mode: .director), "director may queue sections")
+require(!DAWRemoteAccessRules.allows(sectionCommand, mode: .observer), "observer cannot queue sections")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(sectionCommand)) {
+    require(decoded.action == .queueSection && decoded.target == sectionID, "section command roundtrip")
+} else { fatalError("section command packet") }
+var sectionFixture = fixture
+sectionFixture.markers = [.init(id: sectionID, name: "Refrão", position: 3, color: 0xffcc00, section: true)]
+sectionFixture.sectionPlayback = .init(currentRegion: regionID, secondaryRegion: nextSectionRegion, position: 2,
+    secondaryPosition: 12, queuedMarker: sectionID, queueStartedAt: 1, nextTrigger: 3)
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(sectionFixture)) {
+    require(decoded.sectionPlayback == sectionFixture.sectionPlayback && decoded.markers == sectionFixture.markers,
+        "both section banks, Sub Play position, queued target and countdown survive the bridge")
+} else { fatalError("section state packet") }
+sectionFixture.sectionPlayback?.nextTrigger = .nan
+require(!sectionFixture.valid, "invalid section timing rejected")
+print("REMOTE_SECTIONS_OK")
+
+var displaysFixture = fixture
+displaysFixture.songDisplays = .init(current: "First", currentBPM: 100, next: "Next", nextBPM: 125,
+    queued: "Queued", queuedBPM: nil, playlistSeconds: 600)
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(displaysFixture)) {
+    require(decoded.songDisplays == displaysFixture.songDisplays, "Mac/iPad song names, optional BPM and playlist duration match")
+} else { fatalError("song display packet") }
+print("REMOTE_SONG_DISPLAYS_OK")
+
+var importedGainState = fixture
+importedGainState.tracks[0].clips = [.init(id: UUID(), name: "Imported high gain", start: 0, duration: 4, gain: 27.039209)]
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(importedGainState)) {
+    require(decoded.tracks[0].clips[0].gain == 27.039209, "imported gain above editor range must not block Director state")
+} else { fatalError("Missing imported gain state") }
+print("REMOTE_IMPORTED_GAIN_DIRECTOR_STATE_OK")
+let gainHost = DAWRemoteSession(role: .host, name: "Imported gain host")
+let gainClient = DAWRemoteSession(role: .client, name: "Director")
+gainHost.stateProvider = { importedGainState }
+let gainEndpoint = try gainHost.testListen()
+gainClient.testConnect(gainEndpoint)
+waitFor("Director receives high-gain imported project instead of waiting indefinitely") { gainClient.remoteState?.tracks.first?.clips.first?.gain == 27.039209 }
+gainClient.stop(); gainHost.stop()
+print("REMOTE_IMPORTED_GAIN_DIRECTOR_LIVE_CONNECTION_OK")
+
+let bypassCommand = DAWRemoteCommand(project: project, action: .toggleMultiLoopBypass)
+require(bypassCommand.valid, "global bypass is a target-free command")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(bypassCommand)) {
+    require(decoded.action == .toggleMultiLoopBypass, "global bypass command roundtrip")
+} else { fatalError("bypass command packet") }
+var bypassFixture = fixture
+bypassFixture.multiLoopsBypassed = true
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(bypassFixture)) {
+    require(decoded.multiLoopsBypassed == true, "Remote reflects the host bypass state")
+} else { fatalError("bypass state packet") }
+print("REMOTE_GLOBAL_MULTILOOP_BYPASS_COMMAND_AND_STATE_OK")
+
+var themed = fixture
+themed.gridBackgroundColor = 0x123456; themed.gridPrimaryColor = 0x234567; themed.gridSecondaryColor = 0x345678
+themed.playCursorColor = 0x456789; themed.editCursorColor = 0x56789a; themed.subPlayCursorColor = 0x6789ab
+themed.editPosition = 2; themed.subPlayPosition = 8; themed.setlistFontStyle = 2
+themed.regions[0].nameColor = 0xab1234
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(themed)) {
+    require(decoded.gridBackgroundColor == themed.gridBackgroundColor && decoded.gridPrimaryColor == themed.gridPrimaryColor && decoded.gridSecondaryColor == themed.gridSecondaryColor, "Mac grid colors survive Remote transport")
+    require(decoded.playCursorColor == themed.playCursorColor && decoded.editCursorColor == themed.editCursorColor && decoded.subPlayCursorColor == themed.subPlayCursorColor, "all three cursor colors survive Remote transport")
+    require(decoded.editPosition == 2 && decoded.subPlayPosition == 8, "Remote receives independent cursor positions")
+    require(decoded.setlistFontStyle == 2 && decoded.regions[0].nameColor == 0xab1234, "Mac setlist font and song text color reach iPad")
+} else { fatalError("theme state packet") }
+print("REMOTE_MAC_TIMELINE_CURSOR_AND_SETLIST_APPEARANCE_OK")
+
+var markerKinds = fixture
+markerKinds.markers = [
+    .init(id: UUID(), name: "Normal", position: 1, color: 0x123456),
+    .init(id: UUID(), name: "TRECHO", position: 2, color: 0xabcdef, section: true),
+    .init(id: UUID(), name: "0st Música unificada", position: 3, color: 0xffcc00,
+          unifiedRegionID: UUID(), sourceRegionID: UUID())
+]
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(markerKinds)) {
+    require(decoded.markers == markerKinds.markers, "normal, section and unified marker styles survive Remote transport")
+} else { fatalError("Missing marker style state") }
+print("REMOTE_MAC_MARKER_STYLES_OK")
+
+var subGrid = fixture
+let mainGridID = UUID(), subGridID = UUID(), otherGridID = UUID(), childGridID = UUID()
+subGrid.timelineRegions = [
+    .init(id: mainGridID, name: "Principal", start: 0, end: 30, color: 0x111111),
+    .init(id: subGridID, name: "SubPlay", start: 40, end: 80, color: 0x222222),
+    .init(id: otherGridID, name: "Fila", start: 90, end: 120, color: 0x333333)
+]
+subGrid.regions = subGrid.timelineRegions
+subGrid.playing = true; subGrid.position = 10; subGrid.currentRegion = mainGridID; subGrid.gridRegion = mainGridID
+subGrid.focusedRegion = otherGridID; subGrid.queuedRegion = otherGridID
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == mainGridID, "queue/focus cannot move the playing grid")
+subGrid.subPlaying = true; subGrid.subPlayPosition = 47
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == subGridID, "SubPlay takes grid priority over main, queue and focus")
+subGrid.subPlayPosition = 52
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == subGridID, "moving SubPlay keeps its song visible")
+var promotedGrid = subGrid
+promotedGrid.subPlaying = false; promotedGrid.position = 52; promotedGrid.currentRegion = subGridID; promotedGrid.gridRegion = subGridID
+require(DAWRemoteTimelinePresentation.region(in: promotedGrid)?.id == DAWRemoteTimelinePresentation.region(in: subGrid)?.id,
+        "promotion preserves the displayed song as the normal playback cursor takes over")
+subGrid.subPlaying = false
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == mainGridID, "cancelling SubPlay returns the viewport to main playback")
+subGrid.subPlaying = true
+subGrid.timelineRegions.append(.init(id: childGridID, name: "Música da gaveta", start: 50, end: 60, color: 0x444444, parentRegion: subGridID))
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == subGridID, "a drawer song retains its special region's grid")
+subGrid.subPlayPosition = 85
+require(DAWRemoteTimelinePresentation.region(in: subGrid) == nil, "SubPlay outside a region cannot show the unrelated main song")
+subGrid.subPlaying = false; subGrid.playing = false; subGrid.gridRegion = otherGridID
+require(DAWRemoteTimelinePresentation.region(in: subGrid)?.id == otherGridID, "stopped grid follows the selected song")
+print("REMOTE_SUBPLAY_GRID_PRIORITY_PROMOTION_CANCEL_AND_UNIFIED_REGION_OK")
+
+// A closed Mac/disabled Remote keeps the last workspace behind the reconnect
+// modal, blocks commands and reauthorizes before releasing the modal.
+extension DAWRemoteSession {
+    func testRediscover(_ endpoint: NWEndpoint) {
+        guard let peer = preferredPeer else { fatalError("Missing selected Mac") }
+        peers = [peer]; endpoints = [peer.id: endpoint]
+        attemptReconnect()
+    }
+}
+let resumeHost = DAWRemoteSession(role: .host, name: "Resume Mac")
+let resumeClient = DAWRemoteSession(role: .client, name: "Resume iPad")
+require(resumeHost.setDirectorPIN("1234"), "initial resume PIN")
+var resumeState = fixture
+resumeHost.stateProvider = { resumeState }
+var resumeCommands = 0
+resumeHost.commandHandler = { _ in resumeCommands += 1 }
+let resumeEndpoint = try resumeHost.testListen()
+resumeClient.testConnect(resumeEndpoint, access: .director, pin: "1234")
+waitFor("initial authorized resume state") { resumeClient.remoteState != nil }
+resumeHost.stop()
+waitFor("host stop displays reconnection modal and retains workspace") { resumeClient.reconnecting && !resumeClient.connected }
+require(resumeClient.remoteState?.project == project && resumeClient.presentationAccess == .director && resumeClient.accessMode == nil, "stale presentation is kept without command authority")
+resumeClient.send(.init(project: project, action: .play))
+require(resumeCommands == 0, "disconnected controls cannot execute or enqueue commands")
+resumeState.message = "Fresh after restart"
+let resumedEndpoint = try resumeHost.testListen()
+resumeClient.testRediscover(resumedEndpoint)
+waitFor("same Mac reauthorizes and replaces workspace before hiding modal") {
+    !resumeClient.reconnecting && resumeClient.remoteState?.message == "Fresh after restart" && resumeClient.accessMode == .director
+}
+resumeHost.stop()
+waitFor("second outage") { resumeClient.reconnecting && !resumeClient.connected }
+require(resumeHost.setDirectorPIN("4567"), "PIN changes while disconnected")
+let changedPINEndpoint = try resumeHost.testListen()
+resumeClient.testRediscover(changedPINEndpoint)
+waitFor("changed PIN returns to access picker") {
+    resumeClient.connected && !resumeClient.reconnecting && resumeClient.accessMode == nil && !resumeClient.accessError.isEmpty
+}
+require(resumeClient.remoteState == nil && resumeClient.presentationAccess == nil, "reconnection cannot bypass changed credentials")
+resumeClient.requestAccess(.director, pin: "4567")
+waitFor("new PIN restores session") { resumeClient.remoteState != nil }
+resumeClient.stop(); resumeHost.stop()
+require(!resumeClient.reconnecting && resumeClient.remoteState == nil, "explicit exit clears reconnect intention")
+print("REMOTE_DISCONNECT_MODAL_RETAINED_WORKSPACE_AUTO_REAUTH_FRESH_STATE_CHANGED_PIN_AND_EXIT_OK")
+
+for panel in DAWRemotePhonePanel.allCases {
+    require(panel.selecting(.grid) == .grid, "Grid closes every phone panel")
+    require(panel.selecting(.mixer) == (panel == .mixer ? .grid : .mixer), "Mixer toggles exclusively")
+    require(panel.selecting(.setlist) == (panel == .setlist ? .grid : .setlist), "Setlist toggles exclusively")
+}
+require(DAWRemotePhonePanel.teleprompter1.subscription == 1 && DAWRemotePhonePanel.teleprompter2.subscription == 2 && DAWRemotePhonePanel.notices.subscription == 3, "phone subscribes only to its visible projection panel")
+print("REMOTE_PHONE_EXCLUSIVE_MIXER_SETLIST_GRID_AND_PROJECTION_SUBSCRIPTIONS_OK")
+
+var sectionsDisplayFixture = fixture
+for vertical in [false, true] {
+    sectionsDisplayFixture.sectionListVertical = vertical
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(sectionsDisplayFixture)) {
+        require(decoded.sectionListVertical == vertical, "Mac section display preference reaches the iPad")
+    } else { fatalError("section display mode packet") }
+}
+print("REMOTE_SECTION_DISPLAY_MODE_ROUNDTRIP_OK")
+
+let cancelSection = DAWRemoteCommand(project: project, action: .cancelSection)
+require(cancelSection.valid && DAWRemoteAccessRules.allows(cancelSection, mode: .director), "director can cancel only the queued section")
+require(!DAWRemoteAccessRules.allows(cancelSection, mode: .observer) && !DAWRemoteAccessRules.allows(cancelSection, mode: .notices), "read-only and notices roles cannot cancel a section")
+require(!DAWRemoteCommand(project: project, action: .cancelSection, target: UUID()).valid, "section cancellation has no ambiguous target")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(cancelSection)) {
+    require(decoded.action == .cancelSection, "dedicated cancellation survives transport")
+} else { fatalError("cancel section packet") }

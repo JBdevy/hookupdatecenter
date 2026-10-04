@@ -9,10 +9,67 @@ Project fixture() {
     p.songs={{"song","Song",60,120,{{"track","Track",{"other"}}},{{"region","Region",0,60}}}};
     auto& s=p.songs[0];
     s.markers=std::vector<TimelineMarker>{{"a","A",10,0},{"b","B",20,0}};
+    for (auto& marker : *s.markers) { marker.section = true; marker.loopSection = true; }
     MultiLoop l; l.id="loop";l.name="Chorus";l.marker1="a";l.marker2="b";l.fadeSeconds=3;
     l.tracks={{"track",0.2,true,true,true}};s.parts[0].multiLoops={l};return p;
 }
 int main() {
+    Engine bypass; bypass.loadProject(fixture()); bypass.execute({CommandKind::play}); bypass.advance(12);
+    assert(bypass.transport().multiLoop && bypass.transport().loop.enabled);
+    bypass.execute({CommandKind::toggleMultiLoopBypass});
+    assert(bypass.transport().multiLoopsBypassed && !bypass.transport().multiLoop && !bypass.transport().loop.enabled);
+    assert(bypass.project().songs[0].parts[0].multiLoops[0].enabled.value_or(true));
+    assert(bypass.project().songs[0].parts[0].multiLoops[0].tracks[0].autoFader);
+    bypass.advance(1);
+    bypass.execute({CommandKind::toggleMultiLoopBypass});
+    assert(!bypass.transport().multiLoopsBypassed && near(bypass.transport().position,13));
+    assert(bypass.transport().multiLoop && bypass.transport().multiLoop->gates && bypass.transport().loop.enabled);
+    assert(near(bypass.transport().multiLoop->amount,1));
+    assert(bypass.transport().multiLoop->config.tracks[0].mute && bypass.transport().multiLoop->config.tracks[0].solo);
+    bypass.execute({CommandKind::toggleMultiLoopBypass}); bypass.execute({CommandKind::seek,"",0}); bypass.advance(25);
+    assert(near(bypass.transport().position,25) && !bypass.transport().multiLoop); // Long ticks must not discover bypassed pairs.
+    bypass.execute({CommandKind::seek,"",8.5}); bypass.execute({CommandKind::toggleMultiLoopBypass});
+    assert(bypass.transport().multiLoop && near(bypass.transport().multiLoop->amount,0.5) && !bypass.transport().multiLoop->gates);
+    bypass.execute({CommandKind::toggleMultiLoopBypass}); bypass.execute({CommandKind::stop}); bypass.execute({CommandKind::play});
+    assert(bypass.transport().multiLoopsBypassed && !bypass.transport().multiLoop);
+
+    auto disabledProject = fixture();
+    disabledProject.songs[0].parts[0].multiLoops[0].enabled = false;
+    Engine disabled; disabled.loadProject(disabledProject); disabled.execute({CommandKind::play});
+    disabled.advance(8.5);
+    assert(!disabled.transport().multiLoop); // No pre-fade for a disabled imported pair.
+    disabled.advance(17);
+    assert(near(disabled.transport().position,25.5) && !disabled.transport().loop.enabled);
+    disabled.execute({CommandKind::seek,"",12});
+    assert(!disabled.transport().multiLoop && !disabled.transport().loop.enabled);
+    auto enabledProject = disabled.project();
+    enabledProject.songs[0].parts[0].multiLoops[0].enabled = true;
+    enabledProject.songs[0].parts[0].multiLoops[0].mixerEnabled = false;
+    disabled.applyProjectEdit(enabledProject);
+    assert(disabled.transport().multiLoop && disabled.transport().loop.enabled);
+    assert(disabled.transport().multiLoop->config.tracks[0].autoFader);
+    assert(!disabled.transport().multiLoop->config.tracks[0].mute && !disabled.transport().multiLoop->config.tracks[0].solo);
+    assert(disabled.project().songs[0].parts[0].multiLoops[0].tracks[0].mute); // Presets remain saved.
+    enabledProject.songs[0].parts[0].multiLoops[0].mixerEnabled = true;
+    disabled.applyProjectEdit(enabledProject);
+    assert(disabled.transport().multiLoop->config.tracks[0].mute && disabled.transport().multiLoop->config.tracks[0].solo);
+    enabledProject.songs[0].parts[0].multiLoops[0].enabled = false;
+    disabled.applyProjectEdit(enabledProject);
+    assert(!disabled.transport().multiLoop && !disabled.transport().loop.enabled);
+    disabled.advance(12);
+    assert(near(disabled.transport().position,24));
+    Engine longTick; longTick.loadProject(disabledProject); longTick.execute({CommandKind::play}); longTick.advance(25);
+    assert(near(longTick.transport().position,25) && !longTick.transport().multiLoop);
+    auto sharedAnchorProject = fixture();
+    sharedAnchorProject.songs[0].parts[0].startTime = 10;
+    sharedAnchorProject.songs[0].parts[0].parentRegionID = "parent";
+    sharedAnchorProject.songs[0].parts.push_back({"parent","Special",0,60});
+    sharedAnchorProject.songs[0].markers->at(0).sourceRegionID = "region";
+    sharedAnchorProject.songs[0].markers->at(0).unifiedRegionID = "parent";
+    Engine sharedAnchor; sharedAnchor.loadProject(sharedAnchorProject); sharedAnchor.execute({CommandKind::play}); sharedAnchor.advance(25);
+    assert(near(sharedAnchor.transport().position,15) && sharedAnchor.transport().loop.enabled);
+    sharedAnchor.execute({CommandKind::seek,"",12});
+    assert(sharedAnchor.transport().multiLoop && sharedAnchor.transport().loop.start == 10);
     Engine e;e.loadProject(fixture());e.execute({CommandKind::play});e.advance(8.5);
     assert(e.transport().multiLoop && near(e.transport().multiLoop->amount,0.5));
     assert(!e.transport().loop.enabled && !e.transport().multiLoop->gates);
@@ -58,7 +115,7 @@ int main() {
     assert(escape.transport().queuedRegionId == "next");
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
     escape.execute({CommandKind::queueRegion,"next"}); escape.execute({CommandKind::escape,"",1});
-    assert(escape.transport().queuedRegionId == "next");
+    assert(!escape.transport().queuedRegionId); // Queue cancellation wins over an area selection.
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
     escape.execute({CommandKind::loopStart,"",25}); escape.execute({CommandKind::loopEnd,"",35});
     escape.execute({CommandKind::toggleLoop}); escape.advance(36);

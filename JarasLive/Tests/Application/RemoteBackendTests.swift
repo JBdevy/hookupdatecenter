@@ -12,6 +12,8 @@ private final class BackendURLProtocol: URLProtocol {
             payload = ["status":"active","planId":"trial","expiresAt":"2026-10-09T06:00:00.000Z",
                        "offlineValidUntil":"2026-10-03T06:00:00.000Z","serverTime":"2026-10-02T06:00:00.000Z",
                        "maxDevices":4,"features":["desktop"]]
+        } else if path == "/api/access-status" {
+            status = 403; payload = ["error":"quarantined"]
         } else if path == "/api/login" {
             status = 409; payload = ["error":"deviceLimit"]
         } else if path == "/api/refresh" {
@@ -31,6 +33,8 @@ final class RemoteBackendTests: XCTestCase {
         defer { session.invalidateAndCancel() }
         let backend = RemoteBackendClient(baseURL: URL(string: "https://backcatlive.up.railway.app")!, session: session)
         let credentials = AuthSession(accessToken: "access-test", refreshToken: "refresh-test", expiresAt: Date())
+        do { try await backend.accessStatus(credentials); XCTFail("quarantine must reach the client") }
+        catch BackendFailure.quarantined {}
         let entitlement = try await backend.entitlement(credentials)
         XCTAssertEqual(entitlement.maxDevices, 4)
         XCTAssertEqual(entitlement.planId, "trial")

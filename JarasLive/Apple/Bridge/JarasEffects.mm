@@ -77,6 +77,20 @@ struct EffectAnalysis {
 // segments. The control thread publishes bounded atomic snapshots; rendering
 // never allocates, locks, or rebuilds the graph.
 struct ItemFadeKernel {
+    std::atomic<uint64_t> boundaryHost{0};
+    void gate(AudioBufferList* buffers,unsigned frames,const AudioTimeStamp* time) {
+        const auto end=boundaryHost.load(std::memory_order_relaxed);
+        if(!end || !(time->mFlags&kAudioTimeStampHostTimeValid)) return;
+        const double remaining=(double(end)-double(time->mHostTime))*hostSecondsPerTick;
+        if(remaining>double(frames)/rate+0.003) return;
+        for(unsigned frame=0;frame<frames;++frame) {
+            const float gain=float(curve((remaining-double(frame)/rate)/0.003));
+            for(unsigned ch=0;ch<buffers->mNumberBuffers;++ch) {
+                auto& buffer=buffers->mBuffers[ch]; auto data=static_cast<float*>(buffer.mData);
+                if(data) for(unsigned channel=0;channel<buffer.mNumberChannels;++channel) data[frame*buffer.mNumberChannels+channel]*=gain;
+            }
+        }
+    }
     std::array<std::atomic<double>,6> pending{};
     std::atomic<unsigned> generation{0};
     double parameters[6]{};
@@ -235,6 +249,7 @@ struct EQKernel {
         auto status=pull(flags,time,frames,0,output);
         if(status==noErr) {
             state->fade.process(output,frames,time);
+            state->fade.gate(output,frames,time);
             if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             state->process(output,frames);
             if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
@@ -258,6 +273,9 @@ struct EQKernel {
     unit->kernel.count.store((unsigned)count,std::memory_order_release);
     unit->kernel.enabled.store(enabled,std::memory_order_relaxed);
     unit->kernel.generation.fetch_add(1,std::memory_order_release);
+}
++ (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.boundaryHost.store(hostTime,std::memory_order_relaxed);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)) return;

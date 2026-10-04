@@ -45,6 +45,7 @@ import Foundation
     func setClipText(_ clip: UUID, text: String) throws { try AudioClip.validateText(text); try core.setClipText(clip.uuidString, text: text) }
     func setMIDIInput(_ track: UUID, slot: Int) throws { try core.setMIDIInput(track.uuidString, slot: Int32(slot)) }
     func setMIDIChannel(_ track: UUID, channel: Int) throws { try core.setMIDIChannel(track.uuidString, channel: Int32(channel)) }
+    func setInputMonitoring(_ track: UUID, enabled: Bool) throws { try core.setInputMonitoring(track.uuidString, enabled: enabled) }
     func setRecordingChannels(_ track: UUID, channel: Int) throws { try core.setRecordingChannels(track.uuidString, channel: Int32(channel)) }
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws { try core.setRecording(track.uuidString, first: Int32(input.firstChannel), count: Int32(input.channelCount), format: format) }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws {
@@ -72,12 +73,14 @@ import Foundation
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { try core.editRegion(id.uuidString, name: name, color: color, uppercaseName: uppercaseName) }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { try core.moveClip(id.uuidString, start: start, track: track?.uuidString ?? "") }
     func deleteManualMarker(_ id: UUID) throws { try core.deleteManualMarker(id.uuidString) }
+    func retimeTempoMarkers(_ markers: [TimelineMarker]) throws { try core.retimeTempoMarkers(JSONEncoder().encode(markers)) }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { try core.setTempoMarkers(JSONEncoder().encode(markers)) }
     func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
         try core.setTempoMarkers(JSONEncoder().encode(markers), removing: removing.map(\.uuidString))
     }
     func setMarker(_ marker: TimelineMarker) throws {
         if let bpm = marker.tempoBPM { try core.setTempoMarker(marker.id.uuidString, position: marker.position, bpm: bpm, beats: Int32(marker.tempoBeats ?? 4), unit: Int32(marker.tempoUnit ?? 4), timebase: (marker.tempoTimebase ?? .global).rawValue) }
+        else if marker.isSection { try core.setSectionMarker(marker.id.uuidString, name: marker.name, position: marker.position, color: marker.color, loop: marker.isLoopSection) }
         else { try core.setMarker(marker.id.uuidString, name: marker.name, position: marker.position, color: marker.color) }
     }
     func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws {

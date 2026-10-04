@@ -284,6 +284,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var convert: (Set<UUID>, Int) -> Void = { _, _ in }
     var freezeMIDI: (Set<UUID>, Int) -> Void = { _, _ in }
     var glue: (Set<UUID>) -> Void = { _ in }
+    var tuner: (Set<UUID>) -> Void = { _ in }
     var normalize: (Set<UUID>) -> Void = { _ in }
     var split: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
@@ -296,7 +297,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -352,6 +353,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     var convert: ((Set<UUID>, Int) -> Void)?
     var freezeMIDI: ((Set<UUID>, Int) -> Void)?
     var glue: ((Set<UUID>) -> Void)?
+    var tuner: ((Set<UUID>) -> Void)?
     var normalize: ((Set<UUID>) -> Void)?
     var split: ((Set<UUID>) -> Void)?
     var export: ((Set<UUID>) -> Void)?
@@ -740,6 +742,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 freeze.target = self; menu.addItem(freeze)
                 let glue = NSMenuItem(title: JarasLocalization.string("Unify items"), action: #selector(glueSelection), keyEquivalent: "")
                 glue.target = self; menu.addItem(glue)
+                let tuner = NSMenuItem(title: "Tuner", action: #selector(tuneSelection), keyEquivalent: "")
+                tuner.target = self; menu.addItem(tuner)
                 let normalize = NSMenuItem(title: JarasLocalization.string("Normalize…"), action: #selector(normalizeSelection), keyEquivalent: "")
                 normalize.target = self; menu.addItem(normalize)
                 let split = NSMenuItem(title: JarasLocalization.string("Split at edit cursor…"), action: #selector(splitSelection), keyEquivalent: "")
@@ -788,6 +792,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     @objc private func exportSelection() {
         let audio = Set(selected.filter { item(id: $0).map { $0.editable && $0.audioExportable } == true })
         if !audio.isEmpty { export?(audio) }
+    }
+    @objc private func tuneSelection() {
+        let ids = Set(selected.filter { item(id: $0).map { $0.audioExportable && !$0.midiEditable } == true })
+        if !ids.isEmpty { tuner?(ids) }
     }
     @objc private func reRenderSelection() { reRender?(selected) }
     @objc private func glueSelection() {

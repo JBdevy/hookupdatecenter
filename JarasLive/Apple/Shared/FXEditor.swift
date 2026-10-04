@@ -46,6 +46,7 @@ struct FXEditor: View {
         return show.fxSettings(track).settings(for: effectKey)
     }
     private var audioTarget: UUID? { clip ?? track }
+    private var compactControls: Bool { page == "Delay" || page == "Reverb" }
     private func remove() {
         if let clip { show.removeClipFX(clip, effect: effectKey) }
         else { show.removeFX(track, effect: effectKey) }
@@ -90,7 +91,6 @@ struct FXEditor: View {
                     .padding(24).background(JarasTheme.display).cornerRadius(10)
             case "Delay":
                 Toggle("Enabled", isOn: $settings.delayEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
-                EffectSpectrogram(track: audioTarget, effect: effectKey)
                 HStack(spacing: 26) {
                     EffectVerticalMeters(track: audioTarget, effect: effectKey)
                     FXKnob("Time", value: $settings.delayTime, range: 0.01...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.25, parameter: .delayTime)
@@ -104,7 +104,6 @@ struct FXEditor: View {
                         Text("Room").tag(0); Text("Hall").tag(1); Text("Plate").tag(2)
                     }.pickerStyle(.segmented).labelsHidden().frame(width: 280).mapFXMIDI(.reverbRoom, name: "Space", range: 0...2)
                 }
-                EffectSpectrogram(track: audioTarget, effect: effectKey)
                 HStack(spacing: 14) {
                     EffectVerticalMeters(track: audioTarget, effect: effectKey)
                     FXKnob("Mix", value: $settings.reverbMix, range: 0...100, unit: "%", reset: 20, parameter: .reverbMix)
@@ -115,7 +114,7 @@ struct FXEditor: View {
 
             }
         }.environment(\.fxMIDIScope, FXMIDIScope(track: track, clip: clip, effect: effectKey))
-        .padding(clipChainEditor ? 0 : 20).frame(minWidth: clipChainEditor ? 600 : 640, idealWidth: clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: clipChainEditor ? 410 : 540, idealHeight: clipChainEditor ? 440 : 560, maxHeight: .infinity).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
+        .padding(clipChainEditor ? 0 : 20).frame(minWidth: clipChainEditor ? 600 : 640, idealWidth: clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: compactControls ? (clipChainEditor ? 260 : 340) : (clipChainEditor ? 410 : 540), idealHeight: compactControls ? (clipChainEditor ? 280 : 360) : (clipChainEditor ? 440 : 560), maxHeight: .infinity).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
             .onChange(of: settings) { value in
                 guard show.snapshot.project.id == project else { return }
                 guard currentSettings.merging(effect: page, from: value) != currentSettings else { return }
@@ -236,14 +235,14 @@ struct FXEditor: View {
 }
 /// Item FX share one window. Opening or changing pages only reads the project.
 struct TabbedClipFXEditor: View {
-    let show: ShowController
+    @ObservedObject var show: ShowController
     let clip: UUID
     let close: () -> Void
     @State private var page = "EQ"
     @State private var enabledEffects: Set<String> = []
     private var pages: [String] {
         #if os(macOS)
-        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatStemSeparation 5"]
+        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"] + (show.clipFXSettings(clip).inserted.contains(NativeFXSettings.stemSeparator) ? [NativeFXSettings.stemSeparator] : [])
         #else
         return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
         #endif
@@ -263,12 +262,27 @@ struct TabbedClipFXEditor: View {
             HStack {
                 Text("CatLive FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")).font(.headline).lineLimit(1)
                 Spacer()
+                #if os(macOS)
+                Menu {
+                    if show.clipFXSettings(clip).inserted.contains(NativeFXSettings.stemSeparator) {
+                        Button("Remove CatStemSeparation 5") {
+                            show.removeClipFX(clip, effect: NativeFXSettings.stemSeparator)
+                            if page == NativeFXSettings.stemSeparator { page = "EQ" }
+                        }
+                    } else {
+                        Button("CatStemSeparation 5") {
+                            show.insertClipFX(clip, effect: NativeFXSettings.stemSeparator)
+                            page = NativeFXSettings.stemSeparator
+                        }
+                    }
+                } label: { Image(systemName: "plus") }.frame(width: 44)
+                #endif
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
             HStack(spacing: 4) {
                 ForEach(pages, id: \.self) { effect in
-                    let active = effect == "CatStemSeparation 5" || enabledEffects.contains(effect)
+                    let active = enabledEffects.contains(effect)
                     let tint = color(effect)
                     Button { page = effect } label: {
                         Text(LocalizedStringKey(effect == "Limiter" ? "CatLive Limiter" : effect)).font(.system(size: 12, weight: .semibold))

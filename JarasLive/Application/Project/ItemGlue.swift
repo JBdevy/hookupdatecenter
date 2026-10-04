@@ -18,18 +18,8 @@ public enum ItemGlue {
               clips.allSatisfy({ $0.duration > 0 && $0.startTime.isFinite && $0.duration.isFinite }) else {
             throw ProjectError.invalid("Select audio or MIDI items to unify.")
         }
-        let midi = clips.filter { $0.midi != nil }.count
-        guard midi == 0 || midi == clips.count else {
-            throw ProjectError.invalid("Unify audio and MIDI separately on each track.")
-        }
-        if midi == 0 {
-            guard clips.allSatisfy({ ($0.audioFile ?? track.audioFile) != nil }) else {
-                throw ProjectError.invalid("Select audio or MIDI items to unify.")
-            }
-            let frozen = clips.filter { $0.frozenMIDI == true }.count
-            guard frozen == 0 || frozen == clips.count else {
-                throw ProjectError.invalid("Unify converted MIDI audio separately from other audio on the same track.")
-            }
+        guard clips.allSatisfy({ $0.midi != nil || ($0.audioFile ?? track.audioFile) != nil }) else {
+            throw ProjectError.invalid("Select audio or MIDI items to unify.")
         }
     }
 

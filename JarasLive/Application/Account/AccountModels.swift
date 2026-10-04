@@ -37,11 +37,12 @@ public struct LoginResult: Codable, Sendable { public var account: UserAccount; 
 public struct SessionCache: Codable, Sendable { public var login: LoginResult; public var validatedAt: Date }
 public enum LaunchPhase: String, Sendable { case launching, checkingSession, unauthenticated, checkingLicense, checkingDevice, authorized, offlineAuthorized, unauthorized, error }
 public enum BackendFailure: Error, LocalizedError, Equatable {
-    case invalidCredentials, blocked, expired, revoked, unavailable, invalidSession, notConfigured, existingAccount, deviceLimit, rateLimited, trialConsumed, clockChanged
+    case invalidCredentials, blocked, quarantined, expired, revoked, unavailable, invalidSession, notConfigured, existingAccount, deviceLimit, rateLimited, trialConsumed, clockChanged
     public var errorDescription: String? {
         switch self {
         case .invalidCredentials: return "E-mail ou CPF inválidos."
         case .blocked: return "Esta conta está bloqueada."
+        case .quarantined: return "Seu acesso foi bloqueado por ter sido cadastrado em muitos dispositivos. Entre em contato com o administrador."
         case .expired: return "A autorização desta conta expirou."
         case .revoked: return "Este dispositivo foi substituído por outro login."
         case .unavailable: return "Não foi possível conectar ao serviço."

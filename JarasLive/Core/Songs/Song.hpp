@@ -1,7 +1,7 @@
 #pragma once
 #include "../Tracks/Track.hpp"
 #include "../Parts/Part.hpp"
-namespace jaras { struct TimelineMarker { ID id; std::string name; double position = 0; unsigned color = 0; std::optional<ID> unifiedRegionID; std::optional<ID> sourceRegionID; std::optional<double> tempoBPM; std::optional<int> tempoBeats, tempoUnit; std::optional<std::string> tempoTimebase; std::optional<double> tempoReferenceBPM; };
+namespace jaras { struct TimelineMarker { ID id; std::string name; double position = 0; unsigned color = 0; std::optional<ID> unifiedRegionID; std::optional<ID> sourceRegionID; std::optional<double> tempoBPM; std::optional<int> tempoBeats, tempoUnit; std::optional<std::string> tempoTimebase; std::optional<double> tempoReferenceBPM; std::optional<bool> section; std::optional<bool> loopSection; };
 enum class ProjectTimebase { free, relative };
 struct ProjectTimeSettings { int divisions = 4; ProjectTimebase timebase = ProjectTimebase::free; bool affectsMIDIItems = false, affectsAutomationLength = true; };
 inline bool validProjectTimeSettings(const ProjectTimeSettings& settings) {

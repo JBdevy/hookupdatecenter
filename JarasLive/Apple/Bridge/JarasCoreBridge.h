@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setTimecode:(NSString *)track data:(NSData *)data error:(NSError **)error;
 - (BOOL)setMIDIInput:(NSString *)track slot:(int)slot error:(NSError **)error;
 - (BOOL)setMIDIChannel:(NSString *)track channel:(int)channel error:(NSError **)error;
+- (BOOL)setInputMonitoring:(NSString *)track enabled:(BOOL)enabled error:(NSError **)error;
 - (BOOL)setRecordingChannels:(NSString *)track channel:(int)channel error:(NSError **)error;
 - (BOOL)setRecording:(NSString *)track first:(int)first count:(int)count format:(NSString *)format error:(NSError **)error;
 - (BOOL)pasteItems:(NSData *)data song:(NSString *)song moving:(BOOL)moving error:(NSError **)error;
@@ -32,9 +33,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)moveClip:(NSString *)clipId start:(double)start track:(NSString *)trackId error:(NSError **)error;
 - (BOOL)deleteManualMarker:(NSString *)identifier error:(NSError **)error;
 - (BOOL)setProjectTiming:(double)bpm beats:(int)beats unit:(int)unit settings:(NSData *)settings error:(NSError **)error;
+- (BOOL)retimeTempoMarkers:(NSData *)data error:(NSError **)error;
 - (BOOL)setTempoMarkers:(NSData *)data error:(NSError **)error;
 - (BOOL)setTempoMarkers:(NSData *)data removing:(NSArray<NSString *> *)identifiers error:(NSError **)error;
 - (BOOL)setTempoMarker:(NSString *)identifier position:(double)position bpm:(double)bpm beats:(int)beats unit:(int)unit timebase:(NSString *)timebase error:(NSError **)error;
+- (BOOL)setSectionMarker:(NSString *)identifier name:(NSString *)name position:(double)position color:(unsigned int)color loop:(BOOL)loop error:(NSError **)error;
 - (BOOL)setMarker:(NSString *)identifier name:(NSString *)name position:(double)position color:(unsigned int)color error:(NSError **)error;
 - (BOOL)regionsFromClips:(NSArray<NSString *> *)clips identifiers:(NSArray<NSString *> *)identifiers error:(NSError **)error;
 - (BOOL)regionFromClip:(NSString *)clipId identifier:(NSString *)identifier error:(NSError **)error;

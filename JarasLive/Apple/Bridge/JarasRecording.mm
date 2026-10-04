@@ -45,6 +45,24 @@
     for(uint64_t f=0;f<count;++f) std::copy_n(&_samples[((read+f)%_capacity)*_channels],_channels,destination+f*_channels);
     _read.store(read+count,std::memory_order_release); return count;
 }
+- (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count {
+    AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:(AVAudioChannelCount)count];
+    return [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent, const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *output) {
+        auto read=self->_read.load(std::memory_order_relaxed), write=self->_write.load(std::memory_order_acquire);
+        // Bound latency after a device pause; never replay stale live input.
+        if (write-read > std::max<uint64_t>(4096, frames*4)) read=write-std::min<uint64_t>(write-read,frames*2);
+        auto available=std::min<uint64_t>(frames,write-read);
+        *silent=available==0;
+        for (NSUInteger c=0; c<output->mNumberBuffers; ++c) {
+            auto *samples=(float *)output->mBuffers[c].mData;
+            if (!samples) continue;
+            auto source=first+c;
+            for (NSUInteger f=0; f<frames; ++f) samples[f]=(f<available && source<self->_channels) ? self->_samples[((read+f)%self->_capacity)*self->_channels+source] : 0;
+        }
+        self->_read.store(read+available,std::memory_order_release);
+        return noErr;
+    }];
+}
 - (NSUInteger)droppedFrames { return _dropped.load(std::memory_order_relaxed); }
 @end
 @implementation JarasMP3Encoder

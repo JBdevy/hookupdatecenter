@@ -1,8 +1,9 @@
 #import <Foundation/Foundation.h>
-@class AVAudioPCMBuffer;
+@class AVAudioPCMBuffer, AVAudioSourceNode;
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasCaptureRing : NSObject
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames;
+- (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count;
 - (void)beginCapture;
 - (void)endCapture;
 // Writer queue only: wait for the last accepted input buffer before draining.

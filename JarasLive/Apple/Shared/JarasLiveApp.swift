@@ -1,16 +1,33 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 @MainActor final class Bootstrap: ObservableObject {
     @Published var container: AppContainer?
     @Published var error: String?
-    init() { retry() }
+    init() {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone { return }
+        #endif
+        retry()
+    }
     func retry() { do { container = try AppContainer(); error = nil } catch { self.error = error.localizedDescription } }
 }
 @main @MainActor struct JarasLiveApp: App {
     @StateObject private var bootstrap = Bootstrap()
+    @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @NSApplicationDelegateAdaptor(JarasApplicationDelegate.self) private var appDelegate
     #endif
     @ViewBuilder private var appContent: some View {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone { PhoneRemoteHomeView() }
+        else { bootstrappedContent }
+        #else
+        bootstrappedContent
+        #endif
+    }
+    @ViewBuilder private var bootstrappedContent: some View {
         if let container = bootstrap.container { RootView(container: container) }
         else { VStack(spacing: 20) { Text("CatLive").font(.largeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
     }
@@ -24,7 +41,13 @@ import SwiftUI
         .windowStyle(.hiddenTitleBar)
         .commands { CommandGroup(replacing: .newItem) {} }
         #else
-        WindowGroup("CatLive") { appContent.statusBarHidden(true).persistentSystemOverlays(.hidden) }
+        WindowGroup("CatLive") {
+            appContent.statusBarHidden(true).persistentSystemOverlays(.hidden)
+                .onAppear { UIApplication.shared.isIdleTimerDisabled = scenePhase == .active }
+        }
+        .onChange(of: scenePhase) { phase in
+            UIApplication.shared.isIdleTimerDisabled = phase == .active
+        }
         #endif
     }
 }

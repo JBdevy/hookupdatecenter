@@ -689,6 +689,21 @@ if #available(macOS 14.0, *) {
     RunLoop.main.run(until: Date().addingTimeInterval(0.04))
     precondition(zoomUpdates == pausedUpdates, "blocking input invalidates the display link")
 }
+// Read playback at gesture time even when the SwiftUI grid has not rebuilt.
+let originalZoomCallback = wheel.changeZoom
+wheel.changeZoom = { _, _ in }
+for live in [0.2, 0.8, 0.4] {
+    resetZoomInput()
+    wheel.position = 0.05
+    wheel.livePosition = { live }
+    event.delta = 2
+    precondition(wheel.handleWheelEvent(event))
+    precondition(abs((scroll.zoomAnchor?.fraction ?? -1) - live) < 1e-12,
+                 "zoom uses the live transport head instead of the stale editing head")
+    wheel.livePosition = nil
+}
+wheel.changeZoom = originalZoomCallback
+print("ZOOM_LIVE_TRANSPORT_ANCHOR_WITHOUT_GRID_REBUILD_OK")
 window.close()
 let boundedScroll = GridNativeScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
 boundedScroll.contentView = TimelineClipView()

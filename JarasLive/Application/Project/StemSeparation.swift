@@ -25,9 +25,6 @@ public extension Project {
               songs[song].tracks[channel].clips[item] == original else {
             throw ProjectError.invalid("The source item changed. Open CatStemSeparation 5 again.")
         }
-        guard songs.reduce(0, { $0 + $1.tracks.count }) + tracks.count <= Self.maximumTrackCount else {
-            throw ProjectError.invalid("A project supports at most 1000 tracks")
-        }
         var candidate = self
         candidate.songs[song].tracks[channel].clips[item].muted = true
         candidate.songs[song].tracks[channel].clips[item].separatedStemTracks = tracks.map(\.id)

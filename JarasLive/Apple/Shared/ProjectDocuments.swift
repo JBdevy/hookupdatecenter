@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+import AVFoundation
 #endif
 
 @MainActor final class ProjectDocuments: ObservableObject {
@@ -142,7 +143,10 @@ import AppKit
     }
     private func formattedImportError(_ error: Error) -> String {
         let message = error.localizedDescription
-        for (prefix, key) in [("Unsupported media file: ", "Unsupported media file: %@"),
+        if message == "Select media files, not folders." {
+            return JarasLocalization.string("This item cannot be added. Select audio, video or image files, not folders.")
+        }
+        for (prefix, key) in [("Unsupported media file: ", "This item cannot be added. Select an audio, video or image file: %@"),
                               ("Empty media file: ", "Empty media file: %@")] {
             if message.hasPrefix(prefix) {
                 return String(format: JarasLocalization.string(key), String(message.dropFirst(prefix.count)))
@@ -150,6 +154,37 @@ import AppKit
         }
         return message
     }
+    #if os(macOS)
+    func pasteMedia(_ urls: [URL], track: UUID?) {
+        guard show.canExecute(), ready, !busy, !urls.isEmpty,
+              let song = show.current, pendingAudioDrop == nil else { return }
+        let project = show.snapshot.project.id
+        let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        busy = true; status = "Importing audio…"
+        Task {
+            // Inspect movie streams off the UI thread: an audio-only MP4 must
+            // have exactly the same destination as an audio-only dropped MP4.
+            let visual = await Task.detached(priority: .userInitiated) {
+                GridMediaClipboard.containsVisualMedia(urls)
+            }.value
+            busy = false; status = ""
+            guard show.snapshot.project.id == project, show.current?.id == song.id else { return }
+            let destination: UUID?
+            if visual {
+                guard let video = show.current?.tracks.first(where: { $0.kind == .video }) else {
+                    audioImportError = "Create a Video track first, then drop the video on it"
+                    return
+                }
+                destination = video.id
+            } else { destination = track }
+            // Keep the drop layout/gap question, validation, project-local
+            // media copies, waveform preparation and undo transaction.
+            _ = importAudio(urls.map { NSItemProvider(item: $0 as NSURL, typeIdentifier: UTType.fileURL.identifier) },
+                start: position, track: destination, song: song.id)
+        }
+    }
+    #endif
+
     func chooseVideo(track: UUID) {
         #if os(macOS)
         guard let song = show.current else { return }
@@ -720,7 +755,7 @@ struct ProjectBrowserView: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
                     startupCard("Create Project", icon: "plus.rectangle", color: JarasTheme.green) { creating.toggle(); opening = false }
                     startupCard("Add Project", icon: "folder.badge.plus", color: JarasTheme.purple) { documents.addProject() }
-                    startupCard("Open Project", icon: "folder", color: JarasTheme.purple) { opening = true; creating = false }
+                    startupCard("Recent Projects", icon: "folder", color: JarasTheme.purple) { opening = true; creating = false }
                     startupCard("Remote", icon: "network", color: JarasTheme.green) { showingRemote = true }
                 }.padding(.vertical, 12)
                 #else
@@ -729,7 +764,7 @@ struct ProjectBrowserView: View {
                     action("Add Project", icon: "folder.badge.plus") {
                         documents.addProject()
                     }
-                    action("Open Project", icon: "folder") { opening = true; creating = false }
+                    action("Recent Projects", icon: "folder") { opening = true; creating = false }
                     #if os(iOS)
                     action("Remote", icon: "network") { showingRemote = true }
                     #endif
@@ -1155,6 +1190,41 @@ private final class ProjectSourcePanelValidator: NSObject, NSOpenSavePanelDelega
     func panel(_ sender: Any, validate url: URL) throws {
         guard extensions.contains(url.pathExtension.lowercased()) else {
             throw ProjectError.invalid("Selecione um projeto " + extensions.sorted().map { "." + $0 }.joined(separator: ", ") + ".")
+        }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Own only a token; actual copied items remain in ShowController. A new Finder
+/// copy replaces this token so a stale internal selection cannot win Cmd+V.
+@MainActor final class GridMediaClipboard {
+    static let shared = GridMediaClipboard()
+    enum Source: Equatable { case items, files([URL]), none }
+    private let pasteboard: NSPasteboard
+    private let itemType = NSPasteboard.PasteboardType("com.catlive.grid-items")
+    private var token: String?
+    init(pasteboard: NSPasteboard = .general) { self.pasteboard = pasteboard }
+    func didCopyItems() {
+        let value = UUID().uuidString
+        pasteboard.clearContents()
+        token = pasteboard.setString(value, forType: itemType) ? value : nil
+    }
+    func source() -> Source {
+        if let token, pasteboard.string(forType: itemType) == token { return .items }
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        return urls.isEmpty ? .none : .files(urls)
+    }
+    nonisolated static func containsVisualMedia(_ urls: [URL]) -> Bool {
+        urls.contains { url in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType ?? UTType(filenameExtension: url.pathExtension)
+            if type?.conforms(to: .image) == true { return true }
+            guard type?.conforms(to: .movie) == true else { return false }
+            // Missing files still go through the importer's normal error path.
+            guard FileManager.default.fileExists(atPath: url.path) else { return true }
+            return !AVURLAsset(url: url).tracks(withMediaType: .video).isEmpty
         }
     }
 }

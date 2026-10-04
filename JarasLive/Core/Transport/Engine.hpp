@@ -1,7 +1,7 @@
 #pragma once
 #include "../Project/Models.hpp"
 namespace jaras {
-enum class CommandKind { clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipChannelMode, clipNormalization };
+enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipChannelMode, clipNormalization, clipPitch };
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
 class Engine {
 public:
@@ -27,6 +27,7 @@ public:
     void setClipText(const ID& clip, std::string text);
     void setMIDIInput(const ID& track, int slot);
     void setMIDIChannel(const ID& track, int channel);
+    void setInputMonitoring(const ID& track, bool enabled);
     void setRecordingChannels(const ID& track, int channel);
     void setRecording(const ID& id, int first, int count, std::string format);
     void pasteItems(const ID& song, std::vector<Track> tracks, bool moving);
@@ -35,8 +36,8 @@ public:
     void setTimecode(const ID& track, TimecodeSettings settings);
     void editTrack(const ID& id, std::string name, unsigned color);
     void editMasterColor(unsigned color);
-    void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {});
-    void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {});
+    void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);
+    void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {}, std::optional<bool> section = {}, std::optional<bool> loopSection = {});
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);
     void deleteManualMarker(const ID& id);
     void setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks, std::vector<ID> groups);
@@ -48,6 +49,9 @@ public:
     // Licensing only requests a safe boundary; it never stops an active callback.
     void finishCurrentSong(bool enabled) noexcept { finishCurrent_ = enabled; }
 private:
+    void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
+    const Part* sectionRegion(double position) const;
+    std::optional<TimelineMarker> sectionDestination(const ID& id) const;
     void resetMultiLoop();
     void refreshMultiLoop();
     bool advanceMultiLoop(double elapsed);

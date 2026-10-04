@@ -138,6 +138,7 @@ final class NativeEffectsChain {
                                     duration: clip.fadeTimelineDuration ?? clip.duration, position: itemFadeClock.position,
                                     hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample)
     }
+    func setPlaybackBoundary(_ host: UInt64 = 0) { JarasEqualizer.setPlaybackBoundary(equalizer, hostTime: host) }
     func setSourceGain(_ gain: Double) { JarasEqualizer.setInputGain(equalizer, gain: gain) }
     var instrumentInput: AVAudioMixerNode {
         if let instrumentMix { return instrumentMix }

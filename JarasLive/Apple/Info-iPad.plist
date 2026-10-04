@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>NSLocalNetworkUsageDescription</key><string>CatLive finds nearby Macs and connects directly to control your project through Remote.</string>
+<key>NSLocalNetworkUsageDescription</key><string>O CatLive encontra Macs próximos e conecta diretamente para controlar seu projeto pelo Remote. / CatLive finds nearby Macs and connects directly to control your project through Remote.</string>
 <key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
+<key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 </dict></plist>

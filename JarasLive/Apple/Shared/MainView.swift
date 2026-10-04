@@ -31,7 +31,11 @@ struct MainView: View {
         return false
         #endif
     }
-    private enum Panel: String, Identifiable { case projects, settings; var id: String { rawValue } }
+    private enum Panel: String, Identifiable {
+        case projects, settings, audioSettings
+        var id: String { rawValue }
+        var isSettings: Bool { self != .projects }
+    }
     @State private var panel: Panel?
     @State private var trackEdit: TrackDetailsEditRequest?
     private struct FXTarget: Identifiable { let track: UUID?; let effect: String; var id: String { (track.map { "track:" + $0.uuidString } ?? "master") + effect } }
@@ -43,8 +47,26 @@ struct MainView: View {
     @State private var navigationOpen = false
     @State private var footerMixerOpen = false
     @State private var keyboardOpen = false
+    @State private var sectionsOpen = false
+    @AppStorage("catlive.sections.displayMode") private var sectionDisplayMode = "horizontal"
+    private var horizontalSectionsVisible: Bool { sectionsOpen && sectionDisplayMode != "vertical" && setlistWidth > 0 }
     @State private var keyboardSettings = false
     @State private var workspaceHeight: CGFloat = 900
+    @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
+    @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
+    @State private var draggedFooterHeight: CGFloat?
+    private var maximumFooterHeight: CGFloat {
+        min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
+            - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)
+            - (footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0)))
+    }
+    private var footerHeight: CGFloat {
+        #if os(macOS)
+        return min(maximumFooterHeight, max(27, draggedFooterHeight ?? storedFooterHeight))
+        #else
+        return 27
+        #endif
+    }
     @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
     @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = 248.0
     #if os(macOS)
@@ -80,6 +102,7 @@ struct MainView: View {
                 TransportView(show: show, documents: documents, remotePresentation: remotePresentation, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
                     #if os(macOS)
                     GeometryReader { geometry in
+                        SectionListDock(visible: sectionsOpen && sectionDisplayMode == "vertical" && setlistWidth > 0, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
                             minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
                             contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
@@ -93,7 +116,9 @@ struct MainView: View {
                         } trailing: {
                             SongListView(show: show, sidebarScrollController: setlistScrollController)
                                 .foregroundStyle(JarasTheme.text)
-                        }.frame(width: geometry.size.width, height: geometry.size.height)
+                        }
+                        } sections: { SmoothSeekPanel(show: show, verticalList: true) }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #else
                     HStack(spacing: 1) {
@@ -105,7 +130,8 @@ struct MainView: View {
                 // space for the transport and the top of the timeline/Setlist.
                 if desktopExtras {
                 FooterMixerPanel(show: show, active: footerMixerOpen,
-                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)))
+                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)))
+                if horizontalSectionsVisible { SmoothSeekPanel(show: show).frame(height: SmoothSeekPanelLayout.height) }
                 FooterPianoKeyboard(active: keyboardOpen).frame(height: 108)
                     .frame(height: keyboardOpen ? 108 : 0, alignment: .top).clipped().allowsHitTesting(keyboardOpen).accessibilityHidden(!keyboardOpen)
                 }
@@ -113,9 +139,13 @@ struct MainView: View {
                     #if os(macOS)
                     HStack(spacing: 14) {
                         ResourceUsageView().fixedSize(horizontal: true, vertical: false)
-                        FooterPlaylistDisplay(show: show).frame(maxWidth: .infinity)
-                        AudioStatusView().fixedSize(horizontal: true, vertical: false)
-                    }.buttonStyle(.plain).frame(height: 27)
+                        FooterPlaylistDisplay(show: show, height: footerHeight - 2).frame(maxWidth: .infinity)
+                            .overlay(FooterDisplayResizeInput(height: footerHeight, maximum: maximumFooterHeight,
+                                changed: { draggedFooterHeight = $0 }, ended: { value in
+                                    storedFooterHeight = value; draggedFooterHeight = nil
+                                }))
+                        AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
+                    }.buttonStyle(.plain).frame(height: footerHeight)
                     #else
                     let displayWidth = min(300, max(0, geometry.size.width - 320))
                     let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
@@ -125,7 +155,7 @@ struct MainView: View {
                             ResourceUsageView().frame(width: 114, alignment: .leading)
                             #if os(macOS)
                             Text(verbatim: "|").foregroundStyle(JarasTheme.secondary)
-                            AudioStatusView().frame(width: audioWidth, alignment: .leading)
+                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: audioWidth, alignment: .leading)
                             #endif
                             FooterProjectNameDisplay(show: show, documents: documents)
                                 #if os(macOS)
@@ -138,11 +168,11 @@ struct MainView: View {
                         #if os(macOS)
                         Color.clear.frame(width: sideWidth)
                         #else
-                        AudioStatusView().frame(width: sideWidth, alignment: .trailing)
+                        AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: sideWidth, alignment: .trailing)
                         #endif
                     }.frame(height: 27)
                     #endif
-                }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
+                }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: footerHeight).background(JarasTheme.panel)
 
             }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).jarasHideScrollIndicators()
@@ -300,18 +330,18 @@ struct MainView: View {
             .sheet(item: $panel) { selected in
                 VStack(spacing: 0) {
                     HStack {
-                        Text(LocalizedStringKey(selected == .settings ? "Configurações" : "Projetos")).font(.headline)
+                        Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Projetos")).font(.headline)
                         Spacer()
                         Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
                     }.padding(16)
                     Divider()
-                    if selected == .settings {
-                        SettingsView(auth: auth, show: show, backend: backend)
+                    if selected.isSettings {
+                        SettingsView(auth: auth, show: show, backend: backend, initialSection: selected == .audioSettings ? .audio : .general)
                     } else {
                         ProjectBrowserView(documents: documents, completed: { panel = nil })
                     }
                 }
-                .frame(width: selected == .settings ? 660 : documents.folderReview == nil ? 560 : 840, height: selected == .settings ? 540 : 500)
+                .frame(width: selected.isSettings ? 660 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
                 .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
                 .environment(\.locale, Locale(identifier: language))
             }
@@ -339,6 +369,7 @@ struct MainView: View {
             .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
             .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
             MacProjectionRail(show: show)
+            DesktopMultiLoopBypassButton(show: show)
             Spacer(minLength: 0)
             if desktopExtras {
             Button { footerMixerOpen.toggle() } label: {
@@ -361,6 +392,12 @@ struct MainView: View {
             .jarasHelp("Keyboard")
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
+            Button { sectionsOpen.toggle() } label: {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 16, weight: .semibold)).frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }.foregroundStyle(sectionsOpen ? JarasTheme.green : JarasTheme.text)
+                .accessibilityLabel("Smooth Seek").jarasHelp("Smooth Seek")
             }
         }
         .buttonStyle(.plain)
@@ -415,10 +452,21 @@ class ResizeHoverIndicatorView: NSView {
 
 private struct AudioStatusView: View {
     @ObservedObject private var audio = AudioDeviceSettings.shared
+    let openSettings: () -> Void
+    @State private var hovering = false
+    private var status: String { "\(audio.deviceName) · \(audio.bufferFrames) · \(Int(audio.sampleRate)) Hz" }
     var body: some View {
-        Text("\(audio.deviceName) · \(audio.bufferFrames) · \(Int(audio.sampleRate)) Hz")
-            .lineLimit(1).truncationMode(.middle).foregroundStyle(JarasTheme.secondary)
-            .frame(maxWidth: 370, alignment: .trailing)
+        Button(action: openSettings) {
+            Text(verbatim: status)
+                .lineLimit(1).truncationMode(.middle)
+                .foregroundStyle(hovering ? JarasTheme.green : JarasTheme.secondary)
+                .scaleEffect(hovering ? 1.04 : 1, anchor: .trailing)
+                .animation(.easeOut(duration: 0.12), value: hovering)
+                .frame(maxWidth: 370, maxHeight: .infinity, alignment: .trailing)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).onHover { hovering = $0 }
+            .accessibilityLabel("Open audio settings").accessibilityValue(Text(verbatim: status))
+            .jarasHelp("Open audio settings")
     }
 }
 
@@ -488,20 +536,20 @@ struct RegionTunerControl: View {
     private func step(_ delta: Int) {
         guard let song = show.current, let region = show.pitchRegion else { return }
         let targets = song.pitchTargets(region)
-        show.setRegionPitch(region.id, semitones: min(6, max(-6, region.semitones + delta)), tracks: targets.tracks, groups: targets.groups)
+        show.setRegionPitch(region.id, semitones: min(12, max(-12, region.semitones + delta)), tracks: targets.tracks, groups: targets.groups)
     }
     var body: some View {
         HStack(spacing: 3) {
             Text(verbatim: "Tuner").font(.system(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
             Button { step(-1) } label: { Image(systemName: "minus").frame(width: 20, height: 25).contentShape(Rectangle()) }
-                .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -6).jarasHelp("Lower song pitch")
+                .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -12).jarasHelp("Lower song pitch")
             Text(String(format: "%dst", show.pitchRegion?.semitones ?? 0))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
                 .frame(width: 34, height: 23).background(JarasTheme.display).cornerRadius(4)
                 .immediateRightClick { editing = show.pitchRegion }
                 .accessibilityLabel("Song pitch").accessibilityValue(String(show.pitchRegion?.semitones ?? 0) + "st")
             Button { step(1) } label: { Image(systemName: "plus").frame(width: 20, height: 25).contentShape(Rectangle()) }
-                .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 6).jarasHelp("Raise song pitch")
+                .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 12).jarasHelp("Raise song pitch")
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
         .padding(.horizontal, 6).frame(height: 25)
         .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
@@ -753,3 +801,43 @@ private struct FooterProjectNameDisplay: View {
             .popover(isPresented: $showingBackups, arrowEdge: titlebar ? .bottom : .top) { backupList }
     }
 }
+
+#if os(macOS)
+/// The display itself is the resize surface; screen coordinates keep dragging
+/// stable as the footer's top edge moves under the pointer.
+private struct FooterDisplayResizeInput: NSViewRepresentable {
+    let height: CGFloat
+    let maximum: CGFloat
+    let changed: (CGFloat) -> Void
+    let ended: (CGFloat) -> Void
+    func makeNSView(context: Context) -> FooterDisplayResizeView { FooterDisplayResizeView() }
+    func updateNSView(_ view: FooterDisplayResizeView, context: Context) {
+        view.height = height; view.maximum = maximum; view.changed = changed; view.ended = ended
+    }
+}
+private final class FooterDisplayResizeView: NSView {
+    var height: CGFloat = 27
+    var maximum: CGFloat = 900
+    var changed: ((CGFloat) -> Void)?
+    var ended: ((CGFloat) -> Void)?
+    private var origin: (y: CGFloat, height: CGFloat)?
+    override func resetCursorRects() { addCursorRect(visibleRect, cursor: .resizeUpDown) }
+    override func mouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 0 else { return }
+        origin = (event.locationInWindow.y, height)
+    }
+    private func resizedHeight(_ event: NSEvent) -> CGFloat? {
+        guard let origin else { return nil }
+        return min(max(27, maximum), max(27, origin.height + event.locationInWindow.y - origin.y))
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let value = resizedHeight(event) else { return }
+        changed?(value)
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard let value = resizedHeight(event) else { return }
+        origin = nil; ended?(value)
+        window?.invalidateCursorRects(for: self)
+    }
+}
+#endif

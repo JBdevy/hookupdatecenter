@@ -5,7 +5,7 @@ struct SettingsView: View {
     let backend: any BackendClient
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject private var audio = AudioDeviceSettings.shared
-    private enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
+    enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
         var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
     private var availableSections: [Section] {
@@ -16,9 +16,13 @@ struct SettingsView: View {
         #endif
     }
     @ObservedObject private var mappings = ControlMappings.shared
-    @State private var section = Section.general
+    @State private var section: Section
     @State private var signingIn = false
     @State private var pendingDevice: AuthorizedDevice?
+    init(auth: AuthService, show: ShowController, backend: any BackendClient, initialSection: Section = .general) {
+        self.auth = auth; self.show = show; self.backend = backend
+        _section = State(initialValue: initialSection)
+    }
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 6) {
@@ -42,9 +46,15 @@ struct SettingsView: View {
                         Text("Language").font(.headline)
                         Picker("Language", selection: $language) { Text("English").tag("en"); Text("Português").tag("pt-BR") }.pickerStyle(.segmented).labelsHidden()
                     case .audio:
-                        Text("Output device").font(.headline)
-                        Picker("Output device", selection: Binding(get: { audio.selectedUID }, set: { audio.select($0) })) {
-                            if audio.devices.isEmpty { Text("No output device").tag("") }
+                        Text("Audio device — Input").font(.headline)
+                        Picker("Audio device — Input", selection: Binding(get: { audio.inputUID }, set: { audio.selectInput($0) })) {
+                            Text(verbatim: "None").tag("")
+                            if !audio.inputUID.isEmpty && audio.inputDevice == nil { Text("Disconnected").tag(audio.inputUID) }
+                            ForEach(audio.inputDevices) { device in Text(device.name).tag(device.id) }
+                        }.labelsHidden().frame(maxWidth: .infinity)
+                        Text("Audio device — Output").font(.headline)
+                        Picker("Output device", selection: Binding(get: { audio.selectedUID.isEmpty ? "none" : audio.selectedUID }, set: { audio.select($0) })) {
+                            Text(verbatim: "None").tag("none")
                             ForEach(audio.devices) { device in Text(device.name).tag(device.id) }
                         }.labelsHidden().frame(maxWidth: .infinity)
                         Text("\(audio.channels) output channels").foregroundStyle(JarasTheme.secondary)

@@ -1,6 +1,24 @@
 import XCTest
 @testable import JarasApplication
 final class NativeFXTests: XCTestCase {
+    func testStemSeparatorIsExplicitRemovableAndPersisted() throws {
+        var fx = NativeFXSettings()
+        let key = NativeFXSettings.stemSeparator
+        XCTAssertFalse(fx.inserted.contains(key)); XCTAssertFalse(fx.isEnabled(key))
+        XCTAssertEqual(fx.appendNative(key), key)
+        try fx.validate(); try fx.validateForClip()
+        XCTAssertTrue(fx.isEnabled(key))
+        XCTAssertEqual(fx.appendNative(key), key)
+        XCTAssertEqual(fx.inserted, [key])
+        let saved = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
+        XCTAssertEqual(saved, fx)
+        fx.setEnabled(key, enabled: false)
+        XCTAssertFalse(fx.isEnabled(key))
+        fx.inserted.removeAll { $0 == key }; fx.removeInstance(key)
+        try fx.validate()
+        XCTAssertTrue(fx.inserted.isEmpty)
+    }
+
     func testRepeatedNativeEffectsAndInstrumentsPersistIndependentParametersAndBypass() throws {
         var fx = NativeFXSettings()
         let first = fx.appendNative("Compressor")
@@ -90,8 +108,34 @@ final class NativeFXTests: XCTestCase {
         song = project.songs[0]
         XCTAssertEqual(song.parts.first { $0.id == first.id }?.semitones, 6)
         XCTAssertEqual(song.parts.first { $0.id == second.id }?.semitones, -6)
-        project.songs[0].parts[0].pitchSemitones = 7
+        project.songs[0].parts[0].pitchSemitones = 13
         XCTAssertThrowsError(try project.validate())
+    }
+
+    func testRegionTunerPreservesVSExactOctaveOffsetsAndExplicitTargets() throws {
+        var project = Project.empty(name: "VS Hook tuner")
+        let tuned = Track(id: UUID(), name: "# Keys", role: .keys)
+        let untouched = Track(id: UUID(), name: "Drums", role: .drums)
+        project.songs[0].tracks = [tuned, untouched]
+        project.songs[0].parts = [
+            Part(id: UUID(), name: "Up", startTime: 0, endTime: 10, pitchSemitones: 12,
+                 pitchTrackIDs: [tuned.id], pitchGroupIDs: []),
+            Part(id: UUID(), name: "Down", startTime: 10, endTime: 20, pitchSemitones: -12,
+                 pitchTrackIDs: [tuned.id], pitchGroupIDs: []),
+            Part(id: UUID(), name: "No targets", startTime: 20, endTime: 30, pitchSemitones: 8,
+                 pitchTrackIDs: [], pitchGroupIDs: [])
+        ]
+        let saved = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(saved, project)
+        let song = saved.songs[0]
+        for (position, semitones) in [(0.0, 12), (10.0, -12), (20.0, 0)] {
+            XCTAssertEqual(song.pitch(for: tuned.id, region: song.pitchRegion(at: position)), semitones)
+            XCTAssertEqual(song.pitch(for: untouched.id, region: song.pitchRegion(at: position)), 0)
+        }
+        for invalid in [-13, 13] {
+            project.songs[0].parts[0].pitchSemitones = invalid
+            XCTAssertThrowsError(try project.validate())
+        }
     }
 
     func testSettingsPersistIndependentlyOfWhichEditorIsOpen() throws {

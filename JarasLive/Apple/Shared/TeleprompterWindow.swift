@@ -41,11 +41,11 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let timerHere = settings.clockEnabled && settings.clockPosition.hasSuffix(top ? "top" : "bottom")
         let localHere = settings.localClockEnabled && (settings.clockEnabled ? timerHere : top)
         if timerHere || localHere { clockRow(date: date,size: size,timer: timerHere,local: localHere) }
-        if settings.songNameEnabled && settings.songNamePosition == (top ? "top" : "bottom") {
+        if settings.songNameEnabled && !content.song.isEmpty && settings.songNamePosition == (top ? "top" : "bottom") {
             title(content.song,color: settings.songNameColor,font: settings.songNameFontFamily,scale: settings.songNameScale)
         }
-        if settings.queueNameEnabled && settings.queueNamePosition == (top ? "top" : "bottom") {
-            title(content.queued.isEmpty ? JarasLocalization.string("Queue is empty") : content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
+        if settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
+            title(content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
         }
         if !content.preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
             Text(settings.display(content.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
@@ -63,7 +63,9 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
         let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
         let height = max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
-        let timerWidth = min(width,max(118,tpTimerTextWidth(font) + 36))
+        // Keep a real clock column on narrow phone screens, including fullscreen.
+        let timerLimit = compactPhone && local && !side ? max(1, width - 152) : width
+        let timerWidth = min(timerLimit,max(118,tpTimerTextWidth(font) + 36))
         return ZStack {
             if side && timer && local {
                 HStack(spacing: 8) {
@@ -98,7 +100,14 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         return Text(String(format: "%02d:%02d:%02d",values.hour ?? 0,values.minute ?? 0,values.second ?? 0)).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: settings.localClockColor)).padding(.horizontal,5).padding(.vertical,5)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.localClockBorderEnabled ? border(settings.localClockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
-            .padding(.horizontal,fullscreen ? 24 : 0)
+            .padding(.horizontal,fullscreen && !compactPhone ? 24 : 0)
+    }
+    private var compactPhone: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        return false
+        #endif
     }
     private func title(_ text: String,color: UInt32,font: String,scale: Double) -> some View {
         Text(settings.display(text)).font(tpFont(font,size: 22 * scale / 100)).foregroundStyle(Color(hex: color))
@@ -328,13 +337,12 @@ private struct LocalizedTeleprompterConfig: View {
         }
         let transport = snapshot.transport
         let position = transport.playing ? transport.position : transport.editPosition ?? transport.position
-        let region = (!transport.playing ? song.parts.first(where: { position >= $0.startTime && position < $0.endTime }) : nil)
-            ?? song.parts.first(where: { $0.id == transport.regionId })
-            ?? song.parts.first(where: { position >= $0.startTime && position < $0.endTime })
+        let region = song.parts.filter { position >= $0.startTime && position < $0.endTime }
+            .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
         let queue = song.parts.first(where: { $0.id == transport.queuedRegionId })
         var next = TPProjectionData()
-        next.song = region?.name ?? song.name
-        next.queued = queue?.name ?? snapshot.project.songs.first(where: { $0.id == snapshot.nextSongId || $0.id == transport.queue.songId })?.name ?? ""
+        next.song = region?.name ?? ""
+        next.queued = queue?.name ?? snapshot.project.songs.first(where: { $0.id == transport.queue.songId })?.name ?? ""
         next.currentRegion = region?.id; next.queuedRegion = queue?.id
         var lyricClip: AudioClip?, chordClip: AudioClip?
         let lyricKind: TrackKind = index == 1 ? .teleprompt : .teleprompt2

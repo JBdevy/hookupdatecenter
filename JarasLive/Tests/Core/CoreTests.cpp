@@ -84,6 +84,57 @@ int main() {
     expect(invalidGroup && !groups.project().songs[0].tracks.back().parentTrackID, "invalid group changes nothing");
     groups.groupTracks({"b", "d"}); groups.groupTracks({"track", "b"}); validate(groups.project());
     expect(groups.project().songs[0].tracks[1].parentTrackID == "b", "regrouping keeps existing children");
+    {
+        Project nested = p;
+        auto& tracks = nested.songs[0].tracks;
+        tracks = {{"outer", "Outer", {"other"}}, {"member", "Member", {"other"}},
+                  {"last", "Last", {"other"}}, {"incoming", "Incoming", {"other"}},
+                  {"inner", "Inner", {"other"}}, {"leaf", "Leaf", {"other"}}};
+        tracks[1].parentTrackID = "outer"; tracks[2].parentTrackID = "outer";
+        tracks[4].parentTrackID = "incoming"; tracks[5].parentTrackID = "inner";
+        tracks[3].volume = 0.37; tracks[3].outputs = std::vector<OutputPatch>{{0,2},{5,2}};
+        tracks[4].patch = OutputPatch{-2,2}; tracks[5].patch = OutputPatch{-2,2};
+        Engine tree; tree.loadProject(nested); tree.execute({CommandKind::play}); tree.advance(1);
+        tree.reorderTrack("incoming", "member");
+        auto result = tree.currentSong()->tracks;
+        expect(result[2].id == "last" && result[3].id == "incoming" && result[3].parentTrackID == "outer", "nested drop appends after destination's last child");
+        expect(result[4].parentTrackID == "incoming" && result[5].parentTrackID == "inner", "nested drop preserves all descendant folders");
+        expect(result[3].volume == 0.37 && result[3].outputPatches()[0].firstChannel == -2 && result[3].outputPatches()[1].firstChannel == 5, "folder feeds its new parent while preserving gain and hardware send");
+        expect(tree.transport().playing && tree.transport().position == 1, "nested drop does not reset transport");
+        tree.reorderTrack("outer", "leaf");
+        expect(tree.currentSong()->tracks[0].id == "outer" && !tree.currentSong()->tracks[0].parentTrackID, "self-descendant drop is a no-op");
+        tree.reorderTrack("incoming", "");
+        result = tree.currentSong()->tracks;
+        expect(!result[3].parentTrackID && result[3].outputPatches()[0].firstChannel == 0 && result[4].parentTrackID == "incoming", "moving nested tree out restores root output and keeps inner routes");
+        validate(tree.project());
+        nested.songs[0].tracks[0].routing = TrackRouting{};
+        nested.songs[0].tracks[0].routing->transmitters = {"incoming"};
+        tree.execute({CommandKind::stopAll}); tree.loadProject(nested);
+        bool rejected = false;
+        try { tree.reorderTrack("incoming", "member"); } catch (...) { rejected = true; }
+        expect(rejected && !tree.currentSong()->tracks[3].parentTrackID && tree.currentSong()->tracks[3].outputPatches()[0].firstChannel == 0, "feedback-producing nested drop rolls back atomically");
+    }
+    {
+        auto project = p;
+        auto& tracks = project.songs[0].tracks;
+        tracks = {{"outer", "Outer", {"other"}}, {"inner", "Inner", {"other"}},
+                  {"folder", "Folder", {"other"}}, {"leaf", "Leaf", {"other"}},
+                  {"last", "Last", {"other"}}, {"outside", "Outside", {"other"}}};
+        tracks[1].parentTrackID = "outer"; tracks[2].parentTrackID = "inner";
+        tracks[3].parentTrackID = "folder"; tracks[4].parentTrackID = "inner";
+        tracks[2].patch = OutputPatch{-2,2}; tracks[3].patch = OutputPatch{-2,2};
+        Engine tree; tree.loadProject(project);
+        tree.reorderTrack("folder", "inner");
+        auto result = tree.currentSong()->tracks;
+        expect(result[1].id == "folder" && result[1].parentTrackID == "outer" && result[2].parentTrackID == "folder" && result[3].id == "inner", "dragging a nested folder above its own parent lifts it before that parent with children intact");
+        tree.reorderTrack("folder", "outer");
+        result = tree.currentSong()->tracks;
+        expect(result[0].id == "folder" && !result[0].parentTrackID && result[0].outputPatches()[0].firstChannel == 0 && result[1].parentTrackID == "folder", "dragging above a root folder detaches the child subtree and restores its master output");
+        tree.reorderTrack("leaf", "folder");
+        result = tree.currentSong()->tracks;
+        expect(result[0].id == "leaf" && !result[0].parentTrackID && result[1].id == "folder", "an individual child exits above its folder");
+        validate(tree.project());
+    }
     Project ignoreProject = p; ignoreProject.songs[0].duration = 120;
     ignoreProject.songs[0].parts = {{"ignore-root", "Special", 0, 60}, {"ignore-first", "One", 0, 25}, {"ignore-second", "Two", 20, 40}, {"ignore-third", "Three", 40, 60}, {"ignore-queue", "Queued", 80, 100}};
     for (int i = 1; i <= 3; ++i) ignoreProject.songs[0].parts[i].parentRegionID = "ignore-root";
@@ -108,11 +159,15 @@ int main() {
     ignore.advance(2); expect(!ignore.transport().playing && ignore.transport().position == 25, "late Ignore Next uses actual file end");
     ignore.execute({CommandKind::stopAll}); ignore.execute({CommandKind::selectRegion, "ignore-third"}); ignore.execute({CommandKind::play}); ignore.execute({CommandKind::ignoreNext});
     expect(!ignore.transport().ignoreNextAfter, "last drawer song cannot ignore a nonexistent next song");
-    ignore.setRegionPitch("ignore-first", 6, {"track"}, {});
-    ignore.setRegionPitch("ignore-second", -6, {"track"}, {});
-    expect(ignore.project().songs[0].parts[1].pitchSemitones == 6 && ignore.project().songs[0].parts[2].pitchSemitones == -6, "each drawer song owns its pitch settings");
-    bool pitchRejected = false; try { ignore.setRegionPitch("ignore-first", 7, {"track"}, {}); } catch (...) { pitchRejected = true; }
-    expect(pitchRejected && ignore.project().songs[0].parts[1].pitchSemitones == 6, "region pitch rejects out of range without changing state");
+    ignore.setRegionPitch("ignore-first", 12, {"track"}, {});
+    ignore.setRegionPitch("ignore-second", -12, {"track"}, {});
+    expect(ignore.project().songs[0].parts[1].pitchSemitones == 12 && ignore.project().songs[0].parts[2].pitchSemitones == -12, "each drawer song owns its pitch settings");
+    bool pitchRejected = false; try { ignore.setRegionPitch("ignore-first", 13, {"track"}, {}); } catch (...) { pitchRejected = true; }
+    expect(pitchRejected && ignore.project().songs[0].parts[1].pitchSemitones == 12, "region pitch rejects out of range without changing state");
+    bool lowPitchRejected = false; try { ignore.setRegionPitch("ignore-second", -13, {"track"}, {}); } catch (...) { lowPitchRejected = true; }
+    expect(lowPitchRejected && ignore.project().songs[0].parts[2].pitchSemitones == -12, "region pitch rejects values below one octave without changing state");
+    Engine restoredPitch; restoredPitch.loadProject(ignore.project());
+    expect(restoredPitch.project().songs[0].parts[1].pitchSemitones == 12 && restoredPitch.project().songs[0].parts[2].pitchSemitones == -12, "full-octave region tuner values survive loading the project");
     Project editable = p;
     editable.songs[0].tracks[0].clips.push_back({"clip", {}, "Clip", 2, 3, 0, {0.5}});
     Project trackOrderProject = editable;
@@ -279,15 +334,14 @@ int main() {
     for (int index = 0; index < 1000; ++index) capacityProject.songs[0].tracks.push_back({"capacity-" + std::to_string(index), "Track", {"other"}});
     validate(capacityProject);
     Engine trackCapacity; trackCapacity.loadProject(capacityProject);
-    bool capacityRejected = false; try { trackCapacity.addTrack("extra-capacity", "Extra", {"other"}); } catch (...) { capacityRejected = true; }
-    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "native track creation cannot exceed global 1000 track capacity");
-    Track capacityImport{"extra-capacity", "Extra", {"other"}};
+    trackCapacity.addTrack("extra-created", "Extra", {"other"});
+    expect(trackCapacity.project().songs[0].tracks.size() == 1001, "creation supports more than 1000 tracks");
+    Track capacityImport{"extra-imported", "Extra", {"other"}};
     capacityImport.clips.push_back({"capacity-clip", {}, "Audio", 0, 1});
-    capacityRejected = false; try { trackCapacity.insertAudioTracks("one", {capacityImport}); } catch (...) { capacityRejected = true; }
-    expect(capacityRejected && trackCapacity.project().songs[0].tracks.size() == 1000, "audio import cannot bypass track capacity");
+    trackCapacity.insertAudioTracks("one", {capacityImport});
+    expect(trackCapacity.project().songs[0].tracks.size() == 1002, "audio import supports more than 1000 tracks");
     capacityProject.songs[1].tracks.push_back({"extra-capacity", "Extra", {"other"}});
-    capacityRejected = false; try { validate(capacityProject); } catch (...) { capacityRejected = true; }
-    expect(capacityRejected, "track capacity applies across the whole project");
+    validate(capacityProject);
     Project itemFXProject = editable;
     itemFXProject.songs[0].tracks[0].clips[0].gain = 0.5;
     itemFXProject.songs[0].tracks[0].clips[0].sourceOffset = 1;

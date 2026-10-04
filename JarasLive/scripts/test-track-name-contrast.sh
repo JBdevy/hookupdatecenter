@@ -16,7 +16,7 @@ stubs = '''import AppKit
 import SwiftUI
 final class TrackReorderState: NSObject {
  var source: NSObject?
- func begin() {}
+ func begin(track: UUID) {}
  func finish() {}
 }
 final class TrackSelectionRouter {

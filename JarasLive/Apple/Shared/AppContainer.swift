@@ -1,9 +1,22 @@
 import Foundation
 import Combine
 import SwiftUI
+#if os(macOS)
+import Network
+#endif
 #if os(iOS)
 import UIKit
 #endif
+enum AppStartupPresentation {
+    static let minimumDuration = 3.0
+    static func wait(since start: TimeInterval) async throws {
+        try Task.checkCancellation()
+        let remaining = minimumDuration - (ProcessInfo.processInfo.systemUptime - start)
+        if remaining > 0 {
+            try await Task.sleep(nanoseconds: UInt64((remaining * 1_000_000_000).rounded(.up)))
+        }
+    }
+}
 @MainActor final class AppContainer: ObservableObject {
     let auth: AuthService, show: ShowController
     let backend: any BackendClient
@@ -11,6 +24,9 @@ import UIKit
     @Published private(set) var startupProgress = 0.1
     @Published private(set) var startupStage = "Carregando projeto…"
     private var started = false
+    #if os(macOS)
+    private let accessConnectivity = NWPathMonitor()
+    #endif
     private var armedInstrumentObservation: AnyCancellable?
     let documents: ProjectDocuments
     let preview: Bool
@@ -31,6 +47,12 @@ import UIKit
             show = try ShowController(executor: LocalCommandExecutor(), persistence: persistence, initialProject: preview ? .demo() : .empty(name: "Untitled"), cursorMemory: preview ? nil : ProjectCursorMemory())
             documents = ProjectDocuments(store: persistence, show: show, preview: preview)
         } catch { throw error }
+        #if os(macOS)
+        if !preview {
+            DAWRemoteSession.shared.setHostName(auth.installation.deviceName)
+            auth.onDeviceNameChanged = { DAWRemoteSession.shared.setHostName($0) }
+        }
+        #endif
         auth.isPlaying = { [weak show] in show?.isPlaying ?? false }
         auth.onPendingRevocation = { [weak show] pending in show?.finishCurrentSong(pending) }
         #if os(iOS)
@@ -68,6 +90,7 @@ import UIKit
                     let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
                         track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
                     }.map(\.id))
+                    audio.armedMIDIRecordingTracks = TrackRecording.shared.armed.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode == .midi }.map(\.id)))
                     audio.setArmedInstrumentTracks(TrackRecording.shared.armed.intersection(instruments))
                 }
             }
@@ -159,6 +182,9 @@ import UIKit
         guard !preview else { starting = false; return }
         guard !started else { return }
         started = true
+        // A closed startup window cancels its task; a later appearance can retry.
+        defer { if starting { started = false } }
+        let startupBegan = ProcessInfo.processInfo.systemUptime
         startupProgress = 0.15
         await Task.yield()
         // A document is loaded only after an explicit choice in the project launcher.
@@ -166,9 +192,22 @@ import UIKit
         #if os(macOS)
         startupStage = "Validando acesso…"
         await auth.restore()
+        accessConnectivity.pathUpdateHandler = { [weak auth] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor [weak auth] in await auth?.checkOnlineAccess() }
+        }
+        accessConnectivity.start(queue: DispatchQueue(label: "com.catlive.account-connectivity"))
+        guard !Task.isCancelled else { return }
+        DAWRemoteHostBridge.bind(show)
+        DAWRemoteSession.shared.restoreHostPreference()
         #endif
         startupProgress = 1
         startupStage = "Pronto"
+        #if os(macOS)
+        // Loading runs during the splash; only its remaining minimum time waits.
+        do { try await AppStartupPresentation.wait(since: startupBegan) } catch { return }
+        #endif
+        guard !Task.isCancelled else { return }
         starting = false
         #if os(macOS)
         var nextValidation = ProcessInfo.processInfo.systemUptime
@@ -177,7 +216,10 @@ import UIKit
             auth.checkLocalExpiry()
             if ProcessInfo.processInfo.systemUptime >= nextValidation {
                 nextValidation = ProcessInfo.processInfo.systemUptime + 30
-                Task { await auth.revalidate() }
+                Task {
+                    await auth.checkOnlineAccess()
+                    if !auth.allowed { await auth.revalidate() }
+                }
             }
         }
         #endif

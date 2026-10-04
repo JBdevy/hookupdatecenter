@@ -2,6 +2,27 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectEditingTests: XCTestCase {
+    func testRecordingLanesOnlyExpandForOverlaps() {
+        var track = Track(id: UUID(), name: "Input", role: .other)
+        let original = AudioClip(id: UUID(), name: "Original", startTime: 10, duration: 5)
+        track.clips = [original]
+        var layout = TrackLanes(track: track)
+        XCTAssertEqual(layout.recordingLane(start: 0, duration: 5, clips: track.clips), 0)
+        XCTAssertEqual(layout.recordingLane(start: 15, duration: 5, clips: track.clips), 0)
+        XCTAssertEqual(layout.recordingLane(start: 9, duration: 2, clips: track.clips), 1)
+        let earlierTake = AudioClip(id: UUID(), name: "Take", startTime: 9, duration: 3, recordingLane: 1)
+        let laterTake = AudioClip(id: UUID(), name: "Later", startTime: 20, duration: 3, recordingLane: 12)
+        track.clips += [earlierTake, laterTake]
+        layout = TrackLanes(track: track)
+        XCTAssertEqual(layout.lanes[original.id], 0, "recording before an existing item never pushes that item down")
+        XCTAssertEqual(layout.lanes[earlierTake.id], 1)
+        XCTAssertEqual(layout.lanes[laterTake.id], 0, "old reservations cannot leave an empty lane above a take")
+        XCTAssertEqual(layout.count, 2)
+        XCTAssertEqual(layout.recordingLane(start: 10, duration: 1, clips: track.clips), 2)
+        track.clips.reverse()
+        XCTAssertEqual(TrackLanes(track: track), layout, "array order cannot swap takes")
+    }
+
     func testScalarHistoryRetainsClipStorageAndSupportsUndoRedo() {
         var project = fixture()
         let waveform = (0..<100000).map { Double($0) / 100000 }

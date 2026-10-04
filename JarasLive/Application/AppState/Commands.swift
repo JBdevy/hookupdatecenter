@@ -1,5 +1,5 @@
 import Foundation
-public enum ShowCommand: String, Sendable { case clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
+public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
 @MainActor public protocol CommandExecutor {
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws
     func configureRegionSetlist(_ state: RegionSetlist) throws
@@ -17,6 +17,7 @@ public enum ShowCommand: String, Sendable { case clipFadeIn, clipFadeOut, loopSt
     func setClipText(_ clip: UUID, text: String) throws
     func setMIDIInput(_ track: UUID, slot: Int) throws
     func setMIDIChannel(_ track: UUID, channel: Int) throws
+    func setInputMonitoring(_ track: UUID, enabled: Bool) throws
     func setRecordingChannels(_ track: UUID, channel: Int) throws
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws
@@ -32,6 +33,7 @@ public enum ShowCommand: String, Sendable { case clipFadeIn, clipFadeOut, loopSt
     func regionFromClip(_ id: UUID) throws
     func regionsFromClips(_ ids: [UUID]) throws
     func setTempoMarkers(_ markers: [TimelineMarker]) throws
+    func retimeTempoMarkers(_ markers: [TimelineMarker]) throws
     func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws
     func setMarker(_ marker: TimelineMarker) throws
     func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws
@@ -56,6 +58,7 @@ public enum ShowCommand: String, Sendable { case clipFadeIn, clipFadeOut, loopSt
 
 public extension CommandExecutor {
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
+    func retimeTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { for marker in markers { try setMarker(marker) } }
     func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
         guard removing.isEmpty else { throw BackendFailure.notConfigured }
@@ -74,6 +77,7 @@ public extension CommandExecutor {
     func setClipText(_ clip: UUID, text: String) throws { throw BackendFailure.notConfigured }
     func setMIDIInput(_ track: UUID, slot: Int) throws { throw BackendFailure.notConfigured }
     func setMIDIChannel(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }
+    func setInputMonitoring(_ track: UUID, enabled: Bool) throws { throw BackendFailure.notConfigured }
     func setRecordingChannels(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }
     func setRecording(_ track: UUID, input: OutputPatch, format: String) throws { throw BackendFailure.notConfigured }
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws { throw BackendFailure.notConfigured }

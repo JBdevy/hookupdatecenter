@@ -13,6 +13,7 @@ import XCTest
     var regionSelections: [UUID] = []
     var regionCommands: [ShowCommand] = []
     var playing = false
+    var tempoBatches = 0
     var regionItems: [UUID] = []
     func regionsFromClips(_ ids: [UUID]) throws { regionItems = ids }
     func load(_ project: Project) throws { self.project = project }
@@ -42,6 +43,12 @@ import XCTest
         guard let channel = project.songs[0].tracks.firstIndex(where: { $0.id == track }),
               let item = project.songs[0].tracks[channel].clips.firstIndex(where: { $0.id == clip.id }) else { throw ProjectError.invalid("Missing item") }
         project.songs[0].tracks[channel].clips[item] = clip
+    }
+    func retimeTempoMarkers(_ markers: [TimelineMarker]) throws {
+        let before = project.songs[0]
+        try setTempoMarkers(markers)
+        let map = TempoEditMap(before: before, after: project.songs[0])
+        map.apply(to: &project.songs[0]); tempoBatches += 1
     }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { try setTempoMarkers(markers, removing: []) }
     func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
@@ -355,6 +362,56 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(executor.snapshotCount, snapshotCount, "finishing a take must not serialize and decode every existing waveform")
         XCTAssertEqual(updates, 1)
         XCTAssertTrue(show.hasUnsavedChanges)
+    }
+    @MainActor func testRegionTempoShiftsAllMarkersAndKeepsNextSong() throws {
+        var project = Project.empty(name: "Tempo batch")
+        let region = Part(id: UUID(), name: "Selected", startTime: 10, endTime: 30)
+        project.songs[0].parts = [region, Part(id: UUID(), name: "Next", startTime: 30, endTime: 50)]
+        project.songs[0].duration = 60
+        let tempos = [(0.0,100.0),(10.0,120.0),(20.0,150.0),(30.0,90.0)]
+        project.songs[0].markers = tempos.map { TimelineMarker(id: UUID(), name: "TEMPO", position: $0.0, color: 0x999999, tempoBPM: $0.1, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .free, tempoReferenceBPM: $0.1) }
+        let cue = TimelineMarker(id: UUID(), name: "Cue", position: 22, color: 0xffff00)
+        project.songs[0].markers!.append(cue)
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        show.focusRegion(region.id)
+        show.adjustTempo(1)
+        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,121,151,90])
+        XCTAssertEqual(show.current?.markers?.first(where: { $0.id == cue.id }), cue)
+        XCTAssertEqual(executor.tempoBatches, 1)
+        XCTAssertEqual(show.current?.parts, project.songs[0].parts)
+        show.setTempo(125)
+        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,125,155,90])
+        show.adjustTempo(-1)
+        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,124,154,90])
+        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoReferenceBPM), [100,120,150,90])
+        XCTAssertEqual(executor.tempoBatches, 3)
+        try show.snapshot.project.validate()
+        let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
+        XCTAssertEqual(copy.songs[0].markers, show.current?.markers)
+    }
+    @MainActor func testRegionTempoBoundsApplySameDeltaAndRestoreInheritedTempo() throws {
+        var project = Project.empty(name: "Tempo bounds")
+        let region = Part(id: UUID(), name: "Selected", startTime: 10, endTime: 30)
+        project.songs[0].parts = [region]; project.songs[0].duration = 60
+        project.songs[0].markers = [
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0, tempoBPM: 120, tempoBeats: 4, tempoUnit: 4),
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 20, color: 0, tempoBPM: 299, tempoBeats: 3, tempoUnit: 8)]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        show.focusRegion(region.id); show.adjustTempo(2)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 10)?.tempoBPM, 121)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBPM, 300)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 30)?.tempoBPM, 299)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 5)?.tempoBPM, 120)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBeats, 3)
+        show.adjustTempo(1); XCTAssertEqual(executor.tempoBatches, 1)
+        show.adjustTempo(-1)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 10)?.tempoBPM, 120)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBPM, 299)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: 30)?.tempoBPM, 299)
+        XCTAssertEqual(executor.tempoBatches, 2)
+        try show.snapshot.project.validate()
     }
     @MainActor func testTempoDefaultsPersistenceAndGridSnapping() throws {
         let project = Project.empty(name: "Tempo")

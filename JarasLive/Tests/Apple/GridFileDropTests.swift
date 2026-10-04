@@ -42,7 +42,8 @@ window.contentView = scroll; scroll.documentView = document
 scroll.contentView.scroll(to: NSPoint(x: 230, y: 100)); scroll.reflectScrolledClipView(scroll.contentView)
 var previews: [CGPoint?] = []
 var drops: [([URL], CGPoint)] = []
-scroll.fileDropPreview = { previews.append($0) }
+var previewSources: [[URL]] = []
+scroll.fileDropPreview = { urls, point in previewSources.append(urls); previews.append(point) }
 scroll.fileDrop = { urls, point in drops.append((urls, point)); return true }
 
 let pasteboard = NSPasteboard.withUniqueName()
@@ -57,11 +58,13 @@ func expectClear(_ action: () -> Void) {
     precondition(scroll.draggingEntered(drag) == .copy)
     let count = previews.count
     action()
+    precondition(previewSources.last?.isEmpty == true, "ending a drag clears preview metadata")
     precondition(previews.count == count + 1 && previews.last! == nil, "every drag conclusion clears the insertion preview")
 }
 point(320, 240)
 precondition(scroll.draggingEntered(drag) == .copy)
 precondition(previews == [CGPoint(x: 320, y: 240)], "preview uses document coordinates, including the live scroll offset")
+precondition(previewSources.last == urls, "drag preview receives source URLs before importing")
 precondition(drops.isEmpty, "preview does not import or copy files")
 precondition(scroll.draggingUpdated(drag) == .copy && previews.count == 1, "stationary drag updates do not redraw")
 var modifiers: NSEvent.ModifierFlags = []
@@ -105,7 +108,7 @@ inner.contentView.scroll(to: NSPoint(x: 650, y: 0)); inner.reflectScrolledClipVi
 pasteboard.clearContents(); precondition(pasteboard.writeObjects(urls as [NSURL]))
 var nestedPreview: CGPoint?
 var nestedDrop: CGPoint?
-inner.fileDropPreview = { nestedPreview = $0 }
+inner.fileDropPreview = { _, point in nestedPreview = point }
 inner.fileDrop = { _, position in nestedDrop = position; return true }
 let timelinePosition = CGPoint(x: 875, y: 620)
 drag.draggingLocation = timeline.convert(timelinePosition, to: nil)

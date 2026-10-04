@@ -118,13 +118,27 @@ struct JarasBlink: ViewModifier {
     var interval = 0.5
     var lowOpacity = 0.4
     @State private var bright = true
+    private var blinkInterval: Double {
+        #if os(iOS)
+        return max(0.10, min(0.25, interval * 0.6))
+        #else
+        return interval
+        #endif
+    }
+    private var dimOpacity: Double {
+        #if os(iOS)
+        return min(0.06, lowOpacity)
+        #else
+        return lowOpacity
+        #endif
+    }
     func body(content: Content) -> some View {
-        content.opacity(!active || bright ? 1 : lowOpacity)
+        content.opacity(!active || bright ? 1 : dimOpacity)
             .task(id: active) {
                 bright = true
                 guard active else { return }
                 while !Task.isCancelled {
-                    do { try await Task.sleep(nanoseconds: UInt64(max(0.05, interval) * 1_000_000_000)) }
+                    do { try await Task.sleep(nanoseconds: UInt64(max(0.05, blinkInterval) * 1_000_000_000)) }
                     catch { return }
                     guard !Task.isCancelled else { return }
                     bright.toggle()

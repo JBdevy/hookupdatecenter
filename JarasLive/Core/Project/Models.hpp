@@ -8,7 +8,6 @@ struct RegionPlaylist { ID id; std::string name; ID songId; std::vector<ID> regi
 struct SetlistBlock { ID id; ID songId; std::optional<ID> playlistId; std::string name; unsigned color = 0; std::optional<ID> beforeRegionId; std::optional<bool> symbol; };
 struct RegionSetlist { std::vector<RegionPlaylist> playlists; std::optional<ID> selectedId; bool autoAdvance = false; std::optional<std::vector<SetlistBlock>> blocks; std::optional<bool> stopAtRegionEnd; std::optional<bool> prepareWithoutPlayback; std::optional<bool> automaticSubplay; std::optional<double> automaticSubplaySeconds; };
 struct Project {
-    static constexpr size_t maximumTrackCount = 1000;
     ID id; std::string name;
     int projectFormatVersion = 1;
     std::string minimumJarasVersion = "1.0.0", createdAt, updatedAt;

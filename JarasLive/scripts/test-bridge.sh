@@ -5,7 +5,7 @@ mkdir -p build/bridge-tests
 cat > build/bridge-tests/main.swift <<'SWIFT'
 import Foundation
 var project = Project.demo()
-project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Refrão", position: 12, color: 0xffcc00)]
+project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Refrão", position: 12, color: 0xffcc00, section: true, loopSection: true)]
 project.songs[0].tracks[1].parentTrackID = project.songs[0].tracks[0].id
 project.songs[0].tracks[1].patch = .masterGroup
 project.songs[0].tracks[1].secondaryPatch = OutputPatch(firstChannel: 3, channelCount: 2)
@@ -32,14 +32,15 @@ let loopStart = TimelineMarker(id: UUID(), name: "Loop start", position: 3, colo
 let loopEnd = TimelineMarker(id: UUID(), name: "Loop end", position: 9, color: 0xffffff)
 // Keep unresolved marker references here to verify lossless persistence after marker deletion.
 var multiLoop = MultiLoop(name: "Verse loop", marker1: loopStart.id, marker2: loopEnd.id)
+multiLoop.enabled = false; multiLoop.mixerEnabled = false
 var loopTrack = MultiLoopTrack(id: project.songs[0].tracks[0].id, gain: 0.2)
 loopTrack.autoFader = true; loopTrack.mute = true; loopTrack.solo = true
 multiLoop.tracks = [loopTrack, MultiLoopTrack(id: MultiLoopTrack.masterID, gain: 0.5)]
 project.songs[0].parts[0].multiLoops = [multiLoop]
-project.songs[0].parts[0].pitchSemitones = 6
+project.songs[0].parts[0].pitchSemitones = 12
 project.songs[0].parts[0].pitchTrackIDs = [project.songs[0].tracks[0].id]
 project.songs[0].parts[0].pitchGroupIDs = []
-project.songs[0].parts[1].pitchSemitones = -6
+project.songs[0].parts[1].pitchSemitones = -12
 project.songs[0].parts[1].pitchTrackIDs = []
 project.songs[0].parts[1].pitchGroupIDs = [project.songs[0].tracks[0].id]
 project.songs[0].parts[0].uppercaseName = true

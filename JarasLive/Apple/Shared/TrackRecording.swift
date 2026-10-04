@@ -10,6 +10,7 @@ private struct CaptureTarget: Sendable {
     let track: UUID
     let input: OutputPatch
     let format: String
+    var name = "Recording"
     var id = UUID()
     var lane = 0
     var recordedChannels: Int? = nil
@@ -57,7 +58,8 @@ private final class CaptureWriter: @unchecked Sendable {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             guard target.input.firstChannel >= 1, target.input.firstChannel + target.input.channelCount - 1 <= channels else { throw ProjectError.invalid("Selected recording input is unavailable.") }
             let aiff = target.format.hasPrefix("aiff")
-            let url = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension(aiff ? "aiff" : "wav")
+            let url = folder.appendingPathComponent(target.name).appendingPathExtension(aiff ? "aiff" : "wav")
+            try Data().write(to: url, options: .withoutOverwriting)
             let settings: [String: Any] = [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:sampleRate, AVNumberOfChannelsKey:target.channelCount, AVLinearPCMBitDepthKey:target.format.hasSuffix("16pcm") ? 16 : (target.format == "wav32" || target.format.hasSuffix("32pcm")) ? 32 : 24, AVLinearPCMIsFloatKey:target.format == "wav32", AVLinearPCMIsBigEndianKey:aiff, AVLinearPCMIsNonInterleaved:false]
             let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ProjectError.invalid("Could not allocate recording buffer") }
@@ -142,7 +144,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 do {
                     let duration = Double(take.frames) / self.sampleRate
                     let overview = try StemProjectImporter.audioOverview(url, duration: duration)
-                    let clip = AudioClip(id: take.target.id, name: "Recording", startTime: take.position ?? fallbackStart, duration: duration, waveform: overview.waveform,
+                    let clip = AudioClip(id: take.target.id, name: take.target.name, startTime: take.position ?? fallbackStart, duration: duration, waveform: overview.waveform,
                         audioFile: AudioFile(path: "Stems/Recordings/" + url.lastPathComponent), waveformChannels: overview.channels, recordingLane: take.target.lane)
                     items.append(CapturedItem(track: take.target.track, clip: clip))
                 } catch { message = error.localizedDescription }
@@ -176,6 +178,12 @@ private final class CaptureWriter: @unchecked Sendable {
     private var requestingMicrophone = false
     func bind(_ show: ShowController) {
         self.show = show
+        AudioDeviceSettings.shared.inputDeviceChanged = { [weak self] in
+            guard let self else { return }
+            if self.recording { self.finish() }
+            self.releaseInput(); self.configuredInput = 0
+            self.reconcileArming()
+        }
         ControlMappings.shared.onMIDIReceived = { [weak self] device, status, number, value, timestamp in
             self?.receiveMIDI(device: device, status: status, number: number, value: value, timestamp: timestamp)
         }
@@ -195,6 +203,53 @@ private final class CaptureWriter: @unchecked Sendable {
     @Published var error = ""
     private let captureEngine = AVAudioEngine()
     private var captureRing: JarasCaptureRing?
+    private struct MonitorConfig: Equatable { let track: UUID; let patch: OutputPatch; let channels: Int }
+    private var monitorConfig: [MonitorConfig] = []
+    private var monitorRings: [JarasCaptureRing] = []
+    private var tapInstalled = false
+    private var updatingMonitoring = false
+    private func refreshMonitoring() {
+        guard !updatingMonitoring else { return }
+        updatingMonitoring = true; defer { updatingMonitoring = false }
+        let tracks = show?.current?.tracks ?? []
+        StemAudioPlayback.shared.armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
+        let desired = inputChannels > 0 && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? tracks.filter {
+            armed.contains($0.id) && $0.recordingMode != .midi && $0.kind == .standard
+        }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
+        let playback = StemAudioPlayback.shared
+        guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
+        for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
+        monitorConfig = []; monitorRings = []
+        guard !desired.isEmpty else { rebuildInputTap(); releaseInputIfIdle(); return }
+        configureInput()
+        let format = captureEngine.inputNode.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else { return }
+        for config in desired where config.patch.firstChannel >= 1 && config.patch.firstChannel + config.patch.channelCount - 1 <= Int(format.channelCount) {
+            let ring = JarasCaptureRing(channels: UInt(format.channelCount), capacity: UInt(max(8192, format.sampleRate / 4)))
+            let count = min(config.channels, config.patch.channelCount)
+            let source = ring.monitorSource(withSampleRate: format.sampleRate, firstChannel: UInt(config.patch.firstChannel - 1), channelCount: UInt(count))
+            playback.setInputMonitor(config.track, source: source, format: AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: AVAudioChannelCount(count)))
+            monitorConfig.append(config); monitorRings.append(ring)
+        }
+        if captureRing == nil {
+            captureRing = JarasCaptureRing(channels: UInt(format.channelCount), capacity: UInt(format.sampleRate * 8))
+            captureRing?.endCapture()
+        }
+        rebuildInputTap()
+        do { if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() } }
+        catch { self.error = error.localizedDescription; releaseInput() }
+    }
+    private func rebuildInputTap() {
+        let input = captureEngine.inputNode
+        if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
+        guard let ring = captureRing else { return }
+        let rings = monitorRings
+        input.installTap(onBus: 0, bufferSize: 256, format: input.outputFormat(forBus: 0)) { buffer, _ in
+            ring.push(buffer)
+            for monitor in rings { monitor.push(buffer) }
+        }
+        tapInstalled = true
+    }
     private var configuredInput: UInt32 = 0
     private var directory: URL?
     private var project: UUID?
@@ -203,6 +258,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var midiTakes: [UUID: MIDIRecordingTake] = [:]
     private var midiStartTime = 0.0
     private var recordingSong: UUID?
+    private var recordingNames = RecordingNames(directory: nil)
     private var pendingTakes = Set<UUID>()
     private weak var show: ShowController?
     private var startPosition = 0.0
@@ -210,19 +266,13 @@ private final class CaptureWriter: @unchecked Sendable {
     private var lastPosition = 0.0
     private var lastTime = 0.0
     var defaultInputPatch: OutputPatch { OutputPatch(firstChannel: 1, channelCount: min(2, max(1, inputChannels))) }
-    var inputChannels: Int { configureInput(); return Int(captureEngine.inputNode.outputFormat(forBus: 0).channelCount) }
+    var inputChannels: Int { AudioDeviceSettings.shared.inputDevice?.channels ?? 0 }
     private func configureInput(allowCaptureSetup: Bool = false) {
         guard (!recording && !busy) || (allowCaptureSetup && writer == nil) else { return }
         #if os(macOS)
         let audio = AudioDeviceSettings.shared
-        var selected = audio.devices.first { $0.id == audio.selectedUID }?.hardwareID ?? 0
-        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,mScope: kAudioDevicePropertyScopeInput,mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        if selected == 0 || AudioObjectGetPropertyDataSize(selected,&address,0,nil,&size) != noErr || size == 0 {
-            address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,mScope: kAudioObjectPropertyScopeGlobal,mElement: kAudioObjectPropertyElementMain)
-            size = UInt32(MemoryLayout<UInt32>.size)
-            guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),&address,0,nil,&size,&selected) == noErr else { return }
-        }
+        guard let device = audio.inputDevice else { releaseInput(); configuredInput = 0; return }
+        var selected = device.hardwareID
         guard selected != 0, selected != configuredInput, let unit = captureEngine.inputNode.audioUnit else { return }
         releaseInput()
         if AudioUnitSetProperty(unit,kAudioOutputUnitProperty_CurrentDevice,kAudioUnitScope_Global,0,&selected,UInt32(MemoryLayout<UInt32>.size)) == noErr { configuredInput = selected }
@@ -231,7 +281,7 @@ private final class CaptureWriter: @unchecked Sendable {
     func open(directory: URL, project: UUID) {
         if recording { finish() }
         releaseInput()
-        self.directory = directory; self.project = project; armed.removeAll(); armState = RecordingArmState(); microphoneTracks.removeAll(); midiTakes.removeAll(); LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
+        self.directory = directory; self.project = project; recordingNames = RecordingNames(directory: directory, clips: show?.snapshot.project.songs.flatMap(\.tracks).flatMap(\.clips) ?? []); armed.removeAll(); armState = RecordingArmState(); microphoneTracks.removeAll(); midiTakes.removeAll(); LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
     }
     func closeProject() {
         guard !recording, !busy else { return }
@@ -254,14 +304,14 @@ private final class CaptureWriter: @unchecked Sendable {
     private func reconcileArming() {
         guard !busy else { return }
         let wanted = armState.armed
-        if !microphoneTracks.isEmpty, let show {
-            let audioTracks = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode != .midi }.map(\.id))
-            microphoneTracks.formIntersection(audioTracks)
+        if let show {
+            microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode != .midi }.map(\.id)))
         }
         let authorization = AVCaptureDevice.authorizationStatus(for: .audio)
-        let effective = authorization == .authorized ? wanted : wanted.subtracting(microphoneTracks)
+        let effective = authorization == .authorized || inputChannels == 0 ? wanted : wanted.subtracting(microphoneTracks)
         if armed != effective { armed = effective; updateArmedTargets() }
-        guard !wanted.intersection(microphoneTracks).isEmpty, authorization != .authorized else { return }
+        refreshMonitoring()
+        guard inputChannels > 0, !wanted.intersection(microphoneTracks).isEmpty, authorization != .authorized else { return }
         guard authorization == .notDetermined else {
             error = "Allow microphone access in System Settings to record audio."; return
         }
@@ -278,11 +328,10 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     private func target(for track: Track, position: Double) -> CaptureTarget {
-        let occupied = RecordingLaneLayout.shared.items.values.filter { $0.track == track.id }.map { $0.clip.recordingLane ?? 0 }
-        let lane = max(track.clips.isEmpty ? 0 : TrackLanes(track: track).count, (occupied.max().map { $0 + 1 }) ?? 0)
-        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey, lane: lane, recordedChannels: track.recordingChannels ?? 2)
-        let clip = AudioClip(id: target.id, name: "Recording", startTime: position, duration: 0.01, recordingLane: lane)
-        RecordingLaneLayout.shared.reserve(track: track.id, clip: clip)
+        let lane = TrackLanes(track: track).recordingLane(start: position, duration: 0.01, clips: track.clips)
+        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey, name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.recordingChannels ?? 2)
+        let clip = AudioClip(id: target.id, name: target.name, startTime: position, duration: 0.01, recordingLane: lane)
+        RecordingLaneLayout.shared.reserve(track: track, clip: clip)
         LiveRecordingPreview.shared.takes[target.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: Array(repeating: [0], count: target.channelCount))
         return target
     }
@@ -319,16 +368,16 @@ private final class CaptureWriter: @unchecked Sendable {
         for id in Array(midiTakes.keys) where !kept.contains(id) { finishMIDITake(id, at: position) }
         guard let song = show?.current else { return }
         for track in tracks where midiTakes[track.id] == nil {
-            let lane = RecordingLaneLayout.shared.count(for: track.id, existing: track.clips.isEmpty ? 0 : TrackLanes(track: track).count)
-            let take = MIDIRecordingTake(track: track.id, song: song, startTime: position, lane: lane)
+            let lane = TrackLanes(track: track).recordingLane(start: position, duration: 0.01, clips: track.clips)
+            let take = MIDIRecordingTake(track: track.id, song: song, startTime: position, lane: lane, name: recordingNames.allocate(track: track.name, clips: track.clips))
             midiTakes[track.id] = take
-            RecordingLaneLayout.shared.reserve(track: track.id, clip: AudioClip(id: take.id, name: "MIDI recording", startTime: position, duration: 0.01, recordingLane: lane, midi: MIDIItem(sourceBPM: take.sourceBPM)))
+            RecordingLaneLayout.shared.reserve(track: track, clip: AudioClip(id: take.id, name: take.name, startTime: position, duration: 0.01, recordingLane: lane, midi: MIDIItem(sourceBPM: take.sourceBPM)))
             LiveRecordingPreview.shared.takes[take.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: [])
         }
     }
     private func finishMIDITake(_ track: UUID, at position: Double) {
         guard var take = midiTakes.removeValue(forKey: track) else { return }
-        if let clip = take.finish(at: position), show?.snapshot.project.id == project { show?.addRecordedClip(clip, track: track) }
+        if let clip = take.finish(at: position), show?.snapshot.project.id == project { addRecordedClip(clip, track: track) }
         RecordingLaneLayout.shared.remove(take.id); LiveRecordingPreview.shared.takes[take.id] = nil
     }
     private func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8, timestamp: Double) {
@@ -341,10 +390,16 @@ private final class CaptureWriter: @unchecked Sendable {
             midiTakes[track.id]?.receive(source: device, status: status, number: number, value: value, position: position)
         }
     }
+    private func addRecordedClip(_ clip: AudioClip, track id: UUID) {
+        guard let show, let track = show.current?.tracks.first(where: { $0.id == id }) else { return }
+        var clip = clip
+        clip.recordingLane = TrackLanes(track: track).recordingLane(start: clip.startTime, duration: clip.duration, clips: track.clips)
+        show.addRecordedClip(clip, track: id)
+    }
     private func accept(_ items: [CapturedItem], message: String?, project recordedProject: UUID?) {
         if let show, show.snapshot.project.id == recordedProject {
             for item in items {
-                show.addRecordedClip(item.clip, track: item.track)
+                addRecordedClip(item.clip, track: item.track)
                 RecordingLaneLayout.shared.remove(item.clip.id); LiveRecordingPreview.shared.takes[item.clip.id] = nil
                 pendingTakes.remove(item.clip.id)
                 if !show.snapshot.project.songs.flatMap(\.tracks).flatMap(\.clips).contains(where: { $0.id == item.clip.id }) { error = show.message }
@@ -383,6 +438,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let permission = AVCaptureDevice.authorizationStatus(for: .audio)
         let allowed = permission == .authorized ? true : permission == .notDetermined ? await AVCaptureDevice.requestAccess(for: .audio) : false
         guard allowed else { throw ProjectError.invalid("Allow microphone access in System Settings to record audio.") }
+        guard inputChannels > 0 else { throw ProjectError.invalid("Choose an audio input device in Settings.") }
         configureInput(allowCaptureSetup: true)
         let input = captureEngine.inputNode, format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0 && format.sampleRate > 0 else { throw ProjectError.invalid("No audio input is available.") }
@@ -401,7 +457,7 @@ private final class CaptureWriter: @unchecked Sendable {
             activeTargets = Dictionary(uniqueKeysWithValues: targets.map { ($0.track, $0) })
             writer.setInitialPosition(actualPosition)
             for target in targets {
-                RecordingLaneLayout.shared.move(target.id, start: actualPosition)
+                RecordingLaneLayout.shared.update(target.id, start: actualPosition)
                 LiveRecordingPreview.shared.takes[target.id]?.start = actualPosition
             }
             let session = previewSession
@@ -409,6 +465,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 Task { @MainActor in
                     guard let self, self.previewSession == session else { return }
                     for (id, duration) in durations {
+                        RecordingLaneLayout.shared.update(id, duration: duration)
                         LiveRecordingPreview.shared.takes[id]?.duration = max(0.01, duration)
                         if let channels = waveforms[id] { LiveRecordingPreview.shared.takes[id]?.channels = channels }
                     }
@@ -416,8 +473,8 @@ private final class CaptureWriter: @unchecked Sendable {
             }
             writer.start()
             if captureRing == nil {
-                input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in ring.push(buffer) }
                 captureRing = ring
+                rebuildInputTap()
             }
             do { if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() } }
             catch {
@@ -445,7 +502,11 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         lastTime = now; lastPosition = snapshot.transport.position
         guard recording else { return }
-        for take in midiTakes.values { LiveRecordingPreview.shared.takes[take.id]?.duration = max(0.01, snapshot.transport.position - take.startTime) }
+        for take in midiTakes.values {
+            let duration = max(0.01, snapshot.transport.position - take.startTime)
+            RecordingLaneLayout.shared.update(take.id, duration: duration)
+            LiveRecordingPreview.shared.takes[take.id]?.duration = duration
+        }
     }
     func finishAndWait() async {
         while busy { try? await Task.sleep(nanoseconds: 20_000_000) }
@@ -476,14 +537,15 @@ private final class CaptureWriter: @unchecked Sendable {
         busy = false; reconcileArming(); releaseInputIfIdle()
     }
     private func releaseInputIfIdle() {
-        guard !recording, !busy, show?.isPlaying != true else { return }
+        guard !recording, !busy, monitorConfig.isEmpty else { return }
         releaseInput()
     }
     private func releaseInput() {
-        guard let ring = captureRing else { return }
-        ring.endCapture()
+        for config in monitorConfig { StemAudioPlayback.shared.setInputMonitor(config.track, source: nil) }
+        monitorConfig = []; monitorRings = []
+        captureRing?.endCapture()
         captureEngine.stop()
-        captureEngine.inputNode.removeTap(onBus: 0)
+        if tapInstalled { captureEngine.inputNode.removeTap(onBus: 0); tapInstalled = false }
         captureRing = nil
     }
 }
@@ -504,15 +566,8 @@ struct TrackRecordButton: View {
                     Text(verbatim: "A").font(.system(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
             }
-                .foregroundStyle(recorder.armed.contains(track.id) ? JarasTheme.green : .red)
                 .frame(width: 22, height: 21)
-                .background {
-                    if recorder.armed.contains(track.id) {
-                        ArmedRecordingBackground().transition(.identity)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 3))
-        }
+        }.buttonStyle(RecordingButtonStyle(active: recorder.armed.contains(track.id)))
         #if os(macOS)
         .background(TrackControlSelectionExclusion())
         #endif
@@ -525,6 +580,12 @@ struct TrackRecordButton: View {
                     Text("Stereo").tag(2)
                     Text("MIDI").tag(0)
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
+                if track.recordingMode != .midi {
+                    Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
+                        Text(verbatim: "Monitor On").tag(true)
+                        Text(verbatim: "Monitor Off").tag(false)
+                    }.pickerStyle(.segmented).labelsHidden()
+                }
             }.padding(16)
         }
         .accessibilityLabel("Arm track for recording")
@@ -533,8 +594,31 @@ struct TrackRecordButton: View {
 
     }
 }
-private struct ArmedRecordingBackground: View {
-    var body: some View { Color.red.modifier(JarasBlink(active: true, interval: 0.6, lowOpacity: 0.72)) }
+/// Keep the original idle appearance; only an active REC has a flashing red face.
+/// Its layout and click target stay fixed throughout both phases of the blink.
+private struct RecordingButtonStyle: ButtonStyle {
+    let active: Bool
+    var width: CGFloat = 22
+    var height: CGFloat = 21
+    var fontSize: CGFloat = 10
+    var cornerRadius: CGFloat = 3
+    var transport = false
+    private let red = Color(red: 1, green: 0.12, blue: 0.12)
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: fontSize, weight: .semibold))
+            .lineLimit(1).minimumScaleFactor(0.75)
+            .frame(width: width, height: height)
+            .foregroundStyle(active ? Color.black : transport ? JarasTheme.secondary : Color.red)
+            .background(active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
+                transport ? Color.red.opacity(configuration.isPressed ? 0.7 : 0.45) :
+                JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? red : Color.white.opacity(0.45)) : .clear))
+            .contentShape(Rectangle())
+            .modifier(JarasBlink(active: active, interval: 0.4, lowOpacity: 0.05))
+            .transaction { $0.animation = nil }
+    }
 }
 
 struct TransportRecordButton: View {
@@ -543,7 +627,8 @@ struct TransportRecordButton: View {
     var body: some View {
         Button { recorder.toggle(show: show) } label: {
             Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
-                .foregroundStyle(recorder.recording ? .red : JarasTheme.secondary)
-        }.buttonStyle(TransportButtonStyle(color: .red, active: recorder.recording, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height)).disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
+        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: TransportControlMetrics.width,
+            height: TransportControlMetrics.height, fontSize: TransportControlMetrics.font, cornerRadius: 6, transport: true))
+            .disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
     }
 }

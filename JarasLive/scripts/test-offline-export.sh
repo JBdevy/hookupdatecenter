@@ -15,7 +15,20 @@ clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/eff
 bash scripts/compile-vst3.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasSoundFont.mm -o "$build_dir/soundfont.o"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasTimecode.mm -o "$build_dir/timecode.o"
-cp Tests/Apple/OfflineAudioExportTests.swift "$build_dir/main.swift"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Licensing/AudioLicenseAccess.swift Application/Account/AccountModels.swift Application/Project/AudioFileRead.swift Application/Export/AudioExportPlan.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemGlue.swift Application/Project/TimelineTempo.swift Apple/Shared/AudioDeviceSettings.swift Apple/Shared/NativeTooltips.swift Application/Project/MediaFileNames.swift Application/Project/ProjectDocumentCodec.swift Application/Project/ProjectDocumentAppearance.swift Application/Project/StemProjectImporter.swift Application/Project/HookImportRules.swift Apple/Shared/MediaProcessingSettings.swift Apple/Shared/ItemReRender.swift Apple/Shared/OfflineAudioExport.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/VideoMediaSettings.swift Application/Project/ClickTrack.swift Apple/Shared/ClickAudioSample.swift Apple/Shared/StemAudioPlayback.swift Apple/Shared/Theme.swift Apple/Shared/InstrumentLibrary.swift "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
+extra_sources=()
+swift_options=()
+if [[ "${CATLIVE_TEST_SEPARATOR:-0}" == "1" ]]; then
+ python3 - "$build_dir" <<'PYSEP'
+from pathlib import Path
+import sys
+source = Path('Apple/Shared/CatStemSeparation.swift').read_text()
+source = source[:source.index('@MainActor final class CatStemSession')].replace('private enum CatStemRenderer', 'enum CatStemRenderer')
+Path(sys.argv[1], 'separator.swift').write_text(source + '\n#endif\n')
+PYSEP
+ swift_options=(-parse-as-library)
+ extra_sources=(Application/Project/StemSeparation.swift "$build_dir/separator.swift")
+fi
+cp "${CATLIVE_EXPORT_TEST_SOURCE:-Tests/Apple/OfflineAudioExportTests.swift}" "$build_dir/main.swift"
+swiftc ${swift_options[@]+"${swift_options[@]}"} -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Licensing/AudioLicenseAccess.swift Application/Account/AccountModels.swift Application/Project/AudioFileRead.swift Application/Export/AudioExportPlan.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemGlue.swift Application/Project/TimelineTempo.swift Apple/Shared/AudioDeviceSettings.swift Apple/Shared/NativeTooltips.swift Application/Project/MediaFileNames.swift Application/Project/ProjectDocumentCodec.swift Application/Project/ProjectDocumentAppearance.swift Application/Project/StemProjectImporter.swift Application/Project/HookImportRules.swift Apple/Shared/MediaProcessingSettings.swift Apple/Shared/ItemReRender.swift Apple/Shared/OfflineAudioExport.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/VideoMediaSettings.swift Application/Project/ClickTrack.swift Apple/Shared/ClickAudioSample.swift Apple/Shared/StemAudioPlayback.swift Apple/Shared/Theme.swift Apple/Shared/InstrumentLibrary.swift ${extra_sources[@]+"${extra_sources[@]}"} "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
 "$build_dir/test"
 

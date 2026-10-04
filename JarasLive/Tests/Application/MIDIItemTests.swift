@@ -87,7 +87,9 @@ extension MIDIItemTests {
     func testRecordingSustainRetriggerAllNotesOffAndEmptyTake() throws {
         let song = Project.empty(name: "Capture").songs[0]
         var empty = MIDIRecordingTake(track: UUID(), song: song, startTime: 0)
-        XCTAssertNil(empty.finish(at: 4))
+        let emptyClip = try XCTUnwrap(empty.finish(at: 4))
+        XCTAssertEqual(emptyClip.duration, 4)
+        XCTAssertEqual(emptyClip.midi?.notes, [])
         var take = MIDIRecordingTake(track: UUID(), song: song, startTime: 0)
         take.receive(source: 1, status: 0xb0, number: 64, value: 127, position: 0)
         take.receive(source: 1, status: 0x90, number: 60, value: 88, position: 0)

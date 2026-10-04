@@ -10,7 +10,7 @@ let overflow = JarasCaptureRing(channels: 4, capacity: 100)
 overflow.push(buffer)
 precondition(overflow.droppedFrames == 47900, "overflow must be reported")
 let stereo = UUID(), mono = UUID(), mp3 = UUID(), floatWav = UUID()
-let writer = try CaptureWriter(targets: [CaptureTarget(track: stereo, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav"), CaptureTarget(track: mono, input: OutputPatch(firstChannel: 1, channelCount: 1), format: "wav"), CaptureTarget(track: mp3, input: .stereo, format: "mp3"), CaptureTarget(track: floatWav, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav32")], directory: directory, format: format)
+let writer = try CaptureWriter(targets: [CaptureTarget(track: stereo, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav", name: "Capture - 001"), CaptureTarget(track: mono, input: OutputPatch(firstChannel: 1, channelCount: 1), format: "wav", name: "Capture - 002"), CaptureTarget(track: mp3, input: .stereo, format: "mp3", name: "Capture - 003"), CaptureTarget(track: floatWav, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav32", name: "Capture - 004")], directory: directory, format: format)
 let previewed = DispatchSemaphore(value: 0)
 writer.start { duration, waveforms in
     precondition(duration == 1, "live preview follows captured frames")
@@ -48,7 +48,7 @@ writer.finish(start: 30) { items, error in
 }
 precondition(completed.wait(timeout: .now() + 30) == .success, "recording finalization must complete")
 
-let empty = try CaptureWriter(targets: [CaptureTarget(track: UUID(),input: .stereo,format: "wav")],directory: directory,format: format)
+let empty = try CaptureWriter(targets: [CaptureTarget(track: UUID(),input: .stereo,format: "wav", name: "Capture - 005")],directory: directory,format: format)
 let emptyFinished = DispatchSemaphore(value: 0)
 empty.start()
 empty.finish(start: 0) { items,error in
@@ -65,7 +65,7 @@ print("RECORDING_MISSING_INPUT_HANDLED_OK")
 let reusable = JarasCaptureRing(channels: 4, capacity: 96000)
 for take in 0..<3 {
     let captured = DispatchSemaphore(value: 0)
-    let writer = try CaptureWriter(targets: [CaptureTarget(track: stereo, input: .stereo, format: "wav")], directory: directory, format: format, ring: reusable)
+    let writer = try CaptureWriter(targets: [CaptureTarget(track: stereo, input: .stereo, format: "wav", name: "Repeated - \(take)")], directory: directory, format: format, ring: reusable)
     writer.start()
     reusable.push(buffer)
     writer.finish(start: Double(take) * 2) { items, error in
@@ -92,8 +92,8 @@ precondition(late == 0 && accepted % 48000 == 0, "stop drains complete accepted 
 print("RECORDING_STOP_GATE_REUSE_AND_CONCURRENT_PRODUCER_OK")
 // Independent arming while global REC stays active, including zero targets.
 let dynamic = try CaptureWriter(targets: [], directory: directory, format: format)
-let a = CaptureTarget(track: UUID(), input: .stereo, format: "wav", lane: 4)
-let b = CaptureTarget(track: UUID(), input: .stereo, format: "wav", lane: 2)
+let a = CaptureTarget(track: UUID(), input: .stereo, format: "wav", name: "Capture - 007", lane: 4)
+let b = CaptureTarget(track: UUID(), input: .stereo, format: "wav", name: "Capture - 008", lane: 2)
 let disarmed = DispatchSemaphore(value: 0), final = DispatchSemaphore(value: 0)
 dynamic.start()
 dynamic.changeTargets([a,b], position: 40) { _,_ in }
@@ -117,7 +117,7 @@ precondition(final.wait(timeout: .now()+3) == .success)
 print("RECORDING_EMPTY_REC_DYNAMIC_ARM_DISARM_AND_CONTINUOUS_OTHER_TRACK_OK")
 
 for formatKey in ["wav24pcm", "wav32pcm", "aiff24pcm", "aiff32pcm", "mp3-128", "mp3-320"] {
-    let target = CaptureTarget(track: UUID(), input: .stereo, format: formatKey)
+    let target = CaptureTarget(track: UUID(), input: .stereo, format: formatKey, name: formatKey)
     let take = try CaptureWriter(targets: [target], directory: directory, format: format)
     take.start(); take.ring.push(buffer)
     let done = DispatchSemaphore(value: 0)
@@ -138,8 +138,8 @@ for formatKey in ["wav24pcm", "wav32pcm", "aiff24pcm", "aiff32pcm", "mp3-128", "
 print("RECORD_GLOBAL_WAV_AIFF_24_32_INTEGER_PCM_AND_MP3_128_320_OK")
 
 let outputModes = try CaptureWriter(targets: [
-    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav", recordedChannels: 1),
-    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 2, channelCount: 1), format: "wav", recordedChannels: 2)
+    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav", name: "Capture - 009", recordedChannels: 1),
+    CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 2, channelCount: 1), format: "wav", name: "Capture - 010", recordedChannels: 2)
 ], directory: directory, format: format)
 outputModes.start { _, _ in }
 outputModes.ring.push(buffer)
@@ -162,3 +162,26 @@ outputModes.finish(start: 0) { items, error in
 }
 precondition(outputDone.wait(timeout: .now()+5) == .success)
 print("RECORDING_OUTPUT_MODE_INDEPENDENT_OF_INPUT_PATCH_OK")
+
+var names = RecordingNames(directory: directory, clips: [AudioClip(id: UUID(), name: "Piano - 001", startTime: 0, duration: 1)])
+precondition(names.allocate(track: "Piano") == "Piano - 002")
+precondition(names.allocate(track: "Piano") == "Piano - 003")
+precondition(names.allocate(track: "PIANO") == "PIANO - 004")
+print("RECORDING_NAMES_OK")
+
+let monitorEngine = AVAudioEngine()
+let monitorFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+try monitorEngine.enableManualRenderingMode(.offline, format: monitorFormat, maximumFrameCount: 512)
+let monitorRing = JarasCaptureRing(channels: 4, capacity: 4096)
+let monitorSource = monitorRing.monitorSource(withSampleRate: 48000, firstChannel: 2, channelCount: 2)
+monitorEngine.attach(monitorSource); monitorEngine.connect(monitorSource, to: monitorEngine.mainMixerNode, format: monitorFormat)
+try monitorEngine.start()
+let small = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+small.frameLength = 1024
+for c in 0..<4 { small.floatChannelData![c].update(repeating: Float(c + 1) / 10, count: 1024) }
+monitorRing.push(small)
+let monitorPCM = AVAudioPCMBuffer(pcmFormat: monitorFormat, frameCapacity: 512)!
+let monitorStatus = try monitorEngine.renderOffline(512, to: monitorPCM); precondition(monitorStatus == .success)
+precondition(abs(monitorPCM.floatChannelData![0][100] - 0.3) < 0.0001 && abs(monitorPCM.floatChannelData![1][100] - 0.4) < 0.0001, "live monitor maps input channels 3/4 independently from the recording writer")
+monitorEngine.stop()
+print("INPUT_MONITOR_NATIVE_RING_CHANNEL_MAPPING_OK")

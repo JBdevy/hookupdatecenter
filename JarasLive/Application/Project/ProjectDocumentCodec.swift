@@ -40,7 +40,8 @@ public enum ProjectDocumentCodec {
             // Read existing development documents; all subsequent writes are encrypted.
             plaintext = data
         } else { throw ProjectError.invalid("Invalid or unsupported .jl project.") }
-        let project = try JSONDecoder().decode(Project.self, from: plaintext)
+        var project = try JSONDecoder().decode(Project.self, from: plaintext)
+        project.promoteLoopSectionMarkers()
         try project.validate()
         return project
     }

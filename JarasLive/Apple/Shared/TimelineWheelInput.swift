@@ -216,6 +216,7 @@ struct TimelineWheelInput: NSViewRepresentable {
     var modelUnitWidth: Double? = nil
     var interactionBlocked = false
     var changeTrackHeight: (Double, Bool) -> Void = { _, _ in }
+    var livePosition: (() -> Double)? = nil
     func makeNSView(context: Context) -> TimelineWheelView { TimelineWheelView() }
     func updateNSView(_ view: TimelineWheelView, context: Context) {
         view.horizontalOffsetChanged = horizontalOffsetChanged
@@ -231,6 +232,7 @@ struct TimelineWheelInput: NSViewRepresentable {
         view.extend = extend
         view.acceptRenderedZoom(zoom)
         view.position = position
+        view.livePosition = livePosition
         view.cursorX = cursorX
         view.modelUnitWidth = modelUnitWidth
         view.changeZoom = { next, offset in
@@ -320,6 +322,11 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     var extend: (() -> Void)?
     var zoom = 1.0
     var position = 0.0
+    var livePosition: (() -> Double)?
+    var zoomPosition: Double {
+        let value = livePosition?() ?? position
+        return value.isFinite ? min(1, max(0, value)) : min(1, max(0, position))
+    }
     var cursorX: CGFloat?
     var modelUnitWidth: Double?
     var changeZoom: ((Double, CGFloat) -> Void)?
@@ -517,6 +524,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
         guard delta.isFinite, delta != 0, let grid = horizontal as? GridNativeScrollView,
               let document = horizontal.documentView else { return }
+        grid.prioritizeZoom()
         let direction = amount > 0 ? 1.0 : amount < 0 ? -1.0 : 0.0
         if wheelZoomTransition != nil,
            event.hasPreciseScrollingDeltas || (direction != 0 && wheelZoomDirection != 0 && direction != wheelZoomDirection) {
@@ -540,7 +548,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             // The musical position is independent of the rendered scale.
             // cursorX can still belong to the previous layout when a fast new
             // gesture arrives after the native document has changed width.
-            let fraction = min(1, max(0, position))
+            let fraction = zoomPosition
             gestureAnchor = fraction
             if next == base {
                 // At a limit there is no new layout to center. A real scale
@@ -610,10 +618,11 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             if ProcessInfo.processInfo.systemUptime - lastZoomInput > 0.08 { stopZoomUpdates(preservingVelocity: true) }
             return
         }
+        grid.prioritizeZoom()
         let next = wheelZoomTransition?.value(at: ProcessInfo.processInfo.systemUptime) ?? target
         if next == target { wheelZoomTransition = nil }
         guard next != zoom else { return }
-        let fraction = gestureAnchor ?? min(1, max(0, position))
+        let fraction = gestureAnchor ?? zoomPosition
         let width = documentUnitWidth * next
         let screenX = grid.contentView.frame.width / 2
         let offset = min(max(0, CGFloat(fraction) * width - screenX), max(0, width - grid.contentView.frame.width))

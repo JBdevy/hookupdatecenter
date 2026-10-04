@@ -70,7 +70,7 @@ enum DAWRemoteWire {
         }
     }
 }
-enum DAWRemoteAccess: String, Codable { case director, observer }
+enum DAWRemoteAccess: String, Codable { case director, observer, notices }
 struct DAWRemoteAccessRequest: Codable {
     var mode: DAWRemoteAccess
     var pin: String = ""
@@ -79,6 +79,7 @@ struct DAWRemoteAccessRequest: Codable {
 struct DAWRemoteAccessStatus: Codable {
     var mode: DAWRemoteAccess?
     var requiresPIN: Bool
+    var noticesRequiresPIN: Bool? = nil
     var error: String? = nil
 }
 /// An observer may only subscribe to a local TP view or fetch its still images.
@@ -87,6 +88,13 @@ enum DAWRemoteAccessRules {
     static func allows(_ command: DAWRemoteCommand, mode: DAWRemoteAccess?) -> Bool {
         guard command.valid, let mode else { return false }
         if mode == .director { return true }
+        if mode == .notices {
+            switch command.action {
+            case .noticeSend, .noticeClear, .noticePin, .noticeDestination, .noticeSaveTemplate: return true
+            case .remotePanel: return command.value == 0 || command.value == 3
+            default: return false
+            }
+        }
         return command.action == .requestImage || (command.action == .remotePanel && (0...2).contains(command.value))
     }
 }
@@ -99,7 +107,7 @@ struct DAWRemoteImageAsset: Equatable {
 }
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
-        case play, pause, stop, subPlay, subStop, toggleLoop, seek
+        case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass
         case volume, pan, mute, solo, masterMono, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
@@ -120,6 +128,7 @@ struct DAWRemoteCommand: Codable {
         }
         if enabled != nil && action != .noticeDestination { return false }
         switch action {
+        case .toggleMultiLoopBypass, .cancelSection: return target == nil && value == 0
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
         case .timerStop: return target == nil && value == 0
         case .requestImage: return target != nil && value == 0
@@ -131,11 +140,11 @@ struct DAWRemoteCommand: Codable {
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
         case .openRecentProject: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
-        case .clipMute: return target != nil && value == 0
+        case .clipMute, .queueSection: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
         case .pan: return (-1...1).contains(value) && target != nil
         case .tempo: return (20...400).contains(value)
-        case .pitch: return (-6...6).contains(value) && value.rounded() == value && target != nil
+        case .pitch: return (-12...12).contains(value) && value.rounded() == value && target != nil
         case .seek: return (0...604800).contains(value)
         case .selectRegion, .selectSong: return target != nil
         default: return value == 0
@@ -147,7 +156,7 @@ struct DAWRemoteState: Codable, Equatable {
         var start: Double; var end: Double; var bpm: Double; var beats: Int; var unit: Int
         var valid: Bool {
             start.isFinite && end.isFinite && start >= 0 && end > start &&
-            bpm.isFinite && (60...300).contains(bpm) && (1...32).contains(beats) &&
+            bpm.isFinite && bpm > 0 && (1...32).contains(beats) &&
             [1, 2, 4, 8, 16, 32, 64].contains(unit)
         }
     }
@@ -159,6 +168,34 @@ struct DAWRemoteState: Codable, Equatable {
     }
     struct Marker: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var position: Double; var color: UInt32
+        var section: Bool? = nil
+        var unifiedRegionID: UUID? = nil
+        var sourceRegionID: UUID? = nil
+    }
+    struct SectionPlayback: Codable, Equatable {
+        var currentRegion: UUID?
+        var secondaryRegion: UUID?
+        var position: Double
+        var secondaryPosition: Double?
+        var queuedMarker: UUID?
+        var queueStartedAt: Double?
+        var nextTrigger: Double?
+        var valid: Bool {
+            [position, secondaryPosition, queueStartedAt, nextTrigger].compactMap { $0 }.allSatisfy { $0.isFinite && $0 >= 0 }
+        }
+    }
+    struct SongDisplays: Codable, Equatable {
+        var current: String?
+        var currentBPM: Double?
+        var next: String?
+        var nextBPM: Double?
+        var queued: String?
+        var queuedBPM: Double?
+        var playlistSeconds: Double
+        var valid: Bool {
+            playlistSeconds.isFinite && playlistSeconds >= 0 &&
+                [currentBPM, nextBPM, queuedBPM].compactMap { $0 }.allSatisfy { $0.isFinite && $0 > 0 }
+        }
     }
     struct Track: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var color: UInt32
@@ -217,6 +254,7 @@ struct DAWRemoteState: Codable, Equatable {
     var pendingSave: Bool
     var saving: Bool
     var message: String
+    var multiLoopsBypassed: Bool? = nil
     var pitchRegion: UUID? = nil
     var pitchSemitones: Int? = nil
     var setlistFontStyle: Int? = nil
@@ -228,6 +266,7 @@ struct DAWRemoteState: Codable, Equatable {
     var playbackEnd: Double? = nil
     var projectSavedAt: String? = nil
     var footerInformation: String? = nil
+    var footerLoopBeatPhase: Int? = nil
     var upcomingName: String? = nil
     var upcomingKind: String? = nil
     var playlists: [Song]? = nil
@@ -235,6 +274,7 @@ struct DAWRemoteState: Codable, Equatable {
     var gridRegion: UUID? = nil
     var markers: [Marker]? = nil
     var projects: ProjectBrowser? = nil
+    var sectionListVertical: Bool? = nil
     var teleprompters: [DAWRemoteTeleprompter]? = nil
     var notices: DAWRemoteNotices? = nil
     var timer: DAWRemoteTimerState? = nil
@@ -243,17 +283,29 @@ struct DAWRemoteState: Codable, Equatable {
     var gridLines: Bool? = nil
     var gridPrimaryColor: UInt32? = nil
     var gridSecondaryColor: UInt32? = nil
+    var gridBackgroundColor: UInt32? = nil
+    var playCursorColor: UInt32? = nil
+    var editCursorColor: UInt32? = nil
+    var subPlayCursorColor: UInt32? = nil
+    var editPosition: Double? = nil
+    var subPlayPosition: Double? = nil
+    var sectionPlayback: SectionPlayback? = nil
+    var songDisplays: SongDisplays? = nil
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite &&
+        (editPosition == nil || (editPosition!.isFinite && editPosition! >= 0)) &&
+        (subPlayPosition == nil || (subPlayPosition!.isFinite && subPlayPosition! >= 0)) &&
+        [gridBackgroundColor, gridPrimaryColor, gridSecondaryColor, playCursorColor, editCursorColor, subPlayCursorColor].allSatisfy { $0 == nil || $0! <= 0xffffff } &&
         (gridTempo ?? []).count <= 32768 && (gridTempo ?? []).allSatisfy(\.valid) &&
+        (footerLoopBeatPhase == nil || [0, 1, 3].contains(footerLoopBeatPhase!)) &&
         (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
-        (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
+        (songDisplays?.valid ?? true) && (sectionPlayback?.valid ?? true) && (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
         (teleprompters ?? []).count <= 2 && (teleprompters ?? []).allSatisfy(\.valid) &&
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&
         position >= 0 && duration >= 0 && tracks.count <= 4096 && regions.count <= 8192 &&
         timelineRegions.count <= 8192 && songs.count <= 4096 &&
         tracks.allSatisfy { $0.volume.isFinite && $0.pan.isFinite && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
-            $0.clips.allSatisfy { $0.start.isFinite && $0.duration.isFinite && $0.duration >= 0 && ($0.lane == nil || (0...10000).contains($0.lane!)) && ($0.gain == nil || ($0.gain!.isFinite && $0.gain! >= 0 && $0.gain! <= pow(10, 24.0 / 20))) } } &&
+            $0.clips.allSatisfy { $0.start.isFinite && $0.duration.isFinite && $0.duration >= 0 && ($0.lane == nil || (0...10000).contains($0.lane!)) && ($0.gain == nil || ($0.gain!.isFinite && $0.gain! >= 0)) } } &&
         (regions + timelineRegions).allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }
     }
 }
@@ -321,6 +373,27 @@ enum DAWRemoteSetlistPresentation {
     }
 }
 
+/// The SubPlay head owns the Remote viewport until the Mac promotes or cancels it.
+/// A queued/focused song cannot steal the viewport from either playing head.
+enum DAWRemoteTimelinePresentation {
+    static func region(in state: DAWRemoteState) -> DAWRemoteState.Region? {
+        let regions = state.timelineRegions + state.regions
+        func root(_ region: DAWRemoteState.Region) -> DAWRemoteState.Region {
+            region.parentRegion.flatMap { parent in regions.first { $0.id == parent } } ?? region
+        }
+        if state.subPlaying {
+            guard let position = state.subPlayPosition ?? state.sectionPlayback?.secondaryPosition else { return nil }
+            let contains: (DAWRemoteState.Region) -> Bool = { position >= $0.start && position < $0.end }
+            if let section = regions.first(where: { $0.id == state.sectionPlayback?.secondaryRegion && contains($0) }) {
+                return root(section)
+            }
+            return regions.filter(contains).min { ($0.end - $0.start) < ($1.end - $1.start) }.map(root)
+        }
+        let selected = state.playing ? state.currentRegion : state.focusedRegion ?? state.currentRegion
+        return regions.first { $0.id == state.gridRegion } ?? regions.first { $0.id == selected }.map(root)
+    }
+}
+
 enum DAWRemoteScrollRange {
     static func clamp(_ offset: Double, content: Double, viewport: Double, topInset: Double = 0, bottomInset: Double = 0) -> Double {
         let minimum = -topInset
@@ -331,6 +404,14 @@ enum DAWRemoteScrollRange {
 /// Fractions of the space remaining after the two divider handles. A gesture
 /// always derives its result from the original pair, so reversing also restores
 /// a neighboring panel that the drag temporarily pushed out of view.
+enum DAWRemotePhonePanel: CaseIterable {
+    case grid, mixer, setlist, teleprompter1, teleprompter2, notices, sections
+    func selecting(_ panel: Self) -> Self { panel == self ? .grid : panel }
+    var subscription: Int {
+        switch self { case .teleprompter1: return 1; case .teleprompter2: return 2; case .notices: return 3; default: return 0 }
+    }
+}
+
 struct DAWRemotePanelWidths: Equatable {
     let track: Double
     let setlist: Double
@@ -352,8 +433,13 @@ struct DAWRemotePanelWidths: Equatable {
 
 /// Match desktop lane heights while retaining alignment between mixer and grid.
 enum DAWRemoteItemLayout {
-    static func laneHeight(_ track: DAWRemoteState.Track) -> Double { (track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86 }
-    static func rowHeight(_ track: DAWRemoteState.Track) -> Double { laneHeight(track) * Double(max(1, track.laneCount ?? 1)) }
+    static func heightScale(_ value: Double) -> Double { value.isFinite ? min(3, max(0.35, value)) : 1 }
+    static func laneHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
+        max(28, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale))
+    }
+    static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
+        laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1))
+    }
     /// Remote shows one region. Lanes occupied only by another song must not
     /// leave empty space here; overlapping visible items share the same compact
     /// interval partitioning rule as desktop TrackLanes.

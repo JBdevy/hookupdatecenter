@@ -9,7 +9,7 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
 }
@@ -34,6 +34,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var parentTrackID: UUID?
     public var stereoLink: TrackStereoLink?
     public var inputPatch: OutputPatch?
+    public var inputMonitoring: Bool?
     public var recordingChannels: Int?
     public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
     public var recordingFormat: String?
@@ -150,8 +151,22 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var tempoUnit: Int? = nil
     public var tempoTimebase: TempoMarkerTimebase? = nil
     public var tempoReferenceBPM: Double? = nil
+    public var section: Bool? = nil
+    public var loopSection: Bool? = nil
+    public var isLoopSection: Bool { isSection && loopSection == true }
+    public var markerEditorName: String { (isLoopSection ? "*" : isSection ? "$" : "") + name }
+    public mutating func applySectionPrefix() {
+        guard !isTempo else { return }
+        let raw = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.hasPrefix("$") || raw.hasPrefix("*") else { return }
+        section = true; loopSection = raw.hasPrefix("*")
+        let slot = (1...4).contains { raw.hasPrefix("*\($0)") }
+        name = String(raw.dropFirst(slot ? 2 : 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    public var isSection: Bool { section == true && !isTempo }
     public var isTempo: Bool { tempoBPM != nil }
-    public static let maximumNameLength = 12
+    public static let maximumNameLength = 256
+    public static let maximumSectionNameLength = 256
     public static func flagWidths(_ markers: [Self], scale: Double, widths: [UUID: Double], regionEnds: [UUID: Double] = [:], facesLeft: Bool = false) -> [UUID: Double] {
         let ordered = markers.enumerated().sorted { $0.element.position == $1.element.position ? $0.offset < $1.offset : $0.element.position < $1.element.position }
         var result: [UUID: Double] = [:]
@@ -230,7 +245,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     }
     public func markerLabel(_ marker: TimelineMarker) -> String {
         if let bpm = marker.tempoBPM { return String(format: "%g  %d/%d", bpm, marker.tempoBeats ?? 4, marker.tempoUnit ?? 4) }
-        guard let id = marker.sourceRegionID, let region = parts.first(where: { $0.id == id }) else { return marker.name }
+        guard let id = marker.sourceRegionID, let region = parts.first(where: { $0.id == id }) else { return marker.isSection ? marker.name.uppercased() : marker.name }
         return "\(region.semitones)st  " + marker.name
     }
     public var markerRegionEnds: [UUID: Double] {
@@ -260,7 +275,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public func pitch(for track: UUID, region: Part?) -> Int {
         guard let region, region.semitones != 0, let source = tracks.first(where: { $0.id == track }), source.kind == .standard else { return 0 }
         let targets = pitchTargets(region)
-        return targets.tracks.contains(track) || targets.groups.contains(track) || source.parentTrackID.map(targets.groups.contains) == true ? region.semitones : 0
+        return targets.tracks.contains(track) || targets.groups.contains(track) || !Set(TrackHierarchy(tracks).ancestors(of: source.id)).isDisjoint(with: targets.groups) ? region.semitones : 0
     }
     public func pitchRegion(at position: Double, fallback: UUID? = nil) -> Part? {
         // Children own their audio even when a previous child's tail overlaps.
@@ -272,7 +287,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     }
     public func isSilenced(_ track: Track) -> Bool {
         if track.kind != .standard { return track.mute }
-        return track.mute || (tracks.contains(where: { $0.solo }) && !track.solo && !tracks.contains { ($0.id == track.parentTrackID || $0.parentTrackID == track.id) && $0.solo })
+        return track.mute || !(TrackHierarchy.soloAudibleTracks(tracks)?.contains(track.id) ?? true)
     }
 }
 public struct Setlist: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var songIds: [UUID] }
@@ -346,7 +361,6 @@ public extension RegionSetlist {
 public struct Project: Codable, Identifiable, Equatable, Sendable {
     /// Migrated arrangements retain their own timing when opening the document.
     public var importedTimeline: Bool? = nil
-    public static let maximumTrackCount = 1000
     public var id: UUID; public var name: String
     public var projectFormatVersion = 1, minimumJarasVersion = "1.0.0"
     public var createdAt: String, updatedAt: String
@@ -370,7 +384,6 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     }
     public func validate() throws {
         guard projectFormatVersion == 1, minimumJarasVersion == "1.0.0", !name.isEmpty else { throw ProjectError.invalid("Versão ou nome do projeto inválido.") }
-        guard songs.reduce(0, { $0 + $1.tracks.count }) <= Self.maximumTrackCount else { throw ProjectError.invalid("A project supports at most 1000 tracks") }
         guard (masterVolume ?? 1).isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(masterVolume ?? 1) else { throw ProjectError.invalid("Invalid master volume") }
         guard masterColor == nil || masterColor! <= 0xffffff else { throw ProjectError.invalid("Invalid master color") }
         try masterFX?.validate()
@@ -387,11 +400,14 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
             guard (1...32).contains(song.meterBeats), TimelineTempo.beatUnits.contains(song.meterUnit) else { throw ProjectError.invalid("Invalid time signature.") }
             try song.projectTime.validate()
             guard song.duration.isFinite, song.duration > 0, song.bpm.isFinite, song.bpm > 0 else { throw ProjectError.invalid("Tempo de música inválido.") }
-            var folder: UUID?
+            var ancestors: [UUID] = []
+            let audioTracks = Set(song.tracks.filter { $0.kind == .standard }.map(\.id))
             for track in song.tracks {
                 if let parent = track.parentTrackID {
-                    guard parent == folder, parent != track.id else { throw ProjectError.invalid("Invalid track group") }
-                } else { folder = track.id }
+                    guard let index = ancestors.firstIndex(of: parent), parent != track.id, audioTracks.contains(parent) else { throw ProjectError.invalid("Invalid track group") }
+                    ancestors.removeSubrange((index + 1)..<ancestors.count)
+                } else { ancestors.removeAll(keepingCapacity: true) }
+                ancestors.append(track.id)
                 try register(track.id)
                 if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
                 guard track.clickSound == nil || track.kind == .click else { throw ProjectError.invalid("Custom click sound requires a Click track") }
@@ -458,6 +474,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
                     guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
+                guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
                     guard [clip.fadeIn, clip.fadeOut].allSatisfy({ $0 == nil || ($0!.isFinite && $0! >= 0) }) else { throw ProjectError.invalid("Invalid item fade") }
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
@@ -476,7 +493,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil { throw ProjectError.invalid("Invalid tempo marker") }
                 try register(marker.id)
                 guard !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      (marker.unifiedRegionID != nil || marker.name.count <= TimelineMarker.maximumNameLength), marker.color <= 0xffffff,
+                      (marker.unifiedRegionID != nil || marker.name.count <= (marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)), marker.color <= 0xffffff,
                       marker.position.isFinite, marker.position >= 0, marker.position <= song.duration else { throw ProjectError.invalid("Invalid marker") }
             }
             guard RegionLanes(parts: song.parts).count <= 2 else { throw ProjectError.invalid("No máximo duas regiões sobrepostas.") }
@@ -489,7 +506,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                         throw ProjectError.invalid("Invalid unified region")
                     }
                 }
-                guard (-6...6).contains(part.semitones), Set(part.pitchTrackIDs ?? []).count == (part.pitchTrackIDs ?? []).count, Set(part.pitchGroupIDs ?? []).count == (part.pitchGroupIDs ?? []).count else { throw ProjectError.invalid("Invalid region pitch") }
+                guard (-12...12).contains(part.semitones), Set(part.pitchTrackIDs ?? []).count == (part.pitchTrackIDs ?? []).count, Set(part.pitchGroupIDs ?? []).count == (part.pitchGroupIDs ?? []).count else { throw ProjectError.invalid("Invalid region pitch") }
                 guard part.color == nil || part.color! <= 0xFFFFFF else { throw ProjectError.invalid("Invalid region color") }
                 guard part.startTime.isFinite, part.endTime.isFinite, part.startTime >= 0, part.endTime > part.startTime, part.endTime <= song.duration else { throw ProjectError.invalid("Intervalo da parte inválido.") }
             }
@@ -560,6 +577,10 @@ public struct QueueState: Codable, Equatable, Sendable { public var songId: UUID
 public struct LoopState: Codable, Equatable, Sendable { public var enabled: Bool; public var start: Double? = nil; public var end: Double? = nil }
 public struct SubPlayState: Codable, Equatable, Sendable { public var playing: Bool; public var position: Double }
 public struct TransportState: Codable, Equatable, Sendable {
+    public var multiLoopsBypassed: Bool? = nil
+    public var queuedSectionMarkerId: UUID?
+    public var sectionQueueStartedAt: Double?
+    public var sectionJumpSerial: UInt64?
     public var multiLoop: MultiLoopPlayback?
     public var ignoreNextAfter: Double?
     public var ignoreNextEnd: Double?
@@ -584,15 +605,36 @@ public struct TrackLanes: Equatable {
     public var count: Int = 1
     public init(track: Track) {
         var ends: [Double] = []
-        for clip in track.clips.sorted(by: { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime }) {
-            let preferred = clip.recordingLane.flatMap { (0...10000).contains($0) ? $0 : nil }
-            let lane = preferred.flatMap { $0 >= ends.count || ends[$0] <= clip.startTime ? $0 : nil }
-                ?? ends.firstIndex(where: { $0 <= clip.startTime }) ?? ends.count
-            while ends.count <= lane { ends.append(0) }
+        let ordered = track.clips.sorted {
+            if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        // Lay out existing material first. A new take stays below the material
+        // it overlaps, even if recording starts before that material begins.
+        for clip in ordered where clip.recordingLane == nil {
+            let lane = ends.firstIndex(where: { $0 <= clip.startTime }) ?? ends.count
+            if lane == ends.count { ends.append(0) }
             ends[lane] = clip.startTime + clip.duration
             lanes[clip.id] = lane
         }
-        count = max(1, ends.count)
+        var placed = ordered.filter { $0.recordingLane == nil }
+        let takes = ordered.filter { $0.recordingLane != nil }.sorted {
+            if $0.recordingLane != $1.recordingLane { return ($0.recordingLane ?? 0) < ($1.recordingLane ?? 0) }
+            if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        for clip in takes {
+            let lane = recordingLane(start: clip.startTime, duration: clip.duration, clips: placed)
+            lanes[clip.id] = lane
+            placed.append(clip)
+        }
+        count = max(1, (lanes.values.max() ?? 0) + 1)
+    }
+    /// No overlapping item means lane zero, regardless of items elsewhere.
+    public func recordingLane(start: Double, duration: Double, clips: [AudioClip]) -> Int {
+        let end = start + duration
+        return clips.lazy.filter { $0.startTime < end && $0.startTime + $0.duration > start }
+            .compactMap { lanes[$0.id] }.max().map { $0 + 1 } ?? 0
     }
 }
 

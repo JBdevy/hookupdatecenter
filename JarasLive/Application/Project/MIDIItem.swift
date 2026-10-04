@@ -115,6 +115,7 @@ public struct MIDIRecordingTake: Sendable {
     public let track: UUID
     public let startTime: Double
     public let sourceBPM: Double
+    public let name: String
     private let song: Song
     private let lane: Int
     private struct Key: Hashable, Sendable { let source: Int32; let channel: Int; let pitch: Int }
@@ -123,8 +124,8 @@ public struct MIDIRecordingTake: Sendable {
     private var pressed: [Key: Press] = [:]
     private var sustain: Set<Pedal> = []
     private var notes: [MIDINote] = []
-    public init(track: UUID, song: Song, startTime: Double, lane: Int = 0, id: UUID = UUID()) {
-        self.track = track; self.song = song; self.startTime = startTime; self.lane = lane; self.id = id
+    public init(track: UUID, song: Song, startTime: Double, lane: Int = 0, id: UUID = UUID(), name: String = "MIDI recording") {
+        self.track = track; self.song = song; self.startTime = startTime; self.lane = lane; self.id = id; self.name = name
         let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: 0.01)
         let rate = song.tempoAudioSegments(probe).first?.audioRate ?? 1
         sourceBPM = (song.activeTempoMarker(at: startTime)?.tempoBPM ?? song.bpm) / rate
@@ -170,9 +171,9 @@ public struct MIDIRecordingTake: Sendable {
         let end = max(startTime, position), time = beat(at: end)
         for key in Array(pressed.keys) { release(key, at: time) }
         sustain.removeAll()
-        guard !notes.isEmpty else { return nil }
+        guard end > startTime || !notes.isEmpty else { return nil }
         notes.sort { $0.start == $1.start ? ($0.channel == $1.channel ? $0.pitch < $1.pitch : $0.channel < $1.channel) : $0.start < $1.start }
-        return AudioClip(id: id, name: "MIDI recording", startTime: startTime, duration: max(0.01, end - startTime),
+        return AudioClip(id: id, name: name, startTime: startTime, duration: max(0.01, end - startTime),
             recordingLane: lane, midi: MIDIItem(notes: notes, sourceBPM: sourceBPM))
     }
 }

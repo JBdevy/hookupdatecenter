@@ -59,9 +59,6 @@ struct FXInsertEditor: View {
                         Button("Apply") {
                             guard availableEffects.contains(effect) else { return }
                             #if os(macOS)
-                            if effect == "CatStemSeparation 5" {
-                                dismiss(); open(track, effect); return
-                            }
                             if effect == "External" {
                                 guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
                                 var prepared: [(UUID?, NativeFXSettings, String)] = []

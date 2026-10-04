@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)coefficients enabled:(BOOL)enabled;
 + (void)setPolarity:(AVAudioUnitEffect *)node inverted:(BOOL)inverted;
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain;
++ (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;

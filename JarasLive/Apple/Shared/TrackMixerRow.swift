@@ -36,7 +36,7 @@ struct TrackMixerHeightGeometry {
             CGRect(x: titleX, y: titleY, width: titleWidth, height: titleHeight(height)),
             CGRect(x: max(0, width - controlsWidth - 4), y: mix(centeredY, 3), width: controlsWidth, height: mix(21, 24)),
             CGRect(x: bodyX, y: 27, width: bodyWidth, height: volumeHeight(height)),
-            CGRect(x: bodyX, y: 7, width: 14 * p, height: 14 * p),
+            CGRect(x: bodyX, y: 4, width: 28 * p, height: 20 * p),
             CGRect(x: max(bodyX, width - 90), y: 32, width: min(86, bodyWidth), height: 24 * p)
         ]
     }
@@ -101,7 +101,7 @@ private struct TrackMixerButtonsContainer<Content: View>: View {
         } else if standard {
             let expanded = height >= 64
             let controlHeight: CGFloat = expanded ? 24 : 21
-            let widths: [CGFloat] = [expanded && !showsFader ? 0 : 22, 22, expanded ? 42 : 0, 22, 22]
+            let widths: [CGFloat] = [34, expanded && !showsFader ? 0 : 22, 22, expanded ? 42 : 0, 22, 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
             let frames = widths.indices.map { index in
@@ -143,23 +143,23 @@ struct TrackMixerContinuousLayout: Layout {
 @available(macOS 13, *)
 struct TrackMixerButtonsLayout: Layout {
     let showsFader: Bool
-    // Standard-track controls have explicit widths: FX, REC, pan, M, S.
+    // Standard-track controls have explicit widths: Patch, FX, REC, pan, M, S.
     // Reuse those metrics without querying every control on each resize.
-    private static let controlWidths: [CGFloat] = [22, 22, 42, 22, 22]
+    private static let controlWidths: [CGFloat] = [34, 22, 22, 42, 22, 22]
     // These containers use explicit frames, not their children's alignment guides.
     // The default Layout implementation walks every control to merge guides.
     func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let expanded = (proposal.height ?? 24) >= 24
-        let visible = subviews.indices.filter { !($0 == 2 && !expanded) && !($0 == 0 && expanded && !showsFader) }
+        let visible = subviews.indices.filter { !($0 == 3 && !expanded) && !($0 == 1 && expanded && !showsFader) }
         return CGSize(width: visible.reduce(CGFloat(0)) { $0 + Self.controlWidths[$1] } + CGFloat(max(0, visible.count - 1)) * 3, height: expanded ? 24 : 21)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let expanded = bounds.height >= 24
         var x = bounds.minX
         for i in subviews.indices {
-            let hidden = (i == 2 && !expanded) || (i == 0 && expanded && !showsFader)
+            let hidden = (i == 3 && !expanded) || (i == 1 && expanded && !showsFader)
             let width = Self.controlWidths[i]
             subviews[i].place(at: CGPoint(x: hidden ? bounds.maxX + 1024 : x, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
             if !hidden { x += width + 3 }
@@ -286,7 +286,7 @@ struct TrackMixerRow: View, Equatable {
         #else
         let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight
         #endif
-        return lhs.show === rhs.show && lhs.projectID == rhs.projectID && lhs.trackSelection == rhs.trackSelection && lhs.track == rhs.track && lhs.nextTrack == rhs.nextTrack && lhs.number == rhs.number && lhs.selected == rhs.selected && lhs.silenced == rhs.silenced && lhs.showsMeterScale == rhs.showsMeterScale && lhs.showsFader == rhs.showsFader && lhs.projectDirectory == rhs.projectDirectory && sameHeightMode && lhs.isFolder == rhs.isFolder && lhs.lastChild == rhs.lastChild && (lhs.groupSelection != nil) == (rhs.groupSelection != nil) && (lhs.deleteTracks != nil) == (rhs.deleteTracks != nil)
+        return lhs.show === rhs.show && lhs.projectID == rhs.projectID && lhs.trackSelection == rhs.trackSelection && lhs.track == rhs.track && lhs.nextTrack == rhs.nextTrack && lhs.number == rhs.number && lhs.selected == rhs.selected && lhs.silenced == rhs.silenced && lhs.showsMeterScale == rhs.showsMeterScale && lhs.showsFader == rhs.showsFader && lhs.projectDirectory == rhs.projectDirectory && sameHeightMode && lhs.isFolder == rhs.isFolder && lhs.groupDepth == rhs.groupDepth && lhs.lastChild == rhs.lastChild && (lhs.groupSelection != nil) == (rhs.groupSelection != nil) && (lhs.deleteTracks != nil) == (rhs.deleteTracks != nil)
     }
     @Environment(\.openFX) private var openFX
     @Environment(\.editTextItem) private var editTextItem
@@ -303,6 +303,7 @@ struct TrackMixerRow: View, Equatable {
     var compactHeight = false
     var minimalHeight = false
     let isFolder: Bool
+    var groupDepth: Int = 0
     let lastChild: Bool
     let groupSelection: (() -> Void)?
     let select: () -> Void
@@ -350,6 +351,7 @@ struct TrackMixerRow: View, Equatable {
         let titleColor = JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced)
         HStack(spacing: 4) {
             if track.parentTrackID != nil {
+                if groupDepth > 1 { Color.clear.frame(width: CGFloat(min(4, groupDepth - 1)) * 8) }
                 GroupTrackConnector(last: lastChild).stroke(JarasTheme.green.opacity(0.7), lineWidth: 1)
                     .frame(width: 12).allowsHitTesting(false)
             }
@@ -374,6 +376,8 @@ struct TrackMixerRow: View, Equatable {
                     #endif
                     HStack(spacing: 3) {
                         if track.kind == .standard {
+                            Button("Patch") { patchTarget = editorTarget(project: project) }
+                                .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
                             Button("FX") {
                                 openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
                             }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text)
@@ -405,12 +409,14 @@ struct TrackMixerRow: View, Equatable {
                             .foregroundStyle(Color(hex: titleColor))
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        if isFolder { Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(JarasTheme.green) }
+                        if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
                         Spacer(minLength: 0)
                     }
                 HStack(spacing: 3) {
                     if track.kind == .standard {
                     if showsFader {
+                        Button("Patch") { patchTarget = editorTarget(project: project) }
+                            .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
                         Button("FX") {
                             openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
                         }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
@@ -468,7 +474,7 @@ struct TrackMixerRow: View, Equatable {
                         #else
                         Text(title).font(.system(size: 11, weight: .semibold)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(Color(hex: titleColor))
-                            .contentShape(Rectangle()).onDrag { dragState.begin(); select(); return NSItemProvider(object: ("jaras-track:" + track.id.uuidString) as NSString) }
+                            .contentShape(Rectangle()).onDrag { dragState.begin(track: track.id); select(); return TrackReorderState.provider(track.id) }
                         #endif
                     }.frame(height: compactHeight ? 14 : 16)
                 }
@@ -484,13 +490,14 @@ struct TrackMixerRow: View, Equatable {
             .overlay { Rectangle().stroke(selected && track.kind == .standard ? Color.white.opacity(0.65) : .clear, lineWidth: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).allowsHitTesting(false) }
             .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16) }
             .background { GeometryReader { geometry in
-                if track.kind == .standard { Color.clear.onDrop(of: [UTType.text], delegate: TrackInsertionDrop(show: show, track: track.id, nextTrack: nextTrack, height: geometry.size.height, state: dragState)) }
+                if track.kind == .standard { Color.clear.onDrop(of: [TrackReorderState.type], delegate: TrackInsertionDrop(show: show, track: track.id, nextTrack: nextTrack, height: geometry.size.height, state: dragState)) }
             } }
             .overlay(alignment: dropSide == true ? .bottom : .top) {
-                if dropSide != nil { Rectangle().fill(JarasTheme.green).frame(height: 3).shadow(color: JarasTheme.green, radius: 4).allowsHitTesting(false) }
+                if dropSide != nil { Rectangle().fill(dragState.indicatorColor).frame(height: 3).shadow(color: dragState.indicatorColor, radius: 4).allowsHitTesting(false) }
             }
+            .overlay { if dragState.blockedTarget == track.id { TrackDropBlockedBadge() } }
             #if os(macOS)
-            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard ? {
+            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard ? {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
@@ -502,6 +509,7 @@ struct TrackMixerRow: View, Equatable {
                 if track.kind == .standard { Button("FX") { fxTarget = editorTarget(project: project) } }
                 Button("Editar pista") { editTrackDetails(details) }
                 if canLink { Button("Link tracks") { linkSelectedTracks() } }
+                if track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
                 if track.stereoLink != nil { Button("Unlink tracks") { show.unlinkTracks(track.id) } }
                 if let deleteSelection {
                     Divider()
@@ -567,12 +575,15 @@ struct TrackMixerRow: View, Equatable {
                 .jarasPlaced(at: 2)
                 TrackMixerButtonsContainer(standard: track.kind == .standard, showsFader: showsFader) {
                     if track.kind == .standard {
+                        Button("Patch") { patchTarget = editorTarget(project: project) }
+                            .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
+                            .frame(width: 34).jarasPlaced(at: 0)
                         Button("FX") { openFX(track.id, track.fx?.effectKeys.first ?? "Chain") }
                             .foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
-                            .frame(width: 22).jarasPlaced(at: 0)
-                        TrackRecordButton(show: show, track: track).jarasPlaced(at: 1)
+                            .frame(width: 22).jarasPlaced(at: 1)
+                        TrackRecordButton(show: show, track: track).jarasPlaced(at: 2)
                         TrackPanFader(show: show, track: track.id, pan: track.pan)
-                            .frame(width: 42, height: 24).clipped().jarasPlaced(at: 2)
+                            .frame(width: 42, height: 24).clipped().jarasPlaced(at: 3)
                     } else if track.kind == .click {
                         Button("Insert") { show.insertClickItems(track: track.id) }
                             .buttonStyle(CompactTrackButtonStyle(width: 47))
@@ -598,11 +609,11 @@ struct TrackMixerRow: View, Equatable {
                     Button("M") { show.sendMixerControl(.mute, target: track.id) }
                         .modifier(MappingRightClick(track: track.id, command: "mute"))
                         .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        .frame(width: 22).jarasPlaced(at: 3)
+                        .frame(width: 22).jarasPlaced(at: 4)
                     Button("S") { show.sendMixerControl(.solo, target: track.id) }
                         .modifier(MappingRightClick(track: track.id, command: "solo"))
                         .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
-                        .frame(width: 22).jarasPlaced(at: 4)
+                        .frame(width: 22).jarasPlaced(at: 5)
                 }.buttonStyle(CompactTrackButtonStyle()).trackControlSelectionExclusion().clipped()
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
@@ -612,9 +623,9 @@ struct TrackMixerRow: View, Equatable {
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
                 Group {
-                    if isFolder { Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(JarasTheme.green) }
+                    if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
                     else { Color.clear }
-                }.allowsHitTesting(false).jarasPlaced(at: 5)
+                }.jarasPlaced(at: 5)
                 Group {
                     if track.kind.isTeleprompter { Button("Add media", action: importVideo).buttonStyle(TrackControlButtonStyle()).trackControlSelectionExclusion() }
                     else { Color.clear }
@@ -623,6 +634,45 @@ struct TrackMixerRow: View, Equatable {
     }
     #endif
 
+}
+private struct TrackGroupSymbol: View {
+    let nested: Bool
+    var body: some View {
+        HStack(alignment: .center, spacing: 1) {
+            if nested { Image(systemName: "folder.fill").font(.system(size: 8)) }
+            Image(systemName: "folder.fill").font(.system(size: 12))
+                .overlay { if nested { Image(systemName: "minus").font(.system(size: 7, weight: .heavy)).foregroundStyle(Color.black).offset(y: 1) } }
+        }.foregroundStyle(JarasTheme.green)
+    }
+}
+private struct TrackGroupButton: View {
+    let show: ShowController
+    let project: UUID
+    let track: UUID
+    let parent: UUID?
+    private struct Request { let project: UUID; let track: UUID; let parent: UUID? }
+    @State private var request: Request?
+    @State private var confirming = false
+    var body: some View {
+        Button { request = Request(project: project, track: track, parent: parent); confirming = true } label: {
+            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: 20).contentShape(Rectangle())
+        }.buttonStyle(.plain).trackControlSelectionExclusion()
+            .accessibilityLabel(parent == nil ? "Ungroup" : "Remove from group")
+            .jarasHelp(parent == nil ? "Ungroup" : "Remove from group")
+            .alert(Text(LocalizedStringKey(request?.parent == nil ? "Dissolve this track group?" : "Move this group out of its parent group?")),
+                   isPresented: $confirming) {
+                Button("Cancel", role: .cancel) { request = nil }
+                Button("Confirm", role: .destructive) {
+                    guard let pending = request else { return }
+                    request = nil
+                    guard show.snapshot.project.id == pending.project,
+                          let row = show.current?.tracks.first(where: { $0.id == pending.track }),
+                          row.parentTrackID == pending.parent else { return }
+                    if pending.parent == nil { show.ungroupTrack(pending.track) }
+                    else { show.removeTrackFromGroup(pending.track) }
+                }
+            }
+    }
 }
 private struct GroupTrackConnector: Shape {
     let last: Bool
@@ -1222,19 +1272,37 @@ private final class DirectVolumeSliderView: NSView {
 /// One insertion indicator for the entire drag, including cancellation outside a row.
 private final class TrackReorderState: ObservableObject {
     static let shared = TrackReorderState()
+    static let type = UTType.text
+    static func provider(_ id: UUID) -> NSItemProvider {
+        NSItemProvider(object: ("jaras-track:" + id.uuidString) as NSString)
+    }
     @Published var target: UUID?
+    @Published var blockedTarget: UUID?
     @Published var after = false
+    @Published private(set) var joinsGroup = false
+    private(set) var hoveredTrack: UUID?
+    var indicatorColor: Color { joinsGroup ? JarasTheme.yellow : JarasTheme.green }
     private(set) var active = false
     #if os(macOS)
     var source: TrackDragSource?
     #endif
-    func begin() { finish(); active = true }
-    func indicate(_ id: UUID, after: Bool) {
+    private(set) var draggedTrack: UUID?
+    func begin(track: UUID) { finish(); draggedTrack = track; active = true }
+    func indicate(_ id: UUID, after: Bool, joinsGroup: Bool, hoveredTrack: UUID? = nil) {
         guard active else { return }
-        target = id; self.after = after
+        self.hoveredTrack = hoveredTrack ?? id
+        if blockedTarget != nil { blockedTarget = nil }
+        if target != id { target = id }
+        if self.after != after { self.after = after }
+        if self.joinsGroup != joinsGroup { self.joinsGroup = joinsGroup }
+    }
+    func reject(_ id: UUID) { hoveredTrack = id; target = nil; blockedTarget = id }
+    func leave(_ id: UUID) {
+        guard hoveredTrack == id else { return }
+        target = nil; blockedTarget = nil; hoveredTrack = nil
     }
     func finish() {
-        active = false; target = nil
+        active = false; target = nil; blockedTarget = nil; draggedTrack = nil; hoveredTrack = nil
         #if os(macOS)
         source = nil
         #endif
@@ -1247,19 +1315,81 @@ private struct TrackInsertionDrop: DropDelegate {
     let nextTrack: UUID?
     let height: CGFloat
     let state: TrackReorderState
-    func dropEntered(info: DropInfo) { state.indicate(track, after: info.location.y > height / 2) }
-    func dropUpdated(info: DropInfo) -> DropProposal? { state.indicate(track, after: info.location.y > height / 2); return DropProposal(operation: .move) }
-    func dropExited(info: DropInfo) { if state.target == track { state.target = nil } }
+    var horizontal = false
+    private func after(_ info: DropInfo) -> Bool { (horizontal ? info.location.x : info.location.y) > height / 2 }
+    // The existing indentation gutter chooses an insertion outside the folder.
+    // In the horizontal mixer the equivalent gutter is the top of the strip.
+    private func outsideGroup(_ info: DropInfo) -> Bool { (horizontal ? info.location.y : info.location.x) < 16 }
+    func validateDrop(info: DropInfo) -> Bool { state.active && info.hasItemsConforming(to: [TrackReorderState.type]) }
+    private func allowed(_ info: DropInfo) -> Bool { state.draggedTrack.map { show.canDropTrack($0, on: track, after: after(info)) } ?? false }
+    private func indicate(_ info: DropInfo) {
+        let outside = outsideGroup(info)
+        let joins = state.draggedTrack.map { show.trackDropJoinsGroup($0, on: track, after: after(info), outsideGroup: outside) } ?? false
+        let destination = state.draggedTrack.flatMap {
+            show.current?.normalTrackDropDestination($0, on: track, after: after(info), outsideGroup: outside)
+        }
+        state.indicate(destination?.indicatorTrack ?? track, after: destination?.after ?? after(info), joinsGroup: joins, hoveredTrack: track)
+    }
+    func dropEntered(info: DropInfo) {
+        if allowed(info) { indicate(info) }
+        else { state.reject(track) }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard state.active && allowed(info) else { state.reject(track); return DropProposal(operation: .forbidden) }
+        indicate(info); return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) {
+        state.leave(track)
+    }
     func performDrop(info: DropInfo) -> Bool {
-        let before = info.location.y > height / 2 ? nextTrack : track
+        guard state.active && allowed(info) else { state.finish(); return false }
+        let before = after(info) ? nextTrack : track
+        let outside = outsideGroup(info)
+        let project = show.snapshot.project.id, song = show.current?.id
         state.finish()
-        guard let provider = info.itemProviders(for: [UTType.text]).first else { return false }
+        guard let provider = info.itemProviders(for: [TrackReorderState.type]).first else { return false }
         _ = provider.loadObject(ofClass: String.self) { value, _ in
             guard let value, value.hasPrefix("jaras-track:"), let id = UUID(uuidString: String(value.dropFirst(12))) else { return }
-            Task { @MainActor in show.reorderTrack(id, before: before) }
+            Task { @MainActor in
+                guard show.snapshot.project.id == project, show.current?.id == song else { return }
+                show.dropTrack(id, on: track, before: before, outsideGroup: outside)
+            }
         }
         return true
     }
+}
+/// Keep a visible rejection badge even on systems whose native drag cursor
+/// displays only an arrow for a forbidden SwiftUI drop.
+private struct TrackDropBlockedBadge: View {
+    var body: some View {
+        Image(systemName: "nosign").font(.system(size: 18, weight: .bold))
+            .foregroundStyle(Color.red).padding(5).background(Color.black.opacity(0.85), in: Circle())
+            .allowsHitTesting(false).accessibilityLabel("Drop not allowed")
+    }
+}
+/// Shares the Track Mixer drag session; FX slots keep their own drop handlers.
+private struct FooterTrackInsertion: ViewModifier {
+    let show: ShowController
+    let track: UUID?
+    @ObservedObject private var state = TrackReorderState.shared
+    @ViewBuilder func body(content: Content) -> some View {
+        if let track {
+            let tracks = (show.current?.tracks ?? []).filter { $0.kind == .standard }
+            let next = tracks.firstIndex(where: { $0.id == track }).flatMap { index in
+                index + 1 < tracks.count ? tracks[index + 1].id : nil
+            }
+            content.onDrop(of: [TrackReorderState.type], delegate: TrackInsertionDrop(show: show,
+                track: track, nextTrack: next, height: FooterMixerMetrics.width, state: state, horizontal: true))
+                .overlay(alignment: state.after ? .trailing : .leading) {
+                    if state.target == track {
+                        Rectangle().fill(state.indicatorColor).frame(width: 3)
+                            .shadow(color: state.indicatorColor, radius: 4).allowsHitTesting(false)
+                    }
+                }
+                .overlay { if state.blockedTarget == track { TrackDropBlockedBadge() } }
+        } else { content }
+    }
+
 }
 private extension View {
     @ViewBuilder func trackControlSelectionExclusion() -> some View {
@@ -1276,12 +1406,14 @@ private struct TrackRightClickInput: NSViewRepresentable {
     let project: UUID
     let track: UUID
     let kind: TrackKind
+    var dragName = ""
     let select: () -> Void
     let patch: () -> Void
     let fx: () -> Void
     let edit: () -> Void
     let group: (() -> Void)?
     let ungroup: (() -> Void)?
+    var removeFromGroup: (() -> Void)? = nil
     var link: (() -> Void)? = nil
     var unlink: (() -> Void)? = nil
     var soundDesigner: (() -> Void)? = nil
@@ -1289,7 +1421,7 @@ private struct TrackRightClickInput: NSViewRepresentable {
     var deleteTracks: (() -> Void)? = nil
     var deleteTrackCount = 1
     func makeNSView(context: Context) -> TrackRightClickView { TrackRightClickView() }
-    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.group = group; view.ungroup = ungroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
+    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
 }
 /// Resolve one row per click, including after native scroll hosting recycles rows.
 /// The title also calls this route directly, so selecting it never relies solely
@@ -1312,6 +1444,9 @@ final class TrackControlSelectionExclusionView: NSView {
     private var monitor: Any?
     private var lastEventTime: TimeInterval?
     private var pressedTrack: UUID?
+    private weak var dragRow: TrackRightClickView?
+    private var dragStart: NSPoint?
+    private var dragProject: UUID?
     private var menuTracks = Set<UUID>()
     /// A reused row must retain the track that owns an in-flight button press.
     var pinnedTracks: Set<UUID> { menuTracks.union(pressedTrack.map { [$0] } ?? []) }
@@ -1320,15 +1455,16 @@ final class TrackControlSelectionExclusionView: NSView {
     fileprivate func add(_ row: TrackRightClickView) {
         rows.add(row)
         guard monitor == nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            if event.type == .leftMouseDragged, self?.beginEmptyAreaDrag(event) == true { return nil }
             self?.handle(event)
             return event
         }
     }
     func handle(_ event: NSEvent) {
-        if event.type == .leftMouseUp { pressedTrack = nil; return }
+        if event.type == .leftMouseUp { pressedTrack = nil; dragRow = nil; dragStart = nil; return }
         guard event.type == .leftMouseDown else { return }
-        pressedTrack = nil
+        pressedTrack = nil; dragRow = nil; dragStart = nil
         guard !RightClickRouter.shared.handlesModifiedLeftClick(event) else { return }
         guard let window = event.window, window.attachedSheet == nil,
               !RightClickRouter.shared.interactionBlocked,
@@ -1346,6 +1482,15 @@ final class TrackControlSelectionExclusionView: NSView {
                 button.bounds.contains(point) && button.visibleRect.contains(point)
         }) { return }
         guard row.kind == .standard else { return }
+        // The title already owns its native drag source. All other unoccupied
+        // space uses this row, while registered controls retain their gestures.
+        if let root = window.contentView {
+            var hit = root.hitTest(root.convert(event.locationInWindow, from: nil))
+            var isTitle = false
+            while let view = hit { if view is TrackDragTitleView { isTitle = true; break }; hit = view.superview }
+            if !isTitle { dragRow = row; dragStart = event.locationInWindow; dragProject = row.project }
+        }
+
         // A recycled slot may target another row before this callback runs.
         // Preserve the click's original track/action and project generation.
         let track = row.track, project = row.project, select = row.select
@@ -1353,6 +1498,31 @@ final class TrackControlSelectionExclusionView: NSView {
             guard let self, let row, row.window === window, row.project == project else { return }
             self.perform(track: track, event: event) { select?() }
         }
+    }
+    private func beginEmptyAreaDrag(_ event: NSEvent) -> Bool {
+        guard !TrackReorderState.shared.active, let row = dragRow, let start = dragStart,
+              row.window === event.window, row.project == dragProject, row.track == pressedTrack,
+              !row.interactionBlocked, !RightClickRouter.shared.interactionBlocked,
+              hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 4 else { return false }
+        dragRow = nil; dragStart = nil
+        let state = TrackReorderState.shared
+        state.begin(track: row.track)
+        let source = TrackDragSource(); source.state = state
+        source.onEnd = { [weak self] in self?.pressedTrack = nil }
+        state.source = source
+        let item = NSDraggingItem(pasteboardWriter: ("jaras-track:" + row.track.uuidString) as NSString)
+        let size = NSSize(width: min(240, max(80, row.bounds.width)), height: 28)
+        let label = NSAttributedString(string: row.dragName, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor])
+        let image = NSImage(size: size, flipped: true) { rect in
+            NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+            label.draw(in: rect.insetBy(dx: 4, dy: 7)); return true
+        }
+        let point = row.convert(event.locationInWindow, from: nil)
+        item.setDraggingFrame(NSRect(x: point.x - size.width / 2, y: point.y - 14, width: size.width, height: 28), contents: image)
+        let session = row.beginDraggingSession(with: [item], event: event, source: source)
+        session.animatesToStartingPositionsOnCancelOrFail = false
+        return true
     }
     func withPinnedTrack<T>(_ track: UUID, _ action: () -> T) -> T {
         let inserted = menuTracks.insert(track).inserted
@@ -1368,6 +1538,7 @@ final class TrackControlSelectionExclusionView: NSView {
     }
 }
 private final class TrackRightClickView: RightClickTargetView {
+    var dragName = ""
     var kind = TrackKind.standard
     var project = UUID()
     var track = UUID()
@@ -1381,6 +1552,7 @@ private final class TrackRightClickView: RightClickTargetView {
     var edit: (() -> Void)?
     var group: (() -> Void)?
     var ungroup: (() -> Void)?
+    var removeFromGroup: (() -> Void)?
     var link: (() -> Void)?
     var unlink: (() -> Void)?
     var soundDesigner: (() -> Void)?
@@ -1401,6 +1573,7 @@ private final class TrackRightClickView: RightClickTargetView {
         if kind == .click { append("Sound Designer", soundDesigner) }
         if kind == .standard { append("FX", fx); append("Criar item MIDI", createMIDI); append(JarasLocalization.string("Create group"), group) }
         append(JarasLocalization.string("Ungroup"), ungroup)
+        append(JarasLocalization.string("Remove from group"), removeFromGroup)
         append(JarasLocalization.string("Link tracks"), link)
         append(JarasLocalization.string("Unlink tracks"), unlink)
         append(JarasLocalization.string("Editar pista"), edit)
@@ -1435,21 +1608,24 @@ private struct TrackDragTitle: NSViewRepresentable {
     let track: UUID
     let state: TrackReorderState
     let select: () -> Void
+    var compact = false
     func makeNSView(context: Context) -> TrackDragTitleView { TrackDragTitleView() }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: TrackDragTitleView, context: Context) -> CGSize? {
         CGSize(width: max(0, proposal.width ?? 0), height: max(0, proposal.height ?? 16))
     }
     func updateNSView(_ view: TrackDragTitleView, context: Context) {
-        view.title = title; view.foreground = foreground; view.project = project; view.track = track; view.state = state; view.select = select
+        view.compact = compact; view.title = title; view.foreground = foreground; view.project = project; view.track = track; view.state = state; view.select = select
     }
 }
 private final class TrackDragSource: NSObject, NSDraggingSource {
     weak var state: TrackReorderState?
+    var onEnd: (() -> Void)?
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
-    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { state?.finish() }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { state?.finish(); onEnd?() }
 }
 private final class TrackDragTitleView: NSView {
+    var compact = false { didSet { if compact != oldValue { cachedLabel = nil; needsDisplay = true } } }
     var title = "" {
         didSet {
             guard title != oldValue else { return }
@@ -1480,11 +1656,16 @@ private final class TrackDragTitleView: NSView {
         if let cachedLabel { return cachedLabel }
         var attributes = Self.labelAttributes
         attributes[.foregroundColor] = foreground == 0 ? NSColor.black : NSColor.white
+        if compact {
+            let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center; paragraph.lineBreakMode = .byWordWrapping
+            attributes[.paragraphStyle] = paragraph
+            attributes[.font] = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        }
         let label = NSAttributedString(string: title, attributes: attributes)
         cachedLabel = label
         return label
     }
-    override func draw(_ dirtyRect: NSRect) { label().draw(in: NSRect(x: 0, y: (bounds.height - 14) / 2, width: bounds.width, height: 14)) }
+    override func draw(_ dirtyRect: NSRect) { label().draw(in: compact ? bounds : NSRect(x: 0, y: (bounds.height - 14) / 2, width: bounds.width, height: 14)) }
     override func mouseDown(with event: NSEvent) {
         down = event.locationInWindow
         TrackSelectionRouter.shared.perform(track: track, event: event) { self.select?() }
@@ -1493,7 +1674,7 @@ private final class TrackDragTitleView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let down, let state, hypot(event.locationInWindow.x - down.x, event.locationInWindow.y - down.y) >= 4 else { return }
         self.down = nil
-        state.begin()
+        state.begin(track: track)
         let source = TrackDragSource(); source.state = state; state.source = source
         let item = NSDraggingItem(pasteboardWriter: ("jaras-track:" + track.uuidString) as NSString)
         let size = NSSize(width: max(1, bounds.width), height: 28)
@@ -2004,8 +2185,22 @@ private struct FooterMixerStrip: View, Equatable {
                         panAndFader.frame(maxHeight: .infinity)
                     }.frame(maxWidth: .infinity)
                 }.frame(height: controlsHeight).trackControlSelectionExclusion()
-                Text(verbatim: track?.name ?? "Master").font(.system(size: 10, weight: .semibold))
-                    .lineLimit(2).multilineTextAlignment(.center).frame(maxWidth: .infinity).frame(height: 22).padding(.top, 4)
+                Group {
+                    #if os(macOS)
+                    if let track {
+                        TrackDragTitle(title: track.name, foreground: 0xffffff, project: show.snapshot.project.id,
+                            track: track.id, state: TrackReorderState.shared, select: select, compact: true)
+                    } else { Text("Master").font(.system(size: 10, weight: .semibold)) }
+                    #else
+                    Text(verbatim: track?.name ?? "Master").font(.system(size: 10, weight: .semibold))
+                        .lineLimit(2).multilineTextAlignment(.center)
+                        .contentShape(Rectangle()).onDrag {
+                            guard let track else { return NSItemProvider() }
+                            TrackReorderState.shared.begin(track: track.id); select()
+                            return TrackReorderState.provider(track.id)
+                        }
+                    #endif
+                }.frame(maxWidth: .infinity).frame(height: 22).padding(.top, 4)
                     .foregroundStyle(.white).help(Text(verbatim: track?.name ?? "Master"))
             }.padding(4)
         }.frame(width: FooterMixerMetrics.width).frame(maxHeight: .infinity)
@@ -2014,10 +2209,10 @@ private struct FooterMixerStrip: View, Equatable {
             #if os(macOS)
             .overlay {
                 if let track {
-                    TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, select: select,
+                    TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, dragName: track.name, select: select,
                         patch: { patchPresented = true }, fx: { fxPresented = true }, edit: edit,
                         group: canGroup ? { show.groupTracks(selection) } : nil,
-                        ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil,
+                        ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil,
                         link: canLink ? link : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil,
                         deleteTracks: { requestDeletion(deleteIDs, project: deleteProject) }, deleteTrackCount: deleteIDs.count)
                 }
@@ -2025,12 +2220,14 @@ private struct FooterMixerStrip: View, Equatable {
             #else
             .onTapGesture(perform: select)
             #endif
+            .modifier(FooterTrackInsertion(show: show, track: id))
             .contextMenu {
                 Button("Patch") { patchPresented = true }
                 Button("FX") { fxPresented = true }
                 Button("Editar pista", action: edit)
                 if canGroup { Button("Create group") { show.groupTracks(selection) } }
                 if let id, isFolder { Button("Ungroup") { show.ungroupTrack(id) } }
+                if let track, track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
                 if canLink { Button("Link tracks", action: link) }
                 if let track, track.stereoLink != nil { Button("Unlink tracks") { show.unlinkTracks(track.id) } }
                 if track != nil {
@@ -2101,21 +2298,36 @@ private struct FooterEffectSlot: View {
             .overlay(alignment: .top) { if targeted { JarasTheme.green.frame(height: 2) } }
             .contentShape(Rectangle())
             .jarasHelp(effect == nil ? "Click to open FX Manager" : "Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot).")
-            .onDrop(of: [UTType.text], isTargeted: $targeted) { providers in
-                guard let provider = providers.first, provider.canLoadObject(ofClass: NSString.self) else { return false }
-                let prefix = scope, project = show.snapshot.project.id
-                _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                    guard let text = object as? String, text.hasPrefix(prefix) else { return }
-                    let source = String(text.dropFirst(prefix.count))
-                    Task { @MainActor in
-                        guard show.snapshot.project.id == project else { return }
-                        show.reorderFX(track, effect: source, before: effect)
-                    }
-                }
-                return true
-            }
+            .onDrop(of: [UTType.text], delegate: FooterEffectDrop(show: show, track: track,
+                effect: effect, scope: scope, targeted: $targeted))
+            .trackControlSelectionExclusion()
     }
 }
+private struct FooterEffectDrop: DropDelegate {
+    let show: ShowController
+    let track: UUID?
+    let effect: String?
+    let scope: String
+    @Binding var targeted: Bool
+    func validateDrop(info: DropInfo) -> Bool { !TrackReorderState.shared.active && info.hasItemsConforming(to: [UTType.text]) }
+    func dropEntered(info: DropInfo) { targeted = true }
+    func dropExited(info: DropInfo) { targeted = false }
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        guard !TrackReorderState.shared.active, let provider = info.itemProviders(for: [UTType.text]).first else { return false }
+        let project = show.snapshot.project.id
+        _ = provider.loadObject(ofClass: String.self) { value, _ in
+            guard let value, value.hasPrefix(scope) else { return }
+            let source = String(value.dropFirst(scope.count))
+            Task { @MainActor in
+                guard show.snapshot.project.id == project else { return }
+                show.reorderFX(track, effect: source, before: effect)
+            }
+        }
+        return true
+    }
+}
+
 
 private struct FooterMixerControl: View {
     let show: ShowController

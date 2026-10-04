@@ -83,18 +83,17 @@ final class TrackCreationTests: XCTestCase {
         XCTAssertEqual(show.current?.tracks.map(\.id), ids)
         XCTAssertEqual(show.current?.tracks.compactMap(\.inputPatch), inputs)
     }
-    @MainActor func testCreationRespectsProjectWideLimitAndDoesNotPartiallyInsert() throws {
-        var project = Project.empty(name: "Limit")
-        project.songs[0].tracks = (0..<999).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+    @MainActor func testCreationBeyondOneThousandTracksPersists() throws {
+        var project = Project.empty(name: "Large project")
+        project.songs[0].tracks = (0..<1000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
         let executor = BulkTrackExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
-        XCTAssertTrue(show.addTracks(name: "Over limit", role: .other, count: 2).isEmpty)
-        XCTAssertEqual(executor.editCount, 0)
-        XCTAssertEqual(show.current?.tracks.count, 999)
-        XCTAssertEqual(show.addTracks(name: "Last", role: .other, count: 1).count, 1)
-        XCTAssertEqual(show.current?.tracks.count, 1000)
-        XCTAssertTrue(show.addTracks(name: "Beyond", role: .other, count: 1).isEmpty)
-        XCTAssertEqual(executor.editCount, 1)
+        XCTAssertEqual(show.addTracks(name: "Additional", role: .other, count: 25).count, 25)
+        XCTAssertEqual(show.current?.tracks.count, 1025)
+        try show.snapshot.project.validate()
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
+        XCTAssertEqual(restored.songs[0].tracks.count, 1025)
+        XCTAssertTrue(show.addTracks(name: "Invalid", role: .other, count: 0).isEmpty)
     }
     @MainActor func testCreatingAfterGroupChildKeepsTheNewTracksInsideGroup() throws {
         var project = Project.empty(name: "Group")

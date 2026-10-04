@@ -52,7 +52,7 @@ final class TimelineMarkerTests: XCTestCase {
     }
     func testMarkerPersistsWithUnicodeNameAndRejectsInvalidValues() throws {
         var project = Project.empty(name: "Markers")
-        let marker = TimelineMarker(id: UUID(), name: "áéíóú1234567", position: 30, color: 0xffaa00)
+        let marker = TimelineMarker(id: UUID(), name: String(repeating: "á", count: 255) + "🎸", position: 30, color: 0xffaa00)
         project.songs[0].markers = [marker]
         try project.validate()
         let decoded = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))

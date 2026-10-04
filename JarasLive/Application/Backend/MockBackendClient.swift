@@ -74,6 +74,12 @@ public actor MockBackendClient: BackendClient {
         try persist()
         return LoginResult(account: account.user, session: session, entitlement: grant(maximum), device: installed)
     }
+    public func credentialDevices(email: String, cpf: String) async throws -> [AuthorizedDevice] {
+        try check()
+        guard let account = state.accounts.first(where: { $0.user.email.lowercased() == email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }),
+              account.passwordHash == Self.hash(cpf) else { throw BackendFailure.invalidCredentials }
+        return account.devices.filter { $0.status == .active }
+    }
     public func signup(name: String, email: String, password: String) throws {
         try check()
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

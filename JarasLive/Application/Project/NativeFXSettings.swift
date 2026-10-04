@@ -127,6 +127,8 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instrumentParameters: InstrumentParameters?
     public var inserted: [String] = []
     public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
+    public static let stemSeparator = "CatStemSeparation 5"
+    public var stemSeparatorEnabled: Bool?
     public var eqEnabled = false
     public var bands = [EQBand(frequency: 30, type: "lowCut"), EQBand(frequency: 200), EQBand(frequency: 1000), EQBand(frequency: 5000), EQBand(frequency: 18000, type: "highCut")]
     public var instrumentBypassed: Bool?
@@ -150,7 +152,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public init() {}
     public func validateForClip() throws {
         try validate()
-        guard inserted.allSatisfy({ Self.order.dropFirst().contains($0) }),
+        guard inserted.allSatisfy({ Self.order.dropFirst().contains($0) || $0 == Self.stemSeparator }),
               instances?.isEmpty != false, externalPlugins?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
         else { throw ProjectError.invalid("Items support EQ, Compressor, Pitch, Delay, Reverb and Limiter only") }
     }
@@ -169,7 +171,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         let external = externalPlugins ?? []
         guard Set(external.map(\.id)).count == external.count,
               external.allSatisfy({ !$0.id.isEmpty && $0.classID.count == 32 && $0.classID.allSatisfy(\.isHexDigit) && !$0.name.isEmpty && !$0.path.isEmpty }) else { throw ProjectError.invalid("Invalid external plugin") }
-        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || external.contains(where: { $0.effectKey == effect }) || native.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
+        guard Set(inserted).count == inserted.count, inserted.allSatisfy({ effect in Self.order.contains(effect) || effect == Self.stemSeparator || external.contains(where: { $0.effectKey == effect }) || native.contains(where: { $0.effectKey == effect }) }), bands.count <= 10, Set(bands.map(\.id)).count == bands.count,
               bands.allSatisfy({ $0.frequency.isFinite && (20...20000).contains($0.frequency) && $0.gain.isFinite && (-24...24).contains($0.gain) && $0.q.isFinite && (0.1...18).contains($0.q) && [6,12,24,36,48,72,96,192].contains($0.slope) && ["bell","lowCut","highCut","lowShelf","highShelf"].contains($0.type) }),
               [threshold, ratio, attack, release, makeup, delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut].allSatisfy(\.isFinite),
               (-60...0).contains(threshold), (1...20).contains(ratio), (0.0001...0.2).contains(attack), (0.01...3).contains(release), (-12...24).contains(makeup),
@@ -184,6 +186,7 @@ extension NativeFXSettings {
     public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
     public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }
     @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil) -> String {
+        if kind == Self.stemSeparator, inserted.contains(kind) { return kind }
         if !inserted.contains(kind) {
             inserted.append(kind); setEnabled(kind, enabled: true)
             if kind == "Instruments" { instrumentID = instrument; instrumentParameters = parameters; instrumentBypassed = false }
@@ -200,12 +203,12 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
-        switch effect { case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
+        switch effect { case Self.stemSeparator: return stemSeparatorEnabled == true; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
-        switch effect { case "Instruments": instrumentBypassed = !enabled; case "EQ": eqEnabled = enabled; case "Compressor": compressorEnabled = enabled; case "Limiter": limiterEnabled = enabled; case "Pitch": pitchEnabled = enabled; case "Delay": delayEnabled = enabled; case "Reverb": reverbEnabled = enabled; default: break }
+        switch effect { case Self.stemSeparator: stemSeparatorEnabled = enabled; case "Instruments": instrumentBypassed = !enabled; case "EQ": eqEnabled = enabled; case "Compressor": compressorEnabled = enabled; case "Limiter": limiterEnabled = enabled; case "Pitch": pitchEnabled = enabled; case "Delay": delayEnabled = enabled; case "Reverb": reverbEnabled = enabled; default: break }
     }
     /// Editors for different effects can remain open; each updates only its own parameters.
     public func merging(effect: String, from draft: Self) -> Self {

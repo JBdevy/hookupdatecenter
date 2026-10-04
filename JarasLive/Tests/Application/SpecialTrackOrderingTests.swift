@@ -2,17 +2,17 @@ import XCTest
 @testable import JarasApplication
 
 final class SpecialTrackOrderingTests: XCTestCase {
-    func testGlobalTrackCapacityAcceptsOneThousandAndRejectsOneThousandOne() throws {
+    func testProjectAcceptsTracksBeyondOneThousand() throws {
         var project = Project.empty(name: "Capacity")
         project.songs[0].tracks = (0..<1000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
         try project.validate()
         project.songs[0].tracks.append(Track(id: UUID(), name: "Extra", role: .other))
-        XCTAssertThrowsError(try project.validate())
+        XCTAssertNoThrow(try project.validate())
         project.songs[0].tracks.removeLast()
         var secondSong = project.songs[0]
         secondSong.id = UUID(); secondSong.tracks = [Track(id: UUID(), name: "Extra", role: .other)]
         project.songs.append(secondSong)
-        XCTAssertThrowsError(try project.validate(), "capacity applies across the entire project")
+        XCTAssertNoThrow(try project.validate(), "large projects can span sessions")
     }
     private func fixture() -> Project {
         var project = Project.empty(name: "Track order")

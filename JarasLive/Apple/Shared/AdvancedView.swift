@@ -5,10 +5,11 @@ struct AdvancedView: View {
     let documents: ProjectDocuments?
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
-        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
+        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", sections = "Section manager"
+        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .sections: return "line.3.horizontal.decrease" } }
     }
     @State private var tab = Tab.timeProject
+    @AppStorage("catlive.sections.displayMode") private var sectionDisplayMode = "horizontal"
     @State private var bpm: String
     @State private var beats: String
     @State private var unit: String
@@ -39,7 +40,7 @@ struct AdvancedView: View {
                 VStack(spacing: 6) {
                     ForEach(Tab.allCases, id: \.self) { item in
                         Button { tab = item } label: {
-                            Label { Text(LocalizedStringKey(item.rawValue)) } icon: { Image(systemName: item.icon) }
+                            Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
                                 .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).frame(height: 36)
                                 .background(tab == item ? JarasTheme.green.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -56,6 +57,14 @@ struct AdvancedView: View {
                     if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
+                    if tab == .sections {
+                        Picker("Section display mode", selection: $sectionDisplayMode) {
+                            Text("Vertical").tag("vertical")
+                            Text("Horizontal (footer)").tag("horizontal")
+                        }
+                        Text("The iPad follows this setting. On iPhone, sections are always vertical.")
+                            .font(.callout).foregroundStyle(JarasTheme.secondary)
+                    }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
                     Spacer(minLength: 0)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .topLeading)

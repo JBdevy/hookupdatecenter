@@ -402,6 +402,7 @@
 "Mute" = "Mute";
 "Solo" = "Solo";
 "Video" = "Vídeo";
+"Image" = "Imagem";
 "⌘ / Ctrl: multiple · Shift: range" = "⌘ / Ctrl: múltiplos · Shift: intervalo";
 "%lld output channels" = "%lld canais de saída";
 "%lld samples" = "%lld amostras";
@@ -648,8 +649,6 @@
 "Transmitter 2" = "Enviar 2";
 "Invalid track routing" = "Roteamento de pista inválido";
 "This routing would create an audio feedback loop." = "Esse roteamento criaria um ciclo de realimentação de áudio.";
-"Maximum of 1000 tracks per project." = "Máximo de 1000 pistas por projeto.";
-"A project supports at most 1000 tracks" = "Um projeto aceita no máximo 1000 pistas";
 
 "Plugins" = "Plugins";
 "External" = "Externo";
@@ -1015,32 +1014,32 @@
 "Connect to computer" = "Conectar ao computador";
 
 "Sair" = "Sair";
-"Choose a project to open on the Mac." = "Escolha um projeto para abrir no Mac.";
-"No recent projects on this Mac." = "Nenhum projeto recente neste Mac.";
-"Stop recording on the Mac to open a project." = "Pare a gravação no Mac para abrir um projeto.";
+"Choose a project to open on the Mac." = "Escolha um projeto para abrir no PC.";
+"No recent projects on this Mac." = "Nenhum projeto recente neste PC.";
+"Stop recording on the Mac to open a project." = "Pare a gravação no PC para abrir um projeto.";
 "Stop playback to open a project." = "Pare a reprodução para abrir um projeto.";
-"Resolve missing audio on the Mac to continue." = "Resolva os áudios ausentes no Mac para continuar.";
-"Could not open the project. Check the Mac for details." = "Não foi possível abrir o projeto. Confira os detalhes no Mac.";
-"This project is no longer in the Mac’s recent projects." = "Este projeto não está mais entre os projetos recentes do Mac.";
-"Update CatLive on the Mac to browse recent projects." = "Atualize o CatLive no Mac para acessar os projetos recentes.";
+"Resolve missing audio on the Mac to continue." = "Resolva os áudios ausentes no PC para continuar.";
+"Could not open the project. Check the Mac for details." = "Não foi possível abrir o projeto. Confira os detalhes no PC.";
+"This project is no longer in the Mac’s recent projects." = "Este projeto não está mais entre os projetos recentes do PC.";
+"Update CatLive on the Mac to browse recent projects." = "Atualize o CatLive no PC para acessar os projetos recentes.";
 
-"Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad." = "O áudio continua no Mac. Deixe o Wi-Fi e o Bluetooth ligados para conectar diretamente a um iPad próximo.";
+"Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad." = "O áudio continua no PC. Deixe o Wi-Fi e o Bluetooth ligados para conectar diretamente a um iPad próximo.";
 
-"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do Mac e escolha-o abaixo." = "Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do Mac e escolha-o abaixo.";
+"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do Mac e escolha-o abaixo." = "Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do PC e escolha-o abaixo.";
 
 "Conexão direta · sem roteador ou internet" = "Conexão direta · sem roteador ou internet";
 
-"Não foi possível conectar. Aproxime os aparelhos e confira o Remote no Mac." = "Não foi possível conectar. Aproxime os aparelhos e confira o Remote no Mac.";
+"Não foi possível conectar. Aproxime os aparelhos e confira o Remote no Mac." = "Não foi possível conectar. Aproxime os aparelhos e confira o Remote no PC.";
 
-"Searching for nearby Macs…" = "Buscando Macs próximos…";
+"Searching for nearby Macs…" = "Buscando PCs próximos…";
 
-"Connection failed. Keep the devices nearby and enable Remote on the Mac." = "Falha na conexão. Aproxime os aparelhos e ative Remote no Mac.";
+"Connection failed. Keep the devices nearby and enable Remote on the Mac." = "Falha na conexão. Aproxime os aparelhos e ative Remote no PC.";
 
 "Item volume" = "Volume do item";
 "Notices" = "Recados";
 "Stop" = "Parar";
-"Atualize o CatLive no Mac para usar este painel." = "Atualize o CatLive no Mac para usar este painel.";
-"Atualize o CatLive no Mac para sincronizar o cronômetro." = "Atualize o CatLive no Mac para sincronizar o cronômetro.";
+"Atualize o CatLive no Mac para usar este painel." = "Atualize o CatLive no PC para usar este painel.";
+"Atualize o CatLive no Mac para sincronizar o cronômetro." = "Atualize o CatLive no PC para sincronizar o cronômetro.";
 
 /* Logic project migration */
 "Import Logic project" = "Importar projeto do Logic";
@@ -1144,3 +1143,107 @@
 "The open project changed. Start Add Project again." = "O projeto aberto mudou. Use Adicionar ao projeto novamente.";
 
 "Songs will be added in this order after the last song in the open project." = "As músicas serão adicionadas nesta ordem após a última música do projeto aberto.";
+
+"On" = "Ativo";
+
+"Off" = "Inativo";
+
+"Enable multiloop" = "Ativar multiloop";
+
+"Section marker" = "Marcador de trecho";
+"Section markers can only be created inside a song." = "Marcadores de trecho só podem ser criados dentro de uma música.";
+"Playing / Selected" = "Tocando / Selecionada";
+"Queued" = "Fila de espera";
+
+"Section manager" = "Gerenciador de trechos";
+
+"Now playing" = "Reproduzindo";
+
+"Selected song" = "Selecionada";
+
+"Next song label" = "Próxima";
+
+"Recent Projects" = "Projetos Recentes";
+"Audio device — Input" = "Dispositivo de áudio — Entrada";
+"Audio device — Output" = "Dispositivo de áudio — Saída";
+"Enter a positive whole number." = "Digite um número inteiro maior que zero.";
+"Choose an audio input device in Settings." = "Escolha um dispositivo de entrada de áudio nas Configurações.";
+
+"Add regions" = "Adicionar regiões";
+
+"Device RAM in use" = "Memória RAM em uso no dispositivo";
+
+"Waiting for reconnection" = "Aguardando reconexão";
+
+"Open CatLive and enable Remote on your Mac." = "Abra o CatLive e ative o Remote no PC.";
+
+"Exit Remote" = "Sair do Remote";
+
+"Observer" = "Observador";
+
+"Follow your Mac's repertoire." = "Acompanhe o repertório do PC.";
+
+"Connect to Mac" = "Conectar ao PC";
+
+"Control or follow your Mac’s session." = "Controle ou acompanhe a sessão do PC.";
+
+"Senha do modo Recados" = "Senha do modo Recados";
+
+"Acesso apenas aos recados. Deixe vazio para entrar sem senha." = "Acesso apenas aos recados. Deixe vazio para entrar sem senha.";
+
+"Salvar senha de Recados" = "Salvar senha de Recados";
+
+"Resize sections" = "Ajustar largura dos trechos";
+
+"Section display mode" = "Modo de exibição de trechos";
+
+"Horizontal (footer)" = "Horizontal (rodapé)";
+
+"Vertical" = "Vertical";
+
+"The iPad follows this setting. On iPhone, sections are always vertical." = "O iPad segue esta configuração. No iPhone, os trechos são sempre verticais.";
+
+"Cancel queued section" = "Cancelar trecho engatilhado";
+
+"Choose a project to open on the PC." = "Escolha um projeto para abrir no PC.";
+"No recent projects on this PC." = "Nenhum projeto recente neste PC.";
+"Stop recording on the PC to open a project." = "Pare a gravação no PC para abrir um projeto.";
+"Resolve missing audio on the PC to continue." = "Resolva os áudios ausentes no PC para continuar.";
+"Could not open the project. Check the PC for details." = "Não foi possível abrir o projeto. Confira os detalhes no PC.";
+"This project is no longer in the PC’s recent projects." = "Este projeto não está mais entre os projetos recentes do PC.";
+"Update CatLive on the PC to browse recent projects." = "Atualize o CatLive no PC para acessar os projetos recentes.";
+"Audio continues on the PC. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad." = "O áudio continua no PC. Deixe o Wi-Fi e o Bluetooth ligados para conectar diretamente a um iPad próximo.";
+"Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do PC e escolha-o abaixo." = "Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do PC e escolha-o abaixo.";
+"Não foi possível conectar. Aproxime os aparelhos e confira o Remote no PC." = "Não foi possível conectar. Aproxime os aparelhos e confira o Remote no PC.";
+"Searching for nearby PCs…" = "Buscando PCs próximos…";
+"Connection failed. Keep the devices nearby and enable Remote on the PC." = "Falha na conexão. Aproxime os aparelhos e ative Remote no PC.";
+"Atualize o CatLive no PC para usar este painel." = "Atualize o CatLive no PC para usar este painel.";
+"Atualize o CatLive no PC para sincronizar o cronômetro." = "Atualize o CatLive no PC para sincronizar o cronômetro.";
+"Open CatLive and enable Remote on your PC." = "Abra o CatLive e ative o Remote no PC.";
+"Follow your PC's repertoire." = "Acompanhe o repertório do PC.";
+"Connect to PC" = "Conectar ao PC";
+"Control or follow your PC’s session." = "Controle ou acompanhe a sessão do PC.";
+"Audio continues on the PC. Direct connection via Wi-Fi and Bluetooth is available only on macOS." = "O áudio continua no PC. A conexão direta por Wi-Fi e Bluetooth está disponível apenas no macOS.";
+
+"Remove from group" = "Remover do grupo";
+
+"Drop not allowed" = "Não é possível soltar aqui";
+
+"Dissolve this track group?" = "Deseja desfazer esse grupo de pistas?";
+
+"Move this group out of its parent group?" = "Deseja remover esse grupo para fora do grupo?";
+
+"Confirm" = "Confirmar";
+
+"This item cannot be added. Select an audio, video or image file: %@" = "Este item não pode ser adicionado. Escolha um arquivo de áudio, vídeo ou imagem: %@";
+"This item cannot be added. Select audio, video or image files, not folders." = "Este item não pode ser adicionado. Escolha arquivos de áudio, vídeo ou imagem, não pastas.";
+
+"Open audio settings" = "Abrir configurações de áudio";
+
+"Nome deste dispositivo" = "Nome deste dispositivo";
+"Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular." = "Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular.";
+"Ex.: PC do palco" = "Ex.: PC do palco";
+"O nome é obrigatório. Use um nome curto e fácil de reconhecer." = "O nome é obrigatório. Use um nome curto e fácil de reconhecer.";
+"Use um nome mais curto, com letras ou números, sem quebras de linha." = "Use um nome mais curto, com letras ou números, sem quebras de linha.";
+"Voltar" = "Voltar";
+"Salvar e continuar" = "Salvar e continuar";

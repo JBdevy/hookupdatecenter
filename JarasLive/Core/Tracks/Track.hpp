@@ -12,7 +12,7 @@ inline std::string fixedTrackName(const TrackRole& role) { return role.id == "ge
 struct AudioFile { std::string path; std::optional<std::string> sha256; };
 struct MIDINote { ID id; double start=0, length=1; int pitch=60, velocity=100, channel=1; };
 struct MIDIItem { std::vector<MIDINote> notes; double sourceBPM=120; int division=16; std::string mode="straight"; double swing=.5; };
-struct AudioClip { ID id; std::vector<ID> separatedStemTracks; std::string name; double startTime = 0, duration = 0, sourceOffset = 0; std::vector<double> waveform; std::optional<AudioFile> audioFile; std::optional<double> gain; std::optional<double> normalizationGain; std::optional<double> fadeIn, fadeOut; std::optional<int> channelMode; std::vector<std::vector<double>> waveformChannels; bool muted = false; double playbackRate = 1; std::optional<int> recordingLane; std::optional<double> loopStart, loopLength; std::optional<std::string> fxJSON; std::optional<double> timecodeStartOffset, timecodeEndOffset; std::optional<bool> fxBypassed; std::optional<std::string> text; std::optional<MIDIItem> midi; std::optional<bool> frozenMIDI, renderedTiming; std::optional<TimecodeSettings> timecode; };
+struct AudioClip { ID id; std::vector<ID> separatedStemTracks; std::string name; double startTime = 0, duration = 0, sourceOffset = 0; std::vector<double> waveform; std::optional<AudioFile> audioFile; std::optional<double> gain; std::optional<double> normalizationGain; std::optional<double> fadeIn, fadeOut; std::optional<int> channelMode; std::vector<std::vector<double>> waveformChannels; bool muted = false; double playbackRate = 1; std::optional<int> recordingLane; std::optional<double> loopStart, loopLength; std::optional<std::string> fxJSON; std::optional<double> timecodeStartOffset, timecodeEndOffset; std::optional<bool> fxBypassed; std::optional<std::string> text; std::optional<MIDIItem> midi; std::optional<bool> frozenMIDI, renderedTiming; std::optional<double> pitchSemitones; std::optional<TimecodeSettings> timecode; };
 struct Track {
     ID id; std::string name; TrackRole role;
     double volume = 1, pan = 0;
@@ -23,6 +23,7 @@ struct Track {
     std::optional<OutputPatch> patch;
     std::optional<unsigned> color;
     std::optional<OutputPatch> inputPatch;
+    std::optional<bool> inputMonitoring;
     std::optional<int> recordingChannels;
     std::optional<std::string> recordingFormat;
     std::optional<std::string> fxJSON;

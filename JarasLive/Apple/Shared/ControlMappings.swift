@@ -71,7 +71,8 @@ struct MappingTransferRequest: Identifiable {
         #if os(macOS)
         if keyMonitor == nil {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                self?.handleKey(event) == true ? nil : event
+                if RegionShortcutView.handleSelectedObjectsDelete(event) { return nil }
+                return self?.handleKey(event) == true ? nil : event
             }
         }
         #endif

@@ -83,7 +83,7 @@ import AppKit
         window.closesOnRightDoubleClick = true
         window.title = "CatLive Video"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
-        window.level = .normal; window.delegate = self
+        window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
         window.contentView = NSHostingView(rootView: VideoSurface(controller: self))
         window.restorePlacement(key: "jaras.videoWindow"); window.makeKeyAndOrderFront(nil)
         self.window = window; visible = true

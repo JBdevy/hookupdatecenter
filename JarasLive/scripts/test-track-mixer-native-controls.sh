@@ -18,7 +18,7 @@ a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index(
 parts.append('''
 private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
-private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin() {} ; func finish() {} }
+private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
 private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
 private enum Counts { static var origin=0; static var size=0; static var slotLayouts=0; static var update=0; static func reset(){origin=0;size=0;slotLayouts=0;update=0} }
 ''')

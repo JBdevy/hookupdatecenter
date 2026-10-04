@@ -6,61 +6,146 @@ struct DAWRemoteHostView: View {
     @ObservedObject private var remote = DAWRemoteSession.shared
     @State private var pin = ""
     @State private var saved = false
+    @State private var noticesPIN = ""
+    @State private var noticesSaved = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(verbatim: "Remote").font(.headline)
             Text("Open Remote on the iPad and choose this computer.").font(.callout)
             Text(LocalizedStringKey(remote.status)).font(.caption).foregroundStyle(remote.connected ? JarasTheme.green : JarasTheme.secondary)
             if !remote.peerName.isEmpty { Text(verbatim: remote.peerName).font(.caption) }
-            Text("Audio continues on the Mac. Keep Wi-Fi and Bluetooth on to connect directly to a nearby iPad.").font(.caption).foregroundStyle(JarasTheme.secondary)
+            Text("Audio continues on the PC. Direct connection via Wi-Fi and Bluetooth is available only on macOS.").font(.caption).foregroundStyle(JarasTheme.secondary)
             Divider()
             Text("Senha do modo Diretor").font(.headline)
             Text(remote.directorRequiresPIN ? "O Diretor está protegido por senha." : "O Diretor está liberado sem senha.")
                 .font(.caption).foregroundStyle(JarasTheme.secondary)
-            SecureField("4 dígitos · vazio para remover", text: $pin)
+            TextField("4 dígitos · vazio para remover", text: $pin)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: pin) { value in pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)); saved = false }
-            Text("Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o Mac.")
+            Text("Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC.")
                 .font(.caption).foregroundStyle(JarasTheme.secondary)
-            Button("Salvar senha") { saved = remote.setDirectorPIN(pin); pin = "" }
+            Button("Salvar senha") { saved = remote.setDirectorPIN(pin) }
                 .disabled(!pin.isEmpty && pin.count != 4)
             if saved { Text("Configuração salva.").font(.caption).foregroundStyle(JarasTheme.green) }
-            if remote.enabled { Button("Disable Remote") { remote.stop() } }
+            Divider()
+            Text("Senha do modo Recados").font(.headline)
+            TextField("4 dígitos · vazio para remover", text: $noticesPIN)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: noticesPIN) { value in noticesPIN = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)); noticesSaved = false }
+            Text("Acesso apenas aos recados. Deixe vazio para entrar sem senha.")
+                .font(.caption).foregroundStyle(JarasTheme.secondary)
+            Button("Salvar senha de Recados") { noticesSaved = remote.setNoticesPIN(noticesPIN) }
+                .disabled(!noticesPIN.isEmpty && noticesPIN.count != 4)
+            if noticesSaved { Text("Configuração salva.").font(.caption).foregroundStyle(JarasTheme.green) }
+            if remote.enabled { Button("Disable Remote") { remote.setHostEnabled(false) } }
         }.padding(20).frame(width: 320).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .onAppear { pin = remote.savedDirectorPIN; noticesPIN = remote.savedNoticesPIN }
     }
 }
 #else
 import UIKit
+/// Phones connect to the Mac without starting a local project/audio engine.
+struct PhoneRemoteHomeView: View {
+    @AppStorage("jaras.language") private var language = "en"
+    @State private var entering = false
+    @State private var starting = true
+    var body: some View {
+        ZStack {
+            JarasTheme.background.ignoresSafeArea()
+            if starting { StartupView(progress: nil, stage: "Iniciando…") }
+            else {
+                VStack(spacing: 24) {
+                    Spacer()
+                    Image("CatLiveSplash").resizable().scaledToFit().frame(width: 180, height: 180)
+                    Text("Remote").font(.title2.bold()).foregroundStyle(JarasTheme.green)
+                    Text("Control or follow your PC’s session.").multilineTextAlignment(.center).foregroundStyle(JarasTheme.secondary)
+                    Button("Connect to PC") { entering = true }
+                        .font(.headline).frame(maxWidth: .infinity, minHeight: 48)
+                        .background(JarasTheme.green).foregroundStyle(.black).clipShape(RoundedRectangle(cornerRadius: 10))
+                    Picker("Language", selection: $language) {
+                        Text(verbatim: "English").tag("en")
+                        Text(verbatim: "Português").tag("pt-BR")
+                    }.pickerStyle(.segmented)
+                    Spacer()
+                }.padding(28).frame(maxWidth: 420)
+            }
+        }.preferredColorScheme(.dark).environment(\.locale, Locale(identifier: language))
+            .fullScreenCover(isPresented: $entering) { DAWRemoteClientView().environment(\.locale, Locale(identifier: language)) }
+            .task {
+                do { try await Task.sleep(nanoseconds: 3_000_000_000); starting = false } catch {}
+            }
+    }
+}
 struct DAWRemoteClientView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var remote = DAWRemoteSession.shared
     @StateObject private var localTimer = RemoteLocalTimer()
     @State private var directorPIN = ""
-    @State private var enteringDirector = false
+    @State private var enteringMode: DAWRemoteAccess?
     var body: some View {
         VStack(spacing: 0) {
-            if remote.connected {
-                if remote.accessMode == nil { accessPicker }
-                else if let state = remote.remoteState {
-                    NativeRemoteWorkspace(state: state, computerName: remote.peerName, timer: localTimer, send: remote.send,
-                                          exitRemote: { remote.stop(); dismiss() }, observer: remote.accessMode == .observer)
-                        // A project change replaces local selections, search,
-                        // scroll positions and open item editors as one unit.
-                        // The connection and saved panel widths stay intact.
+            if let state = remote.remoteState, remote.presentationAccess != nil {
+                if remote.presentationAccess == .notices {
+                    RemoteNativeNoticesView(close: { remote.stop(); dismiss() })
                         .id(state.project)
-                } else { ProgressView("Waiting for the computer…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                        .onChange(of: remote.reconnecting) { waiting in
+                            if !waiting { remote.send(.init(project: state.project, action: .remotePanel, value: 3)) }
+                        }
+                } else {
+                NativeRemoteWorkspace(state: state, computerName: remote.peerName, timer: localTimer, send: remote.send,
+                                      exitRemote: { remote.stop(); dismiss() }, observer: remote.presentationAccess == .observer)
+                    .id(state.project)
+                }
+            } else if remote.connected {
+                if remote.accessMode == nil { accessPicker } else {
+                    VStack(spacing: 18) {
+                        ProgressView { Text(verbatim: "Aguardando a sessão do PC…\nWaiting for the PC session…") }
+                        Text(verbatim: "Abra um projeto no CatLive do PC.\nOpen a project in CatLive on your PC.")
+                            .foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                        if !remote.accessError.isEmpty { Text(verbatim: remote.accessError).foregroundStyle(.red).multilineTextAlignment(.center) }
+                        Button { remote.browse() } label: { Text(verbatim: "Reconectar · Reconnect") }
+                        Button { remote.stop(); dismiss() } label: { Text(verbatim: "Voltar · Back") }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else {
                 connectionPicker
             }
-        }.background(JarasTheme.background).foregroundStyle(JarasTheme.text)
-            .ignoresSafeArea(.container).statusBarHidden(true).persistentSystemOverlays(.hidden)
+        }.background(JarasTheme.background.ignoresSafeArea()).foregroundStyle(JarasTheme.text)
+            .disabled(remote.reconnecting)
+            .allowsHitTesting(!remote.reconnecting)
+            .accessibilityHidden(remote.reconnecting)
+            .overlay {
+                if remote.reconnecting {
+                    ZStack {
+                        Color.black.opacity(0.65).ignoresSafeArea()
+                        VStack(spacing: 16) {
+                            ProgressView().tint(JarasTheme.green).scaleEffect(1.25)
+                            Text("Waiting for reconnection").font(.title3.bold())
+                            Text(verbatim: remote.peerName).foregroundStyle(JarasTheme.green)
+                            Text("Open CatLive and enable Remote on your PC.")
+                                .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                            Button("Exit Remote") { remote.stop(); dismiss() }.buttonStyle(.bordered)
+                        }.padding(28).frame(maxWidth: 360)
+                            .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(JarasTheme.green.opacity(0.4)))
+                            .foregroundStyle(JarasTheme.text)
+                            .accessibilityAddTraits(.isModal).padding(.horizontal, 20)
+                    }.onAppear { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                }
+            }
+            .statusBarHidden(true).persistentSystemOverlays(.hidden)
             .onAppear { remote.browse() }.onDisappear { remote.stop() }
             .onChange(of: remote.connected) { connected in
-                directorPIN = ""; enteringDirector = false
-                if connected {
+                directorPIN = ""; enteringMode = nil
+                if connected && !remote.reconnecting {
                     localTimer.resetSynchronization()
                     localTimer.synchronize(remote.remoteState?.timer)
+                }
+            }
+            .onChange(of: remote.reconnecting) { waiting in
+                if !waiting && remote.connected {
+                    localTimer.resetSynchronization(); localTimer.synchronize(remote.remoteState?.timer)
                 }
             }
             .onChange(of: remote.remoteState?.timer) { localTimer.synchronize($0) }
@@ -68,108 +153,138 @@ struct DAWRemoteClientView: View {
     }
 
     private var accessPicker: some View {
+        ScrollView {
         VStack(spacing: 20) {
             Text(verbatim: remote.peerName).font(.title2.bold())
-            Text("Escolha como acompanhar esta sessão").foregroundStyle(JarasTheme.secondary)
-            HStack(spacing: 16) {
+            Text(verbatim: "Escolha como acompanhar esta sessão\nChoose how to join this session").foregroundStyle(JarasTheme.secondary)
+            let layout = UIDevice.current.userInterfaceIdiom == .phone ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+            layout {
                 Button {
-                    if remote.directorRequiresPIN { enteringDirector = true }
+                    directorPIN = ""
+                    if remote.directorRequiresPIN { enteringMode = .director }
                     else { remote.requestAccess(.director) }
                 } label: {
                     VStack(spacing: 12) {
                         Image(systemName: "slider.horizontal.3").font(.largeTitle)
-                        Text("Diretor").font(.title3.bold())
-                        Text("Controle o CatLive no Mac").font(.caption)
+                        Text(verbatim: "Diretor · Director").font(.title3.bold())
+                        Text(verbatim: "Controle o CatLive no PC\nControl CatLive on your PC").font(.caption)
                     }.frame(width: 220, height: 140).background(JarasTheme.panel).cornerRadius(12)
                 }
                 Button { directorPIN = ""; remote.requestAccess(.observer) } label: {
                     VStack(spacing: 12) {
                         Image(systemName: "eye").font(.largeTitle)
-                        Text("Observador").font(.title3.bold())
-                        Text("Acompanhe Setlist e teleprompters").font(.caption)
+                        Text(verbatim: "Observador · Observer").font(.title3.bold())
+                        Text(verbatim: UIDevice.current.userInterfaceIdiom == .phone ? "Repertório e teleprompters\nRepertoire and teleprompters" : "Acompanhe Setlist e teleprompters\nFollow the setlist and teleprompters").font(.caption)
+                    }.frame(width: 220, height: 140).background(JarasTheme.panel).cornerRadius(12)
+                }
+                Button {
+                    directorPIN = ""
+                    if remote.noticesRequiresPIN { enteringMode = .notices }
+                    else { remote.requestAccess(.notices) }
+                } label: {
+                    VStack(spacing: 12) {
+                        Image(systemName: "text.bubble").font(.largeTitle)
+                        Text(verbatim: "Recados · Notices").font(.title3.bold())
+                        Text(verbatim: "Envie recados aos teleprompters\nSend notices to the teleprompters").font(.caption)
                     }.frame(width: 220, height: 140).background(JarasTheme.panel).cornerRadius(12)
                 }
             }.buttonStyle(.plain).foregroundStyle(JarasTheme.green).disabled(remote.authorizing)
-            if enteringDirector {
-                HStack {
-                    SecureField("Senha de 4 dígitos", text: $directorPIN).keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder).frame(width: 180)
+            if let enteringMode {
+                VStack(spacing: 16) {
+                    Image(systemName: "lock.shield").font(.system(size: 30)).foregroundStyle(JarasTheme.green)
+                    Text(verbatim: enteringMode == .notices ? "Acesso Recados · Notices access" : "Acesso Diretor · Director access").font(.headline)
+                    Text(verbatim: remote.peerName).font(.subheadline).foregroundStyle(JarasTheme.secondary)
+                    SecureField("", text: $directorPIN, prompt: Text(verbatim: "••••"))
+                        .keyboardType(.numberPad).textContentType(.oneTimeCode)
+                        .font(.system(size: 30, weight: .semibold, design: .monospaced))
+                        .multilineTextAlignment(.center).padding(12).frame(width: 180)
+                        .background(JarasTheme.background).clipShape(RoundedRectangle(cornerRadius: 10))
+                        .accessibilityLabel("Senha de quatro dígitos · Four-digit PIN")
                         .onChange(of: directorPIN) { value in directorPIN = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)) }
-                    Button("Entrar") { remote.requestAccess(.director, pin: directorPIN); directorPIN = "" }
+                    Button { remote.requestAccess(enteringMode, pin: directorPIN) } label: {
+                        HStack { if remote.authorizing { ProgressView() }; Text(verbatim: "Conectar · Connect"); Image(systemName: "arrow.right") }
+                            .font(.headline).padding(.vertical, 12).frame(maxWidth: .infinity)
+                    }.buttonStyle(.borderedProminent).tint(JarasTheme.green)
                         .disabled(directorPIN.count != 4 || remote.authorizing)
-                }
+                }.padding(20).frame(maxWidth: 330).background(JarasTheme.panel)
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
             }
             if !remote.accessError.isEmpty { Text(verbatim: remote.accessError).foregroundStyle(.red) }
             if remote.authorizing { ProgressView() }
-            Button("Escolher outro Mac") { remote.browse(); directorPIN = ""; enteringDirector = false }
+            Button { remote.browse(); directorPIN = ""; enteringMode = nil } label: { Text(verbatim: "Escolher outro PC · Choose another PC") }
                 .foregroundStyle(JarasTheme.secondary)
+        }.multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(20)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var connectionPicker: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button { remote.stop(); dismiss() } label: {
-                    Label("Voltar", systemImage: "chevron.left").font(.system(size: 14, weight: .semibold))
-                }.buttonStyle(.plain).foregroundStyle(JarasTheme.secondary)
-                Spacer()
-            }.padding(24)
-            Spacer(minLength: 12)
-            VStack(spacing: 22) {
-                Image(systemName: "desktopcomputer").font(.system(size: 38, weight: .light))
-                    .foregroundStyle(JarasTheme.green).frame(width: 80, height: 80)
-                    .background(JarasTheme.green.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 20))
-                VStack(spacing: 8) {
-                    Text("Conectar ao Mac").font(.system(size: 25, weight: .semibold))
-                    Text("Deixe o Wi-Fi e o Bluetooth ligados nos dois aparelhos.\nAtive Remote no CatLive do Mac e escolha-o abaixo.")
-                        .font(.system(size: 14)).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
-                    Label("Conexão direta · sem roteador ou internet", systemImage: "wifi")
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(JarasTheme.green)
-                }
-                VStack(spacing: 10) {
-                    HStack {
-                        Text("Macs disponíveis").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
-                        Spacer()
-                        Button { remote.browse() } label: {
-                            Image(systemName: "arrow.clockwise").font(.system(size: 14, weight: .semibold)).frame(width: 32, height: 30)
-                        }.buttonStyle(.plain).foregroundStyle(JarasTheme.green).disabled(remote.connecting)
-                            .accessibilityLabel("Buscar Macs novamente")
+        ScrollView {
+            VStack(spacing: 0) {
+                HStack {
+                    Button { remote.stop(); dismiss() } label: {
+                        Label { Text(verbatim: "Voltar · Back") } icon: { Image(systemName: "chevron.left") }.font(.system(size: 14, weight: .semibold))
+                    }.buttonStyle(.plain).foregroundStyle(JarasTheme.secondary)
+                    Spacer()
+                }.padding(24)
+                Spacer(minLength: 12)
+                VStack(spacing: 22) {
+                    Image(systemName: "desktopcomputer").font(.system(size: 38, weight: .light))
+                        .foregroundStyle(JarasTheme.green).frame(width: 80, height: 80)
+                        .background(JarasTheme.green.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 20))
+                    VStack(spacing: 8) {
+                        Text(verbatim: "Conectar ao PC · Connect to PC").font(.system(size: 23, weight: .semibold))
+                            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        Text(verbatim: "Conecte o PC e este aparelho à mesma rede. Ative Remote no CatLive do PC e escolha-o abaixo.\n\nConnect your PC and this device to the same network. Enable Remote in CatLive on your PC, then choose it below.")
+                            .font(.system(size: 14)).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label { Text(verbatim: "Somente macOS: conexão direta por Wi-Fi e Bluetooth, sem roteador. Deixe ambos ligados nos dois aparelhos.\nmacOS only: direct connection via Wi-Fi and Bluetooth, without a router. Keep both enabled on both devices.") } icon: { Image(systemName: "wifi") }
+                            .font(.system(size: 12, weight: .medium)).foregroundStyle(JarasTheme.green)
                     }
-                    if remote.peers.isEmpty {
-                        HStack(spacing: 10) {
-                            ProgressView().tint(JarasTheme.green)
-                            Text("Procurando Macs…").font(.system(size: 14)).foregroundStyle(JarasTheme.secondary)
-                        }.frame(maxWidth: .infinity).frame(height: 76).background(JarasTheme.background).cornerRadius(10)
-                    } else {
-                        ScrollView {
-                            VStack(spacing: 8) {
-                                ForEach(remote.peers, id: \.self) { peer in
-                                    Button { remote.connect(peer) } label: {
-                                        HStack(spacing: 12) {
-                                            Image(systemName: "desktopcomputer").font(.system(size: 22)).foregroundStyle(JarasTheme.green)
-                                            Text(verbatim: peer.displayName).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                                            Spacer()
-                                            if remote.connecting && remote.peerName == peer.displayName { ProgressView().tint(JarasTheme.green) }
-                                            else { Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary) }
-                                        }.padding(16).background(JarasTheme.background).cornerRadius(10)
-                                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(remote.connecting && remote.peerName == peer.displayName ? JarasTheme.green : JarasTheme.line))
-                                    }.buttonStyle(.plain).disabled(remote.connecting)
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text(verbatim: "PCs disponíveis · Available PCs").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
+                            Spacer()
+                            Button { remote.browse() } label: {
+                                Image(systemName: "arrow.clockwise").font(.system(size: 14, weight: .semibold)).frame(width: 32, height: 30)
+                            }.buttonStyle(.plain).foregroundStyle(JarasTheme.green).disabled(remote.connecting)
+                                .accessibilityLabel(Text(verbatim: "Buscar PCs novamente · Refresh PCs"))
+                        }
+                        if remote.peers.isEmpty {
+                            HStack(spacing: 10) {
+                                ProgressView().tint(JarasTheme.green)
+                                Text(verbatim: "Procurando PCs… · Searching for PCs…").font(.system(size: 14)).foregroundStyle(JarasTheme.secondary)
+                            }.frame(maxWidth: .infinity).frame(height: 76).background(JarasTheme.background).cornerRadius(10)
+                        } else {
+                            ScrollView {
+                                VStack(spacing: 8) {
+                                    ForEach(remote.peers, id: \.self) { peer in
+                                        Button { remote.connect(peer) } label: {
+                                            HStack(spacing: 12) {
+                                                Image(systemName: "desktopcomputer").font(.system(size: 22)).foregroundStyle(JarasTheme.green)
+                                                Text(verbatim: peer.displayName).font(.system(size: 15, weight: .semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                                                Spacer()
+                                                if remote.connecting && remote.peerName == peer.displayName { ProgressView().tint(JarasTheme.green) }
+                                                else { Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary) }
+                                            }.padding(16).background(JarasTheme.background).cornerRadius(10)
+                                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(remote.connecting && remote.peerName == peer.displayName ? JarasTheme.green : JarasTheme.line))
+                                        }.buttonStyle(.plain).disabled(remote.connecting)
+                                    }
                                 }
-                            }
-                        }.frame(maxHeight: min(220, CGFloat(remote.peers.count) * 68))
+                            }.frame(height: min(220, CGFloat(remote.peers.count) * 68))
+                        }
+                        if remote.status.hasPrefix("Connection failed") {
+                            Text(verbatim: "Não foi possível conectar. Aproxime os aparelhos e confira o Remote no PC.\nCould not connect. Bring the devices closer and check Remote on your PC.")
+                                .font(.system(size: 12)).foregroundStyle(JarasTheme.yellow)
+                        } else if remote.status == "Disconnected" {
+                            Text(verbatim: "Conexão encerrada. Escolha o PC para reconectar.\nDisconnected. Choose your PC to reconnect.")
+                                .font(.system(size: 12)).foregroundStyle(JarasTheme.secondary)
+                        }
                     }
-                    if remote.status.hasPrefix("Connection failed") {
-                        Text("Não foi possível conectar. Aproxime os aparelhos e confira o Remote no Mac.")
-                            .font(.system(size: 12)).foregroundStyle(JarasTheme.yellow)
-                    } else if remote.status == "Disconnected" {
-                        Text("Conexão encerrada. Escolha o Mac para reconectar.")
-                            .font(.system(size: 12)).foregroundStyle(JarasTheme.secondary)
-                    }
-                }
-            }.padding(28).frame(maxWidth: 520).background(JarasTheme.panel).cornerRadius(18)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(JarasTheme.line))
-                .padding(.horizontal, 24)
-            Spacer(minLength: 40)
+                }.padding(28).frame(maxWidth: 520).background(JarasTheme.panel).cornerRadius(18)
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(JarasTheme.line))
+                    .padding(.horizontal, 24)
+                Spacer(minLength: 40)
+            }.frame(maxWidth: .infinity)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -225,11 +340,19 @@ struct DAWRemoteClientView: View {
                     (candidate.totalLoop == true || !(candidate.multiLoops ?? []).isEmpty)
                 } ?? false)
             } ?? false
-            let information = transport.ignoreNextAfter != nil ? "Ignore Next" : hasMultiLoop ? JarasLocalization.string("This song has an active multiloop") : transport.loop.enabled ? JarasLocalization.string("Loop armed") : ""
+            let information = transport.loop.enabled ? "Loop Ativo" : transport.ignoreNextAfter != nil ? "Ignore Next" : hasMultiLoop ? JarasLocalization.string("This song has an active multiloop") : ""
             let internalNext = transport.playing && transport.ignoreNextAfter == nil ? song?.nextDrawerRegion(transport.regionId, position: transport.position) : nil
             let queued = transport.subPlay.playing
                 ? song?.parts.first { transport.subPlay.position >= $0.startTime && transport.subPlay.position < $0.endTime }
                 : song?.parts.first { $0.id == transport.queuedRegionId }
+            let sectionRegion = transport.playing ? song?.sectionRegion(at: transport.position)
+                : song?.parts.first(where: { $0.id == show.focusedRegion }) ?? song?.sectionRegion(at: transport.editPosition ?? transport.position)
+            let secondarySectionRegion = transport.subPlay.playing ? song?.sectionRegion(at: transport.subPlay.position)
+                : song?.parts.first(where: { $0.id == transport.queuedRegionId })
+            let displays = TransportSongDisplays(song: song, transport: transport, focusedRegion: show.focusedRegion)
+            let nextSection = song?.sectionRegion(at: transport.position).flatMap { part in
+                song?.sectionMarkers(in: part).first(where: { $0.position > transport.position + 0.000001 })?.position
+            }
             return DAWRemoteState(project: snapshot.project.id, projectName: snapshot.project.name,
                 song: song?.id, songName: song?.name ?? "—",
                 songs: snapshot.project.songs.map { .init(id: $0.id, name: $0.name) },
@@ -243,12 +366,13 @@ struct DAWRemoteClientView: View {
                 }, regions: show.listedRegions.map(region), timelineRegions: (song?.parts ?? []).map(region),
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
                 position: transport.position, duration: song?.duration ?? 0,
-                bpm: song?.tempoSection(at: transport.position).bpm ?? 120,
+                bpm: show.tempoControlBPM,
                 playing: transport.playing, paused: transport.paused ?? false,
                 subPlaying: transport.subPlay.playing, loop: transport.loop.enabled,
                 masterVolume: snapshot.project.masterVolume ?? 1, masterMute: snapshot.project.masterMute ?? false,
                 masterSolo: snapshot.project.masterSolo ?? false, masterMono: snapshot.project.masterMono ?? false,
                 pendingSave: show.hasUnsavedChanges, saving: show.saving, message: show.message,
+                multiLoopsBypassed: transport.multiLoopsBypassed == true,
                 pitchRegion: show.pitchRegion?.id, pitchSemitones: show.pitchRegion?.semitones,
                 setlistFontStyle: UserDefaults.standard.integer(forKey: "jaras.setlist.fontStyle"),
                 prepareOnly: show.regionSetlist.preparesWithoutPlayback,
@@ -257,19 +381,34 @@ struct DAWRemoteClientView: View {
                 regionAuto: show.regionSetlist.autoAdvance, queueStartedAt: transport.queueStartedAt,
                 playbackEnd: transport.ignoreNextEnd ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
                 projectSavedAt: show.lastSavedAt ?? snapshot.project.updatedAt, footerInformation: information,
+                footerLoopBeatPhase: FooterInformationDisplay.loopBeatPhase(transport: transport, song: song),
                 upcomingName: (internalNext ?? queued)?.displayName,
                 upcomingKind: internalNext != nil ? "Next song" : transport.subPlay.playing ? "Sub Play" : "Queued song",
                 playlists: show.regionSetlist.playlists.filter { $0.songId == song?.id }.map { .init(id: $0.id, name: $0.name) },
                 selectedPlaylist: selectedPlaylist?.id,
                 gridRegion: transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position, expanded: [])?.id : (show.focusedRegion ?? transport.regionId),
-                markers: (song?.markers ?? []).filter { !$0.isTempo }.map { .init(id: $0.id, name: $0.name, position: $0.position, color: $0.color) },
+                markers: (song?.markers ?? []).filter { !$0.isTempo }.map { .init(id: $0.id, name: song?.markerLabel($0) ?? $0.name, position: $0.position, color: $0.color, section: $0.isSection, unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID) },
                 projects: documents?.remoteProjectBrowser,
+                sectionListVertical: UserDefaults.standard.string(forKey: "catlive.sections.displayMode") == "vertical",
                 teleprompters: (1...2).contains(requestedPanel) ? [teleprompter(index: requestedPanel, snapshot: snapshot, directory: documents?.currentURL?.deletingLastPathComponent(), remote: remote)] : nil,
                 notices: requestedPanel == 0 ? nil : notices(project: snapshot.project.id, remote: remote), timer: timerState(),
                 gridTempo: cachedGridTempo, gridDivisions: song?.projectTime.divisions,
                 gridLines: UserDefaults.standard.object(forKey: "jaras.timeline.gridlines") as? Bool ?? (GlobalProjectTiming.load()?.settings.divisions != 0),
                 gridPrimaryColor: UInt32(AppearanceColor.shared("jaras.timeline.primaryGrid", default: TimelineAppearanceDefaults.primaryGrid).value),
-                gridSecondaryColor: UInt32(AppearanceColor.shared("jaras.timeline.secondaryGrid", default: TimelineAppearanceDefaults.secondaryGrid).value))
+                gridSecondaryColor: UInt32(AppearanceColor.shared("jaras.timeline.secondaryGrid", default: TimelineAppearanceDefaults.secondaryGrid).value),
+                gridBackgroundColor: UInt32(AppearanceColor.shared("jaras.timeline.background", default: TimelineAppearanceDefaults.background).value),
+                playCursorColor: UInt32(AppearanceColor.shared("jaras.timeline.playCursor", default: TimelineAppearanceDefaults.playCursor).value),
+                editCursorColor: UInt32(AppearanceColor.shared("jaras.timeline.editCursor", default: TimelineAppearanceDefaults.editCursor).value),
+                subPlayCursorColor: UInt32(AppearanceColor.shared("jaras.timeline.subPlayCursor", default: TimelineAppearanceDefaults.subPlayCursor).value),
+                editPosition: transport.editPosition ?? transport.position,
+                subPlayPosition: transport.subPlay.position,
+                sectionPlayback: .init(currentRegion: sectionRegion?.id, secondaryRegion: secondarySectionRegion?.id,
+                    position: transport.playing ? transport.position : transport.editPosition ?? transport.position,
+                    secondaryPosition: transport.subPlay.playing ? transport.subPlay.position : nil,
+                    queuedMarker: transport.queuedSectionMarkerId, queueStartedAt: transport.sectionQueueStartedAt, nextTrigger: nextSection),
+                songDisplays: .init(current: displays.current?.displayName ?? song?.name, currentBPM: displays.currentBPM,
+                    next: displays.next?.displayName, nextBPM: displays.nextBPM, queued: displays.queued?.displayName, queuedBPM: displays.queuedBPM,
+                    playlistSeconds: show.listedRegions.reduce(0) { $0 + max(0, $1.endTime - $1.startTime) }))
         }
         session.commandHandler = { [weak show] command in
             guard command.valid else { return }
@@ -306,6 +445,9 @@ struct DAWRemoteClientView: View {
             case .clipGain:
                 if let target = command.target { show.setItemGain(target, gain: command.value) }
             case .clipMute: show.send(.clipMute, target: command.target)
+            case .queueSection:
+                guard let target = command.target, show.current?.sectionDestinationPosition(target) != nil else { return }
+                show.send(.queueSection, target: target)
             case .selectPlaylist:
                 if let target = command.target {
                     guard show.regionSetlist.playlists.contains(where: { $0.id == target && $0.songId == show.current?.id }) else { return }
@@ -387,9 +529,8 @@ struct DAWRemoteClientView: View {
         let original = snapshot.project.songs.first { $0.id == transport.songId } ?? snapshot.project.songs.first
         let song = original.map { transport.multiLoop?.projectionSong($0) ?? $0 }
         let position = transport.playing ? transport.position : transport.editPosition ?? transport.position
-        let region = (!transport.playing ? song?.parts.first { position >= $0.startTime && position < $0.endTime } : nil)
-            ?? song?.parts.first { $0.id == transport.regionId }
-            ?? song?.parts.first { position >= $0.startTime && position < $0.endTime }
+        let region = song?.parts.filter { position >= $0.startTime && position < $0.endTime }
+            .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
         let queued = song?.parts.first { $0.id == transport.queuedRegionId }
         let kind: TrackKind = index == 1 ? .teleprompt : .teleprompt2
         var lyric: AudioClip?, chord: AudioClip?, media: AudioClip?
@@ -415,9 +556,9 @@ struct DAWRemoteClientView: View {
         style.queuePosition = settings.queueNamePosition; style.chordPosition = settings.chordPosition; style.progressPosition = settings.progressPosition
         let progressClip = settings.progressMode == "chords" ? chord : lyric
         let progress = progressClip.map { min(1, max(0, (position - $0.startTime) / max(0.001, $0.duration))) } ?? 0
-        let queueName = queued?.name ?? snapshot.project.songs.first { $0.id == snapshot.nextSongId || $0.id == transport.queue.songId }?.name ?? ""
+        let queueName = queued?.name ?? snapshot.project.songs.first { $0.id == transport.queue.songId }?.name ?? ""
         var result = DAWRemoteTeleprompter(index: index, text: settings.display(lyric?.text ?? ""), chords: settings.display(chord?.text ?? ""),
-            song: settings.display(region?.name ?? song?.name ?? ""), queued: settings.display(queueName.isEmpty ? JarasLocalization.string("Queue is empty") : queueName), progress: progress,
+            song: settings.display(region?.name ?? ""), queued: settings.display(queueName), progress: progress,
             style: style, preview: controller.previewActive, settings: settings)
         if controller.previewActive, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
@@ -448,12 +589,14 @@ struct DAWRemoteClientView: View {
 }
 #else
 @MainActor private struct NativeRemoteWorkspace: View {
+    @Environment(\.isEnabled) private var controlsEnabled
     let state: DAWRemoteState
     let computerName: String
     let timer: RemoteLocalTimer
     let send: (DAWRemoteCommand) -> Void
     let exitRemote: () -> Void
     var observer = false
+    @State private var phonePanel: DAWRemotePhonePanel = .setlist
     @State private var navigationOpen = false
     @State private var projectsOpen = false
     @State private var playlistPickerOpen = false
@@ -465,6 +608,9 @@ struct DAWRemoteClientView: View {
     @State private var prompterFullscreen = false
     @State private var noticesOpen = false
     @State private var timerOpen = false
+    @State private var sectionsOpen = false
+    private var verticalSections: Bool { UIDevice.current.userInterfaceIdiom == .phone || state.sectionListVertical == true }
+    @State private var settingsOpen = false
     @State private var confirmSave = false
     @State private var search = ""
     @FocusState private var searchFocused: Bool
@@ -540,7 +686,7 @@ struct DAWRemoteClientView: View {
         return (state.timelineRegions + state.regions).first { $0.id == id }
     }
     private var gridRegion: DAWRemoteState.Region? {
-        state.timelineRegions.first { $0.id == state.gridRegion } ?? selectedTimelineRegion
+        DAWRemoteTimelinePresentation.region(in: state)
     }
     private var visibleTracks: [DAWRemoteState.Track] { DAWRemoteItemLayout.tracks(state.tracks, within: gridRegion) }
     private var drawerRegion: DAWRemoteState.Region? { DAWRemoteSetlistPresentation.drawer(in: state) }
@@ -550,10 +696,227 @@ struct DAWRemoteClientView: View {
     }
     private func updatePanelSubscription() {
         guard state.timer != nil else { return }
-        action(.remotePanel, value: Double(prompterPanel?.rawValue ?? (noticesOpen ? 3 : 0)))
+        let panel = UIDevice.current.userInterfaceIdiom == .phone ? (observer && phonePanel.subscription > 2 ? 0 : phonePanel.subscription) : (prompterPanel?.rawValue ?? (noticesOpen ? 3 : 0))
+        action(.remotePanel, value: Double(panel))
     }
     var body: some View {
-        Group { if observer { observerWorkspace } else { directorWorkspace } }
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .phone {
+                if observer { phoneRepertoire } else { phoneDirectorWorkspace }
+            }
+            else if observer { observerWorkspace }
+            else { directorWorkspace }
+        }
+        .onChange(of: controlsEnabled) { enabled in
+            if !enabled {
+                navigationOpen = false; projectsOpen = false; playlistPickerOpen = false
+                noticesOpen = false; timerOpen = false; settingsOpen = false; confirmSave = false
+                searchFocused = false; scrubPosition = nil; pendingSeek = nil
+            } else { updatePanelSubscription() }
+        }
+        .background(RemoteKeyboardDismissal(active: searchFocused) { searchFocused = false })
+    }
+    private func choosePhonePanel(_ panel: DAWRemotePhonePanel) {
+        searchFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        let next = phonePanel.selecting(panel)
+        phonePanel = observer && next == .grid ? .setlist : next
+        prompterFullscreen = false
+        scrubPosition = nil; pendingSeek = nil
+    }
+    private func phonePanelButton(_ panel: DAWRemotePhonePanel, title: String, icon: String? = nil) -> some View {
+        Button { choosePhonePanel(panel) } label: {
+            Group {
+                if let icon { Image(systemName: icon).font(.system(size: 18, weight: .semibold)) }
+                else { Text(verbatim: title).font(.system(size: 11, weight: .bold)) }
+            }.frame(width: 44, height: 44)
+                .background(phonePanel == panel ? JarasTheme.green.opacity(0.14) : Color.clear)
+        }.buttonStyle(.plain)
+            .foregroundStyle(phonePanel == panel ? JarasTheme.green : panel == .notices ? JarasTheme.yellow : panel.subscription > 0 ? .red : JarasTheme.secondary)
+            .accessibilityLabel(LocalizedStringKey(title)).accessibilityValue(phonePanel == panel ? "Shown" : "Hidden")
+    }
+    private var cancelSectionButton: some View {
+        Button { action(.cancelSection) } label: {
+            Text(verbatim: "C\nA\nN\nC\nE\nL\nA\nR")
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .multilineTextAlignment(.center)
+                .frame(width: 30, height: 106)
+                .contentShape(Rectangle())
+        }.buttonStyle(RemoteCancelSectionButtonStyle())
+            .disabled(state.sectionPlayback?.queuedMarker == nil)
+            .accessibilityLabel("Cancel queued section")
+    }
+    private var phoneDirectorWorkspace: some View {
+        HStack(spacing: 1) {
+            GeometryReader { rail in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 2) {
+                    Menu {
+                        Button("Projects") { projectsOpen = true }
+                        Button("Exit Remote", action: exitRemote)
+                    } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Menu")
+                    phonePanelButton(.mixer, title: "Track Mixer", icon: "slider.horizontal.3")
+                    phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
+                    phonePanelButton(.grid, title: "Grid", icon: "square.grid.3x3")
+                    phonePanelButton(.teleprompter1, title: "TP1")
+                    phonePanelButton(.teleprompter2, title: "TP2")
+                    phonePanelButton(.notices, title: "Notices", icon: "text.bubble")
+                    Button { timerOpen = true } label: { Image(systemName: "clock").frame(width: 44, height: 44) }
+                        .foregroundStyle(Color.blue).accessibilityLabel("Timer")
+                    MultiLoopBypassButton(active: state.multiLoopsBypassed == true) { action(.toggleMultiLoopBypass) }
+                    cancelSectionButton.padding(.top, 12)
+                    Button { confirmSave = true } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
+                        .foregroundStyle(JarasTheme.green).disabled(!state.pendingSave || state.saving).accessibilityLabel("Save")
+                    Spacer(minLength: 12)
+                    phonePanelButton(.sections, title: "Section manager", icon: "line.3.horizontal.decrease")
+                    Button { settingsOpen = true } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Configurações")
+                }.buttonStyle(.plain).frame(minHeight: max(0, rail.size.height - 8)).padding(.vertical, 4)
+            }
+            }.frame(width: 44).background(JarasTheme.panel)
+            VStack(spacing: 1) {
+                if !prompterFullscreen { phoneTransport }
+                Group {
+                    switch phonePanel {
+                    case .mixer: trackMixer
+                    case .setlist: setlist
+                    case .grid:
+                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition,
+                            control: { action($0, target: $1, value: $2) }, preview: { scrubPosition = $0 }, seek: { position in
+                                scrubPosition = nil
+                                guard !state.playing, let region = selectedTimelineRegion else { return }
+                                pendingSeek = position; seekSentAt = Date(); action(.seek, target: region.id, value: position)
+                            })
+                    case .teleprompter1, .teleprompter2:
+                        RemoteNativeTeleprompterPanel(index: phonePanel.subscription, timer: timer,
+                            fullscreen: prompterFullscreen, toggleFullscreen: { prompterFullscreen.toggle() }, managesSubscription: false)
+                    case .notices:
+                        RemoteNativeNoticesView(close: { choosePhonePanel(.grid) }, managesSubscription: false)
+                    case .sections: remoteSections
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                if !keyboardVisible && !prompterFullscreen {
+                    VStack(spacing: 0) {
+                        SongNameDisplay(title: "Next", name: state.songDisplays?.next, bpm: state.songDisplays?.nextBPM).frame(height: 25)
+                        phoneDisplayDivider
+                        SongNameDisplay(title: state.subPlaying ? "Sub Play" : "Queued", name: state.songDisplays?.queued, bpm: state.songDisplays?.queuedBPM).frame(height: 25)
+                        phoneDisplayDivider
+                        phoneInformationDisplay
+                    }.background(JarasTheme.display)
+                        .overlay(Rectangle().stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
+                }
+            }.frame(maxWidth: .infinity).disabled(state.projects?.busy == true)
+        }.background(JarasTheme.background)
+            .onAppear(perform: updatePanelSubscription)
+            .onChange(of: phonePanel) { _ in updatePanelSubscription() }
+            .onChange(of: state.project) { _ in updatePanelSubscription() }
+            .onDisappear { action(.remotePanel, value: 0) }
+            .onChange(of: state.position) { position in
+                if let pendingSeek, abs(position - pendingSeek) <= 0.1 { self.pendingSeek = nil }
+            }
+            .onChange(of: state.playing) { _ in scrubPosition = nil; pendingSeek = nil }
+            .onChange(of: state.focusedRegion) { _ in scrubPosition = nil; pendingSeek = nil }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
+            .sheet(isPresented: $timerOpen) {
+                RemoteNativeTimerView(timer: timer, send: {
+                    guard state.timer != nil else { return }
+                    send(.init(id: $2, project: state.project, song: state.song, action: $0, value: $1))
+                }, close: { timerOpen = false }).presentationDetents([.height(230)]).preferredColorScheme(.dark)
+            }
+            .sheet(isPresented: $settingsOpen) { NativeRemoteSettingsView().presentationDetents([.height(220)]).preferredColorScheme(.dark) }
+            .sheet(isPresented: $projectsOpen) {
+                NativeRemoteProjectsView(state: state, computerName: computerName,
+                    open: { action(.openRecentProject, target: $0) }, close: { projectsOpen = false })
+            }
+            .alert("Do you want to save this project?", isPresented: $confirmSave) {
+                Button("Cancel", role: .cancel) {}
+                Button("Save") { action(.save) }
+            }
+    }
+    private func phoneTransportButton(_ title: String, icon: String, active: Bool = false, color: Color = JarasTheme.green, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14, weight: .semibold))
+                Text(LocalizedStringKey(title)).font(.system(size: 9, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+            }.frame(maxWidth: .infinity, minHeight: 44).background(active ? color.opacity(0.35) : JarasTheme.display)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }.buttonStyle(.plain).foregroundStyle(color)
+    }
+    private var phoneTransport: some View {
+        VStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(state.playing ? "Now playing" : "Selected song").font(.system(size: 10, weight: .semibold))
+                    Spacer(minLength: 2)
+                    Text(verbatim: timeText).monospacedDigit().font(.system(size: 12, weight: .semibold))
+                }.foregroundStyle(JarasTheme.secondary)
+                Text(verbatim: state.songDisplays?.current ?? selectedTimelineRegion?.name ?? state.songName)
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(JarasTheme.green).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }.padding(6).background(JarasTheme.display).cornerRadius(5)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
+            HStack(spacing: 4) {
+                phoneTransportButton(state.playing || state.paused ? "Stop" : "Play", icon: state.playing || state.paused ? "stop.fill" : "play.fill", active: state.playing) {
+                    action(state.playing || state.paused ? .stop : .play)
+                }
+                phoneTransportButton(state.paused ? "Play" : "Pause", icon: state.paused ? "play.fill" : "pause.fill", active: state.paused, color: JarasTheme.yellow) {
+                    action(state.paused ? .play : .pause)
+                }.disabled(!state.playing && !state.paused)
+                phoneTransportButton("Sub Play", icon: "play.fill", active: state.subPlaying, color: JarasTheme.yellow) { action(state.subPlaying ? .subStop : .subPlay) }.disabled(!state.playing)
+                phoneTransportButton("Repeat", icon: "repeat", active: state.loop, color: state.loop ? JarasTheme.yellow : .red) { action(.toggleLoop) }
+                    .modifier(JarasBlink(active: state.loop, interval: 0.55, lowOpacity: 0.45))
+            }
+            HStack(spacing: 6) { bpmControl; tunerControl }
+        }.padding(6).background(JarasTheme.panel)
+    }
+    private var phoneDisplayDivider: some View {
+        Rectangle().fill(Color.white.opacity(0.22)).frame(height: 1).allowsHitTesting(false)
+    }
+    private var phoneInformationDisplay: some View {
+        TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
+            beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
+            .font(.system(size: 10, weight: .bold)).lineLimit(2).minimumScaleFactor(0.7)
+            .multilineTextAlignment(.center).accessibilityLabel("Information")
+    }
+    private var phoneRepertoire: some View {
+        HStack(spacing: 1) {
+            VStack(spacing: 2) {
+                Menu { Button("Exit Remote", action: exitRemote) } label: {
+                    Image(systemName: "line.3.horizontal").frame(width: 44, height: 44)
+                }.accessibilityLabel("Menu")
+                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
+                phonePanelButton(.teleprompter1, title: "TP1")
+                phonePanelButton(.teleprompter2, title: "TP2")
+                Spacer(minLength: 0)
+            }.buttonStyle(.plain).frame(width: 44).background(JarasTheme.panel)
+            VStack(spacing: 1) {
+                if !prompterFullscreen {
+                    VStack(spacing: 5) {
+                        phoneObserverDisplay(state.playing ? "Now playing" : "Selected song", name: state.songDisplays?.current ?? observerCurrentName, color: JarasTheme.green)
+                        phoneObserverDisplay("Queued", name: state.songDisplays?.queued ?? observerQueuedName, color: JarasTheme.yellow)
+                        phoneInformationDisplay
+                            .overlay(Rectangle().stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
+                    }.padding(6).background(JarasTheme.panel)
+                }
+                if phonePanel == .teleprompter1 || phonePanel == .teleprompter2 {
+                    RemoteNativeTeleprompterPanel(index: phonePanel.subscription, timer: timer,
+                        fullscreen: prompterFullscreen, toggleFullscreen: { prompterFullscreen.toggle() }, managesSubscription: false)
+                } else { observerSetlist }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.background(JarasTheme.background)
+            .onAppear(perform: updatePanelSubscription)
+            .onChange(of: phonePanel) { _ in updatePanelSubscription() }
+            .onChange(of: state.project) { _ in updatePanelSubscription() }
+            .onDisappear { action(.remotePanel, value: 0) }
+    }
+    private func phoneObserverDisplay(_ title: String, name: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(LocalizedStringKey(title)).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(JarasTheme.secondary)
+            Text(verbatim: name).font(.system(size: 13, weight: .semibold)).foregroundStyle(color).lineLimit(2)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(JarasTheme.display).cornerRadius(5)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
     }
     private var observerWorkspace: some View {
         GeometryReader { geometry in
@@ -687,12 +1050,26 @@ struct DAWRemoteClientView: View {
                                     send(.init(id: $2, project: state.project, song: state.song, action: $0, value: $1))
                                 }, close: { timerOpen = false })
                                 if state.timer == nil {
-                                    Text("Atualize o CatLive no Mac para sincronizar o cronômetro.")
+                                    Text("Atualize o CatLive no PC para sincronizar o cronômetro.")
                                         .font(.caption).foregroundStyle(JarasTheme.secondary).padding(12).frame(width: 300)
                                 }
                             }.background(JarasTheme.panel).preferredColorScheme(.dark)
                         }
+                    MultiLoopBypassButton(active: state.multiLoopsBypassed == true) { action(.toggleMultiLoopBypass) }
+                    cancelSectionButton.padding(.top, 12)
                     Spacer(minLength: 0)
+                    Button { sectionsOpen.toggle() } label: {
+                        Image(systemName: "line.3.horizontal.decrease").font(.system(size: 17, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                    }.buttonStyle(.plain).foregroundStyle(sectionsOpen ? JarasTheme.green : JarasTheme.secondary)
+                        .accessibilityLabel("Section manager").accessibilityValue(sectionsOpen ? "Shown" : "Hidden")
+                    Button { settingsOpen = true } label: {
+                        Image(systemName: "gearshape").font(.system(size: 17, weight: .semibold))
+                            .frame(width: 36, height: 36).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(settingsOpen ? JarasTheme.green : JarasTheme.secondary)
+                        .accessibilityLabel("Configurações")
+                        .popover(isPresented: $settingsOpen) { NativeRemoteSettingsView().preferredColorScheme(.dark) }
+                        .padding(.bottom, 6)
                 }.padding(.top, 6).frame(width: 36).background(JarasTheme.panel)
                 VStack(spacing: 1) {
                     if !prompterFullscreen { transportBar }
@@ -739,8 +1116,12 @@ struct DAWRemoteClientView: View {
                         }, ended: finishPanelResize)
                         }
                         let setlistWidth = prompterFullscreen ? 0 : prompterPanel == nil ? panelSpace * panelWidths.setlist : max(1, contentWidth - 10) * prompterSetlistFraction
-                        setlist.frame(width: setlistWidth).clipped()
+                        setlistWithSections.frame(width: setlistWidth).clipped()
                             .allowsHitTesting(setlistWidth > 0).accessibilityHidden(setlistWidth == 0)
+                    }
+                    if sectionsOpen && !verticalSections && !keyboardVisible && !prompterFullscreen &&
+                        (prompterPanel == nil ? panelWidths.setlist > 0 : prompterSetlistFraction > 0) {
+                        remoteSections.frame(height: SmoothSeekPanelLayout.height)
                     }
                     if !keyboardVisible && !prompterFullscreen { footer }
 
@@ -782,6 +1163,45 @@ struct DAWRemoteClientView: View {
                 Button("Save") { action(.save) }
             }
     }
+    private var setlistWithSections: some View {
+        SectionListDock(visible: sectionsOpen && verticalSections, storageKey: "catlive.remote.sections.width") {
+            setlist
+        } sections: { remoteSections }
+    }
+    private var remoteSections: some View {
+        let playback = state.sectionPlayback
+        let current = state.timelineRegions.first { $0.id == playback?.currentRegion }
+        let queued = state.timelineRegions.first { $0.id == playback?.secondaryRegion }
+        return Group {
+            if verticalSections {
+                SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying) { secondary in
+                    remoteSectionBank(secondary: secondary)
+                }
+            } else {
+                HStack(spacing: 1) {
+                    remoteSectionBank(secondary: false)
+                    Rectangle().fill(JarasTheme.secondary.opacity(0.35)).frame(width: 1)
+                    remoteSectionBank(secondary: true)
+                }.padding(5).background(JarasTheme.panel)
+            }
+        }
+    }
+    private func remoteSectionBank(secondary: Bool) -> some View {
+        let playback = state.sectionPlayback
+        let id = secondary ? playback?.secondaryRegion : playback?.currentRegion
+        let region = state.timelineRegions.first { $0.id == id }
+        let markers: [TimelineMarker] = (state.markers ?? []).filter { marker in
+            marker.section == true && region.map { marker.position >= $0.start && marker.position <= $0.end } == true
+        }.sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
+            .map { TimelineMarker(id: $0.id, name: $0.name.uppercased(), position: $0.position, color: $0.color, section: true) }
+        return SmoothSeekBankView(title: secondary ? (state.subPlaying ? "Sub Play" : "Queued") : "Playing / Selected",
+            name: region?.name ?? "—", markers: markers, end: region?.end ?? 0,
+            position: secondary ? playback?.secondaryPosition ?? 0 : playback?.position ?? state.position,
+            showsPosition: !secondary || state.subPlaying, positionRunning: secondary ? state.subPlaying : state.playing, queued: playback?.queuedMarker,
+            trigger: playback?.nextTrigger, queueStartedAt: playback?.queueStartedAt, playbackPosition: state.position, playbackRunning: state.playing,
+            select: { action(.queueSection, target: $0) }, verticalList: verticalSections,
+            regionID: region?.id, regionStart: region?.start ?? 0)
+    }
     private var projectFooterText: String {
         let iso = ISO8601DateFormatter()
         let timestamp = state.projectSavedAt ?? ""
@@ -795,24 +1215,18 @@ struct DAWRemoteClientView: View {
         return "Sessão - " + state.projectName + " - " + (date.map { formatter.string(from: $0) } ?? "—")
     }
     private var footer: some View {
-        GeometryReader { geometry in
-            let centerWidth = min(300, geometry.size.width * 0.30)
-            let sideWidth = (geometry.size.width - centerWidth) / 2
-            HStack(spacing: 0) {
-                Text(verbatim: projectFooterText).lineLimit(1).minimumScaleFactor(0.7)
-                    .padding(.horizontal, 6).frame(maxWidth: .infinity, alignment: .leading).frame(height: 21)
-                    .background(JarasTheme.display).cornerRadius(4)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line))
-                    .padding(.trailing, 8).frame(width: sideWidth)
-                    .accessibilityLabel("Nome do projeto e data de salvamento")
-                Color.clear.frame(width: sideWidth)
-                Text(verbatim: state.footerInformation ?? "").font(.system(size: 10, weight: .bold)).lineLimit(1)
-                    .foregroundStyle(JarasTheme.green).frame(width: centerWidth, height: 21)
-                    .background(JarasTheme.display).cornerRadius(4)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line))
-                    .accessibilityLabel("Informações")
-            }.font(.system(size: 9, weight: .medium, design: .monospaced))
-        }.padding(.horizontal, 8).padding(.vertical, 3).frame(height: 27).background(JarasTheme.panel)
+        let displays = state.songDisplays
+        let total = displays?.playlistSeconds ?? state.regions.filter { $0.parentRegion == nil }.reduce(0) { $0 + max(0, $1.end - $1.start) }
+        let seconds = Int(min(Double(Int.max / 2), max(0, total)))
+        return HStack(spacing: 10) {
+            ResourceUsageView(memoryScope: .device)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityElement(children: .combine)
+            FooterSongDisplays(next: displays?.next, nextBPM: displays?.nextBPM,
+                queued: displays?.queued, queuedBPM: displays?.queuedBPM, subPlaying: state.subPlaying,
+                duration: String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
+        }.padding(.horizontal, 8).padding(.vertical, 3).frame(height: 31).background(JarasTheme.panel)
     }
     private func resizeHandle(label: String, changed: @escaping (Double) -> Void, ended: @escaping () -> Void) -> some View {
         ZStack {
@@ -844,6 +1258,7 @@ struct DAWRemoteClientView: View {
                     .frame(maxWidth: .infinity)
                 HStack(spacing: 3) {
                     Text(remoteDecibelText(state.masterVolume)).font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 36, alignment: .leading)
+                        .contentShape(Rectangle()).onTapGesture(count: 2) { action(.volume, value: 1) }
                     RemoteNativeSlider(value: DAWRemoteFaderScale.decibels(state.masterVolume), range: -60...12, height: 20) { action(.volume, value: DAWRemoteFaderScale.gain($0)) }
                         .accessibilityLabel("Master volume")
                 }
@@ -866,15 +1281,20 @@ struct DAWRemoteClientView: View {
             }.frame(width: 176)
             VStack(spacing: 5) {
                 HStack(spacing: 6) {
-                    Text(verbatim: selectedTimelineRegion?.name ?? state.songName)
-                        .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8).frame(height: 25).background(JarasTheme.display).cornerRadius(5)
-                        .accessibilityLabel("Música selecionada")
-                    Text(verbatim: state.upcomingName ?? "—")
-                        .foregroundStyle(JarasTheme.yellow).frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8).frame(height: 25).background(JarasTheme.display).cornerRadius(5)
-                        .accessibilityLabel(state.upcomingKind ?? "Queued song")
+                    GeometryReader { geometry in
+                        HStack(spacing: 0) {
+                            SongNameDisplay(title: state.playing ? "Now playing" : "Selected song",
+                                name: state.songDisplays?.current ?? selectedTimelineRegion?.name ?? state.songName,
+                                bpm: state.songDisplays?.currentBPM, color: state.playing ? JarasTheme.green : JarasTheme.text)
+                                .frame(width: max(0, (geometry.size.width - 1) * 0.75)).accessibilityLabel("Current song")
+                            Rectangle().fill(JarasTheme.line).frame(width: 1)
+                            TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
+                                beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
+                                .font(.system(size: 10, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
+                                .frame(width: max(0, (geometry.size.width - 1) * 0.25), height: 25).clipped()
+                                .accessibilityLabel("Information")
+                        }
+                    }.frame(height: 25).background(JarasTheme.display).cornerRadius(5)
                     Text(verbatim: timeText).monospacedDigit().frame(width: 82, height: 25)
                         .background(JarasTheme.display).cornerRadius(5).accessibilityLabel("Tempo da agulha")
                 }.font(.system(size: 12, weight: .semibold)).lineLimit(1)
@@ -930,13 +1350,13 @@ struct DAWRemoteClientView: View {
     private var tunerControl: some View {
                 HStack(spacing: 6) {
                     Button { action(.pitch, target: state.pitchRegion, value: Double((state.pitchSemitones ?? 0) - 1)) } label: { Image(systemName: "minus").frame(width: 28, height: 32) }
-                        .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -6)
+                        .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12)
                     VStack(spacing: 0) {
                         Text(verbatim: "Tuner").font(.system(size: 10))
                         Text(String(format: "%+dst", state.pitchSemitones ?? 0)).monospacedDigit()
                     }.frame(minWidth: 70, maxWidth: .infinity)
                     Button { action(.pitch, target: state.pitchRegion, value: Double((state.pitchSemitones ?? 0) + 1)) } label: { Image(systemName: "plus").frame(width: 28, height: 32) }
-                        .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 6)
+                        .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12)
                 }.font(.system(size: 14, weight: .semibold)).buttonStyle(.plain).foregroundStyle(JarasTheme.green)
                 .padding(.horizontal, 4).frame(minWidth: 134, maxWidth: .infinity, minHeight: 32).background(JarasTheme.display).cornerRadius(5)
     }
@@ -971,9 +1391,9 @@ struct DAWRemoteClientView: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 1) {
                         ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { number, track in
-                            RemoteNativeMixerRow(track: track, number: number + 1) { command, value in
+                            RemoteNativeMixerRow(track: track, number: number + 1, compact: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale) < 70) { command, value in
                                 action(command, target: track.id, value: value)
-                            }.frame(height: DAWRemoteItemLayout.rowHeight(track))
+                            }.frame(height: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale))
                         }
                     }
                     #if os(iOS)
@@ -985,16 +1405,25 @@ struct DAWRemoteClientView: View {
     }
     private var setlist: some View {
         VStack(spacing: 8) {
-            Text(verbatim: "Setlist").font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+            Button { searchFocused = false; playlistPickerOpen = true } label: {
+                HStack(spacing: 8) {
+                    if let playlist = state.playlists?.first(where: { $0.id == state.selectedPlaylist }) {
+                        Text(verbatim: playlist.name).lineLimit(1)
+                    } else { Text("All regions").lineLimit(1) }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+                }.font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.text)
+                    .padding(.horizontal, 9).frame(maxWidth: .infinity).frame(height: 30)
+                    .background(JarasTheme.panel)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.45)))
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Selecionar playlist")
+                .popover(isPresented: $playlistPickerOpen, arrowEdge: .top) {
+                    RemoteNativePlaylistPicker(playlists: state.playlists ?? [], selected: state.selectedPlaylist,
+                        choose: { id in action(.selectPlaylist, target: id); playlistPickerOpen = false },
+                        close: { playlistPickerOpen = false }).equatable()
+                }
             HStack(spacing: 6) {
-                Button { playlistPickerOpen = true } label: {
-                    Image(systemName: "list.bullet").foregroundStyle(JarasTheme.green).frame(width: 30, height: 28)
-                }.buttonStyle(.plain).accessibilityLabel("Selecionar playlist")
-                    .popover(isPresented: $playlistPickerOpen, arrowEdge: .top) {
-                        RemoteNativePlaylistPicker(playlists: state.playlists ?? [], selected: state.selectedPlaylist,
-                            choose: { id in action(.selectPlaylist, target: id); playlistPickerOpen = false },
-                            close: { playlistPickerOpen = false }).equatable()
-                    }
                 TextField("Pesquisar músicas", text: $search).textFieldStyle(.roundedBorder).focused($searchFocused)
                 Button { action(.toggleRegionAuto) } label: {
                     Text(verbatim: "AUTO").font(.system(size: 9, weight: .bold)).frame(width: 34, height: 26)
@@ -1055,7 +1484,7 @@ struct DAWRemoteClientView: View {
                     LinearGradient(colors: [Color(hex: 0x2457a9), Color(hex: 0x152b58)], startPoint: .leading, endPoint: .trailing)
                 } else { JarasTheme.panel }
             }.cornerRadius(5)
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : .clear, lineWidth: 1.5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected && !active && !queued ? JarasTheme.green : .clear, lineWidth: 1.5))
             .overlay(alignment: .bottomLeading) {
                 if active || queued {
                     GeometryReader { geometry in
@@ -1069,6 +1498,30 @@ struct DAWRemoteClientView: View {
     }
 
 }
+private struct NativeRemoteSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("jaras.language") private var language = "en"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Label("Configurações", systemImage: "gearshape").font(.headline)
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }.buttonStyle(.plain).accessibilityLabel("Close")
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Language").font(.subheadline.weight(.semibold))
+                Picker("Language", selection: $language) {
+                    Text(verbatim: "English").tag("en")
+                    Text(verbatim: "Português").tag("pt-BR")
+                }.pickerStyle(.segmented).labelsHidden()
+            }
+        }.padding(20).frame(width: 320).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .environment(\.locale, Locale(identifier: language))
+    }
+}
+
 /// The center grid renders native clip geometry from the Mac state.
 private enum RemoteNativeGridMetrics {
     static let regionHeight: CGFloat = 24
@@ -1080,7 +1533,7 @@ private struct RemoteNativeTimeline: View {
     @Environment(\.displayScale) private var displayScale
     let state: DAWRemoteState
     let tracks: [DAWRemoteState.Track]
-    let scrolling: RemoteTrackScrollController
+    @ObservedObject var scrolling: RemoteTrackScrollController
     let region: DAWRemoteState.Region?
     let position: Double
     let control: (DAWRemoteCommand.Action, UUID, Double) -> Void
@@ -1089,6 +1542,12 @@ private struct RemoteNativeTimeline: View {
     private var start: Double { region?.start ?? 0 }
     private var end: Double { region?.end ?? start }
     private var span: Double { max(0.001, end - start) }
+    private var visibleMarkers: [TimelineMarker] {
+        (state.markers ?? []).filter { $0.position >= start && $0.position <= end }
+            .map { TimelineMarker(id: $0.id, name: $0.name, position: $0.position, color: $0.color,
+                unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID, section: $0.section) }
+            .sorted { $0.position < $1.position }
+    }
     var body: some View {
         GeometryReader { geometry in
             let width = max(1, geometry.size.width)
@@ -1100,15 +1559,33 @@ private struct RemoteNativeTimeline: View {
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 1) {
                         ForEach(tracks) { track in
-                            timelineRow(track, width: width, marks: marks).frame(height: DAWRemoteItemLayout.rowHeight(track))
+                            timelineRow(track, width: width, marks: marks).frame(height: DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale))
                         }
                     }
                     #if os(iOS)
-                    .background(RemoteTrackScrollProbe(controller: scrolling, isGrid: true))
+                    .background(RemoteTrackScrollProbe(controller: scrolling, isGrid: true, gridTap: { fraction in
+                        guard !state.playing, region != nil else { return }
+                        seek(start + fraction * span)
+                    }))
                     #endif
                 }
+            }.overlay(alignment: .topLeading) {
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, size in
+                        for marker in visibleMarkers {
+                            let x = (marker.position - start) / span * size.width
+                            var stem = Path()
+                            stem.move(to: CGPoint(x: x, y: RemoteNativeGridMetrics.regionHeight + RemoteNativeGridMetrics.markerHeight + 1))
+                            stem.addLine(to: CGPoint(x: x, y: size.height))
+                            context.stroke(stem, with: .color(remoteColor(marker.color).opacity(marker.unifiedRegionID != nil || marker.sourceRegionID != nil ? 1 : 0.45)), lineWidth: 1)
+                        }
+                    }
+                    // Needles stay above coincident marker stems, as on the Mac.
+                    cursor(width: width)
+                        .padding(.top, RemoteNativeGridMetrics.rulerAreaHeight + 1)
+                }.clipped().allowsHitTesting(false)
             }
-        }.background(JarasTheme.background)
+        }.background(remoteColor(state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background)))
     }
     private func gridMarks(width: CGFloat) -> [TimelineTimeRuler.Tick] {
         let sections = (state.gridTempo ?? []).map {
@@ -1136,7 +1613,6 @@ private struct RemoteNativeTimeline: View {
                     }
                 }
             }
-            cursor(width: width)
         }.frame(height: RemoteNativeGridMetrics.timeHeight).contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { gesture in
@@ -1160,36 +1636,74 @@ private struct RemoteNativeTimeline: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(remoteColor(region.color).opacity(0.6))
             }
-            cursor(width: width)
         }.frame(height: RemoteNativeGridMetrics.regionHeight).clipped().accessibilityLabel("Faixa da região " + (region?.name ?? ""))
     }
     private func markerLane(width: CGFloat) -> some View {
-        let markers = (state.markers ?? []).filter { $0.position >= start && $0.position <= end }.sorted { $0.position < $1.position }
+        let markers = visibleMarkers
         return ZStack(alignment: .leading) {
             JarasTheme.display
             Canvas { context, size in
-                for (index, marker) in markers.enumerated() {
+                let widths = Dictionary(uniqueKeysWithValues: markers.map { marker in
+                    (marker.id, Double(context.resolve(Text(verbatim: marker.name).font(.system(size: 9, weight: .semibold)))
+                        .measure(in: CGSize(width: .infinity, height: size.height)).width))
+                })
+                let ends = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, end) })
+                let flags = TimelineMarker.flagWidths(markers, scale: size.width / span, widths: widths, regionEnds: ends)
+                for marker in markers {
+                    guard let flagWidth = flags[marker.id] else { continue }
                     let x = (marker.position - start) / span * size.width
-                    let nextX = index + 1 < markers.count ? (markers[index + 1].position - start) / span * size.width : size.width
-                    let flagWidth = min(110, max(2, min(nextX - x - 2, size.width - x)))
                     let rect = CGRect(x: x, y: 1, width: flagWidth, height: size.height - 2)
-                    context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(remoteColor(marker.color)))
-                    if flagWidth > 15 {
-                        context.draw(Text(verbatim: marker.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.black), in: rect.insetBy(dx: 3, dy: 2))
-                    }
+                    drawMarkerFlag(marker, rect: rect, context: &context)
+                    context.draw(Text(verbatim: marker.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.black),
+                        in: rect.insetBy(dx: marker.isSection ? 7 : 3, dy: 2))
                 }
             }
-            cursor(width: width)
         }.frame(height: RemoteNativeGridMetrics.markerHeight).clipped().accessibilityLabel("Marcadores da música")
     }
     private func cursor(width: CGFloat) -> some View {
-        Rectangle().fill(remoteColor(UInt32(state.playing ? TimelineAppearanceDefaults.playCursor : TimelineAppearanceDefaults.editCursor))).frame(width: 2)
-            .offset(x: min(width - 2, max(0, (position - start) / span * width)))
-            .allowsHitTesting(false)
+        ZStack(alignment: .leading) {
+            needle(state.playing ? state.editPosition : position,
+                   color: state.editCursorColor ?? UInt32(TimelineAppearanceDefaults.editCursor), width: width)
+            if state.playing {
+                needle(position, color: state.playCursorColor ?? UInt32(TimelineAppearanceDefaults.playCursor), width: width, glowing: true)
+            }
+            if state.subPlaying {
+                needle(state.subPlayPosition ?? state.sectionPlayback?.secondaryPosition, color: state.subPlayCursorColor ?? UInt32(TimelineAppearanceDefaults.subPlayCursor), width: width, glowing: true)
+            }
+        }.frame(width: width, alignment: .leading).frame(maxHeight: .infinity)
+            .clipped().allowsHitTesting(false)
+    }
+    @ViewBuilder private func needle(_ time: Double?, color: UInt32, width: CGFloat, glowing: Bool = false) -> some View {
+        if let time, time >= start, time <= end {
+            let x = min(width - (glowing ? 3 : 2), max(0, (time - start) / span * width))
+            let displayColor = remoteColor(color)
+            ZStack(alignment: .topLeading) {
+                if glowing {
+                    let trailWidth = min(x, 38)
+                    Rectangle().fill(LinearGradient(colors: [.clear, displayColor.opacity(0.16), displayColor.opacity(0.65)], startPoint: .leading, endPoint: .trailing))
+                        .frame(width: trailWidth).offset(x: x - trailWidth)
+                }
+                Rectangle().fill(displayColor).frame(width: glowing ? 3 : 2)
+                    .shadow(color: displayColor.opacity(glowing ? 1 : 0.55), radius: glowing ? 4 : 3)
+                    .offset(x: x)
+                if glowing {
+                    Rectangle().fill(Color.white.opacity(0.8)).frame(width: 1)
+                        .shadow(color: displayColor, radius: 7).offset(x: x + 1)
+                }
+                Path { head in
+                    head.move(to: .zero)
+                    head.addLine(to: CGPoint(x: 14, y: 0))
+                    head.addLine(to: CGPoint(x: 7, y: 9))
+                    head.closeSubpath()
+                }.fill(displayColor).frame(width: 14, height: 9)
+                    .shadow(color: displayColor.opacity(glowing ? 0.9 : 0.4), radius: glowing ? 4 : 2)
+                    .offset(x: x + (glowing ? 1.5 : 1) - 7)
+            }
+        }
     }
     private func timelineRow(_ track: DAWRemoteState.Track, width: CGFloat, marks: [TimelineTimeRuler.Tick]) -> some View {
         ZStack(alignment: .topLeading) {
-            JarasTheme.mixer.opacity(0.5)
+            remoteColor(state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background))
             Canvas { context, size in
                 if state.gridLines != false {
                     var primary = Path(), secondary = Path()
@@ -1212,10 +1726,9 @@ private struct RemoteNativeTimeline: View {
                     visibleFraction: (right - left) / max(0.001, clip.duration),
                     mute: { control(.clipMute, clip.id, 0) },
                     setGain: { control(.clipGain, clip.id, $0) })
-                    .frame(width: itemWidth, height: DAWRemoteItemLayout.laneHeight(track))
-                    .offset(x: (left - start) / span * width, y: Double(clip.lane ?? 0) * DAWRemoteItemLayout.laneHeight(track))
+                    .frame(width: itemWidth, height: DAWRemoteItemLayout.laneHeight(track, scale: scrolling.heightScale))
+                    .offset(x: (left - start) / span * width, y: Double(clip.lane ?? 0) * DAWRemoteItemLayout.laneHeight(track, scale: scrolling.heightScale))
             }
-            cursor(width: width)
         }.frame(width: width, alignment: .leading).clipped().accessibilityLabel(track.name + ", clipes")
     }
 }
@@ -1228,6 +1741,7 @@ private struct RemoteNativeGridItem: View {
     let visibleFraction: Double
     let mute: () -> Void
     let setGain: (Double) -> Void
+    @Environment(\.isEnabled) private var controlsEnabled
     @State private var editorOpen = false
     var body: some View {
         VStack(spacing: 0) {
@@ -1257,6 +1771,7 @@ private struct RemoteNativeGridItem: View {
                 RemoteNativeItemEditor(clip: clip, color: color, setGain: setGain, mute: mute, close: { editorOpen = false })
                     .preferredColorScheme(.dark)
             }
+            .onChange(of: controlsEnabled) { if !$0 { editorOpen = false } }
             .accessibilityLabel(clip.name).accessibilityAction(named: "Editar item") { editorOpen = true }
     }
 }
@@ -1342,10 +1857,10 @@ private struct RemoteNativeSlider: View {
                     .overlay(Rectangle().fill(Color(white: 0.33)).frame(width: 1, height: 12))
                     .offset(x: CGFloat(fraction) * max(1, geometry.size.width - 12))
             }.frame(maxHeight: .infinity).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { update($0.location.x, width: geometry.size.width) }
-                    .onEnded { update($0.location.x, width: geometry.size.width); commit(draft) })
-                .simultaneousGesture(TapGesture(count: 2).onEnded { commit(0) })
+                .overlay(RemoteSliderTouchInput(
+                    changed: { update($0, width: geometry.size.width) },
+                    ended: { update($0, width: geometry.size.width); commit(draft) },
+                    reset: { commit(0) }))
         }.frame(height: height)
             .onChange(of: value) { confirmed in
                 if !editing, abs(confirmed - draft) <= 0.000001 { pending = false }
@@ -1363,9 +1878,75 @@ private struct RemoteNativeSlider: View {
             }
     }
 }
+/// Tap and pan are distinct native gestures: a double tap never commits a
+/// positional drag afterwards. The single tap waits for the double-tap decision.
+private struct RemoteSliderTouchInput: UIViewRepresentable {
+    @Environment(\.isEnabled) private var enabled
+    let changed: (CGFloat) -> Void
+    let ended: (CGFloat) -> Void
+    let reset: () -> Void
+    func makeUIView(context: Context) -> RemoteSliderTouchView { RemoteSliderTouchView() }
+    func updateUIView(_ view: RemoteSliderTouchView, context: Context) {
+        view.changed = changed; view.ended = ended; view.reset = reset
+        view.isUserInteractionEnabled = enabled
+    }
+}
+private final class RemoteSliderTouchView: UIView, UIGestureRecognizerDelegate {
+    var changed: ((CGFloat) -> Void)?
+    var ended: ((CGFloat) -> Void)?
+    var reset: (() -> Void)?
+    private var lastDragX: CGFloat?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+        pan.maximumNumberOfTouches = 1; pan.delegate = self
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(resetTapped))
+        doubleTap.numberOfTapsRequired = 2
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        tap.require(toFail: doubleTap)
+        addGestureRecognizer(pan); addGestureRecognizer(doubleTap); addGestureRecognizer(tap)
+        isAccessibilityElement = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func resetTapped() { reset?() }
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) { ended?(gesture.location(in: self).x) }
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed:
+            lastDragX = gesture.location(in: self).x; changed?(lastDragX!)
+        case .ended:
+            lastDragX = nil; ended?(gesture.location(in: self).x)
+        case .cancelled, .failed:
+            if let x = lastDragX { lastDragX = nil; ended?(x) }
+        default: break
+        }
+    }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: self)
+        return abs(velocity.x) >= abs(velocity.y)
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer.view is UIScrollView
+    }
+}
+
 private func remoteDecibelText(_ gain: Double) -> String {
     gain <= 0 ? "−∞" : String(format: "%+.1f", DAWRemoteFaderScale.decibels(gain))
 }
+// Keep Cancel visibly yellow even when no section is queued. The disabled
+// state still prevents sending a command; only the system dimming is omitted.
+private struct RemoteCancelSectionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.black)
+            .background(Color(hex: 0xffd600))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .opacity(configuration.isPressed ? 0.85 : 1)
+    }
+}
+
 private struct RemoteNativeTrackButtonStyle: ButtonStyle {
     var activeColor: Color? = nil
     func makeBody(configuration: Configuration) -> some View {
@@ -1396,7 +1977,7 @@ private struct RemoteNativePlaylistPicker: View, Equatable {
             Rectangle().fill(JarasTheme.line).frame(height: 1)
             ScrollView(.vertical) {
                 LazyVStack(spacing: 5) {
-                    row(id: nil, name: JarasLocalization.string("Todas as músicas"))
+                    row(id: nil, name: JarasLocalization.string("All regions"))
                     ForEach(playlists) { playlist in row(id: playlist.id, name: playlist.name) }
                 }.padding(10)
             }
@@ -1422,27 +2003,36 @@ private struct RemoteNativePlaylistPicker: View, Equatable {
 private struct RemoteNativeMixerRow: View {
     let track: DAWRemoteState.Track
     let number: Int
+    var compact = false
     let send: (DAWRemoteCommand.Action, Double) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 3) {
+                if compact {
+                    Text(String(format: "%02d  %@", number, track.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        .foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)).frame(maxWidth: .infinity, alignment: .leading)
+                } else {
                 Spacer(minLength: 0)
                 Text(verbatim: "Pan").font(.system(size: 10, weight: .semibold)).foregroundStyle(JarasTheme.text)
                 RemoteNativeSlider(value: track.pan, range: -1...1) { send(.pan, $0) }.frame(width: 60)
                     .accessibilityLabel("Pan " + track.name)
+                }
                 Button { send(.mute, 0) } label: { Text(verbatim: "M") }
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: track.mute ? .red : nil))
                 Button { send(.solo, 0) } label: { Text(verbatim: "S") }
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil))
             }
+            if !compact {
             HStack(spacing: 3) {
                 Text(remoteDecibelText(track.volume)).font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(JarasTheme.text).frame(width: 36, alignment: .leading)
+                    .contentShape(Rectangle()).onTapGesture(count: 2) { send(.volume, 1) }
                 RemoteNativeSlider(value: DAWRemoteFaderScale.decibels(track.volume), range: -60...12, height: 22, linked: track.linkedTrack != nil) { send(.volume, DAWRemoteFaderScale.gain($0)) }
                     .accessibilityLabel("Volume " + track.name)
             }.frame(height: 23)
             Text(String(format: "%02d  %@", number, track.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                 .foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }.padding(.horizontal, 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .background {
                 let components = TrackNameContrast.components(track.color, emphasized: track.emphasized == true)
@@ -1474,10 +2064,10 @@ private struct RemoteNativeMixerRow: View {
                         .background(JarasTheme.panel).clipShape(Circle())
                 }.buttonStyle(.plain).accessibilityLabel("Close")
             }
-            Text("Choose a project to open on the Mac.").font(.callout).foregroundStyle(JarasTheme.secondary)
+            Text("Choose a project to open on the PC.").font(.callout).foregroundStyle(JarasTheme.secondary)
             if let browser {
                 if browser.recent.isEmpty {
-                    Text("No recent projects on this Mac.").foregroundStyle(JarasTheme.secondary)
+                    Text("No recent projects on this PC.").foregroundStyle(JarasTheme.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
@@ -1513,7 +2103,7 @@ private struct RemoteNativeMixerRow: View {
                     Text(LocalizedStringKey(browser.error)).font(.callout).foregroundStyle(JarasTheme.yellow)
                 }
             } else {
-                Text("Update CatLive on the Mac to browse recent projects.").font(.callout).foregroundStyle(JarasTheme.secondary)
+                Text("Update CatLive on the PC to browse recent projects.").font(.callout).foregroundStyle(JarasTheme.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1525,6 +2115,24 @@ private struct RemoteNativeMixerRow: View {
 }
 
 @MainActor private final class RemoteTrackScrollController: NSObject, ObservableObject {
+    @Published private(set) var heightScale = DAWRemoteItemLayout.heightScale(
+        UserDefaults.standard.object(forKey: "jaras.remote.trackHeightScale") as? Double ?? 1)
+    private var pinchStartScale: Double?
+    func resizeTracks(_ scale: CGFloat) {
+        if pinchStartScale == nil {
+            pinchStartScale = heightScale
+            #if os(iOS)
+            momentum?.cancel(); momentum = nil; velocity = 0
+            #endif
+        }
+        let next = DAWRemoteItemLayout.heightScale((pinchStartScale ?? heightScale) * Double(scale))
+        if abs(next - heightScale) > 0.0001 { heightScale = next }
+    }
+    func finishResizingTracks() {
+        guard pinchStartScale != nil else { return }
+        pinchStartScale = nil
+        UserDefaults.standard.set(heightScale, forKey: "jaras.remote.trackHeightScale")
+    }
     #if os(iOS)
     weak var scrollView: UIScrollView? {
         didSet {
@@ -1541,7 +2149,9 @@ private struct RemoteNativeMixerRow: View {
         didSet {
             guard oldValue !== gridScrollView else { return }
             oldValue?.removeGestureRecognizer(itemHold)
+            oldValue?.removeGestureRecognizer(gridTapRecognizer)
             gridScrollView?.addGestureRecognizer(itemHold)
+            gridScrollView?.addGestureRecognizer(gridTapRecognizer)
             gridObservation = gridScrollView?.observe(\.contentOffset, options: [.new]) { [weak self] source, _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -1568,6 +2178,32 @@ private struct RemoteNativeMixerRow: View {
         gesture.delegate = self
         return gesture
     }()
+    var gridTap: ((Double) -> Void)?
+    private lazy var gridTapRecognizer: UITapGestureRecognizer = {
+        let gesture = UITapGestureRecognizer(target: self, action: #selector(gridTapped(_:)))
+        gesture.cancelsTouchesInView = false
+        gesture.delegate = self
+        gesture.require(toFail: itemHold)
+        return gesture
+    }()
+    @objc private func gridTapped(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let scroll = gridScrollView,
+              !scroll.isDragging, scroll.bounds.width > 0 else { return }
+        let x = gesture.location(in: scroll).x - scroll.bounds.minX
+        gridTap?(min(1, max(0, Double(x / scroll.bounds.width))))
+    }
+    private func receiveGridTap(_ touch: UITouch) -> Bool {
+        var view = touch.view
+        while let candidate = view, candidate !== gridScrollView {
+            if candidate is UIControl { return false }
+            view = candidate.superview
+        }
+        // SwiftUI's M button may not be a UIControl. Exclude its registered bounds too.
+        return !holdAreas.values.compactMap(\.view).contains { area in
+            area.window != nil && !area.isHidden &&
+                CGRect(x: 0, y: 0, width: 35, height: 28).contains(touch.location(in: area))
+        }
+    }
     func registerHoldArea(_ view: RemoteGridItemHoldArea) { holdAreas[ObjectIdentifier(view)] = HoldArea(view) }
     func unregisterHoldArea(_ view: RemoteGridItemHoldArea) { holdAreas.removeValue(forKey: ObjectIdentifier(view)) }
     @objc private func itemHeld(_ gesture: UILongPressGestureRecognizer) {
@@ -1601,17 +2237,20 @@ private struct RemoteNativeMixerRow: View {
     private var lastTranslation: CGFloat = 0
     private var velocity: CGFloat = 0
     func begin() {
+        guard pinchStartScale == nil else { return }
         momentum?.cancel(); momentum = nil
         gestureStart = scrollView?.contentOffset.y ?? 0
         lastTime = CACurrentMediaTime(); lastTranslation = 0; velocity = 0
     }
     func drag(_ translation: CGFloat) {
+        guard pinchStartScale == nil else { return }
         let now = CACurrentMediaTime(), elapsed = now - lastTime
         if elapsed > 0.005 { velocity = -(translation - lastTranslation) / elapsed }
         lastTime = now; lastTranslation = translation
         move(to: gestureStart - translation, animated: false)
     }
     func end() {
+        guard pinchStartScale == nil else { return }
         guard CACurrentMediaTime() - lastTime < 0.1, abs(velocity) > 30 else { return }
         let initialVelocity = min(5000, max(-5000, velocity))
         momentum = Task { @MainActor [weak self] in
@@ -1651,6 +2290,7 @@ private struct RemoteNativeMixerRow: View {
 @MainActor private struct RemoteTrackScrollRail: View {
     let controller: RemoteTrackScrollController
     @State private var dragging = false
+    @GestureState private var pinching = false
     var body: some View {
         VStack(spacing: 0) {
             Button { controller.step(-1) } label: {
@@ -1672,17 +2312,25 @@ private struct RemoteNativeMixerRow: View {
                     controller.drag($0.translation.height)
                 }
                 .onEnded { _ in controller.end(); dragging = false })
+            .simultaneousGesture(MagnificationGesture()
+                .updating($pinching) { _, active, _ in active = true }
+                .onChanged { controller.resizeTracks($0) }
+                .onEnded { _ in controller.finishResizingTracks(); dragging = false })
+            .onChange(of: pinching) { active in
+                if !active { controller.finishResizingTracks(); dragging = false }
+            }
             .accessibilityElement(children: .contain).accessibilityLabel("Área de rolagem do Track-Mixer")
+            .accessibilityHint("Use dois dedos em pinça nesta barra para ajustar a altura das pistas")
     }
 }
 #if os(iOS)
 extension RemoteTrackScrollController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        receiveItemHold(touch)
+        gestureRecognizer === gridTapRecognizer ? receiveGridTap(touch) : receiveItemHold(touch)
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        otherGestureRecognizer === gridScrollView?.panGestureRecognizer
+        return otherGestureRecognizer === gridScrollView?.panGestureRecognizer
     }
 }
 
@@ -1723,13 +2371,17 @@ private final class RemoteGridItemHoldArea: UIView {
 private struct RemoteTrackScrollProbe: UIViewRepresentable {
     let controller: RemoteTrackScrollController
     var isGrid = false
+    var gridTap: ((Double) -> Void)? = nil
     func makeUIView(context: Context) -> RemoteTrackScrollProbeView {
         let view = RemoteTrackScrollProbeView()
         view.isUserInteractionEnabled = false; view.controller = controller; view.isGrid = isGrid
+        if isGrid { controller.gridTap = gridTap }
         return view
     }
     func updateUIView(_ view: RemoteTrackScrollProbeView, context: Context) {
-        view.controller = controller; view.isGrid = isGrid; view.resolve()
+        view.controller = controller; view.isGrid = isGrid
+        if isGrid { controller.gridTap = gridTap }
+        view.resolve()
     }
 }
 private final class RemoteTrackScrollProbeView: UIView {
@@ -1826,7 +2478,7 @@ private struct RemoteNativeProjectionImage: View {
             if let content, let state = remote.remoteState {
                 projection(content, state: state)
             } else if remote.remoteState?.timer == nil {
-                Text("Atualize o CatLive no Mac para usar este painel.")
+                Text("Atualize o CatLive no PC para usar este painel.")
                     .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                     .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1943,7 +2595,7 @@ private struct RemoteNativeNoticeOverlay: View {
                     Toggle("TP-2", isOn: Binding(get: { notices.window2 }, set: { command(.noticeDestination, value: 2, enabled: $0) }))
                 }.toggleStyle(.button).tint(JarasTheme.green)
             } else if remote.remoteState?.timer == nil {
-                Text("Atualize o CatLive no Mac para usar este painel.")
+                Text("Atualize o CatLive no PC para usar este painel.")
                     .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                     .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { ProgressView("Aguardando recados…").frame(maxWidth: .infinity, maxHeight: .infinity) }
@@ -2108,7 +2760,7 @@ private struct RemoteNativeNoticeOverlay: View {
         }.onAppear(perform: synchronizeDigits)
             .onChange(of: timer.targetSeconds) { _ in synchronizeDigits() }
             #if os(iOS)
-            .background(RemoteTimerKeyboardDismissal(active: focused != nil) { focused = nil })
+            .background(RemoteKeyboardDismissal(active: focused != nil) { focused = nil })
             #endif
     }
     private func toggleTimer() {
@@ -2141,16 +2793,16 @@ private struct RemoteNativeNoticeOverlay: View {
 #if os(iOS)
 /// Observe taps without taking ownership of the grid's scrolling or control
 /// gestures. Switching between text fields must keep the keyboard open.
-private struct RemoteTimerKeyboardDismissal: UIViewRepresentable {
+struct RemoteKeyboardDismissal: UIViewRepresentable {
     let active: Bool
     let dismiss: () -> Void
-    func makeUIView(context: Context) -> RemoteTimerKeyboardTapView { RemoteTimerKeyboardTapView() }
-    func updateUIView(_ view: RemoteTimerKeyboardTapView, context: Context) {
+    func makeUIView(context: Context) -> RemoteKeyboardTapView { RemoteKeyboardTapView() }
+    func updateUIView(_ view: RemoteKeyboardTapView, context: Context) {
         view.dismiss = dismiss; view.tap.isEnabled = active
     }
-    static func dismantleUIView(_ view: RemoteTimerKeyboardTapView, coordinator: ()) { view.detach() }
+    static func dismantleUIView(_ view: RemoteKeyboardTapView, coordinator: ()) { view.detach() }
 }
-private final class RemoteTimerKeyboardTapView: UIView, UIGestureRecognizerDelegate {
+final class RemoteKeyboardTapView: UIView, UIGestureRecognizerDelegate {
     var dismiss: (() -> Void)?
     private weak var installedWindow: UIWindow?
     lazy var tap: UITapGestureRecognizer = {

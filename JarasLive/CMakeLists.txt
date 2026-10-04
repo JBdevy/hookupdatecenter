@@ -7,3 +7,7 @@ add_executable(JarasCoreTests Tests/Core/CoreTests.cpp)
 target_link_libraries(JarasCoreTests PRIVATE JarasLiveCore)
 enable_testing()
 add_test(NAME JarasCoreTests COMMAND JarasCoreTests)
+
+add_executable(SmoothSeekTests Tests/Core/SmoothSeekTests.cpp)
+target_link_libraries(SmoothSeekTests PRIVATE JarasLiveCore)
+add_test(NAME SmoothSeekTests COMMAND SmoothSeekTests)

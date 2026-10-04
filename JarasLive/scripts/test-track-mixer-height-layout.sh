@@ -14,7 +14,7 @@ title=source[titleStart:source.index('\n#endif',titleStart)].replace('private ',
 stubs='''
 final class TrackReorderState: ObservableObject {
  var source: TrackDragSource?
- func begin() {}
+ func begin(track: UUID) {}
  func finish() {}
 }
 final class TrackSelectionRouter {

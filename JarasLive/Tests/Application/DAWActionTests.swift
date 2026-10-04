@@ -168,7 +168,7 @@ final class DAWActionTests: XCTestCase {
         let cc = ControlInput(kind: "midi", label: "Keyboard CH1 CC7", device: 27, channel: 0, status: 0xb0, number: 7)
         bindings.setInput(cc, action: .volumeTrack, kind: "midi")
         bindings.setTrack(1001, action: .volumeTrack)
-        XCTAssertEqual(bindings.binding(.volumeTrack).trackNumber, 1000)
+        XCTAssertEqual(bindings.binding(.volumeTrack).trackNumber, 1001)
         bindings.setTrack(0, action: .selectTrack)
         XCTAssertEqual(bindings.binding(.selectTrack).trackNumber, 1)
         bindings.setInput(ControlInput(kind: "midi", label: "Auto", device: 27, channel: 0, status: 0x90, number: 60), action: .toggleAuto, kind: "midi")

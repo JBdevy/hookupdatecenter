@@ -186,10 +186,73 @@ public extension Project {
             }
         }
     }
+    mutating func moveNormalTrack(_ source: UUID, on target: UUID, after: Bool, outsideGroup: Bool, song songID: UUID) {
+        guard let song = songs.firstIndex(where: { $0.id == songID }),
+              let destination = songs[song].normalTrackDropDestination(source, on: target, after: after, outsideGroup: outsideGroup),
+              var moving = songs[song].tracks.first(where: { $0.id == source }) else { return }
+        var remaining = songs[song].tracks.filter { $0.id != source }
+        if moving.parentTrackID != destination.parent {
+            if let parent = destination.parent { moving.sendToGroup(parent) }
+            else { moving.detachFromGroup() }
+        }
+        let insertion = destination.before.flatMap { before in remaining.firstIndex { $0.id == before } } ?? remaining.count
+        remaining.insert(moving, at: insertion)
+        songs[song].tracks = remaining
+        orderSpecialTracks()
+    }
+    /// A folder dropped ABOVE a member stays outside the old folder and
+    /// adopts that member and the following siblings, preserving their trees.
+    mutating func adoptTracksBelow(_ target: UUID, into source: UUID, song songID: UUID) {
+        guard let song = songs.firstIndex(where: { $0.id == songID }),
+              let adoption = songs[song].groupAdoption(source, above: target) else { return }
+        let tracks = songs[song].tracks, hierarchy = TrackHierarchy(tracks)
+        guard let parent = tracks.first(where: { $0.id == adoption.parent }) else { return }
+        let sourceIDs = hierarchy.descendants(of: source).union([source])
+        let adoptedIDs = adoption.roots.reduce(into: Set<UUID>()) { $0.formUnion(hierarchy.descendants(of: $1).union([$1])) }
+        let folderIDs = hierarchy.descendants(of: parent.id).union([parent.id])
+        var moving = tracks.filter { sourceIDs.contains($0.id) }
+        var adopted = tracks.filter { adoptedIDs.contains($0.id) }
+        var remaining = tracks.filter { !sourceIDs.contains($0.id) && !adoptedIDs.contains($0.id) }
+        guard let root = moving.firstIndex(where: { $0.id == source }),
+              let last = remaining.lastIndex(where: { folderIDs.contains($0.id) }) else { return }
+        if let outer = parent.parentTrackID { moving[root].sendToGroup(outer) }
+        else { moving[root].detachFromGroup() }
+        let roots = Set(adoption.roots)
+        for index in adopted.indices where roots.contains(adopted[index].id) { adopted[index].sendToGroup(source) }
+        // The hit track becomes the first child; retain the order of both trees.
+        moving.insert(contentsOf: adopted, at: root + 1)
+        remaining.insert(contentsOf: moving, at: last + 1)
+        songs[song].tracks = remaining
+        orderSpecialTracks()
+    }
+    /// Remove just this subtree from its immediate folder, placing it after
+    /// that folder's remaining children while preserving the internal routes.
+    mutating func removeTrackFromGroup(_ id: UUID) {
+        for song in songs.indices {
+            let tracks = songs[song].tracks
+            guard let source = tracks.first(where: { $0.id == id }),
+                  let parentID = source.parentTrackID,
+                  let parent = tracks.first(where: { $0.id == parentID }) else { continue }
+            let hierarchy = TrackHierarchy(tracks)
+            let movingIDs = hierarchy.descendants(of: id).union([id])
+            let folderIDs = hierarchy.descendants(of: parentID).union([parentID])
+            var moving = tracks.filter { movingIDs.contains($0.id) }
+            var remaining = tracks.filter { !movingIDs.contains($0.id) }
+            guard let root = moving.firstIndex(where: { $0.id == id }),
+                  let last = remaining.lastIndex(where: { folderIDs.contains($0.id) }) else { continue }
+            if let outer = parent.parentTrackID { moving[root].parentTrackID = outer }
+            else { moving[root].detachFromGroup() }
+            remaining.insert(contentsOf: moving, at: last + 1)
+            songs[song].tracks = remaining
+        }
+        orderSpecialTracks()
+    }
     mutating func ungroupTrack(_ id: UUID) {
         for song in songs.indices {
+            let parent = songs[song].tracks.first { $0.id == id }?.parentTrackID
             for track in songs[song].tracks.indices where songs[song].tracks[track].parentTrackID == id {
-                songs[song].tracks[track].detachFromGroup()
+                if let parent { songs[song].tracks[track].parentTrackID = parent }
+                else { songs[song].tracks[track].detachFromGroup() }
             }
         }
         orderSpecialTracks()
@@ -272,6 +335,15 @@ public extension Project {
 }
 
 private extension Track {
+    mutating func sendToGroup(_ parent: UUID) {
+        var patches = outputPatches
+        if patches.isEmpty { patches = [.masterGroup] }
+        patches[0] = .masterGroup
+        patches = [.masterGroup] + patches.dropFirst().filter { $0 != .master && $0 != .masterGroup }
+        parentTrackID = parent
+        patch = patches[0]; secondaryPatch = patches.count > 1 ? patches[1] : nil
+        if outputs != nil { outputs = patches }
+    }
     mutating func detachFromGroup() {
         if let outputs { self.outputs = outputs.map { $0 == .masterGroup ? .master : $0 } }
         if patch == .masterGroup { patch = .master }

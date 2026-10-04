@@ -79,9 +79,9 @@ final class FrozenMIDITests: XCTestCase {
         XCTAssertEqual(single.muted, true); XCTAssertFalse(single.midi!.notes.isEmpty)
         XCTAssertEqual(single.startTime, a.startTime); XCTAssertEqual(single.duration, a.duration)
         let audio = AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/original.wav"))
-        XCTAssertThrowsError(try ItemGlue.validate(track: track, clips: [a, audio]))
+        XCTAssertNoThrow(try ItemGlue.validate(track: track, clips: [a, audio]))
         var frozen = audio; frozen.id = UUID(); frozen.frozenMIDI = true
-        XCTAssertThrowsError(try ItemGlue.validate(track: track, clips: [audio, frozen]))
+        XCTAssertNoThrow(try ItemGlue.validate(track: track, clips: [audio, frozen]))
     }
 
     @MainActor func testGlueMultipleTracksOneUndoStaleGuardAndAudioTimingRoundtrip() throws {
@@ -111,5 +111,15 @@ final class FrozenMIDITests: XCTestCase {
         XCTAssertEqual(show.current?.tracks[0].clips.count, 2)
         XCTAssertTrue(show.current!.tracks[0].clips.allSatisfy { $0.renderedTiming == true })
         XCTAssertTrue(show.knownMediaPaths.isSuperset(of: ["Stems/a.wav", "Stems/b.wav", "Stems/glued.wav"]))
+    }
+    func testItemPitchSurvivesDocumentAndRejectsOutOfRange() throws {
+        var project = Project.empty(name: "Item tuning")
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/test.wav"))
+        clip.pitchSemitones = -7; track.clips = [clip]; project.songs[0].tracks = [track]
+        let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(copy.songs[0].tracks[0].clips[0].pitchSemitones, -7)
+        project.songs[0].tracks[0].clips[0].pitchSemitones = 13
+        XCTAssertThrowsError(try project.validate())
     }
 }
