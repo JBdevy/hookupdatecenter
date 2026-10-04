@@ -343,8 +343,17 @@ public enum LogicProjectImporter {
             }
         }
         markers.sort { $0.start < $1.start }
-        song.duration = max(1, song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0,
-                            markers.map(\.end).max() ?? 0, musicRegions.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0, markers.map(\.start).max() ?? 0)
+        var duration = 1.0
+        for track in song.tracks {
+            for clip in track.clips { duration = max(duration, clip.startTime + clip.duration) }
+        }
+        for marker in markers {
+            duration = max(duration, marker.start)
+            duration = max(duration, marker.end)
+        }
+        for region in musicRegions { duration = max(duration, region.endTime) }
+        for marker in song.markers ?? [] { duration = max(duration, marker.position) }
+        song.duration = duration
         for (index, marker) in markers.enumerated() {
             song.markers?.append(TimelineMarker(id: UUID(), name: String(marker.name.prefix(TimelineMarker.maximumNameLength)), position: marker.start, color: 0xC7AB40))
             let next = index + 1 < markers.count ? markers[index + 1].start : song.duration
