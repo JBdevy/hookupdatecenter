@@ -626,7 +626,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         let width = documentUnitWidth * next
         let screenX = grid.contentView.frame.width / 2
         let offset = min(max(0, CGFloat(fraction) * width - screenX), max(0, width - grid.contentView.frame.width))
-        grid.zoomAnchor = (fraction, screenX, width)
+        grid.zoomAnchor = (fraction, screenX, CGFloat(width))
         zoom = next
         awaitingRenderedZoom = next
         // changeZoom publishes this bucket with the scale. Native bounds
