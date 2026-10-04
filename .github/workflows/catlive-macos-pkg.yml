@@ -65,7 +65,9 @@ jobs:
           APP="$RUNNER_TEMP/catlive-build/Build/Products/Release/CatLive.app"
           test -d "$APP"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = 'com.hookdeveloper.jaraslive.mac'
-          lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/CatLive"
+          ARCHS_FOUND="$(lipo -archs "$APP/Contents/MacOS/CatLive")"
+          [[ " $ARCHS_FOUND " == *" arm64 "* ]]
+          [[ " $ARCHS_FOUND " == *" x86_64 "* ]]
 
       - name: Import Developer ID certificates
         shell: bash
