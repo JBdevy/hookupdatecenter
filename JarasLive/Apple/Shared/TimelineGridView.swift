@@ -1281,6 +1281,13 @@ private final class NativeTimelineNeedlesView: NSView {
         let root = CALayer(), line = CAShapeLayer(), head = CAShapeLayer(), trail = CAGradientLayer()
         init() {
             root.addSublayer(trail); root.addSublayer(line); root.addSublayer(head)
+            // Disable implicit animations on these layers once. Opening and
+            // committing a transaction for each needle frame flushes the window.
+            let keys = ["position", "bounds", "hidden", "opacity", "path", "fillColor", "strokeColor", "lineDashPattern",
+                        "lineCap", "lineWidth", "shadowColor", "shadowOpacity", "shadowRadius", "shadowOffset", "colors", "locations"]
+            for layer in [root, line, head, trail] {
+                layer.actions = Dictionary(uniqueKeysWithValues: keys.map { ($0, NSNull()) })
+            }
             line.fillColor = nil; line.lineWidth = 1.5
             trail.startPoint = CGPoint(x: 0, y: 0.5); trail.endPoint = CGPoint(x: 1, y: 0.5)
         }
@@ -1376,7 +1383,6 @@ private final class NativeTimelineNeedlesView: NSView {
         editX = x(transport.editPosition ?? transport.position); subX = x(playback.subPosition)
         let merged = subVisible && abs(editX - subX) < 0.5
         let blended = [0, 8, 16].reduce(0) { $0 | (((((colors[1] >> $1) & 255) + ((colors[2] >> $1) & 255)) / 2) << $1) }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
         draw(edit, x: editX, color: merged ? blended : colors[1], playback: false,
             glowing: dragging == false || (merged && dragging == true), merged: merged)
         main.root.isHidden = !transport.playing && transport.paused != true
@@ -1386,7 +1392,6 @@ private final class NativeTimelineNeedlesView: NSView {
             draw(sub, x: subX, color: colors[2], playback: false, glowing: transport.subPlay.playing || dragging == true)
             sub.root.opacity = now.truncatingRemainder(dividingBy: 0.9) < 0.45 ? 1 : 0.3
         }
-        CATransaction.commit()
         follow.update(position: playback.followPosition, pixelsPerSecond: size.width / max(1, extent), contentWidth: size.width,
             source: "\(songID?.uuidString ?? "")-\(playback.followSource == .sub ? "sub" : "main")")
     }
@@ -1399,16 +1404,20 @@ private final class NativeTimelineNeedlesView: NSView {
             trailWidth: min(x, 38), glowing: glowing, merged: merged, playback: playback)
         guard needle.appearance != appearance else { return }
         needle.appearance = appearance
+        // Shape paths alone do not establish layer bounds. Give both shapes
+        // explicit geometry so the compositor cannot cull them at distant zoom.
+        needle.line.frame = needle.root.bounds; needle.head.frame = needle.root.bounds
         let color = ink(value)
         let path = CGMutablePath(); path.move(to: CGPoint(x: 14, y: tip)); path.addLine(to: CGPoint(x: 14, y: max(tip, size.height)))
         needle.line.path = path; needle.line.strokeColor = color
+        needle.line.shadowPath = path.copy(strokingWithWidth: 1.5, lineCap: .butt, lineJoin: .miter, miterLimit: 10)
         needle.line.lineDashPattern = merged ? [1, 3] : nil
         needle.line.lineCap = merged ? .round : .butt
         needle.line.shadowColor = color; needle.line.shadowOpacity = glowing ? 1 : 0.55
         needle.line.shadowRadius = glowing ? 8 : 3; needle.line.shadowOffset = .zero
         let head = CGMutablePath(); head.move(to: CGPoint(x: 7, y: playback ? tip : top + 5))
         head.addLine(to: CGPoint(x: 21, y: playback ? tip : top + 5)); head.addLine(to: CGPoint(x: 14, y: playback ? tip + 9 : tip)); head.closeSubpath()
-        needle.head.path = head; needle.head.fillColor = merged ? color.copy(alpha: 0.18) : color
+        needle.head.path = head; needle.head.shadowPath = head; needle.head.fillColor = merged ? color.copy(alpha: 0.18) : color
         needle.head.strokeColor = merged ? color : nil; needle.head.lineDashPattern = merged ? [1, 2] : nil; needle.head.lineWidth = 1.5
         needle.head.shadowColor = color; needle.head.shadowOpacity = playback && glowing ? 0.9 : 0
         needle.head.shadowRadius = 4; needle.head.shadowOffset = .zero

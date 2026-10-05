@@ -715,9 +715,8 @@ final class GridNativeScrollView: NSScrollView {
               let prepareHorizontalScroll else { return }
         preparingHorizontalScroll = true
         defer { preparingHorizontalScroll = false }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        // Ordinary movement inside the prepared bucket does not need a
+        // transaction/layout flush. Prepare changed buckets before revealing them.
         if prepareHorizontalScroll(x) { document.layoutSubtreeIfNeeded() }
     }
     var fileDrop: (([URL], CGPoint) -> Bool)?

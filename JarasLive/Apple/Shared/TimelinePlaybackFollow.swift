@@ -123,9 +123,9 @@ final class TimelinePlaybackFollowView: NSView {
             needsApply = false
             return
         }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        // NSClipView.scroll applies the origin directly. A nested Core
+        // Animation commit here flushes unrelated hosting layouts at 60 Hz.
+        // Let the normal display cycle commit the updated viewport and layers.
         scroll.prepareHorizontalViewport(at: x)
         // Tile preparation can finish a pending layout. Never apply a position
         // calculated for another scale or viewport width, or consume its handoff.

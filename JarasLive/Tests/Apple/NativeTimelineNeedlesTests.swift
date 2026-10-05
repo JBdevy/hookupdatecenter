@@ -28,6 +28,8 @@ MainActor.assumeIsolated {
     let initialLayouts = host.layouts
     show.publish(main: 20); pump(0.035)
     let first = position(1); pump(0.02); let second = position(1)
+    precondition(needles.layer!.sublayers![1].animationKeys()?.isEmpty != false,
+                 "playback positions update directly without implicit animation lag")
     precondition(first >= 20 && second > first, "native layers interpolate between authoritative samples")
     pump(0.1)
     let stable = position(1)
@@ -61,5 +63,23 @@ MainActor.assumeIsolated {
     precondition(seeks.last?.1 == false && abs(seeks.last!.0 - 500) < 0.00001, "editing head remains draggable")
     precondition(host.layouts == pausedLayouts, "appearance and head interaction do not relayout the host")
     print("NATIVE_NEEDLES_SUB_PRIORITY_CANCEL_STOP_APPEARANCE_AND_EDIT_HIT_OK")
+    // At the furthest zoom the song and its cursors occupy only a few pixels.
+    // Verify the real compositor geometry and painted alpha, not just positions.
+    for extent in [1000.0, 200000, 1000000] {
+        needles.configure(show: show, size: CGSize(width: 800, height: 240), rulerHeight: 48,
+            verticalOffset: 0, extent: extent, seek: { _, _ in }, marker: { _ in })
+        let root = needles.layer!.sublayers![0]
+        precondition((root.sublayers![1] as! CAShapeLayer).bounds.size == CGSize(width: 28, height: 240))
+        let bitmap = CGContext(data: nil, width: 800, height: 240, bitsPerComponent: 8,
+            bytesPerRow: 800 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        needles.layer!.render(in: bitmap)
+        let pixels = bitmap.data!.assumingMemoryBound(to: UInt8.self)
+        let column = Int(min(799, max(0, 500 * 800 / extent)))
+        let left = max(0, column - 2), right = min(799, column + 2)
+        precondition((left...right).contains { pixels[100 * 800 * 4 + $0 * 4 + 3] > 0 },
+                     "the editing needle remains painted at every zoom level")
+    }
+    print("NATIVE_NEEDLES_VISIBLE_PIXELS_AT_DISTANT_AND_MINIMUM_ZOOM_OK")
     needles.stop()
 }
