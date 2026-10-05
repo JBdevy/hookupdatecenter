@@ -81,5 +81,21 @@ MainActor.assumeIsolated {
                      "the editing needle remains painted at every zoom level")
     }
     print("NATIVE_NEEDLES_VISIBLE_PIXELS_AT_DISTANT_AND_MINIMUM_ZOOM_OK")
+    for width in [1000000.0, 100000, 12000, 1500] {
+        host.rootView = NativeTimelineNeedles(show: show, width: width, height: 240,
+            rulerHeight: 48, verticalOffset: 0, extent: 1000,
+            seek: { _, _ in }, marker: { _ in }).frame(width: width, height: 240)
+        host.setFrameSize(CGSize(width: width, height: 240)); host.layoutSubtreeIfNeeded()
+        show.publish(main: 500, playing: true); pump(0.25)
+        let current = find(host)!
+        precondition(abs(current.frame.width - width) < 0.001,
+            "zooming out must shrink the native needle host, rather than center its stale fitting width")
+        let head = current.layer!.sublayers![1]
+        let actualX = current.convert(CGPoint(x: head.frame.minX + 14, y: 50), to: host).x
+        precondition(abs(actualX - (500 + TimelinePlaybackPresentation.maximumExtrapolation) * width / 1000) < 1,
+            "the composited playback needle must occupy the same document coordinate as the items")
+        precondition(current.visibleRect.intersects(head.frame), "the playback needle must remain inside the visible native viewport after zoom")
+    }
+    print("NATIVE_NEEDLES_SWIFTUI_HOST_SHRINK_AND_DOCUMENT_ALIGNMENT_OK")
     needles.stop()
 }

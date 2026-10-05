@@ -295,8 +295,10 @@ struct TimecodePlaybackSpan {
         var revision: UInt64
     }
     private var preparedJump: PreparedJump?
+    private var appliedJumpBoundaries: [ObjectIdentifier: UInt64] = [:]
     private var boundaryTails: [(Voice, UInt64)] = []
     private func cancelPreparedJump() {
+        appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for key in Array(voices.keys) where key.head == 2 { remove(key) }
         for voice in voices.values { voice.effects?.setPlaybackBoundary() }
         headAudioClock[2] = nil; lastPosition[2] = nil; preparedJump = nil
@@ -810,6 +812,7 @@ struct TimecodePlaybackSpan {
         setGraphRenderEnabled(instrumentRenderPending)
         if !realtime { engine.pause() }
         preparedJump = nil
+        appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
         lastPosition.removeAll(); headAudioClock.removeAll()
         for meter in meters.values { meter.reset() }
@@ -1085,6 +1088,7 @@ struct TimecodePlaybackSpan {
         applyNormalization(to: &voice)
     }
     func previewClipFXBypass(_ id: UUID, bypassed: Bool) {
+        appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for fragment in clipFragments[id] ?? [id] { previewClipFXBypassFragment(fragment, bypassed: bypassed) }
     }
     private func previewClipFXBypassFragment(_ id: UUID, bypassed: Bool) {
@@ -1102,6 +1106,7 @@ struct TimecodePlaybackSpan {
         }
     }
     func previewClipFX(_ id: UUID, settings: NativeFXSettings) {
+        appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for fragment in clipFragments[id] ?? [id] { previewClipFXFragment(fragment, settings: settings) }
     }
     private func previewClipFXFragment(_ id: UUID, settings: NativeFXSettings) {
@@ -1118,6 +1123,7 @@ struct TimecodePlaybackSpan {
         }
     }
     func previewFX(_ track: UUID?, settings: NativeFXSettings) {
+        appliedJumpBoundaries.removeAll(keepingCapacity: true)
         if let track {
             for (key, sampler) in samplers where key.track == track && !settings.isEnabled(key.effect) { sampler.silence() }
         }
@@ -1863,6 +1869,7 @@ struct TimecodePlaybackSpan {
         }
         if realtime, preparedJump == nil, let next = nextJump, next.0 - transport.position <= 1.0,
            let host = audioHostTime(position: next.0, head: 0), host > nowHost + AVAudioTime.hostTime(forSeconds: 0.015) {
+            appliedJumpBoundaries.removeAll(keepingCapacity: true)
             preparedJump = PreparedJump(boundary: next.0, destination: next.1, host: host, section: next.2, revision: revision)
             headAudioClock[2] = (next.1, host)
         }
@@ -2039,11 +2046,19 @@ struct TimecodePlaybackSpan {
         if let jump = preparedJump {
             // Both heads use the same host clock. Rendering fades the outgoing
             // source at the boundary; no UI timer stops or restarts the audio.
-            let reference = masterBus.outputPresentationLatency
+            var reference: Double?
             for (key, voice) in voices where key.head == 0 {
-                let delay = max(0, (voice.effects?.equalizer.outputPresentationLatency ?? reference) - reference)
+                guard let effects = voice.effects else { continue }
+                let id = ObjectIdentifier(effects.equalizer)
+                guard appliedJumpBoundaries[id] != jump.host else { continue }
+                // Device latency queries synchronize with the audio I/O unit.
+                // A prepared boundary is immutable: apply it once per voice,
+                // including newly scheduled voices, instead of every UI tick.
+                if reference == nil { reference = masterBus.outputPresentationLatency }
+                let delay = max(0, effects.equalizer.outputPresentationLatency - reference!)
                 let ticks = AVAudioTime.hostTime(forSeconds: delay)
-                voice.effects?.setPlaybackBoundary(jump.host > ticks ? jump.host - ticks : jump.host)
+                effects.setPlaybackBoundary(jump.host > ticks ? jump.host - ticks : jump.host)
+                appliedJumpBoundaries[id] = jump.host
             }
         }
         updateMetronome(song: song, transport: transport)
@@ -2201,6 +2216,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
     ]
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        let actions = Dictionary(uniqueKeysWithValues:
+            ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity"].map { ($0, NSNull()) })
+        for content in backgrounds + levelClips + gradients + scaleLabels + [peakLabel] { content.actions = actions }
         wantsLayer = true
         layer?.masksToBounds = true
         // All visible content belongs to retained sublayers; the NSView itself
@@ -2321,19 +2339,18 @@ struct VerticalTrackMeter: NSViewRepresentable {
     }
     fileprivate func refreshVisibleDrawing() {
         if let layer, installedLayer !== layer || backgrounds.contains(where: { $0.superlayer !== layer }) || levelClips.contains(where: { $0.superlayer !== layer }) {
-            CATransaction.begin(); CATransaction.setDisableActions(true)
             layer.masksToBounds = true
             for channel in 0..<2 { layer.addSublayer(backgrounds[channel]); layer.addSublayer(levelClips[channel]) }
             for label in scaleLabels { layer.addSublayer(label) }
             layer.addSublayer(peakLabel); installedLayer = layer
             geometryScale = 0; pendingDrawing = true; pendingPeak = true
-            CATransaction.commit()
         }
         guard pendingDrawing || pendingPeak || geometrySize != bounds.size || geometryShowsScale != showScale,
               let window, window.isVisible, !window.isMiniaturized,
               !isHiddenOrHasHiddenAncestor, !visibleRect.isEmpty else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        // Every retained content layer disables its implicit actions once.
+        // Let all meters share the window's display commit rather than forcing
+        // a global layout/commit separately for every track's amplitude tick.
         updateLayerGeometry()
         if pendingDrawing {
             for channel in 0..<2 {

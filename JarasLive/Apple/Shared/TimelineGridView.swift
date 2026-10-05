@@ -1322,7 +1322,14 @@ private final class NativeTimelineNeedlesView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(show: ShowController, size: CGSize, rulerHeight: CGFloat, verticalOffset: CGFloat,
                    extent: Double, seek: @escaping (Double, Bool) -> Void, marker: @escaping (Bool) -> Void) {
+        let resized = self.size != size
         self.size = size; self.rulerHeight = rulerHeight; self.verticalOffset = verticalOffset; self.extent = extent
+        if resized {
+            // AppKitPlatformViewHost caches the representable's fitting size.
+            // Without invalidation it keeps the old wide view centered inside
+            // a zoomed-out document, moving every needle outside the viewport.
+            invalidateIntrinsicContentSize()
+        }
         self.seek = seek; self.marker = marker
         if self.show !== show {
             subscriptions.removeAll(); self.show = show
