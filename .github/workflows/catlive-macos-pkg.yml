@@ -168,7 +168,7 @@ jobs:
           python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); sys.exit(0 if data.get("status") == "Accepted" else 1)' "$RUNNER_TEMP/catlive-notary-result.json"
           xcrun stapler staple "$PKG"
           xcrun stapler validate "$PKG"
-          shasum -a 256 "$PKG" > "$PKG.sha256"
+          (cd dist && shasum -a 256 "Catlive-$VERSION.pkg" > "Catlive-$VERSION.pkg.sha256")
 
       - name: Upload notarized installer
         uses: actions/upload-artifact@v4
