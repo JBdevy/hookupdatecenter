@@ -1,6 +1,12 @@
 import SwiftUI
 import AppKit
-struct Part: Equatable { var name: String; var color: UInt32?; var displayName: String { name } }
+import Combine
+struct Part: Equatable { var name: String; var color: UInt32?; var startTime: Double = 0; var displayName: String { name } }
+struct TransportState { var position: Double = 0; var queueStartedAt: Double? }
+struct ShowSnapshot { var transport: TransportState }
+final class ShowController: ObservableObject {
+    @Published var snapshot = ShowSnapshot(transport: TransportState())
+}
 extension View { func jarasHelp(_ text: String) -> some View { self } }
 
 import SwiftUI
@@ -103,7 +109,34 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
   print("NATIVE_SETLIST_PIXEL_MEAN width=\(width) difference=\(mean)")
  }
 }
+@MainActor func testPlaybackUpdatesWithoutRebuildingRows() {
+    let show = ShowController()
+    let region = Part(name: "CURRENT", color: 0x44ff88, startTime: 30)
+    let view = NativeRegionSetlistLabelView(frame: CGRect(x: 0, y: 0, width: 340, height: 34))
+    view.configure(number: 1, name: region.name, duration: "30s", color: 0x44ff88,
+        selected: false, active: true, queued: false, prepareOnly: false, progress: 0, queueProgress: 0)
+    view.bindPlayback(SetlistPlaybackBinding(show: show, region: region, end: 60, playbackEnd: 60))
+    func value<T>(_ name: String, _: T.Type) -> T { Mirror(reflecting: view).children.first { $0.label == name }!.value as! T }
+    for sample in 1...30 { show.snapshot.transport.position = 30 + Double(sample) / 30 }
+    precondition(abs(value("progress", Double.self) - 1.0 / 30) < 1e-9)
+    precondition(value("durationText", String.self) == "29s")
+    show.snapshot.transport.position = 45
+    precondition(value("progress", Double.self) == 0.5)
+    precondition(value("durationText", String.self) == "15s")
+    show.snapshot.transport.position = 30 // Loop wraps reset the bar on the same sample.
+    precondition(value("progress", Double.self) == 0)
+    show.snapshot.transport.queueStartedAt = 30
+    view.configure(number: 2, name: "QUEUED", duration: "30s", color: 0x44ff88,
+        selected: false, active: false, queued: true, prepareOnly: false, progress: 0, queueProgress: 1)
+    show.snapshot.transport.position = 45
+    precondition(value("queueProgress", Double.self) == 0.5)
+    view.bindPlayback(nil)
+    show.snapshot.transport.position = 59
+    precondition(value("queueProgress", Double.self) == 0.5, "Inactive rows must release their playback subscription")
+    print("NATIVE_SETLIST_DIRECT_PROGRESS_COUNTDOWN_LOOP_WRAP_AND_UNSUBSCRIBE_OK")
+}
 MainActor.assumeIsolated {
+ testPlaybackUpdatesWithoutRebuildingRows()
  try! testVisualParity()
  try! testActions()
  try! benchmarkLabels()

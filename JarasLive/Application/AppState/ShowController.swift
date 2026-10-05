@@ -1,11 +1,63 @@
 import Foundation
 import Combine
+/// Coalesce model mutations, publishing only changes used by static controls.
+/// Progress views continue to observe the playback samples directly.
+@MainActor public final class ShowPresentationObserver: ObservableObject {
+    public let objectWillChange = ObservableObjectPublisher()
+    private let show: ShowController
+    private var state: ShowPresentationState
+    private var subscription: AnyCancellable?
+    private var pending = false
+    public init(show: ShowController) {
+        self.show = show; state = show.presentationState
+        subscription = show.objectWillChange.sink { [weak self] _ in self?.schedule() }
+    }
+    private func schedule() {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            let next = self.show.presentationState
+            guard self.state != next else { return }
+            self.state = next; self.objectWillChange.send()
+        }
+    }
+}
+public struct ShowPresentationState: Equatable {
+    let project: UUID
+    let projectRevision: UInt64
+    let setlistRevision: UInt64
+    let transport: TransportState
+    let nextSong: UUID?
+    let focused: UUID?
+    let focusRequest: UUID
+    let setlistFocusRequest: UUID
+    let navigation: ShowController.SetlistNavigationRequest?
+    let pitchRegion: UUID?
+    let subRegion: UUID?
+    let bpm: Double
+    let dirty: Bool
+    let saving: Bool
+    let message: String
+}
 /// Mixer controls observe project edits, never the 30 Hz playback position.
 @MainActor public final class ShowProjectPresentation: ObservableObject {
     public let objectWillChange = ObservableObjectPublisher()
 }
 @MainActor public final class ShowController: ObservableObject {
     public let projectPresentation = ShowProjectPresentation()
+    public var presentationState: ShowPresentationState {
+        var transport = snapshot.transport
+        transport.position = 0; transport.editPosition = nil
+        transport.subPlay.position = 0; transport.multiLoop?.amount = 0
+        return ShowPresentationState(project: snapshot.project.id, projectRevision: projectRevision,
+            setlistRevision: setlistRevision, transport: transport, nextSong: snapshot.nextSongId,
+            focused: focusedRegion, focusRequest: regionFocusRequest, setlistFocusRequest: setlistFocusRequest,
+            navigation: setlistNavigationRequest, pitchRegion: pitchRegion?.id,
+            subRegion: current?.sectionRegion(at: snapshot.transport.subPlay.position)?.id,
+            bpm: tempoControlBPM, dirty: hasUnsavedChanges, saving: saving, message: message)
+    }
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
             if oldValue.project != snapshot.project || oldValue.transport.songId != snapshot.transport.songId {
@@ -401,6 +453,7 @@ import Combine
         case .playStop: send(snapshot.transport.playing ? .stop : .play)
         case .pause: send(.pause)
         case .repeatPlayback: send(.toggleLoop)
+        case .toggleMultiLoopBypass: send(.toggleMultiLoopBypass)
         case .subPlayStop: send(snapshot.transport.subPlay.playing ? .subStop : .subPlay)
         case .addTrack: addTrackRequest &+= 1
         case .setlistUp, .setlistDown: setlistNavigationRequest = SetlistNavigationRequest(id: UUID(), direction: action == .setlistUp ? -1 : 1)
@@ -501,6 +554,16 @@ import Combine
     public var audioMIDIInput: (UUID, Int) -> Void = { _, _ in }
     private let executor: any CommandExecutor, persistence: any ProjectPersistence
     private let cursorMemory: ProjectCursorMemory?
+    private let globalDefaults: UserDefaults?
+    public static let multiLoopBypassDefaultsKey = "catlive.multiLoopsBypassed"
+    private func restoreGlobalBypass() throws {
+        guard let globalDefaults else { return }
+        let requested = globalDefaults.bool(forKey: Self.multiLoopBypassDefaultsKey)
+        if (snapshot.transport.multiLoopsBypassed == true) != requested {
+            try executor.execute(.toggleMultiLoopBypass, target: nil, value: 0)
+            snapshot.transport = try executor.playbackSnapshot().transport
+        }
+    }
     private var timer: Timer?, lastTime = ProcessInfo.processInfo.systemUptime
     @Published public private(set) var hasUnsavedChanges = false
     @Published public private(set) var saving = false
@@ -556,6 +619,8 @@ import Combine
                   let item = snapshot.project.songs[song].tracks[channel].clips.firstIndex(where: { $0.id == original.id }),
                   snapshot.project.songs[song].tracks[channel].clips[item] == original else { continue }
             do {
+                var rendered = rendered
+                rendered.regionOwnerID = rendered.startTime == original.startTime ? original.regionOwnerID : snapshot.project.songs[song].regionOwner(at: rendered.startTime, end: rendered.startTime + rendered.duration)
                 try executor.replaceAudioClip(rendered, track: track)
                 snapshot.project.songs[song].tracks[channel].clips[item] = rendered
                 markChanged(); onProjectEdited(); return true
@@ -763,11 +828,11 @@ import Combine
         return snapshot.project != before
     }
 
-    public init(executor: any CommandExecutor, persistence: any ProjectPersistence, initialProject: Project = .demo(), cursorMemory: ProjectCursorMemory? = nil) throws {
-        self.executor = executor; self.persistence = persistence; self.cursorMemory = cursorMemory
+    public init(executor: any CommandExecutor, persistence: any ProjectPersistence, initialProject: Project = .demo(), cursorMemory: ProjectCursorMemory? = nil, globalDefaults: UserDefaults? = nil) throws {
+        self.executor = executor; self.persistence = persistence; self.cursorMemory = cursorMemory; self.globalDefaults = globalDefaults
         var initialProject = initialProject; initialProject.promoteLoopSectionMarkers()
         try executor.load(initialProject); snapshot = try executor.snapshot()
-        try restoreCursor(); resetHistory()
+        try restoreGlobalBypass(); try restoreCursor(); resetHistory()
     }
     public func restore() async {
         do { if let project = try await persistence.load() { try replaceProject(project) } else { try await persistence.save(snapshot.project) } } catch { message = error.localizedDescription }
@@ -966,6 +1031,9 @@ import Combine
             if command == .subSeek { revealSubCursor() }
             lastTime = ProcessInfo.processInfo.systemUptime
             snapshot.transport = update.transport; snapshot.nextSongId = update.nextSongId
+            if command == .toggleMultiLoopBypass {
+                globalDefaults?.set(snapshot.transport.multiLoopsBypassed == true, forKey: Self.multiLoopBypassDefaultsKey)
+            }
             applyLoopMixer()
             if disabledAuto { markChanged(refreshAudio: false, preservingMediaStorage: true) }
             focusPreparedRegion(previous: previous)
@@ -1372,6 +1440,12 @@ import Combine
               let index = snapshot.project.songs.firstIndex(where: { $0.id == song }) else {
             throw ProjectError.invalid("The destination project is no longer available.")
         }
+        var tracks = tracks
+        let arrangement = snapshot.project.songs[index]
+        for row in tracks.indices { for item in tracks[row].clips.indices {
+            let clip = tracks[row].clips[item]
+            tracks[row].clips[item].regionOwnerID = arrangement.regionOwner(at: clip.startTime, end: clip.startTime + clip.duration)
+        } }
         try executor.insertAudioTracks(tracks, song: song)
         for track in tracks {
             if let destination = snapshot.project.songs[index].tracks.firstIndex(where: { $0.id == track.id }) {
@@ -1387,6 +1461,8 @@ import Combine
                   let trackIndex = snapshot.project.songs[songIndex].tracks.firstIndex(where: { $0.id == track }) else {
                 throw ProjectError.invalid("Unknown recording track")
             }
+            var clip = clip
+            clip.regionOwnerID = snapshot.project.songs[songIndex].regionOwner(at: clip.startTime, end: clip.startTime + clip.duration)
             try executor.addRecordedClip(clip, track: track)
             snapshot.project.songs[songIndex].tracks[trackIndex].clips.append(clip)
             snapshot.project.songs[songIndex].duration = max(snapshot.project.songs[songIndex].duration, clip.startTime + clip.duration)
@@ -2090,7 +2166,7 @@ import Combine
         regionNavigationTask?.cancel(); regionNavigationTask = nil
         try project.validate()
         timer?.invalidate(); timer = nil
-        try executor.load(project); snapshot = try executor.snapshot()
+        try executor.load(project); snapshot = try executor.snapshot(); try restoreGlobalBypass()
         projectRevision &+= 1; hasUnsavedChanges = false
         audioProjectRevision &+= 1
         itemClipboard = nil
@@ -2100,7 +2176,7 @@ import Combine
     }
     public func importProject(_ data: Data) throws {
         let project = try ProjectDocumentCodec.decode(data)
-        try executor.load(project); snapshot = try executor.snapshot(); try restoreCursor(); markChanged()
+        try executor.load(project); snapshot = try executor.snapshot(); try restoreGlobalBypass(); try restoreCursor(); markChanged()
     }
 }
 

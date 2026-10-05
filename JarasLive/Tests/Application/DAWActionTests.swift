@@ -2,6 +2,21 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testGlobalMultiloopBypassIsAssignableWithoutAnyDefaultInput() throws {
+        let action = DAWAction.toggleMultiLoopBypass
+        var bindings = DAWActionBindings()
+        XCTAssertTrue(DAWAction.visible.contains(action))
+        XCTAssertNil(action.defaultKeyboard); XCTAssertNil(bindings.binding(action).keyboard)
+        XCTAssertNil(bindings.binding(action).midi)
+        XCTAssertTrue(action.supportsMIDI); XCTAssertFalse(action.needsTrack); XCTAssertFalse(action.repeats)
+        let key = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        let midi = ControlInput(kind: "midi", label: "Note", device: 9, channel: 2, status: 0x90, number: 41)
+        XCTAssertTrue(bindings.setInput(key, action: action, kind: "keyboard"))
+        XCTAssertTrue(bindings.setInput(midi, action: action, kind: "midi"))
+        let saved = try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(bindings.entries))
+        let restored = DAWActionBindings(stored: saved)
+        XCTAssertEqual(restored.matching(key), action); XCTAssertEqual(restored.matching(midi), action)
+    }
     func testMasterSoloUsesTheGlobalActionAndHasNoDefaultShortcut() {
         XCTAssertEqual(DAWAction.quickMapping(command: "solo", master: true), .soloMaster)
         XCTAssertNil(DAWAction.soloMaster.defaultKeyboard)

@@ -29,4 +29,7 @@ void orderSpecialTracks(Project& project);
 void validateRouting(const Song&);
 void validate(const Project& project);
 void synchronizeTimecode(Project& project);
+std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end = {});
+bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner);
+void synchronizeRegionOwnership(Project& project, const Project* previous = nullptr);
 }

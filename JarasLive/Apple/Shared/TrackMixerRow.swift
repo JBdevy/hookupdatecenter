@@ -1943,7 +1943,9 @@ private final class FooterMixerScrollView: NSView {
             if let cached = strips[index] {
                 strip = cached
                 if force && (version == nil || mountedVersions[index] != version) {
-                    strip.rootView = makeContent(index..<(index + 1)); changed = true
+                    // Scalar edits keep this channel's bounds. Let AppKit coalesce
+                    // its normal layout pass instead of forcing one per autofader tick.
+                    strip.rootView = makeContent(index..<(index + 1))
                 }
             } else {
                 strip = FooterMixerHostingView(rootView: makeContent(index..<(index + 1)))

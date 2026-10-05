@@ -515,6 +515,38 @@ int main() {
     for(const auto& track:repelled.tracks) expect(std::abs(track.clips[0].startTime-42.01)<1e-8,"repulsion preserves offsets of every media item");
     cargoEngine.loadProject(cargo); cargoEngine.moveRegion("cargo-root",39.999);
     expect(std::abs(cargoEngine.project().songs[0].parts[0].startTime-39.99)<1e-8,"repulsion can choose the left side without moving stationary marker");
+    // Passing over material never transfers membership, even after save/reload.
+    Project attachment; attachment.id="attachment-project"; attachment.name="Attachments";
+    Song attachmentSong; attachmentSong.id="attachment-song"; attachmentSong.name="Show"; attachmentSong.duration=100;
+    attachmentSong.parts={{"attachment-a","A",10,20},{"attachment-b","B",40,60}};
+    Track attachmentTrack{"attachment-track","Audio",{"other"}};
+    attachmentTrack.clips={{"attachment-own",{},"Own",12,2},{"attachment-other",{},"Other",45,2},{"attachment-free",{},"Free",75,2}};
+    attachmentSong.tracks={attachmentTrack};
+    attachmentSong.markers=std::vector<TimelineMarker>{{"attachment-cue","Own cue",14,0},{"attachment-foreign","Foreign",47,0},{"attachment-loose","Loose",78,0}};
+    attachment.songs={attachmentSong}; Engine attachments; attachments.loadProject(attachment);
+    attachments.moveRegion("attachment-a",40);
+    Project persistedAttachments = attachments.project();
+    attachments.loadProject(persistedAttachments); // Ownership, including nil for loose material, survives reload.
+    attachments.moveRegion("attachment-a",10);
+    const auto& restoredAttachments=attachments.project().songs[0];
+    expect(restoredAttachments.tracks[0].clips[0].startTime==12 && restoredAttachments.tracks[0].clips[1].startTime==45,"leaving another region never steals its audio");
+    expect(restoredAttachments.markers->at(0).position==14 && restoredAttachments.markers->at(1).position==47,"leaving another region never steals its markers");
+    attachments.moveRegion("attachment-a",70); attachments.moveRegion("attachment-a",10);
+    expect(attachments.project().songs[0].tracks[0].clips[2].startTime==75 && attachments.project().songs[0].markers->at(2).position==78,"passing over loose items and markers leaves them stationary");
+    attachments.moveClip("attachment-free",15,""); // An explicit item placement attaches it.
+    attachments.setMarker("attachment-loose","Placed cue",18,0);
+    attachments.moveRegion("attachment-a",70);
+    expect(attachments.project().songs[0].tracks[0].clips.back().startTime==75,"an explicitly placed item travels with its assigned region");
+    expect(attachments.project().songs[0].markers->back().position==78,"an explicitly placed marker travels with its assigned region");
+    attachments.moveClip("attachment-free",95,"");
+    attachments.moveRegion("attachment-a",10);
+    expect(attachments.project().songs[0].tracks[0].clips.back().startTime==95,"explicitly moving an item outside detaches it");
+    attachments.execute({CommandKind::toggleMultiLoopBypass});
+    attachments.loadProject(attachments.project());
+    expect(attachments.transport().multiLoopsBypassed,"global bypass survives a native project reload");
+    attachments.execute({CommandKind::toggleMultiLoopBypass});
+    attachments.loadProject(attachments.project());
+    expect(!attachments.transport().multiLoopsBypassed,"global bypass also preserves its disabled state");
     Engine sizing; sizing.loadProject(editable); sizing.regionFromClip("clip", "resize");
     sizing.resizeRegion("resize", 1, 50);
     expect(sizing.project().songs[0].parts[0].startTime == 1 && sizing.project().songs[0].parts[0].endTime == 50, "both region boundaries resize");

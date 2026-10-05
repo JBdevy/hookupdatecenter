@@ -25,6 +25,7 @@ import Combine
     func playbackSnapshot() throws -> PlaybackSnapshot { playbackReads += 1; return PlaybackSnapshot(transport: transport) }
     func applyProjectEdit(_ project: Project) throws { try project.validate(); self.project = project; fullEdits += 1 }
     func execute(_ command: ShowCommand,target: UUID?,value: Double) throws {
+        if command == .toggleMultiLoopBypass { transport.multiLoopsBypassed = !(transport.multiLoopsBypassed == true); return }
         if command != .clipGain && command != .clipNormalization && command != .clipChannelMode {
             mixerCommands.append(command)
             if failMixerCommand == command { throw ProjectError.invalid("Injected mixer failure") }
@@ -202,6 +203,62 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let show = try ShowController(executor: executor,persistence: MemoryProjectStore(),initialProject: project)
         executor.snapshotReads = 0; executor.playbackReads = 0
         return (show,executor)
+    }
+    @MainActor func testGlobalBypassPersistsBothStatesAcrossProjectsAndControllerRestarts() throws {
+        let suite = "catlive.bypass.test." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let executor = IncrementalSettingsExecutor()
+        let controller = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: fixture(), globalDefaults: defaults)
+        XCTAssertFalse(controller.snapshot.transport.multiLoopsBypassed == true)
+        controller.performAction(.toggleMultiLoopBypass)
+        XCTAssertTrue(defaults.bool(forKey: ShowController.multiLoopBypassDefaultsKey))
+        try controller.replaceProject(fixture())
+        XCTAssertTrue(controller.snapshot.transport.multiLoopsBypassed == true)
+        let reopened = try ShowController(executor: IncrementalSettingsExecutor(), persistence: MemoryProjectStore(), initialProject: fixture(), globalDefaults: defaults)
+        XCTAssertTrue(reopened.snapshot.transport.multiLoopsBypassed == true)
+        reopened.performAction(.toggleMultiLoopBypass)
+        XCTAssertFalse(defaults.bool(forKey: ShowController.multiLoopBypassDefaultsKey))
+        let off = try ShowController(executor: IncrementalSettingsExecutor(), persistence: MemoryProjectStore(), initialProject: fixture(), globalDefaults: defaults)
+        XCTAssertFalse(off.snapshot.transport.multiLoopsBypassed == true)
+    }
+    @MainActor func testStaticPresentationIgnoresClockButKeepsControlAndRegionChanges() async throws {
+        var project = fixture()
+        let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 90)
+        project.songs[0].parts.append(second)
+        let (controller, executor) = try show(project)
+        let observer = ShowPresentationObserver(show: controller)
+        var changes = 0
+        let subscription = observer.objectWillChange.sink { changes += 1 }
+        defer { subscription.cancel() }
+        func flush() async { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
+        for step in 1...30 {
+            executor.transport.position = 37.5 + Double(step) / 30
+            controller.tick()
+            await flush()
+        }
+        XCTAssertEqual(changes, 0, "Setlist and toolbar must not rebuild on playback samples")
+        executor.transport.queuedRegionId = second.id
+        executor.transport.queueStartedAt = executor.transport.position
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 1, "Arming the queue updates controls immediately on the next UI turn")
+        executor.transport.position = 65
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 2, "Crossing a region updates titles even when regionId stays unchanged")
+        executor.transport.subPlay.playing = true
+        executor.transport.subPlay.position = 40
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 3)
+        executor.transport.subPlay.position = 65
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 4, "SubPlay crossing a region must update its displayed song")
+        let track = try XCTUnwrap(controller.current?.tracks.last?.id)
+        controller.sendMixerControl(.mute, target: track)
+        await flush()
+        XCTAssertEqual(changes, 5)
+        executor.transport.playing = false
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 6, "Stopping restores Play and disables Pause")
     }
     @MainActor func testMixerPresentationIgnoresPlaybackTicksAndPublishesRealEdits() throws {
         let (controller, executor) = try show(fixture())

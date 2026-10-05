@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 struct TransportView: View {
     @State private var showingExport = false
     @State private var showingAdvanced = false
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     var documents: ProjectDocuments? = nil
     var remotePresentation = false
     var mediaDirectory: URL? = nil
@@ -13,6 +14,16 @@ struct TransportView: View {
     var setlistCollapsed = false
     var toggleMixer: () -> Void = {}
     var toggleSetlist: () -> Void = {}
+    init(show: ShowController, documents: ProjectDocuments? = nil, remotePresentation: Bool = false,
+         mediaDirectory: URL? = nil, toggleNavigation: @escaping () -> Void = {}, openSettings: @escaping () -> Void = {},
+         mixerCollapsed: Bool = false, setlistCollapsed: Bool = false,
+         toggleMixer: @escaping () -> Void = {}, toggleSetlist: @escaping () -> Void = {}) {
+        self.show = show; self.documents = documents; self.remotePresentation = remotePresentation
+        self.mediaDirectory = mediaDirectory; self.toggleNavigation = toggleNavigation; self.openSettings = openSettings
+        self.mixerCollapsed = mixerCollapsed; self.setlistCollapsed = setlistCollapsed
+        self.toggleMixer = toggleMixer; self.toggleSetlist = toggleSetlist
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     var body: some View {
         GeometryReader { geometry in
             #if os(macOS)
@@ -129,10 +140,19 @@ struct TransportView: View {
         .buttonStyle(TransportButtonStyle(horizontalPadding: controlPadding, fontSize: controlFont)).padding(.horizontal, 8).padding(.vertical, 6)
         .frame(maxWidth: .infinity).background(JarasTheme.panel)
     }
-    private var transportDisplay: some View {
+    private var transportDisplay: some View { TransportDisplaysLive(show: show) }
+}
+
+private struct TransportDisplaysLive: View {
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
+    init(show: ShowController) {
+        self.show = show
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
+    var body: some View {
         let transport = show.snapshot.transport
         let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion)
-        let seconds = max(0, Int(transport.position))
         return HStack(spacing: 0) {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -146,18 +166,31 @@ struct TransportView: View {
                 }
             }
             Rectangle().fill(JarasTheme.line).frame(width: 1)
-            Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
-                .monospacedDigit().frame(width: 100).accessibilityLabel("Transport time")
+            TransportTimeDisplay(show: show).frame(width: 100)
         }.font(.system(size: 12, weight: .semibold)).lineLimit(1).frame(height: 25)
             .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line))
     }
 }
 
+private struct TransportTimeDisplay: View {
+    @ObservedObject var show: ShowController
+    var body: some View {
+        let seconds = max(0, Int(show.snapshot.transport.position))
+        Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
+            .monospacedDigit().accessibilityLabel("Transport time")
+    }
+}
+
 #if os(macOS)
 struct FooterPlaylistDisplay: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     var height: CGFloat = 25
+    init(show: ShowController, height: CGFloat = 25) {
+        self.show = show; self.height = height
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     private var duration: String {
         // listedRegions contains the selected playlist's root regions only;
         // children inside a special region already belong to its full span.
@@ -178,7 +211,12 @@ struct FooterPlaylistDisplay: View {
 #endif
 
 struct FooterInformationDisplay: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
+    init(show: ShowController, documents: ProjectDocuments? = nil, embedded: Bool = false) {
+        self.show = show; self.documents = documents; self.embedded = embedded
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     var documents: ProjectDocuments? = nil
     var embedded = false
     private var displayHeight: CGFloat { embedded ? 25 : 21 }
@@ -199,8 +237,8 @@ struct FooterInformationDisplay: View {
         if hasMultiLoop { return JarasLocalization.string("This song has an active multiloop") }
         return ""
     }
-    // Follow the transport clock, so the pulse stays on the beat through
-    // tempo changes, seeks and loop wraps without another UI timer.
+    // Read the transport clock for beat pulses through tempo changes,
+    // seeks and loop wraps. Static notices do not subscribe to its samples.
     static func loopBeatPhase(transport: TransportState, song: Song?) -> Int? {
         guard transport.playing, transport.loop.enabled,
               let marker = song?.activeTempoMarker(at: transport.position), let bpm = marker.tempoBPM else { return nil }
@@ -209,8 +247,15 @@ struct FooterInformationDisplay: View {
         return beat - Double(index) < 0.45 ? 0 : (index.isMultiple(of: 2) ? 1 : 3)
     }
     var body: some View {
+        Group {
+            if show.snapshot.transport.playing && show.snapshot.transport.loop.enabled {
+                TimelineView(.periodic(from: .now, by: 0.05)) { _ in messageDisplay }
+            } else { messageDisplay }
+        }
+    }
+    private var messageDisplay: some View {
         let message = information
-        TransportInformationMessage(message: message,
+        return TransportInformationMessage(message: message,
             beatPhase: Self.loopBeatPhase(transport: show.snapshot.transport, song: show.current),
             steady: hasMultiLoop && show.snapshot.transport.ignoreNextAfter == nil && !show.snapshot.transport.loop.enabled,
             height: displayHeight, cornerRadius: embedded ? 0 : 4)
@@ -317,7 +362,8 @@ private struct PanelCollapseButton: View {
 }
 
 private struct TempoControl: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     var documents: ProjectDocuments? = nil
     @State private var editing = false
     @State private var bpmDraft = "120"
@@ -327,6 +373,10 @@ private struct TempoControl: View {
     @State private var bpmShake = 0.0
     @FocusState private var meterFocus: Int?
     @FocusState private var bpmFocus: Bool
+    init(show: ShowController, documents: ProjectDocuments? = nil) {
+        self.show = show; self.documents = documents
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     private var bpmText: String {
         String(format: "%g", show.tempoControlBPM)
     }

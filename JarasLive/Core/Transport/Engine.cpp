@@ -10,16 +10,17 @@
 #include <map>
 namespace jaras {
 void Engine::loadProject(Project project) {
-    orderSpecialTracks(project); synchronizeTimecode(project); validate(project);
+    orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project); validate(project);
     if (transport_.playing || transport_.subPlay.playing) throw std::logic_error("Stop before loading another project");
-    project_ = std::move(project); transport_ = {}; automaticSubplayQueue_.reset(); finishCurrent_ = false; resumeSub_ = false; playStart_.reset(); subPlayStart_.reset();
+    const bool bypassed = transport_.multiLoopsBypassed;
+    project_ = std::move(project); transport_ = {}; transport_.multiLoopsBypassed = bypassed; automaticSubplayQueue_.reset(); finishCurrent_ = false; resumeSub_ = false; playStart_.reset(); subPlayStart_.reset();
     auto ids = order(); if (!ids.empty()) transport_.songId = ids.front();
 }
 void Engine::applyProjectEdit(Project project) {
     if (project.id != project_.id) throw std::invalid_argument("Cannot edit another project");
-    orderSpecialTracks(project); synchronizeTimecode(project); validate(project);
+    orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project, &project_); validate(project);
     project_ = std::move(project);
-    if (!currentSong()) { transport_ = {}; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
+    if (!currentSong()) { const bool bypassed = transport_.multiLoopsBypassed; transport_ = {}; transport_.multiLoopsBypassed = bypassed; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
     if (!region(transport_.regionId)) { transport_.regionId.reset(); transport_.loop.enabled = false; }
     if (!region(transport_.queuedRegionId)) { transport_.queuedRegionId.reset(); autoRegionQueue_ = false; }
     syncRegion(); autoQueueRegion(); refreshMultiLoop();
@@ -205,9 +206,8 @@ static double repelRegionMarkers(const Song& song, const Part& region, double pr
     std::vector<double> offsets, stationary;
     double minimumStart = 0;
     if (song.markers) for (const auto& marker : *song.markers) {
-        const bool owned = marker.unifiedRegionID == region.id;
-        const bool inside = !marker.unifiedRegionID && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8;
-        if (owned || inside) { offsets.push_back(marker.position - region.startTime); minimumStart = std::max(minimumStart, region.startTime - marker.position); }
+        const bool owned = regionOwns(song, region.id, marker.regionOwnerID) || marker.unifiedRegionID == region.id;
+        if (owned) { offsets.push_back(marker.position - region.startTime); minimumStart = std::max(minimumStart, region.startTime - marker.position); }
         else stationary.push_back(marker.position);
     }
     std::vector<std::pair<double,double>> ranges, merged;
@@ -238,16 +238,13 @@ void Engine::moveRegion(const ID& id, double start) {
             start = repelRegionMarkers(song, region, start);
             const double oldStart = region.startTime, oldEnd = region.endTime, delta = start - oldStart;
             for (auto& track : song.tracks) for (auto& clip : track.clips)
-                if (clip.startTime >= oldStart - 1e-8 && clip.startTime + clip.duration <= oldEnd + 1e-8)
+                if (regionOwns(song, id, clip.regionOwnerID))
                     clip.startTime = std::max(0.0, clip.startTime + delta);
             for (auto& child : song.parts) if (child.parentRegionID == id) { child.startTime += delta; child.endTime += delta; }
-            // Marker ownership takes precedence in overlapping special regions.
-            // Unowned flags (including tempo) travel with [start, end), so a flag
-            // at the next song's start is never taken along with this region.
+            // Follow persisted membership, including a special region's children.
             if (song.markers) for (auto& marker : *song.markers) {
-                const bool owned = marker.unifiedRegionID == id;
-                const bool inside = !marker.unifiedRegionID && marker.position >= oldStart - 1e-8 && marker.position < oldEnd - 1e-8;
-                if (owned || inside) {
+                const bool owned = regionOwns(song, id, marker.regionOwnerID) || marker.unifiedRegionID == id;
+                if (owned) {
                     marker.position = std::max(0.0, marker.position + delta);
                     song.duration = std::max(song.duration, marker.position);
                 }
@@ -293,6 +290,7 @@ void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
             if (track.role.id == "timecode") throw std::invalid_argument("Timecode items follow their regions");
             auto clip = *it;
             clip.startTime = start;
+            clip.regionOwnerID = regionOwnerAt(song, start, start + clip.duration);
             if (mediaTransfer && isTeleprompterRole(target->role)) {
                 clip.gain.reset(); clip.muted = false; clip.waveform.clear(); clip.waveformChannels.clear();
                 clip.loopStart.reset(); clip.loopLength.reset();
@@ -365,6 +363,7 @@ void Engine::setMarker(ID id, std::string name, double position, unsigned color,
     TimelineMarker marker{std::move(id), std::move(name), position, color};
     if (found != song->markers->end()) marker.unifiedRegionID = found->unifiedRegionID;
     if (found != song->markers->end()) marker.sourceRegionID = found->sourceRegionID;
+    marker.regionOwnerID = found != song->markers->end() && found->position == position ? found->regionOwnerID : regionOwnerAt(*song, position);
     if (bpm && found != song->markers->end()) marker.tempoReferenceBPM = found->tempoReferenceBPM;
     marker.section = section ? section : (found != song->markers->end() ? found->section : std::nullopt);
     marker.loopSection = loopSection ? loopSection : (found != song->markers->end() ? found->loopSection : std::nullopt);
@@ -454,8 +453,9 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
         if (name.empty()) name = source->name;
         const unsigned rgb = (channel(colors) << 16) | (channel(colors) << 8) | channel(colors);
         song->parts.push_back({regionId, name, source->startTime, source->startTime + source->duration, rgb});
+        for (auto& track : song->tracks) for (auto& clip : track.clips) if (clip.id == clipId) clip.regionOwnerID = regionId;
     }
-    orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next);
+    orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next); project_ = std::move(next);
 }
 void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
     if ((settings.mode != "mtc" && settings.mode != "ltc") ||
@@ -586,7 +586,7 @@ void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
             for (auto& clip : imported.clips) destination->clips.push_back(std::move(clip));
         }
     }
-    orderSpecialTracks(next); synchronizeTimecode(next); validate(next);
+    orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next);
     project_ = std::move(next);
 }
 void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
@@ -598,7 +598,7 @@ void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
             if (existing == track.clips.end()) throw std::invalid_argument("Unknown audio item");
             *existing = std::move(clip);
         } else track.clips.push_back(std::move(clip));
-        orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next); return;
+        orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next); project_ = std::move(next); return;
     }
     throw std::invalid_argument("Unknown recording track");
 }

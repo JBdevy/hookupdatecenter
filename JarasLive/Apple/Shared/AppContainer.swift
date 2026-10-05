@@ -44,7 +44,7 @@ enum AppStartupPresentation {
             let device = try DeviceAuthorizationService.installation(store: store, name: name, platform: platform)
             auth = AuthService(backend: backend, store: store, installation: device, feature: feature, verifier: preview ? nil : .production)
             let persistence = DocumentProjectStore()
-            show = try ShowController(executor: LocalCommandExecutor(), persistence: persistence, initialProject: preview ? .demo() : .empty(name: "Untitled"), cursorMemory: preview ? nil : ProjectCursorMemory())
+            show = try ShowController(executor: LocalCommandExecutor(), persistence: persistence, initialProject: preview ? .demo() : .empty(name: "Untitled"), cursorMemory: preview ? nil : ProjectCursorMemory(), globalDefaults: preview ? nil : .standard)
             documents = ProjectDocuments(store: persistence, show: show, preview: preview)
         } catch { throw error }
         #if os(macOS)

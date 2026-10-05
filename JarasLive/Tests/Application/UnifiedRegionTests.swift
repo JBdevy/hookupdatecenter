@@ -2,6 +2,38 @@ import XCTest
 @testable import JarasApplication
 
 final class UnifiedRegionTests: XCTestCase {
+    func testFlatteningGroupsAndDisunifyingPreservesExplicitContentOwnership() throws {
+        var project = fixture()
+        let first = project.songs[0].parts[0].id
+        let originalGroup = try project.unifyRegions(containing: first, name: "Original")
+        let third = Part(id: UUID(), name: "Third", startTime: 100, endTime: 120)
+        let fourth = Part(id: UUID(), name: "Fourth", startTime: 115, endTime: 135)
+        project.songs[0].duration = 180
+        project.songs[0].parts.removeAll { $0.name == "Separate song" }
+        project.regionSetlist = nil
+        project.songs[0].parts += [third, fourth]
+        let otherGroup = try project.unifyRegions(containing: third.id, name: "Other")
+        project.songs[0].regionOwnershipInitialized = true
+        project.songs[0] = project.songs[0].previewMovingRegion(otherGroup, to: 75)
+        let owned = AudioClip(id: UUID(), name: "Owned", startTime: 92, duration: 1, regionOwnerID: otherGroup)
+        let loose = AudioClip(id: UUID(), name: "Loose", startTime: 93, duration: 1)
+        project.songs[0].tracks[0].clips += [owned, loose]
+        let cue = TimelineMarker(id: UUID(), name: "Owned cue", position: 92, color: 0, regionOwnerID: otherGroup)
+        project.songs[0].markers!.append(cue)
+        let merged = try project.unifyRegions(containing: originalGroup, name: "")
+        XCTAssertEqual(merged, originalGroup)
+        XCTAssertEqual(project.songs[0].tracks[0].clips.first { $0.id == owned.id }?.regionOwnerID, merged)
+        XCTAssertEqual(project.songs[0].markers?.first { $0.id == cue.id }?.regionOwnerID, merged)
+        XCTAssertNil(project.songs[0].tracks[0].clips.first { $0.id == loose.id }?.regionOwnerID)
+        try project.disunifyRegion(merged)
+        let owner = try XCTUnwrap(project.songs[0].tracks[0].clips.first { $0.id == owned.id }?.regionOwnerID)
+        XCTAssertTrue(project.songs[0].parts.contains { $0.id == owner })
+        XCTAssertEqual(project.songs[0].markers?.first { $0.id == cue.id }?.regionOwnerID, owner)
+        XCTAssertNil(project.songs[0].tracks[0].clips.first { $0.id == loose.id }?.regionOwnerID)
+        let moved = project.songs[0].previewMovingRegion(owner, to: 140)
+        XCTAssertNotEqual(moved.tracks[0].clips.first { $0.id == owned.id }?.startTime, owned.startTime)
+        XCTAssertEqual(moved.tracks[0].clips.first { $0.id == loose.id }?.startTime, loose.startTime)
+    }
     private func fixture() -> Project {
         var project = Project.empty(name: "Unified")
         let first = Part(id: UUID(), name: "First song (original case)", startTime: 30, endTime: 55, color: 0x123456)

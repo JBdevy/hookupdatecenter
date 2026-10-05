@@ -56,7 +56,17 @@ public extension Project {
             songs[songIndex].parts[index].startTime = max(start, songs[songIndex].parts[index].startTime)
         }
         songs[songIndex].parts.append(group)
+        for track in songs[songIndex].tracks.indices {
+            for clip in songs[songIndex].tracks[track].clips.indices {
+                if songs[songIndex].tracks[track].clips[clip].regionOwnerID.map(replacedGroups.contains) == true {
+                    songs[songIndex].tracks[track].clips[clip].regionOwnerID = group.id
+                }
+            }
+        }
         var markers = songs[songIndex].markers ?? []
+        for index in markers.indices where markers[index].regionOwnerID.map(replacedGroups.contains) == true {
+            markers[index].regionOwnerID = group.id
+        }
         let originalMarkers = Dictionary(uniqueKeysWithValues: markers.compactMap { marker -> (UUID, TimelineMarker)? in
             guard let source = marker.sourceRegionID, marker.unifiedRegionID.map(replacedGroups.contains) == true else { return nil }
             return (source, marker)
@@ -98,6 +108,16 @@ public extension Project {
         }
         candidate.songs[song].parts.removeAll { $0.id == id }
         candidate.songs[song].markers?.removeAll { $0.unifiedRegionID == id }
+        let remaining = candidate.songs[song]
+        for track in remaining.tracks.indices {
+            for clip in remaining.tracks[track].clips.indices where remaining.tracks[track].clips[clip].regionOwnerID == id {
+                let item = remaining.tracks[track].clips[clip]
+                candidate.songs[song].tracks[track].clips[clip].regionOwnerID = remaining.regionOwner(at: item.startTime, end: item.startTime + item.duration)
+            }
+        }
+        for index in (remaining.markers ?? []).indices where remaining.markers?[index].regionOwnerID == id {
+            candidate.songs[song].markers?[index].regionOwnerID = remaining.regionOwner(at: remaining.markers![index].position)
+        }
         if var state = candidate.regionSetlist {
             for index in state.playlists.indices {
                 state.playlists[index].regionIds = state.playlists[index].regionIds.flatMap { $0 == id ? members.map(\.id) : [$0] }

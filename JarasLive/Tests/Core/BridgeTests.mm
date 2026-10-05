@@ -240,11 +240,18 @@ int main(int argc,char**argv){@autoreleasepool{
     NSData* batch=[NSJSONSerialization dataWithJSONObject:@[imported] options:0 error:&error];
     expect([core insertAudioTracks:batch song:original[@"songs"][0][@"id"] error:&error],"import audio through bridge");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
-    expect(equalJSON([snapshot[@"project"][@"songs"][0][@"tracks"] lastObject],imported),"audio import preserves complete track and clip metadata");
+    // Re-placement computes new region membership; other import metadata is unchanged.
+    NSMutableDictionary* importedResult=[[snapshot[@"project"][@"songs"][0][@"tracks"] lastObject] mutableCopy];
+    NSMutableArray* importedClips=[NSMutableArray new];
+    for(NSDictionary* value in importedResult[@"clips"]) { NSMutableDictionary* c=[value mutableCopy]; [c removeObjectForKey:@"regionOwnerID"]; [importedClips addObject:c]; }
+    importedResult[@"clips"]=importedClips;
+    for(NSMutableDictionary* value in clips) [value removeObjectForKey:@"regionOwnerID"];
+    expect(equalJSON(importedResult,imported),"audio import preserves complete track and clip metadata except recomputed membership");
     expect([snapshot[@"transport"][@"playing"] boolValue],"import preserves playback");
     NSMutableDictionary* recorded = [snapshot[@"project"][@"songs"][0][@"tracks"][0][@"clips"][0] mutableCopy];
     recorded[@"id"] = NSUUID.UUID.UUIDString; recorded[@"recordingLane"] = @4;
     recorded[@"startTime"] = @32; recorded[@"duration"] = @8;
+    [recorded removeObjectForKey:@"regionOwnerID"];
     NSMutableDictionary* recordedSource = [recorded[@"audioFile"] mutableCopy];
     recordedSource[@"sha256"] = [@"" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0]; recorded[@"audioFile"] = recordedSource;
     expect([core addRecordedClip:[NSJSONSerialization dataWithJSONObject:recorded options:0 error:&error] track:midiTrack error:&error], "recorded clip insertion accepts complete item settings");

@@ -206,7 +206,8 @@ public final class AuthService: ObservableObject {
                 guard result.device.deviceName == chosenName else { throw BackendFailure.invalidSession }
                 try store.write(Data(chosenName.utf8), key: DeviceDisplayName.storageKey)
             }
-            try store.delete(quarantineNoticeKey)
+            let secureStore = store, quarantineKey = quarantineNoticeKey
+            try await Task.detached(priority: .utility) { try secureStore.delete(quarantineKey) }.value
             try await writeSessionData(JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())))
             installation.deviceName = device.deviceName
             pendingLogin = nil; requiresDeviceName = false

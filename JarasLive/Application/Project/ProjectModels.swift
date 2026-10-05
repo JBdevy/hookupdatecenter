@@ -9,7 +9,7 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
 }
@@ -145,6 +145,7 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var position: Double
     public var color: UInt32
     public var unifiedRegionID: UUID? = nil
+    public var regionOwnerID: UUID? = nil
     public var sourceRegionID: UUID? = nil
     public var tempoBPM: Double? = nil
     public var tempoBeats: Int? = nil
@@ -214,6 +215,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public var markers: [TimelineMarker]?
     public var beatsPerBar: Int?
     public var beatUnit: Int?
+    public var regionOwnershipInitialized: Bool? = nil
     public var timeSettings: ProjectTimeSettings? = nil
     public var projectTime: ProjectTimeSettings { timeSettings ?? .legacy }
     public var meterBeats: Int { beatsPerBar ?? 4 }
@@ -719,6 +721,28 @@ extension Track {
 }
 
 public extension Song {
+    /// Resolve imported material once; nil then means intentionally unattached.
+    func regionOwner(at start: Double, end: Double? = nil) -> UUID? {
+        parts.filter { start >= $0.startTime - 1e-8 && start < $0.endTime - 1e-8 && (end == nil || end! <= $0.endTime + 1e-8) }
+            .min {
+                if ($0.parentRegionID != nil) != ($1.parentRegionID != nil) { return $0.parentRegionID != nil }
+                if $0.endTime - $0.startTime != $1.endTime - $1.startTime { return $0.endTime - $0.startTime < $1.endTime - $1.startTime }
+                return $0.id.uuidString < $1.id.uuidString
+            }?.id
+    }
+    func regionOwns(_ root: UUID, owner: UUID?) -> Bool {
+        guard let owner else { return false }
+        return owner == root || parts.contains { $0.id == owner && $0.parentRegionID == root }
+    }
+    func itemBelongs(_ clip: AudioClip, to root: UUID) -> Bool {
+        regionOwns(root, owner: regionOwnershipInitialized == true ? clip.regionOwnerID : regionOwner(at: clip.startTime, end: clip.startTime + clip.duration))
+    }
+    func markerBelongs(_ marker: TimelineMarker, to root: UUID) -> Bool {
+        marker.unifiedRegionID == root || regionOwns(root, owner: regionOwnershipInitialized == true ? marker.regionOwnerID : marker.sourceRegionID ?? regionOwner(at: marker.position))
+    }
+}
+
+public extension Song {
     /// Visual counterpart of Engine::moveRegion. All positions are tested
     /// against the original region before applying the same displacement once.
     func previewMovingRegion(_ id: UUID, to start: Double) -> Song {
@@ -737,7 +761,7 @@ public extension Song {
                     result.tracks[track].clips[index].startTime = newStart
                     result.tracks[track].clips[index].duration = newEnd - newStart
                     result.duration = max(result.duration, newEnd)
-                } else if clip.startTime >= region.startTime - 1e-8 && clip.startTime + clip.duration <= region.endTime + 1e-8 {
+                } else if itemBelongs(clip, to: id) {
                     result.tracks[track].clips[index].startTime = max(0, clip.startTime + delta)
                 }
             }
@@ -750,9 +774,7 @@ public extension Song {
         if var markers = result.markers {
             for index in markers.indices {
                 let marker = markers[index]
-                let owned = marker.unifiedRegionID == id
-                let inside = marker.unifiedRegionID == nil && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8
-                if owned || inside {
+                if markerBelongs(marker, to: id) {
                     markers[index].position = max(0, marker.position + delta)
                     result.duration = max(result.duration, markers[index].position)
                 }
@@ -774,9 +796,7 @@ public struct RegionMarkerRepulsion {
         let gap = minimumGap.isFinite ? max(0.01, minimumGap) : 0.01
         var offsets: [Double] = [], stationary: [Double] = []
         for marker in song.markers ?? [] {
-            let owned = marker.unifiedRegionID == region.id
-            let inside = marker.unifiedRegionID == nil && marker.position >= region.startTime - 1e-8 && marker.position < region.endTime - 1e-8
-            if owned || inside { offsets.append(marker.position - region.startTime) }
+            if song.markerBelongs(marker, to: region.id) { offsets.append(marker.position - region.startTime) }
             else { stationary.append(marker.position) }
         }
         minimumStart = max(0, -(offsets.min() ?? 0))

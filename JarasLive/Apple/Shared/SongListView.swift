@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 @MainActor private final class SetlistEntryCache {
     struct Key: Equatable {
         let controller: ObjectIdentifier
@@ -24,9 +25,16 @@ import UniformTypeIdentifiers
     }
 }
 struct SongListView: View {
-    @ObservedObject var show: ShowController
     #if os(macOS)
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     var sidebarScrollController: SidebarScrollController? = nil
+    init(show: ShowController, sidebarScrollController: SidebarScrollController? = nil) {
+        self.show = show; self.sidebarScrollController = sidebarScrollController
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
+    #else
+    @ObservedObject var show: ShowController
     #endif
     private struct EntryEdit: Identifiable { let id: UUID; let name: String; let color: UInt32; let block: Bool; var regionTargets: Set<UUID> = [] }
     @State private var editingEntry: EntryEdit?
@@ -225,6 +233,7 @@ struct SongListView: View {
                             RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[region.id] ?? number) : number, selected: selectedEntries.contains(region.id),
                                              active: active, queued: queued, prepareOnly: setlist.preparesWithoutPlayback, remaining: Int(ceil(remaining)),
                                              progress: progress, queueProgress: queued ? min(1, queueRemaining / queueLength) : 0,
+                                             playback: SetlistPlaybackBinding(show: show, region: region, end: regionEnd, playbackEnd: playbackEnd),
                                              expanded: content.unifiedRegionIDs.contains(region.id) ? expandedRegions.contains(region.id) : nil,
                                              toggleDrawer: {
                                                  if !expandedRegions.insert(region.id).inserted { expandedRegions.remove(region.id) }
@@ -699,6 +708,15 @@ private final class PlaylistPopoverAnchorView: NSView {
     deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
 }
 #endif
+private struct SetlistPlaybackBinding: Equatable {
+    let show: ShowController
+    let region: Part
+    let end: Double
+    let playbackEnd: Double
+    static func == (a: Self, b: Self) -> Bool {
+        a.show === b.show && a.region == b.region && a.end == b.end && a.playbackEnd == b.playbackEnd
+    }
+}
 private struct RegionSetlistRow: View, Equatable {
     let region: Part
     var fontStyle: Int = 0
@@ -711,13 +729,14 @@ private struct RegionSetlistRow: View, Equatable {
     let remaining: Int
     let progress: Double
     let queueProgress: Double
+    var playback: SetlistPlaybackBinding? = nil
     var expanded: Bool? = nil
     var toggleDrawer: (() -> Void)? = nil
     let select: () -> Void
     static func == (a: Self, b: Self) -> Bool {
         a.region == b.region && a.fontStyle == b.fontStyle && a.nameColor == b.nameColor && a.number == b.number && a.selected == b.selected &&
         a.active == b.active && a.queued == b.queued && a.prepareOnly == b.prepareOnly && a.remaining == b.remaining &&
-        a.progress == b.progress && a.queueProgress == b.queueProgress && a.expanded == b.expanded
+        a.progress == b.progress && a.queueProgress == b.queueProgress && a.playback == b.playback && a.expanded == b.expanded
     }
     var body: some View {
         let color = Color(hex: region.color ?? 0x705264)
@@ -726,7 +745,7 @@ private struct RegionSetlistRow: View, Equatable {
             #if os(macOS)
             NativeRegionSetlistLabel(number: number, name: region.displayName, duration: regionDurationText(Double(remaining)),
                 color: region.color ?? 0x705264, selected: selected, active: active, queued: queued, prepareOnly: prepareOnly,
-                progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor)
+                progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor, playback: active || queued ? playback : nil)
                 .frame(height: 34).frame(maxWidth: .infinity).contentShape(Rectangle())
             #else
             HStack(spacing: 6) {
@@ -794,10 +813,12 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     let queueProgress: Double
     var fontStyle: Int = 0
     var nameColor: UInt32 = 0xffffff
+    var playback: SetlistPlaybackBinding? = nil
     func makeNSView(context: Context) -> NativeRegionSetlistLabelView { NativeRegionSetlistLabelView() }
     func updateNSView(_ view: NativeRegionSetlistLabelView, context: Context) {
         view.configure(number: number, name: name, duration: duration, color: color, selected: selected,
                        active: active, queued: queued, prepareOnly: prepareOnly, progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor)
+        view.bindPlayback(playback)
     }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeRegionSetlistLabelView, context: Context) -> CGSize? {
@@ -835,6 +856,31 @@ private final class NativeRegionSetlistLabelView: NSView {
     private var stripe = NSColor.clear.cgColor
     private var selected = false, active = false, queued = false, prepareOnly = false
     private var progress = 0.0, queueProgress = 0.0
+    private var playback: SetlistPlaybackBinding?
+    private var playbackSubscription: AnyCancellable?
+    func bindPlayback(_ binding: SetlistPlaybackBinding?) {
+        guard playback != binding else { return }
+        playbackSubscription = nil; playback = binding
+        guard let binding else { return }
+        playbackSubscription = binding.show.$snapshot.sink { [weak self] snapshot in
+            self?.updatePlayback(snapshot.transport)
+        }
+    }
+    private func updatePlayback(_ transport: TransportState) {
+        guard let playback else { return }
+        let start = playback.region.startTime
+        let duration = max(0.001, playback.end - start)
+        progress = active ? min(1, max(0, (transport.position - start) / duration)) : 0
+        let queueLength = max(0.001, playback.playbackEnd - (transport.queueStartedAt ?? transport.position))
+        queueProgress = queued ? min(1, max(0, playback.playbackEnd - transport.position) / queueLength) : 0
+        let text = regionDurationText(active ? ceil(max(0, playback.end - transport.position)) : duration)
+        if text != durationText {
+            durationText = text; durationLine = Self.line(text, font: Self.durationFont)
+            durationWidth = durationLine.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) } ?? 0
+            truncationWidth = -1
+        }
+        needsDisplay = true
+    }
     private var roundedBounds: CGRect = .null
     private var roundedPath: CGPath?
     override var isFlipped: Bool { true }

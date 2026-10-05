@@ -531,7 +531,12 @@ private struct AudioDropOptions: View {
 
 /// Reuses the per-song pitch state and target editor in the transport.
 struct RegionTunerControl: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
+    init(show: ShowController) {
+        self.show = show
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     @State private var editing: Part?
     private func step(_ delta: Int) {
         guard let song = show.current, let region = show.pitchRegion else { return }

@@ -7,10 +7,10 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import re,sys
 source=Path('Apple/Shared/SongListView.swift').read_text()
-start=source.index('private struct RegionSetlistRow:')
+start=source.index('private struct SetlistPlaybackBinding:')
 end=source.index('struct SongListPreview',start)
 code=source[start:end]
-row=code[:code.index('#if os(macOS)\nimport AppKit')]
+row=code[code.index('private struct RegionSetlistRow:'):code.index('#if os(macOS)\nimport AppKit')]
 # The retained iPad label is also the visual baseline for native macOS drawing.
 original=re.sub(r'#if os\(macOS\).*?#else\n(.*?)#endif',r'\1',row,flags=re.S).replace('RegionSetlistRow','OriginalRegionSetlistRow')
 theme=Path('Apple/Shared/Theme.swift').read_text()

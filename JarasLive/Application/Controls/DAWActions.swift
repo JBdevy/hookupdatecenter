@@ -7,7 +7,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, normalizeItems, createTempoMarker
-    case toggleTracks, toggleSetlist
+    case toggleTracks, toggleSetlist, toggleMultiLoopBypass
 
     public static let visible = allCases
     public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack].contains(self) }
@@ -50,13 +50,14 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .toggleTeleprompter: return "Teleprompter window on/off"
         case .toggleTracks: return "Tracks show/hide"
         case .toggleSetlist: return "Setlist show/hide"
+        case .toggleMultiLoopBypass: return "Multiloops BYPASS on/off"
         }
     }
     public var defaultKeyboard: ControlInput? {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .selectTrack: return nil
+        case .selectTrack, .toggleMultiLoopBypass: return nil
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
         case .soloTrack: (key, modifiers, label) = (1, shift, "⇧S")
         case .tempoDown: (key, modifiers, label) = (27, 0, "−")

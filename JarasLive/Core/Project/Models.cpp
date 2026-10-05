@@ -7,6 +7,66 @@
 #include <stdexcept>
 #include <unordered_map>
 namespace jaras {
+// Membership is established on placement, never by moving a region across material.
+std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end) {
+    const Part* selected = nullptr;
+    for (const auto& part : song.parts) {
+        if (start < part.startTime - 1e-8 || start >= part.endTime - 1e-8 || (end && *end > part.endTime + 1e-8)) continue;
+        if (!selected || (part.parentRegionID.has_value() != selected->parentRegionID.has_value() ? part.parentRegionID.has_value() :
+            part.endTime - part.startTime != selected->endTime - selected->startTime ? part.endTime - part.startTime < selected->endTime - selected->startTime : part.id < selected->id)) selected = &part;
+    }
+    return selected ? std::optional<ID>(selected->id) : std::nullopt;
+}
+bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner) {
+    if (!owner) return false;
+    if (*owner == root) return true;
+    for (const auto& part : song.parts) if (part.id == *owner) return part.parentRegionID == root;
+    return false;
+}
+void synchronizeRegionOwnership(Project& project, const Project* previous) {
+    for (auto& song : project.songs) {
+        const Song* old = nullptr;
+        if (previous) for (const auto& candidate : previous->songs) if (candidate.id == song.id) { old = &candidate; break; }
+        const bool initialize = !song.regionOwnershipInitialized;
+        const auto valid = [&](const std::optional<ID>& owner) { return !owner || std::any_of(song.parts.begin(), song.parts.end(), [&](const auto& part) { return part.id == *owner; }); };
+        const auto regionMoved = [&](const std::optional<ID>& owner) {
+            if (!old || !owner) return false;
+            const auto a = std::find_if(old->parts.begin(), old->parts.end(), [&](const auto& p) { return p.id == *owner; });
+            const auto b = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto& p) { return p.id == *owner; });
+            return a != old->parts.end() && b != song.parts.end() && (a->startTime != b->startTime || a->endTime != b->endTime);
+        };
+        std::unordered_map<ID, const AudioClip*> oldClips;
+        std::unordered_map<ID, const TimelineMarker*> oldMarkers;
+        Song created;
+        if (old) {
+            for (const auto& t : old->tracks) for (const auto& c : t.clips) oldClips[c.id] = &c;
+            if (old->markers) for (const auto& m : *old->markers) oldMarkers[m.id] = &m;
+            for (const auto& p : song.parts) if (!p.parentRegionID &&
+                std::none_of(old->parts.begin(), old->parts.end(), [&](const auto& q) { return q.id == p.id; }) &&
+                std::none_of(song.parts.begin(), song.parts.end(), [&](const auto& child) { return child.parentRegionID == p.id; })) created.parts.push_back(p);
+        }
+        for (auto& track : song.tracks) for (auto& clip : track.clips) {
+            // Generated Timecode has an explicit owner even when its edges extend.
+            if (track.role.id == "timecode" && !track.importedTimecodeItems) continue;
+            const auto priorEntry = oldClips.find(clip.id);
+            const AudioClip* prior = priorEntry == oldClips.end() ? nullptr : priorEntry->second;
+            if (initialize || (old && !prior)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime, clip.startTime + clip.duration);
+            else if (prior && clip.startTime != prior->startTime && !regionMoved(prior->regionOwnerID)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime, clip.startTime + clip.duration);
+            else if (!valid(clip.regionOwnerID)) clip.regionOwnerID.reset();
+            else if (prior && !clip.regionOwnerID) clip.regionOwnerID = regionOwnerAt(created, clip.startTime, clip.startTime + clip.duration);
+        }
+        if (song.markers) for (auto& marker : *song.markers) {
+            const auto priorEntry = oldMarkers.find(marker.id);
+            const TimelineMarker* prior = priorEntry == oldMarkers.end() ? nullptr : priorEntry->second;
+            if (marker.unifiedRegionID) marker.regionOwnerID = marker.sourceRegionID ? marker.sourceRegionID : marker.unifiedRegionID;
+            else if (initialize || (old && !prior)) marker.regionOwnerID = regionOwnerAt(song, marker.position);
+            else if (prior && marker.position != prior->position && !regionMoved(prior->regionOwnerID)) marker.regionOwnerID = regionOwnerAt(song, marker.position);
+            else if (!valid(marker.regionOwnerID)) marker.regionOwnerID.reset();
+            else if (prior && !marker.regionOwnerID) marker.regionOwnerID = regionOwnerAt(created, marker.position);
+        }
+        song.regionOwnershipInitialized = true;
+    }
+}
 void orderSpecialTracks(Project& project) {
     for (auto& song : project.songs) if (song.markers) {
         std::set<ID> endpoints;
@@ -338,6 +398,7 @@ void synchronizeTimecode(Project& project) {
             if (auto existing = previous.find(id); existing != previous.end()) clip = std::move(existing->second);
             clip.id = std::move(id);
             clip.name = "TIMECODE";
+            clip.regionOwnerID = part.id;
             clip.startTime = std::max(0.0, part.startTime + clip.timecodeStartOffset.value_or(0));
             const double end = std::max(clip.startTime + 0.01, part.endTime + clip.timecodeEndOffset.value_or(0));
             clip.duration = end - clip.startTime;

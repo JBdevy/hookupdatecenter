@@ -62,6 +62,10 @@ for song in project.songs.indices {
         }
     }
 }
+// Persist both attached and intentionally loose material across the bridge.
+for index in project.songs.indices { project.songs[index].regionOwnershipInitialized = true }
+project.songs[0].tracks[0].clips[0].regionOwnerID = first.id
+project.songs[0].markers?[0].regionOwnerID = first.id
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
