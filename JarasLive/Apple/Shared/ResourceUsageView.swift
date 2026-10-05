@@ -16,13 +16,7 @@ enum ResourceMemoryScope { case application, device }
                 + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
             let now = ProcessInfo.processInfo.systemUptime
             if let previous, now > previous.wall {
-                let processPercent = max(0, (total - previous.cpu) / (now - previous.wall) * 100)
-                #if os(macOS)
-                // Match Activity Monitor: 100% represents one logical core.
-                cpu = processPercent
-                #else
-                cpu = min(100, processPercent / Double(max(1, ProcessInfo.processInfo.activeProcessorCount)))
-                #endif
+                cpu = min(100, max(0, (total - previous.cpu) / (now - previous.wall) * 100 / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))))
             }
             previous = (now, total)
         } else { cpu = nil }
@@ -76,9 +70,6 @@ struct ResourceUsageView: View {
     var body: some View {
         HStack(spacing: 14) {
             Text("CPU \(percent(usage.cpu))")
-                #if os(macOS)
-                .jarasHelp("CatLive process CPU · 100% = one logical core")
-                #endif
             Text("RAM \(percent(usage.ram))").jarasHelp(usage.memoryScope == .device ? "Device RAM in use" : "RAM used by CatLive")
         }.monospacedDigit().foregroundStyle(JarasTheme.secondary)
             .task { await usage.run() }
