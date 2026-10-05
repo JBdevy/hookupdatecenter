@@ -28,11 +28,11 @@ BRANCH="$(git branch --show-current)"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  read -r -p 'Versão do CatLive [1.0.0]: ' VERSION
-  VERSION="${VERSION:-1.0.0}"
+  read -r -p 'Versão do CatLive [1.00]: ' VERSION
+  VERSION="${VERSION:-1.00}"
 fi
 VERSION="${VERSION#v}"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a versão no formato X.Y.Z.' >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }
 
 FILES=('JarasLive' '.github/workflows/catlive-macos-pkg.yml' 'build catlive macos.command')
 echo 'Alterações do CatLive que serão enviadas:'
@@ -68,3 +68,4 @@ if [[ -n "$RUN_ID" ]]; then
 else
   echo "Build do CatLive $VERSION disparado. Consulte https://github.com/$REPO/actions/workflows/$WORKFLOW"
 fi
+echo "Depois da assinatura e notarização, o instalador Catlive-$VERSION.pkg será publicado na Release catlive-v$VERSION."
