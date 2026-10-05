@@ -40,6 +40,8 @@ public struct ShowPresentationState: Equatable {
     let dirty: Bool
     let saving: Bool
     let message: String
+    let notice: String?
+    let savedAt: String?
 }
 /// Mixer controls observe project edits, never the 30 Hz playback position.
 @MainActor public final class ShowProjectPresentation: ObservableObject {
@@ -56,7 +58,8 @@ public struct ShowPresentationState: Equatable {
             focused: focusedRegion, focusRequest: regionFocusRequest, setlistFocusRequest: setlistFocusRequest,
             navigation: setlistNavigationRequest, pitchRegion: pitchRegion?.id,
             subRegion: current?.sectionRegion(at: snapshot.transport.subPlay.position)?.id,
-            bpm: tempoControlBPM, dirty: hasUnsavedChanges, saving: saving, message: message)
+            bpm: tempoControlBPM, dirty: hasUnsavedChanges, saving: saving, message: message,
+            notice: modalNotice, savedAt: lastSavedAt)
     }
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
@@ -494,20 +497,30 @@ public struct ShowPresentationState: Equatable {
     private var clipFXDefaults: [UUID: NativeFXSettings] = [:]
     public private(set) var mixerPlaybackRevision: UInt64 = 0
     private var applyingLoopMixer = false
+    private var loopMixerProject: Project?
     private struct LoopMixerBase { var volume: Double; var mute: Bool; var solo: Bool }
     private var loopMixerBase: [UUID: LoopMixerBase] = [:]
     private var loopMixerID: UUID?
     private func applyLoopMixer() {
         guard !applyingLoopMixer else { return }
         applyingLoopMixer = true
-        defer { applyingLoopMixer = false }
+        loopMixerProject = snapshot.project
+        // Publish the combined frame once. Every track still uses the ordinary
+        // mixer commands/audio callbacks, without rebuilding controls per track.
+        defer {
+            let project = loopMixerProject
+            loopMixerProject = nil; applyingLoopMixer = false
+            if let project, project != snapshot.project { snapshot.project = project }
+        }
         let loop = snapshot.transport.multiLoop
         let rules = Dictionary(uniqueKeysWithValues: (loop?.tracks ?? []).map { ($0.id, $0) })
         func values(_ id: UUID) -> LoopMixerBase? {
+            let project = loopMixerProject ?? snapshot.project
             if id == MultiLoopTrack.masterID {
-                return LoopMixerBase(volume: snapshot.project.masterVolume ?? 1, mute: snapshot.project.masterMute ?? false, solo: snapshot.project.masterSolo ?? false)
+                return LoopMixerBase(volume: project.masterVolume ?? 1, mute: project.masterMute ?? false, solo: project.masterSolo ?? false)
             }
-            return current?.tracks.first(where: { $0.id == id }).map { LoopMixerBase(volume: $0.volume, mute: $0.mute, solo: $0.solo) }
+            return project.songs.first(where: { $0.id == snapshot.transport.songId })?.tracks.first(where: { $0.id == id })
+                .map { LoopMixerBase(volume: $0.volume, mute: $0.mute, solo: $0.solo) }
         }
         func apply(_ id: UUID, _ value: LoopMixerBase) {
             guard let now = values(id) else { return }
@@ -1153,56 +1166,59 @@ public struct ShowPresentationState: Equatable {
         guard command != .phase || target != nil else { return }
         do {
             try executor.execute(command, target: target, value: value)
+            var project = loopMixerProject ?? snapshot.project
             if target == nil {
                 if command == .volume {
                     let gain = min(pow(10, 12.0 / 20), max(0, value))
-                    snapshot.project.masterVolume = gain; audioVolume(nil, gain)
+                    project.masterVolume = gain; audioVolume(nil, gain)
                 }
                 if command == .masterMono {
-                    let mono = !(snapshot.project.masterMono ?? false)
-                    snapshot.project.masterMono = mono; audioMasterMono(mono)
+                    let mono = !(project.masterMono ?? false)
+                    project.masterMono = mono; audioMasterMono(mono)
                 }
                 if command == .solo {
-                    let solo = !(snapshot.project.masterSolo ?? false)
-                    snapshot.project.masterSolo = solo; audioMasterSolo(solo)
+                    let solo = !(project.masterSolo ?? false)
+                    project.masterSolo = solo; audioMasterSolo(solo)
                 }
                 if command == .mute {
-                    let muted = !(snapshot.project.masterMute ?? false)
-                    snapshot.project.masterMute = muted; audioMute(nil, muted)
+                    let muted = !(project.masterMute ?? false)
+                    project.masterMute = muted; audioMute(nil, muted)
                 }
             } else if let target {
-                for song in snapshot.project.songs.indices {
-                    for track in snapshot.project.songs[song].tracks.indices {
+                for song in project.songs.indices {
+                    for track in project.songs[song].tracks.indices {
                         if command == .clipMute {
-                            if let clip = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == target }) {
-                                let muted = !(snapshot.project.songs[song].tracks[track].clips[clip].muted ?? false)
-                                snapshot.project.songs[song].tracks[track].clips[clip].muted = muted
+                            if let clip = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == target }) {
+                                let muted = !(project.songs[song].tracks[track].clips[clip].muted ?? false)
+                                project.songs[song].tracks[track].clips[clip].muted = muted
                                 audioClipMute(target, muted)
                             }
-                        } else if snapshot.project.songs[song].tracks[track].id == target {
+                        } else if project.songs[song].tracks[track].id == target {
                             switch command {
                             case .volume:
                                 let gain = min(pow(10, 12.0 / 20), max(0, value))
-                                snapshot.project.songs[song].tracks[track].volume = gain; audioVolume(target, gain)
+                                project.songs[song].tracks[track].volume = gain; audioVolume(target, gain)
                             case .phase:
-                                let inverted = snapshot.project.songs[song].tracks[track].phaseInverted != true
-                                snapshot.project.songs[song].tracks[track].phaseInverted = inverted; audioPhase(target, inverted)
+                                let inverted = project.songs[song].tracks[track].phaseInverted != true
+                                project.songs[song].tracks[track].phaseInverted = inverted; audioPhase(target, inverted)
                             case .pan:
                                 let pan = min(1, max(-1, value))
-                                snapshot.project.songs[song].tracks[track].pan = pan; audioPan(target, pan)
+                                project.songs[song].tracks[track].pan = pan; audioPan(target, pan)
                             case .mute:
-                                snapshot.project.songs[song].tracks[track].mute.toggle()
-                                audioMute(target, snapshot.project.songs[song].tracks[track].mute)
+                                project.songs[song].tracks[track].mute.toggle()
+                                audioMute(target, project.songs[song].tracks[track].mute)
                             case .solo:
-                                snapshot.project.songs[song].tracks[track].solo.toggle()
-                                audioSolo(target, snapshot.project.songs[song].tracks[track].solo)
+                                project.songs[song].tracks[track].solo.toggle()
+                                audioSolo(target, project.songs[song].tracks[track].solo)
                             default: break
                             }
                         }
                     }
                 }
             }
-            synchronizeLinkedControl(command, target: target, value: value)
+            synchronizeLinkedControl(command, target: target, value: value, project: &project)
+            if applyingLoopMixer { loopMixerProject = project }
+            else { snapshot.project = project }
             let id = target ?? MultiLoopTrack.masterID
             if !applyingLoopMixer, var base = loopMixerBase[id] {
                 if command == .volume { base.volume = value }
@@ -1688,16 +1704,23 @@ public struct ShowPresentationState: Equatable {
         catch { message = error.localizedDescription }
     }
     private func synchronizeLinkedControl(_ command: ShowCommand, target: UUID?, value: Double) {
-        guard command == .volume || command == .pan, let target, let location = trackLocation(target),
-              let link = snapshot.project.songs[location.song].tracks[location.track].stereoLink,
-              let other = snapshot.project.songs[location.song].tracks.firstIndex(where: { $0.id == link.partner && $0.stereoLink?.partner == target }) else { return }
+        var project = snapshot.project
+        synchronizeLinkedControl(command, target: target, value: value, project: &project)
+        if project != snapshot.project { snapshot.project = project }
+    }
+    private func synchronizeLinkedControl(_ command: ShowCommand, target: UUID?, value: Double, project: inout Project) {
+        guard command == .volume || command == .pan, let target,
+              let song = project.songs.firstIndex(where: { $0.tracks.contains(where: { $0.id == target }) }),
+              let track = project.songs[song].tracks.firstIndex(where: { $0.id == target }),
+              let link = project.songs[song].tracks[track].stereoLink,
+              let other = project.songs[song].tracks.firstIndex(where: { $0.id == link.partner && $0.stereoLink?.partner == target }) else { return }
         if command == .volume {
             let gain = min(pow(10, 12.0 / 20), max(0, value))
-            snapshot.project.songs[location.song].tracks[other].volume = gain
+            project.songs[song].tracks[other].volume = gain
             audioVolume(link.partner, gain)
         } else {
             let pan = -min(1, max(-1, value))
-            snapshot.project.songs[location.song].tracks[other].pan = pan
+            project.songs[song].tracks[other].pan = pan
             audioPan(link.partner, pan)
         }
     }

@@ -68,6 +68,9 @@ final class NativeEffectsChain {
     private var input: AVAudioNode?
     private var format: AVAudioFormat?
     private var connected: [AVAudioNode] = []
+    // Keep processors ready for live edits, but do not render unused ones.
+    // Once activated they retain their graph position through bypass ramps.
+    private var preparedEffects: Set<String> = ["EQ"]
     private var instrumentMix: AVAudioMixerNode?
     private var observesDelay = false
     private var delayInputProbe: JarasAudioAnalysisProbe?
@@ -151,6 +154,7 @@ final class NativeEffectsChain {
     func attach(to engine: AVAudioEngine, input: AVAudioNode, format: AVAudioFormat, destinations: [AVAudioConnectionPoint] = []) {
         self.engine = engine; self.input = input; self.format = format
         settings = nil; sampleRate = 0
+        preparedEffects = reorderable ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
         for node in nodes { engine.attach(node) }
         engine.attach(outputMix)
         if !destinations.isEmpty { engine.connect(output, to: destinations, fromBus: 0, format: format) }
@@ -158,10 +162,11 @@ final class NativeEffectsChain {
     }
     private func connect(_ next: NativeFXSettings) {
         guard let engine, let input, let format else { return }
-        var keys = reorderable ? next.effectKeys : Array(NativeFXSettings.order.dropFirst())
-        // Uninserted native processors stay bypassed in the graph, preserving
-        // their identity and avoiding reconnections for ordinary knob edits.
-        keys += NativeFXSettings.order.dropFirst().filter { !keys.contains($0) }
+        preparedEffects.formUnion(next.effectKeys)
+        // Also accept legacy settings with enabled processors but no inserted list.
+        preparedEffects.formUnion(NativeFXSettings.order.dropFirst().filter { next.isEnabled($0) })
+        var keys = reorderable ? next.effectKeys : NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) }
+        keys += NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) && !keys.contains($0) }
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         let ordered: [AVAudioNode] = keys.compactMap { key in
             if let node = instanceNodes[key] { return node }
@@ -211,6 +216,7 @@ final class NativeEffectsChain {
         for node in nodes { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
         engine.detach(outputMix); connected.removeAll(); self.engine = nil; input = nil
+        preparedEffects = ["EQ"]
         instrumentMix = nil
         #if os(macOS)
         externalNodes.removeAll()
@@ -284,6 +290,11 @@ final class NativeEffectsChain {
     private var meterCache: [String:[Float]] = [:]
     func observe(_ effects: Set<String>) {
         observedEffects = effects
+        let additions = effects.intersection(Set(NativeFXSettings.order.dropFirst())).subtracting(preparedEffects)
+        if !additions.isEmpty {
+            preparedEffects.formUnion(additions)
+            connect(settings ?? NativeFXSettings())
+        }
         for (key, node) in instanceNodes {
             let enabled = effects.contains(key)
             switch settings?.kind(of: key) {

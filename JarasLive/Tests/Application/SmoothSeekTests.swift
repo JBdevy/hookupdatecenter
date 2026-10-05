@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import JarasApplication
 
 @MainActor private final class SectionExecutor: CommandExecutor {
@@ -131,6 +132,38 @@ final class SmoothSeekTests: XCTestCase {
         XCTAssertEqual(show.current!.tracks[0].volume, track.volume, accuracy: 0.000001)
         XCTAssertEqual(show.current!.tracks[0].solo, track.solo)
         XCTAssertEqual(show.current!.tracks[0].mute, track.mute)
+    }
+    @MainActor func testManyAutoFadersPublishOneMixerFrameAndRestore() throws {
+        let backend = SectionExecutor()
+        var project = Project.demo()
+        let original = project.songs[0].tracks[0]
+        project.songs[0].tracks = (0..<24).map { index in
+            var track = original; track.id = UUID(); track.name = "Fade \(index)"
+            track.stereoLink = nil; track.parentTrackID = nil; track.volume = 1; track.mute = false; track.solo = false
+            return track
+        }
+        let show = try ShowController(executor: backend, persistence: MemoryProjectStore(), initialProject: project)
+        let rules = project.songs[0].tracks.map { track in
+            var rule = MultiLoopTrack(id: track.id, gain: 0); rule.autoFader = true; return rule
+        }
+        var publications = 0
+        let observation = show.projectPresentation.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+        var gains: [UUID: Double] = [:]
+        show.audioVolume = { id, gain in if let id { gains[id] = gain } }
+        backend.transport.multiLoop = MultiLoopPlayback(id: UUID(), start: 10, end: 20,
+            amount: 0.5, gates: false, released: false, tracks: rules)
+        let revision = show.projectRevision
+        show.tick()
+        XCTAssertEqual(publications, 1, "24 automatic faders publish one complete mixer frame")
+        XCTAssertEqual(gains.count, 24)
+        XCTAssertTrue(gains.values.allSatisfy { abs($0 - 0.5) < 0.000001 })
+        XCTAssertTrue(show.current!.tracks.allSatisfy { abs($0.volume - 0.5) < 0.000001 })
+        XCTAssertTrue(backend.project.songs[0].tracks.allSatisfy { abs($0.volume - 0.5) < 0.000001 })
+        XCTAssertEqual(show.projectRevision, revision)
+        backend.transport.multiLoop = nil; show.tick()
+        XCTAssertEqual(publications, 2)
+        XCTAssertTrue(show.current!.tracks.allSatisfy { $0.volume == 1 })
     }
     @MainActor func testSectionCreationOutsideRegionShowsNotice() throws {
         let show = try ShowController(executor: SectionExecutor(), persistence: MemoryProjectStore(), initialProject: Project.demo())

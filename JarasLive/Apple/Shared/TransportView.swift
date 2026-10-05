@@ -174,11 +174,16 @@ private struct TransportDisplaysLive: View {
 }
 
 private struct TransportTimeDisplay: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @State private var seconds: Int
+    init(show: ShowController) {
+        self.show = show
+        _seconds = State(initialValue: max(0, Int(show.snapshot.transport.position)))
+    }
     var body: some View {
-        let seconds = max(0, Int(show.snapshot.transport.position))
         Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
             .monospacedDigit().accessibilityLabel("Transport time")
+            .onReceive(show.$snapshot.map { max(0, Int($0.transport.position)) }.removeDuplicates()) { seconds = $0 }
     }
 }
 
@@ -523,13 +528,15 @@ struct TransportButtonStyle: ButtonStyle {
 struct TransportPreview: PreviewProvider { static var previews: some View { TransportView(show: try! AppContainer(preview: true).show).frame(width: 980) } }
 
 private struct MetronomeControl: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
     var documents: ProjectDocuments? = nil
     @ObservedObject private var settings = MetronomeSettings.shared
     @State private var configuring = false
-    private var pulse: Bool {
-        guard settings.enabled, show.snapshot.transport.playing, let song = show.current else { return true }
-        let position = show.snapshot.transport.position
+    @State private var pulse = true
+    private func pulse(for snapshot: ShowSnapshot) -> Bool {
+        guard settings.enabled, snapshot.transport.playing,
+              let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { return true }
+        let position = snapshot.transport.position
         let section = song.tempoSection(at: position)
         let beat = max(0, position - section.start) * section.bpm / 60 * Double(section.unit) / 4
         return beat.truncatingRemainder(dividingBy: 1) < 0.35
@@ -537,7 +544,8 @@ private struct MetronomeControl: View {
     var body: some View {
         Button { settings.enabled.toggle() } label: { Image(systemName: "metronome") }
             .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: 30, height: 35))
-            .opacity(pulse ? 1 : 0.45)
+            .opacity(!settings.enabled || pulse ? 1 : 0.45)
+            .onReceive(show.$snapshot.map { pulse(for: $0) }.removeDuplicates()) { pulse = $0 }
             .accessibilityLabel("Metronome").accessibilityValue(settings.enabled ? "On" : "Off")
             .jarasHelp("Metronome · Right-click to configure")
             .immediateRightClick { configuring = true }

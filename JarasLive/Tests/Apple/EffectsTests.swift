@@ -278,7 +278,57 @@ func testSpectrumWorker(rate: Double) {
     print("JARAS_LIMITER_CEILING_TRANSIENTS_MONO_STEREO_BYPASS_INSTANCES_AND_PROJECT_ROUNDTRIP_OK")
 }
 
+@MainActor func testSparseTrackChainLiveInsertion() throws {
+    for rate in [44100.0, 48000] {
+        let engine = AVAudioEngine(), player = AVAudioPlayerNode(), mixer = AVAudioMixerNode()
+        let chain = NativeEffectsChain()
+        let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+        engine.attach(player); engine.attach(mixer)
+        engine.connect(player, to: mixer, format: format)
+        chain.attach(to: engine, input: mixer, format: format)
+        engine.connect(chain.output, to: engine.mainMixerNode, format: format)
+        for node in [chain.compressor, chain.delay, chain.reverb] {
+            precondition(engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty,
+                         "unused processors must not participate in rendering")
+        }
+        let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 4))!
+        source.frameLength = source.frameCapacity
+        for channel in 0..<2 { for frame in 0..<Int(source.frameLength) { source.floatChannelData![channel][frame] = 0.1 } }
+        player.scheduleBuffer(source)
+        try engine.start(); player.play()
+        let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+        func check(_ expected: Float) throws {
+            for block in 0..<24 {
+                let status = try engine.renderOffline(512, to: output)
+                precondition(status == .success)
+                if block >= 16 {
+                    for channel in 0..<2 { for frame in 0..<Int(output.frameLength) {
+                        precondition(abs(output.floatChannelData![channel][frame] - expected) < 0.0001,
+                                     "live insertion and bypass preserve the scheduled PCM")
+                    } }
+                }
+            }
+        }
+        try check(0.1)
+        let nodeCount = engine.attachedNodes.count
+        var settings = NativeFXSettings(); settings.appendNative("Compressor")
+        settings.threshold = 0; settings.ratio = 1; settings.makeup = -6
+        chain.apply(settings)
+        try check(0.1 * Float(pow(10, -6.0 / 20)))
+        precondition(engine.attachedNodes.count == nodeCount)
+        let destination = engine.outputConnectionPoints(for: chain.compressor, outputBus: 0).first?.node
+        settings.compressorEnabled = false; chain.apply(settings)
+        try check(0.1)
+        precondition(engine.outputConnectionPoints(for: chain.compressor, outputBus: 0).first?.node === destination,
+                     "bypass keeps the activated processor connected")
+        chain.apply(NativeFXSettings()); try check(0.1)
+        engine.stop()
+        print("UNUSED_TRACK_FX_OUTSIDE_RENDER_PATH_AND_LIVE_INSERTION_CONTINUITY_OK rate=\(rate)")
+    }
+}
 @MainActor func run() throws {
+    try testSparseTrackChainLiveInsertion()
     try testLimiter()
     setbuf(stdout, nil)
     try testItemFades()

@@ -713,7 +713,12 @@ private struct KeyboardSettingsView: View {
 
 /// Observes transient modal notices without rebuilding the workspace for them.
 private struct ProjectNoticePresenter: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
+    init(show: ShowController) {
+        self.show = show
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     var body: some View {
         Color.clear.allowsHitTesting(false)
             .alert(Text(verbatim: show.modalNotice.map { JarasLocalization.string($0) } ?? ""), isPresented: Binding(
@@ -724,9 +729,14 @@ private struct ProjectNoticePresenter: View {
 }
 
 private struct FooterProjectNameDisplay: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @StateObject private var updates: ShowPresentationObserver
     @ObservedObject var documents: ProjectDocuments
     var titlebar = false
+    init(show: ShowController, documents: ProjectDocuments, titlebar: Bool = false) {
+        self.show = show; self.documents = documents; self.titlebar = titlebar
+        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+    }
     @State private var showingBackups = false
     @State private var backups: [(url: URL, date: Date)] = []
     @State private var loadingBackups = false

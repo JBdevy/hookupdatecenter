@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 enum TimelineZoomLimits {
     static let minimum = 0.001
     static let maximum = 8192.0
@@ -383,6 +384,17 @@ private struct TimelineGridContent: View, Equatable {
                                             .offset(x: max(0, horizontalOffset - 512), y: verticalOffset)
                                             .allowsHitTesting(false)
                                         // Draw needles last so coincident region/marker lines cannot cover them.
+                                        #if os(macOS)
+                                        NativeTimelineNeedles(show: show, width: width, height: contentHeight,
+                                            rulerHeight: rulerHeight, verticalOffset: verticalOffset, extent: extent,
+                                            seek: { position, secondary in
+                                                if let song = show.current {
+                                                    show.send(secondary ? .subSeek : .editSeek,
+                                                        value: gridPosition(position, song: song, pixelsPerSecond: pixelsPerSecond))
+                                                }
+                                            }, marker: { tempo in if tempo { beginTempoMarker() } else { beginMarker() } })
+                                            .frame(width: width, height: contentHeight)
+                                        #else
                                         TimelinePlaybackLayer(show: show) { playback in
                                             ZStack(alignment: .topLeading) {
                                                 cursor(position: show.snapshot.transport.editPosition ?? show.snapshot.transport.position, duration: extent, width: width, height: contentHeight, secondary: false, rulerHeight: rulerHeight, verticalOffset: verticalOffset, subPosition: playback.subPosition)
@@ -394,12 +406,8 @@ private struct TimelineGridContent: View, Equatable {
                                                     .modifier(SubCursorBlink())
                                                 }
                                             }.frame(width: width, height: contentHeight, alignment: .topLeading)
-                                            #if os(macOS)
-                                            .background(TimelinePlaybackFollow(position: playback.followPosition,
-                                                pixelsPerSecond: pixelsPerSecond, contentWidth: width,
-                                                source: "\(song.id)-\(playback.followSource == .sub ? "sub" : "main")"))
-                                            #endif
                                         }
+                                        #endif
                                             }.frame(width: width, height: contentHeight, alignment: .topLeading)
                                         }.frame(width: width, height: contentHeight)
                                         }
@@ -1243,6 +1251,205 @@ private struct TimelineGridContent: View, Equatable {
 
     }
 }
+#if os(macOS)
+/// Moving needles update Core Animation layers without invalidating the hosted
+/// track/item tree. Transport samples and their epochs stay paired between ticks.
+private struct NativeTimelineNeedles: NSViewRepresentable {
+    let show: ShowController
+    let width: CGFloat
+    let height: CGFloat
+    let rulerHeight: CGFloat
+    let verticalOffset: CGFloat
+    let extent: Double
+    let seek: (Double, Bool) -> Void
+    let marker: (Bool) -> Void
+    func makeNSView(context: Context) -> NativeTimelineNeedlesView { NativeTimelineNeedlesView() }
+    func updateNSView(_ view: NativeTimelineNeedlesView, context: Context) {
+        view.configure(show: show, size: CGSize(width: width, height: height),
+            rulerHeight: rulerHeight, verticalOffset: verticalOffset, extent: extent, seek: seek, marker: marker)
+    }
+    static func dismantleNSView(_ view: NativeTimelineNeedlesView, coordinator: ()) { view.stop() }
+}
+private final class NativeTimelineNeedlesView: NSView {
+    private final class Needle {
+        struct Appearance: Equatable {
+            let color: Int
+            let top: CGFloat, tip: CGFloat, height: CGFloat, trailWidth: CGFloat
+            let glowing: Bool, merged: Bool, playback: Bool
+        }
+        var appearance: Appearance?
+        let root = CALayer(), line = CAShapeLayer(), head = CAShapeLayer(), trail = CAGradientLayer()
+        init() {
+            root.addSublayer(trail); root.addSublayer(line); root.addSublayer(head)
+            line.fillColor = nil; line.lineWidth = 1.5
+            trail.startPoint = CGPoint(x: 0, y: 0.5); trail.endPoint = CGPoint(x: 1, y: 0.5)
+        }
+    }
+    private let edit = Needle(), main = Needle(), sub = Needle()
+    private let follow = TimelinePlaybackFollowView()
+    private weak var show: ShowController?
+    private var subscriptions: [AnyCancellable] = []
+    private var timer: Timer?
+    private var pendingSample = false
+    private var transport: TransportState?
+    private var sampledAt = 0.0, duration = 0.0, extent = 1.0
+    private var boundary: Double?
+    private var songID: UUID?
+    private var subVisible = false
+    private var size = CGSize.zero
+    private var rulerHeight: CGFloat = 0, verticalOffset: CGFloat = 0
+    private var editX: CGFloat = 0, subX: CGFloat = 0
+    private var dragging: Bool?
+    private var seek: (Double, Bool) -> Void = { _, _ in }
+    private var marker: (Bool) -> Void = { _ in }
+    private var colors: [Int] = [TimelineAppearanceDefaults.playCursor, TimelineAppearanceDefaults.editCursor, TimelineAppearanceDefaults.subPlayCursor]
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { size }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for needle in [edit, main, sub] { layer?.addSublayer(needle.root) }
+        addSubview(follow)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(show: ShowController, size: CGSize, rulerHeight: CGFloat, verticalOffset: CGFloat,
+                   extent: Double, seek: @escaping (Double, Bool) -> Void, marker: @escaping (Bool) -> Void) {
+        self.size = size; self.rulerHeight = rulerHeight; self.verticalOffset = verticalOffset; self.extent = extent
+        self.seek = seek; self.marker = marker
+        if self.show !== show {
+            subscriptions.removeAll(); self.show = show
+            subscriptions.append(show.$snapshot.sink { [weak self] _ in self?.scheduleSample() })
+            subscriptions.append(show.$subCursorPreview.sink { [weak self] _ in self?.scheduleSample() })
+            for (index, pair) in [("jaras.timeline.playCursor", TimelineAppearanceDefaults.playCursor),
+                                  ("jaras.timeline.editCursor", TimelineAppearanceDefaults.editCursor),
+                                  ("jaras.timeline.subPlayCursor", TimelineAppearanceDefaults.subPlayCursor)].enumerated() {
+                subscriptions.append(AppearanceColor.shared(pair.0, default: pair.1).$value.sink { [weak self] value in
+                    self?.colors[index] = value
+                    self?.paint()
+                })
+            }
+        }
+        sample(); paint()
+    }
+    private func scheduleSample() {
+        guard !pendingSample else { return }
+        pendingSample = true
+        // @Published emits before its storage changes. Read the completed
+        // snapshot after publication, and never reset an older sample's epoch.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingSample = false; self.sample(); self.paint()
+        }
+    }
+    private func sample() {
+        guard let show else { return }
+        transport = show.snapshot.transport; sampledAt = show.timelinePlaybackSampleTime
+        let song = show.current
+        songID = song?.id; duration = song?.duration ?? 0; subVisible = show.subCursorVisible
+        let region = song?.parts.first { $0.id == transport?.regionId }
+        boundary = transport?.ignoreNextEnd ?? region?.parentRegionID.flatMap { id in song?.parts.first { $0.id == id }?.endTime } ?? region?.endTime
+        manageTimer()
+    }
+    private func manageTimer() {
+        let active = window != nil && (transport?.playing == true || transport?.subPlay.playing == true || subVisible)
+        if !active { timer?.invalidate(); timer = nil; return }
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.paint() }
+        }
+        self.timer = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); manageTimer(); paint() }
+    func stop() { timer?.invalidate(); timer = nil; subscriptions.removeAll(); show = nil }
+    deinit { timer?.invalidate() }
+    private func ink(_ value: Int) -> CGColor {
+        CGColor(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
+            blue: CGFloat(value & 255) / 255, alpha: 1)
+    }
+    private func x(_ position: Double) -> CGFloat { min(max(0, size.width - 1), max(0, size.width * position / max(1, extent))) }
+    private func paint() {
+        guard let transport, size.width > 0, size.height > 0 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let playback = TimelinePlaybackPresentation(transport: transport, elapsed: max(0, now - sampledAt),
+            songDuration: duration, mainBoundary: boundary)
+        editX = x(transport.editPosition ?? transport.position); subX = x(playback.subPosition)
+        let merged = subVisible && abs(editX - subX) < 0.5
+        let blended = [0, 8, 16].reduce(0) { $0 | (((((colors[1] >> $1) & 255) + ((colors[2] >> $1) & 255)) / 2) << $1) }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        draw(edit, x: editX, color: merged ? blended : colors[1], playback: false,
+            glowing: dragging == false || (merged && dragging == true), merged: merged)
+        main.root.isHidden = !transport.playing && transport.paused != true
+        if !main.root.isHidden { draw(main, x: x(playback.mainPosition), color: colors[0], playback: true, glowing: transport.playing) }
+        sub.root.isHidden = !subVisible || merged
+        if !sub.root.isHidden {
+            draw(sub, x: subX, color: colors[2], playback: false, glowing: transport.subPlay.playing || dragging == true)
+            sub.root.opacity = now.truncatingRemainder(dividingBy: 0.9) < 0.45 ? 1 : 0.3
+        }
+        CATransaction.commit()
+        follow.update(position: playback.followPosition, pixelsPerSecond: size.width / max(1, extent), contentWidth: size.width,
+            source: "\(songID?.uuidString ?? "")-\(playback.followSource == .sub ? "sub" : "main")")
+    }
+    private func draw(_ needle: Needle, x: CGFloat, color value: Int, playback: Bool, glowing: Bool, merged: Bool = false) {
+        let top = rulerHeight - 16 + verticalOffset
+        let tip = playback ? rulerHeight + verticalOffset : top + 17
+        let frame = CGRect(x: x - 14, y: 0, width: 28, height: size.height)
+        if needle.root.frame != frame { needle.root.frame = frame }
+        let appearance = Needle.Appearance(color: value, top: top, tip: tip, height: size.height,
+            trailWidth: min(x, 38), glowing: glowing, merged: merged, playback: playback)
+        guard needle.appearance != appearance else { return }
+        needle.appearance = appearance
+        let color = ink(value)
+        let path = CGMutablePath(); path.move(to: CGPoint(x: 14, y: tip)); path.addLine(to: CGPoint(x: 14, y: max(tip, size.height)))
+        needle.line.path = path; needle.line.strokeColor = color
+        needle.line.lineDashPattern = merged ? [1, 3] : nil
+        needle.line.lineCap = merged ? .round : .butt
+        needle.line.shadowColor = color; needle.line.shadowOpacity = glowing ? 1 : 0.55
+        needle.line.shadowRadius = glowing ? 8 : 3; needle.line.shadowOffset = .zero
+        let head = CGMutablePath(); head.move(to: CGPoint(x: 7, y: playback ? tip : top + 5))
+        head.addLine(to: CGPoint(x: 21, y: playback ? tip : top + 5)); head.addLine(to: CGPoint(x: 14, y: playback ? tip + 9 : tip)); head.closeSubpath()
+        needle.head.path = head; needle.head.fillColor = merged ? color.copy(alpha: 0.18) : color
+        needle.head.strokeColor = merged ? color : nil; needle.head.lineDashPattern = merged ? [1, 2] : nil; needle.head.lineWidth = 1.5
+        needle.head.shadowColor = color; needle.head.shadowOpacity = playback && glowing ? 0.9 : 0
+        needle.head.shadowRadius = 4; needle.head.shadowOffset = .zero
+        needle.trail.isHidden = !glowing
+        needle.trail.frame = CGRect(x: 14 - min(x, 38), y: tip, width: min(x, 38), height: max(0, size.height - tip))
+        needle.trail.colors = [color.copy(alpha: 0)!, color.copy(alpha: 0.08)!, color.copy(alpha: 0.42)!]
+        needle.trail.locations = [0, 0.5, 1]
+    }
+    private func target(at point: CGPoint) -> Bool? {
+        guard point.y >= rulerHeight - 16 + verticalOffset && point.y <= rulerHeight + 6 + verticalOffset else { return nil }
+        if subVisible && abs(point.x - subX) <= 14 { return true }
+        return abs(point.x - editX) <= 14 ? false : nil
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let window, !NativeTimelineInputGate.shared.isBlocked(window), window.attachedSheet == nil,
+              target(at: convert(point, from: superview)) != nil else { return nil }
+        return self
+    }
+    override func mouseDown(with event: NSEvent) {
+        dragging = target(at: convert(event.locationInWindow, from: nil)); move(event)
+    }
+    override func mouseDragged(with event: NSEvent) { move(event) }
+    override func mouseUp(with event: NSEvent) { dragging = nil; sample(); paint() }
+    private func move(_ event: NSEvent) {
+        guard let dragging else { return }
+        let position = min(max(0, convert(event.locationInWindow, from: nil).x / max(1, size.width)), 1) * extent
+        seek(position, dragging); sample(); paint()
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        guard target(at: convert(event.locationInWindow, from: nil)) == false else { return }
+        let menu = NSMenu()
+        for (title, selector) in [("Create marker", #selector(createMarker)), ("Create tempo marker", #selector(createTempoMarker))] {
+            let item = NSMenuItem(title: JarasLocalization.string(title), action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item)
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+    @objc private func createMarker() { marker(false) }
+    @objc private func createTempoMarker() { marker(true) }
+}
+#endif
+
 private struct TimelineCursorAppearance<Content: View>: View {
     @ObservedObject private var play = AppearanceColor.shared("jaras.timeline.playCursor", default: TimelineAppearanceDefaults.playCursor)
     @ObservedObject private var edit = AppearanceColor.shared("jaras.timeline.editCursor", default: TimelineAppearanceDefaults.editCursor)

@@ -259,6 +259,12 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         executor.transport.playing = false
         controller.tick(); await flush()
         XCTAssertEqual(changes, 6, "Stopping restores Play and disables Pause")
+        controller.modalNotice = "A marker already exists at this position."
+        await flush()
+        XCTAssertEqual(changes, 7, "Modal notices still update without observing the playback clock")
+        controller.modalNotice = nil
+        await flush()
+        XCTAssertEqual(changes, 8)
     }
     @MainActor func testMixerPresentationIgnoresPlaybackTicksAndPublishesRealEdits() throws {
         let (controller, executor) = try show(fixture())
