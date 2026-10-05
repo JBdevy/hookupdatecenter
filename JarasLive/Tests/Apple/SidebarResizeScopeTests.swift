@@ -135,6 +135,15 @@ MainActor.assumeIsolated {
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     precondition(setlist.frame.width == completedWidth && counters.panelEvaluations == completedEvaluations,
                  "a completed gesture has no deferred horizontal work")
+    // Exiting an unrelated handle must not replace an active drag cursor.
+    let other = MixerDividerView(frame: NSRect(x: 0, y: 0, width: 8, height: 100))
+    divider.mouseDown(with: event(.leftMouseDown, delta: 0))
+    let activeCursor = NSCursor.current
+    other.mouseExited(with: event(.mouseMoved, delta: 0))
+    precondition(NSCursor.current == activeCursor, "only the active handle owns its resize cursor")
+    divider.mouseUp(with: event(.leftMouseUp, delta: 0))
+    divider.mouseExited(with: event(.mouseMoved, delta: 0))
+    precondition(NSCursor.current != activeCursor, "leaving a released handle restores the pointer")
     print("SIDEBAR_RESIZE_SCOPED_ROOT_NATIVE_GEOMETRY_IDENTITY_SCROLL_AND_FINAL_COMMIT_OK mean_ms=\(timings.reduce(0,+)/Double(timings.count))")
     window.close()
 }

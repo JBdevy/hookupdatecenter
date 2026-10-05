@@ -1,7 +1,18 @@
 import Foundation
 import Combine
+/// Mixer controls observe project edits, never the 30 Hz playback position.
+@MainActor public final class ShowProjectPresentation: ObservableObject {
+    public let objectWillChange = ObservableObjectPublisher()
+}
 @MainActor public final class ShowController: ObservableObject {
-    @Published public private(set) var snapshot: ShowSnapshot
+    public let projectPresentation = ShowProjectPresentation()
+    @Published public private(set) var snapshot: ShowSnapshot {
+        didSet {
+            if oldValue.project != snapshot.project || oldValue.transport.songId != snapshot.transport.songId {
+                projectPresentation.objectWillChange.send()
+            }
+        }
+    }
     @Published public private(set) var focusedRegion: UUID?
     private var selectedSetlistBlock: UUID?
     /// Blocks prepare the next Play without starting or queueing a song on click.
@@ -329,7 +340,9 @@ import Combine
         public let track: UUID
     }
     @Published public private(set) var trackSelectionRequest: TrackSelectionRequest?
-    @Published public private(set) var mixerTrackSelection: Set<UUID> = []
+    @Published public private(set) var mixerTrackSelection: Set<UUID> = [] {
+        didSet { if oldValue != mixerTrackSelection { projectPresentation.objectWillChange.send() } }
+    }
     public func setMixerTrackSelection(_ ids: Set<UUID>, anchor: UUID?) {
         let valid = ids.intersection((current?.tracks ?? []).filter { $0.kind == .standard }.map(\.id))
         selectedTrackForActions = anchor.flatMap { valid.contains($0) ? $0 : nil } ?? valid.first
@@ -774,7 +787,15 @@ import Combine
         guard isPlaying else { return }
         let previous = snapshot.transport
         executor.advance(delta)
-        do { let update = try executor.playbackSnapshot(); snapshot.transport = update.transport; snapshot.nextSongId = update.nextSongId; applyLoopMixer(); focusPreparedRegion(previous: previous); rememberCursor(); if !isPlaying { timer?.invalidate(); timer = nil; onStop() }; audioUpdate(snapshot, audioProjectRevision) } catch { message = error.localizedDescription }
+        do {
+            let update = try executor.playbackSnapshot()
+            var next = snapshot
+            next.transport = update.transport; next.nextSongId = update.nextSongId
+            snapshot = next
+            applyLoopMixer(); focusPreparedRegion(previous: previous); rememberCursor()
+            if !isPlaying { timer?.invalidate(); timer = nil; onStop() }
+            audioUpdate(snapshot, audioProjectRevision)
+        } catch { message = error.localizedDescription }
     }
     private var tempoControlRegion: Part? {
         guard let song = current else { return nil }

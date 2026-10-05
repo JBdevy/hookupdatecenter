@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import JarasApplication
 
 @MainActor private final class IncrementalSettingsExecutor: CommandExecutor {
@@ -201,6 +202,31 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let show = try ShowController(executor: executor,persistence: MemoryProjectStore(),initialProject: project)
         executor.snapshotReads = 0; executor.playbackReads = 0
         return (show,executor)
+    }
+    @MainActor func testMixerPresentationIgnoresPlaybackTicksAndPublishesRealEdits() throws {
+        let (controller, executor) = try show(fixture())
+        var changes = 0
+        let subscription = controller.projectPresentation.objectWillChange.sink { changes += 1 }
+        defer { subscription.cancel() }
+        executor.transport.position += 1
+        for _ in 0..<30 { controller.tick() }
+        XCTAssertEqual(changes, 0, "Playback position must not rebuild mixer controls")
+        let track = try XCTUnwrap(controller.current?.tracks.last?.id)
+        controller.setMixerTrackSelection([track], anchor: track)
+        XCTAssertEqual(changes, 1)
+        controller.setMixerTrackSelection([track], anchor: track)
+        XCTAssertEqual(changes, 1, "Unchanged selection must not invalidate mixer")
+        controller.sendMixerControl(.volume, target: track, value: 0.5)
+        XCTAssertGreaterThan(changes, 1)
+        let afterVolume = changes
+        controller.sendMixerControl(.mute, target: track)
+        XCTAssertGreaterThan(changes, afterVolume)
+        let afterMute = changes
+        controller.sendMixerControl(.solo, target: track)
+        XCTAssertGreaterThan(changes, afterMute)
+        let afterSolo = changes
+        controller.tick()
+        XCTAssertEqual(changes, afterSolo)
     }
     @MainActor func testSelectedMixerControlsShareStatesAndPreserveUnselectedTracks() throws {
         var project = fixture()

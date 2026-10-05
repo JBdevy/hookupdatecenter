@@ -686,7 +686,12 @@ private struct GroupTrackConnector: Shape {
 }
 struct MasterStrip: View {
     @Environment(\.openFX) private var openFX
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @ObservedObject private var updates: ShowProjectPresentation
+    init(show: ShowController) {
+        self.show = show
+        _updates = ObservedObject(wrappedValue: show.projectPresentation)
+    }
     @State private var patchPresented = false
     @State private var fxPresented = false
     @State private var colorPresented = false
@@ -1758,8 +1763,13 @@ private struct FooterMixerRenderState: Equatable {
     let selection: Set<UUID>
 }
 struct FooterHorizontalMixer: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @ObservedObject private var updates: ShowProjectPresentation
     var active = true
+    init(show: ShowController, active: Bool = true) {
+        self.show = show; self.active = active
+        _updates = ObservedObject(wrappedValue: show.projectPresentation)
+    }
     var body: some View {
         let project = show.snapshot.project
         let tracks = (show.current?.tracks ?? []).filter { $0.kind == .standard }.map { track in

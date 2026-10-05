@@ -49,10 +49,15 @@ struct TimelineGridView: View {
     }
 }
 private struct TimelineLiveMixerRow<Content: View>: View {
-    @ObservedObject var show: ShowController
+    let show: ShowController
+    @ObservedObject private var updates: ShowProjectPresentation
     let track: Track
     let index: Int
     @ViewBuilder let content: (Track) -> Content
+    init(show: ShowController, track: Track, index: Int, @ViewBuilder content: @escaping (Track) -> Content) {
+        self.show = show; self.track = track; self.index = index; self.content = content
+        _updates = ObservedObject(wrappedValue: show.projectPresentation)
+    }
     var body: some View {
         let tracks = show.current?.tracks ?? []
         let current = tracks.indices.contains(index) && tracks[index].id == track.id ? tracks[index] : track
@@ -2259,6 +2264,8 @@ final class MixerDividerView: NSView {
     }
     private var scrollObserver: UUID?
     private var hoverArea: NSTrackingArea?
+    private var pointerCursorMonitor: Any?
+    private static weak var pointerCursorOwner: MixerDividerView?
     var scrollIndicatorVisible: Bool { scrollController?.metrics.canScroll == true }
     private var pendingScroll: CGFloat?
     private var hasScrolledInDrag = false
@@ -2307,18 +2314,41 @@ final class MixerDividerView: NSView {
         }
         return NSCursor(image: image, hotSpot: NSPoint(x: 12, y: 12))
     }()
-    override func resetCursorRects() { addCursorRect(bounds, cursor: Self.moveCursor) }
-    override func cursorUpdate(with event: NSEvent) { Self.moveCursor.set() }
-    override func mouseExited(with event: NSEvent) {
-        if !mouseIsDown { NSCursor.arrow.set() }
+    override func resetCursorRects() { addCursorRect(visibleRect, cursor: Self.moveCursor) }
+    private func releasePointerCursor() {
+        guard Self.pointerCursorOwner === self else { return }
+        Self.pointerCursorOwner = nil
+        if NSCursor.current == Self.moveCursor { NSCursor.arrow.set() }
     }
-    override func mouseEntered(with event: NSEvent) { Self.moveCursor.set() }
-    override func mouseMoved(with event: NSEvent) { Self.moveCursor.set() }
+    private func updatePointerCursor() {
+        if let owner = Self.pointerCursorOwner, owner.mouseIsDown { return }
+        guard let window else { releasePointerCursor(); return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        if !isHiddenOrHasHiddenAncestor && bounds.intersection(visibleRect).contains(point) {
+            Self.pointerCursorOwner = self
+            Self.moveCursor.set()
+        } else { releasePointerCursor() }
+    }
+    override func cursorUpdate(with event: NSEvent) { updatePointerCursor() }
+    override func mouseExited(with event: NSEvent) {
+        if !mouseIsDown { releasePointerCursor() }
+    }
+    override func mouseEntered(with event: NSEvent) { updatePointerCursor() }
+    override func mouseMoved(with event: NSEvent) { if !mouseIsDown { updatePointerCursor() } }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let pointerCursorMonitor { NSEvent.removeMonitor(pointerCursorMonitor); self.pointerCursorMonitor = nil }
         if window == nil {
             mouseIsDown = false; stopScrollUpdates()
-            if NSCursor.current == Self.moveCursor { NSCursor.arrow.set() }
+            releasePointerCursor()
+        } else {
+            // Tracking exits can be lost when a drag changes hosting/clip bounds.
+            // Recheck the actual pointer instead of retaining the resize cursor.
+            pointerCursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+                guard let self, !self.mouseIsDown, event.window === self.window else { return event }
+                self.updatePointerCursor()
+                return event
+            }
         }
     }
     private func refreshIndicator() { needsDisplay = true }
@@ -2395,8 +2425,13 @@ final class MixerDividerView: NSView {
     }
     override func mouseDown(with event: NSEvent) {
         stopScrollUpdates()
+        Self.pointerCursorOwner = self
         Self.moveCursor.set()
-        if event.clickCount == 2 { mouseIsDown = false; dragAxis = .pending; onToggle?(); return }
+        if event.clickCount == 2 {
+            mouseIsDown = false; dragAxis = .pending; onToggle?()
+            releasePointerCursor(); window?.invalidateCursorRects(for: self); updatePointerCursor()
+            return
+        }
         mouseIsDown = true
         dragAxis = .pending
         startingWidth = columnWidth
@@ -2447,11 +2482,12 @@ final class MixerDividerView: NSView {
             commitResizeLayout()
         }
         if finishedAxis == .pending && startingWidth == 0 { onToggle?() }
-        if !bounds.intersection(visibleRect).contains(convert(event.locationInWindow, from: nil)) {
-            NSCursor.arrow.set()
-        }
+        releasePointerCursor()
+        window?.invalidateCursorRects(for: self)
+        updatePointerCursor()
     }
     deinit {
+        if let pointerCursorMonitor { NSEvent.removeMonitor(pointerCursorMonitor) }
         cancelScrollDisplayLink?(); scrollFrameTimer?.invalidate()
         if let controller = scrollController, let id = scrollObserver {
             Task { @MainActor in controller.removeObserver(id) }
