@@ -75,19 +75,40 @@ jobs:
           set -euo pipefail
           KEYCHAIN="$RUNNER_TEMP/catlive-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
           printf '%s' "$APP_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/catlive-app.p12"
           printf '%s' "$INSTALLER_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/catlive-installer.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$RUNNER_TEMP/catlive-app.p12" -k "$KEYCHAIN" -P "$APP_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security import "$RUNNER_TEMP/catlive-installer.p12" -k "$KEYCHAIN" -P "$INSTALLER_CERT_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/security
+          # This keychain exists only for this job. Avoid an invisible GUI access
+          # prompt when productbuild requests the Installer private key.
+          import_identity() {
+            local certificate="$1" password="$2"
+            local output="$RUNNER_TEMP/catlive-identity-import.log"
+            if security import "$certificate" -k "$KEYCHAIN" -P "$password" -A -t cert -f pkcs12 > "$output" 2>&1; then
+              cat "$output"
+            elif grep -Fq 'The specified item already exists in the keychain' "$output"; then
+              echo 'Shared certificate already imported; checking identities below.'
+            else
+              cat "$output"
+              return 1
+            fi
+          }
+          import_identity "$RUNNER_TEMP/catlive-app.p12" "$APP_CERT_PASSWORD"
+          import_identity "$RUNNER_TEMP/catlive-installer.p12" "$INSTALLER_CERT_PASSWORD"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN"
+          EXISTING_KEYCHAINS=()
+          while IFS= read -r existing; do
+            existing="${existing//\"/}"
+            [[ -z "$existing" || "$existing" == "$KEYCHAIN" ]] || EXISTING_KEYCHAINS+=("$existing")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING_KEYCHAINS[@]}"
           rm -f "$RUNNER_TEMP/catlive-app.p12" "$RUNNER_TEMP/catlive-installer.p12"
           security find-identity -v -p codesigning "$KEYCHAIN" | grep -q 'Developer ID Application:'
-          security find-identity -v -p basic "$KEYCHAIN" | grep -q 'Developer ID Installer:'
+          security find-identity -v "$KEYCHAIN" | grep -q 'Developer ID Installer:'
           echo "CATLIVE_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "CATLIVE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Sign CatLive and embedded runtime
         shell: bash
@@ -105,16 +126,32 @@ jobs:
           codesign --force --sign "$APP_ID" --options runtime --timestamp --entitlements "$ENTITLEMENTS" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-      - name: Build signed PKG
+      - name: Build unsigned PKG
         shell: bash
         run: |
           set -euo pipefail
           APP="$RUNNER_TEMP/catlive-build/Build/Products/Release/CatLive.app"
-          INSTALLER_ID="$(security find-identity -v -p basic "$CATLIVE_KEYCHAIN" | sed -n 's/.*"\(Developer ID Installer:.*\)"/\1/p' | head -1)"
-          test -n "$INSTALLER_ID"
           mkdir -p dist
-          productbuild --component "$APP" /Applications --component-compression auto --sign "$INSTALLER_ID" "dist/CatLive-$VERSION-macOS.pkg"
-          pkgutil --check-signature "dist/CatLive-$VERSION-macOS.pkg" | grep -q 'Developer ID Installer:'
+          pkgbuild --component "$APP" --install-location /Applications \
+            --compression latest --min-os-version 12.0 \
+            "$RUNNER_TEMP/CatLive-$VERSION-unsigned.pkg"
+
+      - name: Sign installer PKG
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          set -euo pipefail
+          security unlock-keychain -p "$CATLIVE_KEYCHAIN_PASSWORD" "$CATLIVE_KEYCHAIN"
+          INSTALLER_ID="$(security find-identity -v "$CATLIVE_KEYCHAIN" | sed -n 's/.*"\(Developer ID Installer:.*\)"/\1/p' | head -1)"
+          test -n "$INSTALLER_ID"
+          python3 JarasLive/scripts/sign-catlive-pkg.py \
+            "$RUNNER_TEMP/CatLive-$VERSION-unsigned.pkg" \
+            "dist/CatLive-$VERSION-macOS.pkg" \
+            "$INSTALLER_ID" "$CATLIVE_KEYCHAIN"
+          PKG_SIGNATURE="$(pkgutil --check-signature "dist/CatLive-$VERSION-macOS.pkg")"
+          printf '%s\n' "$PKG_SIGNATURE"
+          grep -q 'Developer ID Installer:' <<< "$PKG_SIGNATURE"
+          grep -q 'Signed with a trusted timestamp' <<< "$PKG_SIGNATURE"
 
       - name: Notarize and staple PKG
         shell: bash
