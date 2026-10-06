@@ -226,13 +226,45 @@ final class GridSelectionLayout {
 #if os(macOS)
 import AppKit
 
-/// Header text keeps the original AppKit drawing and metrics. Scroll and cursor
-/// updates reuse the measured title instead of running the typesetter again.
+/// Keep AppKit shaping and metrics, reusing the prepared Core Graphics layer
+/// during continuous scroll. Each entry retains only its latest drawing size.
 enum GridSelectionHeaderText {
     final class Title {
         let text: NSAttributedString
         let width: CGFloat
+        var string: String { text.string }
+        private var rendered: CGLayer?
+        private var renderedSize = CGSize.zero
+        private var renderedScale = CGSize.zero
+        private var renderedFlipped = false
         init(_ text: NSAttributedString) { self.text = text; width = text.size().width }
+        func draw(in rect: CGRect) {
+            guard rect.width > 0, rect.height > 0, let graphics = NSGraphicsContext.current else { return }
+            let context = graphics.cgContext, flipped = graphics.isFlipped
+            let transform = context.ctm
+            let scale = CGSize(width: hypot(transform.a, transform.b), height: hypot(transform.c, transform.d))
+            if rendered == nil || renderedSize != rect.size || renderedScale != scale || renderedFlipped != flipped {
+                let pixels = CGSize(width: rect.width * scale.width, height: rect.height * scale.height)
+                guard let layer = CGLayer(context, size: pixels, auxiliaryInfo: nil), let drawing = layer.context else {
+                    text.draw(in: rect); return
+                }
+                drawing.scaleBy(x: scale.width, y: scale.height)
+                if flipped { drawing.translateBy(x: 0, y: rect.height); drawing.scaleBy(x: 1, y: -1) }
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: drawing, flipped: flipped)
+                text.draw(in: CGRect(origin: .zero, size: rect.size))
+                NSGraphicsContext.restoreGraphicsState()
+                rendered = layer; renderedSize = rect.size; renderedScale = scale; renderedFlipped = flipped
+            }
+            if let rendered {
+                if flipped {
+                    context.saveGState()
+                    context.translateBy(x: rect.minX, y: rect.maxY); context.scaleBy(x: 1, y: -1)
+                    context.draw(rendered, in: CGRect(origin: .zero, size: rect.size))
+                    context.restoreGState()
+                } else { context.draw(rendered, in: rect) }
+            }
+        }
     }
     private static let font = NSFont.systemFont(ofSize: 9, weight: .semibold)
     private static func attributes(centered: Bool? = nil, color: NSColor = .white) -> [NSAttributedString.Key: Any] {
@@ -247,28 +279,28 @@ enum GridSelectionHeaderText {
     private static let activeAttributes = attributes(centered: true, color: .systemGreen)
     private static let titles: NSCache<NSString, Title> = {
         let cache = NSCache<NSString, Title>()
-        cache.countLimit = 1024; cache.totalCostLimit = 2 * 1024 * 1024
+        cache.countLimit = 256; cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
-    private static let gains: NSCache<NSString, NSAttributedString> = {
-        let cache = NSCache<NSString, NSAttributedString>()
-        cache.countLimit = 256; cache.totalCostLimit = 64 * 1024
+    private static let gains: NSCache<NSString, Title> = {
+        let cache = NSCache<NSString, Title>()
+        cache.countLimit = 256; cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
-    static let mute = NSAttributedString(string: "M", attributes: centeredAttributes)
-    static let fx = NSAttributedString(string: "FX", attributes: centeredAttributes)
-    static let activeFX = NSAttributedString(string: "FX", attributes: activeAttributes)
-    static let edit = NSAttributedString(string: "Edit", attributes: centeredAttributes)
+    static let mute = Title(NSAttributedString(string: "M", attributes: centeredAttributes))
+    static let fx = Title(NSAttributedString(string: "FX", attributes: centeredAttributes))
+    static let activeFX = Title(NSAttributedString(string: "FX", attributes: activeAttributes))
+    static let edit = Title(NSAttributedString(string: "Edit", attributes: centeredAttributes))
     static func title(_ name: String) -> Title {
         if let cached = titles.object(forKey: name as NSString) { return cached }
         let value = Title(NSAttributedString(string: name, attributes: titleAttributes))
-        titles.setObject(value, forKey: name as NSString, cost: name.utf8.count * 8 + 128)
+        titles.setObject(value, forKey: name as NSString, cost: Int(ceil(value.width) * 13 * 16) + name.utf8.count * 8 + 128)
         return value
     }
-    static func gain(_ text: String) -> NSAttributedString {
+    static func gain(_ text: String) -> Title {
         if let cached = gains.object(forKey: text as NSString) { return cached }
-        let value = NSAttributedString(string: text, attributes: gainAttributes)
-        gains.setObject(value, forKey: text as NSString, cost: text.utf8.count * 8 + 128)
+        let value = Title(NSAttributedString(string: text, attributes: gainAttributes))
+        gains.setObject(value, forKey: text as NSString, cost: Int(ceil(value.width) * 13 * 16) + 128)
         return value
     }
 }
@@ -944,7 +976,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 if let rect = item.gainLabelRect { GridSelectionHeaderText.gain(item.gainLabel).draw(in: rect.insetBy(dx: 1, dy: 0)) }
                 let nameRect = CGRect(x: item.headerRect.minX + item.titleInset + 4, y: item.rect.minY + 1,
                                       width: max(0, item.headerRect.width - item.titleInset - 8), height: 12)
-                if nameRect.width >= 10 { GridSelectionHeaderText.title(item.name ?? "").text.draw(in: nameRect) }
+                if nameRect.width >= 10 { GridSelectionHeaderText.title(item.name ?? "").draw(in: nameRect) }
                 drawItemFades(item)
         }
     }
