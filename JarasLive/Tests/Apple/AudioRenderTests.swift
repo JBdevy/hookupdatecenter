@@ -1462,7 +1462,7 @@ print("REAL_AUDIO_RENDER_OK main=\(mainPeak) +12dB=\(louder) muted=\(muted)")
 
 // Stereo track meters must observe the actual PCM after pan and gain, even
 // when Master is muted or this track routes directly to hardware.
-for panValue in [-1.0, 0.0, 1.0] {
+for panValue in [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0] {
     let panEngine = AVAudioEngine()
     try panEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let panRenderer = StemAudioPlayback(engine: panEngine, realtime: false)
@@ -1490,6 +1490,9 @@ for panValue in [-1.0, 0.0, 1.0] {
     try panRenderer.update(panState, revision: 1)
     precondition(abs(level.levels.x - pcm.x) < 0.005 && abs(level.levels.y - pcm.y) < 0.005,
                  "track meter must match post-pan PCM independently of Master: pan=\(panValue), meter=\(level.levels), pcm=\(pcm)")
+    let expected = SIMD2(0.05 * (1 - max(0, panValue)), 0.05 * (1 + min(0, panValue)))
+    precondition(abs(pcm.x - expected.x) < 0.0001 && abs(pcm.y - expected.y) < 0.0001,
+                 "fractional stereo balance preserves the original Apple mixer curve: pan=\(panValue), pcm=\(pcm)")
     if panValue == -1 { precondition(pcm.x > 0.02 && pcm.y < 0.00001) }
     if panValue == 1 { precondition(pcm.y > 0.02 && pcm.x < 0.00001) }
     if panValue == 0 { precondition(pcm.x > 0.02 && pcm.y > 0.02) }

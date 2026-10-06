@@ -145,10 +145,12 @@ struct EQKernel {
     unsigned activeSections=0;
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<double> inputGain{1};
+    std::atomic<double> inputPan{0};
     std::atomic<bool> inverted{false};
     std::atomic<int> channelMode{0};
     double channelMatrix[4] = {1,0,0,1};
     double currentInputGain=1;
+    double currentInputPan=0;
     bool inputGainInitialized=false;
     double mix=0;
     EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
@@ -172,15 +174,32 @@ struct EQKernel {
             }
         }
         const double gain=inputGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
-        if(!inputGainInitialized) { currentInputGain=gain; inputGainInitialized=true; }
-        if(gain!=1 || currentInputGain!=1) {
-            for(unsigned frame=0;frame<frames;frame++) {
+        const double pan=inputPan.load(std::memory_order_relaxed);
+        if(!inputGainInitialized) { currentInputGain=gain; currentInputPan=pan; inputGainInitialized=true; }
+        if(gain!=1 || currentInputGain!=1 || pan!=0 || currentInputPan!=0) {
+            unsigned frame=0;
+            // Smooth only parameter changes. Once settled, use a contiguous
+            // channel pass that the compiler can vectorize instead of doing
+            // control interpolation and channel lookup for every sample.
+            for(;frame<frames && (currentInputGain!=gain || currentInputPan!=pan);frame++) {
                 currentInputGain += (gain-currentInputGain)*0.02;
                 if(std::abs(gain-currentInputGain)<1e-9) currentInputGain=gain;
+                currentInputPan += (pan-currentInputPan)*0.02;
+                if(std::abs(pan-currentInputPan)<1e-9) currentInputPan=pan;
                 for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                     auto data=static_cast<float*>(buffers->mBuffers[ch].mData);
-                    if(data) data[frame]*=float(currentInputGain);
+                    // Stereo balance matches the existing mixer: center is
+                    // unity, with only the opposite channel attenuated.
+                    const double balance=ch==0 ? 1-std::max(0.0,currentInputPan) : 1+std::min(0.0,currentInputPan);
+                    if(data) data[frame]*=float(currentInputGain*balance);
                 }
+            }
+            for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
+                auto data=static_cast<float*>(buffers->mBuffers[ch].mData);
+                if(!data) continue;
+                const float scale=float(gain*(ch==0 ? 1-std::max(0.0,pan) : 1+std::min(0.0,pan)));
+                if(scale==1) continue;
+                for(unsigned i=frame;i<frames;i++) data[i]*=scale;
             }
         }
         const auto before=generation.load(std::memory_order_acquire);
@@ -283,6 +302,10 @@ struct EQKernel {
 }
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,3),std::memory_order_relaxed);
+}
++ (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan {
+    if(!std::isfinite(pan)) return;
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.inputPan.store(std::clamp(pan,-1.0,1.0),std::memory_order_relaxed);
 }
 + (void)setPolarity:(AVAudioUnitEffect *)node inverted:(BOOL)inverted {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.inverted.store(inverted,std::memory_order_relaxed);

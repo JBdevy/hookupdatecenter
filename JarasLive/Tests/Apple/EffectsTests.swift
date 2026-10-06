@@ -31,7 +31,15 @@ import AVFoundation
     result = result.map { Array($0.prefix(count)) }
     if analysis {
     precondition(chain.spectrum("Reverb")?.count == 4096*MemoryLayout<Float>.size, "reverb spectrum receives stereo PCM")
-    precondition(chain.spectrum("Delay")?.count == 4096*MemoryLayout<Float>.size, "delay spectrum receives its own output")
+    // AVAudioNode delivers tap buffers asynchronously even in offline mode.
+    // Wait for the first frame, keeping a bound so a missing tap still fails.
+    var delayFrame = chain.spectrum("Delay")
+    let tapDeadline = Date().addingTimeInterval(0.25)
+    while delayFrame == nil && Date() < tapDeadline {
+        Thread.sleep(forTimeInterval: 0.001)
+        delayFrame = chain.spectrum("Delay")
+    }
+    precondition(delayFrame?.count == 4096*MemoryLayout<Float>.size, "delay spectrum receives its own output")
     chain.observe([])
     precondition(chain.spectrum("Reverb") == nil, "closing editor stops analysis")
     }

@@ -342,9 +342,9 @@ struct TimecodePlaybackSpan {
         let masterSend = AVAudioMixerNode()
         let groupSend = AVAudioMixerNode()
         let internalSend = AVAudioMixerNode()
-        let gain = AVAudioMixerNode()
-        let pan = AVAudioMixerNode()
-        let polarity = JarasEqualizer.makeNode()
+        // One existing native kernel applies fader, stereo balance, phase and
+        // mute/solo. It also supplies the post-control PCM to the meter tap.
+        let controls = JarasEqualizer.makeNode()
         let hardware = [JarasChannelRouter.makeNode()]
         let effects = NativeEffectsChain()
     }
@@ -531,8 +531,8 @@ struct TimecodePlaybackSpan {
         clickSample = nil; clickSoundPath = nil
         for monitor in inputMonitors.values { engine.detach(monitor.source); engine.detach(monitor.gate) }; inputMonitors.removeAll()
         for bus in trackBuses.values {
-            bus.pan.removeTap(onBus: 0)
-            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.gain); engine.detach(bus.pan); engine.detach(bus.polarity); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
+            bus.controls.removeTap(onBus: 0)
+            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         trackBuses.removeAll(); groupConnections.removeAll()
         if let metronome { engine.detach(metronome.node); engine.detach(metronomeRoute) }; metronome = nil; metronomeSoundRevision = nil; metronomeTiming = []
@@ -554,7 +554,7 @@ struct TimecodePlaybackSpan {
         if let bus = trackBuses[id] { return bus }
         let bus = TrackBus()
         engine.attach(bus.silence); engine.attach(bus.mix); engine.attach(bus.processedMix); engine.attach(bus.masterSend); engine.attach(bus.groupSend)
-        engine.attach(bus.gain); engine.attach(bus.pan); engine.attach(bus.polarity); engine.attach(bus.internalSend)
+        engine.attach(bus.controls); engine.attach(bus.internalSend)
         for route in bus.hardware {
             JarasChannelRouter.setRenderEnabled(route, enabled: !realtime || renderEnabled)
             engine.attach(route); engine.connect(route, to: engine.mainMixerNode, fromBus: 0, toBus: engine.mainMixerNode.nextAvailableInputBus, format: hardwareFormat)
@@ -565,12 +565,8 @@ struct TimecodePlaybackSpan {
         engine.connect(bus.internalSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
         bus.internalSend.outputVolume = 0
         let destinations = [AVAudioConnectionPoint(node: bus.masterSend, bus: 0), AVAudioConnectionPoint(node: bus.groupSend, bus: 0), AVAudioConnectionPoint(node: bus.internalSend, bus: 0)] + bus.hardware.map { AVAudioConnectionPoint(node: $0, bus: 0) }
-        // The first mixer applies gain/pan; the downstream unity mixer makes
-        // that stereo PCM observable by the meter before output routing.
-        engine.connect(bus.pan, to: destinations, fromBus: 0, format: format)
-        engine.connect(bus.gain, to: bus.pan, format: format)
-        engine.connect(bus.polarity, to: bus.gain, format: format)
-        engine.connect(bus.processedMix, to: bus.polarity, format: format)
+        engine.connect(bus.controls, to: destinations, fromBus: 0, format: format)
+        engine.connect(bus.processedMix, to: bus.controls, format: format)
         bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)])
         engine.connect(bus.silence, to: bus.mix, fromBus: 0, toBus: 0, format: format)
         bus.effects.apply(tracks[id]?.fx ?? NativeFXSettings())
@@ -581,7 +577,7 @@ struct TimecodePlaybackSpan {
         bus.masterSend.outputVolume = 0; bus.groupSend.outputVolume = 0
         if let bank = trackPeaks[id] {
             let slot = 0
-            bus.pan.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            bus.controls.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 guard let data = buffer.floatChannelData, buffer.frameLength > 0 else { return }
                 var left: Float = 0, right: Float = 0
                 vDSP_maxmgv(data[0], vDSP_Stride(buffer.stride), &left, vDSP_Length(buffer.frameLength))
@@ -1190,12 +1186,8 @@ struct TimecodePlaybackSpan {
         }
         if let track {
             guard tracks[track] != nil else { return }
-            let wasSilent = (tracks[track]?.volume ?? 0) <= 0
             tracks[track]?.volume = gain
-            trackBuses[track]?.gain.outputVolume = Float(min(pow(10, 12.0 / 20), max(0, gain)))
-            // Fader motion changes one gain parameter. Gate and polarity are
-            // independent and only need rewriting when crossing silence.
-            if wasSilent != (gain <= 0) { applyTrackGate(track) }
+            applyTrackGain(track)
         } else {
             master = gain
             masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, gain)))))
@@ -1204,7 +1196,7 @@ struct TimecodePlaybackSpan {
     }
     func previewPan(_ id: UUID, pan: Double) {
         tracks[id]?.pan = pan
-        trackBuses[id]?.gain.pan = Float(pan)
+        if let bus = trackBuses[id] { JarasEqualizer.setInputPan(bus.controls, pan: pan) }
     }
     func previewMute(_ id: UUID?, muted: Bool) {
         if let id {
@@ -1223,7 +1215,7 @@ struct TimecodePlaybackSpan {
                 timecodeGenerator?.setGain(inverted ? -gain : gain)
             } else {
                 tracks[id]?.phaseInverted = inverted
-                if let bus = trackBuses[id] { JarasEqualizer.setPolarity(bus.polarity, inverted: inverted) }
+                if let bus = trackBuses[id] { JarasEqualizer.setPolarity(bus.controls, inverted: inverted) }
             }
         }
     }
@@ -1320,10 +1312,15 @@ struct TimecodePlaybackSpan {
     private func refreshSoloEligibility() {
         soloAudibleTracks = TrackHierarchy.soloAudibleTracks(Array(tracks.values))
     }
+    private func applyTrackGain(_ id: UUID) {
+        guard let track = tracks[id], let bus = trackBuses[id] else { return }
+        let audible = !track.mute && (soloAudibleTracks?.contains(id) ?? true) && track.volume > 0
+        JarasEqualizer.setInputGain(bus.controls, gain: audible ? min(pow(10, 12.0 / 20), track.volume) : 0)
+    }
     private func applyTrackGate(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
-        bus.pan.outputVolume = track.mute || !(soloAudibleTracks?.contains(id) ?? true) || track.volume <= 0 ? 0 : 1
-        JarasEqualizer.setPolarity(bus.polarity, inverted: track.phaseInverted == true)
+        applyTrackGain(id)
+        JarasEqualizer.setPolarity(bus.controls, inverted: track.phaseInverted == true)
     }
     private func configureRoutes(_ nodes: [AVAudioUnitEffect], patches: [OutputPatch]) {
         for node in nodes {
@@ -1349,11 +1346,10 @@ struct TimecodePlaybackSpan {
         masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, master)))))
         applyMasterRoutes(); refreshSoloEligibility()
         for (id, bus) in trackBuses {
-            guard let track = tracks[id] else { bus.pan.outputVolume = 0; bus.effects.resetTails(); continue }
+            guard let track = tracks[id] else { JarasEqualizer.setInputGain(bus.controls, gain: 0); bus.effects.resetTails(); continue }
             bus.effects.apply(track.fx ?? NativeFXSettings())
             applyTrackGate(id)
-            bus.gain.pan = Float(track.pan)
-            bus.gain.outputVolume = Float(min(pow(10, 12.0 / 20), max(0, track.volume)))
+            JarasEqualizer.setInputPan(bus.controls, pan: track.pan)
             applyTrackRoutes(track, bus: bus)
         }
         for (key,sampler) in samplers {
