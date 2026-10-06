@@ -2334,15 +2334,16 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
     if let knob = controls.gainKnobRect, knob.intersects(tile) {
         let center = CGPoint(x: knob.midX, y: knob.midY)
         let radius: CGFloat = 4.5, angle = 135 + controls.gainPosition * 270
+        titleContext.fill(Path(ellipseIn: CGRect(x: center.x-radius, y: center.y-radius, width: radius*2, height: radius*2)), with: .color(.black))
         var ring = Path(); ring.addArc(center: center, radius: radius, startAngle: .degrees(135), endAngle: .degrees(405), clockwise: false)
-        titleContext.stroke(ring, with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+        titleContext.stroke(ring, with: .color(.white), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
         if controls.gainPosition > 0 {
             var fill = Path(); fill.addArc(center: center, radius: radius, startAngle: .degrees(135), endAngle: .degrees(angle), clockwise: false)
             titleContext.stroke(fill, with: .color(JarasTheme.green), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
         }
         let radians = angle * .pi / 180
         var needle = Path(); needle.move(to: center); needle.addLine(to: CGPoint(x: center.x + cos(radians) * 3.5, y: center.y + sin(radians) * 3.5))
-        titleContext.stroke(needle, with: .color(.white), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+        titleContext.stroke(needle, with: .color(JarasTheme.green), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
     #endif
     if let phase = controls.phaseRect {
@@ -2354,10 +2355,12 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
     }
     if let pan = controls.panKnobRect {
         let center = CGPoint(x: pan.midX, y: pan.midY)
-        titleContext.stroke(Path(ellipseIn: CGRect(x: center.x-4.5, y: center.y-4.5, width: 9, height: 9)), with: .color(JarasTheme.green), lineWidth: 1.5)
+        let ring = Path(ellipseIn: CGRect(x: center.x-4.5, y: center.y-4.5, width: 9, height: 9))
+        titleContext.fill(ring, with: .color(.black))
+        titleContext.stroke(ring, with: .color(.white), lineWidth: 1.5)
         let angle = (135 + controls.panPosition * 270) * .pi / 180
         var needle = Path(); needle.move(to: center); needle.addLine(to: CGPoint(x: center.x+cos(angle)*3.5, y: center.y+sin(angle)*3.5))
-        titleContext.stroke(needle, with: .color(.white), lineWidth: 1.2)
+        titleContext.stroke(needle, with: .color(JarasTheme.green), lineWidth: 2)
     }
     if let gainLabel = controls.gainLabelRect {
         drawTimelineName(controls.gainLabel, in: gainLabel, visibleRect: tile, context: &titleContext)
@@ -2546,7 +2549,7 @@ final class MixerDividerView: NSView {
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let hoverArea { removeTrackingArea(hoverArea) }
+        guard hoverArea == nil else { return }
         let area = NSTrackingArea(rect: bounds, options: [.cursorUpdate, .mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
         addTrackingArea(area); hoverArea = area
     }

@@ -224,8 +224,9 @@ private struct LocalizedTeleprompterConfig: View {
             Picker("Teleprompter", selection: $slot) {
                 Text("Teleprompter 1").tag(1)
                 Text("Teleprompter 2").tag(2)
+                Text("Messages").tag(3)
             }.pickerStyle(.segmented).padding(12)
-            TeleprompterConfig(preferences: slot == 1 ? .shared : .second, close: close)
+            TeleprompterConfig(showingNotices: slot == 3, preferences: slot == 2 ? .second : .shared, close: close)
         }.onAppear { slot = initialSlot }
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }

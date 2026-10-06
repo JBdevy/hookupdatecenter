@@ -714,7 +714,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        guard hoverTracking == nil else { return }
         let tracking = NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
         hoverTracking = tracking; addTrackingArea(tracking)
     }

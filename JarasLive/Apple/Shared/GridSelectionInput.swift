@@ -42,14 +42,14 @@ struct GridSelectionItem {
     private var controlStart: CGFloat { headerRect.minX + 2 }
     var muteRect: CGRect? { editable && headerRect.width >= 21 ? CGRect(x: controlStart, y: rect.minY, width: 17, height: 13) : nil }
     var fxRect: CGRect? { editable && !midiEditable && headerRect.width >= 41 ? CGRect(x: controlStart + 18, y: rect.minY, width: 20, height: 13) : nil }
-    var gainKnobRect: CGRect? { editable && headerRect.width >= 57 ? CGRect(x: controlStart + 39, y: rect.minY, width: 15, height: 13) : nil }
-    var phaseRect: CGRect? { editable && !midiEditable && headerRect.width >= 74 ? CGRect(x: controlStart + 55, y: rect.minY, width: 15, height: 13) : nil }
-    var panKnobRect: CGRect? { editable && !midiEditable && headerRect.width >= 90 ? CGRect(x: controlStart + 71, y: rect.minY, width: 15, height: 13) : nil }
+    var gainKnobRect: CGRect? { editable && headerRect.width >= (midiEditable ? 57 : 90) ? CGRect(x: controlStart + (midiEditable ? 39 : 71), y: rect.minY, width: 15, height: 13) : nil }
+    var phaseRect: CGRect? { editable && !midiEditable && headerRect.width >= 57 ? CGRect(x: controlStart + 39, y: rect.minY, width: 15, height: 13) : nil }
+    var panKnobRect: CGRect? { editable && !midiEditable && headerRect.width >= 74 ? CGRect(x: controlStart + 55, y: rect.minY, width: 15, height: 13) : nil }
     var panPosition: Double { (min(1, max(-1, pan)) + 1) / 2 }
     func draggingPan(by delta: CGFloat) -> Double { min(1, max(-1, pan - Double(delta) / 60)) }
     var gainLabel: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
     var gainLabelRect: CGRect? {
-        guard let knob = panKnobRect ?? phaseRect ?? gainKnobRect else { return nil }
+        guard let knob = gainKnobRect else { return nil }
         let width = ceil(CGFloat(gainLabel.count) * 5.5) + 8
         guard headerRect.maxX - knob.maxX >= width + 3 else { return nil }
         return CGRect(x: knob.maxX + 1, y: rect.minY, width: width, height: 13)
@@ -58,7 +58,7 @@ struct GridSelectionItem {
     var titleInset: CGFloat {
         let rightEdge: CGFloat
         if let label = gainLabelRect { rightEdge = label.maxX }
-        else if let knob = panKnobRect ?? phaseRect ?? gainKnobRect { rightEdge = knob.maxX }
+        else if let knob = gainKnobRect ?? panKnobRect ?? phaseRect { rightEdge = knob.maxX }
         else if let fx = fxRect { rightEdge = fx.maxX }
         else if let mute = muteRect { rightEdge = mute.maxX }
         else if let edit = editRect { rightEdge = edit.maxX }
@@ -471,20 +471,25 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             clip.postsBoundsChangedNotifications = true
             return NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
                 self?.needsDisplay = true
-                if let self { self.window?.invalidateCursorRects(for: self) }
+                // The input host stays pinned in the viewport. Its one body
+                // cursor rectangle does not move when timeline content moves;
+                // refreshPointerCursor resolves the new item under the mouse.
                 self?.refreshPointerCursor()
             }
         }
     }
     private func positionedHeader(_ source: GridSelectionItem) -> GridSelectionItem {
-        guard let name = source.name else { return source }
         let space = coordinates
+        return positionedHeader(source, viewport: space.viewport, origin: space.origin)
+    }
+    private func positionedHeader(_ source: GridSelectionItem, viewport: CGRect, origin: CGPoint) -> GridSelectionItem {
+        guard let name = source.name else { return source }
         var item = source
         if liveHeaderGain?.id == item.id { item.gain = liveHeaderGain!.value }
         if let liveFade, liveFade.id == item.id {
             if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
         }
-        return item.visibleLeftHeader(in: CGRect(origin: space.origin, size: space.viewport.size), titleWidth: GridSelectionHeaderText.title(name).width)
+        return item.visibleLeftHeader(in: CGRect(origin: origin, size: viewport.size), titleWidth: GridSelectionHeaderText.title(name).width)
     }
     // Use native scroll bounds, not the delayed SwiftUI offset from its last render.
     private var coordinates: (viewport: CGRect, origin: CGPoint) {
@@ -687,7 +692,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
+        // inVisibleRect follows clipping and geometry changes in AppKit.
+        // Replacing it on every follow-scroll invalidates cursor tracking
+        // throughout the window without changing this area's coverage.
+        guard trackingAreas.isEmpty else { return }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self))
     }
     override func resetCursorRects() {
@@ -698,23 +706,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         let content = CGRect(x: body.minX, y: top, width: body.width, height: max(0, body.maxY - top))
         guard content.width > 0, content.height > 0 else { return }
         addCursorRect(content, cursor: .arrow)
-        let dx = space.viewport.minX - space.origin.x, dy = space.viewport.minY - space.origin.y
-        func add(_ rect: CGRect, _ cursor: NSCursor) {
-            let visible = rect.offsetBy(dx: dx, dy: dy).intersection(content)
-            if !visible.isNull, visible.width > 0, visible.height > 0 { addCursorRect(visible, cursor: cursor) }
-        }
-        let visibleTimeline = content.offsetBy(dx: -dx, dy: -dy)
-        for item in candidates(in: visibleTimeline.insetBy(dx: -10, dy: 0)).map(positionedHeader) {
-            if item.resizable {
-                let tolerance = min(10, max(2, item.rect.width / 2))
-                add(CGRect(x: item.rect.minX - tolerance, y: item.rect.minY, width: tolerance * 2, height: item.rect.height), .resizeLeftRight)
-                add(CGRect(x: item.rect.maxX - tolerance, y: item.rect.minY, width: tolerance * 2, height: item.rect.height), .resizeLeftRight)
-            }
-            for rect in [item.muteRect, item.fxRect, item.editRect].compactMap({ $0 }) { add(rect, .pointingHand) }
-            if let knob = item.gainKnobRect { add(knob, .resizeUpDown) }
-            if let knob = item.panKnobRect { add(knob, .resizeUpDown) }
-            for left in [true, false] { if let handle = item.fadeHandleRect(left) { add(handle, .crosshair) } }
-        }
+        // The automatic tracking area owns item-specific cursors through
+        // cursorUpdate/mouseMoved. Registering every item edge, knob and button
+        // again on each playback scroll duplicated that hit-testing work.
     }
     func pointerCursor(at point: CGPoint) -> NSCursor {
         guard let item = hitItem(at: point) else { return .arrow }
@@ -930,7 +924,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         NSBezierPath(rect: CGRect(x: viewport.minX, y: viewport.minY + headerHeight, width: viewport.width, height: max(0, viewport.height - headerHeight))).addClip()
         defer { NSGraphicsContext.restoreGraphicsState() }
         for source in candidates(in: visible) where source.name != nil && source.rect.width >= 20 && source.rect.maxX >= visible.minX && source.rect.minX <= visible.maxX {
-                var item = positionedHeader(source)
+                var item = positionedHeader(source, viewport: viewport, origin: origin)
                 let dx = viewport.minX - origin.x, dy = viewport.minY - origin.y
                 item.rect = item.rect.offsetBy(dx: dx, dy: dy)
                 item.visibleHeader = item.visibleHeader?.offsetBy(dx: dx, dy: dy)
@@ -950,11 +944,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 if let rect = item.gainKnobRect {
                     let center = CGPoint(x: rect.midX, y: rect.midY), radius = 4.5
                     let ring = NSBezierPath(ovalIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-                    NSColor.systemGreen.setStroke(); ring.lineWidth = 1.5; ring.stroke()
+                    NSColor.black.setFill(); ring.fill()
+                    NSColor.white.setStroke(); ring.lineWidth = 1.5; ring.stroke()
                     let angle = (135 + item.gainPosition * 270) * .pi / 180
                     let needle = NSBezierPath(); needle.move(to: center)
                     needle.line(to: CGPoint(x: center.x + cos(angle) * 3.5, y: center.y + sin(angle) * 3.5))
-                    NSColor.white.setStroke(); needle.lineWidth = 1.2; needle.stroke()
+                    NSColor(calibratedRed: 0.2, green: 1, blue: 0.55, alpha: 1).setStroke(); needle.lineWidth = 2; needle.stroke()
                 }
                 if let rect = item.phaseRect {
                     (item.phaseInverted ? NSColor.systemYellow : NSColor.black.withAlphaComponent(0.28)).setFill(); rect.fill()
@@ -966,12 +961,13 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 if let rect = item.panKnobRect {
                     let center = CGPoint(x: rect.midX, y: rect.midY), radius = 4.5
                     let ring = NSBezierPath(ovalIn: CGRect(x: center.x-radius, y: center.y-radius, width: radius*2, height: radius*2))
-                    NSColor.systemGreen.setStroke(); ring.lineWidth = 1.5; ring.stroke()
+                    NSColor.black.setFill(); ring.fill()
+                    NSColor.white.setStroke(); ring.lineWidth = 1.5; ring.stroke()
                     let value = liveHeaderPan?.id == item.id ? liveHeaderPan!.value : item.pan
                     let angle = (135 + (value+1)/2*270) * .pi / 180
                     let needle = NSBezierPath(); needle.move(to: center)
                     needle.line(to: CGPoint(x: center.x+cos(angle)*3.5, y: center.y+sin(angle)*3.5))
-                    NSColor.white.setStroke(); needle.lineWidth = 1.2; needle.stroke()
+                    NSColor(calibratedRed: 0.2, green: 1, blue: 0.55, alpha: 1).setStroke(); needle.lineWidth = 2; needle.stroke()
                 }
                 if let rect = item.gainLabelRect { GridSelectionHeaderText.gain(item.gainLabel).draw(in: rect.insetBy(dx: 1, dy: 0)) }
                 let nameRect = CGRect(x: item.headerRect.minX + item.titleInset + 4, y: item.rect.minY + 1,

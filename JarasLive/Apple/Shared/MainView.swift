@@ -433,7 +433,7 @@ class ResizeHoverIndicatorView: NSView {
     private var hovered = false
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let hoverArea { removeTrackingArea(hoverArea) }
+        guard hoverArea == nil else { return }
         let area = NSTrackingArea(rect: bounds,
                                   options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                   owner: self, userInfo: nil)

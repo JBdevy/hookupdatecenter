@@ -5,6 +5,15 @@ let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), 
 let grid = GridSelectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 window.contentView = grid
 grid.headerHeight = 71
+grid.updateTrackingAreas()
+let initialTracking = grid.trackingAreas.first!
+for offset in 0..<120 {
+    grid.setBoundsOrigin(CGPoint(x: CGFloat(offset) * 0.25, y: 0))
+    grid.updateTrackingAreas()
+    precondition(grid.trackingAreas.count == 1 && grid.trackingAreas.first === initialTracking,
+                 "scrolling retains automatic visible-rect mouse tracking")
+}
+grid.setBoundsOrigin(.zero)
 let first = UUID(), second = UUID(), third = UUID()
 grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 60,height: 30)),
               GridSelectionItem(id: second, rect: CGRect(x: 230,y: 150,width: 60,height: 30)),
@@ -584,7 +593,8 @@ grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 2
 var phaseClicks: [UUID] = [], panEdits: [(UUID, Double, Bool)] = []
 grid.phase = { phaseClicks.append($0) }; grid.pan = { panEdits.append(($0,$1,$2)) }
 let phaseRect = grid.items[0].phaseRect!, panRect = grid.items[0].panKnobRect!
-precondition(phaseRect.minX > grid.items[0].gainKnobRect!.minX && panRect.minX > phaseRect.minX)
+precondition(phaseRect.maxX < panRect.minX && panRect.maxX < grid.items[0].gainKnobRect!.minX && grid.items[0].gainLabelRect!.minX > grid.items[0].gainKnobRect!.maxX,
+             "volume is the last knob, immediately before its dB value")
 let beforeMixSeeks = seeks.count
 _ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
 _ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))

@@ -202,7 +202,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
+        guard tracking == nil else { return }
         let area = NSTrackingArea(rect: bounds, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }
@@ -327,7 +327,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
+        guard tracking == nil else { return }
         let area = NSTrackingArea(rect: bounds, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }

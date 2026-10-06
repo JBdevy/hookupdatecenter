@@ -103,23 +103,17 @@ private enum TPSettingField: Identifiable {
 }
 
 struct TeleprompterConfig: View {
-    @State private var showingNotices = false
+    var showingNotices = false
     @ObservedObject var preferences: TeleprompterPreferences
     let close: () -> Void
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Teleprompter settings").font(.headline)
+                Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.headline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
-            #if os(macOS)
-            Picker("Settings", selection: $showingNotices) {
-                Text("Teleprompter").tag(false)
-                Text("Messages").tag(true)
-            }.pickerStyle(.segmented)
-            #endif
             if !showingNotices {
                 Picker("Preset", selection: Binding(get: { preferences.selected },set: { preferences.select($0) })) {
                     Text("Night").tag(TeleprompterPreset.night); Text("Day").tag(TeleprompterPreset.day)
