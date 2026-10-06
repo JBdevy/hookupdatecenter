@@ -310,10 +310,12 @@ int main() {
     mediaMoveProject.songs[0].tracks.push_back(videoMoveTrack);
     mediaMoveProject.songs[0].tracks.push_back({"audio-move", "Audio", {"other"}});
     Engine mediaMoves; mediaMoves.loadProject(mediaMoveProject);
-    for (const auto& ids : {std::make_pair(ID("video-move-item"), ID("audio-move")), std::make_pair(ID("clip"), ID("video-move"))}) {
-        bool rejected = false; try { mediaMoves.moveClip(ids.first, 4, ids.second); } catch (...) { rejected = true; }
-        expect(rejected && mediaMoves.project().songs[0].tracks[0].clips[0].id == "video-move-item" && mediaMoves.project().songs[0].tracks[1].clips[0].id == "clip", "video and audio cannot cross incompatible track kinds");
-    }
+    mediaMoves.moveClip("video-move-item", 4, "audio-move");
+    const auto& mediaDestination = mediaMoves.project().songs[0].tracks.back();
+    expect(mediaDestination.id == "audio-move" && mediaDestination.clips[0].id == "video-move-item" && mediaDestination.clips[0].startTime == 4, "video can move into a standard audio track");
+    bool audioToLegacyVideoRejected = false;
+    try { mediaMoves.moveClip("clip", 4, "video-move"); } catch (...) { audioToLegacyVideoRejected = true; }
+    expect(audioToLegacyVideoRejected, "ordinary audio cannot move into the legacy special Video track");
     Project crossMediaProject = mediaMoveProject;
     crossMediaProject.songs[0].tracks.push_back({"teleprompter-move", "Teleprompter", {"teleprompt"}});
     Engine crossMedia; crossMedia.loadProject(crossMediaProject);
@@ -327,8 +329,8 @@ int main() {
     auto mislabeledVideo = editable; mislabeledVideo.songs[0].tracks[0].clips[0].audioFile = AudioFile{"Videos/movie.wav", {}};
     mislabeledVideo.songs[0].tracks.push_back({"audio-move", "Audio", {"other"}});
     mediaMoves.execute({CommandKind::stopAll});
-    bool videoFolderRejected = false; try { mediaMoves.loadProject(mislabeledVideo); } catch (...) { videoFolderRejected = true; }
-    expect(videoFolderRejected, "managed video media cannot be loaded as a standard audio item");
+    mediaMoves.loadProject(mislabeledVideo);
+    expect(mediaMoves.project().songs[0].tracks[0].clips[0].audioFile->path == "Videos/movie.wav", "managed movie soundtracks are permitted on standard tracks");
     Project capacityProject = editable;
     capacityProject.songs[0].tracks.clear();
     for (int index = 0; index < 1000; ++index) capacityProject.songs[0].tracks.push_back({"capacity-" + std::to_string(index), "Track", {"other"}});

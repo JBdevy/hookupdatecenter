@@ -153,13 +153,16 @@ import SwiftUI
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
     var level: Double { max(levels.x, levels.y) }
+    // Instant attack, with no peak hold on the moving bars. The separate
+    // clipping readout retains its maximum until explicitly cleared.
+    static let releaseDecibelsPerSecond = 48.0
     private var envelope = SIMD2<Double>(repeating: 0)
     func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
     func update(left: Double, right: Double, elapsed: Double) {
         peakHold.record(max(left, right))
         let peaks = SIMD2(left, right)
-        let decay = envelope == .zero ? 0 : pow(10, -24 * max(0, elapsed) / 20)
+        let decay = envelope == .zero ? 0 : pow(10, -Self.releaseDecibelsPerSecond * max(0, elapsed) / 20)
         var changed = false
         for channel in 0..<2 {
             let input = peaks[channel].isFinite ? max(0, peaks[channel]) : 0
@@ -183,7 +186,7 @@ struct TimecodePlaybackSpan {
     init?(song: Song, track: Track, position: Double, settings: TimecodeSettings, preferredRegion: UUID?) {
         let preferred = preferredRegion.map(Project.timecodeItemID)
         var current: AudioClip?, upcoming: AudioClip?
-        for clip in track.clips {
+        for clip in track.clips where !clip.isProjectionMedia {
             let contains = position >= clip.startTime && position < clip.startTime + clip.duration
             if clip.id == preferred && contains { current = clip; break }
             if contains && (current == nil || clip.startTime < current!.startTime) { current = clip }
@@ -872,7 +875,7 @@ struct TimecodePlaybackSpan {
     private func audioFile(_ audio: AudioFile) throws -> AVAudioFile {
         if let file = files[audio.path] { return file }
         guard let directory else { throw ProjectError.invalid("No project media directory") }
-        let file = try AVAudioFile(forReading: directory.appendingPathComponent(audio.path))
+        let file = try AudioFileRead.openMedia(directory.appendingPathComponent(audio.path))
         files[audio.path] = file
         return file
     }
@@ -932,7 +935,7 @@ struct TimecodePlaybackSpan {
                       self.latestPlayback?.snapshot.transport.playing != true,
                       self.latestPlayback?.snapshot.transport.subPlay.playing != true else { return }
                 do {
-                    if self.tracks[track]?.kind == .video {
+                    if clip.isProjectionMedia {
                         let path = clip.audioFile!.path
                         if self.silentVideoFiles.contains(path) { continue }
                         if (try? self.audioFile(clip.audioFile!)) == nil { self.silentVideoFiles.insert(path); continue }
@@ -1031,6 +1034,27 @@ struct TimecodePlaybackSpan {
         voice.effects?.updateItemFade(voice.clip)
         voice.effects?.setSourceGain(voice.clip.normalizationGain ?? 1)
         voice.effects?.setSourceChannelMode(voice.clip.channelMode ?? 0)
+        voice.effects?.setSourcePolarity(voice.clip.phaseInverted == true)
+        voice.player.pan = Float(voice.clip.pan ?? 0)
+    }
+    func previewItemPhase(_ id: UUID, inverted: Bool) { previewItemMix(id, inverted: inverted, pan: nil) }
+    func previewItemPan(_ id: UUID, pan: Double) {
+        guard pan.isFinite else { return }
+        previewItemMix(id, inverted: nil, pan: min(1, max(-1, pan)))
+    }
+    private func previewItemMix(_ id: UUID, inverted: Bool?, pan: Double?) {
+        func update(_ clip: inout AudioClip) {
+            if let inverted { clip.phaseInverted = inverted }
+            if let pan { clip.pan = pan == 0 ? nil : pan }
+        }
+        for fragment in clipFragments[id] ?? [id] {
+            if let index = clipIndices[fragment] { update(&clips[index].1) }
+            for head in 0...2 {
+                let key = VoiceKey(clip: fragment, head: head)
+                if var voice = voices[key] { update(&voice.clip); applyNormalization(to: &voice); voices[key] = voice }
+                if var tail = effectTails[key] { update(&tail.voice.clip); applyNormalization(to: &tail.voice); effectTails[key] = tail }
+            }
+        }
     }
     func previewItemFade(_ id: UUID, fadeIn: Bool, seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
@@ -1351,7 +1375,7 @@ struct TimecodePlaybackSpan {
             let muted = voice.clip.muted == true
             let linear = voice.clip.gain ?? 1
             voice.player.volume = muted || linear <= 0 ? 0 : 1
-            voice.player.pan = 0
+            voice.player.pan = Float(voice.clip.pan ?? 0)
             voice.gain.globalGain = muted || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))
         }
     }
@@ -1725,7 +1749,7 @@ struct TimecodePlaybackSpan {
             lastVideoNoAudio = VideoMediaSettings.shared.noAudio
             if songID != song.id { stop() }
             if song.tracks.contains(where: { tracks[$0.id]?.midiInput != $0.midiInput || tracks[$0.id]?.midiChannel != $0.midiChannel }) { releaseMIDINotes() }
-            tracks = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.kind == .standard || $0.kind == .video || $0.kind == .click }.map { ($0.id, $0) })
+            tracks = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.kind == .standard || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }.map { ($0.id, $0) })
             // Gate only live input, before track FX/routing. Keep the source and
             // capture tap running so toggling monitoring cannot interrupt a take.
             for (id, monitor) in inputMonitors {
@@ -1734,9 +1758,10 @@ struct TimecodePlaybackSpan {
             allowsTempoChanges = song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio
             let tempoSections = song.tempoSections(until: song.duration)
             clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true)
-            clips = song.tracks.filter { $0.kind == .standard || ($0.kind == .video && !VideoMediaSettings.shared.noAudio) }.flatMap { track in
+            clips = song.tracks.flatMap { track in
                 track.clips.filter { clip in
-                    guard let path = clip.audioFile?.path else { return false }
+                    guard let path = clip.audioFile?.path, !clip.isImage, track.kind == .standard || clip.isProjectionMedia else { return false }
+                    if clip.isProjectionMedia && VideoMediaSettings.shared.noAudio { return false }
                     return !missingAudioPaths.contains(path)
                 }.flatMap { clip in
                     let fragments = song.tempoAudioSegments(clip, sections: tempoSections)
@@ -1747,12 +1772,12 @@ struct TimecodePlaybackSpan {
             }
             unifiedPlaybackStarts = Dictionary(uniqueKeysWithValues: song.parts.filter { $0.parentRegionID != nil }.map { ($0.id, $0.startTime) })
             clipIndices = Dictionary(uniqueKeysWithValues: clips.enumerated().map { ($0.element.1.id, $0.offset) })
-            let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .video || $0.kind == .click }
+            let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }
             let activeIDs = Set(metered.map(\.id))
             trackPeaks = trackPeaks.filter { activeIDs.contains($0.key) }
             for track in metered where trackPeaks[track.id] == nil { trackPeaks[track.id] = JarasMeterBank() }
             // Prepare routing before Play so starting a file only adds its source.
-            for track in song.tracks where track.kind == .standard || track.kind == .video || track.kind == .click { _ = trackBus(for: track.id) }
+            for track in song.tracks where track.kind == .standard || track.kind == .click || track.clips.contains(where: \.isProjectionMedia) { _ = trackBus(for: track.id) }
             try prepareClickTrack(song: song)
             connectGroups(); connectTracks()
             for id in Array(idleVoices.keys) where tracks[id] == nil {
@@ -1953,7 +1978,7 @@ struct TimecodePlaybackSpan {
                     continue
                 }
                 guard voices[key] == nil, let audio = clip.audioFile else { continue }
-                if tracks[track]?.kind == .video {
+                if clip.isProjectionMedia {
                     if silentVideoFiles.contains(audio.path) { continue }
                     if (try? audioFile(audio)) == nil { silentVideoFiles.insert(audio.path); continue }
                 }
@@ -1976,7 +2001,7 @@ struct TimecodePlaybackSpan {
                 // start deadline and mute the first samples of later voices.
                 let linear = clip.gain ?? 1
                 player.volume = clip.muted == true || linear <= 0 ? 0 : 1
-                player.pan = 0
+                player.pan = Float(clip.pan ?? 0)
                 voice.gain.globalGain = clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))
                 // Register the reserved bus before preparing another overlapping item.
                 voices[key] = voice

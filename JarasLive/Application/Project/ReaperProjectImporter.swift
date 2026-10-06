@@ -174,7 +174,7 @@ public enum ReaperProjectImporter {
             hook.trackIDs["TRACK_\(song.tracks.count + 1)"] = track.id
             if let guid = node.header.dropFirst().first { hook.trackIDs[guid.uppercased()] = track.id }
             if let special {
-                track.role = TrackRole(rawValue: special.rawValue); track.name = special.title
+                track.role = special == .video ? .other : TrackRole(rawValue: special.rawValue); track.name = special.title
                 track.parentTrackID = nil; track.color = special.defaultColor
                 if special.isText { track.mute = false }
                 if special != .video { track.solo = false }

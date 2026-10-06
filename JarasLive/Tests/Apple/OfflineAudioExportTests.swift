@@ -707,3 +707,30 @@ do {
     }
     print("ITEM_TUNER_PRINT_RESET_AND_MIXED_GLUE_AUDIO_MIDI_GAPS_OK")
 }
+
+do {
+    let videos = root.appendingPathComponent("Videos")
+    try FileManager.default.createDirectory(at: videos, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: root.appendingPathComponent("a.wav"), to: videos.appendingPathComponent("soundtrack.wav"))
+    var fixture = Project.empty(name: "Movie mix print")
+    var track = Track(id: UUID(), name: "Movie track", role: .other)
+    let original = AudioClip(id: UUID(), name: "Soundtrack", startTime: 0, duration: 1,
+        audioFile: AudioFile(path: "Videos/soundtrack.wav"), phaseInverted: true, pan: -1)
+    track.clips = [original]; fixture.songs[0].tracks = [track]
+    let result = try ItemReRender.render(project: fixture, song: fixture.songs[0], track: track, clip: original, directory: root,
+        settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
+    precondition(!result.isProjectionMedia && result.audioFile!.path.hasPrefix("Stems/"))
+    precondition(result.phaseInverted == nil && result.pan == nil && result.fx == nil)
+    let file = try AVAudioFile(forReading: root.appendingPathComponent(result.audioFile!.path))
+    let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+    try file.read(into: pcm)
+    let originalFile = try AVAudioFile(forReading: root.appendingPathComponent("a.wav"))
+    let originalPCM = AVAudioPCMBuffer(pcmFormat: originalFile.processingFormat, frameCapacity: AVAudioFrameCount(originalFile.length))!
+    try originalFile.read(into: originalPCM)
+    for i in 1000..<45000 {
+        precondition(abs(pcm.floatChannelData![1][i]) < 0.00001)
+        precondition(abs(pcm.floatChannelData![0][i] + originalPCM.floatChannelData![0][i]) < 0.0001)
+    }
+    precondition(FileManager.default.fileExists(atPath: videos.appendingPathComponent("soundtrack.wav").path))
+    print("MEDIA_RERENDER_STEMS_ITEM_PHASE_PAN_BAKED_RESET_AND_ORIGINAL_PRESERVED_PCM_OK")
+}

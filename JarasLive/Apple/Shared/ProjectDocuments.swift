@@ -78,9 +78,6 @@ import AVFoundation
             audioImportError = "The destination track no longer exists"; return false
         }
         let destinationKind = track.flatMap { id in arrangement.tracks.first { $0.id == id }?.kind }
-        guard destinationKind != .timecode, destinationKind != .chords, destinationKind != .click else {
-            audioImportError = "Drop media on an audio, Video or Teleprompter track"; return false
-        }
         if providers.count > 1, layout == nil {
             pendingAudioDrop = PendingAudioDrop(providers: providers, start: start, track: track, song: song, project: projectID)
             return true
@@ -162,21 +159,9 @@ import AVFoundation
         let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
         busy = true; status = "Importing audio…"
         Task {
-            // Inspect movie streams off the UI thread: an audio-only MP4 must
-            // have exactly the same destination as an audio-only dropped MP4.
-            let visual = await Task.detached(priority: .userInitiated) {
-                GridMediaClipboard.containsVisualMedia(urls)
-            }.value
             busy = false; status = ""
             guard show.snapshot.project.id == project, show.current?.id == song.id else { return }
-            let destination: UUID?
-            if visual {
-                guard let video = show.current?.tracks.first(where: { $0.kind == .video }) else {
-                    audioImportError = "Create a Video track first, then drop the video on it"
-                    return
-                }
-                destination = video.id
-            } else { destination = track }
+            let destination = track
             // Keep the drop layout/gap question, validation, project-local
             // media copies, waveform preparation and undo transaction.
             _ = importAudio(urls.map { NSItemProvider(item: $0 as NSURL, typeIdentifier: UTType.fileURL.identifier) },
@@ -343,9 +328,25 @@ import AVFoundation
         }.value
         let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
             track.clips.compactMap { clip -> URL? in
-                guard let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
+                guard !clip.isProjectionMedia, let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
                 return directory.appendingPathComponent(file.path)
             }
+        }
+        // Resolve movie audio before the workspace can start playback. A
+        // render deadline must never wait for AVAssetReader container decoding.
+        let movies = Set(project.songs.flatMap(\.tracks).flatMap(\.clips).compactMap { clip -> String? in
+            guard clip.isProjectionMedia, !clip.isImage, let path = clip.audioFile?.path, !missing.contains(path) else { return nil }
+            return path
+        })
+        let opening = openingCancellation
+        if !movies.isEmpty {
+            status = "Preparing audio…"
+            await Task.detached(priority: .userInitiated) {
+                for path in movies {
+                    guard opening?.cancelled != true, !Task.isCancelled else { return }
+                    _ = try? AudioFileRead.openMedia(directory.appendingPathComponent(path), cancelled: { opening?.cancelled == true })
+                }
+            }.value
         }
         status = "Preparing waveforms…"
         let cancellation = openingCancellation
@@ -357,6 +358,11 @@ import AVFoundation
     }
     private func activate(_ project: Project, at url: URL) async throws {
         var project = project
+        for song in project.songs.indices {
+            for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].role.rawValue == "video" {
+                project.songs[song].tracks[track].role = .other
+            }
+        }
         if let global = GlobalProjectTiming.load() { global.applyOnOpen(to: &project) }
         else if let song = project.songs.first { GlobalProjectTiming(song: song).save() }
         try project.validate()

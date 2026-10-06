@@ -22,6 +22,8 @@ NS_ASSUME_NONNULL_END
 
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasDynamics : NSObject
+/// EQ and compressor share one render pull for each fixed-order item chain.
++ (AVAudioUnitEffect *)makeItemEqualizerCompressor;
 + (AVAudioUnitEffect *)makeCompressor;
 + (AVAudioUnitEffect *)makeLimiter;
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release;

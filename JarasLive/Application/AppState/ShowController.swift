@@ -58,17 +58,42 @@ public struct ShowPresentationState: Equatable {
             focused: focusedRegion, focusRequest: regionFocusRequest, setlistFocusRequest: setlistFocusRequest,
             navigation: setlistNavigationRequest, pitchRegion: pitchRegion?.id,
             subRegion: current?.sectionRegion(at: snapshot.transport.subPlay.position)?.id,
-            bpm: tempoControlBPM, dirty: hasUnsavedChanges, saving: saving, message: message,
+            bpm: tempoControlBPM, dirty: needsSave, saving: saving, message: message,
             notice: modalNotice, savedAt: lastSavedAt)
     }
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
+            if timelineFollowPaused {
+                let before = oldValue.transport, after = snapshot.transport
+                let changedPlayback = before.playing != after.playing || before.subPlay.playing != after.subPlay.playing ||
+                    before.songId != after.songId ||
+                    (after.playing && before.regionId != after.regionId) ||
+                    (after.subPlay.playing && oldValue.project.songs.first(where: { $0.id == before.songId })?.sectionRegion(at: before.subPlay.position)?.id !=
+                        snapshot.project.songs.first(where: { $0.id == after.songId })?.sectionRegion(at: after.subPlay.position)?.id)
+                if changedPlayback { timelineFollowPaused = false }
+            }
             if oldValue.project != snapshot.project || oldValue.transport.songId != snapshot.transport.songId {
                 projectPresentation.objectWillChange.send()
             }
         }
     }
     @Published public private(set) var focusedRegion: UUID?
+    /// A region-band click pauses navigation, independently of setlist selection.
+    /// The highlight survives Stop and song transitions; only the pause expires.
+    @Published public private(set) var selectedTimelineRegion: UUID?
+    @Published public private(set) var timelineFollowPaused = false
+    public var timelineZoomPosition: Double {
+        if timelineFollowPaused {
+            let value = snapshot.transport.editPosition ?? snapshot.transport.position
+            return value.isFinite ? max(0, value) : 0
+        }
+        return snapshot.transport.timelineZoomPosition
+    }
+    public func selectTimelineRegion(_ id: UUID) {
+        guard current?.parts.contains(where: { $0.id == id && $0.parentRegionID == nil }) == true else { return }
+        selectedTimelineRegion = id
+        timelineFollowPaused = true
+    }
     private var selectedSetlistBlock: UUID?
     /// Blocks prepare the next Play without starting or queueing a song on click.
     public func selectSetlistBlock(_ id: UUID?) {
@@ -550,6 +575,8 @@ public struct ShowPresentationState: Equatable {
     public var audioItemChannelMode: (UUID, Int) -> Void = { _, _ in }
     public var audioItemNormalization: (UUID, Double) -> Void = { _, _ in }
     public var audioItemFade: (UUID, Bool, Double) -> Void = { _, _, _ in }
+    public var audioItemPhase: (UUID, Bool) -> Void = { _, _ in }
+    public var audioItemPan: (UUID, Double) -> Void = { _, _ in }
     public var audioItemGain: (UUID, Double) -> Void = { _, _ in }
     public var audioVolume: (UUID?, Double) -> Void = { _, _ in }
     public var audioPan: (UUID, Double) -> Void = { _, _ in }
@@ -579,6 +606,13 @@ public struct ShowPresentationState: Equatable {
     }
     private var timer: Timer?, lastTime = ProcessInfo.processInfo.systemUptime
     @Published public private(set) var hasUnsavedChanges = false
+    private var lastSavedCursor: SavedProjectCursor?
+    private var editingCursor: SavedProjectCursor? {
+        guard let songID = snapshot.transport.songId else { return nil }
+        return SavedProjectCursor(songID: songID, position: snapshot.transport.editPosition ?? snapshot.transport.position)
+    }
+    /// Navigation enables an explicit Save without making closing require a content-save prompt.
+    public var needsSave: Bool { hasUnsavedChanges || editingCursor != lastSavedCursor }
     @Published public private(set) var saving = false
     public private(set) var projectRevision: UInt64 = 0
     private var audioProjectRevision: UInt64 = 0
@@ -634,6 +668,17 @@ public struct ShowPresentationState: Equatable {
             do {
                 var rendered = rendered
                 rendered.regionOwnerID = rendered.startTime == original.startTime ? original.regionOwnerID : snapshot.project.songs[song].regionOwner(at: rendered.startTime, end: rendered.startTime + rendered.duration)
+                if original.isProjectionMedia && snapshot.project.songs[song].tracks[channel].kind != .standard {
+                    var next = snapshot.project
+                    next.songs[song].tracks[channel].clips.remove(at: item)
+                    var audioTrack = Track(id: UUID(), name: rendered.name, role: .other, color: next.songs[song].tracks[channel].color)
+                    audioTrack.clips = [rendered]
+                    next.songs[song].tracks.insert(audioTrack, at: channel + 1)
+                    next.orderSpecialTracks()
+                    try executor.applyProjectEdit(next)
+                    snapshot = try executor.snapshot()
+                    markChanged(); onProjectEdited(); return true
+                }
                 try executor.replaceAudioClip(rendered, track: track)
                 snapshot.project.songs[song].tracks[channel].clips[item] = rendered
                 markChanged(); onProjectEdited(); return true
@@ -699,6 +744,42 @@ public struct ShowPresentationState: Equatable {
                     try executor.execute(.clipPitch, target: id, value: Double(semitones))
                     snapshot.project.songs[song].tracks[track].clips[item].pitchSemitones = semitones == 0 ? nil : semitones
                     markChanged()
+                } catch { message = error.localizedDescription }
+                return
+            }
+        }
+    }
+    public func toggleItemPhase(_ id: UUID) {
+        guard let clip = current?.tracks.lazy.flatMap(\.clips).first(where: { $0.id == id }) else { return }
+        setItemMix(id, command: .clipPhase, value: clip.phaseInverted == true ? 0 : 1)
+    }
+    public func previewItemPan(_ id: UUID, pan: Double) {
+        guard pan.isFinite else { return }
+        audioItemPan(id, min(1, max(-1, pan)))
+    }
+    public func setItemPan(_ id: UUID, pan: Double) {
+        guard pan.isFinite else { return }
+        setItemMix(id, command: .clipPan, value: min(1, max(-1, pan)))
+    }
+    private func setItemMix(_ id: UUID, command: ShowCommand, value: Double) {
+        guard canExecute(), !finishing else { return }
+        for song in snapshot.project.songs.indices {
+            for track in snapshot.project.songs[song].tracks.indices {
+                guard let index = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
+                let clip = snapshot.project.songs[song].tracks[track].clips[index]
+                let previous = command == .clipPan ? clip.pan ?? 0 : clip.phaseInverted == true ? 1.0 : 0.0
+                guard previous != value else { return }
+                do {
+                    tick()
+                    try executor.execute(command, target: id, value: value)
+                    if command == .clipPan {
+                        snapshot.project.songs[song].tracks[track].clips[index].pan = value == 0 ? nil : value
+                        audioItemPan(id, value)
+                    } else {
+                        snapshot.project.songs[song].tracks[track].clips[index].phaseInverted = value != 0
+                        audioItemPhase(id, value != 0)
+                    }
+                    markChanged(refreshAudio: false)
                 } catch { message = error.localizedDescription }
                 return
             }
@@ -845,6 +926,7 @@ public struct ShowPresentationState: Equatable {
         self.executor = executor; self.persistence = persistence; self.cursorMemory = cursorMemory; self.globalDefaults = globalDefaults
         var initialProject = initialProject; initialProject.promoteLoopSectionMarkers()
         try executor.load(initialProject); snapshot = try executor.snapshot()
+        lastSavedCursor = initialProject.savedCursor
         try restoreGlobalBypass(); try restoreCursor(); resetHistory()
     }
     public func restore() async {
@@ -1167,6 +1249,10 @@ public struct ShowPresentationState: Equatable {
         do {
             try executor.execute(command, target: target, value: value)
             var project = loopMixerProject ?? snapshot.project
+            // Transfer ownership of the pending mixer frame before mutation.
+            // Otherwise each automatic fader copies the songs/tracks arrays
+            // again while the previous pending frame still retains their storage.
+            if applyingLoopMixer { loopMixerProject = nil }
             if target == nil {
                 if command == .volume {
                     let gain = min(pow(10, 12.0 / 20), max(0, value))
@@ -1269,8 +1355,9 @@ public struct ShowPresentationState: Equatable {
     public func previewClipFX(_ clip: UUID, settings: NativeFXSettings) {
         guard canExecute(), !finishing else { return }
         for song in snapshot.project.songs.indices {
-            for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind == .standard {
+            for track in snapshot.project.songs[song].tracks.indices {
                 guard let index = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == clip }) else { continue }
+                guard snapshot.project.songs[song].tracks[track].kind == .standard || snapshot.project.songs[song].tracks[track].clips[index].isProjectionMedia else { return }
                 guard (snapshot.project.songs[song].tracks[track].clips[index].fx ?? NativeFXSettings()) != settings else { return }
                 do {
                     try settings.validateForClip(); try executor.setClipFX(clip, settings: settings)
@@ -1313,8 +1400,9 @@ public struct ShowPresentationState: Equatable {
     public func toggleClipFXAllBypass(_ clip: UUID) {
         guard canExecute(), !finishing else { return }
         for song in snapshot.project.songs.indices {
-            for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind == .standard {
+            for track in snapshot.project.songs[song].tracks.indices {
                 guard let index = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == clip }) else { continue }
+                guard snapshot.project.songs[song].tracks[track].kind == .standard || snapshot.project.songs[song].tracks[track].clips[index].isProjectionMedia else { return }
                 let value = snapshot.project.songs[song].tracks[track].clips[index].fxBypassed != true
                 do {
                     try executor.setClipFXBypass(clip, bypassed: value)
@@ -1434,7 +1522,7 @@ public struct ShowPresentationState: Equatable {
         do {
             try settings.validate(); try executor.setTimecode(track, settings: settings)
             snapshot.project.songs[location.song].tracks[location.track].timecode = settings
-            for item in snapshot.project.songs[location.song].tracks[location.track].clips.indices {
+            for item in snapshot.project.songs[location.song].tracks[location.track].clips.indices where !snapshot.project.songs[location.song].tracks[location.track].clips[item].isProjectionMedia {
                 snapshot.project.songs[location.song].tracks[location.track].clips[item].name = "TIMECODE"
             }
             markChanged(refreshAudio: false)
@@ -1928,7 +2016,7 @@ public struct ShowPresentationState: Equatable {
         if let source = current?.tracks.first(where: { $0.clips.contains { $0.id == id } }),
            let clip = source.clips.first(where: { $0.id == id }) {
             guard let destination = track.flatMap({ id in current?.tracks.first { $0.id == id } }) ?? (track == nil ? source : nil) else { return }
-            let mediaTransfer = clip.isProjectionMedia && (source.kind == .video || source.kind.isTeleprompter) && (destination.kind == .video || destination.kind.isTeleprompter)
+            let mediaTransfer = clip.isProjectionMedia
             guard source.id == destination.id || (source.kind == .standard && destination.kind == .standard) || mediaTransfer else { return }
             guard destination.canPlaceItem(start: start, duration: clip.duration, excluding: source.id == destination.id ? id : nil, media: clip.isProjectionMedia) else { return }
         }
@@ -2137,7 +2225,9 @@ public struct ShowPresentationState: Equatable {
                                position: snapshot.transport.editPosition ?? snapshot.transport.position)
     }
     private func restoreCursor() throws {
-        guard let saved = cursorMemory?.cursor(for: snapshot.project.id),
+        // The document's saved position wins over a later local navigation or
+        // preferences from another installation. Local memory serves unsaved documents.
+        guard let saved = snapshot.project.savedCursor ?? cursorMemory?.cursor(for: snapshot.project.id),
               let song = snapshot.project.songs.first(where: { $0.id == saved.songID }) else { return }
         if snapshot.transport.songId != song.id { try executor.execute(.select, target: song.id, value: 0) }
         let position = min(song.duration, saved.position)
@@ -2156,8 +2246,9 @@ public struct ShowPresentationState: Equatable {
         defer { saving = false }
         let revision = projectRevision, effects = effectRevision, setlist = setlistRevision
         var project = snapshot.project; project.updatedAt = ISO8601DateFormatter().string(from: Date())
+        project.savedCursor = editingCursor
         try await persistence.save(project)
-        if snapshot.project.id == project.id { lastSavedAt = project.updatedAt }
+        if snapshot.project.id == project.id { lastSavedCursor = project.savedCursor; lastSavedAt = project.updatedAt }
         if projectRevision == revision && effectRevision == effects && setlistRevision == setlist { hasUnsavedChanges = false }
     }
     public func saveForClosing() async throws {
@@ -2190,16 +2281,20 @@ public struct ShowPresentationState: Equatable {
         try project.validate()
         timer?.invalidate(); timer = nil
         try executor.load(project); snapshot = try executor.snapshot(); try restoreGlobalBypass()
+        lastSavedCursor = project.savedCursor
         projectRevision &+= 1; hasUnsavedChanges = false
         audioProjectRevision &+= 1
         itemClipboard = nil
         selectedSetlistBlock = nil
+        selectedTimelineRegion = nil; timelineFollowPaused = false
         focusedRegion = nil; restoredCursorPosition = nil; navigationFocusPosition = nil; regionFocusRequest = UUID(); message = ""
         try restoreCursor(); resetHistory()
     }
     public func importProject(_ data: Data) throws {
         let project = try ProjectDocumentCodec.decode(data)
+        selectedTimelineRegion = nil; timelineFollowPaused = false
         try executor.load(project); snapshot = try executor.snapshot(); try restoreGlobalBypass(); try restoreCursor(); markChanged()
+        lastSavedCursor = project.savedCursor
     }
 }
 

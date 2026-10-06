@@ -1,5 +1,5 @@
 import Foundation
-public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
+public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipPhase, clipPan, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo }
 @MainActor public protocol CommandExecutor {
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws
     func configureRegionSetlist(_ state: RegionSetlist) throws

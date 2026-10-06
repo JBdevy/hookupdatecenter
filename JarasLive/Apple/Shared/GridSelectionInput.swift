@@ -17,6 +17,8 @@ struct GridSelectionItem {
     let id: UUID
     var rect: CGRect
     var gain: Double = 1
+    var phaseInverted = false
+    var pan: Double = 0
     var editable = true
     var resizable = true
     var movable = true
@@ -41,9 +43,13 @@ struct GridSelectionItem {
     var muteRect: CGRect? { editable && headerRect.width >= 21 ? CGRect(x: controlStart, y: rect.minY, width: 17, height: 13) : nil }
     var fxRect: CGRect? { editable && !midiEditable && headerRect.width >= 41 ? CGRect(x: controlStart + 18, y: rect.minY, width: 20, height: 13) : nil }
     var gainKnobRect: CGRect? { editable && headerRect.width >= 57 ? CGRect(x: controlStart + 39, y: rect.minY, width: 15, height: 13) : nil }
+    var phaseRect: CGRect? { editable && !midiEditable && headerRect.width >= 74 ? CGRect(x: controlStart + 55, y: rect.minY, width: 15, height: 13) : nil }
+    var panKnobRect: CGRect? { editable && !midiEditable && headerRect.width >= 90 ? CGRect(x: controlStart + 71, y: rect.minY, width: 15, height: 13) : nil }
+    var panPosition: Double { (min(1, max(-1, pan)) + 1) / 2 }
+    func draggingPan(by delta: CGFloat) -> Double { min(1, max(-1, pan - Double(delta) / 60)) }
     var gainLabel: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
     var gainLabelRect: CGRect? {
-        guard let knob = gainKnobRect else { return nil }
+        guard let knob = panKnobRect ?? phaseRect ?? gainKnobRect else { return nil }
         let width = ceil(CGFloat(gainLabel.count) * 5.5) + 8
         guard headerRect.maxX - knob.maxX >= width + 3 else { return nil }
         return CGRect(x: knob.maxX + 1, y: rect.minY, width: width, height: 13)
@@ -52,7 +58,7 @@ struct GridSelectionItem {
     var titleInset: CGFloat {
         let rightEdge: CGFloat
         if let label = gainLabelRect { rightEdge = label.maxX }
-        else if let knob = gainKnobRect { rightEdge = knob.maxX }
+        else if let knob = panKnobRect ?? phaseRect ?? gainKnobRect { rightEdge = knob.maxX }
         else if let fx = fxRect { rightEdge = fx.maxX }
         else if let mute = muteRect { rightEdge = mute.maxX }
         else if let edit = editRect { rightEdge = edit.maxX }
@@ -283,6 +289,8 @@ struct GridSelectionInput: NSViewRepresentable {
     var resize: (UUID, Bool, CGFloat, Bool) -> Void = { _,_,_,_ in }
     var fade: (UUID, Bool, Double, Bool) -> Void = { _, _, _, _ in }
     var gain: (UUID, Double, Bool) -> Void = { _,_,_ in }
+    var phase: (UUID) -> Void = { _ in }
+    var pan: (UUID, Double, Bool) -> Void = { _,_,_ in }
     var fx: (UUID, Bool) -> Void = { _, _ in }
     var editMIDI: (UUID) -> Void = { _ in }
     var createMIDI: ((CGPoint, CGFloat?) -> Void)? = nil
@@ -304,7 +312,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -349,13 +357,17 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
     private var fadeItem: (item: GridSelectionItem, left: Bool)?
     private var liveFade: (id: UUID, left: Bool, seconds: Double)?
     var gain: ((UUID, Double, Bool) -> Void)?
+    var phase: ((UUID) -> Void)?
+    var pan: ((UUID, Double, Bool) -> Void)?
     var fx: ((UUID, Bool) -> Void)?
     var editText: ((UUID) -> Void)?
-    private enum HeaderControl { case mute, fx, editText }
+    private enum HeaderControl { case mute, fx, editText, phase }
     private var pressedHeader: (id: UUID, rect: CGRect, control: HeaderControl)?
     private var headerPressCancelled = false
     private var resizingLeft: Bool?
     private var gainItem: GridSelectionItem?
+    private var panItem: GridSelectionItem?
+    private var liveHeaderPan: (id: UUID, value: Double)?
     var reRender: ((Set<UUID>) -> Void)?
     var convert: ((Set<UUID>, Int) -> Void)?
     var freezeMIDI: ((Set<UUID>, Int) -> Void)?
@@ -501,7 +513,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         // A modal opened during a press must not leave a latent mouse-up action.
         activeButton = nil; anchor = nil; selectionRect = nil; contextItem = nil
         draggedItem = nil; hasDragged = false; movingAllowed = false
-        pressedHeader = nil; headerPressCancelled = false; gainItem = nil; resizingLeft = nil
+        pressedHeader = nil; headerPressCancelled = false; gainItem = nil; panItem = nil; liveHeaderPan = nil; resizingLeft = nil
         needsDisplay = true
     }
     func timelinePendingClickCancelled() {
@@ -510,7 +522,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         pendingSeek = nil
         // Keep ownership of mouse-up so it cannot activate another view after
         // the viewport has moved. Existing item/gain/edge drags still commit.
-        draggedItem = nil; movingAllowed = false; resizingLeft = nil; gainItem = nil; fadeItem = nil; liveFade = nil
+        draggedItem = nil; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
         pressedHeader = nil; headerPressCancelled = false
     }
     override var acceptsFirstResponder: Bool { true }
@@ -520,7 +532,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         pendingSeek = nil
         dragStart = event.locationInWindow
         let timeline = timelinePoint(event)
-        draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil; fadeItem = nil; liveFade = nil
+        draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
             if createMIDI != nil && event.clickCount == 2 { createMIDI?(timeline, nil); return }
@@ -534,6 +546,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
         }
         if let rect = item.editRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .editText); dragStart = event.locationInWindow; return
+        } else if let rect = item.phaseRect, rect.contains(timeline) {
+            pressedHeader = (item.id, rect, .phase); dragStart = event.locationInWindow; return
+        } else if item.panKnobRect?.contains(timeline) == true {
+            if event.clickCount == 2 { pan?(item.id, 0, true); return }
+            panItem = item; draggedItem = item.id; dragStart = event.locationInWindow; return
         } else if item.gainKnobRect?.contains(timeline) == true {
             if event.clickCount == 2 { gain?(item.id, 1, true); return }
             gainItem = item; draggedItem = item.id; dragStart = event.locationInWindow; return
@@ -575,6 +592,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             fade?(id, fadeItem.left, seconds, false)
         }
         else if let resizingLeft { resize?(id, resizingLeft, translation.width, false) }
+        else if let panItem {
+            let value = panItem.draggingPan(by: translation.height)
+            liveHeaderPan = (id, value); needsDisplay = true
+            pan?(id, value, false)
+        }
         else if let gainItem {
             let value = gainItem.draggingGain(by: translation.height)
             liveHeaderGain = (id, value); needsDisplay = true
@@ -601,6 +623,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             // cannot receive the release that activated its originating FX button.
             if activate {
                 switch header.control {
+                case .phase: phase?(header.id)
                 case .mute: mute?(header.id)
                 case .fx: fx?(header.id, event.modifierFlags.contains(.option))
                 case .editText: editText?(header.id)
@@ -620,6 +643,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             let translation = CGSize(width: event.locationInWindow.x - dragStart.x, height: dragStart.y - event.locationInWindow.y)
             if let fadeItem { fade?(id, fadeItem.left, fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width), true) }
             else if let resizingLeft { resize?(id, resizingLeft, translation.width, true) }
+            else if let panItem { pan?(id, panItem.draggingPan(by: translation.height), true) }
             else if let gainItem { gain?(id, gainItem.draggingGain(by: translation.height), true) }
             else if movingAllowed {
                 let point = convert(event.locationInWindow, from: nil)
@@ -627,7 +651,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                 move?(id, translation, inside ? dragOrigin.y + translation.height : .nan, true)
             }
         }
-        draggedItem = nil; hasDragged = false; movingAllowed = false; gainItem = nil; liveHeaderGain = nil; fadeItem = nil; liveFade = nil; needsDisplay = true
+        draggedItem = nil; hasDragged = false; movingAllowed = false; gainItem = nil; panItem = nil; liveHeaderPan = nil; liveHeaderGain = nil; fadeItem = nil; liveFade = nil; needsDisplay = true
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -656,12 +680,14 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
             }
             for rect in [item.muteRect, item.fxRect, item.editRect].compactMap({ $0 }) { add(rect, .pointingHand) }
             if let knob = item.gainKnobRect { add(knob, .resizeUpDown) }
+            if let knob = item.panKnobRect { add(knob, .resizeUpDown) }
             for left in [true, false] { if let handle = item.fadeHandleRect(left) { add(handle, .crosshair) } }
         }
     }
     func pointerCursor(at point: CGPoint) -> NSCursor {
         guard let item = hitItem(at: point) else { return .arrow }
         if item.fadeSide(at: point) != nil { return .crosshair }
+        if item.panKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.gainKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.fxRect?.contains(point) == true || item.muteRect?.contains(point) == true || item.editRect?.contains(point) == true { return .pointingHand }
         return item.resizeSide(at: point) != nil ? .resizeLeftRight : .arrow
@@ -896,6 +922,23 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver {
                     let angle = (135 + item.gainPosition * 270) * .pi / 180
                     let needle = NSBezierPath(); needle.move(to: center)
                     needle.line(to: CGPoint(x: center.x + cos(angle) * 3.5, y: center.y + sin(angle) * 3.5))
+                    NSColor.white.setStroke(); needle.lineWidth = 1.2; needle.stroke()
+                }
+                if let rect = item.phaseRect {
+                    (item.phaseInverted ? NSColor.systemYellow : NSColor.black.withAlphaComponent(0.28)).setFill(); rect.fill()
+                    let center = CGPoint(x: rect.midX, y: rect.midY)
+                    let path = NSBezierPath(ovalIn: CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7))
+                    path.move(to: CGPoint(x: center.x - 4.5, y: center.y + 4.5)); path.line(to: CGPoint(x: center.x + 4.5, y: center.y - 4.5))
+                    (item.phaseInverted ? NSColor.black : NSColor.white).setStroke(); path.lineWidth = 1.2; path.stroke()
+                }
+                if let rect = item.panKnobRect {
+                    let center = CGPoint(x: rect.midX, y: rect.midY), radius = 4.5
+                    let ring = NSBezierPath(ovalIn: CGRect(x: center.x-radius, y: center.y-radius, width: radius*2, height: radius*2))
+                    NSColor.systemGreen.setStroke(); ring.lineWidth = 1.5; ring.stroke()
+                    let value = liveHeaderPan?.id == item.id ? liveHeaderPan!.value : item.pan
+                    let angle = (135 + (value+1)/2*270) * .pi / 180
+                    let needle = NSBezierPath(); needle.move(to: center)
+                    needle.line(to: CGPoint(x: center.x+cos(angle)*3.5, y: center.y+sin(angle)*3.5))
                     NSColor.white.setStroke(); needle.lineWidth = 1.2; needle.stroke()
                 }
                 if let rect = item.gainLabelRect { GridSelectionHeaderText.gain(item.gainLabel).draw(in: rect.insetBy(dx: 1, dy: 0)) }

@@ -1,10 +1,5 @@
 import Foundation
 
-public struct SavedProjectCursor: Equatable {
-    public let songID: UUID
-    public let position: Double
-}
-
 /// Local workspace state: moving a cursor never rewrites the audio project.
 @MainActor public final class ProjectCursorMemory {
     private let preferences: UserDefaults

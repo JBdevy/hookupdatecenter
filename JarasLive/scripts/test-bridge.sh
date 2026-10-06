@@ -5,6 +5,7 @@ mkdir -p build/bridge-tests
 cat > build/bridge-tests/main.swift <<'SWIFT'
 import Foundation
 var project = Project.demo()
+project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 42.125)
 project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Refrão", position: 12, color: 0xffcc00, section: true, loopSection: true)]
 project.songs[0].tracks[1].parentTrackID = project.songs[0].tracks[0].id
 project.songs[0].tracks[1].patch = .masterGroup

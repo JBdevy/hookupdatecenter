@@ -55,6 +55,64 @@ import XCTest
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testRegionBandClickPausesFollowUntilStopOrNextSongAndKeepsHighlight() throws {
+        var project = Project.empty(name: "Navigation")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        project.songs[0].parts = [first, second]; project.songs[0].duration = 20
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.play)
+        show.send(.editSeek, value: 4)
+        XCTAssertFalse(show.timelineFollowPaused, "Editing the cursor alone must not disable continuous follow")
+        XCTAssertEqual(show.timelineZoomPosition, show.snapshot.transport.position)
+        show.selectTimelineRegion(first.id)
+        XCTAssertTrue(show.timelineFollowPaused)
+        XCTAssertEqual(show.selectedTimelineRegion, first.id)
+        XCTAssertEqual(show.timelineZoomPosition, 4)
+        show.send(.editSeek, value: 6)
+        XCTAssertTrue(show.timelineFollowPaused)
+        XCTAssertEqual(show.timelineZoomPosition, 6)
+        executor.transport.position = 10
+        executor.transport.regionId = second.id
+        show.tick()
+        XCTAssertFalse(show.timelineFollowPaused, "Starting another song resumes follow")
+        XCTAssertEqual(show.selectedTimelineRegion, first.id, "Playback changes must preserve the white band selection")
+        XCTAssertEqual(show.timelineZoomPosition, 10, accuracy: 0.05)
+        show.selectTimelineRegion(first.id)
+        XCTAssertTrue(show.timelineFollowPaused, "Clicking the same highlighted band must pause again")
+        show.send(.stop)
+        XCTAssertFalse(show.timelineFollowPaused)
+        XCTAssertEqual(show.selectedTimelineRegion, first.id)
+        show.selectTimelineRegion(UUID())
+        XCTAssertFalse(show.timelineFollowPaused, "Invalid regions must not affect navigation")
+        try show.replaceProject(Project.empty(name: "Another project"))
+        XCTAssertNil(show.selectedTimelineRegion)
+    }
+
+    @MainActor func testRegionBandPauseOverridesSubPlayZoomUntilPlaybackHandoff() throws {
+        var project = Project.empty(name: "SubPlay navigation")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        project.songs[0].parts = [first, second]; project.songs[0].duration = 20
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        executor.transport.playing = true; executor.transport.regionId = first.id
+        executor.transport.subPlay.playing = true; executor.transport.subPlay.position = 12
+        executor.transport.editPosition = 3
+        show.send(.subSeek)
+        XCTAssertEqual(show.timelineZoomPosition, 12)
+        show.selectTimelineRegion(first.id)
+        XCTAssertEqual(show.timelineZoomPosition, 3)
+        executor.transport.subPlay.position = 13
+        show.tick()
+        XCTAssertTrue(show.timelineFollowPaused, "Advancing inside a song must preserve the manual pause")
+        executor.transport.subPlay.playing = false
+        show.send(.subStop)
+        XCTAssertFalse(show.timelineFollowPaused, "The handoff back to main playback resumes follow")
+        XCTAssertEqual(show.selectedTimelineRegion, first.id)
+    }
+
     @MainActor func testPlayFromBlockUsesFirstFollowingSongInPlaylistOrder() throws {
         var project = Project.empty(name: "Blocks")
         let a = Part(id: UUID(), name: "A", startTime: 0, endTime: 10)
@@ -568,6 +626,55 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertEqual(reopened.snapshot.transport.position, 42.125)
         try reopened.replaceProject(other)
         XCTAssertEqual(reopened.snapshot.transport.position, 17)
+    }
+    @MainActor func testSaveStoresCursorInEncryptedDocumentAndReopensWithoutLocalPreferences() async throws {
+        let store = MemoryProjectStore()
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: store, initialProject: .empty(name: "Portable cursor"))
+        show.send(.editSeek, value: 42.125)
+        XCTAssertTrue(show.needsSave, "Moving only the editing needle must enable Save")
+        XCTAssertFalse(show.hasUnsavedChanges, "Cursor navigation alone does not require a content-save prompt on close")
+        show.send(.play); executor.advance(12); show.tick()
+        try await show.flushProject()
+        XCTAssertFalse(show.needsSave)
+        let stored = await store.load()
+        let saved = try XCTUnwrap(stored)
+        let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(saved))
+        XCTAssertEqual(decoded.savedCursor?.position, 42.125, "Save preserves the editing needle, not the advancing playback needle")
+        let reopened = try ShowController(executor: CursorExecutor(), persistence: store, initialProject: decoded)
+        XCTAssertFalse(reopened.needsSave)
+        XCTAssertEqual(reopened.snapshot.transport.editPosition, 42.125)
+        XCTAssertEqual(reopened.snapshot.transport.position, 42.125)
+        XCTAssertEqual(reopened.restoredCursorPosition, 42.125)
+        XCTAssertFalse(reopened.isPlaying)
+        reopened.send(.editSeek, value: 60)
+        XCTAssertTrue(reopened.needsSave)
+        try await reopened.flushProject()
+        XCTAssertFalse(reopened.needsSave)
+        show.send(.stopAll)
+        try await show.flushProject()
+        let storedAgain = await store.load()
+        let savedAgain = try XCTUnwrap(storedAgain)
+        XCTAssertEqual(savedAgain.savedCursor?.position, 42.125, "Every save captures the current needle even without a content edit")
+    }
+    @MainActor func testDocumentCursorWinsOverLocalNavigationAndIsRestoredAfterSwitchingProjects() throws {
+        let suite = "catlive-saved-cursor-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let memory = ProjectCursorMemory(preferences: defaults)
+        var project = Project.empty(name: "Saved cursor")
+        project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 65.25)
+        memory.remember(project: project.id, songID: project.songs[0].id, position: 0)
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project, cursorMemory: memory)
+        XCTAssertEqual(show.snapshot.transport.position, 65.25)
+        show.send(.editSeek, value: 7)
+        try show.replaceProject(.empty(name: "Other"))
+        try show.replaceProject(project)
+        XCTAssertEqual(show.snapshot.transport.position, 65.25)
+        XCTAssertFalse(show.hasUnsavedChanges)
+        project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: project.songs[0].duration + 90)
+        try show.replaceProject(project)
+        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration)
     }
     @MainActor func testSavedCursorClampsToProjectEndAndIgnoresInvalidPosition() throws {
         let suite = "jaras-test-cursor-" + UUID().uuidString

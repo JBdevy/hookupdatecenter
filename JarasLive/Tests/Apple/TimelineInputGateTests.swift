@@ -6,7 +6,18 @@ window.isReleasedWhenClosed = false
 let scroll = GridNativeScrollView(frame: NSRect(x: 0,y: 0,width: 400,height: 300))
 let document = NSView(frame: NSRect(x: 0,y: 0,width: 4000,height: 300))
 let wheel = TimelineWheelView(frame: NSRect(x: 0,y: 0,width: 4000,height: 300))
+// Restoration arrives before SwiftUI attaches the input to its native viewport.
+let restoration = UUID()
+wheel.focus(request: restoration, x: 2400)
 window.contentView = scroll; scroll.documentView = document; document.addSubview(wheel)
+wheel.observeHorizontalScroll()
+RunLoop.main.run(until: Date().addingTimeInterval(0.030))
+precondition(scroll.contentView.bounds.minX > 2000,
+             "a restored cursor must reveal its position after the native viewport attaches")
+scroll.contentView.scroll(to: NSPoint(x: 0, y: 0))
+wheel.focus(request: restoration, x: 2400)
+precondition(scroll.contentView.bounds.minX == 0, "a consumed restoration cannot pull back later manual scrolling")
+print("NATIVE_CURSOR_RESTORATION_WAIT_FOR_VIEWPORT_AND_CONSUME_ONCE_OK")
 let gate = NativeTimelineInputGate.shared
 let previousZoom = TimelineViewportPreferences.storage.object(forKey: "jaras.timelineZoom")
 let legacyZoomBeforeTest = UserDefaults.standard.object(forKey: "jaras.timelineZoom") as? NSObject

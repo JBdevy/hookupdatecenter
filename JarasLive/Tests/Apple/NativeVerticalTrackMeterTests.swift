@@ -6,6 +6,18 @@ import Foundation
     let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 80, height: 100))
     let document = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 10_000))
     scroll.documentView = document; window.contentView = scroll
+    let decayMeter = TrackMeterLevel()
+    decayMeter.update(left: 1, right: 0.1, elapsed: 0)
+    for _ in 0..<15 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
+    precondition(abs(20 * log10(decayMeter.levels.x) + 24) < 0.001,
+                 "a transient falls 24 dB within half a second without altering its peak")
+    precondition(abs(decayMeter.levels.x / decayMeter.levels.y - 10) < 0.001,
+                 "release preserves independent channel amplitudes")
+    for _ in 0..<30 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
+    precondition(decayMeter.levels == .zero, "silence clears a full-scale transient within 1.5 seconds")
+    decayMeter.update(left: 0.8, right: 0.3, elapsed: 1.0 / 30)
+    precondition(decayMeter.levels == SIMD2(0.8, 0.3), "new peaks still attack immediately")
+    print("METER_FAST_RELEASE_STEREO_SILENCE_AND_INSTANT_ATTACK_OK")
     let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 32, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)

@@ -74,14 +74,7 @@ enum StemProjectImporter {
         let sources = try droppedSources(urls)
         guard let kind = sources.first?.kind else { throw ProjectError.invalid("No media files to import") }
         guard sources.allSatisfy({ $0.kind == kind }) else { throw ProjectError.invalid("Drop audio and video separately") }
-        if kind == .video {
-            guard destinationKind == .video || destinationKind?.isTeleprompter == true, !destinationTracks.isEmpty else {
-                throw ProjectError.invalid(videoTrackAvailable ? "Drop videos on an existing Video track" : "Create a Video track first, then drop the video on it")
-            }
-            guard layout == .sameTrack || sources.count <= destinationTracks.count else {
-                throw ProjectError.invalid("Choose Same track to add these videos to the existing Video track")
-            }
-        } else {
+        if kind != .video {
             guard destinationKind == nil || destinationKind == .standard else { throw ProjectError.invalid("Audio files must be dropped on a standard audio track") }
         }
         let fm = FileManager.default
@@ -106,6 +99,7 @@ enum StemProjectImporter {
                 }
                 let copied = folder.appendingPathComponent(name)
                 try fm.copyItem(at: url, to: copied)
+                if isVideo && !AVURLAsset(url: copied).tracks(withMediaType: .audio).isEmpty { _ = try AudioFileRead.openMedia(copied) }
                 let overview = isVideo ? (waveform: [Double](), peak: 0.0, channels: [[Double]]()) : try audioOverview(copied, duration: source.duration)
                 let itemName = url.deletingPathExtension().lastPathComponent
                 let clip = AudioClip(id: UUID(), name: itemName, startTime: layout == .sameTrack ? cursor : start, duration: source.duration,
@@ -113,7 +107,7 @@ enum StemProjectImporter {
                 if layout == .sameTrack, !tracks.isEmpty { tracks[0].clips.append(clip) }
                 else {
                     let trackID = tracks.count < destinationTracks.count ? destinationTracks[tracks.count] : UUID()
-                    var track = Track(id: trackID, name: isVideo ? (destinationKind?.title ?? "Video") : itemName, role: TrackRole(rawValue: isVideo ? (destinationKind?.rawValue ?? "video") : "other"), color: isVideo ? nil : Track.defaultStandardColor)
+                    var track = Track(id: trackID, name: isVideo && destinationKind?.isText == true ? destinationKind!.title : itemName, role: TrackRole(rawValue: isVideo && !destinationTracks.isEmpty && destinationKind != .video ? (destinationKind?.rawValue ?? "other") : "other"), color: Track.defaultStandardColor)
                     track.clips = [clip]; tracks.append(track)
                 }
                 cursor += source.duration + gap
@@ -215,7 +209,7 @@ enum StemProjectImporter {
                 for item in project.songs[song].tracks[track].clips.indices {
                     try Task.checkCancellation()
                     let clip = project.songs[song].tracks[track].clips[item]
-                    guard clip.waveformChannels == nil, let file = clip.audioFile else { continue }
+                    guard !clip.isProjectionMedia, clip.waveformChannels == nil, let file = clip.audioFile else { continue }
                     if cache[file.path] == nil {
                         let url = directory.appendingPathComponent(file.path)
                         guard FileManager.default.fileExists(atPath: url.path) else { continue }

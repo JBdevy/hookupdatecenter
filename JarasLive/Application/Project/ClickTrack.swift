@@ -54,7 +54,7 @@ public enum ClickTrackProgram {
     /// Merge overlapping items so an overlap never doubles the click amplitude.
     /// Tempo origin stays on its marker, even if an item starts between beats.
     public static func sections(song: Song, track: Track) -> [ClickTrackSection] {
-        let items = track.clips.filter { $0.muted != true }.sorted { $0.startTime < $1.startTime }
+        let items = track.clips.filter { $0.muted != true && $0.audioFile == nil }.sorted { $0.startTime < $1.startTime }
         var spans: [(Double, Double)] = []
         for item in items {
             let end = item.startTime + item.duration

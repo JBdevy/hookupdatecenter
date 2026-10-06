@@ -290,6 +290,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         return true
     }
     func observeHorizontalScroll() {
+        defer { schedulePendingFocus() }
         guard let clip = scrollViews.first?.contentView, observedHorizontal !== clip else { return }
         if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }
         observedHorizontal = clip
@@ -370,13 +371,39 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     private var heightResponse = TimelineTrackHeightResponse()
     private var documentUnitWidth = 1.0
     private var lastFocusRequest: UUID?
+    private var pendingFocus: (request: UUID, x: CGFloat)?
+    private var focusScheduled = false
     func focus(request: UUID, x: CGFloat?) {
         guard lastFocusRequest != request else { return }
-        lastFocusRequest = request
-        guard let x else { return }
+        guard let x, x.isFinite else {
+            lastFocusRequest = request; pendingFocus = nil
+            return
+        }
+        pendingFocus = (request, x)
+        applyPendingFocus()
+    }
+    private func schedulePendingFocus() {
+        guard pendingFocus != nil, !focusScheduled else { return }
+        focusScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.focusScheduled = false
+            self.applyPendingFocus()
+        }
+    }
+    override func layout() {
+        super.layout()
+        schedulePendingFocus()
+    }
+    private func applyPendingFocus() {
+        guard let pending = pendingFocus, window != nil,
+              let horizontal = scrollViews.first, let document = horizontal.documentView,
+              document.frame.width > 0, horizontal.contentView.bounds.width > 0 else { return }
+        let x = pending.x
+        pendingFocus = nil; lastFocusRequest = pending.request
         // The native viewport already has its geometry. Revealing a cursor must
         // not synchronously lay out the whole window or wait for another turn.
-        if let horizontal = scrollViews.first {
+        do {
             takeHorizontalControl(horizontal)
             let visible = horizontal.contentView.bounds
             // User-selected left limit: the region start is 14 points inside the grid.
@@ -404,7 +431,9 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { stopZoomUpdates(); flushSavedZoom() }
-        DispatchQueue.main.async { [weak self] in self?.observeVerticalScroll(); self?.observeHorizontalScroll() }
+        DispatchQueue.main.async { [weak self] in
+            self?.observeVerticalScroll(); self?.observeHorizontalScroll(); self?.applyPendingFocus()
+        }
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if window != nil {
             NativeTimelineInputGate.shared.add(self)

@@ -133,6 +133,8 @@ enum AppStartupPresentation {
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
             show.audioItemFade = { audio.previewItemFade($0, fadeIn: $1, seconds: $2) }
+            show.audioItemPhase = { audio.previewItemPhase($0, inverted: $1) }
+            show.audioItemPan = { audio.previewItemPan($0, pan: $1) }
             show.audioItemGain = { audio.previewItemGain($0, gain: $1) }
             show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
             show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }

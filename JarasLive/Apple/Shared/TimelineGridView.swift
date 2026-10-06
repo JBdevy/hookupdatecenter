@@ -46,7 +46,7 @@ struct TimelineGridView: View {
     var remotePresentation = false
     var toggleMixer: () -> Void = {}
     var body: some View {
-        TimelineGridContent(show: show, documents: documents, revision: show.projectRevision, mixerRevision: show.mixerPlaybackRevision, songID: show.current?.id, focusRequest: show.regionFocusRequest, editPosition: show.snapshot.transport.editPosition ?? show.snapshot.transport.position, remotePresentation: remotePresentation, toggleMixer: toggleMixer).equatable()
+        TimelineGridContent(show: show, documents: documents, revision: show.projectRevision, mixerRevision: show.mixerPlaybackRevision, songID: show.current?.id, focusRequest: show.regionFocusRequest, selectedRegion: show.selectedTimelineRegion, editPosition: show.snapshot.transport.editPosition ?? show.snapshot.transport.position, remotePresentation: remotePresentation, toggleMixer: toggleMixer).equatable()
     }
 }
 private struct TimelineLiveMixerRow<Content: View>: View {
@@ -73,11 +73,12 @@ private struct TimelineGridContent: View, Equatable {
     let mixerRevision: UInt64
     let songID: UUID?
     let focusRequest: UUID
+    let selectedRegion: UUID?
     let editPosition: Double
     let toggleMixer: () -> Void
     let remotePresentation: Bool
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.remotePresentation == rhs.remotePresentation && lhs.show === rhs.show && lhs.revision == rhs.revision && lhs.songID == rhs.songID && lhs.focusRequest == rhs.focusRequest && lhs.editPosition == rhs.editPosition
+        lhs.remotePresentation == rhs.remotePresentation && lhs.show === rhs.show && lhs.revision == rhs.revision && lhs.songID == rhs.songID && lhs.focusRequest == rhs.focusRequest && lhs.selectedRegion == rhs.selectedRegion && lhs.editPosition == rhs.editPosition
     }
     @ObservedObject private var recordingLayout = RecordingLaneLayout.shared
     @Environment(\.locale) private var locale
@@ -153,9 +154,9 @@ private struct TimelineGridContent: View, Equatable {
     @State private var trackHeight: CGFloat = TimelineTrackHeightLimits.defaultHeight
     #if os(macOS)
     #endif
-    init(show: ShowController, documents: ProjectDocuments, revision: UInt64, mixerRevision: UInt64, songID: UUID?, focusRequest: UUID, editPosition: Double, remotePresentation: Bool, toggleMixer: @escaping () -> Void) {
+    init(show: ShowController, documents: ProjectDocuments, revision: UInt64, mixerRevision: UInt64, songID: UUID?, focusRequest: UUID, selectedRegion: UUID?, editPosition: Double, remotePresentation: Bool, toggleMixer: @escaping () -> Void) {
         self.show = show; self.documents = documents; self.revision = revision; self.mixerRevision = mixerRevision; self.songID = songID
-        self.focusRequest = focusRequest; self.editPosition = editPosition
+        self.focusRequest = focusRequest; self.selectedRegion = selectedRegion; self.editPosition = editPosition
         self.remotePresentation = remotePresentation; self.toggleMixer = toggleMixer
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
         _savedLabelWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
@@ -248,7 +249,7 @@ private struct TimelineGridContent: View, Equatable {
                         song.tracks.enumerated().flatMap { index, track -> [GridSelectionItem] in
                         let y = rulerHeight + rows.offsets[index]
                         return track.clips.map { clip in
-                            GridSelectionItem(id: clip.id, rect: CGRect(x: clip.startTime, y: y + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3, width: clip.duration, height: rows.laneHeights[index] - 6), gain: clip.gain ?? 1, editable: track.kind == .standard, movable: track.kind != .timecode, contextActions: track.kind == .standard || track.kind == .video, audioExportable: track.kind == .standard && clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil, midiEditable: clip.midi != nil, textEditable: track.kind.isText && !clip.isProjectionMedia, name: track.kind == .timecode ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true), fxBypassed: clip.fxBypassed == true, duration: clip.duration, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, trackIndex: index, laneIndex: rows.lanes[index].lanes[clip.id] ?? 0)
+                            GridSelectionItem(id: clip.id, rect: CGRect(x: clip.startTime, y: y + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3, width: clip.duration, height: rows.laneHeights[index] - 6), gain: clip.gain ?? 1, phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0, editable: track.kind == .standard || clip.isProjectionMedia, movable: track.kind != .timecode || clip.isProjectionMedia, contextActions: track.kind == .standard || clip.isProjectionMedia, audioExportable: track.kind == .standard && clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil, midiEditable: clip.midi != nil, textEditable: track.kind.isText && !clip.isProjectionMedia, name: clip.isImage ? JarasLocalization.string("Image") : track.kind == .timecode && !clip.isProjectionMedia ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true), fxBypassed: clip.fxBypassed == true, duration: clip.duration, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, trackIndex: index, laneIndex: rows.lanes[index].lanes[clip.id] ?? 0)
                         }
                     }
                     }
@@ -314,7 +315,7 @@ private struct TimelineGridContent: View, Equatable {
                                         let headerViewport = TimelineHeaderViewport.covering(offset: horizontalOffset, width: geometry.size.width, height: geometry.size.height)
                                         TimelineStaticHeaderLayer(identity: TimelineStaticHeaderIdentity(controller: ObjectIdentifier(show), project: show.snapshot.project.id, renderKey: renderKey,
                                             documentSize: CGSize(width: width, height: contentHeight), viewport: headerViewport, rulerHeight: rulerHeight, extent: extent,
-                                            verticalOffset: verticalOffset, editingRegion: editingRegion, unifyingRegion: unifyingRegion, locale: locale)) {
+                                            verticalOffset: verticalOffset, editingRegion: editingRegion, unifyingRegion: unifyingRegion, selectedRegion: selectedRegion, locale: locale)) {
                                             let visibleStart = max(0, headerViewport.minX - 1024) / pixelsPerSecond
                                             let visibleEnd = (headerViewport.maxX + 1536) / pixelsPerSecond
                                             ZStack(alignment: .topLeading) {
@@ -330,6 +331,14 @@ private struct TimelineGridContent: View, Equatable {
                                             let regionWidth: CGFloat = max(1, CGFloat(part.endTime - part.startTime) * pixelsPerSecond) + edgePadding * 2
                                             regionHitArea(part, song: originalSong, pixelsPerSecond: pixelsPerSecond, canUnify: overlapCache.regions(song: originalSong, revision: revision).contains(part.id))
                                                 .frame(width: regionWidth, height: edgePadding > 0 ? 24 : 16)
+                                                .overlay(alignment: .center) {
+                                                    if selectedRegion == part.id {
+                                                        Rectangle().strokeBorder(Color.white, lineWidth: 1.5)
+                                                            .padding(.horizontal, edgePadding)
+                                                            .padding(.vertical, edgePadding > 0 ? 4 : 0)
+                                                            .allowsHitTesting(false)
+                                                    }
+                                                }
                                                 .background { regionEditorAnchors(part, index: index) }
                                                 .offset(x: part.startTime * pixelsPerSecond - edgePadding, y: verticalOffset + CGFloat(regionLanes.lanes[part.id] ?? 0) * 16 - (edgePadding > 0 ? 4 : 0))
                                         }
@@ -457,6 +466,9 @@ private struct TimelineGridContent: View, Equatable {
                                                     show.previewItemGain(id, gain: value)
                                                     if ended { show.setItemGain(id, gain: value); itemGainPreview.clear() }
                                                     else { itemGainPreview.update(id: id, gain: value) }
+                                                }, phase: { show.toggleItemPhase($0) }, pan: { id, value, ended in
+                                                    if ended { show.setItemPan(id, pan: value) }
+                                                    else { show.previewItemPan(id, pan: value) }
                                                 }, fx: { id, bypass in
                                                     if bypass { show.toggleClipFXAllBypass(id) }
                                                     else { openClipFXChain(id) }
@@ -493,7 +505,7 @@ private struct TimelineGridContent: View, Equatable {
                                         }
                                     }, focusRequest: show.regionFocusRequest, focusX: show.snapshot.transport.subPlay.playing ? nil : ((show.navigationFocusPosition ?? show.restoredCursorPosition).map { $0 * pixelsPerSecond } ?? song.parts.first(where: { $0.id == show.focusedRegion }).map { $0.startTime * pixelsPerSecond }), cursorX: editPosition * pixelsPerSecond, modelUnitWidth: extent * 10, interactionBlocked: gridInteractionBlocked, changeTrackHeight: { factor, smoothWheel in
                                         changeTrackHeight(factor, smoothWheel: smoothWheel)
-                                    }, livePosition: { show.snapshot.transport.timelineZoomPosition / extent }))
+                                    }, livePosition: { show.timelineZoomPosition / extent }))
                                     #endif
                                     .coordinateSpace(name: "timeline").frame(width: width, height: contentHeight, alignment: .topLeading)
                                     .contentShape(Rectangle())
@@ -679,7 +691,7 @@ private struct TimelineGridContent: View, Equatable {
         ClipDragInput(item: GridSelectionItem(id: clip.id,
             rect: CGRect(x: clip.startTime * pixelsPerSecond + 1, y: itemY,
                 width: max(2, clip.duration * pixelsPerSecond - 2), height: rows.laneHeights[index] - 6),
-            editable: track.kind == .standard, movable: track.kind != .timecode,
+            editable: track.kind == .standard || clip.isProjectionMedia, movable: track.kind != .timecode || clip.isProjectionMedia,
             muted: clip.muted == true, duration: clip.duration,
             fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0), originY: itemY, click: { point in
             show.send(.editSeek, value: gridPosition(point.x / pixelsPerSecond, song: song, pixelsPerSecond: pixelsPerSecond))
@@ -754,15 +766,14 @@ private struct TimelineGridContent: View, Equatable {
         selectedTracks = [id]
     }
     private func dragDestination(y: CGFloat, source: Track, song: Song, rows: TrackRowLayout) -> UUID {
-        guard source.kind == .standard || source.kind == .video || source.kind.isTeleprompter else { provisionalTrack = nil; return source.id }
+        let media = movingClip.flatMap { id in source.clips.first { $0.id == id } }?.isProjectionMedia == true
+        guard source.kind == .standard || media else { provisionalTrack = nil; return source.id }
         if let index = song.tracks.indices.first(where: { y >= rows.offsets[$0] && y < rows.offsets[$0] + rows.heights[$0] }) {
             provisionalTrack = nil
             let target = song.tracks[index]
+            if media, let clip = movingClip.flatMap({ id in source.clips.first { $0.id == id } }),
+               target.id == source.id || target.canPlaceItem(start: movingStart, duration: clip.duration, media: true) { return target.id }
             if source.kind == .standard { return target.kind == .standard ? target.id : source.id }
-            if (source.kind == .video || source.kind.isTeleprompter),
-               let clip = movingClip.flatMap({ id in source.clips.first { $0.id == id } }), clip.isProjectionMedia,
-               (target.kind == .video || target.kind.isTeleprompter),
-               (target.id == source.id || target.canPlaceItem(start: movingStart, duration: clip.duration, media: true)) { return target.id }
             return source.id
         }
         let last = song.tracks.count - 1
@@ -863,9 +874,9 @@ private struct TimelineGridContent: View, Equatable {
         }
         #endif
         guard let song = show.current, song.id == initialSong.id else { return }
-        let entries = song.tracks.filter { $0.kind == .standard }.flatMap { track in
+        let entries = song.tracks.flatMap { track in
             track.clips.filter { clip in
-                ids.contains(clip.id) && (midiChannels != nil ? clip.midi != nil : clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil)
+                ids.contains(clip.id) && !clip.isImage && (track.kind == .standard || clip.isProjectionMedia) && (midiChannels != nil ? clip.midi != nil : clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil)
             }.map { (track, $0) }
         }
         guard !entries.isEmpty else { return }
@@ -1069,7 +1080,7 @@ private struct TimelineGridContent: View, Equatable {
         RegionRightClick(edit: { editingRegion = part.id }, unify: canUnify ? { requestUnification(part.id) } : nil, detectBPM: { show.detectBPMRegion = part.id }, disunify: song.parts.contains(where: { $0.parentRegionID == part.id }) ? { show.disunifyRegion(part.id) } : nil, delete: {
             regionToDelete = (show.snapshot.project.id, song.id, part.id)
             confirmingRegionDelete = true
-        }, resizable: !song.parts.contains(where: { $0.parentRegionID == part.id }), seek: { show.send(.editSeek, value: part.startTime) }, drag: { translation, ended, edge in
+        }, resizable: !song.parts.contains(where: { $0.parentRegionID == part.id }), seek: { show.selectTimelineRegion(part.id); show.send(.editSeek, value: part.startTime) }, drag: { translation, ended, edge in
             guard let original = song.parts.first(where: { $0.id == part.id }) else { return }
             if edge != 0 {
                 guard original.parentRegionID == nil, !song.parts.contains(where: { $0.parentRegionID == part.id }) else {
@@ -1316,6 +1327,7 @@ private final class NativeTimelineNeedlesView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        layerContentsRedrawPolicy = .never
         for needle in [edit, main, sub] { layer?.addSublayer(needle.root) }
         addSubview(follow)
     }
@@ -1399,7 +1411,7 @@ private final class NativeTimelineNeedlesView: NSView {
             draw(sub, x: subX, color: colors[2], playback: false, glowing: transport.subPlay.playing || dragging == true)
             sub.root.opacity = now.truncatingRemainder(dividingBy: 0.9) < 0.45 ? 1 : 0.3
         }
-        follow.update(position: playback.followPosition, pixelsPerSecond: size.width / max(1, extent), contentWidth: size.width,
+        follow.update(position: show?.timelineFollowPaused == true ? nil : playback.followPosition, pixelsPerSecond: size.width / max(1, extent), contentWidth: size.width,
             source: "\(songID?.uuidString ?? "")-\(playback.followSource == .sub ? "sub" : "main")")
     }
     private func draw(_ needle: Needle, x: CGFloat, color value: Int, playback: Bool, glowing: Bool, merged: Bool = false) {
@@ -1815,6 +1827,7 @@ private struct TimelineStaticHeaderIdentity: Equatable {
     let verticalOffset: CGFloat
     let editingRegion: UUID?
     let unifyingRegion: UUID?
+    var selectedRegion: UUID? = nil
     let locale: Locale
 }
 private struct TimelineStaticHeaderLayer<Content: View>: View, Equatable {
@@ -2297,7 +2310,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
     titleContext.clip(to: path)
     titleContext.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height <= 26 ? rect.height : min(13, rect.height))), with: .color(.black.opacity(0.16)))
     #if !os(macOS)
-    let controls = GridSelectionItem(id: clip.id, rect: rect, gain: clip.gain ?? 1, editable: track.kind == .standard, textEditable: track.kind.isText && !clip.isProjectionMedia)
+    let controls = GridSelectionItem(id: clip.id, rect: rect, gain: clip.gain ?? 1, phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0, editable: track.kind == .standard || clip.isProjectionMedia, textEditable: track.kind.isText && !clip.isProjectionMedia)
     #if os(macOS)
     if let editRect = controls.editRect, editRect.intersects(tile) {
         titleContext.fill(Path(editRect), with: .color(.black.opacity(0.28)))
@@ -2332,11 +2345,25 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
         titleContext.stroke(needle, with: .color(.white), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
     }
     #endif
+    if let phase = controls.phaseRect {
+        titleContext.fill(Path(phase), with: .color(clip.phaseInverted == true ? .yellow : .black.opacity(0.28)))
+        let center = CGPoint(x: phase.midX, y: phase.midY)
+        var symbol = Path(ellipseIn: CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7))
+        symbol.move(to: CGPoint(x: center.x-4.5, y: center.y+4.5)); symbol.addLine(to: CGPoint(x: center.x+4.5, y: center.y-4.5))
+        titleContext.stroke(symbol, with: .color(clip.phaseInverted == true ? .black : .white), lineWidth: 1.2)
+    }
+    if let pan = controls.panKnobRect {
+        let center = CGPoint(x: pan.midX, y: pan.midY)
+        titleContext.stroke(Path(ellipseIn: CGRect(x: center.x-4.5, y: center.y-4.5, width: 9, height: 9)), with: .color(JarasTheme.green), lineWidth: 1.5)
+        let angle = (135 + controls.panPosition * 270) * .pi / 180
+        var needle = Path(); needle.move(to: center); needle.addLine(to: CGPoint(x: center.x+cos(angle)*3.5, y: center.y+sin(angle)*3.5))
+        titleContext.stroke(needle, with: .color(.white), lineWidth: 1.2)
+    }
     if let gainLabel = controls.gainLabelRect {
         drawTimelineName(controls.gainLabel, in: gainLabel, visibleRect: tile, context: &titleContext)
     }
     let titleInset = controls.titleInset
-    let title = track.kind == .timecode ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name
+    let title = clip.isImage ? JarasLocalization.string("Image") : track.kind == .timecode && !clip.isProjectionMedia ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name
     drawTimelineName(title, in: CGRect(x: rect.minX + titleInset, y: rect.minY, width: max(0, rect.width - titleInset), height: min(13, rect.height)), visibleRect: tile, context: &context)
     #endif
     }
@@ -2358,7 +2385,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
         if body.height >= 12 { drawTimelineName(JarasLocalization.string("Not found"), in: body, visibleRect: tile, centered: true, context: &context) }
         return
     }
-    if track.kind == .click {
+    if track.kind == .click && !clip.isProjectionMedia {
         let body = CGRect(x: rect.minX, y: rect.minY + 14, width: rect.width, height: max(0, rect.height - 16))
         let visible = body.intersection(tile)
         guard !visible.isEmpty else { return }
@@ -2378,12 +2405,12 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, rect: CGRect, sel
         waveContext.fill(wave, with: .color(Color(white: 0.88).opacity(silenced ? 0.5 : 0.9)))
         return
     }
-    if track.kind == .timecode || track.kind == .video || (clip.isProjectionMedia && ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension.lowercased())) {
+    if (track.kind == .timecode && !clip.isProjectionMedia) || track.kind == .video || (clip.isProjectionMedia && ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension.lowercased())) {
         let body = CGRect(x: rect.minX, y: rect.minY + 13, width: rect.width, height: max(0, rect.height - 13))
         if body.height >= 12 {
             let fileExtension = URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension
             let isImage = UTType(filenameExtension: fileExtension)?.conforms(to: .image) == true
-            let label = track.kind == .timecode ? "TIMECODE" : isImage ? JarasLocalization.string("Image") : "VIDEO"
+            let label = track.kind == .timecode && !clip.isProjectionMedia ? "TIMECODE" : isImage ? JarasLocalization.string("Image") : "VIDEO"
             drawTimelineName(label, in: body, visibleRect: tile, centered: true, context: &context)
         }
         return

@@ -128,7 +128,7 @@ struct TransportView: View {
                     }
                     #endif
                     Spacer(minLength: 0)
-                    ProjectSaveButton(pending: show.hasUnsavedChanges, saving: show.saving, message: show.message) { Task { await show.save() } }
+                    ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
                         .frame(width: TransportControlMetrics.width, height: TransportControlMetrics.height)
@@ -252,11 +252,20 @@ struct FooterInformationDisplay: View {
         return beat - Double(index) < 0.45 ? 0 : (index.isMultiple(of: 2) ? 1 : 3)
     }
     var body: some View {
+        #if os(macOS)
+        NativeTransportInformation(show: show, message: information,
+            steady: hasMultiLoop && show.snapshot.transport.ignoreNextAfter == nil && !show.snapshot.transport.loop.enabled,
+            cornerRadius: embedded ? 0 : 4)
+            .frame(height: displayHeight)
+            .overlay { if !embedded { RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false) } }
+            .accessibilityLabel("Information").accessibilityValue(information)
+        #else
         Group {
             if show.snapshot.transport.playing && show.snapshot.transport.loop.enabled {
                 TimelineView(.periodic(from: .now, by: 0.05)) { _ in messageDisplay }
             } else { messageDisplay }
         }
+        #endif
     }
     private var messageDisplay: some View {
         let message = information
@@ -269,6 +278,80 @@ struct FooterInformationDisplay: View {
             .accessibilityLabel("Information").accessibilityValue(message)
     }
 }
+
+#if os(macOS)
+/// Pulse the retained notice layers without relaying each beat through SwiftUI
+/// layout. The timing and colors remain shared with the remote presentation.
+private struct NativeTransportInformation: NSViewRepresentable {
+    let show: ShowController
+    let message: String
+    let steady: Bool
+    let cornerRadius: CGFloat
+    func makeNSView(context: Context) -> NativeTransportInformationView { NativeTransportInformationView() }
+    func updateNSView(_ view: NativeTransportInformationView, context: Context) {
+        view.configure(message: message, steady: steady, cornerRadius: cornerRadius) { [weak show] in
+            guard let show else { return nil }
+            return FooterInformationDisplay.loopBeatPhase(transport: show.snapshot.transport, song: show.current)
+        }
+    }
+    static func dismantleNSView(_ view: NativeTransportInformationView, coordinator: ()) { view.stop() }
+}
+private final class NativeTransportInformationView: NSView {
+    private let text = CATextLayer()
+    private var message = "", steady = false
+    private var beat: () -> Int? = { nil }
+    private var timer: Timer?
+    private var interval = 0.0
+    private var paintedPhase: Int?
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true; layerContentsRedrawPolicy = .never
+        let actions = Dictionary(uniqueKeysWithValues: ["position", "bounds", "string", "foregroundColor", "backgroundColor", "cornerRadius", "contentsScale"].map { ($0, NSNull()) })
+        layer?.actions = actions; layer?.masksToBounds = true
+        text.actions = actions; text.alignmentMode = .center; text.truncationMode = .end
+        text.font = NSFont.systemFont(ofSize: 10, weight: .bold); text.fontSize = 10
+        layer?.addSublayer(text)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    func configure(message: String, steady: Bool, cornerRadius: CGFloat, beat: @escaping () -> Int?) {
+        if self.message != message { self.message = message; text.string = message; paintedPhase = nil }
+        if self.steady != steady { self.steady = steady; paintedPhase = nil }
+        self.beat = beat; layer?.cornerRadius = cornerRadius
+        updateTimer(); paint()
+    }
+    override func layout() { super.layout(); updateGeometry(); paint() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateGeometry(); updateTimer(); paint() }
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); updateGeometry() }
+    private func updateGeometry() {
+        text.contentsScale = window?.backingScaleFactor ?? 1
+        let height = ceil(NSFont.systemFont(ofSize: 10, weight: .bold).ascender - NSFont.systemFont(ofSize: 10, weight: .bold).descender + 2)
+        let frame = CGRect(x: 3, y: max(0, (bounds.height - height) / 2), width: max(0, bounds.width - 6), height: height)
+        if text.frame != frame { text.frame = frame }
+    }
+    private func updateTimer() {
+        let next = window == nil || message.isEmpty || steady ? 0 : beat() != nil ? 0.05 : 0.5
+        guard next != interval else { return }
+        stop(); interval = next
+        guard next > 0 else { return }
+        let clock = Timer(timeInterval: next, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.paint() }
+        }
+        timer = clock; RunLoop.main.add(clock, forMode: .common)
+    }
+    private func paint() {
+        let phase = beat() ?? (steady || message.isEmpty ? nil : Int(Date.timeIntervalSinceReferenceDate * 2) % 4)
+        let state = phase ?? -1
+        guard state != paintedPhase else { return }
+        paintedPhase = state
+        let bright = phase == 0 || (beat() == nil && phase?.isMultiple(of: 2) == true)
+        text.foregroundColor = NSColor(bright ? Color.red : phase == nil || phase == 1 ? JarasTheme.green : JarasTheme.yellow).cgColor
+        layer?.backgroundColor = NSColor(phase == nil ? JarasTheme.display : bright ? JarasTheme.yellow : Color.black).cgColor
+    }
+    func stop() { timer?.invalidate(); timer = nil; interval = 0 }
+    deinit { timer?.invalidate() }
+}
+#endif
 
 /// Shared notice colors and pulse for the Mac, iPad and iPhone.
 struct TransportInformationMessage: View {
@@ -493,13 +576,52 @@ private struct JarasSavePulse: ViewModifier {
     let active: Bool
     @State private var bright = true
     func body(content: Content) -> some View {
+        #if os(macOS)
+        NativeSavePulse(content: content, active: active)
+        #else
         content
             .opacity(active ? (bright ? 1 : 0.48) : 1)
             .animation(active ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .none, value: bright)
             .onAppear { bright = !active }
             .onChange(of: active) { bright = !$0 }
+        #endif
     }
 }
+#if os(macOS)
+/// The save pulse changes only a retained layer. SwiftUI does not need a new
+/// display list and AppKit window layout for every frame of this idle animation.
+private struct NativeSavePulse<Content: View>: NSViewRepresentable {
+    let content: Content
+    let active: Bool
+    func makeNSView(context: Context) -> NativeSavePulseHost<Content> {
+        NativeSavePulseHost(rootView: content)
+    }
+    func updateNSView(_ view: NativeSavePulseHost<Content>, context: Context) {
+        view.rootView = content
+        view.setPulse(active)
+    }
+}
+private final class NativeSavePulseHost<Content: View>: NSHostingView<Content> {
+    required init(rootView: Content) {
+        super.init(rootView: rootView); wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    func setPulse(_ active: Bool) {
+        guard let layer else { return }
+        if active {
+            guard layer.animation(forKey: "savePulse") == nil else { return }
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1; pulse.toValue = 0.48; pulse.duration = 0.9
+            pulse.autoreverses = true; pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(pulse, forKey: "savePulse")
+        } else {
+            layer.removeAnimation(forKey: "savePulse")
+        }
+    }
+}
+#endif
 enum TransportControlMetrics {
     static let width: CGFloat = 60
     static let height: CGFloat = 26

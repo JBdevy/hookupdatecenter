@@ -28,7 +28,7 @@ Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation)
 stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
 stubs = Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text().split('@MainActor private final class PresentationJournal')[0]
 stubs = stubs.replace('let duration: Double; let parts:', 'let id = UUID(); let duration: Double; let parts:')
-stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
+stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
 stubs += '''
 @MainActor private final class AppearanceColor: ObservableObject {
     static var colors: [String: AppearanceColor] = [:]

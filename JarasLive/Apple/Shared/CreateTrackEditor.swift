@@ -22,7 +22,7 @@ struct CreateTrackEditor: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Criar pista").font(.title2.bold())
             Picker("Type", selection: $kind) {
-                ForEach(TrackKind.allCases, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
+                ForEach(TrackKind.allCases.filter { $0 != .video }, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
             }
             if kind == .standard {
                 TextField("Nome da pista", text: $name).textFieldStyle(.roundedBorder)

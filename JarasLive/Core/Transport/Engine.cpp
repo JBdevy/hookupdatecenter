@@ -281,20 +281,13 @@ void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
             auto target = std::find_if(song.tracks.begin(), song.tracks.end(), [&](const auto& t) { return t.id == (destination.empty() ? track.id : destination); });
             if (target == song.tracks.end()) throw std::invalid_argument("Unknown destination track");
             const bool projectionMedia = it->audioFile && it->audioFile->path.rfind("Videos/", 0) == 0;
-            const bool sourceMediaTrack = track.role.id == "video" || isTeleprompterRole(track.role);
-            const bool targetMediaTrack = target->role.id == "video" || isTeleprompterRole(target->role);
-            const bool mediaTransfer = projectionMedia && sourceMediaTrack && targetMediaTrack;
+            const bool mediaTransfer = projectionMedia;
             if (!mediaTransfer && !fixedTrackName(track.role).empty() && target->id != track.id) throw std::invalid_argument("Special items can only move horizontally on their own track");
             if (!mediaTransfer && fixedTrackName(track.role) != fixedTrackName(target->role)) throw std::invalid_argument("Items must stay on a compatible track");
-            if (projectionMedia && !targetMediaTrack) throw std::invalid_argument("Video items must stay on a Video or Teleprompter track");
-            if (track.role.id == "timecode") throw std::invalid_argument("Timecode items follow their regions");
+            if (track.role.id == "timecode" && !projectionMedia) throw std::invalid_argument("Timecode items follow their regions");
             auto clip = *it;
             clip.startTime = start;
             clip.regionOwnerID = regionOwnerAt(song, start, start + clip.duration);
-            if (mediaTransfer && isTeleprompterRole(target->role)) {
-                clip.gain.reset(); clip.muted = false; clip.waveform.clear(); clip.waveformChannels.clear();
-                clip.loopStart.reset(); clip.loopLength.reset();
-            }
             track.clips.erase(it);
             target->clips.push_back(clip);
             song.duration = std::max(song.duration, start + clip.duration);
@@ -436,7 +429,7 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
     for (const auto& [clipId, regionId] : items) {
         const AudioClip* source = nullptr;
         for (const auto& track : song->tracks) for (const auto& clip : track.clips) if (clip.id == clipId) {
-            if (track.role.id == "timecode") throw std::invalid_argument("Timecode items cannot create regions");
+            if (track.role.id == "timecode" && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Timecode items cannot create regions");
             source = &clip;
         }
         if (!source) throw std::invalid_argument("Unknown clip");
@@ -472,7 +465,7 @@ void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
             if (settings.midiDestination != previous.midiDestination) clip.timecode->midiDestination = settings.midiDestination;
         }
         track.timecode = std::move(settings);
-        for (auto& clip : track.clips) clip.name = "TIMECODE";
+        for (auto& clip : track.clips) if (!clip.audioFile) clip.name = "TIMECODE";
         return;
     }
     throw std::invalid_argument("Unknown Timecode track");
@@ -486,14 +479,14 @@ void Engine::setFX(const ID& id, std::string json) {
 void Engine::setClipFX(const ID& id, std::string json) {
     validateClipFXJSON(json);
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
-        if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Item FX requires an audio track");
+        if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Item FX requires an audio item");
         clip.fxJSON = std::move(json); return;
     }
     throw std::invalid_argument("Unknown FX item");
 }
 void Engine::setClipFXBypass(const ID& id, bool bypassed) {
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
-        if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Item FX requires an audio track");
+        if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Item FX requires an audio item");
         clip.fxBypassed = bypassed; return;
     }
     throw std::invalid_argument("Unknown FX item");
@@ -554,7 +547,8 @@ void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving
     std::set<ID> identifiers;
     for (const auto& source : tracks) {
         auto target = std::find_if(song->tracks.begin(), song->tracks.end(), [&](const auto& track) { return track.id == source.id; });
-        if (target == song->tracks.end() || target->role.id == "timecode" || source.clips.empty()) throw std::invalid_argument("Invalid destination track");
+        if (target == song->tracks.end() || source.clips.empty()) throw std::invalid_argument("Invalid destination track");
+        if (target->role.id == "timecode" && std::any_of(source.clips.begin(), source.clips.end(), [](const auto& clip) { return !clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) != 0; })) throw std::invalid_argument("Timecode items cannot be pasted");
         for (const auto& clip : source.clips) {
             if (!identifiers.insert(clip.id).second) throw std::invalid_argument("Duplicate pasted item");
             if (moving) {
@@ -576,13 +570,14 @@ void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == songID; });
     if (song == next.songs.end()) throw std::invalid_argument("Unknown destination grid");
     for (auto& imported : tracks) {
-        if (imported.role.id == "timecode" || imported.role.id == "chords") throw std::invalid_argument("Media requires an audio track or a Video track");
+        const bool projectionMedia = !imported.clips.empty() && std::all_of(imported.clips.begin(), imported.clips.end(), [](const auto& clip) { return clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0; });
+        if (!projectionMedia && (imported.role.id == "timecode" || imported.role.id == "chords")) throw std::invalid_argument("Audio requires an audio track");
         if (imported.clips.empty()) throw std::invalid_argument("Missing imported audio item");
         for (const auto& clip : imported.clips) song->duration = std::max(song->duration, clip.startTime + clip.duration);
         auto destination = std::find_if(song->tracks.begin(), song->tracks.end(), [&](const auto& track) { return track.id == imported.id; });
         if (destination == song->tracks.end()) song->tracks.push_back(std::move(imported));
         else {
-            if (fixedTrackName(destination->role) != fixedTrackName(imported.role) || destination->role.id == "timecode" || destination->role.id == "chords") throw std::invalid_argument("Incompatible track type");
+            if (!projectionMedia && (fixedTrackName(destination->role) != fixedTrackName(imported.role) || destination->role.id == "timecode" || destination->role.id == "chords")) throw std::invalid_argument("Incompatible track type");
             for (auto& clip : imported.clips) destination->clips.push_back(std::move(clip));
         }
     }
@@ -847,13 +842,24 @@ void Engine::execute(const Command& c) {
     }
     case CommandKind::clipMute:
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
-            if (clip.id == c.target) { if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special items cannot be muted"); clip.muted = !clip.muted; return; }
+            if (clip.id == c.target) { if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special items cannot be muted"); clip.muted = !clip.muted; return; }
+        throw std::invalid_argument("Unknown clip");
+    case CommandKind::clipPhase:
+    case CommandKind::clipPan:
+        if (!std::isfinite(c.value) || (c.kind == CommandKind::clipPan && (c.value < -1 || c.value > 1)) ||
+            (c.kind == CommandKind::clipPhase && c.value != 0 && c.value != 1)) throw std::invalid_argument("Invalid item pan or polarity");
+        for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
+            if (clip.id == c.target) {
+                if (c.kind == CommandKind::clipPhase) clip.phaseInverted = c.value != 0;
+                else clip.pan = c.value == 0 ? std::nullopt : std::optional<double>(c.value);
+                return;
+            }
         throw std::invalid_argument("Unknown clip");
     case CommandKind::clipPitch:
         if (!std::isfinite(c.value) || c.value < -12 || c.value > 12) throw std::invalid_argument("Invalid item pitch");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {
-                if (!fixedTrackName(track.role).empty() || clip.midi) throw std::invalid_argument("Select audio items to tune");
+                if ((!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) || clip.midi) throw std::invalid_argument("Select audio items to tune");
                 clip.pitchSemitones = c.value == 0 ? std::nullopt : std::optional<double>(c.value); return;
             }
         throw std::invalid_argument("Unknown clip");
@@ -861,7 +867,7 @@ void Engine::execute(const Command& c) {
         if (!std::isfinite(c.value) || c.value < 0 || c.value > 3 || c.value != std::floor(c.value)) throw std::invalid_argument("Invalid item channel mode");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {
-                if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special item channels cannot be changed");
+                if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special item channels cannot be changed");
                 clip.channelMode = c.value == 0 ? std::nullopt : std::optional<int>(int(c.value)); return;
             }
         throw std::invalid_argument("Unknown clip");
@@ -870,7 +876,7 @@ void Engine::execute(const Command& c) {
         if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid item fade");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {
-                if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special items cannot have fades");
+                if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special items cannot have fades");
                 auto& fade = c.kind == CommandKind::clipFadeIn ? clip.fadeIn : clip.fadeOut;
                 fade = c.value == 0 ? std::nullopt : std::optional<double>(std::min(clip.duration,c.value));
                 return;
@@ -881,7 +887,7 @@ void Engine::execute(const Command& c) {
         if (c.value < 0 || c.value > std::pow(10.0, 24.0 / 20.0)) throw std::invalid_argument("Item gain must be between silence and +24 dB");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {
-                if (!fixedTrackName(track.role).empty()) throw std::invalid_argument("Special item gain cannot be changed");
+                if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special item gain cannot be changed");
                 if (c.kind == CommandKind::clipNormalization) { if (c.value == 1) clip.normalizationGain.reset(); else clip.normalizationGain = c.value; }
                 else clip.gain = c.value;
                 return;

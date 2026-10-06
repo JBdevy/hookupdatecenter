@@ -9,9 +9,10 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
+    var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
 }
 /// The existing persisted channel field also identifies a MIDI take (zero PCM channels).
 public enum TrackRecordingMode: Int, CaseIterable, Sendable {
@@ -360,7 +361,14 @@ public extension RegionSetlist {
         return true
     }
 }
+public struct SavedProjectCursor: Codable, Equatable, Sendable {
+    public let songID: UUID
+    public let position: Double
+    public init(songID: UUID, position: Double) { self.songID = songID; self.position = position }
+}
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Editing position captured by Save, portable with the document and backups.
+    public var savedCursor: SavedProjectCursor? = nil
     /// Migrated arrangements retain their own timing when opening the document.
     public var importedTimeline: Bool? = nil
     public var id: UUID; public var name: String
@@ -386,6 +394,9 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     }
     public func validate() throws {
         guard projectFormatVersion == 1, minimumJarasVersion == "1.0.0", !name.isEmpty else { throw ProjectError.invalid("Versão ou nome do projeto inválido.") }
+        if let savedCursor {
+            guard savedCursor.position.isFinite, savedCursor.position >= 0 else { throw ProjectError.invalid("Invalid saved cursor position") }
+        }
         guard (masterVolume ?? 1).isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(masterVolume ?? 1) else { throw ProjectError.invalid("Invalid master volume") }
         guard masterColor == nil || masterColor! <= 0xffffff else { throw ProjectError.invalid("Invalid master color") }
         try masterFX?.validate()
@@ -453,15 +464,12 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                         guard track.kind == .standard, clip.audioFile == nil, clip.text == nil, clip.loopLength == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
                         try midi.validate()
                     }
-                    guard track.kind != .click || clip.audioFile == nil else { throw ProjectError.invalid("Click items use the built-in sound") }
+                    guard track.kind != .click || clip.audioFile == nil || clip.isProjectionMedia else { throw ProjectError.invalid("Click items use the built-in sound") }
                     guard clip.text == nil || track.kind.isText else { throw ProjectError.invalid("Text items require a Teleprompter or Chords track") }
                     if let text = clip.text { try AudioClip.validateText(text, maximum: track.kind.maximumTextLength ?? AudioClip.maximumTextLength) }
-                    if clip.isProjectionMedia { guard track.kind == .video || track.kind.isTeleprompter else { throw ProjectError.invalid("Videos require a Video or Teleprompter track") } }
-                    if track.kind.isTeleprompter, clip.isProjectionMedia {
-                        guard clip.text == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.loopStart == nil, clip.loopLength == nil else { throw ProjectError.invalid("Teleprompter media cannot contain audio controls") }
-                    } else if track.kind.isText { guard clip.audioFile == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.sourceOffset == 0, clip.loopStart == nil, clip.loopLength == nil else { throw ProjectError.invalid("Text items cannot contain audio") } }
-                    guard clip.fx == nil || track.kind == .standard else { throw ProjectError.invalid("Item FX requires an audio track") }
-                    guard clip.fxBypassed == nil || track.kind == .standard else { throw ProjectError.invalid("Item FX requires an audio track") }
+                    if track.kind.isText && !clip.isProjectionMedia { guard clip.audioFile == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.sourceOffset == 0, clip.loopStart == nil, clip.loopLength == nil else { throw ProjectError.invalid("Text items cannot contain audio") } }
+                    guard clip.fx == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
+                    guard clip.fxBypassed == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
                     try clip.fx?.validateForClip()
                     if let settings = clip.timecode {
                         guard track.kind == .timecode else { throw ProjectError.invalid("Timecode settings require a Timecode item") }
@@ -469,7 +477,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     }
                     let timecodeOffsets = [clip.timecodeStartOffset, clip.timecodeEndOffset].compactMap { $0 }
                     guard timecodeOffsets.allSatisfy(\.isFinite), timecodeOffsets.isEmpty || track.kind == .timecode else { throw ProjectError.invalid("Invalid Timecode span") }
-                    guard track.kind != .timecode || (clip.loopStart == nil && clip.loopLength == nil) else { throw ProjectError.invalid("Timecode items cannot repeat their source") }
+                    guard track.kind != .timecode || clip.isProjectionMedia || (clip.loopStart == nil && clip.loopLength == nil) else { throw ProjectError.invalid("Timecode items cannot repeat their source") }
                     if let start = clip.loopStart, !start.isFinite || start < 0 { throw ProjectError.invalid("Invalid loop start") }
                     if let length = clip.loopLength, !length.isFinite || length <= 0 { throw ProjectError.invalid("Invalid loop length") }
                     try register(clip.id)
@@ -479,6 +487,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
                     guard [clip.fadeIn, clip.fadeOut].allSatisfy({ $0 == nil || ($0!.isFinite && $0! >= 0) }) else { throw ProjectError.invalid("Invalid item fade") }
+                    guard (clip.pan ?? 0).isFinite, (-1...1).contains(clip.pan ?? 0) else { throw ProjectError.invalid("Invalid item pan") }
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }
                     guard clip.startTime.isFinite, clip.duration.isFinite, clip.startTime >= 0, clip.duration > 0, clip.startTime + clip.duration <= song.duration, clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.waveform.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { throw ProjectError.invalid("Bloco de áudio inválido.") }
                 }
@@ -830,5 +839,17 @@ public struct RegionMarkerRepulsion {
         let left = start - range.lowerBound, right = range.upperBound - start
         if abs(left - right) <= 1e-9 { return proposed >= originalStart ? range.upperBound : range.lowerBound }
         return left < right ? range.lowerBound : range.upperBound
+    }
+}
+
+public extension Song {
+    /// Timeline order is the projection priority. Teleprompters opt into their
+    /// own source track; the main video window scans every track from the top.
+    func firstProjectionItem(at position: Double, trackKind: TrackKind? = nil) -> AudioClip? {
+        guard position.isFinite else { return nil }
+        for track in tracks where !track.mute && (trackKind == nil || track.kind == trackKind) {
+            for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip }
+        }
+        return nil
     }
 }

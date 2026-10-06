@@ -478,7 +478,55 @@ struct DynamicsKernel {
     };
 }
 @end
+// Fixed-order item EQ/compressor: one AU pull, the same DSP kernels and ramps.
+// The node remains connected when either effect is enabled during playback.
+@interface CatItemEQCompressorAudioUnit : JarasEQAudioUnit {
+@public DynamicsKernel compressorKernel;
+}
+@end
+@implementation CatItemEQCompressorAudioUnit
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    compressorKernel.prepare(self.outputBusses[0].format.sampleRate);
+    return YES;
+}
+- (void)reset { [super reset]; compressorKernel.resetRequested.store(true, std::memory_order_release); }
+- (AUInternalRenderBlock)internalRenderBlock {
+    EQKernel *eq=&kernel;
+    DynamicsKernel *compressor=&compressorKernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        if(!pull) return kAudioUnitErr_NoConnection;
+        const auto status=pull(flags,time,frames,0,output);
+        if(status==noErr) {
+            eq->fade.process(output,frames,time);
+            eq->fade.gate(output,frames,time);
+            if(auto analysis=eq->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            eq->process(output,frames);
+            if(auto analysis=eq->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            compressor->inputAnalysis.capture(output,frames);
+            compressor->process(output,frames);
+            compressor->outputAnalysis.capture(output,frames);
+        }
+        return status;
+    };
+}
+@end
+static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
+    AUAudioUnit *unit=node.AUAudioUnit;
+    if([unit isKindOfClass:CatItemEQCompressorAudioUnit.class])
+        return ((CatItemEQCompressorAudioUnit *)unit)->compressorKernel;
+    return ((JarasDynamicsAudioUnit *)unit)->kernel;
+}
+
 @implementation JarasDynamics
+ + (AVAudioUnitEffect *)makeItemEqualizerCompressor {
+    static dispatch_once_t once;
+    AudioComponentDescription d={kAudioUnitType_Effect,'CLIC','Jara',0,0};
+    dispatch_once(&once, ^{
+        [AUAudioUnit registerSubclass:CatItemEQCompressorAudioUnit.class asComponentDescription:d name:@"CatLive Item EQ/Compressor" version:1];
+    });
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
 + (AVAudioUnitEffect *)make:(OSType)subtype {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -494,7 +542,7 @@ struct DynamicsKernel {
 + (AVAudioUnitEffect *)makeReverb { return [self make:'JLRV']; }
 + (AVAudioUnitEffect *)makeLimiter { return [self make:'JLLM']; }
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     if(!std::isfinite(gain) || !std::isfinite(ceiling) || !std::isfinite(release)) return;
     k.params[0].store(std::clamp(gain,-24.0,24.0),std::memory_order_relaxed);
     k.params[1].store(std::clamp(ceiling,-24.0,0.0),std::memory_order_relaxed);
@@ -502,15 +550,15 @@ struct DynamicsKernel {
     k.enabled.store(enabled,std::memory_order_relaxed);
 }
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     const double values[]={threshold,ratio,attack,release,gain}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     const double values[]={double(space),mix,decay,lowCut,highCut}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
     if(analysis.enabled.exchange(enabled)==enabled) return;
     analysis.consumed=analysis.head.load();
@@ -518,19 +566,19 @@ struct DynamicsKernel {
     analysis.left.store(0); analysis.right.store(0);
 }
 + (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
-    ((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel.meteringEnabled.store(enabled, std::memory_order_relaxed);
+    dynamicsKernel(node).meteringEnabled.store(enabled, std::memory_order_relaxed);
 }
 + (NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     return (input?k.inputAnalysis:k.outputAnalysis).snapshot();
 }
 + (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
     return @[@(analysis.left.exchange(0)),@(analysis.right.exchange(0))];
 }
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node {
-    auto &k=((JarasDynamicsAudioUnit *)node.AUAudioUnit)->kernel;
+    auto &k=dynamicsKernel(node);
     return @[@(k.peaks[0].exchange(0)),@(k.peaks[1].exchange(0)),@(k.peaks[2].exchange(0)),@(k.peaks[3].exchange(0))];
 }
 @end
@@ -540,10 +588,12 @@ struct ChannelRouteKernel {
     std::array<std::atomic<uint32_t>, 1024> destinations;
     ChannelRouteKernel() { for(auto& value : destinations) value.store(0, std::memory_order_relaxed); }
     std::atomic<bool> renderEnabled{true};
+    std::atomic<bool> hasDestinations{false};
     std::atomic<bool> stopFadeRequested{false};
     std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin;
     unsigned capacity=0, channels=0, stopFadeFrames=0, stopFadePosition=0;
     bool wasRendering=false;
+    bool routingSilent=true;
     void prepare(unsigned frames,unsigned count,double rate) {
         capacity=frames; channels=count;
         input.assign(frames*2,0); output.assign(frames*count,0);
@@ -551,6 +601,7 @@ struct ChannelRouteKernel {
         lastOutput.assign(count,0); fadeOrigin.assign(count,0);
         stopFadeFrames=std::max(64u,static_cast<unsigned>(rate*0.005)); stopFadePosition=stopFadeFrames;
         wasRendering=false;
+        routingSilent=true;
         stopFadeRequested.store(false,std::memory_order_relaxed);
     }
 };
@@ -612,6 +663,20 @@ struct ChannelRouteKernel {
             }
             return noErr;
         }
+        // A track without a direct hardware patch is already heard through
+        // its master/group/internal sends. Do not pull that entire graph a
+        // second time through a hardware route which produces only silence.
+        // Let a removed patch finish its existing gain ramp before sleeping.
+        if (!state->hasDestinations.load(std::memory_order_acquire) && state->routingSilent) {
+            for (unsigned ch=0; ch<output->mNumberBuffers && ch<state->channels; ++ch) {
+                auto& buffer=output->mBuffers[ch];
+                if (!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
+                buffer.mDataByteSize=frames*sizeof(float);
+                memset(buffer.mData,0,buffer.mDataByteSize);
+            }
+            if (flags) *flags |= kAudioUnitRenderAction_OutputIsSilence;
+            return noErr;
+        }
         state->wasRendering=true;
         state->stopFadePosition=state->stopFadeFrames;
         if (!pull) return kAudioUnitErr_NoConnection;
@@ -621,6 +686,7 @@ struct ChannelRouteKernel {
         auto status=pull(flags,time,frames,0,reinterpret_cast<AudioBufferList*>(&input));
         if(status!=noErr) return status;
         const auto left=static_cast<const float*>(input.buffers[0].mData),right=static_cast<const float*>(input.buffers[1].mData);
+        bool silentRouting=true;
         for(unsigned ch=0;ch<output->mNumberBuffers && ch<state->channels;ch++) {
             auto& buffer=output->mBuffers[ch];
             if(!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
@@ -639,8 +705,10 @@ struct ChannelRouteKernel {
                 out[frame]=(left ? left[frame]:0)*gl+(right ? right[frame]:0)*gr;
             }
             state->leftGain[ch]=gl; state->rightGain[ch]=gr;
+            if(l!=0 || r!=0 || std::abs(gl)>=1e-6f || std::abs(gr)>=1e-6f) silentRouting=false;
             state->lastOutput[ch]=frames ? out[frames-1] : 0;
         }
+        state->routingSilent=silentRouting;
         return noErr;
     };
 }
@@ -677,6 +745,7 @@ struct ChannelRouteKernel {
         else { gains[first-1] += 2u; gains[first] += 2u<<16; }
     }
     for(unsigned i=0; i<1024; ++i) unit->route.destinations[i].store(gains[i],std::memory_order_relaxed);
+    unit->route.hasDestinations.store(std::any_of(gains.begin(),gains.end(),[](uint32_t gain) { return gain!=0; }),std::memory_order_release);
 }
 @end
 

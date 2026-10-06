@@ -574,3 +574,27 @@ menuGrid.updateSelection([contextAudibleID])
 invoke(menuGrid.itemContextMenu(for: contextAudibleID), "glueSelection")
 precondition(glued == [contextAudibleID], "A single audio item can also be unified")
 print("AUDIO_MIDI_GLUE_MENU_COMPLETE_SELECTION_AND_SINGLE_ITEM_OK")
+
+// Header phase and pan never start item movement or a timeline seek.
+grid.removeFromSuperview(); window.contentView = grid
+grid.frame = NSRect(x: 0, y: 0, width: 800, height: 600); grid.timelineOrigin = .zero
+grid.headerHeight = 71; grid.interactionBlocked = false
+NativeTimelineInputGate.shared.setBlocked(false, for: window)
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 240, height: 50))]
+var phaseClicks: [UUID] = [], panEdits: [(UUID, Double, Bool)] = []
+grid.phase = { phaseClicks.append($0) }; grid.pan = { panEdits.append(($0,$1,$2)) }
+let phaseRect = grid.items[0].phaseRect!, panRect = grid.items[0].panKnobRect!
+precondition(phaseRect.minX > grid.items[0].gainKnobRect!.minX && panRect.minX > phaseRect.minX)
+let beforeMixSeeks = seeks.count
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
+precondition(phaseClicks == [first])
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: panRect.midX, y: panRect.midY)))
+_ = grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: panRect.midX, y: panRect.midY - 60)))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: panRect.midX, y: panRect.midY - 60)))
+precondition(panEdits.last!.0 == first && panEdits.last!.1 == 1 && panEdits.last!.2)
+precondition(panEdits.filter { $0.2 }.count == 1 && seeks.count == beforeMixSeeks)
+_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: panRect.midX, y: panRect.midY), clicks: 2))
+_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: panRect.midX, y: panRect.midY), clicks: 2))
+precondition(panEdits.last!.1 == 0 && panEdits.last!.2)
+print("ITEM_HEADER_PHASE_PAN_ORDER_DRAG_COMMIT_AND_CENTER_OK")

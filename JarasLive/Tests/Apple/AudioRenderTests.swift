@@ -33,6 +33,45 @@ do {
     for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = 0.1 } }
     try file.write(from: buffer)
 }
+// Item phase/pan use the live production graph and remain local to that item.
+do {
+    func itemPCM(inverted: Bool, pan: Double, live: Bool = false) throws -> [[Float]] {
+        let engine = AVAudioEngine()
+        let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+        let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+        let renderer = StemAudioPlayback(engine: engine, realtime: false)
+        renderer.open(directory: directory); defer { renderer.prepareForClosing() }
+        var project = Project.empty(name: "Item mix")
+        var track = Track(id: UUID(), name: "Tone", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 3,
+            audioFile: AudioFile(path: "tone.wav"), phaseInverted: live ? false : inverted, pan: live ? 0 : pan)
+        track.clips = [clip]; project.songs[0].tracks = [track]
+        let state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+            position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+        try renderer.update(state, revision: 1)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+        if live { renderer.previewItemPhase(clip.id, inverted: inverted); renderer.previewItemPan(clip.id, pan: pan) }
+        var output = [[Float](), [Float]()]
+        for block in 0..<40 {
+            let status = try engine.renderOffline(512, to: buffer); precondition(status == .success)
+            if block > 24 { for c in 0..<2 { output[c] += Array(UnsafeBufferPointer(start: buffer.floatChannelData![c], count: Int(buffer.frameLength))) } }
+        }
+        return output
+    }
+    let dry = try itemPCM(inverted: false, pan: 0), inverted = try itemPCM(inverted: true, pan: 0)
+    for channel in 0..<2 {
+        precondition(dry[channel].contains { abs($0) > 0.05 })
+        precondition(zip(dry[channel], inverted[channel]).allSatisfy { abs($0 + $1) < 0.00001 }, "item polarity cancels both source channels")
+    }
+    for live in [false, true] {
+        let left = try itemPCM(inverted: false, pan: -1, live: live)
+        let right = try itemPCM(inverted: true, pan: 1, live: live)
+        precondition(left[0].contains { $0 > 0.05 } && left[1].allSatisfy { abs($0) < 0.00001 })
+        precondition(right[1].contains { $0 < -0.05 } && right[0].allSatisfy { abs($0) < 0.00001 })
+    }
+    print("ITEM_POLARITY_STEREO_NULL_PAN_AND_LIVE_EDITS_PCM_OK")
+}
 // Item fades use the whole timeline item clock even after seeking or looping
 // the underlying file. Exercise the production voice scheduler, not only the AU.
 do {

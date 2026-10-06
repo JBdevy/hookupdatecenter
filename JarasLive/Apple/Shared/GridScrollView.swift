@@ -925,11 +925,11 @@ final class NativeTimelinePinnedView: NSView {
     }
     private func pin() {
         guard let host, let clip else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         let origin = NSPoint(x: max(0, horizontalClip?.bounds.minX ?? 0), y: max(0, clip.bounds.minY))
-        if host.frame.origin != origin { host.setFrameOrigin(origin) }
-        CATransaction.commit()
+        guard host.frame.origin != origin else { return }
+        // Direct AppKit positioning is immediate. A separate CA commit for
+        // every scroll sample can flush the entire window between display frames.
+        host.setFrameOrigin(origin)
     }
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }

@@ -11,9 +11,18 @@ struct EQAnalysisFrame: Sendable {
 // export owns separate instances and never touches the live graph.
 final class NativeEffectsChain {
     private let reorderable: Bool
-    init(reorderable: Bool = true) { self.reorderable = reorderable }
-    let equalizer = JarasEqualizer.makeNode()
-    let compressor = JarasDynamics.makeCompressor()
+    init(reorderable: Bool = true) {
+        self.reorderable = reorderable
+        if reorderable {
+            equalizer = JarasEqualizer.makeNode()
+            compressor = JarasDynamics.makeCompressor()
+        } else {
+            let node = JarasDynamics.makeItemEqualizerCompressor()
+            equalizer = node; compressor = node
+        }
+    }
+    let equalizer: AVAudioUnitEffect
+    let compressor: AVAudioUnitEffect
     private var limiter: AVAudioUnitEffect?
     private var pitch: AVAudioUnitTimePitch?
     let delay = AVAudioUnitDelay()
@@ -124,9 +133,9 @@ final class NativeEffectsChain {
     #endif
     private var nodes: [AVAudioUnit] {
         #if os(macOS)
-        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + Array(externalNodes.values)
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + Array(externalNodes.values)
         #else
-        return [equalizer, compressor, delay, reverb] + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
         #endif
     }
     var output: AVAudioNode { outputMix }
@@ -142,6 +151,7 @@ final class NativeEffectsChain {
                                     hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample)
     }
     func setPlaybackBoundary(_ host: UInt64 = 0) { JarasEqualizer.setPlaybackBoundary(equalizer, hostTime: host) }
+    func setSourcePolarity(_ inverted: Bool) { JarasEqualizer.setPolarity(equalizer, inverted: inverted) }
     func setSourceGain(_ gain: Double) { JarasEqualizer.setInputGain(equalizer, gain: gain) }
     var instrumentInput: AVAudioMixerNode {
         if let instrumentMix { return instrumentMix }
@@ -168,6 +178,7 @@ final class NativeEffectsChain {
         var keys = reorderable ? next.effectKeys : NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) }
         keys += NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) && !keys.contains($0) }
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
+        var includedNodes = Set<ObjectIdentifier>()
         let ordered: [AVAudioNode] = keys.compactMap { key in
             if let node = instanceNodes[key] { return node }
             switch key {
@@ -185,7 +196,7 @@ final class NativeEffectsChain {
                 return nil
                 #endif
             }
-        }
+        }.filter { includedNodes.insert(ObjectIdentifier($0)).inserted }
         guard ordered.map(ObjectIdentifier.init) != connected.map(ObjectIdentifier.init) else { return }
         delayInputProbe?.detach(); delayOutputProbe?.detach()
         // Keep the upstream players connected to a live destination while

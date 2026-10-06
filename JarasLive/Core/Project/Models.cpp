@@ -208,6 +208,7 @@ void validate(const Project& p) {
                 (patch.firstChannel != 0 || patch.channelCount == 2), "Invalid output patch");
     };
     require(!p.masterColor || *p.masterColor <= 0xffffff, "Invalid master color");
+    require(!p.savedCursor || (finite(p.savedCursor->position) && p.savedCursor->position >= 0), "Invalid saved cursor position");
     require(finite(p.masterVolume) && p.masterVolume >= 0 && p.masterVolume <= std::pow(10.0, 12.0 / 20.0), "Invalid master volume");
     if (p.masterPatch) validatePatch(*p.masterPatch, false, false, true);
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
@@ -294,15 +295,13 @@ void validate(const Project& p) {
                         require(!n.id.empty() && noteIDs.insert(n.id).second && finite(n.start) && finite(n.length) && n.start>=0 && n.length>0 && n.start+n.length<=10000000 && n.pitch>=0 && n.pitch<=127 && n.velocity>=1 && n.velocity<=127 && n.channel>=1 && n.channel<=16, "Invalid MIDI note");
                     }
                 }
-                require(t.role.id != "generatedClick" || !clip.audioFile, "Click items use the built-in sound");
+                require(t.role.id != "generatedClick" || !clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) == 0, "Click items use the built-in sound");
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
                 if (clip.text) validateClipText(*clip.text, t.role.id == "chords" ? 30 : 400);
                 const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
-                require(!media || t.role.id == "video" || isTeleprompterRole(t.role), "Videos require a Video or Teleprompter track");
-                if (isTeleprompterRole(t.role) && media) require(!clip.text && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && !clip.loopStart && !clip.loopLength, "Teleprompter media cannot contain audio controls");
-                else require(!textTrack || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && clip.sourceOffset == 0 && !clip.loopStart && !clip.loopLength), "Text items cannot contain audio");
-                require(!clip.fxJSON || fixed.empty(), "Item FX requires an audio track");
-                require(!clip.fxBypassed || fixed.empty(), "Item FX requires an audio track");
+                require(!textTrack || media || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && clip.sourceOffset == 0 && !clip.loopStart && !clip.loopLength), "Text items cannot contain audio");
+                require(!clip.fxJSON || fixed.empty() || media, "Item FX requires an audio item");
+                require(!clip.fxBypassed || fixed.empty() || media, "Item FX requires an audio item");
                 if (clip.fxJSON) validateClipFXJSON(*clip.fxJSON);
                 if (clip.timecode) {
                     const auto& tc = *clip.timecode;
@@ -310,10 +309,11 @@ void validate(const Project& p) {
                 }
                 require(!clip.timecodeStartOffset || (finite(*clip.timecodeStartOffset) && t.role.id == "timecode"), "Invalid Timecode start span");
                 require(!clip.timecodeEndOffset || (finite(*clip.timecodeEndOffset) && t.role.id == "timecode"), "Invalid Timecode end span");
-                require(t.role.id != "timecode" || (!clip.loopStart && !clip.loopLength), "Timecode items cannot repeat their source");
+                require(t.role.id != "timecode" || media || (!clip.loopStart && !clip.loopLength), "Timecode items cannot repeat their source");
                 if (clip.audioFile) files.push_back(*clip.audioFile);
                 require(!clip.loopStart || (finite(*clip.loopStart) && *clip.loopStart >= 0), "Invalid loop start");
                 require(!clip.loopLength || (finite(*clip.loopLength) && *clip.loopLength > 0), "Invalid loop length");
+                require(!clip.pan || (finite(*clip.pan) && *clip.pan >= -1 && *clip.pan <= 1), "Invalid item pan");
                 require(!clip.gain || (finite(*clip.gain) && *clip.gain >= 0), "Invalid clip gain");
                 require(!clip.channelMode || (*clip.channelMode >= 0 && *clip.channelMode <= 3), "Invalid item channel mode");
                 require((!clip.fadeIn || (finite(*clip.fadeIn) && *clip.fadeIn >= 0)) && (!clip.fadeOut || (finite(*clip.fadeOut) && *clip.fadeOut >= 0)), "Invalid item fade");
@@ -385,7 +385,8 @@ void synchronizeTimecode(Project& project) {
         previous.reserve(track.clips.size());
         for (auto& clip : track.clips) { const auto id = clip.id; previous.emplace(id, std::move(clip)); }
         track.clips.clear();
-        track.clips.reserve(song.parts.size());
+        track.clips.reserve(song.parts.size() + previous.size());
+        for (auto& entry : previous) if (entry.second.audioFile) track.clips.push_back(std::move(entry.second));
         for (const auto& part : song.parts) {
             if (part.parentRegionID) continue;
             ID id = part.id;
@@ -395,7 +396,7 @@ void synchronizeTimecode(Project& project) {
                 id[0] = "0123456789ABCDEF"[value];
             } else id += "-timecode";
             AudioClip clip;
-            if (auto existing = previous.find(id); existing != previous.end()) clip = std::move(existing->second);
+            if (auto existing = previous.find(id); existing != previous.end() && !existing->second.audioFile) clip = std::move(existing->second);
             clip.id = std::move(id);
             clip.name = "TIMECODE";
             clip.regionOwnerID = part.id;

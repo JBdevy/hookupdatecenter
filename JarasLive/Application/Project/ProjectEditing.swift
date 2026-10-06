@@ -150,7 +150,13 @@ public extension Project {
             for track in songs[song].tracks.indices {
                 guard let index = songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
-                if songs[song].tracks[track].kind == .timecode {
+                if songs[song].tracks[track].clips[index].isProjectionMedia {
+                    let clip = songs[song].tracks[track].clips[index]
+                    if clip.isImage {
+                        songs[song].tracks[track].clips[index].startTime = start
+                        songs[song].tracks[track].clips[index].duration = end - start
+                    } else { songs[song].tracks[track].clips[index] = clip.resized(start: start, end: end) }
+                } else if songs[song].tracks[track].kind == .timecode {
                     if songs[song].tracks[track].importedTimecodeItems == true {
                         songs[song].tracks[track].clips[index].startTime = start
                         songs[song].tracks[track].clips[index].duration = end - start
@@ -182,7 +188,7 @@ public extension Project {
                     var left = clip, right = clip
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
-                    if textTrack { return [left, right] }
+                    if textTrack && !clip.isProjectionMedia { return [left, right] }
                     right.sourceOffset += left.duration * clip.audioRate
                     let fraction = left.duration / clip.duration
                     func pieces(_ peaks: [Double]) -> ([Double], [Double]) {
@@ -201,8 +207,9 @@ public extension Project {
     }
     mutating func deleteItems(_ ids: Set<UUID>) {
         for song in songs.indices {
-            for track in songs[song].tracks.indices where songs[song].tracks[track].kind != .timecode {
-                songs[song].tracks[track].clips.removeAll { ids.contains($0.id) }
+            for track in songs[song].tracks.indices {
+                let timecode = songs[song].tracks[track].kind == .timecode
+                songs[song].tracks[track].clips.removeAll { ids.contains($0.id) && (!timecode || $0.isProjectionMedia) }
             }
         }
     }

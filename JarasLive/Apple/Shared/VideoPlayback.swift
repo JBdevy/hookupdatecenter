@@ -16,6 +16,7 @@ import AppKit
     @Published private(set) var message = ""
     @Published private(set) var stretch: Bool
     @Published private(set) var image: NSImage?
+    @Published private(set) var opacity = 1.0
     let player = AVPlayer()
     private var window: NSWindow?
     private var directory: URL?
@@ -26,6 +27,7 @@ import AppKit
     private var projectionEnabled = false
     private var active: Bool { visible || projectionEnabled }
     private var playbackRate: Float = 0
+    private var lastSourcePosition: Double?
     private var lastPosition: Double?
     private var lastHost = 0.0
     private var lastCorrection = 0.0
@@ -97,7 +99,7 @@ import AppKit
     private func reset() {
         generation = UUID(); pendingSeek = nil; seeking = false
         player.pause(); player.replaceCurrentItem(with: nil)
-        itemStatus = nil; clipID = nil; playbackRate = 0; lastPosition = nil
+        itemStatus = nil; clipID = nil; playbackRate = 0; lastPosition = nil; lastSourcePosition = nil
         if image != nil { image = nil }
     }
     func update(_ snapshot: ShowSnapshot) {
@@ -107,10 +109,16 @@ import AppKit
         let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
         let transport = snapshot.transport
         let position = transport.playing || transport.paused == true ? transport.position : transport.editPosition ?? transport.position
-        guard let clip = song.tracks.filter({ $0.kind == trackKind && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && $0.startTime <= position && $0.startTime + $0.duration > position }), let file = clip.audioFile else {
+        guard let clip = song.firstProjectionItem(at: position, trackKind: trackKind == .video ? nil : trackKind), let file = clip.audioFile else {
             if clipID != nil { reset() }
             message = ""; return
         }
+        func curve(_ amount: Double) -> Double { let value = min(1, max(0, amount)); return value * value * (3 - 2 * value) }
+        let elapsed = position - (clip.fadeTimelineStart ?? clip.startTime)
+        let duration = clip.fadeTimelineDuration ?? clip.duration
+        let fade = ((clip.fadeIn ?? 0) > 0 ? curve(elapsed / clip.fadeIn!) : 1) *
+                   ((clip.fadeOut ?? 0) > 0 ? curve((duration - elapsed) / clip.fadeOut!) : 1)
+        if opacity != fade { opacity = fade }
         let url = directory.appendingPathComponent(file.path)
         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
             if clipID != clip.id {
@@ -129,7 +137,11 @@ import AppKit
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
-        let source = clip.sourceOffset + (position - clip.startTime) * clip.audioRate
+        var source = clip.sourceOffset + (position - clip.startTime) * clip.audioRate
+        if let length = clip.loopLength, length > 0 {
+            let start = clip.loopStart ?? clip.sourceOffset
+            source = start + (source - start).truncatingRemainder(dividingBy: length)
+        }
         let rate = transport.playing ? Float(clip.audioRate) : 0
         let changedClip = clipID != clip.id
         if changedClip {
@@ -145,13 +157,14 @@ import AppKit
             applyVideoColor()
             message = ""
         }
+        let sourceJumped = lastSourcePosition.map { abs(source - $0 - (playbackRate != 0 ? (now - lastHost) * Double(playbackRate) : 0)) > 0.12 } ?? true
         let jumped = lastPosition.map { abs(position - $0 - (playbackRate != 0 ? now-lastHost : 0)) > 0.12 } ?? true
         let playerTime = player.currentTime().seconds
         let drifted = rate != 0 && !seeking && now - lastCorrection > 1.8 && playerTime.isFinite && abs(playerTime - source) > 0.15
-        if changedClip || jumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
+        if changedClip || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
             lastCorrection = now; seek(source, rate: rate)
         }
-        playbackRate = rate; lastPosition = position; lastHost = now
+        playbackRate = rate; lastPosition = position; lastSourcePosition = source; lastHost = now
     }
     private func applyVideoColor() {
         guard trackKind == .video, let item = player.currentItem else { return }
@@ -223,7 +236,7 @@ struct ProjectionMediaSurface: View {
             } else {
                 NativeVideoLayer(player: controller.player, stretch: controller.stretch)
             }
-        }.saturation(controller.usesVideoSettings && settings.blackAndWhite ? 0 : 1).allowsHitTesting(false)
+        }.opacity(controller.opacity).saturation(controller.usesVideoSettings && settings.blackAndWhite ? 0 : 1).allowsHitTesting(false)
     }
 }
 private struct NativeVideoLayer: NSViewRepresentable {

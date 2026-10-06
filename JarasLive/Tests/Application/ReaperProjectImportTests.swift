@@ -329,7 +329,7 @@ final class ReaperProjectImportTests: XCTestCase {
         """, in: directory)
         let result = try ReaperProjectImporter.read(source)
         let tracks = result.project.songs[0].tracks
-        XCTAssertEqual(tracks.map(\.kind), [.timecode, .chords, .teleprompt, .teleprompt2, .video])
+        XCTAssertEqual(tracks.map(\.kind), [.timecode, .chords, .teleprompt, .teleprompt2, .standard])
         XCTAssertEqual(tracks[2].clips.count, 2, "remove only empty placeholders overlapping actual content")
         XCTAssertEqual(tracks[2].clips[0].text, "Primeira linha\nSegunda linha")
         XCTAssertEqual(tracks[3].clips[0].text, "Texto do segundo TP")

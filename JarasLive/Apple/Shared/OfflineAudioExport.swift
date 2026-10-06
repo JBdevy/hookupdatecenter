@@ -171,7 +171,7 @@ final class OfflineAudioExport {
                           let audio = clip.audioFile ?? track.audioFile else { throw AudioExportFailure.invalidFormat }
                     if let cached = sourceChannels[audio.path] { settings.channels = cached }
                     else {
-                        let file = try AVAudioFile(forReading: mediaDirectory.appendingPathComponent(audio.path))
+                        let file = try AudioFileRead.openMedia(mediaDirectory.appendingPathComponent(audio.path))
                         settings.channels = Int(file.processingFormat.channelCount)
                         sourceChannels[audio.path] = settings.channels
                     }
@@ -300,12 +300,14 @@ final class OfflineAudioExport {
 
         func addClip(_ clip: AudioClip,track: Track,bus: Bus,start: Double,end: Double,pitchStart: Double? = nil) throws {
             if cancellation.cancelled { throw CancellationError() }
-            guard clip.muted != true, let audio = clip.audioFile ?? track.audioFile else { return }
+            guard clip.muted != true, !clip.isImage, let audio = clip.audioFile ?? track.audioFile else { return }
             let begin = max(start,clip.startTime), finish = min(end,clip.startTime+clip.duration)
             guard finish > begin else { return }
-            let file = try AVAudioFile(forReading: mediaDirectory.appendingPathComponent(audio.path))
+            if clip.isProjectionMedia && AVURLAsset(url: mediaDirectory.appendingPathComponent(audio.path)).tracks(withMediaType: .audio).isEmpty { return }
+            let file = try AudioFileRead.openMedia(mediaDirectory.appendingPathComponent(audio.path))
             let player = AVAudioPlayerNode(), gain = AVAudioUnitEQ(numberOfBands: 0)
             engine.attach(player); engine.attach(gain)
+            player.pan = Float(clip.pan ?? 0)
             let sourceFormat = file.processingFormat
             var source: AVAudioNode = player
             let semitones = (clip.pitchSemitones ?? 0) + (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track.id, region: song.pitchRegion(at: pitchStart ?? clip.startTime))))
@@ -316,10 +318,10 @@ final class OfflineAudioExport {
             gain.globalGain = Float(max(-96,min(24,20*log10(max(0.00000001,clip.gain ?? 1)))))
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
             let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
-            if (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true {
+            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true {
                 let effects = NativeEffectsChain()
                 effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
-                effects.apply(fx); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
+                effects.apply(fx); effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 effects.configureItemFade(clip, position: begin, sampleTime: (begin - start + Double(preroll) / format.sampleRate) * sourceFormat.sampleRate)
                 // The graph retains the configured Audio Units.
             } else { engine.connect(source,to: gain,format: sourceFormat) }
@@ -382,11 +384,11 @@ final class OfflineAudioExport {
             }
         } else {
             let root = hasMaster ? try makeBus(fx: project.masterFX,volume: project.masterVolume ?? 1,pan: 0,muted: project.masterMute ?? false, mono: project.masterMono ?? false) : nil
-            for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
+            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
                 buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track))
             }
-            for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
-                for clip in track.clips where writers[0].job.includes(clip) {
+            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
+                for clip in track.clips where writers[0].job.includes(clip) && (track.kind == .standard || clip.isProjectionMedia) {
                     if clip.midi != nil {
                         try addMIDI(clip, track: track, bus: buses[track.id]!, start: writers[0].job.start)
                     } else {
@@ -396,7 +398,7 @@ final class OfflineAudioExport {
                     }
                 }
             }
-            for track in song.tracks where track.kind == .standard && needed.contains(track.id) {
+            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
                 let bus = buses[track.id]!
                 let outputs = Set(track.outputPatches)
                 if let root, outputs.contains(.master) { link(bus.output,root.mix,root.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === root.mix }.count)) }

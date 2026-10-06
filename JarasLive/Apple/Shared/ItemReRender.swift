@@ -9,6 +9,10 @@ enum ItemReRender {
                        settings: MediaProcessingFormat, cancellation: AudioExportCancellation,
                        progress: (AudioExportProgress) -> Void = { _ in }) throws -> AudioClip {
         var source = song
+        if let index = source.tracks.firstIndex(where: { $0.id == track.id }), clip.isProjectionMedia {
+            source.tracks[index].role = .other
+            source.tracks[index].clips = [clip]
+        }
         var time = source.projectTime; time.timebase = .free; source.timeSettings = time
         source.markers?.removeAll { $0.isTempo }
         for index in source.parts.indices { source.parts[index].pitchSemitones = 0 }
@@ -37,7 +41,7 @@ enum ItemReRender {
             result.audioFile = AudioFile(path: "Stems/" + name)
             result.fadeIn = nil; result.fadeOut = nil; result.fadeTimelineStart = nil; result.fadeTimelineDuration = nil
             result.pitchSemitones = nil
-            result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil
+            result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil; result.phaseInverted = nil; result.pan = nil
             result.loopStart = nil; result.loopLength = nil; result.fx = nil; result.fxBypassed = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels
             return result
@@ -167,7 +171,7 @@ enum ItemReRender {
             result.name = url.deletingPathExtension().lastPathComponent
             result.audioFile = AudioFile(path: "Stems/" + name); result.midi = nil; result.frozenMIDI = true
             result.pitchSemitones = nil
-            result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil
+            result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil; result.phaseInverted = nil; result.pan = nil
             result.loopStart = nil; result.loopLength = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels
             return result

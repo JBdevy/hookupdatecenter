@@ -1,15 +1,15 @@
 import Foundation
 import AVFoundation
-@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1) throws -> [[Float]] {
+@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1, item: Bool = false, analysis: Bool = true) throws -> [[Float]] {
     let engine = AVAudioEngine()
     let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
-    let player = AVAudioPlayerNode(), chain = NativeEffectsChain()
+    let player = AVAudioPlayerNode(), chain = NativeEffectsChain(reorderable: !item)
     engine.attach(player)
     chain.attach(to: engine, input: player, format: format)
     engine.connect(chain.output, to: engine.mainMixerNode, format: format)
     chain.apply(settings)
-    chain.observe(["Delay","Reverb"])
+    if analysis { chain.observe(["Delay","Reverb"]) }
     let count = Int(rate * duration)
     let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
     input.frameLength = AVAudioFrameCount(count)
@@ -29,12 +29,14 @@ import AVFoundation
         for ch in 0..<2 { result[ch].append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![ch], count: Int(buffer.frameLength))) }
     }
     result = result.map { Array($0.prefix(count)) }
+    if analysis {
     precondition(chain.spectrum("Reverb")?.count == 4096*MemoryLayout<Float>.size, "reverb spectrum receives stereo PCM")
     precondition(chain.spectrum("Delay")?.count == 4096*MemoryLayout<Float>.size, "delay spectrum receives its own output")
     chain.observe([])
     precondition(chain.spectrum("Reverb") == nil, "closing editor stops analysis")
+    }
     let meters = chain.compressorPeaks()
-    if settings.compressorEnabled { precondition(meters[0] > meters[2] && meters[1] > meters[3], "compressor meters read its own input and output") }
+    if analysis && settings.compressorEnabled { precondition(meters[0] > meters[2] && meters[1] > meters[3], "compressor meters read its own input and output") }
     precondition(result.joined().allSatisfy { $0.isFinite && abs($0)<2 }, "finite bounded output")
     engine.stop()
     return result
@@ -91,7 +93,18 @@ func frameRMS(_ data: Data) -> Double {
     JarasChannelRouter.setRenderEnabled(route, enabled: true)
     let restored = try render()
     precondition(restored > 0.1 && sourcePulls > before, "waking route immediately restores audio")
+    JarasChannelRouter.configure(route, first: -1, count: 2)
+    for _ in 0..<4 { _ = try render() }
+    let unpatchedPulls = sourcePulls
+    for _ in 0..<8 { let silence = try render(); precondition(silence == 0, "an unpatched hardware route must remain silent") }
+    precondition(sourcePulls == unpatchedPulls,
+                 "a hardware route without destinations stops pulling its upstream processors after the ramp")
+    JarasChannelRouter.configure(route, first: 1, count: 2)
+    let repatched = try render()
+    precondition(repatched > 0.1 && sourcePulls > unpatchedPulls,
+                 "assigning a hardware patch resumes audio without rebuilding the graph")
     engine.stop()
+    print("UNPATCHED_HARDWARE_ROUTE_RELEASE_SLEEP_AND_LIVE_REPATCH_PCM_OK")
     print("IDLE_ROUTE_STOPS_UPSTREAM_RENDER_WITH_DEVICE_CLOCK_ALIVE_OK")
 }
 func testRoundedSpectrum() {
@@ -377,7 +390,47 @@ func testSpectrumWorker(rate: Double) {
         print("NATIVE_FX_PCM_OK rate=\(rate) ratio=\(gain) spaces=\(signatures)")
     }
 }
-try MainActor.assumeIsolated { try run() }
+@MainActor func testCombinedItemEQCompressor() throws {
+    for rate in [44100.0, 48000.0] {
+        var settings = NativeFXSettings()
+        settings.eqEnabled = true; settings.bands[0].frequency = 200
+        settings.compressorEnabled = true; settings.threshold = -24; settings.ratio = 4; settings.makeup = 3
+        let reference = try render(settings, rate: rate, analysis: false)
+        let combined = try render(settings, rate: rate, item: true, analysis: false)
+        for channel in 0..<2 {
+            let error = zip(reference[channel], combined[channel]).map { abs($0 - $1) }.max()!
+            precondition(error < 0.00001, "combined item processor preserves EQ/compressor PCM: \(error)")
+        }
+        let engine = AVAudioEngine(), player = AVAudioPlayerNode(), chain = NativeEffectsChain(reorderable: false)
+        let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+        engine.attach(player); chain.attach(to: engine, input: player, format: format)
+        engine.connect(chain.output, to: engine.mainMixerNode, format: format)
+        precondition(chain.equalizer === chain.compressor)
+        let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 2))!
+        input.frameLength = input.frameCapacity
+        for c in 0..<2 { for i in 0..<Int(input.frameLength) { input.floatChannelData![c][i] = 0.1 } }
+        player.scheduleBuffer(input); try engine.start(); player.play()
+        let count = engine.attachedNodes.count
+        let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+        func check(_ expected: Float) throws {
+            for block in 0..<24 {
+                let status = try engine.renderOffline(512, to: output); precondition(status == .success)
+                if block > 16 { for c in 0..<2 { for i in 0..<Int(output.frameLength) { precondition(abs(output.floatChannelData![c][i] - expected) < 0.0001) } } }
+            }
+            precondition(engine.attachedNodes.count == count)
+        }
+        try check(0.1)
+        var active = NativeFXSettings(); active.compressorEnabled = true; active.threshold = 0; active.ratio = 1; active.makeup = -6
+        chain.apply(active); try check(0.1 * Float(pow(10, -6.0 / 20)))
+        chain.setSourcePolarity(true); try check(-0.1 * Float(pow(10, -6.0 / 20)))
+        chain.setSourcePolarity(false); chain.apply(NativeFXSettings()); try check(0.1)
+        engine.stop()
+    }
+    print("COMBINED_ITEM_EQ_COMPRESSOR_PCM_AND_LIVE_CONTINUITY_OK")
+}
+try MainActor.assumeIsolated { try testCombinedItemEQCompressor(); try run() }
+
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))
 let spectrumEnd = EQSpectrum(input: Array(repeating: -24, count: EQSpectrum.binCount), output: Array(repeating: -12, count: EQSpectrum.binCount))
