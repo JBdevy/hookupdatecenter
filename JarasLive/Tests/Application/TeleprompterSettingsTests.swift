@@ -45,16 +45,16 @@ final class TeleprompterSettingsTests: XCTestCase {
     }
     func testSanitizationProtectsSliderRangesAndDisplayChoices() {
         var value = TeleprompterSettings()
-        value.chordScale = 70; value.textScale = .nan; value.clockScale = 600; value.songNameScale = 0
+        value.chordScale = 170; value.textScale = .nan; value.clockScale = 600; value.songNameScale = 0
         value.mediaScale = .infinity; value.previewScale = -50; value.clockPosition = "invalid"; value.fontFamily = "missing"
         value.borderColor = 0xff123456
         let result = value.sanitized()
-        XCTAssertEqual(result.chordScale,50)
+        XCTAssertEqual(result.chordScale,100)
         XCTAssertEqual(result.textScale,100)
-        XCTAssertEqual(result.clockScale,100)
-        XCTAssertEqual(result.songNameScale,50)
+        XCTAssertEqual(result.clockScale,150)
+        XCTAssertEqual(result.songNameScale,35)
         XCTAssertEqual(result.mediaScale,100)
-        XCTAssertEqual(result.previewScale,50)
+        XCTAssertEqual(result.previewScale,35)
         XCTAssertEqual(result.clockPosition,"center-top")
         XCTAssertEqual(result.fontFamily,"system")
         XCTAssertEqual(result.borderColor,0x123456)

@@ -579,7 +579,7 @@ struct DAWRemoteClientView: View {
             blocks += (headers[nil] ?? []).map { .init(id: $0.id, name: settings.display($0.name), color: $0.color, rows: []) }
             result.blocks = Array(blocks.filter { !$0.name.isEmpty || !$0.rows.isEmpty }.dropFirst(controller.previewPage * 4).prefix(4))
         }
-        if !controller.previewActive, let media, let file = media.audioFile, let directory,
+        if !controller.previewActive || settings.isClear, let media, let file = media.audioFile, let directory,
            UTType(filenameExtension: URL(fileURLWithPath: file.path).pathExtension)?.conforms(to: .image) == true {
             result.imageID = remote.imageID(for: directory.appendingPathComponent(file.path), project: snapshot.project.id)
             result.mediaName = media.name
@@ -2505,7 +2505,7 @@ private struct RemoteNativeProjectionImage: View {
                 }
             })
             .overlay {
-                if let notices = state.notices, notices.active && (index == 1 ? notices.window1 : notices.window2) {
+                if !content.resolvedSettings.isClear, let notices = state.notices, notices.active && (index == 1 ? notices.window1 : notices.window2) {
                     RemoteNativeNoticeOverlay(notice: notices, project: state.project)
                 }
             }

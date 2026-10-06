@@ -14,26 +14,29 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private var settings: TeleprompterSettings { content.resolvedSettings }
     var body: some View {
         GeometryReader { geometry in
-            let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
-            TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
-                VStack(spacing: 3) {
-                    decorations(top: true,date: context.date,size: geometry.size)
-                    GeometryReader { area in
-                        ZStack {
-                            Color.clear
-                            if content.preview { previewGrid(size: area.size) }
-                            else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
-                        }.clipped()
-                    }
-                    decorations(top: false,date: context.date,size: geometry.size)
-                }.padding(fullscreen ? 0 : 3)
-                    .background {
-                        ZStack {
-                            Color.black
-                            if !content.preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+            if settings.isClear { media().frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
+            else {
+                let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
+                TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
+                    VStack(spacing: 3) {
+                        decorations(top: true,date: context.date,size: geometry.size)
+                        GeometryReader { area in
+                            ZStack {
+                                Color.clear
+                                if content.preview { previewGrid(size: area.size) }
+                                else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
+                            }.clipped()
                         }
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
+                        decorations(top: false,date: context.date,size: geometry.size)
+                    }.padding(fullscreen ? 0 : 3)
+                        .background {
+                            ZStack {
+                                Color.black
+                                if !content.preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+                            }
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
+                }
             }
         }.background(Color.black)
     }
@@ -276,6 +279,7 @@ private struct LocalizedTeleprompterConfig: View {
             // next main-queue turn so progress mode also changes while stopped.
             DispatchQueue.main.async { [weak self] in
                 guard let self, let show = self.show else { return }
+                self.video.setProjectionEnabled(self.visible && (!self.previewActive || self.preferences.settings.isClear))
                 self.update(show.snapshot,revision: show.projectRevision)
             }
         }
@@ -290,7 +294,7 @@ private struct LocalizedTeleprompterConfig: View {
         window.contentView = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
         self.window = window; visible = true; display.fullscreen = false
         if index == 2 { previewActive = Self.shared.previewActive; display.previewActive = previewActive }
-        video.setProjectionEnabled(!previewActive)
+        video.setProjectionEnabled(!previewActive || preferences.settings.isClear)
         cachedRevision = nil
         update(show.snapshot,revision: show.projectRevision)
         window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); window.makeKeyAndOrderFront(nil)
@@ -303,7 +307,7 @@ private struct LocalizedTeleprompterConfig: View {
     private func setPreview(_ active: Bool) {
         previewActive = active
         display.previewActive = active
-        video.setProjectionEnabled(visible && !active)
+        video.setProjectionEnabled(visible && (!active || preferences.settings.isClear))
     }
     func selectPreviewPage(_ page: Int) {
         previewPage = min(5,max(0,page))
@@ -522,7 +526,7 @@ private struct TeleprompterProjectionView: View {
         TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
             timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
             media: { ProjectionMediaSurface(controller: video) })
-            .overlay { TPNoticeOverlay(index: index) }.environment(\.locale, Locale(identifier: language))
+            .overlay { if !preferences.settings.isClear { TPNoticeOverlay(index: index) } }.environment(\.locale, Locale(identifier: language))
     }
 }
 #else
@@ -559,18 +563,27 @@ struct TPNoticeAppearance: Codable {
     private var expiry: Task<Void, Never>?
     private var panel: NSWindow?
     private var globalDraft = ""
-    init() {
-        let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         appearance = defaults.data(forKey: "jaras.notices.appearance").flatMap { try? JSONDecoder().decode(TPNoticeAppearance.self, from: $0) } ?? TPNoticeAppearance()
         let stored = defaults.stringArray(forKey: "jaras.notices.templates") ?? []
         templates = (0..<3).map { stored.indices.contains($0) ? stored[$0] : "" }
         images = (0..<3).map { defaults.data(forKey: "jaras.notices.image.\($0)") }
     }
     private func persist() {
-        let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(appearance) { defaults.set(data, forKey: "jaras.notices.appearance") }
         defaults.set(templates, forKey: "jaras.notices.templates")
         for i in 0..<3 { defaults.set(images[i], forKey: "jaras.notices.image.\(i)") }
+    }
+    func reload() {
+        let appearance = defaults.data(forKey: "jaras.notices.appearance").flatMap { try? JSONDecoder().decode(TPNoticeAppearance.self, from: $0) } ?? self.appearance
+        let stored = defaults.stringArray(forKey: "jaras.notices.templates") ?? self.templates
+        let images = (0..<3).map { defaults.data(forKey: "jaras.notices.image.\($0)") }
+        self.appearance = appearance
+        self.templates = (0..<3).map { stored.indices.contains($0) ? stored[$0] : "" }
+        self.images = images
+        if slot >= 0 { draft = templates[slot] }
     }
     var active: Bool { !message.isEmpty || image != nil }
     func remaining(at date: Date = Date()) -> Double { pinned ? pausedRemaining : max(0, deadline?.timeIntervalSince(date) ?? 0) }
@@ -605,9 +618,9 @@ struct TPNoticeAppearance: Codable {
         if active { schedule(seconds: seconds) }
     }
     func clear() { expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false; message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false }
-    func chooseImage() {
-        guard slot >= 0 else { return }
-        let imageSlot = slot
+    func chooseImage(for index: Int? = nil) {
+        let imageSlot = index ?? slot
+        guard images.indices.contains(imageSlot) else { return }
         let picker = NSOpenPanel(); picker.allowedContentTypes = [.image]; picker.allowsMultipleSelection = false
         picker.begin { [weak self] response in
             guard response == .OK, let url = picker.url, let source = NSImage(contentsOf: url), let self else { return }
@@ -677,7 +690,7 @@ struct TPNoticeSettingsView: View {
             Toggle("Show on TP-1", isOn: $model.appearance.window1)
             Toggle("Show on TP-2", isOn: $model.appearance.window2)
             Picker("Font", selection: $model.appearance.font) {
-                ForEach(["Arial","Verdana","Georgia","Menlo","Impact"], id: \.self) { Text($0).tag($0) }
+                ForEach(Array(Set(["Arial","Segoe UI","Verdana","Tahoma","Georgia","Trebuchet MS","Menlo","Impact",model.appearance.font])).sorted(), id: \.self) { Text($0).tag($0) }
             }
             Text("Text scale: \(Int(model.appearance.scale))%")
             Slider(value: $model.appearance.scale, in: 50...100)
@@ -687,6 +700,24 @@ struct TPNoticeSettingsView: View {
                 if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
             }
             Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
+            Divider()
+            Text("Saved messages").font(.headline).foregroundStyle(JarasTheme.green)
+            ForEach(0..<3) { index in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Message \(index + 1)").font(.subheadline.bold())
+                    TextEditor(text: Binding(get: { model.templates[index] }, set: { model.templates[index] = String($0.prefix(500)) }))
+                        .frame(height: 64)
+                    HStack {
+                        Button("Add image") { model.chooseImage(for: index) }
+                        if let data = model.images[index], let image = NSImage(data: data) {
+                            Image(nsImage: image).resizable().scaledToFit().frame(width: 72, height: 42)
+                            Button("Remove image") { model.images[index] = nil }
+                        }
+                        Spacer()
+                        Text("\(model.templates[index].count) / 500").font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(12).background(JarasTheme.display).cornerRadius(6)
+            }
         }.padding(16)
     }
     private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {

@@ -19,6 +19,7 @@ import UIKit
         guard store.select(preset) else { return }
         selected = preset; settings = store.current
     }
+    func reload() { store.reload(); selected = store.selected; settings = store.current }
     func set<Value>(_ path: WritableKeyPath<TeleprompterSettings, Value>, _ value: Value) {
         var next = settings; next[keyPath: path] = value
         guard store.update(next) else { return }
@@ -57,15 +58,15 @@ private enum TPSettingField: Identifiable {
         .color("queueNameColor", "Queued song color", \.queueNameColor),
         .color("progressColor", "Progress color", \.progressColor),
         .color("chordColor", "Chords color", \.chordColor),
-        .range("textScale", "Lyrics scale", \.textScale, 50...100),
-        .range("clockScale", "Timer scale", \.clockScale, 50...100),
-        .range("songNameScale", "Song name scale", \.songNameScale, 50...125),
-        .range("queueNameScale", "Queued song scale", \.queueNameScale, 50...125),
+        .range("textScale", "Lyrics scale", \.textScale, 35...100),
+        .range("clockScale", "Timer scale", \.clockScale, 35...150),
+        .range("songNameScale", "Song name scale", \.songNameScale, 35...200),
+        .range("queueNameScale", "Queued song scale", \.queueNameScale, 35...200),
         .toggle("mediaStretch", "Stretch", \.stretchesMedia),
-        .range("mediaScale", "Media scale", \.mediaScale, 50...150),
-        .range("previewScale", "Preview depth", \.previewScale, 50...100),
-        .range("localClockScale", "Local clock scale", \.localClockScale, 50...100),
-        .range("chordScale", "Chords scale", \.chordScale, 10...50),
+        .range("mediaScale", "Media scale", \.mediaScale, 25...150),
+        .range("previewScale", "Preview depth", \.previewScale, 35...300),
+        .range("localClockScale", "Local clock scale", \.localClockScale, 50...200),
+        .range("chordScale", "Chords scale", \.chordScale, 10...100),
         .choice("textCase", "Text case", \.textCase, [TPOption(value: "original", label: "Original text"), TPOption(value: "uppercase", label: "UPPERCASE"), TPOption(value: "lowercase", label: "lowercase")]),
         .choice("fontFamily", "Lyrics font", \.fontFamily, [TPOption(value: "system", label: "Default"), TPOption(value: "arial", label: "ARIAL"), TPOption(value: "segoe", label: "SEGOE UI"), TPOption(value: "bahnschrift", label: "BAHNSCHRIFT"), TPOption(value: "verdana", label: "VERDANA"), TPOption(value: "tahoma", label: "TAHOMA"), TPOption(value: "georgia", label: "GEORGIA"), TPOption(value: "trebuchet", label: "TREBUCHET"), TPOption(value: "impact", label: "IMPACT"), TPOption(value: "mono", label: "MONO")]),
         .choice("previewFontFamily", "Preview font", \.previewFontFamily, [TPOption(value: "system", label: "Default"), TPOption(value: "arial", label: "ARIAL"), TPOption(value: "segoe", label: "SEGOE UI"), TPOption(value: "bahnschrift", label: "BAHNSCHRIFT"), TPOption(value: "verdana", label: "VERDANA"), TPOption(value: "tahoma", label: "TAHOMA"), TPOption(value: "georgia", label: "GEORGIA"), TPOption(value: "trebuchet", label: "TREBUCHET"), TPOption(value: "impact", label: "IMPACT"), TPOption(value: "mono", label: "MONO")]),
@@ -97,6 +98,7 @@ private enum TPSettingField: Identifiable {
         .toggle("previewBlockDurationEnabled", "Show block durations in preview", \.previewBlockDurationEnabled),
         .toggle("previewUnderlineEnabled", "Underline preview names", \.previewUnderlineEnabled),
         .toggle("progressEnabled", "Show progress bar", \.progressEnabled),
+        .toggle("clearMode", "Clear mode (media only)", \.isClear),
     ]
 }
 
@@ -112,41 +114,46 @@ struct TeleprompterConfig: View {
                 Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
-            Picker("Preset", selection: Binding(get: { preferences.selected },set: { preferences.select($0) })) {
-                Text("Night").tag(TeleprompterPreset.night); Text("Day").tag(TeleprompterPreset.day)
+            #if os(macOS)
+            Picker("Settings", selection: $showingNotices) {
+                Text("Teleprompter").tag(false)
+                Text("Messages").tag(true)
             }.pickerStyle(.segmented)
-            GeometryReader { geometry in
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 12) {
-                        ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
-                            VStack(alignment: .leading,spacing: 10) {
-                                Text(LocalizedStringKey(group)).font(.system(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
-                                LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8),count: geometry.size.width > 520 ? 2 : 1),spacing: 8) {
-                                    ForEach(TPSettingField.all.filter { $0.group == group }) { field in
-                                        fieldView(field).padding(9).frame(maxWidth: .infinity,minHeight: group == "Colors" || group == "Display" ? 48 : 70,alignment: .leading)
-                                            .background(JarasTheme.display).cornerRadius(6)
-                                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
+            #endif
+            if !showingNotices {
+                Picker("Preset", selection: Binding(get: { preferences.selected },set: { preferences.select($0) })) {
+                    Text("Night").tag(TeleprompterPreset.night); Text("Day").tag(TeleprompterPreset.day)
+                }.pickerStyle(.segmented)
+                GeometryReader { geometry in
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 12) {
+                            ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
+                                VStack(alignment: .leading,spacing: 10) {
+                                    Text(LocalizedStringKey(group)).font(.system(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
+                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8),count: geometry.size.width > 520 ? 2 : 1),spacing: 8) {
+                                        ForEach(TPSettingField.all.filter { $0.group == group }) { field in
+                                            fieldView(field).padding(9).frame(maxWidth: .infinity,minHeight: group == "Colors" || group == "Display" ? 48 : 70,alignment: .leading)
+                                                .background(JarasTheme.display).cornerRadius(6)
+                                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
+                                        }
                                     }
-                                }
-                            }.padding(10).background(JarasTheme.background).cornerRadius(6)
-                        }
-                    }.padding(.trailing,2).padding(.bottom,10)
+                                }.padding(10).background(JarasTheme.background).cornerRadius(6)
+                            }
+                        }.padding(.trailing,2).padding(.bottom,10)
+                    }
                 }
             }
+            #if os(macOS)
+            if showingNotices {
+                ScrollView { TPNoticeSettingsView().frame(maxWidth: .infinity, alignment: .leading) }
+            }
+            #endif
             HStack {
-                #if os(macOS)
-                Button("Message settings") { showingNotices = true }
-                #endif
                 Button("Timer settings") { TeleprompterTimerController.shared.showConfiguration() }
                 Spacer(); Button("Close",action: close).keyboardShortcut(.cancelAction)
             }
         }.padding(16).frame(minWidth: 500,idealWidth: 760,maxWidth: .infinity,minHeight: 520,idealHeight: 700,maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
-            #if os(macOS)
-            .sheet(isPresented: $showingNotices) {
-                VStack { TPNoticeSettingsView(); Button("Close") { showingNotices = false }.keyboardShortcut(.cancelAction) }.padding().frame(width: 480)
-            }
-            #endif
     }
     @ViewBuilder private func fieldView(_ field: TPSettingField) -> some View {
         switch field {

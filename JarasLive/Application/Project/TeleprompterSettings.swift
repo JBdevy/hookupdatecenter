@@ -59,6 +59,11 @@ public struct TeleprompterSettings: Codable, Equatable, Sendable {
     public var previewUnderlineEnabled: Bool = true
     public var chordsEnabled: Bool = true
     public var hideTransport: Bool = false
+    public var clearMode: Bool? = nil
+    public var isClear: Bool {
+        get { clearMode ?? false }
+        set { clearMode = newValue }
+    }
     public var rgbWindowBorderEnabled: Bool = false
     public var rgbClockBorderEnabled: Bool = false
     public var rgbTextBoxBorderEnabled: Bool = false
@@ -82,14 +87,14 @@ public struct TeleprompterSettings: Codable, Equatable, Sendable {
     }
     public func sanitized() -> Self {
         var result = self
-        result.textScale = textScale.isFinite ? min(100, max(50, textScale)) : Self().textScale
-        result.clockScale = clockScale.isFinite ? min(100, max(50, clockScale)) : Self().clockScale
-        result.songNameScale = songNameScale.isFinite ? min(125, max(50, songNameScale)) : Self().songNameScale
-        result.queueNameScale = queueNameScale.isFinite ? min(125, max(50, queueNameScale)) : Self().queueNameScale
-        result.mediaScale = mediaScale.isFinite ? min(150, max(50, mediaScale)) : Self().mediaScale
-        result.previewScale = previewScale.isFinite ? min(100, max(50, previewScale)) : Self().previewScale
-        result.localClockScale = localClockScale.isFinite ? min(100, max(50, localClockScale)) : Self().localClockScale
-        result.chordScale = chordScale.isFinite ? min(50, max(10, chordScale)) : Self().chordScale
+        result.textScale = textScale.isFinite ? min(100, max(35, textScale)) : Self().textScale
+        result.clockScale = clockScale.isFinite ? min(150, max(35, clockScale)) : Self().clockScale
+        result.songNameScale = songNameScale.isFinite ? min(200, max(35, songNameScale)) : Self().songNameScale
+        result.queueNameScale = queueNameScale.isFinite ? min(200, max(35, queueNameScale)) : Self().queueNameScale
+        result.mediaScale = mediaScale.isFinite ? min(150, max(25, mediaScale)) : Self().mediaScale
+        result.previewScale = previewScale.isFinite ? min(300, max(35, previewScale)) : Self().previewScale
+        result.localClockScale = localClockScale.isFinite ? min(200, max(50, localClockScale)) : Self().localClockScale
+        result.chordScale = chordScale.isFinite ? min(100, max(10, chordScale)) : Self().chordScale
         if !["original", "uppercase", "lowercase"].contains(textCase) { result.textCase = Self().textCase }
         if !["system", "arial", "segoe", "bahnschrift", "verdana", "tahoma", "georgia", "trebuchet", "impact", "mono"].contains(fontFamily) { result.fontFamily = Self().fontFamily }
         if !["system", "arial", "segoe", "bahnschrift", "verdana", "tahoma", "georgia", "trebuchet", "impact", "mono"].contains(previewFontFamily) { result.previewFontFamily = Self().previewFontFamily }
@@ -152,6 +157,16 @@ public final class TeleprompterSettingsStore {
         guard next != current else { return false }
         if selected == .day { profiles.day = next } else { profiles.night = next }
         persist(); return true
+    }
+    public func importProfiles(selected: TeleprompterPreset, night: TeleprompterSettings, day: TeleprompterSettings) {
+        profiles.selected = selected
+        profiles.night = night.sanitized(); profiles.day = day.sanitized()
+        persist()
+    }
+    public func reload() {
+        guard let data = defaults.data(forKey: key), let saved = try? JSONDecoder().decode(Profiles.self, from: data) else { return }
+        profiles = saved
+        profiles.night = profiles.night.sanitized(); profiles.day = profiles.day.sanitized()
     }
     private func persist() {
         if let data = try? JSONEncoder().encode(profiles) { defaults.set(data, forKey: key) }

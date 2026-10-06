@@ -492,11 +492,15 @@ import AVFoundation
         Task {
             defer { busy = false }
             do {
-                let result = try await Task.detached(priority: .userInitiated) {
+                let (result, teleprompter) = try await Task.detached(priority: .userInitiated) {
                     let result = try isReaper ? ReaperProjectImporter.read(source) : LogicProjectImporter.read(source)
                     try ProjectMigration.save(result, to: destination)
-                    return result
+                    return (result, isReaper ? VSHookTeleprompterMigration.read(for: source) : nil)
                 }.value
+                if VSHookTeleprompterMigration.applyOnce(teleprompter) {
+                    TeleprompterPreferences.shared.reload(); TeleprompterPreferences.second.reload()
+                    TPNoticeController.shared.reload()
+                }
                 warnings = result.warnings.map { JarasLocalization.string($0) }
                 let missing = ProjectAudioRecovery.missingPaths(in: result.project, directory: destination.deletingLastPathComponent())
                 if !missing.isEmpty {
