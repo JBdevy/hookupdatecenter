@@ -6,7 +6,9 @@ function createUpdateOperationGuard() {
   let active = false;
   return async function runUpdateOperation(operation) {
     if (active) {
-      throw new Error('Já existe uma atualização em andamento. Aguarde a conclusão.');
+      const error = new Error('Já existe uma atualização em andamento. Aguarde a conclusão.');
+      error.code = 'UPDATE_BUSY';
+      throw error;
     }
     active = true;
     try {

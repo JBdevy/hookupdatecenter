@@ -56,6 +56,7 @@ let settings = {
   clockScale: 1,
   mediaScale: 1,
   previewEnabled: true,
+  ignorePreview: false,
   previewScale: 1,
   alwaysOnTop: false,
   clearMode: false
@@ -828,7 +829,7 @@ function cleanPreviewBlockLabel(value) {
 }
 
 function renderPreviewOverlay(preview) {
-  const enabled = settings.previewEnabled !== false;
+  const enabled = settings.previewEnabled !== false && settings.ignorePreview !== true;
   const active = enabled && preview && preview.active === true;
   document.body.classList.toggle('preview-active', !!active);
   if (!previewOverlayEl) return !!active;

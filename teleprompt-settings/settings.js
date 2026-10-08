@@ -47,6 +47,7 @@ const defaults = {
   queueNameEnabled: true,
   progressEnabled: false,
   previewEnabled: true,
+  ignorePreview: false,
   previewSongDurationEnabled: true,
   previewBlockDurationEnabled: true,
   previewUnderlineEnabled: true,

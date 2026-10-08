@@ -161,6 +161,8 @@ let updateInstallerQuitWatchdog = null;
 let checkTimer = null;
 let updateReminderTimer = null;
 let bundledReaperAssetsSyncTimer = null;
+let pendingExtensionInstallTimer = null;
+let pendingExtensionInstallNoticeShown = false;
 let chatPresenceTimer = null;
 let chatPresenceHeartbeatInFlight = false;
 let bridgeServers = [];
@@ -4144,6 +4146,7 @@ function getLyricsDefaults() {
     clockScale: 1,
     mediaScale: 1,
     previewEnabled: true,
+    ignorePreview: false,
     previewScale: 1,
     alwaysOnTop: false,
     clearMode: false
@@ -4373,6 +4376,7 @@ function saveLyricsSettings(settings = {}, slot = 1) {
   if (settings.clockScale !== undefined) next.clockScale = clampLyricsScale(settings.clockScale, next.clockScale || 1, 2.5);
   if (settings.mediaScale !== undefined) next.mediaScale = clampLyricsScale(settings.mediaScale, next.mediaScale || 1, 1);
   if (typeof settings.previewEnabled === 'boolean') next.previewEnabled = settings.previewEnabled;
+  if (typeof settings.ignorePreview === 'boolean') next.ignorePreview = settings.ignorePreview;
   if (settings.previewScale !== undefined) next.previewScale = clampLyricsScale(settings.previewScale, next.previewScale || 1, 1);
   if (typeof settings.alwaysOnTop === 'boolean') next.alwaysOnTop = settings.alwaysOnTop;
   if (typeof settings.clearMode === 'boolean') next.clearMode = settings.clearMode;
@@ -6655,26 +6659,11 @@ function getWindowsReaperUserPluginsDir() {
 }
 
 function getWindowsReaperUserPluginsDirs() {
-  const candidates = [getWindowsReaperUserPluginsDir()];
-  const profilesRoot = path.dirname(os.homedir());
-  try {
-    for (const entry of physicalFs.readdirSync(profilesRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      candidates.push(path.join(
-        profilesRoot, entry.name, 'AppData', 'Roaming', 'REAPER', 'UserPlugins'
-      ));
-    }
-  } catch (_) {}
-  const programData = process.env.PROGRAMDATA || process.env.ProgramData;
-  if (programData) candidates.push(path.join(programData, 'REAPER', 'UserPlugins'));
-
-  const seen = new Set();
-  return candidates.filter((dir) => {
-    const key = path.resolve(dir).toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return physicalFs.existsSync(dir);
-  });
+  // O REAPER desta conta carrega a extensão deste perfil. Inspecionar/remover
+  // arquivos de outras contas podia abortar a cópia por EACCES e também fazer
+  // uma instalação de outro usuário parecer instalada para o usuário atual.
+  const directory = getWindowsReaperUserPluginsDir();
+  return physicalFs.existsSync(directory) ? [directory] : [];
 }
 
 function hasCompleteWindowsFfmpegRoot(root) {
@@ -6761,9 +6750,13 @@ function findFileBelow(root, expectedName, depth = 0) {
   return '';
 }
 
+function ensureWindowsFfmpegRuntime() {
+  // Um runtime íntegro já instalado não depende do ZIP do instalador anterior.
+  installWindowsFfmpegRuntime(hasInstalledFfmpegRuntime()
+    ? '' : getBundledFfmpegRuntimeArchive(true));
+}
+
 function installWindowsFfmpegRuntime(archive) {
-  if (!archive) return;
-  validateFfmpegRuntimeArchive(archive);
   const pluginsDirectory = path.resolve(
     getWindowsReaperUserPluginsDir());
   const runtimeParent = path.resolve(
@@ -6778,9 +6771,11 @@ function installWindowsFfmpegRuntime(archive) {
     throw new Error('A pasta do runtime FFmpeg não pôde ser validada.');
   }
   if (hasCompleteWindowsFfmpegRoot(target)) {
-    physicalFs.rmSync(legacyVlc, { recursive: true, force: true });
+    try { physicalFs.rmSync(legacyVlc, { recursive: true, force: true }); }
+    catch (error) { console.warn('[Hook Center] Runtime VLC antigo não removido:', error?.message || error); }
     return;
   }
+  validateFfmpegRuntimeArchive(archive);
   physicalFs.mkdirSync(runtimeParent, { recursive: true });
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingRoot = path.join(
@@ -6857,7 +6852,8 @@ function installWindowsFfmpegRuntime(archive) {
     }
     physicalFs.rmSync(backup, { recursive: true, force: true });
     // O runtime antigo so e removido depois de o FFmpeg passar na verificacao.
-    physicalFs.rmSync(legacyVlc, { recursive: true, force: true });
+    try { physicalFs.rmSync(legacyVlc, { recursive: true, force: true }); }
+    catch (error) { console.warn('[Hook Center] Runtime VLC antigo não removido:', error?.message || error); }
   } finally {
     physicalFs.rmSync(stagingRoot, { recursive: true, force: true });
   }
@@ -6888,7 +6884,8 @@ function removeLegacyWindowsVshookExtensions() {
   if (failures.length) {
     throw new Error(
       'Não foi possível remover a extensão antiga reaper_vshook.dll. ' +
-      'Feche o REAPER e execute a Hook Center como administrador.'
+      'Feche o REAPER e verifique a permissão da pasta e o bloqueio pelo antivírus. ' +
+      `Arquivo: ${failures.join(', ')}`
     );
   }
 }
@@ -6954,10 +6951,23 @@ function installWindowsPayload(files, options = {}) {
       'Feche completamente o REAPER antes de instalar a extensão.'
     );
   }
+  validateExtensionBinaryFile(files.vshookDll, 'vshookDll');
+  ensureWindowsFfmpegRuntime();
   removeLegacyWindowsVshookExtensions();
-  removeWindowsPublicVsHookDir();
-  installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
-  copyFileEnsured(files.vshookDll, path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll'));
+  const destination = path.join(getWindowsReaperUserPluginsDir(), 'reaper_VSHookExt.dll');
+  try {
+    copyFileEnsured(files.vshookDll, destination);
+  } catch (error) {
+    throw new Error(
+      `Não foi possível instalar a extensão em ${destination}. ` +
+      'Feche o REAPER e verifique a permissão da pasta e o bloqueio pelo antivírus.\n' +
+      String(error?.message || error)
+    );
+  }
+  // Scripts legados públicos não são carregados como uma segunda DLL. Falha
+  // de limpeza não pode bloquear a extensão verificada no perfil atual.
+  try { removeWindowsPublicVsHookDir(); }
+  catch (error) { console.warn('[Hook Center] Pasta pública antiga não removida:', error?.message || error); }
   // Confere novamente o diretório antes de entregar o controle ao instalador.
   // O customInstall e a próxima inicialização repetem a mesma limpeza.
   removeLegacyWindowsVshookExtensions();
@@ -7237,7 +7247,7 @@ async function syncBundledReaperAssetsOnStartup() {
     const identity = getBundledReaperAssetsIdentity();
     const ffmpegRuntimeCurrent = hasInstalledFfmpegRuntime();
     if (ffmpegRuntimeCurrent) {
-      installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
+      ensureWindowsFfmpegRuntime();
     }
     const companionCurrent = (() => {
       try {
@@ -7263,7 +7273,7 @@ async function syncBundledReaperAssetsOnStartup() {
     // O mesmo vale para o FFmpeg: ele vem dentro da Hook Center e so e extraido
     // aqui se uma instalacao anterior nao o concluiu.
     if (!ffmpegRuntimeCurrent) {
-      installWindowsFfmpegRuntime(getBundledFfmpegRuntimeArchive(true));
+      ensureWindowsFfmpegRuntime();
     }
     if (!companionCurrent) installWindowsVshookCompanion();
     installWindowsVshookTheme();
@@ -7311,8 +7321,7 @@ function scheduleBundledReaperAssetsSync(delayMs = 1200) {
     if (appIsQuitting) return;
     try {
       const result = await syncBundledReaperAssetsOnStartup();
-      if (process.platform === 'darwin' &&
-          result?.skipped === 'reaper-running') {
+      if (result?.skipped === 'reaper-running') {
         scheduleBundledReaperAssetsSync(15000);
       }
     } catch (error) {
@@ -7348,6 +7357,10 @@ async function completePendingPostCenterUpdateInstall() {
     return { ok: true, skipped: 'center-installer-version-mismatch' };
   }
   const files = pending.files || {};
+  if ((process.platform === 'win32' && isWindowsReaperRunning()) ||
+      (process.platform === 'darwin' && isMacReaperRunning())) {
+    return { ok: true, skipped: 'reaper-running' };
+  }
   if (process.platform === 'win32') {
     if (!files.vshookDll || !fs.existsSync(files.vshookDll)) {
       throw new Error('A DLL guardada para concluir a atualização não foi encontrada.');
@@ -7388,14 +7401,63 @@ async function completePendingPostCenterUpdateInstall() {
   // No Windows o NSIS da Central já instalou o companion antes de ela abrir.
   // No macOS o PKG faz o mesmo; o Store só é limpo se for necessária uma
   // recuperação por uma instalação antiga/incompleta.
-  if (process.platform === 'win32') {
-    markBundledReaperAssetsInstalled();
-  } else if (macBundledReaperAssetsAreCurrent()) {
-    markBundledReaperAssetsInstalled();
-  } else {
+  try {
+    if (process.platform === 'win32' || macBundledReaperAssetsAreCurrent()) {
+      markBundledReaperAssetsInstalled();
+    } else {
+      store.set('bundledReaperAssetsIdentity', '');
+    }
+  } catch (error) {
+    // A DLL já foi verificada e a atualização concluída. A recuperação dos
+    // temas/companion não pode anunciar que essa cópia falhou.
     store.set('bundledReaperAssetsIdentity', '');
+    console.warn('[Hook Center] Componentes auxiliares serão verificados novamente:', error?.message || error);
   }
   return { ok: true, installed: true };
+}
+
+function schedulePendingExtensionInstall(delayMs = 1000) {
+  if (appIsQuitting || pendingExtensionInstallTimer ||
+      !store.get('pendingPostCenterUpdateInstall')?.files) return;
+  pendingExtensionInstallTimer = setTimeout(async () => {
+    pendingExtensionInstallTimer = null;
+    if (appIsQuitting) return;
+    const show = (options) => isValidWindow(mainWindow)
+      ? dialog.showMessageBox(mainWindow, options)
+      : dialog.showMessageBox(options);
+    try {
+      const result = await runUpdateOperation(completePendingPostCenterUpdateInstall);
+      if (appIsQuitting) return;
+      if (result?.skipped === 'reaper-running') {
+        schedulePendingExtensionInstall(5000);
+        if (!pendingExtensionInstallNoticeShown) {
+          pendingExtensionInstallNoticeShown = true;
+          await show({ type: 'info', title: 'Instalação do VS Hook pendente',
+            message: 'Feche o REAPER para concluir a instalação da extensão.',
+            detail: 'Mantenha a Hook Center aberta. Assim que o REAPER for encerrado, a extensão será instalada automaticamente na pasta UserPlugins.',
+            buttons: ['OK'] });
+        }
+      } else if (result?.installed) {
+        pendingExtensionInstallNoticeShown = false;
+        if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
+        await show({ type: 'info', title: 'VS Hook instalado',
+          message: 'A extensão do VS Hook foi instalada na pasta UserPlugins.',
+          detail: 'Agora você pode abrir o REAPER.', buttons: ['OK'] });
+      }
+    } catch (error) {
+      if (appIsQuitting) return;
+      if (error?.code === 'UPDATE_BUSY') {
+        schedulePendingExtensionInstall(5000);
+        return;
+      }
+      console.error('[Hook Center] Instalação da extensão pendente:', error?.message || error);
+      const answer = await show({ type: 'error', title: 'Extensão não instalada',
+        message: 'A Hook Center foi atualizada, mas a extensão do VS Hook ainda não foi instalada.',
+        detail: String(error?.message || error),
+        buttons: ['Tentar novamente', 'Depois'], defaultId: 0, cancelId: 1 });
+      if (answer.response === 0) schedulePendingExtensionInstall();
+    }
+  }, delayMs);
 }
 
 async function installDownloadedUpdate() {
@@ -10133,6 +10195,8 @@ function prepareForAppQuit() {
   if (bundledReaperAssetsSyncTimer) {
     clearTimeout(bundledReaperAssetsSyncTimer);
   }
+  if (pendingExtensionInstallTimer) clearTimeout(pendingExtensionInstallTimer);
+  pendingExtensionInstallTimer = null;
   checkTimer = null;
   bridgeWatchTimer = null;
   bridgeNetworkWatchTimer = null;
@@ -10177,10 +10241,7 @@ app.whenReady().then(async () => {
   // O Drop Hook fica visível para os outros computadores enquanto a Hook
   // Center estiver aberta, mesmo antes de o usuário visitar a aba Ferramentas.
   getCopyProjectService();
-  await completePendingPostCenterUpdateInstall().catch((error) => {
-    console.error('[Hook Center] Não concluiu a instalação após atualizar a central:',
-      error?.message || error);
-  });
+  schedulePendingExtensionInstall();
   await ensureBridgeServersRunning().catch((error) => {
     console.error('[Hook Center] Conexão via app não iniciou:', error?.message || error);
   });

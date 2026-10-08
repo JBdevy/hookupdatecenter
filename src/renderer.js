@@ -5689,6 +5689,8 @@ function applyLyricsSettingsToForm(settings = {}) {
     if (mediaScale) mediaScale.value = String(Math.round((Number(data.mediaScale || 1) || 1) * 100));
     if (previewScale) previewScale.value = String(Math.round((Number(data.previewScale || 1) || 1) * 100));
     if (previewEnabled) previewEnabled.checked = data.previewEnabled !== false;
+    const ignorePreview = $(`#lyricsIgnorePreview${slot}`);
+    if (ignorePreview) ignorePreview.checked = data.ignorePreview === true;
     if (alwaysOnTop) alwaysOnTop.checked = data.alwaysOnTop === true;
     setCheckedIfExists(`lyricsAlwaysOnTopQuick${slot}`, data.alwaysOnTop === true);
     if (clearModeButton) {
@@ -5776,6 +5778,7 @@ async function saveLyricsSettingsFromForm(slot = 1) {
     clockScale: Math.max(0.5, Math.min(2.5, (Number($(`#lyricsClockScale${id}`)?.value || 100) / 100))),
     mediaScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsMediaScale${id}`)?.value || 100) / 100))),
     previewEnabled: $(`#lyricsPreviewEnabled${id}`)?.checked !== false,
+    ignorePreview: $(`#lyricsIgnorePreview${id}`)?.checked === true,
     previewScale: Math.max(0.5, Math.min(1, (Number($(`#lyricsPreviewScale${id}`)?.value || 100) / 100))),
     alwaysOnTop: ($(`#lyricsAlwaysOnTop${id}`)?.checked === true) || ($(`#lyricsAlwaysOnTopQuick${id}`)?.checked === true),
     clearMode: $(`#lyricsClearModeButton${id}`)?.getAttribute('aria-pressed') === 'true'
@@ -5947,6 +5950,7 @@ function setupLyricsAutoApply() {
       `lyricsMediaScale${slot}`,
       `lyricsPreviewScale${slot}`,
       `lyricsPreviewEnabled${slot}`,
+      `lyricsIgnorePreview${slot}`,
       `lyricsAlwaysOnTop${slot}`,
       `lyricsClearModeButton${slot}`
     ];
