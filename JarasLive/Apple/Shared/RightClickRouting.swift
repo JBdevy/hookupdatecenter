@@ -26,7 +26,7 @@ import AppKit
         return targets.allObjects.filter {
             (!optionClick || $0.optionClick != nil) && (!shiftClick || $0.shiftClick != nil) && !$0.interactionBlocked && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && $0.bounds.width > 0 && $0.bounds.height > 0 && $0.clickBounds.contains($0.convert(event.locationInWindow,from: nil)) && $0.visibleRect.contains($0.convert(event.locationInWindow,from: nil))
         }.sorted {
-            $0.priority == $1.priority ? $0.bounds.width*$0.bounds.height < $1.bounds.width*$1.bounds.height : $0.priority > $1.priority
+            $0.priority == $1.priority ? $0.clickPriorityArea < $1.clickPriorityArea : $0.priority > $1.priority
         }.first
     }
     @discardableResult func handle(_ event: NSEvent) -> Bool {
@@ -46,6 +46,7 @@ class RightClickTargetView: NSView {
     var shiftClick: (() -> Void)?
     var priority: Int { 0 }
     var clickBounds: NSRect { bounds }
+    var clickPriorityArea: CGFloat { bounds.width * bounds.height }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { RightClickRouter.shared.add(self) } }
 }

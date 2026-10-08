@@ -2,6 +2,21 @@ import XCTest
 @testable import JarasApplication
 
 final class TeleprompterSettingsTests: XCTestCase {
+    func testIgnorePreviewPersistsIndependentlyAndOlderSettingsDefaultToFalse() throws {
+        let (defaults,suite) = preferences(); defer { defaults.removePersistentDomain(forName: suite) }
+        let first = TeleprompterSettingsStore(defaults: defaults)
+        let second = TeleprompterSettingsStore(defaults: defaults, key: "tp2")
+        var settings = first.current; settings.ignoresPreview = true; first.update(settings)
+        XCTAssertFalse(first.current.displaysPreview(true))
+        XCTAssertTrue(second.current.displaysPreview(true))
+        XCTAssertFalse(second.current.displaysPreview(false))
+        XCTAssertTrue(TeleprompterSettingsStore(defaults: defaults).current.ignoresPreview)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any])
+        legacy.removeValue(forKey: "ignorePreview")
+        let decoded = try JSONDecoder().decode(TeleprompterSettings.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertFalse(decoded.ignoresPreview)
+        XCTAssertTrue(decoded.displaysPreview(true))
+    }
     func testLegacySettingsDecodeWithoutStretchAndNewStretchPersists() throws {
         var settings = TeleprompterSettings()
         let legacy = try JSONEncoder().encode(settings)

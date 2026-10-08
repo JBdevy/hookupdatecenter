@@ -1252,3 +1252,7 @@
 "Clear mode (media only)" = "Clear mode (media only)";
 
 "Saved messages" = "Saved messages";
+
+"Ignore Preview" = "Ignore Preview";
+
+"The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder." = "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.";

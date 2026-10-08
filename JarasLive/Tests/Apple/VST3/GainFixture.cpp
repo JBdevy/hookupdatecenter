@@ -37,7 +37,7 @@ public:
     tresult PLUGIN_API checkSizeConstraint(ViewRect *rect) override { rect->right = rect->left + std::max(320,rect->getWidth()); rect->bottom = rect->top + std::max(200,rect->getHeight()); return kResultOk; }
 };
 class Gain final: public IComponent,public IAudioProcessor,public IEditController,public IMidiMapping {
-    std::atomic<uint32> refs{1};std::atomic<float> gain{0.5f};bool note=false,held=false,pedal=false;
+    std::atomic<uint32> refs{1};std::atomic<float> gain{0.5f};std::atomic<uint64> inputSilence{0};bool note=false,held=false,pedal=false;
 public:
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override{*out=nullptr; if(FUnknownPrivate::iidEqual(id,FUnknown_iid)||FUnknownPrivate::iidEqual(id,IComponent_iid))*out=static_cast<IComponent*>(this);else if(FUnknownPrivate::iidEqual(id,IAudioProcessor_iid))*out=static_cast<IAudioProcessor*>(this);else if(FUnknownPrivate::iidEqual(id,IEditController_iid))*out=static_cast<IEditController*>(this);if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*>(this);if(*out){addRef();return kResultOk;}return kNoInterface;}
     uint32 PLUGIN_API addRef() override{return ++refs;}uint32 PLUGIN_API release() override{auto n=--refs;if(!n)delete this;return n;}
@@ -50,7 +50,7 @@ public:
     tresult PLUGIN_API activateBus(MediaType,BusDirection,int32,TBool) override{return kResultOk;}
     tresult PLUGIN_API setActive(TBool) override{return kResultOk;}
     tresult PLUGIN_API setState(IBStream *stream) override{float v;int32 n=0;if(stream->read(&v,4,&n)!=kResultOk||n!=4)return kResultFalse;gain=v;return kResultOk;}
-    tresult PLUGIN_API getState(IBStream *stream) override{float v=gain.load();return stream->write(&v,4,nullptr);}
+    tresult PLUGIN_API getState(IBStream *stream) override{float v=gain.load();auto mask=inputSilence.load();auto result=stream->write(&v,4,nullptr);return result==kResultOk?stream->write(&mask,8,nullptr):result;}
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement*,int32 in,SpeakerArrangement*,int32 out) override{return in==1&&out==1?kResultOk:kResultFalse;}
     tresult PLUGIN_API getBusArrangement(BusDirection,int32,SpeakerArrangement &arr) override{arr=3;return kResultOk;}
     tresult PLUGIN_API canProcessSampleSize(int32 size) override{return size==kSample32?kResultOk:kResultFalse;}
@@ -58,6 +58,7 @@ public:
     tresult PLUGIN_API setupProcessing(ProcessSetup&) override{return kResultOk;}
     tresult PLUGIN_API setProcessing(TBool) override{return kResultOk;}
     tresult PLUGIN_API process(ProcessData &data) override{
+        inputSilence.store(data.inputs[0].silenceFlags);
 
         if(data.inputParameterChanges)for(int i=0;i<data.inputParameterChanges->getParameterCount();i++){auto q=data.inputParameterChanges->getParameterData(i);int32 offset;double value;if(q->getPoint(0,offset,value)==kResultOk){if(q->getParameterId()==1){pedal=value>=0.5;if(!pedal&&!held)note=false;}else gain=value;}}
         int nextEvent=0;

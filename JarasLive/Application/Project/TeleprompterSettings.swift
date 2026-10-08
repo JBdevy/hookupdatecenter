@@ -54,6 +54,12 @@ public struct TeleprompterSettings: Codable, Equatable, Sendable {
     public var queueNameEnabled: Bool = true
     public var progressEnabled: Bool = false
     public var previewEnabled: Bool = true
+    public var ignorePreview: Bool? = nil
+    public var ignoresPreview: Bool {
+        get { ignorePreview ?? false }
+        set { ignorePreview = newValue }
+    }
+    public func displaysPreview(_ active: Bool) -> Bool { active && previewEnabled && !ignoresPreview }
     public var previewSongDurationEnabled: Bool = true
     public var previewBlockDurationEnabled: Bool = true
     public var previewUnderlineEnabled: Bool = true

@@ -19,6 +19,18 @@ enum WaveformPeakCodec {
     }
 }
 
+/// Dense curves keep their existing weight; resolved source samples become a
+/// thin contour without a width jump at a power-of-two geometry transition.
+enum TimelineWaveformStrokeStyle {
+    static func lineWidth(sampleRate: Double, pixelsPerSecond: Double) -> Double {
+        guard sampleRate.isFinite, sampleRate > 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 2 }
+        let samplesPerPoint = max(1, sampleRate / pixelsPerSecond)
+        let progress = min(1, max(0, (8 - log2(samplesPerPoint)) / 6))
+        let smooth = progress * progress * (3 - 2 * progress)
+        return 2 - smooth
+    }
+}
+
 /// A bounded number of decoder owners prepare independent files concurrently.
 /// Results and completion notifications retain input order and monotonic progress;
 /// no preparation is left running after this function returns.
@@ -54,8 +66,51 @@ enum WaveformPreparation {
 final class TimelineAudioWaveform: ObservableObject {
     static let shared = TimelineAudioWaveform()
     static let blockFrames = 65_536
+    static let peakFramesPerInterval = 256
     static func diskCacheURL(_ url: URL) -> URL { WaveformSource.cacheURL(url) }
     @Published private(set) var revision: UInt64 = 0
+
+    /// Hash the (often long, Unicode) source path/version once per header.
+    /// Project source/overview lookups share this identity, so they avoid
+    /// repeating Unicode normalization on every zoom frame. Block lookups hash
+    /// only its cached hash and coordinates without bridging a fresh NSString.
+    fileprivate final class VertexSource: Hashable {
+        let prefix: String
+        let hash: Int
+        let labelPrefix: String
+        init(_ prefix: String) {
+            self.prefix = prefix; hash = prefix.hashValue
+            // Buffer labels are cache identifiers, not file paths. Encode the
+            // canonical source once so every block can hash ASCII directly,
+            // instead of repeating Unicode normalization during a cold zoom.
+            // Unlike a hash-only label, this encoding cannot alias two sources.
+            labelPrefix = Data(prefix.precomposedStringWithCanonicalMapping.utf8).base64EncodedString()
+        }
+        func hash(into hasher: inout Hasher) { hasher.combine(hash) }
+        static func == (lhs: VertexSource, rhs: VertexSource) -> Bool {
+            lhs === rhs || lhs.prefix == rhs.prefix
+        }
+    }
+    private final class VertexKey: NSObject {
+        let source: VertexSource
+        let start: Int64
+        let span: Int
+        let step: Int
+        private let cachedHash: Int
+        init(source: VertexSource, start: Int64, span: Int, step: Int) {
+            self.source = source; self.start = start; self.span = span; self.step = step
+            var hasher = Hasher()
+            hasher.combine(source.hash); hasher.combine(start); hasher.combine(span); hasher.combine(step)
+            cachedHash = hasher.finalize()
+        }
+        override var hash: Int { cachedHash }
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? VertexKey else { return false }
+            return start == other.start && span == other.span && step == other.step &&
+                (source === other.source || source.prefix == other.source.prefix)
+        }
+        var label: String { "vertices:\(source.labelPrefix):\(start):\(span):\(step)" }
+    }
 
     final class Header: NSObject {
         let rate: Double
@@ -63,16 +118,150 @@ final class TimelineAudioWaveform: ObservableObject {
         let channels: Int
         let sourcePath: String?
         let cachePrefix: String?
+        fileprivate let vertexSource: VertexSource?
         let checkedAt = ProcessInfo.processInfo.systemUptime
         init(rate: Double, frames: Int64, channels: Int = 1, sourcePath: String? = nil, sourceVersion: String? = nil) {
             self.rate = rate; self.frames = frames; self.channels = channels
             self.sourcePath = sourcePath
             cachePrefix = sourcePath.map { "\($0):\(frames):\(rate):\(sourceVersion ?? "")" }
+            vertexSource = cachePrefix.map(VertexSource.init)
+        }
+    }
+    /// Immutable samples backed by owned Float storage or one frozen
+    /// decoder buffer. A copied channel retains its owner independently of PCM.
+    final class PCMChannel: RandomAccessCollection {
+        typealias Index = Int
+        typealias Element = Float
+        private let retainedOwner: AVAudioPCMBuffer?
+        private let allocation: UnsafeMutablePointer<Float>?
+        private let pointer: UnsafePointer<Float>
+        let count: Int
+        var startIndex: Int { 0 }
+        var endIndex: Int { count }
+        init(_ values: [Float]) {
+            let allocated = UnsafeMutablePointer<Float>.allocate(capacity: Swift.max(1, values.count))
+            if !values.isEmpty {
+                values.withUnsafeBufferPointer { allocated.initialize(from: $0.baseAddress!, count: values.count) }
+            }
+            retainedOwner = nil; allocation = allocated; pointer = UnsafePointer(allocated); count = values.count
+        }
+        fileprivate init(count: Int, initialize: (UnsafeMutableBufferPointer<Float>) -> Void) {
+            let allocated = UnsafeMutablePointer<Float>.allocate(capacity: Swift.max(1, count))
+            initialize(UnsafeMutableBufferPointer(start: allocated, count: count))
+            retainedOwner = nil; allocation = allocated; pointer = UnsafePointer(allocated); self.count = count
+        }
+        fileprivate init(buffer: AVAudioPCMBuffer, pointer: UnsafePointer<Float>, count: Int) {
+            retainedOwner = buffer; allocation = nil; self.pointer = pointer; self.count = count
+        }
+        deinit { if let allocation { allocation.deinitialize(count: count); allocation.deallocate() } }
+        /// Immutable extrema positions relative to groups of eight samples.
+        /// 255 marks a group containing only NaNs; scalar comparison ignores it.
+        fileprivate final class ExtremaIndex {
+            private let allocation: UnsafeMutablePointer<SIMD2<UInt8>>
+            let pairs: UnsafePointer<SIMD2<UInt8>>
+            let count: Int
+            init(_ source: UnsafeBufferPointer<Float>) {
+                count = source.count / 8
+                allocation = .allocate(capacity: Swift.max(1, count))
+                pairs = UnsafePointer(allocation)
+                for group in 0..<count {
+                    let first = group * 8
+                    var initial = 0
+                    if source[first].isNaN {
+                        repeat { initial += 1 } while initial < 8 && source[first + initial].isNaN
+                    }
+                    var low = UInt8(initial), high = UInt8(initial)
+                    if initial < 8 {
+                        var lowValue = source[first + initial], highValue = lowValue
+                        for delta in (initial + 1)..<8 {
+                            let value = source[first + delta]
+                            if value < lowValue { low = UInt8(delta); lowValue = value }
+                            if value > highValue { high = UInt8(delta); highValue = value }
+                        }
+                    } else { low = 255; high = 255 }
+                    allocation.advanced(by: group).initialize(to: SIMD2(low, high))
+                }
+            }
+            deinit { allocation.deinitialize(count: count); allocation.deallocate() }
+        }
+        private let extremaLock = NSLock()
+        private var storedExtrema: ExtremaIndex?
+        /// Charge the maximum summary bytes before NSCache takes ownership.
+        /// Tiny pages cannot have a complete group and never allocate an index.
+        fileprivate var extremaReservedBytes: Int { (count / 8) * MemoryLayout<SIMD2<UInt8>>.stride }
+        fileprivate func extremaIndex() -> ExtremaIndex? {
+            guard count >= 8 else { return nil }
+            extremaLock.lock(); defer { extremaLock.unlock() }
+            if let existing = storedExtrema { return existing }
+            let result = ExtremaIndex(contiguousSamples)
+            storedExtrema = result
+            return result
+        }
+        /// The caller must retain this channel while accessing these samples.
+        fileprivate var contiguousSamples: UnsafeBufferPointer<Float> {
+            UnsafeBufferPointer(start: pointer, count: count)
+        }
+        @inline(__always) subscript(index: Int) -> Float {
+            precondition(index >= 0 && index < count)
+            return withExtendedLifetime(self) { pointer[index] }
+        }
+        @inline(__always) func index(after index: Int) -> Int { index + 1 }
+        @inline(__always) func index(before index: Int) -> Int { index - 1 }
+        @inline(__always) func withUnsafeBufferPointer<Result>(_ body: (UnsafeBufferPointer<Float>) throws -> Result) rethrows -> Result {
+            try withExtendedLifetime(self) { try body(UnsafeBufferPointer(start: pointer, count: count)) }
+        }
+        @inline(__always) func withContiguousStorageIfAvailable<Result>(_ body: (UnsafeBufferPointer<Float>) throws -> Result) rethrows -> Result? {
+            try withUnsafeBufferPointer(body)
         }
     }
     final class PCM: NSObject {
-        let channels: [[Float]]
-        init(channels: [[Float]]) { self.channels = channels }
+        let channels: [PCMChannel]
+        /// The mixed display channel is prepared only once per frozen page.
+        let waveformChannels: [PCMChannel]
+        let cost: Int
+        private static func displayChannels(_ channels: [PCMChannel]) -> [PCMChannel] {
+            guard channels.count > 1 else { return channels }
+            let count = min(channels[0].count, channels[1].count)
+            let mono = PCMChannel(count: count) { output in
+                channels[0].withUnsafeBufferPointer { left in
+                    channels[1].withUnsafeBufferPointer { right in
+                        for index in 0..<count {
+                            output.baseAddress!.advanced(by: index).initialize(to: (left[index] + right[index]) * 0.5)
+                        }
+                    }
+                }
+            }
+            return channels + [mono]
+        }
+        init(channels: [[Float]]) {
+            self.channels = channels.map(PCMChannel.init)
+            waveformChannels = Self.displayChannels(self.channels)
+            cost = waveformChannels.reduce(0) { $0 + $1.count * MemoryLayout<Float>.stride + $1.extremaReservedBytes }
+        }
+        /// Only a complete contiguous Float32 decode can be retained directly.
+        /// Interleaved data and synthetic MP3 padding keep their existing copy.
+        fileprivate init?(retaining buffer: AVAudioPCMBuffer, frames: Int) {
+            guard frames > 0, frames == Int(buffer.frameLength), frames <= Int(buffer.frameCapacity),
+                  buffer.format.commonFormat == .pcmFormatFloat32, buffer.stride == 1,
+                  let pointers = buffer.floatChannelData else { return nil }
+            let channelCount = Int(buffer.format.channelCount)
+            channels = (0..<channelCount).map { PCMChannel(buffer: buffer, pointer: UnsafePointer(pointers[$0]), count: frames) }
+            waveformChannels = Self.displayChannels(channels)
+            // A short EOF page still retains its full decoder allocation.
+            let rawBytes = Int(buffer.frameCapacity) * channelCount * MemoryLayout<Float>.stride
+            cost = rawBytes + (channelCount > 1 ? frames * MemoryLayout<Float>.stride : 0) +
+                waveformChannels.reduce(0) { $0 + $1.extremaReservedBytes }
+        }
+    }
+    /// A view over shared decoder pages, including its endpoint sample. The
+    /// vertices consume these slices directly; no per-LOD PCM copy is retained.
+    struct PCMView {
+        struct Slice {
+            let page: PCM
+            let range: Range<Int>
+        }
+        let slices: [Slice]
+        var count: Int { slices.reduce(0) { $0 + $1.range.count } }
     }
     /// Keep extrema at their actual sample positions, in time order. A coarser
     /// level removes subpixel detail; it never moves a peak to a bucket boundary.
@@ -166,7 +355,7 @@ final class TimelineAudioWaveform: ObservableObject {
             self.step = step
             self.start = start; self.end = start + Int64(min(span, pcm.channels.first?.count ?? 0)); self.rate = rate
             cost = pcm.channels.count * (span / step + 2) * (step == 1 ? 24 : 96)
-            let channels = pcm.channels.count > 1 ? pcm.channels + [zip(pcm.channels[0], pcm.channels[1]).map { ($0 + $1) * 0.5 }] : pcm.channels
+            let channels = pcm.waveformChannels
             paths = channels.map { source in
                 // Share exactly one source sample with the next block.
                 let count = min(source.count, span + 1)
@@ -204,12 +393,12 @@ final class TimelineAudioWaveform: ObservableObject {
         let step: Int
         let rate: Double
         let key: String
+        let keyHash: Int
         let isPeakEnvelope: Bool
         var cost: Int { channels.reduce(0) { $0 + $1.count * MemoryLayout<SIMD2<Float>>.stride } }
 
-        init(channels: [[SIMD2<Float>]], start: Int64, end: Int64, step: Int, rate: Double, key: String, isPeakEnvelope: Bool = false) {
-            self.isPeakEnvelope = isPeakEnvelope
-            self.channels = channels.map { points in
+        convenience init(channels: [[SIMD2<Float>]], start: Int64, end: Int64, step: Int, rate: Double, key: String, isPeakEnvelope: Bool = false) {
+            let compacted = channels.map { points in
                 if isPeakEnvelope { return points }
                 // Silence and constant plateaus have one exact straight segment;
                 // retaining thousands of coincident capsules wastes GPU fill when
@@ -224,8 +413,14 @@ final class TimelineAudioWaveform: ObservableObject {
                 // Release unused storage for silent blocks as well as vertices.
                 return result.count < points.count / 2 ? result.withUnsafeBufferPointer { Array($0) } : result
             }
+            self.init(compactedChannels: compacted, start: start, end: end, step: step, rate: rate, key: key, isPeakEnvelope: isPeakEnvelope)
+        }
+        private init(compactedChannels: [[SIMD2<Float>]], start: Int64, end: Int64, step: Int, rate: Double, key: String, isPeakEnvelope: Bool = false) {
+            channels = compactedChannels
+            self.isPeakEnvelope = isPeakEnvelope
             self.start = start; self.end = end
             self.step = step; self.rate = rate; self.key = key
+            keyHash = key.hashValue
         }
         convenience init(buckets: [[Bucket]], start: Int64, end: Int64, step: Int, rate: Double, key: String) {
             let channels = buckets.map { buckets -> [SIMD2<Float>] in
@@ -249,34 +444,104 @@ final class TimelineAudioWaveform: ObservableObject {
             self.init(channels: channels, start: start, end: end, step: step, rate: rate, key: key)
         }
         convenience init(pcm: PCM, start: Int64, span: Int, step: Int, rate: Double, key: String) {
-            let sourceChannels = pcm.channels.count > 1
-                ? pcm.channels + [zip(pcm.channels[0], pcm.channels[1]).map { ($0 + $1) * 0.5 }]
-                : pcm.channels
-            let channels = sourceChannels.map { source -> [SIMD2<Float>] in
-                let count = min(source.count, span + 1)
+            let view = PCMView(slices: [PCMView.Slice(page: pcm, range: 0..<(pcm.channels.first?.count ?? 0))])
+            self.init(pages: view, start: start, span: span, step: step, rate: rate, key: key)
+        }
+        convenience init(pages: PCMView, start: Int64, span: Int, step: Int, rate: Double, key: String) {
+            let frameCount = pages.count
+            let channels = (0..<(pages.slices.first?.page.waveformChannels.count ?? 0)).map { channel -> [SIMD2<Float>] in
+                let count = min(frameCount, span + 1)
                 guard count > 0 else { return [] }
-                if step == 1 { return (0..<count).map { SIMD2(Float($0), -source[$0]) } }
                 var vertices: [SIMD2<Float>] = []
-                vertices.reserveCapacity((count / step + 1) * 4)
-                var previous = -1
-                func append(_ frame: Int) {
+                vertices.reserveCapacity(step == 1 ? count : (count / step + 1) * 4)
+                var previous = -1, uncompressedCount = 0
+                func append(_ frame: Int, _ value: Float) {
                     guard frame > previous else { return }
-                    vertices.append(SIMD2(Float(frame), -source[frame])); previous = frame
+                    let point = SIMD2(Float(frame), -value)
+                    let last = vertices.count - 1
+                    // Compact exact plateaus as points are emitted. The old
+                    // path allocated and scanned the entire curve a second time.
+                    if last >= 1, vertices[last].y == point.y, vertices[last - 1].y == point.y {
+                        vertices[last] = point
+                    } else { vertices.append(point) }
+                    previous = frame; uncompressedCount += 1
                 }
-                for first in stride(from: 0, to: count, by: step) {
-                    let last = min(count, first + step) - 1
-                    var low = first, high = first
-                    for frame in first...last {
-                        if source[frame] < source[low] { low = frame }
-                        if source[frame] > source[high] { high = frame }
+                var consumed = 0
+                var first = 0, low = 0, high = 0
+                var firstValue: Float = 0, lowValue: Float = 0, highValue: Float = 0
+                for slice in pages.slices {
+                    guard consumed < count else { break }
+                    let storage = slice.page.waveformChannels[channel]
+                    precondition(slice.range.lowerBound >= 0 && slice.range.upperBound <= storage.count)
+                    let source = storage.contiguousSamples
+                    let extrema = step >= 8 ? storage.extremaIndex() : nil
+                    defer { withExtendedLifetime(storage) {} }
+                    do {
+                        var offset = slice.range.lowerBound
+                        let end = min(slice.range.upperBound, offset + count - consumed)
+                        if step == 1 {
+                            while offset < end {
+                                append(consumed, source[offset])
+                                offset += 1; consumed += 1
+                            }
+                            continue
+                        }
+                        while offset < end {
+                            let inBucket = consumed - first
+                            if inBucket == 0 {
+                                low = consumed; high = consumed
+                                firstValue = source[offset]; lowValue = firstValue; highValue = firstValue
+                            }
+                            let length = min(step - inBucket, end - offset)
+                            if let extrema {
+                                var index = 0
+                                while index < length && (offset + index) & 7 != 0 {
+                                    let value = source[offset + index]
+                                    if value < lowValue { low = consumed + index; lowValue = value }
+                                    if value > highValue { high = consumed + index; highValue = value }
+                                    index += 1
+                                }
+                                while index + 8 <= length {
+                                    let pair = extrema.pairs[(offset + index) / 8]
+                                    if pair.x != 255 {
+                                        let position = index + Int(pair.x)
+                                        let value = source[offset + position]
+                                        if value < lowValue { low = consumed + position; lowValue = value }
+                                    }
+                                    if pair.y != 255 {
+                                        let position = index + Int(pair.y)
+                                        let value = source[offset + position]
+                                        if value > highValue { high = consumed + position; highValue = value }
+                                    }
+                                    index += 8
+                                }
+                                while index < length {
+                                    let value = source[offset + index]
+                                    if value < lowValue { low = consumed + index; lowValue = value }
+                                    if value > highValue { high = consumed + index; highValue = value }
+                                    index += 1
+                                }
+                            } else {
+                                for index in 0..<length {
+                                    let value = source[offset + index]
+                                    if value < lowValue { low = consumed + index; lowValue = value }
+                                    if value > highValue { high = consumed + index; highValue = value }
+                                }
+                            }
+                            offset += length; consumed += length
+                            if consumed - first == step || consumed == count {
+                                append(first, firstValue)
+                                if low < high { append(low, lowValue); append(high, highValue) }
+                                else { append(high, highValue); append(low, lowValue) }
+                                append(consumed - 1, source[offset - 1])
+                                first = consumed
+                            }
+                        }
                     }
-                    append(first)
-                    if low < high { append(low); append(high) } else { append(high); append(low) }
-                    append(last)
                 }
-                return vertices
+                return vertices.count < uncompressedCount / 2 ? vertices.withUnsafeBufferPointer { Array($0) } : vertices
             }
-            self.init(channels: channels, start: start, end: start + Int64(min(span, pcm.channels.first?.count ?? 0)), step: step, rate: rate, key: key)
+            self.init(compactedChannels: channels, start: start, end: start + Int64(min(span, frameCount)), step: step, rate: rate, key: key)
         }
     }
     struct VertexDrawing {
@@ -285,9 +550,14 @@ final class TimelineAudioWaveform: ObservableObject {
         let requestedStep: Int
     }
 
-    private let vertexBlocks = NSCache<NSString, VertexBlock>()
+    private let vertexBlocks = NSCache<VertexKey, VertexBlock>()
     private let headers = NSCache<NSString, Header>()
-    private let headerAliases = NSCache<NSString, NSURL>()
+    private final class HeaderAlias: NSObject {
+        let url: URL
+        let path: String
+        init(url: URL, path: String) { self.url = url; self.path = path }
+    }
+    private let headerAliases = NSCache<NSString, HeaderAlias>()
     private let pcm = NSCache<NSString, PCM>()
     private let geometries = NSCache<NSString, Geometry>()
     private let joinedDrawings = NSCache<NSString, RetainedDrawing>()
@@ -305,21 +575,21 @@ final class TimelineAudioWaveform: ObservableObject {
     private let vertexOverviews = NSCache<NSString, VertexOverview>()
     private let projectCacheLock = NSLock()
     private var projectHeaders: [String: Header] = [:]
-    private var projectOverviews: [String: VertexOverview] = [:]
-    private var projectSources: [String: WaveformSource] = [:]
-    private func pinnedSource(_ prefix: String) -> WaveformSource? {
+    private var projectOverviews: [VertexSource: VertexOverview] = [:]
+    private var projectSources: [VertexSource: WaveformSource] = [:]
+    private func pinnedSource(_ identity: VertexSource) -> WaveformSource? {
         projectCacheLock.lock(); defer { projectCacheLock.unlock() }
-        return projectSources[prefix]
+        return projectSources[identity]
     }
     private func pinnedHeader(_ path: String) -> Header? {
         projectCacheLock.lock(); defer { projectCacheLock.unlock() }
         return projectHeaders[path]
     }
-    private func pinnedOverview(_ prefix: String) -> VertexOverview? {
+    private func pinnedOverview(_ identity: VertexSource) -> VertexOverview? {
         projectCacheLock.lock(); defer { projectCacheLock.unlock() }
-        return projectOverviews[prefix]
+        return projectOverviews[identity]
     }
-    private func installProjectCache(headers: [String: Header], overviews: [String: VertexOverview], sources: [String: WaveformSource]) {
+    private func installProjectCache(headers: [String: Header], overviews: [VertexSource: VertexOverview], sources: [VertexSource: WaveformSource]) {
         projectCacheLock.lock(); defer { projectCacheLock.unlock() }
         projectHeaders = headers; projectOverviews = overviews
         projectSources = sources
@@ -332,9 +602,9 @@ final class TimelineAudioWaveform: ObservableObject {
         // A complete fallback for every file fits a project-wide 32 MiB target.
         // It remains available when detailed vertex blocks are evicted.
         let overviewPixels = max(16, min(512, (32 * 1024 * 1024) / max(1, files.count) / 384))
-        let prepared: ([String: Header], [String: VertexOverview], [String: WaveformSource]) = await withCheckedContinuation { continuation in
+        let prepared: ([String: Header], [VertexSource: VertexOverview], [VertexSource: WaveformSource]) = await withCheckedContinuation { continuation in
             sourceWorker.async(qos: .userInitiated) { [self] in
-                typealias Prepared = (url: URL, header: Header, prefix: String, overview: VertexOverview, source: WaveformSource)
+                typealias Prepared = (url: URL, header: Header, overview: VertexOverview, source: WaveformSource)
                 let entries: [Prepared?] = WaveformPreparation.map(files, progress: { done, total in
                     DispatchQueue.main.async { if !cancelled() { progress(done, total) } }
                 }) { url in
@@ -344,19 +614,20 @@ final class TimelineAudioWaveform: ObservableObject {
                     let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
                     let header = Header(rate: audio.processingFormat.sampleRate, frames: audio.length,
                         channels: Int(audio.processingFormat.channelCount), sourcePath: url.path, sourceVersion: "\(size):\(modified)")
-                    guard let prefix = header.cachePrefix,
-                          let source = try? (pinnedSource(prefix) ?? WaveformSource.loadOrBuild(url, header: header, cancelled: cancelled)),
+                    guard let prefix = header.cachePrefix, let identity = header.vertexSource,
+                          let source = try? (pinnedSource(identity) ?? WaveformSource.loadOrBuild(url, header: header, cancelled: cancelled)),
                           let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return nil }
                     headers.setObject(header, forKey: url.path as NSString)
                     sources.setObject(source, forKey: prefix as NSString, cost: source.cost)
-                    return (url, header, prefix, overview, source)
+                    return (url, header, overview, source)
                 }
-                var preparedHeaders: [String: Header] = [:], preparedOverviews: [String: VertexOverview] = [:]
-                var preparedSources: [String: WaveformSource] = [:]
+                var preparedHeaders: [String: Header] = [:], preparedOverviews: [VertexSource: VertexOverview] = [:]
+                var preparedSources: [VertexSource: WaveformSource] = [:]
                 for entry in entries.compactMap({ $0 }) {
+                    guard let identity = entry.header.vertexSource else { continue }
                     preparedHeaders[entry.url.path] = entry.header
-                    preparedOverviews[entry.prefix] = entry.overview
-                    preparedSources[entry.prefix] = entry.source
+                    preparedOverviews[identity] = entry.overview
+                    preparedSources[identity] = entry.source
                 }
                 continuation.resume(returning: (preparedHeaders, preparedOverviews, preparedSources))
             }
@@ -380,10 +651,19 @@ final class TimelineAudioWaveform: ObservableObject {
     private static let emptyDrawing = Drawing(values: [], step: 1)
     private let retained = NSCache<NSString, RetainedDrawing>()
     private let lock = NSLock()
-    private var pending = Set<String>()
+    private enum PendingKey: Hashable {
+        case named(String)
+        case vertex(VertexKey)
+    }
+    private var pending = Set<PendingKey>()
     private var notificationPending = false
     private var readyLevels: [String: Set<Int>] = [:]
-    private var files: [String: AVAudioFile] = [:] // Accessed only by worker.
+    // Decoder handles, unlike sample pages, are cheap to retain. Evict only the
+    // least recently used handle; clearing the pool at the ninth visible stem
+    // used to repeatedly reopen every file throughout a zoom gesture.
+    private static let decoderLimit = 32
+    private var decoderAccess: UInt64 = 0
+    private var files: [String: (audio: AVAudioFile, version: String?, access: UInt64)] = [:] // Worker only.
 
     init(worker: DispatchQueue = DispatchQueue(label: "jaras.waveform.decode", qos: .utility), drawingWorker: DispatchQueue = DispatchQueue(label: "jaras.waveform.curves", qos: .userInitiated), presentationCacheCostLimit: Int = 64 * 1024 * 1024) {
         self.worker = worker
@@ -403,10 +683,10 @@ final class TimelineAudioWaveform: ObservableObject {
         joinedDrawings.totalCostLimit = 16 * 1024 * 1024
     }
 
-    func header(_ url: URL, refresh: Bool = false) -> Header? {
-        // Timeline items already retain canonical URLs. Reuse their loaded
-        // header before Foundation repeats filesystem path normalization.
-        let path = url.path
+    func header(_ url: URL, refresh: Bool = false, sourcePath: String? = nil) -> Header? {
+        // Timeline items retain the exact decoded path beside their URL. Reuse
+        // it and the loaded header before repeating URL decoding/normalization.
+        let path = sourcePath ?? url.path
         if let value = headers.object(forKey: path as NSString) ?? pinnedHeader(path),
            !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
             return value.rate > 0 ? value : nil
@@ -414,19 +694,20 @@ final class TimelineAudioWaveform: ObservableObject {
         // A document opened through /var, /tmp or another alias can retain
         // noncanonical item URLs while preloading installs canonical headers.
         // Remember only that path mapping, never a separate/stale header.
-        let alias = headerAliases.object(forKey: path as NSString).map { $0 as URL }
+        let alias = headerAliases.object(forKey: path as NSString)
         if let alias, let value = headers.object(forKey: alias.path as NSString) ?? pinnedHeader(alias.path),
            !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
             return value.rate > 0 ? value : nil
         }
         let resolvedURL: URL
         if let alias, !refresh {
-            resolvedURL = alias
+            resolvedURL = alias.url
         } else {
             // An aged explicit refresh re-resolves the original path, so an
             // alias moved to another source cannot keep its previous target.
             resolvedURL = url.standardizedFileURL
-            if resolvedURL.path != path { headerAliases.setObject(resolvedURL as NSURL, forKey: path as NSString) }
+            let resolvedPath = resolvedURL.path
+            if resolvedPath != path { headerAliases.setObject(HeaderAlias(url: resolvedURL, path: resolvedPath), forKey: path as NSString) }
             else { headerAliases.removeObject(forKey: path as NSString) }
         }
         let url = resolvedURL
@@ -490,9 +771,10 @@ final class TimelineAudioWaveform: ObservableObject {
 
     /// Nonblocking, viewport-only GPU lookup. Missing blocks are queued; the
     /// renderer owns the last complete visible drawing until replacement is ready.
-    /// Prepared projects copy the requested peak level from RAM in one frame;
-    /// no audio read, background refinement or pyramid reduction runs here.
-    func vertexDrawing(_ url: URL, header: Header, start: Double, end: Double, pixelsPerSecond: Double) -> VertexDrawing {
+    /// Prepared projects copy peak levels from RAM in one frame. Finer levels
+    /// queue only visible PCM blocks; no audio read runs on the drawing thread.
+    func vertexDrawing(_ url: URL, header: Header, start: Double, end: Double, pixelsPerSecond: Double,
+                       prefetch: Bool = false, cachedOnly: Bool = false) -> VertexDrawing {
         guard header.rate > 0, header.frames > 0, start.isFinite, end.isFinite,
               pixelsPerSecond.isFinite, pixelsPerSecond > 0 else {
             return VertexDrawing(blocks: [], complete: false, requestedStep: 1)
@@ -507,10 +789,11 @@ final class TimelineAudioWaveform: ObservableObject {
         // a whole sample here can omit the next block and never reach complete.
         let last = max(first, Int(ceil(lastFrame / Double(span))) - 1)
         let prefix = header.cachePrefix ?? "\(url.path):\(header.frames)"
-        if let source = pinnedSource(prefix) {
-            let preparedStep = max(WaveformSource.baseStep, step)
-            if let blocks = pinnedOverview(prefix)?.levels[preparedStep] {
-                return VertexDrawing(blocks: blocks.filter { Double($0.end) > firstFrame && Double($0.start) < lastFrame }, complete: true, requestedStep: step)
+        let identity = header.vertexSource ?? VertexSource(prefix)
+        if step >= WaveformSource.baseStep, let source = pinnedSource(identity) {
+            let preparedStep = step
+            if let blocks = pinnedOverview(identity)?.levels[preparedStep] {
+                return VertexDrawing(blocks: Self.visibleVertexBlocks(blocks, from: firstFrame, to: lastFrame), complete: true, requestedStep: step)
             }
             let preparedSpan = Self.span(step: preparedStep)
             let first = Int(floor(firstFrame / Double(preparedSpan)))
@@ -518,10 +801,10 @@ final class TimelineAudioWaveform: ObservableObject {
             var blocks: [VertexBlock] = []
             for index in first...last {
                 let start = Int64(index) * Int64(preparedSpan)
-                let key = "vertices:\(prefix):\(start):\(preparedSpan):\(preparedStep)"
-                if let hit = vertexBlocks.object(forKey: key as NSString) { blocks.append(hit); continue }
-                let block = source.vertices(start: start, step: preparedStep, span: preparedSpan, key: key)
-                vertexBlocks.setObject(block, forKey: key as NSString, cost: block.cost)
+                let key = VertexKey(source: identity, start: start, span: preparedSpan, step: preparedStep)
+                if let hit = vertexBlocks.object(forKey: key) { blocks.append(hit); continue }
+                let block = source.vertices(start: start, step: preparedStep, span: preparedSpan, key: key.label)
+                vertexBlocks.setObject(block, forKey: key, cost: block.cost)
                 blocks.append(block)
             }
             return VertexDrawing(blocks: blocks, complete: true, requestedStep: step)
@@ -535,20 +818,21 @@ final class TimelineAudioWaveform: ObservableObject {
         ready.reserveCapacity(min(512, last - first + 1))
         for block in first...boundedLast {
             let start = Int64(block) * Int64(span)
-            let rawKey = "\(prefix):\(start):\(span)"
-            let key = "vertices:\(rawKey):\(step)"
-            if let value = vertexBlocks.object(forKey: key as NSString) { ready.append(value); continue }
+            let key = VertexKey(source: identity, start: start, span: span, step: step)
+            if let value = vertexBlocks.object(forKey: key) { ready.append(value); continue }
+            if cachedOnly { continue }
             if step >= WaveformSource.baseStep, source == nil { needsSource = true; continue }
-            enqueue(key, url: url) { [self] in
+            enqueue(.vertex(key), url: url, maximumPending: prefetch ? 8 : 64) { [self] in
+                let label = key.label
                 let value: VertexBlock
                 if let source {
-                    value = source.vertices(start: start, step: step, span: span, key: key)
+                    value = source.vertices(start: start, step: step, span: span, key: label)
                 } else {
-                    guard let data = readPCM(url, header: header, start: start, span: span, key: rawKey) else { return false }
-                    value = VertexBlock(pcm: data, start: start, span: span, step: step, rate: header.rate, key: key)
+                    guard let data = readPCMView(url, header: header, start: start, span: span) else { return false }
+                    value = VertexBlock(pages: data, start: start, span: span, step: step, rate: header.rate, key: label)
                 }
                 guard !value.channels.isEmpty else { return false }
-                vertexBlocks.setObject(value, forKey: key as NSString, cost: value.cost)
+                vertexBlocks.setObject(value, forKey: key, cost: value.cost)
                 return true
             }
         }
@@ -561,18 +845,42 @@ final class TimelineAudioWaveform: ObservableObject {
         return VertexDrawing(blocks: ready, complete: complete, requestedStep: step)
     }
 
+    /// Prepared levels have ordered, nonoverlapping source intervals. Search
+    /// their boundaries so a visible lookup does not scan the whole recording.
+    /// Use actual endpoints: final blocks can be short and a level can have gaps.
+    static func visibleVertexBlocks(_ blocks: [VertexBlock], from firstFrame: Double, to lastFrame: Double,
+                                    includingBoundaryBlocks: Bool = false) -> [VertexBlock] {
+        var lower = 0, upper = blocks.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            let end = Double(blocks[middle].end)
+            if includingBoundaryBlocks ? end < firstFrame : end <= firstFrame { lower = middle + 1 }
+            else { upper = middle }
+        }
+        let first = lower
+        upper = blocks.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            let start = Double(blocks[middle].start)
+            if includingBoundaryBlocks ? start <= lastFrame : start < lastFrame { lower = middle + 1 }
+            else { upper = middle }
+        }
+        return Array(blocks[first..<lower])
+    }
+
     /// Find an already prepared zoom-out level without scheduling or reading.
     /// Used only while the requested detail is pending, to bound GPU work when
     /// shrinking a previously very detailed source into a few screen pixels.
     func cachedCoarserVertices(_ header: Header, url: URL, start: Double, end: Double,
                                requestedStep: Int) -> [VertexBlock] {
         let prefix = header.cachePrefix ?? "\(url.path):\(header.frames)"
+        let identity = header.vertexSource ?? VertexSource(prefix)
         let firstFrame = max(0, start * header.rate), lastFrame = min(Double(header.frames), end * header.rate)
         guard lastFrame > firstFrame else { return [] }
         var step = max(WaveformSource.baseStep, requestedStep)
         while step <= 1 << 26 {
-            if let overview = (pinnedOverview(prefix) ?? vertexOverviews.object(forKey: prefix as NSString))?.levels[step] {
-                let visible = overview.filter { Double($0.end) >= firstFrame && Double($0.start) <= lastFrame }
+            if let overview = (pinnedOverview(identity) ?? vertexOverviews.object(forKey: prefix as NSString))?.levels[step] {
+                let visible = Self.visibleVertexBlocks(overview, from: firstFrame, to: lastFrame, includingBoundaryBlocks: true)
                 if visible.first.map({ Double($0.start) <= firstFrame }) == true,
                    visible.last.map({ Double($0.end) >= lastFrame }) == true { return visible }
             }
@@ -581,8 +889,8 @@ final class TimelineAudioWaveform: ObservableObject {
             if last >= first, last - first < 64 {
                 var result: [VertexBlock] = []
                 for index in first...last {
-                    let key = "vertices:\(prefix):\(Int64(index) * Int64(span)):\(span):\(step)"
-                    guard let value = vertexBlocks.object(forKey: key as NSString) else { result.removeAll(); break }
+                    let key = VertexKey(source: identity, start: Int64(index) * Int64(span), span: span, step: step)
+                    guard let value = vertexBlocks.object(forKey: key) else { result.removeAll(); break }
                     result.append(value)
                 }
                 if !result.isEmpty { return result }
@@ -598,16 +906,17 @@ final class TimelineAudioWaveform: ObservableObject {
         // Project opening prepares the complete peak pyramid from its base
         // resolution. Unprepared sources use a small overview while loading.
         var overview: [Int: [VertexBlock]] = [:]
+        let identity = header.vertexSource ?? VertexSource(prefix)
         var step = startingStep ?? max(WaveformSource.baseStep, Self.step(rate: header.rate, pixelsPerSecond: Double(overviewPixels) / duration))
         while step <= 1 << 26 {
             let span = Self.span(step: step)
             for start in stride(from: Int64(0), to: header.frames, by: span) {
-                let key = "vertices:\(prefix):\(start):\(span):\(step)"
-                if let hit = vertexBlocks.object(forKey: key as NSString) {
+                let key = VertexKey(source: identity, start: start, span: span, step: step)
+                if let hit = vertexBlocks.object(forKey: key) {
                     overview[step, default: []].append(hit); continue
                 }
-                let block = source.vertices(start: start, step: step, span: span, key: key)
-                vertexBlocks.setObject(block, forKey: key as NSString, cost: block.cost)
+                let block = source.vertices(start: start, step: step, span: span, key: key.label)
+                vertexBlocks.setObject(block, forKey: key, cost: block.cost)
                 overview[step, default: []].append(block)
             }
             if Int64(step) >= header.frames { break }
@@ -618,20 +927,115 @@ final class TimelineAudioWaveform: ObservableObject {
         return value
     }
 
+    private static let pcmPageFrames = 8192
+
+    private func readPCMView(_ url: URL, header: Header, start: Int64, span: Int) -> PCMView? {
+        guard start >= 0, start < header.frames, span >= 0 else { return nil }
+        let requested = Int(min(Int64(span) + 1, header.frames - start))
+        var slices: [PCMView.Slice] = []
+        slices.reserveCapacity((requested + Self.pcmPageFrames - 1) / Self.pcmPageFrames + 1)
+        var consumed = 0
+        while consumed < requested {
+            let position = start + Int64(consumed)
+            let pageStart = position / Int64(Self.pcmPageFrames) * Int64(Self.pcmPageFrames)
+            let offset = Int(position - pageStart)
+            let wanted = min(requested - consumed, Self.pcmPageFrames - offset)
+            guard let page = readPCMPage(url, header: header, start: pageStart),
+                  let available = page.channels.first?.count else { return nil }
+            let count = min(wanted, max(0, available - offset))
+            guard count > 0 else { break }
+            if let first = slices.first, first.page.channels.count != page.channels.count { return nil }
+            slices.append(PCMView.Slice(page: page, range: offset..<(offset + count)))
+            consumed += count
+            // Keep the same contiguous-prefix/EOF contract as the path reader.
+            if count < wanted { break }
+        }
+        return slices.isEmpty ? nil : PCMView(slices: slices)
+    }
+
     /// Shared PCM pages are decoder-owned, never accessed from the render thread.
-    private func readPCM(_ url: URL, header: Header, start: Int64, span: Int, key: String) -> PCM? {
-        if let value = pcm.object(forKey: key as NSString) { return value }
-        guard start >= 0, start < header.frames, let audio = try? file(url) else { return nil }
-        let count = AVAudioFrameCount(min(Int64(span + 512), header.frames - start))
+    /// Different detail steps overlap the same audio but have nonnested spans.
+    /// Cache aligned pages once; assembled span variants are short-lived inputs
+    /// to geometry construction and do not duplicate the 48 MiB cache budget.
+    private func readPCM(_ url: URL, header: Header, start: Int64, span: Int, key _: String) -> PCM? {
+        guard start >= 0, start < header.frames, span >= 0 else { return nil }
+        let requested = Int(min(Int64(span) + 1, header.frames - start))
+        var channels: [[Float]] = []
+        var copied = 0
+        while copied < requested {
+            let position = start + Int64(copied)
+            let pageStart = position / Int64(Self.pcmPageFrames) * Int64(Self.pcmPageFrames)
+            let offset = Int(position - pageStart)
+            let wanted = min(requested - copied, Self.pcmPageFrames - offset)
+            guard let page = readPCMPage(url, header: header, start: pageStart),
+                  let available = page.channels.first?.count else { return nil }
+            let count = min(wanted, max(0, available - offset))
+            guard count > 0 else { break }
+            if copied == 0, offset == 0, count == requested, page.channels.allSatisfy({ $0.count == count }) { return page }
+            if channels.isEmpty {
+                channels = page.channels.map { _ in
+                    var values: [Float] = []
+                    values.reserveCapacity(requested)
+                    return values
+                }
+            }
+            guard channels.count == page.channels.count else { return nil }
+            for channel in channels.indices {
+                channels[channel].append(contentsOf: page.channels[channel][offset..<(offset + count)])
+            }
+            copied += count
+            // A short decoder page is a contiguous prefix. Keep its real
+            // samples, but never stitch a later page across an unread gap.
+            if count < wanted { break }
+        }
+        return channels.isEmpty ? nil : PCM(channels: channels)
+    }
+
+    private func readPCMPage(_ url: URL, header: Header, start: Int64) -> PCM? {
+        let prefix = header.cachePrefix ?? "\(url.path):\(header.frames):\(header.rate)"
+        let key = "pcm-page:\(prefix):\(start)" as NSString
+        if let value = pcm.object(forKey: key) { return value }
+        guard start >= 0, start < header.frames, let audio = try? file(url, version: prefix) else { return nil }
+        if start >= audio.length {
+            // Some decoders throw instead of returning zero frames at EOF.
+            // A stale header must still preserve the preceding valid page.
+            let data = PCM(channels: Array(repeating: [], count: Int(audio.processingFormat.channelCount)))
+            pcm.setObject(data, forKey: key, cost: data.channels.count * MemoryLayout<Float>.stride)
+            return data
+        }
+        let count = AVAudioFrameCount(min(Int64(Self.pcmPageFrames), header.frames - start))
         guard let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: count) else { return nil }
-        do { audio.framePosition = start; try audio.read(into: buffer, frameCount: count) }
+        do { audio.framePosition = start; try AudioFileRead.read(audio, into: buffer, frameCount: count) }
         catch { return nil }
-        guard let pointers = buffer.floatChannelData, buffer.frameLength > 0 else { return nil }
-        let frames = Int(buffer.frameLength), stride = buffer.stride
-        let data = PCM(channels: (0..<Int(buffer.format.channelCount)).map { channel in
-            (0..<frames).map { pointers[channel][$0 * stride] }
-        })
-        pcm.setObject(data, forKey: key as NSString, cost: frames * data.channels.count * 4)
+        let decoded = Int(buffer.frameLength)
+        // Match peak preparation at a gapless MP3's absent packet tail. The
+        // decoder may report that padding in length without returning samples.
+        let padsTail = decoded < Int(count) && AudioFileRead.hasMP3Padding(audio) &&
+            header.frames - start - Int64(decoded) < Int64(audio.fileFormat.streamDescription.pointee.mFramesPerPacket)
+        let frames = padsTail ? Int(count) : decoded
+        if frames == 0, audio.framePosition >= audio.length {
+            // A real EOF on a page boundary is a valid empty suffix. Keep it
+            // distinct from a failed read, which must remain retryable.
+            let data = PCM(channels: Array(repeating: [], count: Int(buffer.format.channelCount)))
+            pcm.setObject(data, forKey: key, cost: data.channels.count * MemoryLayout<Float>.stride)
+            return data
+        }
+        guard let pointers = buffer.floatChannelData, frames > 0 else { return nil }
+        let stride = buffer.stride
+        let data: PCM
+        if let retained = PCM(retaining: buffer, frames: frames) {
+            data = retained
+        } else {
+            data = PCM(channels: (0..<Int(buffer.format.channelCount)).map { channel -> [Float] in
+                if stride == 1 {
+                    var samples = Array(UnsafeBufferPointer(start: pointers[channel], count: decoded))
+                    if frames > decoded { samples.append(contentsOf: repeatElement(0, count: frames - decoded)) }
+                    return samples
+                }
+                return (0..<frames).map { $0 < decoded ? pointers[channel][$0 * stride] : 0 }
+            })
+        }
+        pcm.setObject(data, forKey: key, cost: data.cost)
         return data
     }
 
@@ -871,7 +1275,7 @@ final class TimelineAudioWaveform: ObservableObject {
         return live.compactMap(\.value).reversed().first { presentation in
             if let preferredStep, !presentation.layers.allSatisfy({ layer in
                 let ratio = Double(layer.drawing.step) / Double(preferredStep)
-                return ratio >= 0.25 && ratio <= 4
+                return preferredStep < Self.peakFramesPerInterval ? layer.drawing.step == preferredStep : ratio >= 0.25 && ratio <= 4
             }) { return false }
             return presentation.layers.allSatisfy { layer in
                 layer.drawing.covers(start: start, end: end, rate: rate)
@@ -921,12 +1325,12 @@ final class TimelineAudioWaveform: ObservableObject {
         let previousPresentation = pinned ?? presentations.object(forKey: key)
         let family = familyID.map { "\(prefix):\($0)" }
         if let previous = previousPresentation, previous.complete, previous.scale == pixelsPerSecond, previous.start <= start, previous.end >= end - 1 / header.rate { return keep(previous) }
-        let level = min(26.0, max(0, log2(max(1, header.rate / max(0.001, pixelsPerSecond) / 2))))
-        let fineStep = 1 << Int(floor(level))
+        let fineStep = Self.step(rate: header.rate, pixelsPerSecond: pixelsPerSecond)
         if let previous = previousPresentation,
            previous.layers.allSatisfy({ layer in
                let ratio = Double(layer.drawing.step) / Double(fineStep)
-               return ratio >= 0.25 && ratio <= 4 && layer.drawing.covers(start: start, end: end, rate: header.rate)
+               return (fineStep < Self.peakFramesPerInterval ? layer.drawing.step == fineStep : ratio >= 0.25 && ratio <= 4) &&
+                   layer.drawing.covers(start: start, end: end, rate: header.rate)
            }) { return keep(previous) }
         if let family, let previous = coveringPresentation(family: family, start: start, end: end,
                                                             rate: header.rate, preferredStep: fineStep) { return keep(previous) }
@@ -1029,10 +1433,16 @@ final class TimelineAudioWaveform: ObservableObject {
         }
         return result
     }
+    // These are real PCM extrema intervals, not alternate envelope shapes.
+    // The compact peak pyramid remains dyadic from 256 frames onward.
+    static let detailSteps = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192]
     static func step(rate: Double, pixelsPerSecond: Double) -> Int {
         // Keep simplification below half a point, including Retina displays.
         // This also retains every sample at close zoom with the same stroke.
         let framesPerPixel = max(1, rate / max(0.001, pixelsPerSecond) / 2)
+        if framesPerPixel < Double(peakFramesPerInterval) {
+            return detailSteps.last(where: { Double($0) <= framesPerPixel }) ?? 1
+        }
         return 1 << min(26, max(0, Int(floor(log2(framesPerPixel)))))
     }
     static func span(step: Int) -> Int { max(512, step * 128) }
@@ -1055,17 +1465,35 @@ final class TimelineAudioWaveform: ObservableObject {
         }
     }
 
-    private func file(_ url: URL) throws -> AVAudioFile {
-        if let existing = files[url.path] { return existing }
+    private func file(_ url: URL, version: String? = nil) throws -> AVAudioFile {
+        let path = url.path
+        decoderAccess &+= 1
+        if var existing = files[path], version == nil || existing.version == version {
+            existing.access = decoderAccess
+            files[path] = existing
+            return existing.audio
+        }
         let audio = try AVAudioFile(forReading: url)
-        if files.count >= 8 { files.removeAll(keepingCapacity: true) }
-        files[url.path] = audio
+        if files.count >= Self.decoderLimit, files[path] == nil,
+           let oldest = files.min(by: { $0.value.access < $1.value.access })?.key {
+            files.removeValue(forKey: oldest)
+        }
+        files[path] = (audio, version, decoderAccess)
         return audio
     }
 
-    private func enqueue(_ key: String, url: URL, queue: DispatchQueue? = nil, work: @escaping () -> Bool) {
+    private func enqueue(_ key: String, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64,
+                         work: @escaping () -> Bool) {
+        enqueue(.named(key), url: url, queue: queue, maximumPending: maximumPending, work: work)
+    }
+
+    /// Vertex lookups already own a source/version key with a cached hash.
+    /// Reuse it while queued instead of normalizing its Unicode label again
+    /// on every duplicate request and on completion. All jobs share one limit.
+    private func enqueue(_ key: PendingKey, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64,
+                         work: @escaping () -> Bool) {
         lock.lock()
-        guard pending.count < 64, pending.insert(key).inserted else { lock.unlock(); return }
+        guard pending.count < maximumPending, pending.insert(key).inserted else { lock.unlock(); return }
         lock.unlock()
         (queue ?? worker).async { [self] in
             let changed = autoreleasepool { work() }
@@ -1090,7 +1518,7 @@ final class TimelineAudioWaveform: ObservableObject {
 /// The binary directory indexes sparse mip levels. Read-only mapped pages can
 /// be reclaimed by macOS; opening a project does not copy every source to RAM.
 private final class WaveformSource: NSObject {
-    static let baseStep = 256
+    static let baseStep = TimelineAudioWaveform.peakFramesPerInterval
     private static let recordBytes = 4
     private static let magic = Array("JARASPK4".utf8)
     private struct Stored: Decodable {
@@ -1340,13 +1768,15 @@ private final class WaveformSource: NSObject {
         let level = levels.last { $0.step <= step }
         let sourceStep = level?.step ?? Self.baseStep
         let data = level?.samples ?? samples
-        var points = Array(repeating: [SIMD2<Float>](), count: channels)
-        for channel in 0..<channels { points[channel].reserveCapacity(count * 2) }
-        data.withUnsafeBytes { raw in
-            for bucket in 0..<count {
-                let first = (Int(start) + bucket * step) / sourceStep
-                let last = min(Int((frames + Int64(sourceStep) - 1) / Int64(sourceStep)), first + step / sourceStep)
-                for channel in 0..<channels {
+        // Build each channel in one local array, avoiding repeated nested-array
+        // mutation checks for every emitted peak pair.
+        let points = data.withUnsafeBytes { raw -> [[SIMD2<Float>]] in
+            (0..<channels).map { channel in
+                var points: [SIMD2<Float>] = []
+                points.reserveCapacity(count * 2)
+                for bucket in 0..<count {
+                    let first = (Int(start) + bucket * step) / sourceStep
+                    let last = min(Int((frames + Int64(sourceStep) - 1) / Int64(sourceStep)), first + step / sourceStep)
                     var maximum = Int16.min, minimum = Int16.max
                     for source in first..<last {
                         let offset = (source * channels + channel) * Self.recordBytes
@@ -1359,9 +1789,10 @@ private final class WaveformSource: NSObject {
                     let firstX = Float(bucket * step)
                     let lastX = Float(min(remaining, Int64((bucket + 1) * step)))
                     let high = -WaveformPeakCodec.decode(maximum), low = -WaveformPeakCodec.decode(minimum)
-                    points[channel].append(SIMD2(firstX, high))
-                    points[channel].append(SIMD2(lastX, low))
+                    points.append(SIMD2(firstX, high))
+                    points.append(SIMD2(lastX, low))
                 }
+                return points
             }
         }
         return TimelineAudioWaveform.VertexBlock(channels: points, start: start,

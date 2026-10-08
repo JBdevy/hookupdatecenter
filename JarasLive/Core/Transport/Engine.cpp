@@ -287,7 +287,7 @@ void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
             if (track.role.id == "timecode" && !projectionMedia) throw std::invalid_argument("Timecode items follow their regions");
             auto clip = *it;
             clip.startTime = start;
-            clip.regionOwnerID = regionOwnerAt(song, start, start + clip.duration);
+            clip.regionOwnerID = regionOwnerAt(song, start);
             track.clips.erase(it);
             target->clips.push_back(clip);
             song.duration = std::max(song.duration, start + clip.duration);
@@ -394,8 +394,12 @@ void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::v
     song->markers->erase(std::remove_if(song->markers->begin(), song->markers->end(), [&](const auto& marker) {
         return marker.tempoBPM && std::find(removing.begin(), removing.end(), marker.id) != removing.end();
     }), song->markers->end());
-    for (const auto& marker : markers) {
+    for (auto marker : markers) {
         auto found = std::find_if(song->markers->begin(), song->markers->end(), [&](const auto& item) { return item.id == marker.id; });
+        // Match single-marker placement before retiming. In-place edits retain
+        // explicit nil ownership, even when a region has moved over the marker.
+        marker.regionOwnerID = found != song->markers->end() && found->position == marker.position
+            ? found->regionOwnerID : regionOwnerAt(*song, marker.position);
         if (found == song->markers->end()) song->markers->push_back(marker); else *found = marker;
         if (std::isfinite(marker.position)) song->duration = std::max(song->duration, marker.position);
     }
@@ -587,13 +591,22 @@ void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
 void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
     Project next = project_;
     for(auto& song : next.songs) for(auto& track : song.tracks) if(track.id == id) {
+        const auto recordedID = clip.id;
+        const auto recordedOwner = clip.regionOwnerID;
+        const bool preserveRecordedOwner = !replacing && clip.midi.has_value();
         song.duration = std::max(song.duration, clip.startTime + clip.duration);
         if (replacing) {
             auto existing = std::find_if(track.clips.begin(), track.clips.end(), [&](const auto& item) { return item.id == clip.id; });
             if (existing == track.clips.end()) throw std::invalid_argument("Unknown audio item");
             *existing = std::move(clip);
         } else track.clips.push_back(std::move(clip));
-        orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next); project_ = std::move(next); return;
+        orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_);
+        // The MIDI capture map was fixed at note input time. Moving a region
+        // during the take must not attach a previously loose performance.
+        if (preserveRecordedOwner) for (auto& destination : song.tracks) for (auto& recorded : destination.clips) if (recorded.id == recordedID) {
+            recorded.regionOwnerID = recordedOwner && std::none_of(song.parts.begin(), song.parts.end(), [&](const auto& part) { return part.id == *recordedOwner; }) ? std::nullopt : recordedOwner;
+        }
+        validate(next); project_ = std::move(next); return;
     }
     throw std::invalid_argument("Unknown recording track");
 }

@@ -2,7 +2,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 import Combine
 enum SidebarWidthLimits {
+    #if os(macOS)
+    static let trackMixer: CGFloat = 248.6796875
+    #else
     static let trackMixer: CGFloat = 230
+    #endif
     static let setlistDefault: CGFloat = 335.63671875
     #if os(macOS)
     static let setlist: CGFloat = setlistDefault - 30
@@ -54,7 +58,7 @@ struct MainView: View {
     @State private var workspaceHeight: CGFloat = 900
     @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
     @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
-    @State private var draggedFooterHeight: CGFloat?
+    @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private var maximumFooterHeight: CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
             - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)
@@ -62,7 +66,7 @@ struct MainView: View {
     }
     private var footerHeight: CGFloat {
         #if os(macOS)
-        return min(maximumFooterHeight, max(27, draggedFooterHeight ?? storedFooterHeight))
+        return min(maximumFooterHeight, max(27, storedFooterHeight))
         #else
         return 27
         #endif
@@ -130,29 +134,36 @@ struct MainView: View {
                 // space for the transport and the top of the timeline/Setlist.
                 if desktopExtras {
                 FooterMixerPanel(show: show, active: footerMixerOpen,
-                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)))
+                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)),
+                    resizeCoordinator: footerResizeCoordinator)
                 if horizontalSectionsVisible { SmoothSeekPanel(show: show).frame(height: SmoothSeekPanelLayout.height) }
                 FooterPianoKeyboard(active: keyboardOpen).frame(height: 108)
                     .frame(height: keyboardOpen ? 108 : 0, alignment: .top).clipped().allowsHitTesting(keyboardOpen).accessibilityHidden(!keyboardOpen)
                 }
+                #if os(macOS)
+                FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
+                    active: true, identity: AnyHashable(ObjectIdentifier(show)), role: .display,
+                    resizeCoordinator: footerResizeCoordinator,
+                    displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0),
+                    fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0) {
+                    GeometryReader { geometry in
+                        HStack(spacing: 14) {
+                            ResourceUsageView().fixedSize(horizontal: true, vertical: false)
+                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true).frame(maxWidth: .infinity)
+                                .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight,
+                                    changed: { _ in }, ended: { storedFooterHeight = $0 }))
+                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
+                        }.buttonStyle(.plain).frame(height: geometry.size.height)
+                    }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
+                }
+                #else
                 GeometryReader { geometry in
-                    #if os(macOS)
-                    HStack(spacing: 14) {
-                        ResourceUsageView().fixedSize(horizontal: true, vertical: false)
-                        FooterPlaylistDisplay(show: show, height: footerHeight - 2).frame(maxWidth: .infinity)
-                            .overlay(FooterDisplayResizeInput(height: footerHeight, maximum: maximumFooterHeight,
-                                changed: { draggedFooterHeight = $0 }, ended: { value in
-                                    storedFooterHeight = value; draggedFooterHeight = nil
-                                }))
-                        AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
-                    }.buttonStyle(.plain).frame(height: footerHeight)
-                    #else
                     let displayWidth = min(300, max(0, geometry.size.width - 320))
                     let sideWidth = max(0, (geometry.size.width - displayWidth) / 2)
                     let audioWidth = min(230, max(100, sideWidth * 0.4))
                     HStack(spacing: 0) {
                         HStack(spacing: 8) {
-                            ResourceUsageView().frame(width: 114, alignment: .leading)
+                            ResourceUsageView().fixedSize(horizontal: true, vertical: false)
                             #if os(macOS)
                             Text(verbatim: "|").foregroundStyle(JarasTheme.secondary)
                             AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: audioWidth, alignment: .leading)
@@ -171,8 +182,8 @@ struct MainView: View {
                         AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: sideWidth, alignment: .trailing)
                         #endif
                     }.frame(height: 27)
-                    #endif
                 }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: footerHeight).background(JarasTheme.panel)
+                #endif
 
             }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).jarasHideScrollIndicators()
@@ -372,7 +383,10 @@ struct MainView: View {
             DesktopMultiLoopBypassButton(show: show)
             Spacer(minLength: 0)
             if desktopExtras {
-            Button { footerMixerOpen.toggle() } label: {
+            Button {
+                footerMixerOpen.toggle()
+                if footerMixerOpen { sectionsOpen = false }
+            } label: {
                 Image(systemName: "slider.vertical.3")
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 30, height: 32)
@@ -392,7 +406,10 @@ struct MainView: View {
             .jarasHelp("Keyboard")
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
-            Button { sectionsOpen.toggle() } label: {
+            Button {
+                sectionsOpen.toggle()
+                if sectionsOpen { footerMixerOpen = false }
+            } label: {
                 Image(systemName: "line.3.horizontal.decrease")
                     .font(.system(size: 16, weight: .semibold)).frame(width: 30, height: 32)
                     .contentShape(Rectangle())
@@ -535,7 +552,7 @@ struct RegionTunerControl: View {
     @StateObject private var updates: ShowPresentationObserver
     init(show: ShowController) {
         self.show = show
-        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+        _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var editing: Part?
     private func step(_ delta: Int) {
@@ -717,7 +734,7 @@ private struct ProjectNoticePresenter: View {
     @StateObject private var updates: ShowPresentationObserver
     init(show: ShowController) {
         self.show = show
-        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+        _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     var body: some View {
         Color.clear.allowsHitTesting(false)
@@ -735,7 +752,7 @@ private struct FooterProjectNameDisplay: View {
     var titlebar = false
     init(show: ShowController, documents: ProjectDocuments, titlebar: Bool = false) {
         self.show = show; self.documents = documents; self.titlebar = titlebar
-        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+        _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var showingBackups = false
     @State private var backups: [(url: URL, date: Date)] = []
@@ -818,9 +835,139 @@ private struct FooterProjectNameDisplay: View {
 }
 
 #if os(macOS)
-/// The display itself is the resize surface; screen coordinates keep dragging
-/// stable as the footer's top edge moves under the pointer.
-private struct FooterDisplayResizeInput: NSViewRepresentable {
+enum FooterHeightRole { case display, mixer }
+
+/// Shares only native geometry. No publications, project edits or preferences
+/// are emitted while a divider is moving.
+final class FooterVerticalResizeCoordinator {
+    private weak var display: FooterHeightContainerView?
+    private weak var mixer: FooterHeightContainerView?
+    private var availableHeight: CGFloat = 900
+    private var fallbackMixerHeight: CGFloat = 0
+    func configure(availableHeight: CGFloat, mixerHeight: CGFloat) {
+        self.availableHeight = availableHeight; fallbackMixerHeight = mixerHeight
+        display?.refreshHeight()
+    }
+    func register(_ view: FooterHeightContainerView, role: FooterHeightRole) {
+        if role == .display { display = view } else { mixer = view }
+        display?.refreshHeight()
+    }
+    var displayMaximum: CGFloat {
+        let mixerHeight = mixer.map { $0.active ? max(232, $0.effectiveHeight) : 0 } ?? fallbackMixerHeight
+        return min(161.046875, max(27, availableHeight - mixerHeight))
+    }
+    func heightChanged(role: FooterHeightRole) { if role == .mixer { display?.refreshHeight() } }
+}
+
+struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
+    let storedHeight: CGFloat
+    let minimum: CGFloat
+    let maximum: CGFloat
+    let active: Bool
+    let identity: AnyHashable
+    let role: FooterHeightRole
+    var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
+    var displayAvailableHeight: CGFloat? = nil
+    var fallbackMixerHeight: CGFloat = 0
+    @ViewBuilder let content: () -> Content
+    @Environment(\.self) private var environment
+    func makeNSView(context: Context) -> FooterHeightContainerView { FooterHeightContainerView() }
+    func updateNSView(_ view: FooterHeightContainerView, context: Context) {
+        if let displayAvailableHeight {
+            resizeCoordinator?.configure(availableHeight: displayAvailableHeight, mixerHeight: fallbackMixerHeight)
+        }
+        view.configure(storedHeight: storedHeight, minimum: minimum, maximum: maximum, active: active,
+                       role: role, coordinator: resizeCoordinator)
+        view.openFX = environment.openFX; view.editTrackDetails = environment.editTrackDetails
+        view.setContent(identity: identity, environment: environment) {
+            // Copying the entire environment hides this nested host's accessible
+            // descendants. Forward presentation and actions explicitly instead.
+            AnyView(content().environment(\.locale, environment.locale)
+                .environment(\.colorScheme, environment.colorScheme).environment(\.font, environment.font)
+                .environment(\.controlSize, environment.controlSize).environment(\.isEnabled, environment.isEnabled)
+                .environment(\.layoutDirection, environment.layoutDirection).environment(\.dynamicTypeSize, environment.dynamicTypeSize)
+                .environment(\.displayScale, environment.displayScale)
+                .environment(\.openFX, { [weak view] in view?.openFX($0, $1) })
+                .environment(\.editTrackDetails, { [weak view] in view?.editTrackDetails($0) }))
+        }
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FooterHeightContainerView, context: Context) -> CGSize? {
+        CGSize(width: max(0, proposal.width ?? 0), height: nsView.effectiveHeight)
+    }
+}
+
+final class FooterHeightContainerView: NSView {
+    private var storedHeight: CGFloat = 27
+    private var minimum: CGFloat = 27
+    private var maximum: CGFloat = 161.046875
+    private(set) var active = true
+    private var role: FooterHeightRole = .display
+    private var coordinator: FooterVerticalResizeCoordinator?
+    private var preview: CGFloat?
+    private var pendingCommit: (previous: CGFloat, value: CGFloat)?
+    private var identity: AnyHashable?
+    private var environmentKey: String?
+    var openFX: (UUID?, String) -> Void = { _, _ in }
+    var editTrackDetails: (TrackDetailsEditRequest) -> Void = { _ in }
+    private(set) var contentAssignments = 0
+    private(set) var effectiveHeight: CGFloat = 27
+    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+        host.autoresizingMask = [.width, .height]; addSubview(host)
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: effectiveHeight) }
+    var heightMaximum: CGFloat { role == .display ? min(maximum, coordinator?.displayMaximum ?? maximum) : maximum }
+    var heightMinimum: CGFloat { min(minimum, heightMaximum) }
+    func configure(storedHeight: CGFloat, minimum: CGFloat, maximum: CGFloat, active: Bool,
+                   role: FooterHeightRole, coordinator: FooterVerticalResizeCoordinator?) {
+        if let pendingCommit, storedHeight != pendingCommit.previous || !active { self.pendingCommit = nil }
+        self.storedHeight = storedHeight; self.minimum = minimum; self.maximum = maximum
+        self.active = active; self.role = role; self.coordinator = coordinator
+        // A zero-height frame still leaves the complete mixer in AppKit's
+        // tracking/layout traversal. Hide the retained native root as well.
+        host.isHidden = !active
+        if !active { FooterVerticalResizeView.cancelDrags(in: self); preview = nil }
+        refreshHeight(); coordinator?.register(self, role: role)
+    }
+    func setContent(identity: AnyHashable, environment: EnvironmentValues, make: () -> AnyView) {
+        // Do not instantiate hundreds of controls before the mixer is opened.
+        // An already-mounted root retains its scroll/FX state while hidden.
+        guard active else { return }
+        // Actions update through the native view without replacing its root.
+        let key = "\(environment.locale.identifier)|\(environment.colorScheme)|\(String(describing: environment.font))|\(environment.controlSize)|\(environment.layoutDirection)|\(environment.dynamicTypeSize)|\(environment.isEnabled)|\(environment.displayScale)"
+        guard self.identity != identity || environmentKey != key else { return }
+        self.identity = identity; environmentKey = key
+        host.rootView = make(); contentAssignments += 1
+    }
+    func refreshHeight() {
+        let value = active ? min(heightMaximum, max(heightMinimum, preview ?? pendingCommit?.value ?? storedHeight)) : 0
+        guard value != effectiveHeight else { return }
+        effectiveHeight = value; invalidateIntrinsicContentSize(); needsLayout = true
+        coordinator?.heightChanged(role: role)
+    }
+    func previewHeight(_ height: CGFloat) { preview = height; refreshHeight() }
+    func finishHeight(commit: Bool) {
+        if commit { pendingCommit = (storedHeight, effectiveHeight) }
+        preview = nil; refreshHeight()
+    }
+    override func layout() {
+        super.layout()
+        guard active else { return }
+        if host.frame != bounds { host.frame = bounds }
+        host.layoutSubtreeIfNeeded()
+    }
+}
+
+/// Window coordinates preserve the exact drag distance as the footer moves.
+struct FooterDisplayResizeInput: NSViewRepresentable {
     let height: CGFloat
     let maximum: CGFloat
     let changed: (CGFloat) -> Void
@@ -830,29 +977,145 @@ private struct FooterDisplayResizeInput: NSViewRepresentable {
         view.height = height; view.maximum = maximum; view.changed = changed; view.ended = ended
     }
 }
-private final class FooterDisplayResizeView: NSView {
+class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
     var height: CGFloat = 27
+    var minimum: CGFloat = 27
     var maximum: CGFloat = 900
     var changed: ((CGFloat) -> Void)?
     var ended: ((CGFloat) -> Void)?
     private var origin: (y: CGFloat, height: CGFloat)?
-    override func resetCursorRects() { addCursorRect(visibleRect, cursor: .resizeUpDown) }
+    private weak var dragBoundary: FooterHeightContainerView?
+    private var lastHeight: CGFloat?
+    private var keyMonitor: Any?
+    private var notifications: [NSObjectProtocol] = []
+    private(set) var cursorPushed = false
+    private static let owners = NSHashTable<FooterVerticalResizeView>.weakObjects()
+    var isDragging: Bool { origin != nil }
+    private var boundary: FooterHeightContainerView? {
+        if let dragBoundary { return dragBoundary }
+        var ancestor = superview
+        while let view = ancestor {
+            if let view = view as? FooterHeightContainerView { return view }
+            ancestor = view.superview
+        }
+        return nil
+    }
+    @discardableResult static func cancelActiveDrag(in window: NSWindow?) -> Bool {
+        guard let view = owners.allObjects.first(where: { $0.window === window && $0.isDragging }) else { return false }
+        view.cancelDrag(); return true
+    }
+    static func cancelDrags(in container: FooterHeightContainerView) {
+        for view in owners.allObjects where view.dragBoundary === container { view.cancelDrag() }
+    }
+    override var acceptsFirstResponder: Bool { true }
+    override func resetCursorRects() {
+        if !NativeTimelineInputGate.shared.isBlocked(window), !isHiddenOrHasHiddenAncestor {
+            addCursorRect(visibleRect, cursor: .resizeUpDown)
+        }
+    }
     override func mouseDown(with event: NSEvent) {
-        guard event.buttonNumber == 0 else { return }
-        origin = (event.locationInWindow.y, height)
+        guard event.buttonNumber == 0, !isHiddenOrHasHiddenAncestor,
+              !NativeTimelineInputGate.shared.isBlocked(window), boundary?.active != false else { return }
+        dragBoundary = boundary
+        origin = (event.locationInWindow.y, boundary?.effectiveHeight ?? height)
+        lastHeight = origin?.height
+        NSCursor.resizeUpDown.push(); cursorPushed = true
+        if let window, !(window.firstResponder is TimelineGridKeyboardTarget) { window.makeFirstResponder(self) }
     }
     private func resizedHeight(_ event: NSEvent) -> CGFloat? {
         guard let origin else { return nil }
-        return min(max(27, maximum), max(27, origin.height + event.locationInWindow.y - origin.y))
+        let upper = boundary?.heightMaximum ?? max(minimum, maximum)
+        let lower = boundary?.heightMinimum ?? minimum
+        return min(upper, max(lower, origin.height + event.locationInWindow.y - origin.y))
+    }
+    private func apply(_ value: CGFloat) {
+        guard lastHeight != value else { return }
+        lastHeight = value
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        boundary?.previewHeight(value); changed?(value)
+        window?.contentView?.layoutSubtreeIfNeeded()
+        CATransaction.commit()
     }
     override func mouseDragged(with event: NSEvent) {
         guard let value = resizedHeight(event) else { return }
-        changed?(value)
+        apply(value)
     }
     override func mouseUp(with event: NSEvent) {
         guard let value = resizedHeight(event) else { return }
-        origin = nil; ended?(value)
+        apply(value); origin = nil
+        boundary?.finishHeight(commit: true); dragBoundary = nil; finishCursor(); ended?(value)
+    }
+    func cancelDrag() {
+        guard origin != nil else { return }
+        origin = nil; lastHeight = nil
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let container = boundary
+        container?.finishHeight(commit: false)
+        (container?.window ?? window)?.contentView?.layoutSubtreeIfNeeded(); dragBoundary = nil
+        CATransaction.commit(); finishCursor()
+    }
+    private func finishCursor() {
+        if cursorPushed { NSCursor.pop(); cursorPushed = false }
         window?.invalidateCursorRects(for: self)
     }
+    func timelineInputGateChanged(blocked: Bool) { if blocked { cancelDrag() }; window?.invalidateCursorRects(for: self) }
+    func timelineActiveResizeCancelled() -> Bool {
+        guard isDragging else { return false }
+        cancelDrag(); return true
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) { if window !== newWindow { cancelDrag() }; super.viewWillMove(toWindow: newWindow) }
+    override func viewDidHide() { super.viewDidHide(); cancelDrag() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        notifications.forEach(NotificationCenter.default.removeObserver); notifications.removeAll()
+        Self.owners.remove(self)
+        guard let window else { return }
+        Self.owners.add(self); NativeTimelineInputGate.shared.add(self)
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window, event.keyCode == 53,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty, self.isDragging else { return event }
+            self.cancelDrag(); return nil
+        }
+        for name in [NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification, NSWindow.willBeginSheetNotification] {
+            notifications.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.cancelDrag() })
+        }
+    }
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        notifications.forEach(NotificationCenter.default.removeObserver)
+        if cursorPushed { NSCursor.pop() }
+    }
 }
+final class FooterDisplayResizeView: FooterVerticalResizeView {}
+
+struct FooterMixerResizeInput: NSViewRepresentable {
+    let height: CGFloat
+    let maximum: CGFloat
+    let changed: (CGFloat) -> Void
+    let ended: (CGFloat) -> Void
+    func makeNSView(context: Context) -> FooterMixerResizeView { FooterMixerResizeView() }
+    func updateNSView(_ view: FooterMixerResizeView, context: Context) {
+        view.height = height; view.minimum = 232; view.maximum = maximum; view.changed = changed; view.ended = ended
+    }
+}
+final class FooterMixerResizeView: FooterVerticalResizeView {
+    private var tracking: NSTrackingArea?
+    private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.withAlphaComponent(hovered ? 0.12 : 0.04).setFill(); bounds.fill()
+        (hovered ? NSColor(srgbRed: 105/255, green: 237/255, blue: 145/255, alpha: 1) : NSColor(srgbRed: 185/255, green: 185/255, blue: 185/255, alpha: 1)).setFill()
+        NSBezierPath(roundedRect: NSRect(x: (bounds.width - 48) / 2, y: (bounds.height - 2) / 2, width: 48, height: 2), xRadius: 1, yRadius: 1).fill()
+    }
+}
+#else
+final class FooterVerticalResizeCoordinator {}
 #endif

@@ -129,6 +129,23 @@ import Combine
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
+private actor PresentationSaveStore: ProjectPersistence {
+    private var saving: CheckedContinuation<Void, Never>?
+    private var started: CheckedContinuation<Void, Never>?
+    func load() -> Project? { nil }
+    func save(_ project: Project) async {
+        await withCheckedContinuation { continuation in
+            saving = continuation
+            started?.resume(); started = nil
+        }
+    }
+    func waitUntilSaving() async {
+        guard saving == nil else { return }
+        await withCheckedContinuation { started = $0 }
+    }
+    func completeSave() { saving?.resume(); saving = nil }
+}
+
 final class IncrementalTrackSettingsTests: XCTestCase {
     @MainActor func testMIDIChannelIsIncrementalAndFiltersEveryVoiceMessage() throws {
         let project = fixture(), (show, executor) = try show(project)
@@ -227,10 +244,13 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 90)
         project.songs[0].parts.append(second)
         let (controller, executor) = try show(project)
-        let observer = ShowPresentationObserver(show: controller)
-        var changes = 0
+        let observer = controller.presentationObserver
+        let toolbarObserver = controller.presentationObserver
+        XCTAssertTrue(observer === toolbarObserver, "Static controls must share their playback state derivation")
+        var changes = 0, toolbarChanges = 0
         let subscription = observer.objectWillChange.sink { changes += 1 }
-        defer { subscription.cancel() }
+        let toolbarSubscription = toolbarObserver.objectWillChange.sink { toolbarChanges += 1 }
+        defer { subscription.cancel(); toolbarSubscription.cancel() }
         func flush() async { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
         for step in 1...30 {
             executor.transport.position = 37.5 + Double(step) / 30
@@ -265,6 +285,111 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         controller.modalNotice = nil
         await flush()
         XCTAssertEqual(changes, 8)
+        controller.sendMixerControl(.volume, target: track, value: 0.5, preview: true)
+        await flush()
+        XCTAssertEqual(changes, 8, "Fader previews keep their direct audio update without redrawing static controls")
+        controller.sendMixerControl(.volume, target: track, value: 0.5)
+        await flush()
+        XCTAssertEqual(changes, 9, "Committing the fader still publishes its project edit")
+        XCTAssertEqual(controller.current?.tracks.last?.volume, 0.5)
+        let region = try XCTUnwrap(controller.current?.parts.first)
+        controller.editRegion(region.id, name: "Renamed", color: 0x44ff88)
+        await flush()
+        XCTAssertEqual(changes, 10, "Region metadata updates titles without a transport boundary change")
+        XCTAssertEqual(controller.current?.parts.first?.name, "Renamed")
+        controller.performAction(.toggleMultiLoopBypass)
+        await flush()
+        XCTAssertEqual(changes, 11)
+        XCTAssertTrue(controller.snapshot.transport.multiLoopsBypassed == true)
+        controller.performAction(.toggleMultiLoopBypass)
+        await flush()
+        XCTAssertEqual(changes, 12)
+        XCTAssertFalse(controller.snapshot.transport.multiLoopsBypassed == true)
+        XCTAssertEqual(toolbarChanges, changes, "Every control subscribed to the shared observer receives the same boundary and edit updates")
+    }
+    @MainActor func testSharedPresentationObserverReleasesWithoutRetainingController() throws {
+        var controller: ShowController? = try show(fixture()).0
+        weak var releasedController = controller
+        var observer: ShowPresentationObserver? = controller?.presentationObserver
+        weak var releasedObserver = observer
+        XCTAssertTrue(observer === controller?.presentationObserver)
+        observer = nil
+        XCTAssertNil(releasedObserver, "The controller's cache must not retain a dismissed presentation observer")
+        observer = controller?.presentationObserver
+        releasedObserver = observer
+        XCTAssertNotNil(observer, "A new presentation can recreate its released observer")
+        controller = nil
+        XCTAssertNotNil(releasedController, "A visible presentation retains its controller")
+        observer = nil
+        XCTAssertNil(releasedObserver)
+        XCTAssertNil(releasedController, "The shared observer must not create a controller retain cycle")
+    }
+    @MainActor func testSharedPresentationPublishesSavingAndSavedStateToEveryControl() async throws {
+        let store = PresentationSaveStore()
+        let controller = try ShowController(executor: IncrementalSettingsExecutor(), persistence: store, initialProject: fixture())
+        let observer = controller.presentationObserver
+        let toolbarObserver = controller.presentationObserver
+        var states: [ShowPresentationState] = [], toolbarStates: [ShowPresentationState] = []
+        let subscription = observer.objectWillChange.sink { states.append(controller.presentationState) }
+        let toolbarSubscription = toolbarObserver.objectWillChange.sink { toolbarStates.append(controller.presentationState) }
+        defer { subscription.cancel(); toolbarSubscription.cancel() }
+        func flush() async { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
+        let save = Task { try await controller.flushProject() }
+        await store.waitUntilSaving()
+        await flush()
+        XCTAssertEqual(states.count, 1)
+        XCTAssertEqual(states.last?.saving, true)
+        await store.completeSave()
+        try await save.value
+        await flush()
+        XCTAssertEqual(states.count, 2, "Save completion coalesces its saved timestamp, dirty flag and saving flag")
+        XCTAssertEqual(states.last?.saving, false)
+        XCTAssertEqual(states.last?.dirty, false)
+        XCTAssertNotNil(states.last?.savedAt)
+        XCTAssertEqual(toolbarStates, states, "Save feedback must remain synchronized across the shared observer's consumers")
+    }
+    @MainActor func testTimelinePresentationSeparatesPlaybackFromEditingAndActionRequests() async throws {
+        let (controller, executor) = try show(fixture())
+        let observer = ShowTimelinePresentationObserver(show: controller)
+        var changes = 0
+        let subscription = observer.objectWillChange.sink { changes += 1 }
+        defer { subscription.cancel() }
+        func flush() async { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
+        for step in 1...60 {
+            executor.transport.position = 37.5 + Double(step) / 30
+            controller.tick(); await flush()
+        }
+        XCTAssertEqual(changes, 0, "Playback samples must not reconstruct the static grid")
+        executor.transport.editPosition = 35
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, 1, "Moving the edit cursor still updates input coordinates")
+        controller.selectTimelineRegion(try XCTUnwrap(controller.current?.parts.first?.id))
+        await flush()
+        XCTAssertEqual(changes, 2, "Region selection updates its white outline")
+        let track = try XCTUnwrap(controller.current?.tracks.last?.id)
+        controller.setMixerTrackSelection([track], anchor: track)
+        await flush()
+        XCTAssertEqual(changes, 3, "Mixer selection is reflected in the grid")
+        controller.performAction(.splitItems); await flush()
+        XCTAssertEqual(changes, 4, "Split works even when the project geometry has not changed")
+        controller.performAction(.addTrack); await flush()
+        XCTAssertEqual(changes, 5, "Add-track opens without requiring a playback tick")
+        executor.transport.editPosition = nil
+        controller.tick(); await flush()
+        let before = changes
+        for _ in 0..<30 {
+            executor.transport.position += 0.03
+            controller.tick(); await flush()
+        }
+        XCTAssertEqual(changes, before, "A missing edit cursor must not subscribe geometry to the playhead")
+        executor.transport.subPlay.playing = true
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, before + 1, "SubPlay still enables its cursor")
+        executor.transport.subPlay.playing = false
+        executor.transport.playing = false
+        controller.tick(); await flush()
+        XCTAssertEqual(changes, before + 2, "Stop restores stationary cursor coordinates")
+        XCTAssertEqual(observer.state.editPosition, executor.transport.position)
     }
     @MainActor func testMixerPresentationIgnoresPlaybackTicksAndPublishesRealEdits() throws {
         let (controller, executor) = try show(fixture())

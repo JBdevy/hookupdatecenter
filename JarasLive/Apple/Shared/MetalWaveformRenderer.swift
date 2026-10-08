@@ -36,13 +36,29 @@ struct MetalWaveformCoordinateSpace: Equatable {
     let contentRevision: Int
 }
 
+/// Item decoration stays independent of waveform readiness. Viewport-local
+/// rectangles keep GPU arithmetic precise even very far along the timeline.
+struct MetalTimelineItem: Equatable {
+    let rect: CGRect
+    let topColor: SIMD4<Float>
+    let bottomColor: SIMD4<Float>
+    let borderColor: SIMD4<Float>
+    var cornerRadius: Float = 3
+    var borderWidth: Float = 0.6
+    var headerHeight: Float = 0
+    var firstSeamX: CGFloat? = nil
+    var repeatSpacing: CGFloat? = nil
+}
+
 struct MetalWaveformFrame {
     let size: CGSize
     let strokes: [MetalWaveformStroke]
     var coordinateSpace: MetalWaveformCoordinateSpace? = nil
+    var items: [MetalTimelineItem] = []
+    var isEmpty: Bool { strokes.isEmpty && items.isEmpty }
 
     func hasSameContent(as other: MetalWaveformFrame) -> Bool {
-        coordinateSpace == other.coordinateSpace && size == other.size && strokes.count == other.strokes.count && zip(strokes, other.strokes).allSatisfy { a, b in
+        coordinateSpace == other.coordinateSpace && size == other.size && items == other.items && strokes.count == other.strokes.count && zip(strokes, other.strokes).allSatisfy { a, b in
             a.block === b.block && a.channel == b.channel && a.scale == b.scale && a.translation == b.translation &&
             a.clip == b.clip && a.color == b.color && a.itemRect == b.itemRect && a.firstSeamX == b.firstSeamX &&
             a.repeatSpacing == b.repeatSpacing && a.lineWidth == b.lineWidth && a.itemCornerRadius == b.itemCornerRadius
@@ -124,11 +140,12 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
         renderer.submit(frame, allowCoalescing: sameGeometry)
     }
     private func applyPresentationGeometry() {
-        guard let latest else { return }
+        guard let latest, !latest.isEmpty else { return }
         let rect = CGRect(origin: .zero, size: latest.size)
-        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
         if renderer.frame != rect { renderer.frame = rect }
-        CATransaction.commit()
     }
 }
 
@@ -151,7 +168,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     private var latestFrame: MetalWaveformFrame?
     private var pending: MetalWaveformFrame?
     private var pendingRequestedAt: Double = 0
-    private var visibleBuffers: [String: MetalWaveformEngine.SourceBuffer] = [:]
+    private var visibleBuffers: MetalWaveformEngine.SourceBuffers = [:]
     private let flights = FrameGate()
     private var rendering = false
     private var drawableRetryUsed = false
@@ -246,6 +263,19 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         // ancestors. Identical source/transforms must not cause another GPU pass.
         if let latestFrame, latestFrame.hasSameContent(as: frame) { return }
         latestFrame = frame
+        // An empty viewport has no GPU work. Hide any old drawable immediately
+        // and invalidate delayed presentations instead of allocating, clearing
+        // and scheduling a transparent Retina texture on every zoom frame.
+        if frame.isEmpty {
+            pending = nil
+            visibleBuffers.removeAll(keepingCapacity: false)
+            for presentation in scheduledPresentations.values { presentation.lease.finish(2) }
+            scheduledPresentations.removeAll(keepingCapacity: true)
+            lastPresentedSequence = submittedFrameCount
+            setContentVisible(false)
+            didPresent?(frame)
+            return
+        }
         drawableRetryUsed = false
         requiresImmediateSubmission = !allowCoalescing
         if requiresImmediateSubmission {
@@ -264,7 +294,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
 
     private func renderLatest() {
         guard !rendering, window != nil, bounds.width > 0, bounds.height > 0,
-              (requiresImmediateSubmission || flights.hasCapacity), let frame = pending, engine.isReady else { return }
+              (requiresImmediateSubmission || flights.hasCapacity), let frame = pending, !frame.isEmpty, engine.isReady else { return }
         // MTKView acquires its drawable before invoking draw(in:). Resizing in
         // that delegate mixes the new viewport/scissor with the old texture and
         // can erase most of a waveform when a prepared viewport shrinks.
@@ -301,7 +331,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard !rendering, let frame = pending,
+        guard !rendering, let frame = pending, !frame.isEmpty,
               frame.size.width > 0, frame.size.height > 0,
               let queue = engine.commandQueue, engine.isReady, flights.begin(ignoringLimit: requiresImmediateSubmission) else { return }
         var committed = false
@@ -387,7 +417,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
 
     private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64,
                          lease: FrameLease, requestedAt: Double) {
-        guard sequence > lastPresentedSequence else { lease.finish(2); return }
+        guard sequence > lastPresentedSequence, latestFrame?.isEmpty == false else { lease.finish(2); return }
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.
@@ -411,8 +441,27 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         CATransaction.setDisableActions(true)
         defer { CATransaction.setDisableActions(disabled) }
         didPresent?(frame)
+        setContentVisible(true)
         drawable.present()
-
+    }
+    private func setContentVisible(_ visible: Bool) {
+        let opacity: CGFloat = visible ? 1 : 0
+        // Even an identical AppKit alpha setter invalidates view compositing
+        // and vibrancy through the hierarchy. A presented frame is normally
+        // already visible, so only visibility transitions touch that property.
+        #if os(macOS)
+        guard alphaValue != opacity else { return }
+        #else
+        guard alpha != opacity else { return }
+        #endif
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        #if os(macOS)
+        alphaValue = opacity
+        #else
+        alpha = opacity
+        #endif
     }
 }
 
@@ -424,12 +473,14 @@ final class MetalWaveformEngine {
     let commandQueue: MTLCommandQueue?
     private let preparationLock = NSLock()
     private var pipeline: MTLRenderPipelineState?
+    private var itemPipeline: MTLRenderPipelineState?
     private var readyHandlers: [() -> Void] = []
-    private let buffers = NSCache<NSString, SourceBuffer>()
+    private let buffers = NSCache<BufferCacheKey, SourceBuffer>()
     private let allocateSourceBuffer: (UnsafeRawPointer, Int) -> MTLBuffer?
     private(set) var uploadedBufferCount: UInt64 = 0
     private(set) var lastEncodedSegmentCount = 0
     private(set) var lastEncodedStrokeCount = 0
+    private(set) var lastEncodedItemCount = 0
     private(set) var preparationError: String?
 
     final class SourceBuffer: NSObject {
@@ -437,6 +488,40 @@ final class MetalWaveformEngine {
         let pointCount: Int
         init(buffer: MTLBuffer, pointCount: Int) { self.buffer = buffer; self.pointCount = pointCount }
     }
+
+    /// Reuse the source key's worker-computed hash. Keep semantic equality so
+    /// evicted/recreated CPU blocks can still reuse an existing GPU buffer.
+    private final class BufferCacheKey: NSObject {
+        let source: String
+        let channel: Int
+        private let cachedHash: Int
+        init(block: TimelineAudioWaveform.VertexBlock, channel: Int) {
+            source = block.key; self.channel = channel
+            var hasher = Hasher()
+            hasher.combine(block.keyHash); hasher.combine(channel)
+            cachedHash = hasher.finalize()
+        }
+        override var hash: Int { cachedHash }
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? BufferCacheKey else { return false }
+            return channel == other.channel && source == other.source
+        }
+    }
+
+    /// Visible strokes reuse the same immutable block objects. Hash their
+    /// identity instead of normalizing a full Unicode media path every frame.
+    /// Retaining the block in the key prevents its address from being reused
+    /// while an earlier GPU buffer is still visible.
+    struct SourceBufferKey: Hashable {
+        let block: TimelineAudioWaveform.VertexBlock
+        let channel: Int
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.block === rhs.block && lhs.channel == rhs.channel }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(ObjectIdentifier(block))
+            hasher.combine(channel)
+        }
+    }
+    typealias SourceBuffers = [SourceBufferKey: SourceBuffer]
 
     var isReady: Bool {
         preparationLock.lock(); defer { preparationLock.unlock() }
@@ -489,8 +574,21 @@ final class MetalWaveformEngine {
             colour.sourceAlphaBlendFactor = .one
             colour.destinationAlphaBlendFactor = .one
             let compiled = try device.makeRenderPipelineState(descriptor: descriptor)
+            let itemDescriptor = MTLRenderPipelineDescriptor()
+            itemDescriptor.label = "Timeline item gradients, headers and loop notches"
+            itemDescriptor.vertexFunction = library.makeFunction(name: "timelineItemVertex")
+            itemDescriptor.fragmentFunction = library.makeFunction(name: "timelineItemFragment")
+            let itemColor = itemDescriptor.colorAttachments[0]!
+            itemColor.pixelFormat = .bgra8Unorm
+            itemColor.isBlendingEnabled = true
+            itemColor.sourceRGBBlendFactor = .one
+            itemColor.sourceAlphaBlendFactor = .one
+            itemColor.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            itemColor.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            let compiledItems = try device.makeRenderPipelineState(descriptor: itemDescriptor)
             preparationLock.lock()
             pipeline = compiled
+            itemPipeline = compiledItems
             let handlers = readyHandlers
             readyHandlers.removeAll()
             preparationLock.unlock()
@@ -504,11 +602,19 @@ final class MetalWaveformEngine {
     }
 
     private func sourceBuffer(_ block: TimelineAudioWaveform.VertexBlock, channel: Int,
-                              retaining old: [String: SourceBuffer], next: inout [String: SourceBuffer]) -> SourceBuffer? {
+                              retaining old: SourceBuffers, next: inout SourceBuffers) -> SourceBuffer? {
         guard block.channels.indices.contains(channel), block.channels[channel].count > 1 else { return nil }
-        let key = "\(block.key):channel:\(channel)"
-        if let cached = old[key] ?? buffers.object(forKey: key as NSString) {
-            next[key] = cached
+        let identity = SourceBufferKey(block: block, channel: channel)
+        if let cached = next[identity] { return cached }
+        if let cached = old[identity] {
+            next[identity] = cached
+            return cached
+        }
+        // A newly reconstructed block can still share an already uploaded
+        // source buffer. Only this cold identity path needs the semantic key.
+        let key = BufferCacheKey(block: block, channel: channel)
+        if let cached = buffers.object(forKey: key) {
+            next[identity] = cached
             return cached
         }
         let points = block.channels[channel]
@@ -518,8 +624,8 @@ final class MetalWaveformEngine {
         }) else { return nil }
         buffer.label = "Waveform \(block.key) ch \(channel)"
         let result = SourceBuffer(buffer: buffer, pointCount: points.count)
-        buffers.setObject(result, forKey: key as NSString, cost: size)
-        next[key] = result
+        buffers.setObject(result, forKey: key, cost: size)
+        next[identity] = result
         uploadedBufferCount &+= 1
         return result
     }
@@ -534,22 +640,71 @@ final class MetalWaveformEngine {
         var corner: SIMD4<Float>
     }
 
+    private struct ItemUniforms {
+        var rect: SIMD4<Float>
+        var top: SIMD4<Float>
+        var bottom: SIMD4<Float>
+        var border: SIMD4<Float>
+        var style: SIMD4<Float>
+        var notch: SIMD4<Float>
+    }
+
     @discardableResult
     func encode(_ frame: MetalWaveformFrame, pass: MTLRenderPassDescriptor,
                 command: MTLCommandBuffer, density: Float,
-                retaining visibleBuffers: inout [String: SourceBuffer]) -> Bool {
+                retaining visibleBuffers: inout SourceBuffers) -> Bool {
         preparationLock.lock()
         let prepared = pipeline
+        let preparedItems = itemPipeline
         preparationLock.unlock()
         guard let prepared, frame.size.width > 0, frame.size.height > 0,
               let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return false }
         encoder.label = "Batched visible waveform segments"
         encoder.setRenderPipelineState(prepared)
-        var retained: [String: SourceBuffer] = [:]
+        var retained: SourceBuffers = [:]
         retained.reserveCapacity(visibleBuffers.count)
         lastEncodedSegmentCount = 0
         lastEncodedStrokeCount = 0
+        lastEncodedItemCount = 0
         let viewport = CGRect(origin: .zero, size: frame.size)
+        // Decorations are submitted on their own surface below waveforms.
+        // Waveform maximum-coverage blending must never blend over a fill.
+        if !frame.items.isEmpty, let preparedItems {
+            encoder.setRenderPipelineState(preparedItems)
+            var screen = SIMD4(Float(frame.size.width), Float(frame.size.height), max(1, density), 0)
+            encoder.setVertexBytes(&screen, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+            encoder.setFragmentBytes(&screen, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+            var batch: [ItemUniforms] = []
+            batch.reserveCapacity(32)
+            func flush() {
+                guard !batch.isEmpty else { return }
+                batch.withUnsafeBytes { bytes in
+                    encoder.setVertexBytes(bytes.baseAddress!, length: bytes.count, index: 0)
+                    encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 0)
+                }
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: batch.count)
+                lastEncodedItemCount += batch.count
+                batch.removeAll(keepingCapacity: true)
+            }
+            for item in frame.items {
+                let r = item.rect
+                guard r.minX.isFinite, r.minY.isFinite, r.width.isFinite, r.height.isFinite,
+                    r.width > 0, r.height > 0, r.insetBy(dx: -2, dy: -2).intersects(viewport) else { continue }
+                let spacing = Float(item.repeatSpacing ?? 0)
+                batch.append(ItemUniforms(rect: SIMD4(Float(r.minX), Float(r.minY), Float(r.maxX), Float(r.maxY)),
+                    top: item.topColor, bottom: item.bottomColor, border: item.borderColor,
+                    style: SIMD4(max(0, item.cornerRadius), max(0, item.borderWidth), max(0, item.headerHeight), 0),
+                    notch: SIMD4(Float(item.firstSeamX ?? 0), spacing.isFinite && spacing > 0 ? spacing : 0, 4, min(5, Float(r.height) / 3))))
+                if batch.count == 32 { flush() }
+            }
+            flush()
+            encoder.setRenderPipelineState(prepared)
+        }
+        // Render-target dimensions are immutable throughout this pass. Avoid
+        // crossing the Objective-C attachment/texture accessors per stroke.
+        let target = pass.colorAttachments[0].texture
+        let targetWidth = target?.width ?? 0, targetHeight = target?.height ?? 0
+        var scissor = MTLScissorRect(x: 0, y: 0, width: 0, height: 0)
         for stroke in frame.strokes {
             let clip = stroke.clip.intersection(stroke.itemRect).intersection(viewport)
             guard !clip.isNull, clip.width > 0, clip.height > 0,
@@ -562,8 +717,8 @@ final class MetalWaveformEngine {
             guard !range.isEmpty else { continue }
             let pixelMinX = max(0, Int(floor(clip.minX * CGFloat(density))))
             let pixelMinY = max(0, Int(floor(clip.minY * CGFloat(density))))
-            let pixelMaxX = min(pass.colorAttachments[0].texture!.width, Int(ceil(clip.maxX * CGFloat(density))))
-            let pixelMaxY = min(pass.colorAttachments[0].texture!.height, Int(ceil(clip.maxY * CGFloat(density))))
+            let pixelMaxX = min(targetWidth, Int(ceil(clip.maxX * CGFloat(density))))
+            let pixelMaxY = min(targetHeight, Int(ceil(clip.maxY * CGFloat(density))))
             guard pixelMaxX > pixelMinX, pixelMaxY > pixelMinY else { continue }
             // Cull before upload. A memory-pressure allocation failure must
             // keep the complete previous drawable, rather than present this
@@ -572,7 +727,11 @@ final class MetalWaveformEngine {
                 encoder.endEncoding()
                 return false
             }
-            encoder.setScissorRect(MTLScissorRect(x: pixelMinX, y: pixelMinY, width: pixelMaxX - pixelMinX, height: pixelMaxY - pixelMinY))
+            let pixelWidth = pixelMaxX - pixelMinX, pixelHeight = pixelMaxY - pixelMinY
+            if scissor.x != pixelMinX || scissor.y != pixelMinY || scissor.width != pixelWidth || scissor.height != pixelHeight {
+                scissor = MTLScissorRect(x: pixelMinX, y: pixelMinY, width: pixelWidth, height: pixelHeight)
+                encoder.setScissorRect(scissor)
+            }
             let seam = Float(stroke.firstSeamX ?? 0)
             let spacing = Float(stroke.repeatSpacing ?? 0)
             var uniforms = Uniforms(
@@ -611,6 +770,12 @@ final class MetalWaveformEngine {
         let first = (Float(clip.minX) - padding - stroke.translation.x) / stroke.scale.x
         let last = (Float(clip.maxX) + padding - stroke.translation.x) / stroke.scale.x
         let minimum = min(first, last), maximum = max(first, last)
+        // Interior blocks are already fully visible. Only viewport-edge
+        // blocks need binary searches. Keep the strict upper comparison: a
+        // contour can end in repeated x positions, whose exact boundary must
+        // still follow lowerBound's existing segment selection.
+        let lastPoint = stroke.block.isPeakEnvelope ? elementCount * 2 - 1 : points.count - 1
+        if minimum <= points[0].x, maximum > points[lastPoint].x { return 0..<elementCount }
         if stroke.block.isPeakEnvelope {
             var left = 0, right = elementCount
             while left < right {
@@ -641,6 +806,63 @@ final class MetalWaveformEngine {
     private static let shader = """
     #include <metal_stdlib>
     using namespace metal;
+    struct TimelineItemUniforms {
+        float4 rect, top, bottom, border, style, notch;
+    };
+    struct TimelineItemOut {
+        float4 position [[position]];
+        float2 screen;
+        uint item [[flat]];
+    };
+    vertex TimelineItemOut timelineItemVertex(uint vertexID [[vertex_id]], uint instanceID [[instance_id]],
+        constant TimelineItemUniforms *items [[buffer(0)]], constant float4 &screen [[buffer(1)]]) {
+        const float2 corners[] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(0, 1), float2(1, 0), float2(1, 1) };
+        TimelineItemUniforms u = items[instanceID];
+        float padding = u.style.y * 0.5 + 1.0 / screen.z;
+        float2 lower = max(u.rect.xy - padding, float2(0));
+        float2 upper = min(u.rect.zw + padding, screen.xy);
+        float2 point = mix(lower, upper, corners[vertexID]);
+        TimelineItemOut out;
+        out.screen = point;
+        out.position = float4(point.x / screen.x * 2 - 1, 1 - point.y / screen.y * 2, 0, 1);
+        out.item = instanceID;
+        return out;
+    }
+    fragment float4 timelineItemFragment(TimelineItemOut in [[stage_in]],
+        constant TimelineItemUniforms *items [[buffer(0)]], constant float4 &screen [[buffer(1)]]) {
+        TimelineItemUniforms u = items[in.item];
+        float2 extent = u.rect.zw - u.rect.xy;
+        float radius = min(u.style.x, min(extent.x, extent.y) * 0.5);
+        // Distances from individual edges avoid cancellation at extreme zoom.
+        float2 edges = min(in.screen - u.rect.xy, u.rect.zw - in.screen);
+        float2 q = radius - edges;
+        float distance = length(max(q, float2(0))) + min(max(q.x, q.y), 0.0) - radius;
+        if (u.notch.y > 0) {
+            float seam = u.notch.x + round((in.screen.x - u.notch.x) / u.notch.y) * u.notch.y;
+            if (seam > u.rect.x + radius && seam < u.rect.z - radius) {
+                float dx = abs(in.screen.x - seam);
+                if (dx < u.notch.z) {
+                    float slope = u.notch.w / u.notch.z;
+                    float top = u.rect.w - u.notch.w + dx * slope;
+                    distance = max(distance, (in.screen.y - top) / sqrt(1 + slope * slope));
+                }
+            }
+        }
+        float fillCoverage = saturate(0.5 - distance * screen.z);
+        float t = saturate((in.screen.y - u.rect.y) / max(1.0, extent.y));
+        float4 fill = mix(u.top, u.bottom, t);
+        float alpha = fill.a * fillCoverage;
+        float3 rgb = fill.rgb * alpha;
+        if (u.style.z > 0 && in.screen.y < u.rect.y + u.style.z) {
+            float headerAlpha = 0.16 * fillCoverage;
+            rgb *= (1 - headerAlpha);
+            alpha = headerAlpha + alpha * (1 - headerAlpha);
+        }
+        float strokeCoverage = u.style.y > 0 ? saturate(0.5 + (u.style.y * 0.5 - abs(distance)) * screen.z) : 0;
+        float strokeAlpha = u.border.a * strokeCoverage;
+        return float4(u.border.rgb * strokeAlpha + rgb * (1 - strokeAlpha), strokeAlpha + alpha * (1 - strokeAlpha));
+    }
+
     struct WaveformUniforms {
         float4 transform;
         float4 viewportAndWidth;

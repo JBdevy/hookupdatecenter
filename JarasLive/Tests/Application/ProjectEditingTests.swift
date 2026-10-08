@@ -128,6 +128,90 @@ final class ProjectEditingTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips.count, 1)
         try project.validate()
     }
+    func testAllRegionsDeleteRemovesOwnedContentOfEveryKindAndPreservesOverlaps() throws {
+        var project = Project.empty(name: "Delete region contents")
+        let songID = project.songs[0].id
+        let first = Part(id: UUID(), name: "Delete", startTime: 10, endTime: 20)
+        let other = Part(id: UUID(), name: "Keep", startTime: 15, endTime: 30)
+        project.songs[0].parts = [first, other]
+        project.songs[0].duration = 60
+        project.songs[0].regionOwnershipInitialized = true
+        for kind in [TrackKind.standard, .teleprompt, .teleprompt2, .chords, .click, .timecode] {
+            var track = Track(id: UUID(), name: kind.title, role: TrackRole(rawValue: kind.rawValue))
+            track.clips = [AudioClip(id: UUID(), name: "Owned", startTime: 12, duration: 2, regionOwnerID: first.id)]
+            if kind == .timecode {
+                track.clips = [AudioClip(id: Project.timecodeItemID(first.id), name: "Extended timecode", startTime: 8, duration: 15)]
+            }
+            project.songs[0].tracks.append(track)
+        }
+        let foreign = AudioClip(id: UUID(), name: "Overlapping song", startTime: 16, duration: 1, regionOwnerID: other.id)
+        let loose = AudioClip(id: UUID(), name: "Loose item under region", startTime: 18, duration: 1)
+        project.songs[0].tracks[0].clips += [foreign, loose]
+        let normal = TimelineMarker(id: UUID(), name: "Normal", position: 10, color: 0, regionOwnerID: first.id)
+        let tempo = TimelineMarker(id: UUID(), name: "Tempo", position: 12, color: 0, regionOwnerID: first.id, tempoBPM: 140)
+        let section = TimelineMarker(id: UUID(), name: "Section", position: 14, color: 0, regionOwnerID: first.id, section: true)
+        let loop = TimelineMarker(id: UUID(), name: "Loop", position: 15, color: 0, regionOwnerID: first.id, section: true, loopSection: true)
+        let otherMarker = TimelineMarker(id: UUID(), name: "Other song", position: 17, color: 0, regionOwnerID: other.id)
+        let looseMarker = TimelineMarker(id: UUID(), name: "Unattached", position: 19, color: 0)
+        let boundary = TimelineMarker(id: UUID(), name: "Next", position: 20, color: 0, regionOwnerID: other.id, tempoBPM: 120)
+        project.songs[0].markers = [normal, tempo, section, loop, otherMarker, looseMarker, boundary]
+        let playlist = RegionPlaylist(id: UUID(), name: "Set", songId: songID, regionIds: [first.id, other.id])
+        project.regionSetlist = RegionSetlist(playlists: [playlist])
+        let before = project
+        project.deleteSetlistEntries([first.id], song: songID, playlist: playlist.id)
+        XCTAssertEqual(project.songs, before.songs, "playlist removal must leave all timeline content intact")
+        project = before
+        var history = ProjectEditHistory(project)
+        project.deleteSetlistEntries([first.id], song: songID, playlist: nil)
+        history.record(project)
+        XCTAssertEqual(project.songs[0].parts, [other])
+        XCTAssertEqual(project.songs[0].tracks[0].clips, [foreign, loose])
+        XCTAssertTrue(project.songs[0].tracks.dropFirst().allSatisfy { $0.clips.isEmpty })
+        XCTAssertEqual(project.songs[0].markers, [otherMarker, looseMarker, boundary])
+        XCTAssertEqual(project.regionSetlist?.playlists[0].regionIds, [other.id])
+        XCTAssertEqual(history.undo(), before)
+        XCTAssertEqual(history.redo(), project)
+    }
+    func testAllRegionsImportedContentUsesHalfOpenRegionBoundaries() throws {
+        var project = fixture()
+        let first = Part(id: UUID(), name: "First", startTime: 30, endTime: 50)
+        let next = Part(id: UUID(), name: "Next", startTime: 50, endTime: 70)
+        project.songs[0].parts = [first, next]
+        let tempo = TimelineMarker(id: UUID(), name: "Tempo", position: 30, color: 0, tempoBPM: 130)
+        let cue = TimelineMarker(id: UUID(), name: "Cue", position: 40, color: 0, section: true)
+        let boundary = TimelineMarker(id: UUID(), name: "Next tempo", position: 50, color: 0, tempoBPM: 140)
+        project.songs[0].markers = [tempo, cue, boundary]
+        project.deleteSetlistEntries([first.id], song: project.songs[0].id, playlist: nil)
+        XCTAssertTrue(project.songs[0].tracks[0].clips.isEmpty)
+        XCTAssertEqual(project.songs[0].markers, [boundary])
+        XCTAssertEqual(project.songs[0].parts, [next])
+        try project.validate()
+    }
+    func testAllRegionsClearsPreviouslyUnownedTempoWithoutCapturingItDuringRegionMoves() throws {
+        var project = fixture()
+        let first = Part(id: UUID(), name: "Moving", startTime: 0, endTime: 10)
+        let next = Part(id: UUID(), name: "Next", startTime: 30, endTime: 40)
+        project.songs[0].parts = [first, next]
+        project.songs[0].regionOwnershipInitialized = true
+        project.songs[0].tracks = []
+        let before = TimelineMarker(id: UUID(), name: "Before", position: 19, color: 0, tempoBPM: 120)
+        let start = TimelineMarker(id: UUID(), name: "Start", position: 20, color: 0, tempoBPM: 125)
+        let inside = TimelineMarker(id: UUID(), name: "Legacy tempo", position: 25, color: 0, tempoBPM: 130)
+        let foreign = TimelineMarker(id: UUID(), name: "Other song", position: 26, color: 0, regionOwnerID: next.id, tempoBPM: 135)
+        let boundary = TimelineMarker(id: UUID(), name: "Next start", position: 30, color: 0, tempoBPM: 140)
+        let after = TimelineMarker(id: UUID(), name: "After", position: 31, color: 0, tempoBPM: 145)
+        project.songs[0].markers = [before, start, inside, foreign, boundary, after]
+        project.songs[0] = project.songs[0].previewMovingRegion(first.id, to: 20)
+        XCTAssertEqual(project.songs[0].markers, [before, start, inside, foreign, boundary, after], "a region moving across loose tempos does not capture or move them")
+        var history = ProjectEditHistory(project)
+        let original = project
+        project.deleteSetlistEntries([first.id], song: project.songs[0].id, playlist: nil)
+        history.record(project)
+        XCTAssertEqual(project.songs[0].markers, [before, foreign, boundary, after])
+        XCTAssertEqual(history.undo(), original)
+        XCTAssertEqual(history.redo(), project)
+        try project.validate()
+    }
     func testSplitSourceOffsetsAndUnlimitedRecordingLanes() throws {
         var project = fixture(); let clip = project.songs[0].tracks[0].clips[0]
         project.splitItems([clip.id], at: 35)

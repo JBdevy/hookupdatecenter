@@ -10,6 +10,8 @@ source=Path('Apple/Shared/SongListView.swift').read_text()
 start=source.index('private struct SetlistPlaybackBinding:')
 end=source.index('struct SongListPreview',start)
 code=source[start:end]
+code=code.replace('private final class NativeRegionSetlistLabelView: NSView {', 'private final class NativeRegionSetlistLabelView: NSView {\n    var drawingCount = 0')
+code=code.replace('    override func draw(_ dirtyRect: NSRect) {', '    override func draw(_ dirtyRect: NSRect) {\n        drawingCount += 1')
 row=code[code.index('private struct RegionSetlistRow:'):code.index('#if os(macOS)\nimport AppKit')]
 # The retained iPad label is also the visual baseline for native macOS drawing.
 original=re.sub(r'#if os\(macOS\).*?#else\n(.*?)#endif',r'\1',row,flags=re.S).replace('RegionSetlistRow','OriginalRegionSetlistRow')

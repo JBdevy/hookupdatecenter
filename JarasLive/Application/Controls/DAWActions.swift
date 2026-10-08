@@ -66,7 +66,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .playStop: (key, modifiers, label) = (49, 0, "Space")
         case .pause: return nil
         case .repeatPlayback: (key, modifiers, label) = (15, 0, "R")
-        case .subPlayStop: (key, modifiers, label) = (36, 0, "Enter")
+        case .subPlayStop: (key, modifiers, label) = (49, shift, "⇧Space")
         case .addTrack: (key, modifiers, label) = (17, command, "⌘T")
         case .setlistUp: (key, modifiers, label) = (126, 0, "↑")
         case .setlistDown: (key, modifiers, label) = (125, 0, "↓")
@@ -118,7 +118,6 @@ public struct DAWActionBinding: Codable, Equatable, Identifiable {
         case .addTrack: return input.key == 17 && input.modifiers == 1 << 18
         case .createTempoMarker: return input.key == 17 && input.modifiers == (1 << 18 | 1 << 17)
         case .ignoreNext: return input.key == 82 && input.modifiers == 0
-        case .subPlayStop: return input.key == 76 && input.modifiers == 0
         case .tempoUp: return input.key == 69 && input.modifiers == 0
         case .tempoDown: return input.key == 78 && input.modifiers == 0
         default: return false
@@ -133,6 +132,14 @@ public struct DAWActionBindings: Codable, Equatable {
         if let index = stored.firstIndex(where: { $0.action == .selectTrack }),
            stored[index].keyboard?.key == 17, stored[index].keyboard?.modifiers == (1 << 20 | 1 << 17) {
             stored[index].keyboard = nil
+        }
+        let oldSubPlayDefault = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0)
+        if let index = stored.firstIndex(where: { $0.action == .subPlayStop }),
+           stored[index].keyboard == oldSubPlayDefault, let replacement = DAWAction.subPlayStop.defaultKeyboard,
+           !stored.contains(where: { $0.action != .subPlayStop && $0.matches(replacement) }) {
+            // Move the old default only when the replacement is free. Keep
+            // custom/unbound shortcuts and both bindings when a conflict exists.
+            stored[index].keyboard = replacement
         }
         entries = DAWAction.allCases.map { action in
             var binding = stored.first { $0.action == action } ?? DAWActionBinding(action: action)

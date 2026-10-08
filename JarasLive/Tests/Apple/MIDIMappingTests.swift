@@ -1,6 +1,9 @@
 import SwiftUI
 import CoreMIDI
 let mappingTestApplicationActive = true
+@MainActor enum RegionShortcutView {
+    static func handleSelectedObjectsDelete(_ event: NSEvent) -> Bool { false }
+}
 
 // Only the external devices and project are replaced. The test compiles the
 // production MIDI learner, conflict detection, latch and continuous routing.
@@ -83,7 +86,11 @@ enum ProjectError: Error { case invalid(String) }
         let legacy = [MappedControl(project: show.snapshot.project.id, track: track, command: "mute", input: ControlInput(kind: "midi", label: "CC 91", device: 123, channel: 0, status: 0xb0, number: 91)),
                       MappedControl(project: UUID(), track: nil, command: "mute", input: ControlInput(kind: "midi", label: "CC 90", device: 123, channel: 0, status: 0xb0, number: 90))]
         defaults.set(try! JSONEncoder().encode(legacy), forKey: "jaras.controlMappings")
+        var oldSubPlay = DAWActionBinding(action: .subPlayStop)
+        oldSubPlay.keyboard = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0)
+        defaults.set(try! JSONEncoder().encode([oldSubPlay]), forKey: "jaras.actions")
         let mappings = ControlMappings.shared
+        precondition(mappings.actions.binding(.subPlayStop).keyboard == DAWAction.subPlayStop.defaultKeyboard, "stored Enter defaults migrate to Shift+Space at startup")
         show.snapshot.project.songs = [MappingTestSong(tracks: [MappingTestTrack(id: track, name: "Piano")])]
         mappings.show = show
         mappings.migrateActionMappings()
@@ -277,14 +284,16 @@ enum ProjectError: Error { case invalid(String) }
         alert.beginSheetModal(for: parent) { _ in }
         precondition(alert.window.sheetParent === parent && alert.window.attachedSheet == nil)
         let beforeDialog = show.actionsReceived.count
-        func key(_ code: UInt16, in window: NSWindow) -> NSEvent {
-            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: code == 53 ? "\u{1b}" : "\r", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
+        func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = [], in window: NSWindow, isRepeat: Bool = false) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: code == 53 ? "\u{1b}" : code == 49 ? " " : "\r", charactersIgnoringModifiers: "", isARepeat: isRepeat, keyCode: code)!
         }
         for code: UInt16 in [36, 76, 53] {
             precondition(!mappings.handleKey(key(code, in: alert.window)), "a sheet must receive its Enter/Escape keys before any DAW shortcut")
             precondition(!mappings.handleKey(key(code, in: parent)), "the parent must not dispatch shortcuts while its sheet is open")
         }
+        precondition(!mappings.handleKey(key(49, modifiers: .shift, in: alert.window)), "the sheet owns Shift+Space while it is open")
+        precondition(!mappings.handleKey(key(49, modifiers: .shift, in: parent)), "the parent cannot start Sub Play while its sheet is open")
         precondition(show.actionsReceived.count == beforeDialog, "confirming a dialog must never start Sub Play")
         mappings.beginAction(.projectEnd, kind: "keyboard")
         mappings.candidate = ControlInput(kind: "keyboard", label: "Test dialog key", key: 119, modifiers: 0)
@@ -295,12 +304,18 @@ enum ProjectError: Error { case invalid(String) }
         parent.endSheet(alert.window)
         alert.window.orderOut(nil)
         NativeTimelineInputGate.shared.setBlocked(true, for: parent)
-        precondition(!mappings.handleKey(key(36, in: parent)), "an in-window editor owns Enter instead of Sub Play")
+        precondition(!mappings.handleKey(key(49, modifiers: .shift, in: parent)), "an in-window editor owns Shift+Space instead of Sub Play")
         mappings.beginAction(.projectEnd, kind: "keyboard")
         precondition(mappings.handleKey(key(53, in: parent)) && mappings.editing == nil, "Escape still cancels the active shortcut learner")
         NativeTimelineInputGate.shared.setBlocked(false, for: parent)
-        precondition(mappings.handleKey(key(36, in: parent)), "Sub Play remains available after the dialog closes")
+        for code: UInt16 in [36, 76] {
+            precondition(!mappings.handleKey(key(code, in: parent)), "Enter and keypad Enter no longer start Sub Play")
+        }
+        precondition(mappings.handleKey(key(49, modifiers: .shift, in: parent)), "Shift+Space starts Sub Play after the dialog closes")
         precondition(show.actionsReceived.last == .subPlayStop)
+        let afterSubPlay = show.actionsReceived.count
+        precondition(mappings.handleKey(key(49, modifiers: .shift, in: parent, isRepeat: true)))
+        precondition(show.actionsReceived.count == afterSubPlay, "holding Shift+Space must not toggle Sub Play repeatedly")
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
     }

@@ -961,5 +961,68 @@ int main() {
         expect(e.currentSong()->tracks[0].clips[0].duration==12 && e.currentSong()->tracks[0].clips[1].duration==10,"drawer tempo reversal preserves independent tails");
 
     }
+    {
+        Project project; project.id="tempo-ownership"; project.name="Tempo ownership";
+        Song song{"owner-song","Song",100,120,{},{}};
+        song.parts={{"owner-a","A",10,20},{"owner-b","B",20,30}};
+        song.regionOwnershipInitialized=true;
+        const auto tempoMarker=[](ID id,double position) {
+            TimelineMarker marker{std::move(id),"TEMPO",position,0x999999};
+            marker.tempoBPM=120; marker.tempoBeats=4; marker.tempoUnit=4; marker.tempoTimebase="free";
+            return marker;
+        };
+        auto loose=tempoMarker("owner-loose",14), outside=tempoMarker("owner-outside",41);
+        song.markers=std::vector<TimelineMarker>{loose,outside}; project.songs={song};
+        Engine engine; engine.loadProject(project);
+        const auto marker=[&](const ID& id)->const TimelineMarker& {
+            for(const auto& value:*engine.currentSong()->markers) if(value.id==id) return value;
+            throw std::runtime_error("Missing ownership test marker");
+        };
+        engine.setMarker("owner-manual","TEMPO",16,0x999999,120,4,4,"free");
+        engine.setMarker(loose.id,"TEMPO",14,0x999999,121,4,4,"free");
+        expect(marker("owner-manual").regionOwnerID=="owner-a" && !marker(loose.id).regionOwnerID,"single-marker placement attaches while an in-place edit preserves explicit nil ownership");
+        auto batch=tempoMarker("owner-batch",18), boundary=tempoMarker("owner-boundary",20);
+        engine.setMarkers({batch,boundary});
+        expect(marker(batch.id).regionOwnerID=="owner-a" && marker(boundary.id).regionOwnerID=="owner-b","detected tempo batch attaches new markers and gives an adjacent boundary to the next region");
+        expect(!regionOwns(*engine.currentSong(),"owner-a",marker(boundary.id).regionOwnerID),"deleting the preceding region must exclude the next region's boundary tempo");
+        auto manual=tempoMarker("owner-manual",16); manual.tempoBPM=125;
+        loose.tempoBPM=125;
+        engine.setMarkers({manual,loose});
+        expect(marker(manual.id).regionOwnerID=="owner-a" && !marker(loose.id).regionOwnerID,"batch edits without serialized owners retain owned and intentionally loose memberships");
+        engine.moveRegion("owner-a",40);
+        expect(marker(manual.id).position==46 && marker(batch.id).position==48,"new and edited tempo markers travel with their region");
+        expect(marker(loose.id).position==14 && marker(outside.id).position==41 && marker(boundary.id).position==20,"moving a region preserves loose tempo and the adjacent region's boundary");
+        outside.tempoBPM=130; engine.setMarkers({outside},{},true);
+        expect(!marker(outside.id).regionOwnerID,"retime batch cannot capture a loose marker covered by a moved region");
+        engine.loadProject(engine.project()); engine.moveRegion("owner-a",10);
+        expect(marker(outside.id).position==41 && marker(manual.id).position==16,"save/reload and leaving a loose marker preserve established memberships");
+        batch.position=22; manual.position=70; engine.setMarkers({batch,manual});
+        expect(marker(batch.id).regionOwnerID=="owner-b" && !marker(manual.id).regionOwnerID,"explicit batch movement attaches to the destination region or detaches outside");
+        engine.setMarkers({}, {batch.id,manual.id});
+        expect(engine.currentSong()->markers->size()==3 && marker(boundary.id).regionOwnerID=="owner-b" && !marker(loose.id).regionOwnerID,"batch deletion preserves neighboring boundary and loose markers");
+        engine.setMarkers({loose},{loose.id});
+        expect(marker(loose.id).regionOwnerID=="owner-a","explicit deletion followed by reinsertion establishes new placement ownership");
+    }
+    {
+        Project project; project.id="retime-ownership"; project.name="Retime ownership";
+        Song song{"retime-owner-song","Song",50,120,{},{}};
+        song.timeSettings=ProjectTimeSettings{}; song.timeSettings->timebase=ProjectTimebase::relative;
+        song.parts={{"retime-owner-a","A",10,20},{"retime-owner-b","B",20,30}};
+        song.regionOwnershipInitialized=true;
+        TimelineMarker first{"retime-owner-first","TEMPO",10,0x999999};
+        first.tempoBPM=120; first.tempoBeats=4; first.tempoUnit=4; first.tempoTimebase="global"; first.tempoReferenceBPM=120;
+        auto loose=first; loose.id="retime-owner-loose"; loose.position=15;
+        song.markers=std::vector<TimelineMarker>{loose}; project.songs={song};
+        Engine engine; engine.loadProject(project);
+        auto boundary=first; boundary.id="retime-owner-boundary"; boundary.position=20;
+        engine.setMarkers({first,boundary});
+        first.tempoBPM=240; engine.setMarkers({first,loose,boundary},{},true);
+        const auto& markers=*engine.currentSong()->markers;
+        expect(markers[0].position==12.5 && !markers[0].regionOwnerID,"real tempo warp moves a loose marker in time without assigning ownership");
+        expect(markers[1].position==10 && markers[1].regionOwnerID=="retime-owner-a" && markers[2].position==17.5 && markers[2].regionOwnerID=="retime-owner-b","real tempo warp retains owned start and adjacent boundary memberships");
+        expect(engine.currentSong()->parts[0].endTime==17.5 && engine.currentSong()->parts[1].startTime==17.5,"batch ownership preserves the established tempo mapping");
+        engine.moveRegion("retime-owner-a",35);
+        expect(engine.currentSong()->markers->at(0).position==12.5 && engine.currentSong()->markers->at(1).position==35 && engine.currentSong()->markers->at(2).position==17.5,"after retiming only the region's owned tempo marker follows its movement");
+    }
     std::cout << "JARAS_CORE_OK\n";
 }

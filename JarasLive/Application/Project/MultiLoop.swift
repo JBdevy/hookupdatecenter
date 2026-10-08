@@ -42,6 +42,32 @@ public struct MultiLoopPlayback: Codable, Equatable, Sendable {
     public var released: Bool
     public var tracks: [MultiLoopTrack]
 }
+
+/// Separate the non-destructive audio envelope from legacy linked-fader rules.
+/// Conflicting rules on a linked pair retain the ordinary mixer path, whose
+/// shared fader semantics must not be replaced by two independent envelopes.
+public struct MultiLoopGainPlan {
+    public private(set) var internalRules: [UUID: MultiLoopTrack] = [:]
+    public private(set) var legacyVolumeTargets: Set<UUID> = []
+    public init(loop: MultiLoopPlayback? = nil, tracks: [Track] = []) {
+        guard let loop else { return }
+        let rules = Dictionary(uniqueKeysWithValues: loop.tracks.map { ($0.id, $0) })
+        let linked = Dictionary(uniqueKeysWithValues: tracks.compactMap { track in
+            track.stereoLink.map { (track.id, $0.partner) }
+        })
+        for rule in loop.tracks where rule.autoFader {
+            if let partner = linked[rule.id], linked[partner] == rule.id {
+                if let other = rules[partner], !other.autoFader || other.gain != rule.gain {
+                    legacyVolumeTargets.formUnion([rule.id, partner])
+                } else {
+                    internalRules[rule.id] = rule
+                    internalRules[partner] = rules[partner] ?? rule
+                }
+            } else { internalRules[rule.id] = rule }
+        }
+        for id in legacyVolumeTargets { internalRules[id] = nil }
+    }
+}
 public extension Song {
     func multiLoopsBypassed(in region: Part) -> Bool {
         region.totalLoop == true || region.parentRegionID.map { parent in parts.contains { $0.id == parent && $0.totalLoop == true } } == true

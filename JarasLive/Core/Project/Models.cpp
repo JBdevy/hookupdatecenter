@@ -50,10 +50,10 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
             if (track.role.id == "timecode" && !track.importedTimecodeItems) continue;
             const auto priorEntry = oldClips.find(clip.id);
             const AudioClip* prior = priorEntry == oldClips.end() ? nullptr : priorEntry->second;
-            if (initialize || (old && !prior)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime, clip.startTime + clip.duration);
-            else if (prior && clip.startTime != prior->startTime && !regionMoved(prior->regionOwnerID)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime, clip.startTime + clip.duration);
+            if (initialize || (old && !prior)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime);
+            else if (prior && clip.startTime != prior->startTime && !regionMoved(prior->regionOwnerID)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime);
             else if (!valid(clip.regionOwnerID)) clip.regionOwnerID.reset();
-            else if (prior && !clip.regionOwnerID) clip.regionOwnerID = regionOwnerAt(created, clip.startTime, clip.startTime + clip.duration);
+            else if (prior && !clip.regionOwnerID) clip.regionOwnerID = regionOwnerAt(created, clip.startTime);
         }
         if (song.markers) for (auto& marker : *song.markers) {
             const auto priorEntry = oldMarkers.find(marker.id);
@@ -261,6 +261,7 @@ void validate(const Project& p) {
                 require((tc.mode == "mtc" || tc.mode == "ltc") && (tc.frameRate == 24 || tc.frameRate == 25 || tc.frameRate == 29.97 || tc.frameRate == 30) && finite(tc.offset) && tc.offset >= 0 && tc.offset < 86400, "Invalid timecode settings");
             }
             require(!t.color || *t.color <= 0xffffff, "Invalid track color");
+            require(!t.heightScale || (finite(*t.heightScale) && *t.heightScale >= 0.1 && *t.heightScale <= 10), "Invalid track height");
             require(!t.midiChannel || (*t.midiChannel >= 1 && *t.midiChannel <= 16), "Invalid MIDI channel");
             require(!t.midiInput || (*t.midiInput >= 1 && *t.midiInput <= 3), "Invalid MIDI input");
             if (t.inputPatch) validatePatch(*t.inputPatch, false);

@@ -24,6 +24,8 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID; public var name: String; public var role: TrackRole
     public var volume: Double = 1, pan: Double = 0
     public var phaseInverted: Bool? = nil
+    /// Visual row proportion; absent in existing projects means the standard height.
+    public var heightScale: Double? = nil
     public var mute = false, solo = false
     public var output = 1
     public var fx: NativeFXSettings?
@@ -59,6 +61,30 @@ public struct TrackStereoLink: Codable, Equatable, Sendable {
     public var partner: UUID
     public var left: Bool
     public var original: TrackLinkOriginal
+}
+
+/// Shared visual geometry. Overlapping items retain the existing minimum per lane.
+public enum TrackHeightGeometry {
+    public static let minimumScale = 0.1, maximumScale = 10.0
+    public static func isValidScale(_ value: Double) -> Bool { value.isFinite && (minimumScale...maximumScale).contains(value) }
+    public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }
+    public static func laneLimits(count: Int) -> ClosedRange<Double> { count > 1 ? 26...168 : 24...240 }
+    public static func laneHeight(base: Double, scale: Double, count: Int) -> Double {
+        let limits = laneLimits(count: count)
+        return min(limits.upperBound, max(limits.lowerBound, base * (count > 1 ? 0.7 : 1) * scale))
+    }
+    /// Stop a shared zoom at the first row limit, keeping all row proportions.
+    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64) -> ClosedRange<Double> {
+        var lower = 24.0, upper = 240.0
+        for (index, scale) in scales.enumerated() {
+            let count = laneCounts.indices.contains(index) ? laneCounts[index] : 1
+            let limits = laneLimits(count: count), multiplier = scale * (count > 1 ? 0.7 : 1)
+            lower = max(lower, limits.lowerBound / multiplier)
+            upper = min(upper, limits.upperBound / multiplier)
+        }
+        // A malformed combination from another editor still gets bounded rows.
+        return lower <= upper ? lower...upper : current...current
+    }
 }
 public struct TrackLinkOriginal: Codable, Equatable, Sendable {
     public var name: String
@@ -437,6 +463,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 }
                 try track.timecode?.validate()
                 guard track.color == nil || track.color! <= 0xffffff else { throw ProjectError.invalid("Invalid track color") }
+                guard track.heightScale == nil || TrackHeightGeometry.isValidScale(track.heightScale!) else { throw ProjectError.invalid("Invalid track height") }
                 try track.fx?.validate()
                 if track.kind.isSingleLane {
                     let layers = track.kind.isTeleprompter ? [track.clips.filter { !$0.isProjectionMedia }, track.clips.filter(\.isProjectionMedia)] : [track.clips]
@@ -743,8 +770,20 @@ public extension Song {
         guard let owner else { return false }
         return owner == root || parts.contains { $0.id == owner && $0.parentRegionID == root }
     }
+    /// Match the engine's placement rule. Editing a marker in place preserves
+    /// its attachment (including intentionally loose markers); moving or
+    /// creating it assigns the region at the destination before any retiming.
+    func markerWithRegionOwnership(_ marker: TimelineMarker) -> TimelineMarker {
+        var result = marker
+        if let previous = markers?.first(where: { $0.id == marker.id }), previous.position == marker.position {
+            result.regionOwnerID = previous.regionOwnerID
+        } else {
+            result.regionOwnerID = regionOwner(at: marker.position)
+        }
+        return result
+    }
     func itemBelongs(_ clip: AudioClip, to root: UUID) -> Bool {
-        regionOwns(root, owner: regionOwnershipInitialized == true ? clip.regionOwnerID : regionOwner(at: clip.startTime, end: clip.startTime + clip.duration))
+        regionOwns(root, owner: regionOwnershipInitialized == true ? clip.regionOwnerID : regionOwner(at: clip.startTime))
     }
     func markerBelongs(_ marker: TimelineMarker, to root: UUID) -> Bool {
         marker.unifiedRegionID == root || regionOwns(root, owner: regionOwnershipInitialized == true ? marker.regionOwnerID : marker.sourceRegionID ?? regionOwner(at: marker.position))
@@ -851,5 +890,61 @@ public extension Song {
             for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip }
         }
         return nil
+    }
+}
+
+/// Immutable scheduling index rebuilt with the clip revision. Playback asks
+/// only for items intersecting its lookahead, rather than scanning every song.
+public struct AudioClipPlaybackIndex {
+    private struct Entry {
+        let source: Int
+        let start: Double
+        let end: Double
+    }
+    private struct Node {
+        let entry: Entry
+        let minimumStart: Double
+        let maximumEnd: Double
+        let left: Int?
+        let right: Int?
+    }
+    private var nodes: [Node] = []
+    private var root: Int?
+    public init(clips: [AudioClip]) {
+        var entries: [Entry] = []
+        entries.reserveCapacity(clips.count)
+        for (index, clip) in clips.enumerated() {
+            entries.append(Entry(source: index, start: clip.startTime, end: clip.startTime + clip.duration))
+        }
+        entries.sort { first, second in
+            first.start == second.start ? first.source < second.source : first.start < second.start
+        }
+        nodes.reserveCapacity(entries.count)
+        root = build(entries, 0, entries.count)
+    }
+    private mutating func build(_ entries: [Entry], _ first: Int, _ last: Int) -> Int? {
+        guard first < last else { return nil }
+        let middle = (first + last) / 2
+        let left = build(entries, first, middle), right = build(entries, middle + 1, last)
+        let end = max(entries[middle].end, left.map { nodes[$0].maximumEnd } ?? -.infinity, right.map { nodes[$0].maximumEnd } ?? -.infinity)
+        let index = nodes.count
+        nodes.append(Node(entry: entries[middle], minimumStart: entries[first].start, maximumEnd: end, left: left, right: right))
+        return index
+    }
+    public func candidates(at position: Double, lookahead: Double = 2) -> [Int] {
+        guard position.isFinite, lookahead.isFinite else { return [] }
+        var result: [Int] = []
+        collect(root, from: position, through: position + max(0, lookahead), into: &result)
+        // Preserve the existing per-track scheduling order and common onset.
+        result.sort()
+        return result
+    }
+    private func collect(_ index: Int?, from position: Double, through end: Double, into result: inout [Int]) {
+        guard let index else { return }
+        let node = nodes[index]
+        guard node.maximumEnd > position, node.minimumStart <= end else { return }
+        collect(node.left, from: position, through: end, into: &result)
+        if node.entry.start <= end && node.entry.end > position { result.append(node.entry.source) }
+        collect(node.right, from: position, through: end, into: &result)
     }
 }

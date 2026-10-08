@@ -25,7 +25,7 @@ private final class ButtonsState: ObservableObject {
 private struct ButtonsFixture: View {
     @ObservedObject var state: ButtonsState
     let standard: Bool
-    private var widths: [CGFloat] { standard ? [22, 22, 42, 22, 22] : [47, 22, 22] }
+    private var widths: [CGFloat] { standard ? [34, 22, 22, 42, 22, 22] : [47, 22, 22] }
     var body: some View {
         TrackMixerContinuousContainer(meterWidth: 12, standard: standard, lowerTitle: true) {
             Color.clear.jarasPlaced(at: 0)
@@ -67,8 +67,8 @@ MainActor.assumeIsolated {
                 "controls retain exact positions, slot \(index) height \(height) actual \(actualRect) expected \(expected[index])")
         }
     }
-    // Exercise the complete nested five-control group. Widths are the explicit
-    // production widths of FX, REC, pan, M and S; only visibility changes at 64.
+    // Exercise the complete nested six-control group. Widths are the explicit
+    // production widths of Patch, FX, REC, pan, M and S; visibility changes at 64.
     // Special tracks keep their independently sized HStack controls.
     for standard in [true, false] {
         let buttonState = ButtonsState()
@@ -82,7 +82,7 @@ MainActor.assumeIsolated {
             }
         }
         settleButtons()
-        let widths: [CGFloat] = standard ? [22, 22, 42, 22, 22] : [47, 22, 22]
+        let widths: [CGFloat] = standard ? [34, 22, 22, 42, 22, 22] : [47, 22, 22]
         let identities = widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) }
         for showsFader in [true, false] {
             buttonState.showsFader = showsFader
@@ -93,7 +93,7 @@ MainActor.assumeIsolated {
                 precondition(widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) } == identities,
                     "compact/expanded mode and fader visibility preserve every native button")
                 let expanded = height >= 64
-                let visible = widths.indices.filter { !standard || !($0 == 2 && !expanded) && !($0 == 0 && expanded && !showsFader) }
+                let visible = widths.indices.filter { !standard || !($0 == 3 && !expanded) && !($0 == 1 && expanded && !showsFader) }
                 let groupWidth = visible.reduce(CGFloat(0)) { $0 + widths[$1] } + CGFloat(visible.count - 1) * 3
                 let group = TrackMixerHeightGeometry.frames(width: 260, height: height, meterWidth: 12,
                     standard: standard, lowerTitle: true, controlsWidth: groupWidth)[3]
@@ -116,5 +116,5 @@ MainActor.assumeIsolated {
         }
     }
     window.orderOut(nil)
-    print("MACOS12_STABLE_NATIVE_CONTROLS_FIVE_BUTTON_METRICS_AND_LAYOUT_GEOMETRY_OK forceLegacy=\(JarasDrawingCompatibility.forceLegacy)")
+    print("MACOS12_STABLE_NATIVE_CONTROLS_SIX_BUTTON_METRICS_AND_LAYOUT_GEOMETRY_OK forceLegacy=\(JarasDrawingCompatibility.forceLegacy)")
 }

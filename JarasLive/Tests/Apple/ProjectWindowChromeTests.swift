@@ -54,6 +54,10 @@ private func geometry(_ window: NSWindow) -> [NSRect] {
 }
 
 MainActor.assumeIsolated {
+    precondition(ProjectTitlebarVersionView.text(for: "1.0.0") == "CatLive Version 1.00")
+    precondition(ProjectTitlebarVersionView.text(for: "1.1.0") == "CatLive Version 1.01")
+    precondition(ProjectTitlebarVersionView.text(for: "1.12.0") == "CatLive Version 1.12")
+    precondition(ProjectTitlebarVersionView.text(for: "2.0.0") == "CatLive Version 2.00")
     _ = NSApplication.shared
     UserDefaults.standard.removeObject(forKey: "jaras.editorWindowFrame")
     for size in [NSSize(width: 1440, height: 791), NSSize(width: 600, height: 460), NSSize(width: 840, height: 540)] {

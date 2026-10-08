@@ -170,7 +170,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var resizable = true { didSet {
         if resizable != oldValue {
             if !resizable { hoverEdge = 0; if edge != 0 { startX = nil; activeDrag = nil; edge = 0 } }
-            window?.invalidateCursorRects(for: self)
+            if !usesStableNativeFrame { window?.invalidateCursorRects(for: self) }
         }
     } }
     private var startX: CGFloat?
@@ -180,7 +180,11 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     private var activeSeek: (() -> Void)?
     private var activeDelete: (() -> Void)?
     private var didDrag = false
-    private var hoverEdge = 0 { didSet { if hoverEdge != oldValue { needsDisplay = true } } }
+    private var hoverEdge = 0 { didSet {
+        if hoverEdge != oldValue {
+            if usesStableNativeFrame { updateNativeGrip() } else { needsDisplay = true }
+        }
+    } }
     private var tracking: NSTrackingArea?
     private var inputAvailable: Bool { !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor }
     override func viewDidMoveToWindow() {
@@ -195,37 +199,180 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if !didDrag { timelineInputGateChanged(blocked: true) }
     }
     override var isFlipped: Bool { true }
-    private var edgeWidth: CGFloat { min(34, max(0, (bounds.width - 8) / 2)) }
+    // Native timeline mounts use a bounded view while retaining the original
+    // padded region geometry for edge hit testing, hover and release checks.
+    // Hosted callers keep their existing bounds-based coordinates.
+    private var projectedRegionRect: CGRect?
+    private var usesStableNativeFrame = false
+    private var nativeInputRect: CGRect?
+    private let nativeGrip = CAShapeLayer()
+    var projectedInputBounds: CGRect { nativeInputRect ?? bounds }
+    var hasActiveProjectedGesture: Bool { startX != nil }
+    private var presentingProjectedMenu = false
+    var isReservedForProjectionReuse: Bool { hasActiveProjectedGesture || presentingProjectedMenu }
+    var projectedInteractionEnded: (() -> Void)?
+    /// Empty hit geometry and shape layers retain an attached, raster-free slot.
+    /// A context menu still dispatches through this view, so do not rebind it
+    /// while its modal event loop is active, even if its UUID was removed.
+    @discardableResult func deactivateProjectedInput() -> Bool {
+        guard usesStableNativeFrame, !hasActiveProjectedGesture else { return false }
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        projectedRegionRect = .zero
+        nativeInputRect = .zero
+        hoverEdge = 0
+        nativeGrip.isHidden = true
+        nativeGrip.path = nil
+        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil
+        drag = nil; seek = nil
+        guard !presentingProjectedMenu else { return false }
+        timelineInputGateChanged(blocked: true)
+        projectedInteractionEnded = nil
+        return true
+    }
+    override var wantsUpdateLayer: Bool { usesStableNativeFrame }
+    override func updateLayer() { updateNativeGrip() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard usesStableNativeFrame else { return super.hitTest(point) }
+        guard inputAvailable, projectedInputBounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+    private func updateNativeGrip() {
+        guard usesStableNativeFrame else { return }
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        guard let gripRect else {
+            if !nativeGrip.isHidden { nativeGrip.isHidden = true; nativeGrip.path = nil }
+            return
+        }
+        nativeGrip.isHidden = false
+        if nativeGrip.frame != projectedInputBounds { nativeGrip.frame = projectedInputBounds }
+        nativeGrip.path = CGPath(roundedRect: gripRect.offsetBy(dx: -projectedInputBounds.minX, dy: -projectedInputBounds.minY),
+            cornerWidth: 2, cornerHeight: 2, transform: nil)
+    }
+    func updateProjectedPointer(at point: CGPoint?) {
+        // Explicit cancellation must clear the grip even during a captured drag.
+        guard startX == nil || point == nil else { return }
+        if let point, inputAvailable, projectedInputBounds.intersection(visibleRect).contains(point) {
+            hoverEdge = edge(at: point.x)
+        } else { hoverEdge = 0 }
+        let cursor = hoverEdge != 0 ? NSCursor.resizeLeftRight : NSCursor.arrow
+        if NSCursor.current !== cursor { cursor.set() }
+    }
+    private var regionRect: CGRect { projectedRegionRect ?? bounds }
+    private struct CursorProjection: Equatable {
+        let left: CGRect
+        let right: CGRect
+    }
+    private var edgeWidth: CGFloat { min(34, max(0, (regionRect.width - 8) / 2)) }
     private func edge(at x: CGFloat) -> Int {
         guard resizable else { return 0 }
-        return x <= edgeWidth ? -1 : (x >= bounds.width - edgeWidth ? 1 : 0)
+        return x <= regionRect.minX + edgeWidth ? -1 : (x >= regionRect.maxX - edgeWidth ? 1 : 0)
+    }
+    private func cursorProjection() -> CursorProjection {
+        guard resizable else { return CursorProjection(left: .null, right: .null) }
+        func clipped(_ rect: CGRect) -> CGRect {
+            let clipped = rect.intersection(projectedInputBounds)
+            return clipped.isEmpty ? .null : clipped
+        }
+        return CursorProjection(
+            left: clipped(CGRect(x: regionRect.minX, y: regionRect.minY, width: edgeWidth, height: regionRect.height)),
+            right: clipped(CGRect(x: regionRect.maxX - edgeWidth, y: regionRect.minY, width: edgeWidth, height: regionRect.height)))
+    }
+    private var gripRect: CGRect? {
+        guard resizable, hoverEdge != 0 else { return nil }
+        let x = hoverEdge < 0 ? regionRect.minX + 10 : regionRect.maxX - 10
+        return CGRect(x: x - 2, y: regionRect.minY + 3, width: 4, height: max(0, regionRect.height - 6))
+    }
+    func projectRegion(frame fullFrame: CGRect, viewport: CGRect, stableInputSize: CGSize? = nil) {
+        let left = min(viewport.maxX, max(viewport.minX, fullFrame.minX))
+        let right = min(viewport.maxX, max(viewport.minX, fullFrame.maxX))
+        let nextFrame = CGRect(x: left, y: fullFrame.minY, width: max(0, right - left), height: fullFrame.height)
+        if let stableInputSize {
+            if !usesStableNativeFrame {
+                usesStableNativeFrame = true
+                autoresizesSubviews = false
+                wantsLayer = true
+                layer?.contents = nil
+                nativeGrip.fillColor = NSColor(srgbRed: 0.33, green: 1, blue: 0.58, alpha: 0.95).cgColor
+                nativeGrip.masksToBounds = true
+                layer?.addSublayer(nativeGrip)
+                if let tracking { removeTrackingArea(tracking); self.tracking = nil }
+            }
+            projectedRegionRect = fullFrame
+            nativeInputRect = nextFrame
+            let host = CGRect(origin: .zero, size: stableInputSize)
+            if frame != host { frame = host }
+            updateNativeGrip()
+            return
+        }
+        let oldCursor = cursorProjection()
+        let oldGrip = gripRect?.intersection(bounds)
+        let frameChanged = frame != nextFrame
+        projectedRegionRect = fullFrame.offsetBy(dx: -nextFrame.minX, dy: -nextFrame.minY)
+        if frameChanged { frame = nextFrame }
+        let cursorChanged = oldCursor != cursorProjection()
+        // Native geometry already invalidates tracking when the bounded frame
+        // changes. A moving offscreen logical edge must not traverse AppKit's
+        // window-wide cursor hierarchy on every zoom frame.
+        if !frameChanged, cursorChanged {
+            window?.invalidateCursorRects(for: self)
+            if startX == nil, let window, window.isKeyWindow {
+                let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+                if inputAvailable, bounds.intersection(visibleRect).contains(point) {
+                    hoverEdge = edge(at: point.x)
+                    (hoverEdge != 0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+                } else if hoverEdge != 0 {
+                    hoverEdge = 0; NSCursor.arrow.set()
+                }
+            }
+        }
+        if oldGrip != gripRect?.intersection(bounds) { needsDisplay = true }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        guard tracking == nil else { return }
+        guard !usesStableNativeFrame, tracking == nil else { return }
         let area = NSTrackingArea(rect: bounds, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }
     override func cursorUpdate(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseMoved(with event: NSEvent) {
-        guard startX == nil else { return }
-        hoverEdge = edge(at: convert(event.locationInWindow, from: nil).x)
-        if hoverEdge != 0 { NSCursor.resizeLeftRight.set() }
+        updateProjectedPointer(at: convert(event.locationInWindow, from: nil))
     }
-    override func mouseExited(with event: NSEvent) { if startX == nil { hoverEdge = 0 } }
+    override func mouseExited(with event: NSEvent) {
+        if startX == nil { hoverEdge = 0; NSCursor.arrow.set() }
+    }
     override func draw(_ dirtyRect: NSRect) {
-        guard resizable, hoverEdge != 0 else { return }
-        let x: CGFloat = hoverEdge < 0 ? 10 : bounds.width - 10
+        guard let gripRect else { return }
         NSColor(srgbRed: 0.33, green: 1, blue: 0.58, alpha: 0.95).setFill()
-        NSBezierPath(roundedRect: NSRect(x: x - 2, y: 3, width: 4, height: max(0, bounds.height - 6)), xRadius: 2, yRadius: 2).fill()
+        NSBezierPath(roundedRect: gripRect, xRadius: 2, yRadius: 2).fill()
     }
     override func resetCursorRects() {
-        guard resizable else { return }
-        addCursorRect(NSRect(x: 0, y: 0, width: edgeWidth, height: bounds.height), cursor: .resizeLeftRight)
-        addCursorRect(NSRect(x: bounds.width - edgeWidth, y: 0, width: edgeWidth, height: bounds.height), cursor: .resizeLeftRight)
+        guard !usesStableNativeFrame else { return }
+        let visible = bounds.intersection(visibleRect)
+        guard !visible.isEmpty else { return }
+        guard resizable, inputAvailable else { addCursorRect(visible, cursor: .arrow); return }
+        func register(_ rect: NSRect, cursor: NSCursor) {
+            let clipped = rect.intersection(visible)
+            if !clipped.isEmpty { addCursorRect(clipped, cursor: cursor) }
+        }
+        register(NSRect(x: regionRect.minX + edgeWidth, y: regionRect.minY,
+            width: max(0, regionRect.width - 2 * edgeWidth), height: regionRect.height), cursor: .arrow)
+        register(NSRect(x: regionRect.minX, y: regionRect.minY, width: edgeWidth, height: regionRect.height), cursor: .resizeLeftRight)
+        register(NSRect(x: regionRect.maxX - edgeWidth, y: regionRect.minY, width: edgeWidth, height: regionRect.height), cursor: .resizeLeftRight)
     }
     override func rightMouseDown(with event: NSEvent) {
+        let reserved = usesStableNativeFrame
+        if reserved { presentingProjectedMenu = true }
+        defer {
+            if reserved {
+                presentingProjectedMenu = false
+                projectedInteractionEnded?()
+            }
+        }
         NSMenu.popUpContextMenu(regionMenu(), with: event, for: self)
     }
     func regionMenu() -> NSMenu {
@@ -275,11 +422,12 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
             let delta = event.locationInWindow.x - startX
             if didDrag || abs(delta) >= (edge == 0 ? 3 : 0.5) || abs(event.locationInWindow.y - startY) >= 3 { activeDrag?(delta, true, edge) }
             else if let activeDelete {
-                if bounds.contains(convert(event.locationInWindow, from: nil)) { activeDelete() }
+                if regionRect.contains(convert(event.locationInWindow, from: nil)) { activeDelete() }
             } else { activeSeek?() }
         }
         startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false
-        hoverEdge = edge(at: convert(event.locationInWindow, from: nil).x)
+        mouseMoved(with: event)
+        projectedInteractionEnded?()
     }
 }
 struct MarkerEditAnchor: NSViewRepresentable {
@@ -291,6 +439,26 @@ struct MarkerEditAnchor: NSViewRepresentable {
     func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag }
 }
 final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserver {
+    private var nativeInputBounds: CGRect?
+    var hasActiveProjectedGesture: Bool { startX != nil }
+    override var isFlipped: Bool { nativeInputBounds != nil || super.isFlipped }
+    override var wantsUpdateLayer: Bool { nativeInputBounds != nil }
+    override func updateLayer() {}
+    override var clickBounds: CGRect { nativeInputBounds ?? bounds }
+    override var clickPriorityArea: CGFloat { nativeInputBounds.map { $0.width * $0.height } ?? super.clickPriorityArea }
+    func projectInput(_ rect: CGRect, stableSize: CGSize) {
+        if nativeInputBounds == nil, let tracking { removeTrackingArea(tracking); self.tracking = nil }
+        nativeInputBounds = rect
+        if !wantsLayer { wantsLayer = true; layerContentsRedrawPolicy = .onSetNeedsDisplay }
+        let stable = CGRect(origin: .zero, size: stableSize)
+        if frame != stable { frame = stable }
+    }
+    func updateProjectedPointer(at point: CGPoint?) {
+        guard startX == nil || point == nil else { return }
+        let movable = point.map { inputAvailable && drag != nil && clickBounds.intersection(visibleRect).contains($0) } ?? false
+        let cursor = movable ? NSCursor.resizeLeftRight : NSCursor.arrow
+        if NSCursor.current !== cursor { cursor.set() }
+    }
     private static let cursorTargets = NSHashTable<MarkerEditClickView>.weakObjects()
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -306,12 +474,12 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     static func usesMoveCursor(for event: NSEvent) -> Bool {
         cursorTargets.allObjects.contains { view in
             view.window?.windowNumber == event.windowNumber && view.drag != nil && view.inputAvailable
-                && view.bounds.intersection(view.visibleRect).contains(view.convert(event.locationInWindow, from: nil))
+                && view.clickBounds.intersection(view.visibleRect).contains(view.convert(event.locationInWindow, from: nil))
         }
     }
     var seek: (() -> Void)?
     var drag: ((CGFloat, Bool) -> Void)? { didSet {
-        if (drag != nil) != (oldValue != nil) { window?.invalidateCursorRects(for: self) }
+        if nativeInputBounds == nil, (drag != nil) != (oldValue != nil) { window?.invalidateCursorRects(for: self) }
     } }
     private var startX: CGFloat?
     private var startY: CGFloat = 0
@@ -323,11 +491,11 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         !interactionBlocked && !RightClickRouter.shared.interactionBlocked && !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
     }
     override func resetCursorRects() {
-        if drag != nil, inputAvailable { addCursorRect(bounds, cursor: .resizeLeftRight) }
+        if nativeInputBounds == nil, drag != nil, inputAvailable { addCursorRect(bounds, cursor: .resizeLeftRight) }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        guard tracking == nil else { return }
+        guard nativeInputBounds == nil, tracking == nil else { return }
         let area = NSTrackingArea(rect: bounds, options: [.cursorUpdate, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(area); tracking = area
     }
@@ -346,7 +514,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
               !isHiddenOrHasHiddenAncestor, let event = NSApp.currentEvent,
               [.leftMouseDown, .leftMouseUp, .leftMouseDragged].contains(event.type),
               !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control),
-              bounds.contains(convert(point, from: superview)) else { return nil }
+              clickBounds.contains(convert(point, from: superview)) else { return nil }
         return self
     }
     override func mouseDown(with event: NSEvent) {

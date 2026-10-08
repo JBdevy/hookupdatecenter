@@ -112,7 +112,7 @@ public extension Project {
         for track in remaining.tracks.indices {
             for clip in remaining.tracks[track].clips.indices where remaining.tracks[track].clips[clip].regionOwnerID == id {
                 let item = remaining.tracks[track].clips[clip]
-                candidate.songs[song].tracks[track].clips[clip].regionOwnerID = remaining.regionOwner(at: item.startTime, end: item.startTime + item.duration)
+                candidate.songs[song].tracks[track].clips[clip].regionOwnerID = remaining.regionOwner(at: item.startTime)
             }
         }
         for index in (remaining.markers ?? []).indices where remaining.markers?[index].regionOwnerID == id {
@@ -341,7 +341,53 @@ public extension Project {
         regionSetlist?.blocks?.removeAll { ids.contains($0.id) && $0.songId == songID && $0.playlistId == playlist }
         for id in regions {
             if let playlist { removeRegion(id, from: playlist) }
-            else { deleteRegion(id) }
+            else { deleteRegionWithContents(id, song: songID) }
+        }
+    }
+    /// All Regions deletes the song and its owned timeline content together.
+    /// Resolve ownership before removing the region tree: overlap alone must
+    /// never delete another song's content. Unassigned tempo points are also
+    /// cleared inside the deleted span, including points saved by earlier builds
+    /// without ownership; this deletion rule does not attach them during moves.
+    private mutating func deleteRegionWithContents(_ id: UUID, song songID: UUID) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }),
+              songs[index].parts.contains(where: { $0.id == id }) else { return }
+        let source = songs[index]
+        var removed: Set<UUID> = [id]
+        var pending = [id]
+        while let parent = pending.popLast() {
+            for child in source.parts where child.parentRegionID == parent && removed.insert(child.id).inserted {
+                pending.append(child.id)
+            }
+        }
+        let timecodeIDs = Set(removed.map(Self.timecodeItemID))
+        for track in songs[index].tracks.indices {
+            let nativeTimecode = source.tracks[track].kind == .timecode
+            songs[index].tracks[track].clips.removeAll { clip in
+                (nativeTimecode && timecodeIDs.contains(clip.id)) || removed.contains { source.itemBelongs(clip, to: $0) }
+            }
+        }
+        let removedSpans = source.parts.filter { removed.contains($0.id) }
+        songs[index].markers?.removeAll { marker in
+            if removed.contains(where: { source.markerBelongs(marker, to: $0) }) { return true }
+            return marker.isTempo && marker.regionOwnerID == nil && removedSpans.contains {
+                marker.position >= $0.startTime && marker.position < $0.endTime
+            }
+        }
+        songs[index].parts.removeAll { removed.contains($0.id) }
+        if var state = regionSetlist {
+            // Keep surviving playlist order and move block anchors to the next
+            // surviving song, exactly as when removing a playlist entry.
+            for region in source.parts where removed.contains(region.id) {
+                for playlist in state.playlists { Self.removeRegion(region.id, from: &state, playlist: playlist.id) }
+            }
+            if var blocks = state.blocks {
+                for block in blocks.indices where blocks[block].songId == songID && blocks[block].playlistId == nil && blocks[block].beforeRegionId.map(removed.contains) == true {
+                    blocks[block].beforeRegionId = nil
+                }
+                state.blocks = blocks
+            }
+            regionSetlist = state
         }
     }
     private static func removeRegion(_ id: UUID, from state: inout RegionSetlist, playlist: UUID) {

@@ -3,6 +3,21 @@ import AppKit
 private func close(_ actual: CGFloat, _ expected: CGFloat) -> Bool { abs(actual - expected) < 0.000001 }
 
 MainActor.assumeIsolated {
+    for backingScale: CGFloat in [1, 2] {
+        var policy = TimelinePlaybackFollowPolicy()
+        var viewport = CGRect(x: 0, y: 0, width: 800, height: 400)
+        var changes = 0
+        for frame in 1...600 {
+            let position = (400 + CGFloat(frame) / 60 * 3) / 3
+            if let origin = policy.destination(position: Double(position), pixelsPerSecond: 3, contentWidth: 10000,
+                                               viewport: viewport, source: "song/main", backingScale: backingScale) {
+                viewport.origin.x = origin; changes += 1
+                precondition(abs(origin * backingScale - (origin * backingScale).rounded()) < 0.00001, "follow uses physical pixels")
+            }
+            precondition(abs(position * 3 - viewport.midX) <= 0.5 / backingScale + 0.00001, "continuous needle stays within half a physical pixel of the midpoint")
+        }
+        precondition(changes <= Int(30 * backingScale) + 1, "distant zoom must not cause 600 redundant AppKit scroll/layout updates")
+    }
     for width: CGFloat in [360, 800, 1240] {
         var policy = TimelinePlaybackFollowPolicy()
         var viewport = CGRect(x: 1000, y: 71, width: width, height: 500)
@@ -151,6 +166,21 @@ MainActor.assumeIsolated {
     }
     precondition(released == nil, "queued work never retains a removed follow view")
     flush()
+    // A retained physical plane can be wider than the active musical extent.
+    // Readiness must compare the sample with logical geometry, not capacity.
+    scroll.logicalDocumentWidth = 8000
+    let retainedCapacity = document.frame.width
+    let beforeLogicalFollow = scroll.contentView.bounds.minX
+    update(700, scale: 20, width: retainedCapacity, source: "song/capacity-stale"); flush()
+    precondition(scroll.contentView.bounds.minX == beforeLogicalFollow,
+                 "matching physical capacity never acknowledges a stale logical scale")
+    update(800, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(close(scroll.contentView.bounds.minX, 5800),
+                 "follow resumes against logical geometry inside retained capacity")
+    update(2000, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(close(scroll.contentView.bounds.minX, 6800) && document.frame.width == retainedCapacity,
+                 "follow reaches logical end without exposing the unused physical tail")
+    print("PLAYBACK_FOLLOW_RETAINED_CAPACITY_LOGICAL_READINESS_AND_END_OK")
     window.orderOut(nil)
     print("PLAYBACK_FOLLOW_NATIVE_CLIP_PREPARATION_COALESCING_ZOOM_GATE_AND_RESIZE_OK")
 }

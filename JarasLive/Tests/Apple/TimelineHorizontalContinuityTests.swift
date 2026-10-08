@@ -12,11 +12,17 @@ private struct FocusProbe: NSViewRepresentable {
         if let value, value != view.previous { view.previous = value; action.perform(value) }
     }
 }
-private enum HorizontalProbe { static var mounted = CGRect.zero }
+private enum HorizontalProbe {
+    static var mounted = CGRect.zero
+    static var waveform = CGRect.zero
+}
 private struct MountedCoverage: NSViewRepresentable {
     let rect: CGRect
+    let waveform: CGRect
     func makeNSView(context: Context) -> NSView { NSView() }
-    func updateNSView(_ view: NSView, context: Context) { HorizontalProbe.mounted = rect }
+    func updateNSView(_ view: NSView, context: Context) {
+        HorizontalProbe.mounted = rect; HorizontalProbe.waveform = waveform
+    }
 }
 private struct HorizontalFixture: View {
     @ObservedObject var state: HorizontalState
@@ -29,7 +35,8 @@ private struct HorizontalFixture: View {
             identity: TimelineTileIdentity(), tileIdentity: tiled ? { _, _ in TimelineTileIdentity() } : nil) { context, _, rect, _ in
                 context.fill(Path(rect), with: .color(.green))
             }
-            .background(MountedCoverage(rect: TimelineCanvasCoverage.preparedRect(visibleRect: viewport, documentSize: size)))
+            .background(MountedCoverage(rect: TimelineCanvasCoverage.preparedRect(visibleRect: viewport, documentSize: size),
+                waveform: TimelineWaveformCoverage.preparedRect(visibleRect: viewport, documentSize: size)))
             .background(FocusProbe(value: state.focus, action: focus))
             .frame(width: size.width, height: size.height)
     }
@@ -67,6 +74,7 @@ MainActor.assumeIsolated {
         func checkFirstDisplay() {
             let actual = CGRect(x: scroll.contentView.bounds.minX, y: 0, width: 840, height: 500)
             precondition(HorizontalProbe.mounted.contains(actual), "destination content must mount in this event before first display")
+            precondition(HorizontalProbe.waveform.contains(actual), "smaller waveform reserve must also mount before the native clip moves")
             precondition(HorizontalProbe.mounted.width <= 840 + 2048, "a jump must not mount the intervening project")
             // Render immediately: no RunLoop turn, queued callback, sleep or
             // settle helper may repair a blank first frame for this assertion.

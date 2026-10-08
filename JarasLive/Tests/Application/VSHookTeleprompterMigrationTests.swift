@@ -19,7 +19,7 @@ final class VSHookTeleprompterMigrationTests: XCTestCase {
     func testBothWindowsPresetsScalesFontsAndNoticeSettingsPersistOnlyOnce() throws {
         let file = try fixture("""
         [VS_HOOK_NATIVE_TELEPROMPT]
-        TP1_SETTINGS_V1={"preset":"day","textColor":"#112233","fontFamily":"Trebuchet MS","songNameScale":1.8,"clockScale":1.4,"localClockDepth":1.7,"mediaStretch":true,"clearMode":true}
+        TP1_SETTINGS_V1={"preset":"day","textColor":"#112233","fontFamily":"Trebuchet MS","songNameScale":1.8,"clockScale":1.4,"localClockDepth":1.7,"mediaStretch":true,"clearMode":true,"ignorePreview":true}
         TP1_NIGHT_SETTINGS_V1={"textColor":"#445566","previewScale":2.4,"chordScale":0.9}
         TP1_DAY_SETTINGS_V1={"textColor":"#ffffff"}
         TP2_SETTINGS_V1={"preset":"night","fontFamily":"Segoe UI","queueNameScale":1.9,"windowBorderEnabled":false}
@@ -41,6 +41,7 @@ final class VSHookTeleprompterMigrationTests: XCTestCase {
         XCTAssertEqual(first.current.clockScale, 140)
         XCTAssertEqual(first.current.localClockScale, 170)
         XCTAssertTrue(first.current.stretchesMedia && first.current.isClear)
+        XCTAssertTrue(first.current.ignoresPreview)
         first.select(.night)
         XCTAssertEqual(first.current.textColor, 0x445566)
         XCTAssertEqual(first.current.previewScale, 240)

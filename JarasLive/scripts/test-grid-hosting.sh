@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if [[ -e /tmp/catlive-perf-measurement.lock ]]; then
+  echo "Performance measurement is active; hosting compilation deferred." >&2
+  exit 2
+fi
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-grid-hosting.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/environment.swift" <<'PY'
@@ -23,7 +27,11 @@ end = source.index('    private func previewItemEdit(', start)
 notification = next(line.strip() for line in source.splitlines() if '.onReceive(show.$normalizeItemsRequest.dropFirst())' in line)
 tests = Path('Tests/Apple/GridHostingIntegrationTests.swift').read_text()
 tests = tests.replace('NORMALIZATION_NOTIFICATION', notification)
-zoom = source[source.index('private final class TimelineZoomState:'):source.index('private struct TimelineViewportLayer<')]
+mount_start = source.index('private struct NativeTimelineBaseSlot:')
+mount = source[mount_start:source.index('\n@MainActor private final class NativeTimelineBaseController', mount_start)]
+tests += '\n' + mount + '\n' + Path('Tests/Apple/TimelineNativeMountTests.swift').read_text()
+zoom = source[source.index('private final class TimelineCoordinatePlane:'):source.index('/// Empty layers keep their content subscriptions')]
+zoom += source[source.index('private struct TimelineZoomLayer<'):source.index('private struct TimelineViewportLayer<')]
 limits = source[source.index('enum TimelineZoomLimits'):source.index('private let markerLaneHeight')]
 Path(sys.argv[1]).write_text(limits + zoom + tests + '\nextension NormalizationFixtureContent {\n' + source[start:end] + '\n}\n')
 PYTEST

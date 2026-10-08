@@ -52,6 +52,9 @@ struct RecordingGridOverlay: View {
     let scale: CGFloat
     @ObservedObject private var preview = LiveRecordingPreview.shared
     var body: some View {
+        // An idle recorder has no pixels. Keep its subscription, but do not
+        // allocate and redraw a viewport canvas on every timeline zoom frame.
+        if !preview.takes.isEmpty {
         Canvas { context,size in
             context.translateBy(x: -visibleRect.minX,y: -visibleRect.minY)
             for (id, take) in preview.takes {
@@ -87,5 +90,6 @@ struct RecordingGridOverlay: View {
                 ink.stroke(wave,with: .color(.white.opacity(0.85)),lineWidth: 1)
             }
         }.frame(width: visibleRect.width,height: visibleRect.height).offset(x: visibleRect.minX,y: visibleRect.minY).allowsHitTesting(false)
+        }
     }
 }

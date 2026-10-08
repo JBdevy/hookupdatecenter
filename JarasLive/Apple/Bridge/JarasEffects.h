@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
++ (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
++ (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 @end
@@ -44,8 +46,20 @@ NS_ASSUME_NONNULL_BEGIN
 + (AVAudioUnitEffect *)makeNode;
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (void)beginStopFade:(AVAudioUnitEffect *)node;
++ (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
++ (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count;
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts;
+@end
+NS_ASSUME_NONNULL_END
+
+NS_ASSUME_NONNULL_BEGIN
+/// Fixed item output: gain changes never reconnect the graph. Idle sources
+/// return silence without rendering their upstream player or effect chain.
+@interface JarasVoiceGain : NSObject
++ (AVAudioUnitEffect *)makeNode;
++ (void)setDecibels:(AVAudioUnitEffect *)node decibels:(double)decibels;
++ (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 @end
 NS_ASSUME_NONNULL_END
 

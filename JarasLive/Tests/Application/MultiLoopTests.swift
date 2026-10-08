@@ -107,6 +107,41 @@ final class MultiLoopTests: XCTestCase {
         state.amount = 0; XCTAssertEqual(state.gain(1, rule: rule), 1)
         XCTAssertEqual(state.gain(1, rule: nil), 1)
     }
+    func testInternalGainPlanPropagatesCompatibleLinkedRulesAndIsolatesLegacyConflicts() {
+        var song = Project.empty(name: "Linked fade plan").songs[0]
+        let left = Track(id: UUID(), name: "Left", role: .keys)
+        let right = Track(id: UUID(), name: "Right", role: .keys)
+        let independent = Track(id: UUID(), name: "Independent", role: .keys)
+        song.tracks = [left, right, independent]
+        song.linkTracks([left.id, right.id], firstInput: 1, color: 0xffffff)
+        var leftRule = MultiLoopTrack(id: left.id, gain: 0.2); leftRule.autoFader = true
+        var ordinaryRule = MultiLoopTrack(id: independent.id, gain: 0.4); ordinaryRule.autoFader = true
+        var loop = MultiLoopPlayback(id: UUID(), start: 10, end: 20,
+            amount: 0.5, gates: false, released: false, tracks: [leftRule, ordinaryRule])
+        let single = MultiLoopGainPlan(loop: loop, tracks: song.tracks)
+        XCTAssertTrue(single.legacyVolumeTargets.isEmpty)
+        XCTAssertEqual(single.internalRules[left.id]?.gain, 0.2)
+        XCTAssertEqual(single.internalRules[right.id]?.gain, 0.2, "one linked rule drives the same gain on both channels")
+        XCTAssertEqual(single.internalRules[independent.id]?.gain, 0.4)
+        var rightRule = leftRule; rightRule.id = right.id
+        loop.tracks.append(rightRule)
+        let matching = MultiLoopGainPlan(loop: loop, tracks: song.tracks)
+        XCTAssertTrue(matching.legacyVolumeTargets.isEmpty)
+        XCTAssertEqual(matching.internalRules[right.id]?.gain, 0.2)
+        for conflict in ["gain", "enabled"] {
+            loop.tracks[2] = rightRule
+            if conflict == "gain" { loop.tracks[2].gain = 0.7 }
+            else { loop.tracks[2].autoFader = false }
+            let plan = MultiLoopGainPlan(loop: loop, tracks: song.tracks)
+            XCTAssertEqual(plan.legacyVolumeTargets, [left.id, right.id], "conflicting legacy presets retain their established route")
+            XCTAssertNil(plan.internalRules[left.id])
+            XCTAssertNil(plan.internalRules[right.id])
+            XCTAssertEqual(plan.internalRules[independent.id]?.gain, 0.4)
+        }
+        let empty = MultiLoopGainPlan(loop: nil, tracks: song.tracks)
+        XCTAssertTrue(empty.internalRules.isEmpty)
+        XCTAssertTrue(empty.legacyVolumeTargets.isEmpty)
+    }
     func testValidationAndPersistence() throws {
         var loop = MultiLoop(name: "Loop", marker1: UUID(), marker2: UUID())
         try loop.validate()

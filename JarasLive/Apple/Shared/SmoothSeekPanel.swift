@@ -1,12 +1,131 @@
 import SwiftUI
+import Combine
 #if os(macOS)
 import AppKit
 #endif
 
+/// Button layout changes at section boundaries, never for each position sample.
+/// The small native progress layers read the same authoritative clock directly.
+@MainActor private final class SectionPanelObserver: ObservableObject {
+    private struct State: Equatable {
+        let controls: ShowPresentationState
+        let section: UUID?
+        let secondarySection: UUID?
+        let trigger: UUID?
+        let idlePosition: Double?
+    }
+    let objectWillChange = ObservableObjectPublisher()
+    private var state: State
+    private var subscription: AnyCancellable?
+    private var pending = false
+    init(show: ShowController) {
+        state = Self.read(show)
+        subscription = show.objectWillChange.sink { [weak self, weak show] _ in
+            guard let self, !self.pending else { return }
+            self.pending = true
+            DispatchQueue.main.async { [weak self, weak show] in
+                guard let self, let show else { return }
+                self.pending = false
+                let next = Self.read(show)
+                guard next != self.state else { return }
+                self.state = next; self.objectWillChange.send()
+            }
+        }
+    }
+    private static func read(_ show: ShowController) -> State {
+        let transport = show.snapshot.transport
+        let song = show.current
+        func sections(at position: Double) -> [TimelineMarker] {
+            guard let song, let region = song.sectionRegion(at: position) else { return [] }
+            return song.sectionMarkers(in: region)
+        }
+        let main = sections(at: transport.position)
+        let sub = transport.subPlay.playing ? sections(at: transport.subPlay.position) : []
+        return State(controls: show.presentationState,
+            section: main.last(where: { $0.position <= transport.position })?.id,
+            secondarySection: sub.last(where: { $0.position <= transport.subPlay.position })?.id,
+            trigger: main.first(where: { $0.position > transport.position + 0.000001 })?.id,
+            idlePosition: show.isPlaying ? nil : transport.editPosition ?? transport.position)
+    }
+}
+
+#if os(macOS)
+private struct NativeSectionProgressBar: NSViewRepresentable {
+    let running: Bool
+    let countdown: Bool
+    let start: Double
+    let end: Double
+    let sample: () -> (position: Double, time: Double)
+    func makeNSView(context: Context) -> NativeSectionProgressView { NativeSectionProgressView() }
+    func updateNSView(_ view: NativeSectionProgressView, context: Context) {
+        view.configure(running: running, countdown: countdown, start: start, end: end, sample: sample)
+    }
+    static func dismantleNSView(_ view: NativeSectionProgressView, coordinator: ()) { view.stop() }
+}
+private final class NativeSectionProgressView: NSView {
+    private let bar = CALayer()
+    private var timer: Timer?
+    private var running = false, countdown = false
+    private var start = 0.0, end = 0.0
+    private var sample: (() -> (position: Double, time: Double))?
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) {
+        super.init(frame: frame); wantsLayer = true
+        layer?.addSublayer(bar)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(running: Bool, countdown: Bool, start: Double, end: Double,
+                   sample: @escaping () -> (position: Double, time: Double)) {
+        self.running = running; self.countdown = countdown
+        self.start = start; self.end = end; self.sample = sample
+        updateTimer(); paint()
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateTimer(); paint() }
+    override func layout() { super.layout(); paint() }
+    func stop() { timer?.invalidate(); timer = nil }
+    private func updateTimer() {
+        guard running, window != nil else { stop(); return }
+        guard timer == nil else { return }
+        let clock = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.paint() }
+        timer = clock; RunLoop.main.add(clock, forMode: .common)
+    }
+    private func paint() {
+        guard !isHiddenOrHasHiddenAncestor, !visibleRect.isEmpty, let sample else { return }
+        let value = sample()
+        let elapsed = running ? min(0.25, max(0, ProcessInfo.processInfo.systemUptime - value.time)) : 0
+        let fraction = min(1, max(0, (value.position + elapsed - start) / max(0.001, end - start)))
+        let width = bounds.width * (countdown ? 1 - fraction : fraction)
+        let scale = window?.backingScaleFactor ?? 2
+        let rect = CGRect(x: 0, y: max(0, bounds.height - 5), width: (width * scale).rounded() / scale, height: min(5, bounds.height))
+        let color = countdown ? Self.countdownColor : Self.playbackColor
+        guard bar.frame != rect || bar.backgroundColor != color else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        bar.frame = rect; bar.backgroundColor = color
+        CATransaction.commit()
+    }
+    private static let countdownColor = NSColor(JarasTheme.yellow).cgColor
+    private static let playbackColor = NSColor(JarasTheme.green).cgColor
+}
+#endif
+
 /// Transport updates stay in this small panel, independently of the grid canvas.
 struct SmoothSeekPanel: View {
+    #if os(macOS)
+    let show: ShowController
+    @StateObject private var updates: SectionPanelObserver
+    #else
     @ObservedObject var show: ShowController
+    #endif
     var verticalList = false
+    init(show: ShowController, verticalList: Bool = false) {
+        self.verticalList = verticalList
+        #if os(macOS)
+        self.show = show
+        _updates = StateObject(wrappedValue: SectionPanelObserver(show: show))
+        #else
+        _show = ObservedObject(wrappedValue: show)
+        #endif
+    }
     var body: some View {
         let transport = show.snapshot.transport
         let current = show.current.flatMap { song in
@@ -41,7 +160,14 @@ struct SmoothSeekPanel: View {
             showsPosition: !secondary || transport.subPlay.playing, positionRunning: secondary ? transport.subPlay.playing : transport.playing, queued: transport.queuedSectionMarkerId,
             trigger: trigger, queueStartedAt: transport.sectionQueueStartedAt, playbackPosition: transport.position, playbackRunning: transport.playing,
             select: { show.send(.queueSection, target: $0) }, verticalList: verticalList,
-            regionID: region?.id, regionStart: region?.startTime ?? 0)
+            regionID: region?.id, regionStart: region?.startTime ?? 0,
+            livePosition: { [weak show] in
+                guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
+                return (secondary && show.snapshot.transport.subPlay.playing ? show.snapshot.transport.subPlay.position : show.snapshot.transport.position, show.timelinePlaybackSampleTime)
+            }, livePlayback: { [weak show] in
+                guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
+                return (show.snapshot.transport.position, show.timelinePlaybackSampleTime)
+            })
     }
 }
 
@@ -63,6 +189,8 @@ struct SmoothSeekBankView: View {
     var verticalList = false
     var regionID: UUID? = nil
     var regionStart: Double = 0
+    var livePosition: (() -> (position: Double, time: Double))? = nil
+    var livePlayback: (() -> (position: Double, time: Double))? = nil
     private var displayMarkers: [TimelineMarker] {
         guard let regionID else { return markers }
         return [TimelineMarker(id: regionID, name: "INÍCIO", position: regionStart, color: 0x409cff, section: true)] + markers
@@ -107,13 +235,13 @@ struct SmoothSeekBankView: View {
                 RoundedRectangle(cornerRadius: 5).fill(selected ? JarasTheme.green.opacity(0.35) : isStart ? Color.blue.opacity(0.4) : JarasTheme.display)
                 if queued, let trigger {
                     SectionCountdownBar(position: playbackPosition, trigger: trigger,
-                        startedAt: queueStartedAt, running: playbackRunning)
+                        startedAt: queueStartedAt, running: playbackRunning, liveSample: livePlayback)
                         .id(trigger)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).allowsHitTesting(false)
                 } else if active, positionRunning {
                     SectionPlaybackBar(position: position, start: marker.position,
                         end: displayMarkers.first(where: { $0.position > marker.position })?.position ?? end,
-                        running: positionRunning)
+                        running: positionRunning, liveSample: livePosition)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).allowsHitTesting(false)
                 }
                 HStack(spacing: 2) {
@@ -133,8 +261,18 @@ private struct SectionPlaybackBar: View {
     let start: Double
     let end: Double
     let running: Bool
+    var liveSample: (() -> (position: Double, time: Double))? = nil
     @State private var sampleTime = ProcessInfo.processInfo.systemUptime
     var body: some View {
+        #if os(macOS)
+        if let liveSample {
+            NativeSectionProgressBar(running: running, countdown: false, start: start, end: end, sample: liveSample)
+        } else { fallback }
+        #else
+        fallback
+        #endif
+    }
+    private var fallback: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !running)) { _ in
             let elapsed = running ? min(0.25, max(0, ProcessInfo.processInfo.systemUptime - sampleTime)) : 0
             let fraction = SectionPlaybackProgress.fraction(position: position + elapsed, start: start, end: end)
@@ -158,10 +296,20 @@ private struct SectionCountdownBar: View {
     let trigger: Double
     let startedAt: Double?
     let running: Bool
+    var liveSample: (() -> (position: Double, time: Double))? = nil
     @State private var sampleTime = ProcessInfo.processInfo.systemUptime
     @State private var initialPosition: Double?
     @State private var samplePosition: Double?
     var body: some View {
+        #if os(macOS)
+        if let liveSample {
+            NativeSectionProgressBar(running: running, countdown: true, start: startedAt ?? position, end: trigger, sample: liveSample)
+        } else { fallback }
+        #else
+        fallback
+        #endif
+    }
+    private var fallback: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !running)) { _ in
             let elapsed = running && samplePosition != nil ? min(0.25, max(0, ProcessInfo.processInfo.systemUptime - sampleTime)) : 0
             let duration = max(0.001, trigger - (startedAt ?? initialPosition ?? position))

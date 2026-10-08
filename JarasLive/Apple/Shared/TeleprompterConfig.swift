@@ -94,6 +94,7 @@ private enum TPSettingField: Identifiable {
         .toggle("songNameEnabled", "Show song name", \.songNameEnabled),
         .toggle("queueNameEnabled", "Show queued song", \.queueNameEnabled),
         .toggle("chordsEnabled", "Show chords", \.chordsEnabled),
+        .toggle("ignorePreview", "Ignore Preview", \.ignoresPreview),
         .toggle("previewSongDurationEnabled", "Show song durations in preview", \.previewSongDurationEnabled),
         .toggle("previewBlockDurationEnabled", "Show block durations in preview", \.previewBlockDurationEnabled),
         .toggle("previewUnderlineEnabled", "Underline preview names", \.previewUnderlineEnabled),

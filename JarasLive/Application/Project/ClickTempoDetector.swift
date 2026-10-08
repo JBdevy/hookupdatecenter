@@ -221,8 +221,10 @@ public extension Song {
         for marker in detected {
             // A marker already at the onset is updated, never duplicated.
             if let index = markers!.firstIndex(where: { $0.isTempo && abs($0.position - marker.position) < 0.000001 }) {
-                var replacement = marker; replacement.id = markers![index].id; markers![index] = replacement
-            } else { markers!.append(marker) }
+                var replacement = marker; replacement.id = markers![index].id
+                replacement = markerWithRegionOwnership(replacement)
+                markers![index] = replacement
+            } else { markers!.append(markerWithRegionOwnership(marker)) }
         }
         ensureInitialTempoMarker()
     }

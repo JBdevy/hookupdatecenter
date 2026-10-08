@@ -689,3 +689,45 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertFalse(show.isPlaying)
     }
 }
+
+
+extension ProjectCursorTests {
+    @MainActor func testPlaybackAndZoomPresentationReadsNeverDirtyOrReloadProject() throws {
+        var project = Project.empty(name: "Dirty-state boundary")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 120)
+        project.songs[0].parts = [region]
+        project.songs[0].duration = 120
+        project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 4)
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let initialSnapshots = executor.snapshotCount, initialLoads = executor.loadCount
+        let initialProject = show.snapshot.project
+        let initialRevision = show.projectRevision
+        XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertFalse(show.needsSave)
+        show.send(.play)
+        defer { show.send(.stopAll) }
+        for frame in 0..<300 {
+            executor.advance(1.0 / 30)
+            show.tick()
+            if frame == 100 { show.selectTimelineRegion(region.id) }
+            // The grid reads these anchors and the shared static presentation
+            // while wheel/native drawing updates its separate viewport state.
+            // None may serialize, reload or mutate the document.
+            for _ in 0..<8 {
+                XCTAssertTrue(show.timelineZoomPosition.isFinite)
+                _ = show.timelinePresentationState
+                _ = show.presentationState
+                XCTAssertFalse(show.needsSave)
+            }
+        }
+        show.send(.stopAll)
+        XCTAssertEqual(show.snapshot.project, initialProject)
+        XCTAssertEqual(show.projectRevision, initialRevision)
+        XCTAssertEqual(executor.snapshotCount, initialSnapshots, "Playback/presentation must use lightweight transport snapshots")
+        XCTAssertEqual(executor.loadCount, initialLoads, "Drawing/navigation must never reload the audio project")
+        XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertFalse(show.needsSave)
+        XCTAssertFalse(show.canUndo, "Transport and a region-band selection must not add undo entries")
+    }
+}

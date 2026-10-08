@@ -31,7 +31,7 @@ struct SongListView: View {
     var sidebarScrollController: SidebarScrollController? = nil
     init(show: ShowController, sidebarScrollController: SidebarScrollController? = nil) {
         self.show = show; self.sidebarScrollController = sidebarScrollController
-        _updates = StateObject(wrappedValue: ShowPresentationObserver(show: show))
+        _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     #else
     @ObservedObject var show: ShowController
@@ -247,9 +247,6 @@ struct SongListView: View {
                                         if case .region(let part, _) = entry, targets.contains(part.id) { return part.id }; return nil
                                     } }
                                     Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: region.id, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: targets) }
-                                    if content.unifiedRegionIDs.contains(region.id) {
-                                        Button("Disunify") { show.disunifyRegion(region.id); expandedRegions.remove(region.id) }
-                                    }
                                     if region.parentRegionID == nil {
                                     Button(playlist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
                                         requestRemoval([region.id], keyboard: false)
@@ -342,6 +339,10 @@ struct SongListView: View {
                     if let entrySelectionAnchor, removal.ids.contains(entrySelectionAnchor) { self.entrySelectionAnchor = nil }
                 }
                 removal = nil
+            }
+        } message: {
+            if removal?.playlist == nil {
+                Text("The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.")
             }
         }
         .sheet(item: $multiLoopRegion) { region in MultiLoopsEditor(show: show, regionID: region.id) }
@@ -856,11 +857,14 @@ private final class NativeRegionSetlistLabelView: NSView {
     private var stripe = NSColor.clear.cgColor
     private var selected = false, active = false, queued = false, prepareOnly = false
     private var progress = 0.0, queueProgress = 0.0
+    private let progressClip = CALayer(), progressBar = CALayer(), progressMask = CAShapeLayer()
+    private var playbackDurationSeconds: Int?
     private var playback: SetlistPlaybackBinding?
     private var playbackSubscription: AnyCancellable?
     func bindPlayback(_ binding: SetlistPlaybackBinding?) {
         guard playback != binding else { return }
         playbackSubscription = nil; playback = binding
+        playbackDurationSeconds = nil
         guard let binding else { return }
         playbackSubscription = binding.show.$snapshot.sink { [weak self] snapshot in
             self?.updatePlayback(snapshot.transport)
@@ -873,13 +877,18 @@ private final class NativeRegionSetlistLabelView: NSView {
         progress = active ? min(1, max(0, (transport.position - start) / duration)) : 0
         let queueLength = max(0.001, playback.playbackEnd - (transport.queueStartedAt ?? transport.position))
         queueProgress = queued ? min(1, max(0, playback.playbackEnd - transport.position) / queueLength) : 0
-        let text = regionDurationText(active ? ceil(max(0, playback.end - transport.position)) : duration)
-        if text != durationText {
-            durationText = text; durationLine = Self.line(text, font: Self.durationFont)
-            durationWidth = durationLine.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) } ?? 0
-            truncationWidth = -1
+        let seconds = max(0, Int((active ? ceil(max(0, playback.end - transport.position)) : duration).rounded()))
+        if seconds != playbackDurationSeconds {
+            playbackDurationSeconds = seconds
+            let text = regionDurationText(Double(seconds))
+            if text != durationText {
+                durationText = text; durationLine = Self.line(text, font: Self.durationFont)
+                durationWidth = durationLine.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) } ?? 0
+                truncationWidth = -1
+                needsDisplay = true
+            }
         }
-        needsDisplay = true
+        updateProgressLayer()
     }
     private var roundedBounds: CGRect = .null
     private var roundedPath: CGPath?
@@ -889,13 +898,43 @@ private final class NativeRegionSetlistLabelView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        let actions = Dictionary(uniqueKeysWithValues: ["position", "bounds", "hidden", "backgroundColor", "path"].map { ($0, NSNull()) })
+        for content in [progressClip, progressBar, progressMask] { content.actions = actions }
+        progressClip.name = "setlist-progress-clip"
+        progressBar.name = "setlist-progress-bar"
+        progressClip.mask = progressMask
+        progressMask.fillColor = NSColor.white.cgColor
+        progressClip.addSublayer(progressBar)
+        updateProgressLayer()
         setAccessibilityElement(false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func setFrameSize(_ size: NSSize) {
         let changed = frame.size != size
         super.setFrameSize(size)
-        if changed { needsDisplay = true }
+        if changed { needsDisplay = true; updateProgressLayer() }
+    }
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        updateProgressLayer()
+    }
+    private func updateProgressLayer() {
+        // Only the moving strip changes at playback cadence. Keep the card's
+        // cached text and gradient bitmap until its displayed content changes.
+        if progressClip.superlayer !== layer { layer?.addSublayer(progressClip) }
+        if progressClip.frame != bounds {
+            progressClip.frame = bounds
+            progressMask.frame = progressClip.bounds
+            progressMask.path = RoundedRectangle(cornerRadius: 5).path(in: progressClip.bounds).cgPath
+        }
+        let hidden = !active && !queued
+        if progressClip.isHidden != hidden { progressClip.isHidden = hidden }
+        guard !hidden else { return }
+        let color = active ? Self.green : Self.yellow
+        if progressBar.backgroundColor != color { progressBar.backgroundColor = color }
+        let frame = CGRect(x: 0, y: bounds.height - 2,
+            width: bounds.width * min(1, max(0, active ? progress : queueProgress)), height: 2)
+        if progressBar.frame != frame { progressBar.frame = frame }
     }
     func configure(number: Int, name: String, duration: String, color: UInt32, selected: Bool, active: Bool,
                    queued: Bool, prepareOnly: Bool, progress: Double, queueProgress: Double, fontStyle: Int = 0, nameColor: UInt32 = 0xffffff) {
@@ -922,12 +961,14 @@ private final class NativeRegionSetlistLabelView: NSView {
             durationText = duration; durationLine = Self.line(duration, font: Self.durationFont)
             durationWidth = durationLine.map { CGFloat(CTLineGetTypographicBounds($0,nil,nil,nil)) } ?? 0
             truncationWidth = -1
+            playbackDurationSeconds = nil
         }
         colorValue = color; self.selected = selected; self.active = active; self.queued = queued; self.prepareOnly = prepareOnly
         self.progress = progress; self.queueProgress = queueProgress
         if styleChanged { stripe = active ? Self.red : queued ? (prepareOnly ? Self.green : Self.orange) : NSColor(Color(hex: color)).cgColor }
         if textChanged { setAccessibilityLabel(numberString + ", " + name + ", " + duration) }
-        needsDisplay = true
+        updateProgressLayer()
+        if textChanged || styleChanged { needsDisplay = true }
     }
     private static func line(_ text: String, font: NSFont, color: NSColor = .white) -> CTLine {
         CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
@@ -957,10 +998,6 @@ private final class NativeRegionSetlistLabelView: NSView {
         draw(numberLine,x:17,in:context)
         if available > 0 { draw(truncatedName,x:nameX,in:context) }
         draw(durationLine,x:durationX,in:context)
-        if active || queued {
-            context.setFillColor(active ? Self.green : Self.yellow)
-            context.fill(CGRect(x:0,y:bounds.height-2,width:bounds.width * min(1,max(0,active ? progress : queueProgress)),height:2))
-        }
         context.restoreGState()
         if selected && !active && !queued { context.setStrokeColor(Self.green);context.setLineWidth(1.5);context.addPath(rounded);context.strokePath() }
     }

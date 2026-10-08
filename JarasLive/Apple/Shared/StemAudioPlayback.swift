@@ -343,7 +343,7 @@ struct TimecodePlaybackSpan {
         let groupSend = AVAudioMixerNode()
         let internalSend = AVAudioMixerNode()
         // One existing native kernel applies fader, stereo balance, phase and
-        // mute/solo. It also supplies the post-control PCM to the meter tap.
+        // mute/solo. It also captures peaks directly from the post-control PCM.
         let controls = JarasEqualizer.makeNode()
         let hardware = [JarasChannelRouter.makeNode()]
         let effects = NativeEffectsChain()
@@ -402,6 +402,7 @@ struct TimecodePlaybackSpan {
     /// nil means every track is eligible; a solo permits its complete subtree and the ancestors that carry its audio.
     private var soloAudibleTracks: Set<UUID>?
     private var clips: [(UUID, AudioClip)] = []
+    private var playbackClipIndex = AudioClipPlaybackIndex(clips: [])
     private var missingAudioPaths = Set<String>()
     private var unifiedPlaybackStarts: [UUID: Double] = [:]
     private var clipIndices: [UUID: Int] = [:]
@@ -412,7 +413,7 @@ struct TimecodePlaybackSpan {
     private var revision: UInt64?
     private var songID: UUID?
     private var timecodeTrackID: UUID?
-    private var timecodePreviewGain: (value: Float, original: Double)?
+    private var timecodePreviewGain: (value: Double, original: Double)?
     private var lastVideoNoAudio: Bool?
     private var silentVideoFiles = Set<String>()
     private var tempo: Double?
@@ -422,6 +423,9 @@ struct TimecodePlaybackSpan {
     private var timecodeRoutes: [AVAudioUnitEffect] = []
     private var timecodeAnchor: (key: String, position: Double, host: Double)?
     private var master = 1.0
+    private var loopGainState: MultiLoopPlayback?
+    private var loopGainPlan = MultiLoopGainPlan()
+    private var loopGainPlanKey: (song: UUID, revision: UInt64, rules: [MultiLoopTrack])?
     private var masterMono = false
     private var masterMuted = false
     private var masterSolo = false
@@ -452,7 +456,7 @@ struct TimecodePlaybackSpan {
     private struct VoiceKey: Hashable { let clip: UUID; let head: Int }
     private struct Voice {
         let player: AVAudioPlayerNode
-        let gain: AVAudioUnitEQ
+        let gain: AVAudioUnitEffect
         let stretch: AVAudioUnitTimePitch
         let usesStretch: Bool
         let track: UUID
@@ -502,6 +506,7 @@ struct TimecodePlaybackSpan {
         let rebuild = outputFormatChanged
         if rebuild { beforeAudioGraphReset() }
         stop(); engine.stop()
+        discardNativeMeterPeaks()
         if rebuild { configureGraph(directory: directory) }
         else { engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: hardwareFormat) }
@@ -525,24 +530,24 @@ struct TimecodePlaybackSpan {
         appliedRoutes.removeAll()
         // A project swap rebuilds the graph before it is warmed again by update.
         engine.stop()
+        discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
         for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeAll()
         detachClickTrack()
         clickSample = nil; clickSoundPath = nil
         for monitor in inputMonitors.values { engine.detach(monitor.source); engine.detach(monitor.gate) }; inputMonitors.removeAll()
         for bus in trackBuses.values {
-            bus.controls.removeTap(onBus: 0)
             engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         trackBuses.removeAll(); groupConnections.removeAll()
         if let metronome { engine.detach(metronome.node); engine.detach(metronomeRoute) }; metronome = nil; metronomeSoundRevision = nil; metronomeTiming = []
         if masterConfigured {
-            masterGain.removeTap(onBus: 0)
             for route in masterRoutes { engine.detach(route) }
             masterEffects.detach(from: engine); engine.detach(masterGain); engine.detach(masterChannelMode); engine.detach(masterBus)
             masterConfigured = false
         }
         self.directory = directory; latestPlayback = nil; files.removeAll(); silentVideoFiles.removeAll(); timecodePreviewGain = nil; preparedOnsets.removeAll(); onsetPreparationKey = nil; pitchClipRevision = nil; pitchParts.removeAll(); clipPitches.removeAll(); clipFragments.removeAll(); fragmentStarts.removeAll(); trackPeaks.removeAll(); trackConnections.removeAll(); revision = nil; songID = nil; tempo = nil; subPlayPromotion = 0; sectionJumpSerial = 0
+        loopGainState = nil; loopGainPlan = MultiLoopGainPlan(); loopGainPlanKey = nil
         configureMaster()
         if realtime {
             AudioDeviceSettings.shared.deviceChanged = { [weak self] in
@@ -561,8 +566,20 @@ struct TimecodePlaybackSpan {
         }
         let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
         engine.connect(bus.masterSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
-        engine.connect(bus.groupSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
-        engine.connect(bus.internalSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
+        // The permanent Master send keeps this source graph clocked. Group
+        // and internal sends acquire an output in connectGroups/connectTracks
+        // when first routed, so unused branches need no silent mixer render.
+        for send in [bus.groupSend, bus.internalSend] {
+            do {
+                // An unconnected mixer defaults to 44.1 kHz. Prepare its output
+                // now so first use at another rate preserves the live input.
+                try send.auAudioUnit.outputBusses[0].setFormat(format)
+            } catch {
+                // Keep the established clocked path if the device rejects
+                // preparing a disconnected mixer while its graph is running.
+                engine.connect(send, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
+            }
+        }
         bus.internalSend.outputVolume = 0
         let destinations = [AVAudioConnectionPoint(node: bus.masterSend, bus: 0), AVAudioConnectionPoint(node: bus.groupSend, bus: 0), AVAudioConnectionPoint(node: bus.internalSend, bus: 0)] + bus.hardware.map { AVAudioConnectionPoint(node: $0, bus: 0) }
         engine.connect(bus.controls, to: destinations, fromBus: 0, format: format)
@@ -575,16 +592,7 @@ struct TimecodePlaybackSpan {
         #endif
         bus.effects.observe(analysisEffects[id.uuidString] ?? [])
         bus.masterSend.outputVolume = 0; bus.groupSend.outputVolume = 0
-        if let bank = trackPeaks[id] {
-            let slot = 0
-            bus.controls.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                guard let data = buffer.floatChannelData, buffer.frameLength > 0 else { return }
-                var left: Float = 0, right: Float = 0
-                vDSP_maxmgv(data[0], vDSP_Stride(buffer.stride), &left, vDSP_Length(buffer.frameLength))
-                vDSP_maxmgv(data[1], vDSP_Stride(buffer.stride), &right, vDSP_Length(buffer.frameLength))
-                bank.recordPeak(left, slot: UInt(slot)); bank.recordPeak(right, slot: UInt(slot + 1))
-            }
-        }
+        JarasEqualizer.setOutputMeteringEnabled(bus.controls, enabled: trackPeaks[id] != nil)
         trackBuses[id] = bus
         return bus
     }
@@ -674,15 +682,9 @@ struct TimecodePlaybackSpan {
             engine.attach(route); engine.connect(route, to: engine.mainMixerNode, fromBus: 0, toBus: engine.mainMixerNode.nextAvailableInputBus, format: hardwareFormat)
         }
         engine.connect(masterGain, to: masterRoutes.map { AVAudioConnectionPoint(node: $0, bus: 0) }, fromBus: 0, format: format)
-        for (index, route) in masterRoutes.enumerated() { JarasChannelRouter.configure(route, first: index == 0 ? 1 : -1, count: 2) }
-        let bank = peaks, slot = masterSlot
-        masterGain.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
-            guard let channels = buffer.floatChannelData else { return }
-            guard buffer.frameLength > 0, buffer.format.channelCount > 0 else { return }
-            var left: Float = 0, right: Float = 0
-            vDSP_maxmgv(channels[0], vDSP_Stride(buffer.stride), &left, vDSP_Length(buffer.frameLength))
-            vDSP_maxmgv(channels[min(1, Int(buffer.format.channelCount) - 1)], vDSP_Stride(buffer.stride), &right, vDSP_Length(buffer.frameLength))
-            bank.recordPeak(left, slot: slot); bank.recordPeak(right, slot: slot + 1)
+        for (index, route) in masterRoutes.enumerated() {
+            JarasChannelRouter.configure(route, first: index == 0 ? 1 : -1, count: 2)
+            JarasChannelRouter.setInputMeteringEnabled(route, enabled: index == 0)
         }
         preparedOutputFormat = hardwareFormat
         masterConfigured = true
@@ -794,7 +796,7 @@ struct TimecodePlaybackSpan {
         transportWasRunning = false
         // Silence every active source before touching effect state or idle caches.
         for voice in voices.values { voice.player.volume = 0 }
-        for tail in effectTails.values { tail.voice.gain.globalGain = -96 }
+        for tail in effectTails.values { JarasVoiceGain.setDecibels(tail.voice.gain, decibels: -96) }
         for key in Array(voices.keys) { remove(key) }
         for voice in retiredVoices { recycle(voice) }
         retiredVoices.removeAll()
@@ -802,6 +804,7 @@ struct TimecodePlaybackSpan {
         for pooled in idleVoices.values {
             for voice in pooled {
                 voice.player.stop()
+                JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                 voice.stretch.auAudioUnit.reset()
                 voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
             }
@@ -815,6 +818,7 @@ struct TimecodePlaybackSpan {
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
         lastPosition.removeAll(); headAudioClock.removeAll()
         for meter in meters.values { meter.reset() }
+        drainNativeMeterPeaks()
         masterMeter.reset(); _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
         lastMeterUpdate = 0
@@ -827,6 +831,7 @@ struct TimecodePlaybackSpan {
         meterTimer?.invalidate(); meterTimer = nil
         stop()
         engine.stop()
+        discardNativeMeterPeaks()
         if let deviceActivity { ProcessInfo.processInfo.endActivity(deviceActivity); self.deviceActivity = nil }
         if deviceSilenceAttached { engine.detach(deviceSilence); deviceSilenceAttached = false }
         discardIdleVoices()
@@ -837,6 +842,7 @@ struct TimecodePlaybackSpan {
         instrumentGeneration = UUID()
         instrumentRequests.removeAll()
         files.removeAll(); silentVideoFiles.removeAll(); timecodePreviewGain = nil; preparedOnsets.removeAll()
+        loopGainState = nil; loopGainPlan = MultiLoopGainPlan(); loopGainPlanKey = nil
         directory = nil
     }
     private func resetEffectTails() {
@@ -858,7 +864,8 @@ struct TimecodePlaybackSpan {
         voice.stretch.auAudioUnit.reset()
         voice.effects?.resetTails()
         voice.gain.auAudioUnit.reset()
-        voice.gain.globalGain = -96
+        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+        JarasVoiceGain.setDecibels(voice.gain, decibels: Double(-96))
         // A mixer format converter can retain PCM after a stopped source.
         // Release just this connection so neither an ended item nor Sub Play
         // leaks buffered sound. Keep the processors ready for reuse.
@@ -878,7 +885,7 @@ struct TimecodePlaybackSpan {
     private func makeVoice(track: UUID, clip: AudioClip, file: AVAudioFile) throws -> Voice {
         // Each player owns its reader; scheduling overlapping copies must not share a mutable file cursor.
         let playbackFile = try AVAudioFile(forReading: file.url)
-        let player = AVAudioPlayerNode(), gain = AVAudioUnitEQ(numberOfBands: 0), stretch = AVAudioUnitTimePitch()
+        let player = AVAudioPlayerNode(), gain = JarasVoiceGain.makeNode(), stretch = AVAudioUnitTimePitch()
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
         let usesStretch = !realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
@@ -906,6 +913,7 @@ struct TimecodePlaybackSpan {
             var voice = idleVoices[track]!.remove(at: index)
             if voice.file.url != file.url { voice.file = try AVAudioFile(forReading: file.url) }
             voice.clip = clip
+            JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
             voice.effects?.setPlaybackBoundary()
             if suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain)) != nil {
                 engine.connect(voice.gain, to: trackBus(for: track).input(for: clip), fromBus: 0, toBus: voice.mixInputBus, format: file.processingFormat)
@@ -959,6 +967,7 @@ struct TimecodePlaybackSpan {
                     }
                     if ready < count {
                         let voice = try self.makeVoice(track: track, clip: clip, file: file)
+                        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                         self.idleVoices[track, default: []].append(voice)
                     }
                 } catch { self.onError(error); return }
@@ -984,6 +993,7 @@ struct TimecodePlaybackSpan {
         }
     }
     private func warmPlayer(_ voice: Voice) {
+        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
         guard let silence = AVAudioPCMBuffer(pcmFormat: voice.file.processingFormat, frameCapacity: 256) else { return }
         silence.frameLength = 256
         for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
@@ -1168,12 +1178,12 @@ struct TimecodePlaybackSpan {
             if var voice = voices[key], voice.clip.gain != gain {
                 voice.clip.gain = gain
                 voice.player.volume = gain <= 0 || voice.clip.muted == true ? 0 : 1
-                voice.gain.globalGain = voice.clip.muted == true || gain <= 0 ? -96 : decibels
+                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(voice.clip.muted == true || gain <= 0 ? -96 : decibels))
                 voices[key] = voice
             }
             if var tail = effectTails[key], tail.voice.clip.gain != gain {
                 tail.voice.clip.gain = gain
-                tail.voice.gain.globalGain = tail.voice.clip.muted == true || gain <= 0 ? -96 : decibels
+                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(tail.voice.clip.muted == true || gain <= 0 ? -96 : decibels))
                 effectTails[key] = tail
             }
         }
@@ -1182,7 +1192,8 @@ struct TimecodePlaybackSpan {
         guard gain.isFinite, gain >= 0 else { return }
         if let track, track == timecodeTrackID {
             let original = latestPlayback?.snapshot.project.songs.flatMap(\.tracks).first { $0.id == track }?.volume ?? 1
-            timecodePreviewGain = (Float(gain), original); timecodeGenerator?.setGain(Float(gain) * (timecodePhaseInverted ? -1 : 1)); return
+            timecodePreviewGain = (gain, original)
+            timecodeGenerator?.setGain(Float(effectiveLoopGain(track, manual: gain)) * (timecodePhaseInverted ? -1 : 1)); return
         }
         if let track {
             guard tracks[track] != nil else { return }
@@ -1190,8 +1201,7 @@ struct TimecodePlaybackSpan {
             applyTrackGain(track)
         } else {
             master = gain
-            masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, gain)))))
-            masterBus.outputVolume = masterMuted || gain <= 0 ? 0 : 1
+            applyMasterGain()
         }
     }
     func previewPan(_ id: UUID, pan: Double) {
@@ -1204,15 +1214,16 @@ struct TimecodePlaybackSpan {
             tracks[id]?.mute = muted; applyTrackGate(id)
         } else if masterMuted != muted {
             masterMuted = muted
-            masterBus.outputVolume = muted || master <= 0 ? 0 : 1
+            applyMasterGain()
         }
     }
     func previewPhase(_ id: UUID?, inverted: Bool) {
         if let id {
             if latestPlayback?.snapshot.project.songs.flatMap(\.tracks).contains(where: { $0.id == id && $0.kind == .timecode }) == true {
                 timecodePhaseInverted = inverted
-                let gain = timecodePreviewGain?.value ?? Float(latestPlayback?.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.volume ?? 1)
-                timecodeGenerator?.setGain(inverted ? -gain : gain)
+                let gain = timecodePreviewGain?.value ?? latestPlayback?.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.volume ?? 1
+                let effective = Float(effectiveLoopGain(id, manual: gain))
+                timecodeGenerator?.setGain(inverted ? -effective : effective)
             } else {
                 tracks[id]?.phaseInverted = inverted
                 if let bus = trackBuses[id] { JarasEqualizer.setPolarity(bus.controls, inverted: inverted) }
@@ -1253,13 +1264,13 @@ struct TimecodePlaybackSpan {
                 voice.clip.muted = muted
                 let gain = voice.clip.gain ?? 1
                 voice.player.volume = muted || gain <= 0 ? 0 : 1
-                voice.gain.globalGain = muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
+                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))))
                 voices[key] = voice
             }
             if var tail = effectTails[key], tail.voice.clip.muted != muted {
                 tail.voice.clip.muted = muted
                 let gain = tail.voice.clip.gain ?? 1
-                tail.voice.gain.globalGain = muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
+                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))))
                 effectTails[key] = tail
             }
         }
@@ -1312,10 +1323,35 @@ struct TimecodePlaybackSpan {
     private func refreshSoloEligibility() {
         soloAudibleTracks = TrackHierarchy.soloAudibleTracks(Array(tracks.values))
     }
+    private func updateLoopGainContext(song: Song, transport: TransportState, revision: UInt64) -> Set<UUID> {
+        let rules = transport.multiLoop?.tracks ?? []
+        let rebuild = loopGainPlanKey?.song != song.id || loopGainPlanKey?.revision != revision || loopGainPlanKey?.rules != rules
+        guard rebuild || loopGainState != transport.multiLoop else { return [] }
+        let previous = Set(loopGainPlan.internalRules.keys)
+        if rebuild {
+            loopGainPlan = MultiLoopGainPlan(loop: transport.multiLoop, tracks: song.tracks)
+            loopGainPlanKey = (song.id, revision, rules)
+        }
+        loopGainState = transport.multiLoop
+        return previous.union(loopGainPlan.internalRules.keys)
+    }
+    private func effectiveLoopGain(_ id: UUID, manual: Double) -> Double {
+        // Resolve on the control thread using the original curve. Writing the
+        // existing gain target preserves its interpolation and sample math.
+        loopGainState?.gain(manual, rule: loopGainPlan.internalRules[id]) ?? manual
+    }
+    private func applyMasterGain() {
+        let gain = effectiveLoopGain(MultiLoopTrack.masterID, manual: master)
+        masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, gain)))))
+        // Preserve the existing zero/mute gate before master FX as well as
+        // the post-FX gain, including how effect tails behave at zero.
+        masterBus.outputVolume = masterMuted || gain <= 0 ? 0 : 1
+    }
     private func applyTrackGain(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
-        let audible = !track.mute && (soloAudibleTracks?.contains(id) ?? true) && track.volume > 0
-        JarasEqualizer.setInputGain(bus.controls, gain: audible ? min(pow(10, 12.0 / 20), track.volume) : 0)
+        let gain = effectiveLoopGain(id, manual: track.volume)
+        let audible = !track.mute && (soloAudibleTracks?.contains(id) ?? true) && gain > 0
+        JarasEqualizer.setInputGain(bus.controls, gain: audible ? min(pow(10, 12.0 / 20), gain) : 0)
     }
     private func applyTrackGate(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
@@ -1342,8 +1378,7 @@ struct TimecodePlaybackSpan {
         masterEffects.apply(masterFXSettings)
         JarasEqualizer.setPolarity(masterChannelMode, inverted: false)
         JarasEqualizer.setInputChannelMode(masterChannelMode, mode: masterMono ? 3 : 0)
-        masterBus.outputVolume = masterMuted || master <= 0 ? 0 : 1
-        masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, master)))))
+        applyMasterGain()
         applyMasterRoutes(); refreshSoloEligibility()
         for (id, bus) in trackBuses {
             guard let track = tracks[id] else { JarasEqualizer.setInputGain(bus.controls, gain: 0); bus.effects.resetTails(); continue }
@@ -1372,7 +1407,7 @@ struct TimecodePlaybackSpan {
             let linear = voice.clip.gain ?? 1
             voice.player.volume = muted || linear <= 0 ? 0 : 1
             voice.player.pan = Float(voice.clip.pan ?? 0)
-            voice.gain.globalGain = muted || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))
+            JarasVoiceGain.setDecibels(voice.gain, decibels: Double(muted || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
         }
     }
     private func syncInstruments() {
@@ -1624,7 +1659,8 @@ struct TimecodePlaybackSpan {
         }
         if timecodePreviewGain?.original != track.volume { timecodePreviewGain = nil }
         timecodePhaseInverted = track.phaseInverted == true
-        timecodeGenerator?.setGain((timecodePreviewGain?.value ?? Float(track.volume)) * (timecodePhaseInverted ? -1 : 1))
+        let manual = timecodePreviewGain?.value ?? track.volume
+        timecodeGenerator?.setGain(Float(effectiveLoopGain(track.id, manual: manual)) * (timecodePhaseInverted ? -1 : 1))
         configureRoutes(timecodeRoutes, patches: mode == "ltc" && !masterSolo ? track.outputPatches : [])
         if let bank = trackPeaks[track.id] {
             let peak = active && mode == "ltc" ? timecodeGenerator?.takePeak() ?? 0 : 0
@@ -1728,6 +1764,7 @@ struct TimecodePlaybackSpan {
             stop()
         }
         guard let song = snapshot.project.songs.first(where: { $0.id == transport.songId }) else { stop(); return }
+        let changedLoopGains = updateLoopGainContext(song: song, transport: transport, revision: revision)
         let timelineScale = songID == song.id && song.projectTime.timebase == .relative ? (tempo ?? song.bpm) / song.bpm : 1
         let tempoChanged = abs(timelineScale - 1) > 0.0000001
         if tempoChanged {
@@ -1767,11 +1804,24 @@ struct TimecodePlaybackSpan {
                 }
             }
             unifiedPlaybackStarts = Dictionary(uniqueKeysWithValues: song.parts.filter { $0.parentRegionID != nil }.map { ($0.id, $0.startTime) })
+            playbackClipIndex = AudioClipPlaybackIndex(clips: clips.map { $0.1 })
             clipIndices = Dictionary(uniqueKeysWithValues: clips.enumerated().map { ($0.element.1.id, $0.offset) })
             let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }
             let activeIDs = Set(metered.map(\.id))
+            for id in trackPeaks.keys where !activeIDs.contains(id) {
+                if let bus = trackBuses[id] { JarasEqualizer.setOutputMeteringEnabled(bus.controls, enabled: false) }
+            }
             trackPeaks = trackPeaks.filter { activeIDs.contains($0.key) }
-            for track in metered where trackPeaks[track.id] == nil { trackPeaks[track.id] = JarasMeterBank() }
+            for track in metered where trackPeaks[track.id] == nil {
+                trackPeaks[track.id] = JarasMeterBank()
+                // Monitoring may create a bus before its track becomes metered.
+                // Reusing a removed track must also discard its former peaks.
+                if let bus = trackBuses[track.id] {
+                    _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 0)
+                    _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 1)
+                    JarasEqualizer.setOutputMeteringEnabled(bus.controls, enabled: true)
+                }
+            }
             // Prepare routing before Play so starting a file only adds its source.
             for track in song.tracks where track.kind == .standard || track.kind == .click || track.clips.contains(where: \.isProjectionMedia) { _ = trackBus(for: track.id) }
             try prepareClickTrack(song: song)
@@ -1815,18 +1865,29 @@ struct TimecodePlaybackSpan {
                 }
                 tail.voice.clip = current.1; applyClipFX(current.1.fx ?? emptyFX, to: &tail.voice)
                 let linear = current.1.gain ?? 1
-                tail.voice.gain.globalGain = current.1.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))
+                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(current.1.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
                 effectTails[key] = tail
             }
             applyLevels()
         }
+        for id in changedLoopGains where id != MultiLoopTrack.masterID { applyTrackGain(id) }
+        if changedLoopGains.contains(MultiLoopTrack.masterID) { applyMasterGain() }
         if pitchParts != song.parts || pitchClipRevision != revision {
             pitchParts = song.parts; pitchClipRevision = revision
             clipPitches = Dictionary(uniqueKeysWithValues: clips.map { track, clip in
                 (clip.id, Float(((clip.pitchSemitones ?? 0) + (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track, region: song.pitchRegion(at: fragmentStarts[clip.id] ?? clip.startTime))))) * 100))
             })
         }
-        if running { cancelVoicePreparation() }
+        if running {
+            cancelVoicePreparation()
+            if !transportWasRunning {
+                // Prepared players keep their graph/clock ready, but unused
+                // slots must not render an entire silent item-effects chain.
+                for pooled in idleVoices.values {
+                    for voice in pooled { JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false) }
+                }
+            }
+        }
         transportWasRunning = running
         setGraphRenderEnabled(running || instrumentRenderPending)
         updateTimecode(song: song, transport: transport)
@@ -1837,9 +1898,10 @@ struct TimecodePlaybackSpan {
             for key in Array(voices.keys) where key.head == 0 {
                 if let voice = voices.removeValue(forKey: key) {
                     voice.player.stop()
+                    JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                     // Silence latency buffered by time stretching on the retired
                     // head; the promoted voice and its processing stay untouched.
-                    voice.gain.globalGain = -96
+                    JarasVoiceGain.setDecibels(voice.gain, decibels: Double(-96))
                     // Recycle after Stop, not during the live handoff.
                     retiredVoices.append(voice)
                 }
@@ -1960,7 +2022,8 @@ struct TimecodePlaybackSpan {
                     part.parentRegionID.flatMap { id in song.parts.first(where: { $0.id == id }) }?.endTime ?? part.endTime
                 } : nil
             var scheduled: [(VoiceKey, Voice, AVAudioFramePosition, AVAudioFrameCount, Double)] = []
-            for (track, clip) in clips where clip.startTime <= position + 2 && clip.startTime + clip.duration > position {
+            for index in playbackClipIndex.candidates(at: position) {
+                let (track, clip) = clips[index]
                 guard minimumStart == nil || (fragmentStarts[clip.id] ?? clip.startTime) >= minimumStart! else { continue }
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
                 if let ignoredAfter, (fragmentStarts[clip.id] ?? clip.startTime) >= ignoredAfter { continue }
@@ -1998,7 +2061,7 @@ struct TimecodePlaybackSpan {
                 let linear = clip.gain ?? 1
                 player.volume = clip.muted == true || linear <= 0 ? 0 : 1
                 player.pan = Float(clip.pan ?? 0)
-                voice.gain.globalGain = clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))
+                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
                 // Register the reserved bus before preparing another overlapping item.
                 voices[key] = voice
                 scheduled.append((key, voice, first, AVAudioFrameCount(max(0, min(Int64(UInt32.max), count))), max(0, clip.startTime - position)))
@@ -2098,6 +2161,7 @@ struct TimecodePlaybackSpan {
         if !realtime && !transport.playing && !transport.subPlay.playing {
             if engine.isRunning { engine.pause() }
             for meter in meters.values { meter.reset() }
+            drainNativeMeterPeaks()
             masterMeter.reset(); _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
             for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
             lastMeterUpdate = 0
@@ -2115,11 +2179,35 @@ struct TimecodePlaybackSpan {
             onPeakLimit(id)
         }
     }
+    // Call only after the engine stops: no in-flight render may republish a
+    // peak from the previous graph after Stop has cleared the visible meters.
+    private func discardNativeMeterPeaks() {
+        for route in masterRoutes {
+            _ = JarasChannelRouter.takeInputPeak(route, channel: 0)
+            _ = JarasChannelRouter.takeInputPeak(route, channel: 1)
+        }
+        for bus in trackBuses.values {
+            _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 0)
+            _ = JarasEqualizer.takeOutputPeak(bus.controls, channel: 1)
+        }
+    }
+    private func drainNativeMeterPeaks() {
+        if let route = masterRoutes.first {
+            peaks.recordPeak(JarasChannelRouter.takeInputPeak(route, channel: 0), slot: masterSlot)
+            peaks.recordPeak(JarasChannelRouter.takeInputPeak(route, channel: 1), slot: masterSlot + 1)
+        }
+        for (id, bank) in trackPeaks {
+            guard let bus = trackBuses[id] else { continue }
+            bank.recordPeak(JarasEqualizer.takeOutputPeak(bus.controls, channel: 0), slot: 0)
+            bank.recordPeak(JarasEqualizer.takeOutputPeak(bus.controls, channel: 1), slot: 1)
+        }
+    }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
         guard engine.isRunning, transportWasRunning || instrumentRenderPending else { return }
         if now - lastMeterUpdate >= 1.0 / 30.0 - 0.002 {
             let elapsed = lastMeterUpdate == 0 ? 1.0 / 30.0 : now - lastMeterUpdate
             lastMeterUpdate = now
+            drainNativeMeterPeaks()
             masterMeter.update(left: Double(peaks.takePeak(masterSlot)), right: Double(peaks.takePeak(masterSlot + 1)), elapsed: elapsed)
             for (id, bank) in trackPeaks {
                 let left = Double(bank.takePeak(0)), right = Double(bank.takePeak(1))
@@ -2229,8 +2317,8 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private var geometryScale: CGFloat = 0
     private var geometryShowsScale: Bool?
     private static let scaleAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .regular),
-        .foregroundColor: NSColor(red: 0x9a / 255.0, green: 0xa8 / 255.0, blue: 0xb9 / 255.0, alpha: 1)
+        .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .semibold),
+        .foregroundColor: NSColor.white
     ]
     private static let peakAttributes: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .bold), .foregroundColor: NSColor.systemRed
@@ -2261,6 +2349,8 @@ struct VerticalTrackMeter: NSViewRepresentable {
             let label = scaleLabels[index]
             label.name = "meter-scale-\(index)"
             label.string = NSAttributedString(string: text, attributes: Self.scaleAttributes)
+            label.backgroundColor = NSColor.black.withAlphaComponent(0.68).cgColor
+            label.cornerRadius = 1.5
             layer?.addSublayer(label)
         }
         peakLabel.name = "meter-peak"; peakLabel.isHidden = true
@@ -2408,16 +2498,21 @@ struct VerticalTrackMeter: View {
             }.frame(width: 10)
             if showScale {
                 VStack(spacing: 0) {
-                    Text("0")
+                    scaleLabel("0")
                     Spacer(minLength: 0)
                     if let db = meter.peakHold.decibels { Text(String(format: "%+.2f", db)).foregroundStyle(.red) }
                     Spacer(minLength: 0)
-                    Text("−24")
+                    scaleLabel("−24")
                     Spacer(minLength: 0)
-                    Text("−∞")
+                    scaleLabel("−∞")
                 }.font(.system(size: 7, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
             }
         }.allowsHitTesting(false).accessibilityLabel("Stereo meter, L and R")
+    }
+    private func scaleLabel(_ text: String) -> some View {
+        Text(verbatim: text).font(.system(size: 7, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.white)
+            .background(Color.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 1.5))
     }
     private func channel(_ level: Double) -> some View {
         GeometryReader { geometry in

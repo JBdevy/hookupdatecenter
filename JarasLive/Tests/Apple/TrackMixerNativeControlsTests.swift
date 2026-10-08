@@ -136,7 +136,7 @@ private struct FixtureRow: View, Equatable {
     }
     var body: some View {
         Group {
-            if candidate { NativeTrackMixerControls(meterWidth: 40, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
+            if candidate { NativeTrackMixerControls(track: track, meterWidth: 40, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
             else { controls(split: false) }
         }.frame(maxHeight: .infinity).clipped()
          .background { HStack(spacing: 0) { Color(red: 0.12, green: 0.2, blue: 0.16).opacity(0.5) }.allowsHitTesting(false) }

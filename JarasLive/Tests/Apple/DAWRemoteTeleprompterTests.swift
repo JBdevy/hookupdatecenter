@@ -58,6 +58,7 @@ fullProjectionSettings.queueNameFontFamily = "verdana"
 fullProjectionSettings.previewScale = 70
 fullProjectionSettings.previewSongDurationEnabled = false
 fullProjectionSettings.previewUnderlineEnabled = false
+fullProjectionSettings.ignoresPreview = true
 fullProjectionSettings.rgbTextBoxBorderEnabled = true
 fullProjectionSettings.stretchesMedia = true
 tpFixture.teleprompters?[0].settings = fullProjectionSettings

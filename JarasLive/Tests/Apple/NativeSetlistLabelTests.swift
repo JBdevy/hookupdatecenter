@@ -135,7 +135,81 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
     precondition(value("queueProgress", Double.self) == 0.5, "Inactive rows must release their playback subscription")
     print("NATIVE_SETLIST_DIRECT_PROGRESS_COUNTDOWN_LOOP_WRAP_AND_UNSUBSCRIBE_OK")
 }
+@MainActor func testProgressLayersPreserveStaticDrawingAndTransitions() {
+    _ = NSApplication.shared
+    let show = ShowController()
+    show.snapshot.transport.position = 100
+    let region = Part(name: "CURRENT", color: 0x44ff88)
+    let view = NativeRegionSetlistLabelView(frame: CGRect(x: 0, y: 0, width: 340, height: 34))
+    let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = view; window.orderFront(nil)
+    defer { window.close() }
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+    view.configure(number: 1, name: region.name, duration: regionDurationText(900), color: 0x44ff88,
+        selected: false, active: true, queued: false, prepareOnly: false, progress: 0.1, queueProgress: 0)
+    view.bindPlayback(SetlistPlaybackBinding(show: show, region: region, end: 1000, playbackEnd: 160))
+    let clip = view.layer!.sublayers!.first { $0.name == "setlist-progress-clip" }!
+    let bar = clip.sublayers!.first { $0.name == "setlist-progress-bar" }!
+    let mask = clip.mask as! CAShapeLayer
+    precondition(mask.path != nil && mask.frame == clip.bounds, "The progress strip retains the card's rounded clipping")
+    precondition([clip, bar, mask].allSatisfy { $0.actions?["position"] is NSNull && $0.actions?["bounds"] is NSNull },
+        "Playback layer changes must not animate or require an explicit transaction commit")
+    func drawIfNeeded() { view.displayIfNeeded(); view.layer?.displayIfNeeded() }
+    drawIfNeeded()
+    var drawings = view.drawingCount
+    precondition(drawings > 0)
+    for sample in 1...29 {
+        show.snapshot.transport.position = 100 + Double(sample) / 30
+        precondition(abs(bar.frame.width - 340 * show.snapshot.transport.position / 1000) < 1e-9,
+            "The retained bar advances at every authoritative transport sample")
+        drawIfNeeded()
+        precondition(view.drawingCount == drawings, "Fractional progress must reuse the static title, duration and gradient bitmap")
+    }
+    show.snapshot.transport.position = 101
+    drawIfNeeded()
+    precondition(view.drawingCount > drawings, "Crossing an integer countdown boundary redraws its new text")
+    drawings = view.drawingCount
+    show.snapshot.transport.position = 101.5
+    drawIfNeeded()
+    precondition(view.drawingCount == drawings, "A second progress sample within the same displayed countdown reuses its bitmap")
+    show.snapshot.transport.position = 100
+    drawIfNeeded()
+    precondition(view.drawingCount > drawings && abs(bar.frame.width - 34) < 1e-9, "Loop wraps reset both the bar and countdown immediately")
+    show.snapshot.transport.queueStartedAt = 100
+    view.configure(number: 2, name: "QUEUED", duration: regionDurationText(1000), color: 0x44ff88,
+        selected: false, active: false, queued: true, prepareOnly: false, progress: 0, queueProgress: 1)
+    drawIfNeeded(); drawings = view.drawingCount
+    show.snapshot.transport.position = 130
+    drawIfNeeded()
+    precondition(view.drawingCount == drawings && abs(bar.frame.width - 170) < 1e-9,
+        "Queued progress updates independently of its unchanged full-duration label")
+    precondition(bar.backgroundColor == NSColor(JarasTheme.yellow).cgColor)
+    view.setFrameSize(CGSize(width: 460, height: 34))
+    drawIfNeeded()
+    precondition(view.drawingCount > drawings && abs(bar.frame.width - 230) < 1e-9,
+        "Resizing updates both the cached label and retained progress geometry")
+    precondition(mask.frame == clip.bounds)
+    view.layer = CALayer()
+    drawIfNeeded(); drawings = view.drawingCount
+    show.snapshot.transport.position = 131
+    drawIfNeeded()
+    precondition(clip.superlayer === view.layer && view.drawingCount == drawings,
+        "A replaced AppKit backing layer reattaches the retained progress without reformatting text")
+    view.configure(number: 2, name: "QUEUED", duration: regionDurationText(1000), color: 0x44ff88,
+        selected: false, active: true, queued: false, prepareOnly: false, progress: 0.131, queueProgress: 0)
+    precondition(bar.backgroundColor == NSColor(JarasTheme.green).cgColor,
+        "Promotion to current playback changes the strip from queued yellow to playing green")
+    view.configure(number: 2, name: "QUEUED", duration: regionDurationText(1000), color: 0x44ff88,
+        selected: true, active: false, queued: false, prepareOnly: false, progress: 0, queueProgress: 0)
+    view.bindPlayback(nil)
+    drawIfNeeded(); drawings = view.drawingCount
+    show.snapshot.transport.position = 140
+    drawIfNeeded()
+    precondition(clip.isHidden && view.drawingCount == drawings, "Inactive selected rows hide the strip and release playback updates")
+    print("NATIVE_SETLIST_RETAINED_PROGRESS_NO_STATIC_REDRAW_COUNTDOWN_QUEUE_LOOP_RESIZE_BACKING_AND_PROMOTION_OK")
+}
 MainActor.assumeIsolated {
+ testProgressLayersPreserveStaticDrawingAndTransitions()
  testPlaybackUpdatesWithoutRebuildingRows()
  try! testVisualParity()
  try! testActions()

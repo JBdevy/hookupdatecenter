@@ -490,6 +490,16 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     func observe(_ snapshot: ShowSnapshot) {
+        // Playback samples carry no arming changes. With no configured REC
+        // tracks or capture resources, there is nothing to reconcile or stop.
+        // Automatic REC still takes the normal path while it is deselected.
+        if !recording, !busy, !armState.hasConfiguredTracks, armed.isEmpty,
+           captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !captureEngine.isRunning {
+            if !StemAudioPlayback.shared.armedMIDIRecordingTracks.isEmpty {
+                StemAudioPlayback.shared.armedMIDIRecordingTracks = []
+            }
+            return
+        }
         let validTracks = Set(snapshot.project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.map(\.id))
         var retained = armState; retained.retain(validTracks)
         if retained != armState { armState = retained; microphoneTracks.formIntersection(validTracks); reconcileArming() }
@@ -541,6 +551,7 @@ private final class CaptureWriter: @unchecked Sendable {
         releaseInput()
     }
     private func releaseInput() {
+        guard captureRing != nil || tapInstalled || !monitorConfig.isEmpty || captureEngine.isRunning else { return }
         for config in monitorConfig { StemAudioPlayback.shared.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
         captureRing?.endCapture()
@@ -622,12 +633,13 @@ private struct RecordingButtonStyle: ButtonStyle {
 }
 
 struct TransportRecordButton: View {
+    @Environment(\.transportControlWidth) private var buttonWidth
     let show: ShowController
     @ObservedObject private var recorder = TrackRecording.shared
     var body: some View {
         Button { recorder.toggle(show: show) } label: {
             Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
-        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: TransportControlMetrics.width,
+        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: buttonWidth,
             height: TransportControlMetrics.height, fontSize: TransportControlMetrics.font, cornerRadius: 6, transport: true))
             .disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
     }

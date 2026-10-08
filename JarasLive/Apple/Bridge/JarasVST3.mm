@@ -212,8 +212,23 @@ public:
     }
     void process(AudioBufferList *buffer,unsigned count,double position,double tempo,int beats,int unit,bool playing,const CatMIDIEvent* sequence,unsigned sequenceCount){
         if(bypass.load()||count>frames)return;
-        for(auto &bus:inputs){bus.silenceFlags=0;for(int c=0;c<bus.numChannels;c++)memset(bus.channelBuffers32[c],0,count*sizeof(float));}
-        if(mainIn>=0){auto &bus=inputs[mainIn];for(int c=0;c<std::min<int>(2,bus.numChannels);c++)if(c<(int)buffer->mNumberBuffers&&buffer->mBuffers[c].mData)memcpy(bus.channelBuffers32[c],buffer->mBuffers[c].mData,count*sizeof(float));}
+        // Report exact silence to the plugin, including unused sidechain buses.
+        // Still process every block: MIDI instruments and effect tails may
+        // produce audio with silent input. Storage was allocated during setup.
+        for(unsigned index=0;index<inputs.size();++index) {
+            auto &input=inputs[index]; input.silenceFlags=0;
+            for(int c=0;c<input.numChannels;++c) {
+                auto destination=input.channelBuffers32[c];
+                const float *source=(int(index)==mainIn && c<2 && c<int(buffer->mNumberBuffers))
+                    ? static_cast<const float*>(buffer->mBuffers[c].mData) : nullptr;
+                bool silent=true;
+                if(source) {
+                    memcpy(destination,source,count*sizeof(float));
+                    for(unsigned frame=0;frame<count;++frame) if(source[frame]!=0) { silent=false; break; }
+                } else memset(destination,0,count*sizeof(float));
+                if(silent) input.silenceFlags |= uint64(1)<<c;
+            }
+        }
         for(auto &bus:outputs){bus.silenceFlags=0;for(int c=0;c<bus.numChannels;c++)memset(bus.channelBuffers32[c],0,count*sizeof(float));}
         changes.count=0;if(hasChanges.exchange(false,std::memory_order_acq_rel))for(int i=0;i<paramCount;i++)if(params[i].dirty.exchange(false,std::memory_order_acq_rel)){int32 index;auto q=changes.addParameterData(params[i].id,index);q->addPoint(0,params[i].pending.load(),index);}
         events.count=0;

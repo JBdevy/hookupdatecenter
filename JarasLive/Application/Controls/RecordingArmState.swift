@@ -12,6 +12,7 @@ public struct RecordingArmState: Equatable {
     public private(set) var selected: Set<UUID> = []
     public init() {}
     public func mode(for track: UUID) -> Mode { modes[track] ?? .off }
+    public var hasConfiguredTracks: Bool { !modes.isEmpty }
     public var armed: Set<UUID> {
         Set(modes.compactMap { id, mode in mode == .manual || (mode == .automatic && selected.contains(id)) ? id : nil })
     }

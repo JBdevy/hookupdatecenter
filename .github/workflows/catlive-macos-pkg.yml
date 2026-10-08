@@ -69,6 +69,7 @@ jobs:
           ARCHS_FOUND="$(lipo -archs "$APP/Contents/MacOS/CatLive")"
           [[ " $ARCHS_FOUND " == *" arm64 "* ]]
           [[ " $ARCHS_FOUND " == *" x86_64 "* ]]
+          python3 JarasLive/scripts/test-macos-deployment.py "$APP" --minimum 12.0
 
       - name: Import Developer ID certificates
         shell: bash

@@ -69,10 +69,19 @@ struct ResourceUsageView: View {
     }
     var body: some View {
         HStack(spacing: 14) {
-            Text("CPU \(percent(usage.cpu))")
-            Text("RAM \(percent(usage.ram))").jarasHelp(usage.memoryScope == .device ? "Device RAM in use" : "RAM used by CatLive")
+            indicator("CPU", value: usage.cpu)
+            indicator("RAM", value: usage.ram).jarasHelp(usage.memoryScope == .device ? "Device RAM in use" : "RAM used by CatLive")
         }.monospacedDigit().foregroundStyle(JarasTheme.secondary)
             .task { await usage.run() }
+    }
+    private func indicator(_ label: String, value: Double?) -> some View {
+        // Reserve the largest reading, including the initial unavailable value.
+        // The overlay updates without changing the footer's intrinsic width.
+        Text(verbatim: "\(label) 100.0%").hidden()
+            .overlay(alignment: .leading) {
+                Text(verbatim: "\(label) \(percent(value))").lineLimit(1)
+            }
+            .fixedSize(horizontal: true, vertical: false)
     }
     private func percent(_ value: Double?) -> String {
         value.map { String(format: "%.1f%%", $0) } ?? "—%"

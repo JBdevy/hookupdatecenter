@@ -118,6 +118,7 @@ public struct MIDIRecordingTake: Sendable {
     public let name: String
     private let song: Song
     private let lane: Int
+    private let regionOwnerID: UUID?
     private struct Key: Hashable, Sendable { let source: Int32; let channel: Int; let pitch: Int }
     private struct Press: Sendable { var note: MIDINote; var released = false }
     private struct Pedal: Hashable, Sendable { let source: Int32; let channel: Int }
@@ -126,14 +127,15 @@ public struct MIDIRecordingTake: Sendable {
     private var notes: [MIDINote] = []
     public init(track: UUID, song: Song, startTime: Double, lane: Int = 0, id: UUID = UUID(), name: String = "MIDI recording") {
         self.track = track; self.song = song; self.startTime = startTime; self.lane = lane; self.id = id; self.name = name
-        let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: 0.01)
+        regionOwnerID = song.regionOwner(at: startTime)
+        let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: 0.01, regionOwnerID: regionOwnerID)
         let rate = song.tempoAudioSegments(probe).first?.audioRate ?? 1
         sourceBPM = (song.activeTempoMarker(at: startTime)?.tempoBPM ?? song.bpm) / rate
     }
     private func beat(at position: Double) -> Double {
         let elapsed = max(0, position - startTime)
         guard elapsed > 0 else { return 0 }
-        let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: elapsed)
+        let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: elapsed, regionOwnerID: regionOwnerID)
         return song.tempoAudioSegments(probe).reduce(0) { $0 + $1.duration * $1.audioRate } * sourceBPM / 60
     }
     private mutating func release(_ key: Key, at beat: Double) {
@@ -174,6 +176,6 @@ public struct MIDIRecordingTake: Sendable {
         guard end > startTime || !notes.isEmpty else { return nil }
         notes.sort { $0.start == $1.start ? ($0.channel == $1.channel ? $0.pitch < $1.pitch : $0.channel < $1.channel) : $0.start < $1.start }
         return AudioClip(id: id, name: name, startTime: startTime, duration: max(0.01, end - startTime),
-            recordingLane: lane, midi: MIDIItem(notes: notes, sourceBPM: sourceBPM))
+            recordingLane: lane, midi: MIDIItem(notes: notes, sourceBPM: sourceBPM), regionOwnerID: regionOwnerID)
     }
 }

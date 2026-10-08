@@ -5,7 +5,10 @@ final class RecordingArmStateTests: XCTestCase {
     func testAutomaticSelectionHandoffPreservesManuallyArmedTracks() {
         let first = UUID(), second = UUID(), manual = UUID()
         var state = RecordingArmState()
+        XCTAssertFalse(state.hasConfiguredTracks)
         state.set(.automatic, tracks: [first, second])
+        XCTAssertTrue(state.hasConfiguredTracks, "Deselected automatic REC still needs arming reconciliation")
+        XCTAssertTrue(state.armed.isEmpty)
         state.set(.manual, tracks: [manual])
         XCTAssertEqual(state.armed, [manual])
         state.select([first])
@@ -29,10 +32,12 @@ final class RecordingArmStateTests: XCTestCase {
         }
         state.select([]); state.select([track])
         XCTAssertTrue(state.armed.isEmpty)
+        XCTAssertFalse(state.hasConfiguredTracks)
         state.set(.automatic, tracks: [track]); state.retain([])
         state.select([track])
         XCTAssertTrue(state.armed.isEmpty)
         XCTAssertEqual(state.mode(for: track), .off)
+        XCTAssertFalse(state.hasConfiguredTracks)
     }
     func testTrackSelectionActionCanMapKeyboardAndMIDIIndependently() throws {
         var bindings = DAWActionBindings()

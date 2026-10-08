@@ -206,6 +206,7 @@ struct DAWRemoteState: Codable, Equatable {
         var silenced: Bool? = nil
         var laneCount: Int? = nil
         var linkedTrack: UUID? = nil
+        var heightScale: Double? = nil
     }
     struct Region: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var start: Double; var end: Double; var color: UInt32
@@ -304,7 +305,7 @@ struct DAWRemoteState: Codable, Equatable {
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&
         position >= 0 && duration >= 0 && tracks.count <= 4096 && regions.count <= 8192 &&
         timelineRegions.count <= 8192 && songs.count <= 4096 &&
-        tracks.allSatisfy { $0.volume.isFinite && $0.pan.isFinite && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
+        tracks.allSatisfy { $0.volume.isFinite && $0.pan.isFinite && ($0.heightScale == nil || ($0.heightScale!.isFinite && (0.1...10).contains($0.heightScale!))) && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
             $0.clips.allSatisfy { $0.start.isFinite && $0.duration.isFinite && $0.duration >= 0 && ($0.lane == nil || (0...10000).contains($0.lane!)) && ($0.gain == nil || ($0.gain!.isFinite && $0.gain! >= 0)) } } &&
         (regions + timelineRegions).allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }
     }
@@ -435,7 +436,7 @@ struct DAWRemotePanelWidths: Equatable {
 enum DAWRemoteItemLayout {
     static func heightScale(_ value: Double) -> Double { value.isFinite ? min(3, max(0.35, value)) : 1 }
     static func laneHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
-        max(28, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale))
+        max(28, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale) * (track.heightScale ?? 1))
     }
     static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
         laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1))

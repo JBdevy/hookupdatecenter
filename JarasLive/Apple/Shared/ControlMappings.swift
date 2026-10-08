@@ -383,7 +383,7 @@ struct MappingTransferRequest: Identifiable {
         }
         // Sheet key events belong to the sheet itself, whose attachedSheet is
         // nil. Let its default/cancel buttons receive Enter/Escape instead of
-        // dispatching transport shortcuts (Enter normally starts Sub Play).
+        // dispatching transport shortcuts or custom Enter mappings.
         guard NSApp.modalWindow == nil, event.window?.sheetParent == nil,
               event.window?.attachedSheet == nil,
               !NativeTimelineInputGate.shared.isBlocked(event.window),

@@ -18,14 +18,17 @@ struct TrackMixerHeightGeometry {
         min(20, max(0, titleY(height) - 27)) * progress(height)
     }
     static func frames(width: CGFloat, height: CGFloat, meterWidth: CGFloat, standard: Bool,
-                       lowerTitle: Bool, controlsWidth: CGFloat) -> [CGRect] {
+                       lowerTitle: Bool, controlsWidth: CGFloat, folder: Bool = false) -> [CGRect] {
         let p = progress(height)
         func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * p }
         let bodyX = (meterWidth + 4 + (standard ? 8 : 0)) * p
         let bodyWidth = max(0, width - bodyX - 4)
         let centeredY = max(0, (height - 21) / 2)
-        let titleX = mix(4, bodyX)
+        // At the minimum sidebar width, Patch/FX/REC/pan/M/S fill the top
+        // row. Keep the folder action beside its title, with its own hit area.
+        let titleX = mix(4, bodyX + (folder ? 32 : 0))
         let titleY = lowerTitle ? Self.titleY(height) : mix(centeredY, 3)
+        let folderY = folder ? titleY : 4
         let controlsY = mix(centeredY, 3), controlsHeight = mix(21, 24)
         let clear = lowerTitle ? min(1, max(0, (titleY - controlsY - controlsHeight) / 8)) : 0
         let thinWidth = max(0, width - controlsWidth - 8 - titleX)
@@ -36,7 +39,7 @@ struct TrackMixerHeightGeometry {
             CGRect(x: titleX, y: titleY, width: titleWidth, height: titleHeight(height)),
             CGRect(x: max(0, width - controlsWidth - 4), y: mix(centeredY, 3), width: controlsWidth, height: mix(21, 24)),
             CGRect(x: bodyX, y: 27, width: bodyWidth, height: volumeHeight(height)),
-            CGRect(x: bodyX, y: 4, width: 28 * p, height: 20 * p),
+            CGRect(x: bodyX, y: folderY, width: 28 * p, height: (folder ? titleHeight(height) : 20) * p),
             CGRect(x: max(bodyX, width - 90), y: 32, width: min(86, bodyWidth), height: 24 * p)
         ]
     }
@@ -67,18 +70,19 @@ private struct TrackMixerContinuousContainer<Content: View>: View {
     let meterWidth: CGFloat
     let standard: Bool
     let lowerTitle: Bool
+    var folder = false
     @ViewBuilder let content: () -> Content
     @State private var controlsWidth: CGFloat = 142
     var body: some View {
         if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy {
-            TrackMixerContinuousLayout(meterWidth: meterWidth, standard: standard, lowerTitle: lowerTitle) { content() }
+            TrackMixerContinuousLayout(meterWidth: meterWidth, standard: standard, lowerTitle: lowerTitle, folder: folder) { content() }
         } else {
             // The row's native frame supplies its live height. Only the older
             // OS needs this reader; all seven controls remain mounted.
             GeometryReader { geometry in
                 JarasFixedPlacement(size: geometry.size,
                     frames: TrackMixerHeightGeometry.frames(width: geometry.size.width, height: geometry.size.height,
-                        meterWidth: meterWidth, standard: standard, lowerTitle: lowerTitle, controlsWidth: controlsWidth), content: content)
+                        meterWidth: meterWidth, standard: standard, lowerTitle: lowerTitle, controlsWidth: controlsWidth, folder: folder), content: content)
                     // Only the expanded/compact mode affects the buttons;
                     // keep continuous height local to the seven slot frames.
                     .environment(\.legacyMixerHeight, geometry.size.height >= 64 ? 64 : 24)
@@ -120,6 +124,7 @@ struct TrackMixerContinuousLayout: Layout {
     let meterWidth: CGFloat
     let standard: Bool
     let lowerTitle: Bool
+    var folder = false
     // These containers use explicit frames, not their children's alignment guides.
     // The default Layout implementation walks every control to merge guides.
     func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
@@ -132,7 +137,7 @@ struct TrackMixerContinuousLayout: Layout {
         let height = self.height ?? bounds.height
         let controlsWidth = subviews[3].sizeThatFits(ProposedViewSize(width: nil, height: height >= 64 ? 24 : 21)).width
         let frames = TrackMixerHeightGeometry.frames(width: bounds.width, height: height, meterWidth: meterWidth,
-            standard: standard, lowerTitle: lowerTitle, controlsWidth: controlsWidth)
+            standard: standard, lowerTitle: lowerTitle, controlsWidth: controlsWidth, folder: folder)
         for (view, frame) in zip(subviews, frames) {
             view.place(at: CGPoint(x: frame.width <= 0 || frame.height <= 0 ? bounds.maxX + 1024 : bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading,
                        proposal: ProposedViewSize(frame.size))
@@ -176,6 +181,7 @@ private final class TrackMixerNativeContent {
     }
 }
 private struct NativeTrackMixerControls<Meter: View, Activity: View, Controls: View>: View {
+    let track: UUID
     let meterWidth: CGFloat
     let standard: Bool
     @ViewBuilder var meter: () -> Meter
@@ -189,12 +195,13 @@ private struct NativeTrackMixerControls<Meter: View, Activity: View, Controls: V
             activity: AnyView(activity().environment(\.self, environment)),
             controls: AnyView(controls().environment(\.self, environment)))
         return GeometryReader { geometry in
-            NativeTrackMixerControlsBridge(size: geometry.size, meterWidth: meterWidth, standard: standard, snapshot: snapshot)
+            NativeTrackMixerControlsBridge(track: track, size: geometry.size, meterWidth: meterWidth, standard: standard, snapshot: snapshot)
                 .frame(width: geometry.size.width, height: geometry.size.height)
         }
     }
 }
 private struct NativeTrackMixerControlsBridge: NSViewRepresentable {
+    let track: UUID
     let size: CGSize
     let meterWidth: CGFloat
     let standard: Bool
@@ -203,6 +210,7 @@ private struct NativeTrackMixerControlsBridge: NSViewRepresentable {
         let view = TrackMixerNativeControlView(); updateNSView(view, context: context); return view
     }
     func updateNSView(_ view: TrackMixerNativeControlView, context: Context) {
+        view.track = track
         view.meterWidth = meterWidth; view.standard = standard
         if view.snapshot !== snapshot {
             view.snapshot = snapshot
@@ -219,7 +227,59 @@ private final class TrackMixerControlHost: NSHostingView<AnyView> {
     override var fittingSize: NSSize { frame.size }
     override func hitTest(_ point: NSPoint) -> NSView? { passThrough ? nil : super.hitTest(point) }
 }
-private final class TrackMixerNativeControlView: NSView {
+/// Warm row slots retain their controls, but only nearby rows need to take part
+/// in AppKit's window-wide tracking/layout walks during horizontal playback.
+/// One observer per vertical clip keeps visibility independent of SwiftUI and
+/// of the horizontal timeline's continuously moving bounds.
+@MainActor private final class TrackMixerClipVisibility {
+    private static let observers = NSMapTable<NSClipView, TrackMixerClipVisibility>.weakToStrongObjects()
+    private let views = NSHashTable<TrackMixerNativeControlView>.weakObjects()
+    private var tokens: [NSObjectProtocol] = []
+    private var accessibilityObservations: [NSKeyValueObservation] = []
+    private(set) var retainsAccessibilityControls = false
+    static func forClip(_ clip: NSClipView) -> TrackMixerClipVisibility {
+        if let value = observers.object(forKey: clip) { return value }
+        let value = TrackMixerClipVisibility(clip)
+        observers.setObject(value, forKey: clip)
+        return value
+    }
+    private init(_ clip: NSClipView) {
+        updateAccessibility()
+        clip.postsBoundsChangedNotifications = true
+        clip.postsFrameChangedNotifications = true
+        for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+            tokens.append(NotificationCenter.default.addObserver(forName: name, object: clip, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            })
+        }
+        if let document = clip.documentView {
+            document.postsFrameChangedNotifications = true
+            tokens.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: document, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            })
+        }
+        tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        })
+        accessibilityObservations = [\NSWorkspace.isVoiceOverEnabled, \NSWorkspace.isSwitchControlEnabled].map { key in
+            NSWorkspace.shared.observe(key, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            }
+        }
+    }
+    func add(_ view: TrackMixerNativeControlView) { views.add(view) }
+    func remove(_ view: TrackMixerNativeControlView) { views.remove(view) }
+    private func updateAccessibility() {
+        retainsAccessibilityControls = NSApp.isFullKeyboardAccessEnabled ||
+            NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
+    }
+    private func refresh() {
+        updateAccessibility()
+        for view in views.allObjects { view.refreshViewportVisibility() }
+    }
+    deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
+}
+private final class TrackMixerNativeControlView: NSView, NativeTimelineControlInput {
     let meter = TrackMixerControlHost(rootView: AnyView(Color.clear))
     let activity = TrackMixerControlHost(rootView: AnyView(Color.clear))
     let controls = TrackMixerControlHost(rootView: AnyView(Color.clear))
@@ -227,6 +287,25 @@ private final class TrackMixerNativeControlView: NSView {
     var standard = true
     var logicalSize: CGSize?
     var snapshot: TrackMixerNativeContent?
+    var track: UUID?
+    private weak var visibilityClip: NSClipView?
+    private weak var visibilityObserver: TrackMixerClipVisibility?
+    private var frameObserverAncestors: [ObjectIdentifier] = []
+    private var frameObservers: [NSObjectProtocol] = []
+    private let controlAreas = NSHashTable<NSView>.weakObjects()
+    private lazy var inputRegistration = NativeTimelineControlInputRegistration(self)
+    fileprivate func addControlArea(_ view: NSView) { controlAreas.add(view) }
+    fileprivate func removeControlArea(_ view: NSView) { controlAreas.remove(view) }
+    func hitTestTimelineControl(atWindowPoint point: NSPoint) -> NSView? {
+        let local = convert(point, from: nil)
+        guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local),
+              controlAreas.allObjects.contains(where: { area in
+                  let location = area.convert(point, from: nil)
+                  return area.window === window && !area.isHiddenOrHasHiddenAncestor &&
+                      area.isDescendant(of: controls) && area.bounds.contains(location) && area.visibleRect.contains(location)
+              }) else { return nil }
+        return controls.hitTest(local)
+    }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true; autoresizesSubviews = false
@@ -242,7 +321,62 @@ private final class TrackMixerNativeControlView: NSView {
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeViewport()
+    }
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        observeViewport()
+    }
+    private func observeViewport() {
+        let next = window == nil ? nil : enclosingScrollView?.contentView
+        if visibilityClip !== next {
+            visibilityObserver?.remove(self)
+            visibilityClip = next
+            visibilityObserver = next.map { TrackMixerClipVisibility.forClip($0) }
+            visibilityObserver?.add(self)
+        }
+        // SwiftUI positions a row by moving its native wrappers, without
+        // resizing this view or the document. Observe only those row wrappers;
+        // the shared clip observer already owns viewport/document geometry.
+        var ancestors: [NSView] = []
+        var ancestor = window == nil ? nil : superview
+        while let view = ancestor, view !== next, view !== next?.documentView,
+              view.identifier?.rawValue != "columns-mixer" {
+            ancestors.append(view)
+            ancestor = view.superview
+        }
+        let identities = ancestors.map(ObjectIdentifier.init)
+        if identities != frameObserverAncestors {
+            frameObservers.forEach(NotificationCenter.default.removeObserver)
+            frameObserverAncestors = identities
+            frameObservers = ancestors.map { view in
+                view.postsFrameChangedNotifications = true
+                return NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.refreshViewportVisibility() }
+                }
+            }
+        }
+        refreshViewportVisibility()
+    }
+    fileprivate func refreshViewportVisibility() {
+        defer { inputRegistration.update(active: !isHidden && window != nil) }
+        guard let clip = visibilityClip, window != nil else {
+            if isHidden { isHidden = false }
+            return
+        }
+        // Retain keyboard/assistive traversal and an in-flight control/menu
+        // even when scrolling carries its row beyond the warm visible band.
+        let focused = (window?.firstResponder as? NSView).map { $0 === self || $0.isDescendant(of: self) } ?? false
+        let retained = focused || track.map { TrackSelectionRouter.shared.pinnedTracks.contains($0) } == true ||
+            visibilityObserver?.retainsAccessibilityControls == true
+        let nearby = convert(bounds, to: clip).intersects(clip.bounds.insetBy(dx: 0, dy: -256))
+        let hidden = !retained && !nearby
+        if isHidden != hidden { isHidden = hidden }
+    }
     override func setFrameSize(_ size: NSSize) { super.setFrameSize(size); place() }
+    override func setFrameOrigin(_ origin: NSPoint) { super.setFrameOrigin(origin); refreshViewportVisibility() }
     override func layout() { super.layout(); place() }
     func place() {
         // AppKit pixel rounding can turn 63.9 into 64; use the committed SwiftUI
@@ -258,11 +392,13 @@ private final class TrackMixerNativeControlView: NSView {
         }
         update(meter, frames[0]); update(activity, frames[1])
         update(controls, CGRect(x: 0, y: expanded ? 0 : (height - 24) / 2, width: bounds.width, height: expanded ? 64 : 24))
+        observeViewport()
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         return hit === self ? nil : hit
     }
+    deinit { frameObservers.forEach(NotificationCenter.default.removeObserver) }
 }
 
 #endif
@@ -536,7 +672,7 @@ struct TrackMixerRow: View, Equatable {
     #if os(macOS)
     @ViewBuilder private func continuousControls(title: String, color: UInt32, project: UUID) -> some View {
         if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy {
-            NativeTrackMixerControls(meterWidth: showsMeterScale ? 40 : 12, standard: track.kind == .standard,
+            NativeTrackMixerControls(track: track.id, meterWidth: showsMeterScale ? 40 : 12, standard: track.kind == .standard,
                 meter: { continuousMeter }, activity: { continuousMIDIIndicator }, controls: {
                     continuousControlSlots(title: title, color: color, project: project, separateMeters: true)
                 })
@@ -557,7 +693,7 @@ struct TrackMixerRow: View, Equatable {
     private func continuousControlSlots(title: String, color: UInt32, project: UUID, separateMeters: Bool) -> some View {
             let lowerTitle = track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click
             return TrackMixerContinuousContainer(meterWidth: showsMeterScale ? 40 : 12,
-                                       standard: track.kind == .standard, lowerTitle: lowerTitle) {
+                                       standard: track.kind == .standard, lowerTitle: lowerTitle, folder: isFolder) {
                 Group {
                     if separateMeters { Color.clear } else { continuousMeter }
                 }.jarasPlaced(at: 0)
@@ -623,7 +759,7 @@ struct TrackMixerRow: View, Equatable {
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
                 Group {
-                    if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
+                    if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID, height: 16) }
                     else { Color.clear }
                 }.jarasPlaced(at: 5)
                 Group {
@@ -650,12 +786,13 @@ private struct TrackGroupButton: View {
     let project: UUID
     let track: UUID
     let parent: UUID?
+    var height: CGFloat = 20
     private struct Request { let project: UUID; let track: UUID; let parent: UUID? }
     @State private var request: Request?
     @State private var confirming = false
     var body: some View {
         Button { request = Request(project: project, track: track, parent: parent); confirming = true } label: {
-            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: 20).contentShape(Rectangle())
+            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: height).contentShape(Rectangle())
         }.buttonStyle(.plain).trackControlSelectionExclusion()
             .accessibilityLabel(parent == nil ? "Ungroup" : "Remove from group")
             .jarasHelp(parent == nil ? "Ungroup" : "Remove from group")
@@ -1435,11 +1572,46 @@ struct TrackControlSelectionExclusion: NSViewRepresentable {
     func makeNSView(context: Context) -> TrackControlSelectionExclusionView { TrackControlSelectionExclusionView() }
     func updateNSView(_ view: TrackControlSelectionExclusionView, context: Context) {}
 }
-final class TrackControlSelectionExclusionView: NSView {
+final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObserver {
+    private weak var mixerInput: TrackMixerNativeControlView?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func resetCursorRects() {
+        guard let window, window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window),
+              !isHiddenOrHasHiddenAncestor else { return }
+        let rect = bounds.intersection(visibleRect)
+        guard !rect.isEmpty else { return }
+        // The workspace already supplies this default. Rebuilding an arrow
+        // for each control during unrelated timeline scrolling repeats AppKit
+        // cursor-area registrations. Standalone mixers retain their own area.
+        var ancestor = superview
+        while let view = ancestor {
+            if view is NativeTimelineDefaultCursorHost,
+               view.bounds.intersection(view.visibleRect).contains(view.convert(rect, from: self)) { return }
+            ancestor = view.superview
+        }
+        addCursorRect(rect, cursor: .arrow)
+    }
+    func timelineInputGateChanged(blocked: Bool) {
+        discardCursorRects()
+        window?.invalidateCursorRects(for: self)
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { TrackSelectionRouter.shared.addControl(self) }
+        if window != nil {
+            TrackSelectionRouter.shared.addControl(self)
+            NativeTimelineInputGate.shared.add(self)
+        }
+        updateMixerInput()
+    }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); updateMixerInput() }
+    private func updateMixerInput() {
+        var ancestor = window == nil ? nil : superview
+        while let view = ancestor, !(view is TrackMixerNativeControlView) { ancestor = view.superview }
+        let next = ancestor as? TrackMixerNativeControlView
+        guard mixerInput !== next else { return }
+        mixerInput?.removeControlArea(self)
+        mixerInput = next
+        mixerInput?.addControlArea(self)
     }
 }
 @MainActor final class TrackSelectionRouter {
@@ -1470,6 +1642,7 @@ final class TrackControlSelectionExclusionView: NSView {
         if event.type == .leftMouseUp { pressedTrack = nil; dragRow = nil; dragStart = nil; return }
         guard event.type == .leftMouseDown else { return }
         pressedTrack = nil; dragRow = nil; dragStart = nil
+        guard !TimelineTrackHeightResizeView.handlesPointer(event) else { return }
         guard !RightClickRouter.shared.handlesModifiedLeftClick(event) else { return }
         guard let window = event.window, window.attachedSheet == nil,
               !RightClickRouter.shared.interactionBlocked,
@@ -1714,6 +1887,7 @@ struct FooterMixerPanel: View {
     let show: ShowController
     let active: Bool
     let maximumHeight: CGFloat
+    var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
     @AppStorage("jaras.footerMixerHeight") private var storedHeight = 232.0
     @State private var resizeStart: CGFloat?
     @State private var resizeHeight: CGFloat?
@@ -1721,6 +1895,17 @@ struct FooterMixerPanel: View {
     private var heightLimit: CGFloat { min(723.55859375, maximumHeight) }
     private var height: CGFloat { min(heightLimit, max(232, resizeHeight ?? storedHeight)) }
     var body: some View {
+        #if os(macOS)
+        FooterNativeHeightHost(storedHeight: CGFloat(storedHeight), minimum: 232, maximum: heightLimit,
+            active: active, identity: AnyHashable(FooterMixerHeightContentIdentity(show: ObjectIdentifier(show), active: active)),
+            role: .mixer, resizeCoordinator: resizeCoordinator) {
+            VStack(spacing: 0) {
+                FooterMixerResizeInput(height: height, maximum: heightLimit, changed: { _ in }, ended: { storedHeight = $0 })
+                    .frame(height: 8).jarasHelp("Drag to resize mixer")
+                FooterHorizontalMixer(show: show, active: active).frame(maxHeight: .infinity)
+            }
+        }.clipped().allowsHitTesting(active).accessibilityHidden(!active)
+        #else
         VStack(spacing: 0) {
             ZStack {
                 Color.white.opacity(hovering ? 0.12 : 0.04)
@@ -1744,8 +1929,15 @@ struct FooterMixerPanel: View {
         }.frame(height: height)
             .frame(height: active ? height : 0, alignment: .top).clipped()
             .allowsHitTesting(active).accessibilityHidden(!active)
+        #endif
     }
 }
+#if os(macOS)
+private struct FooterMixerHeightContentIdentity: Hashable {
+    let show: ObjectIdentifier
+    let active: Bool
+}
+#endif
 
 private enum FooterMixerMetrics {
     static let width: CGFloat = 83
@@ -2166,21 +2358,25 @@ private struct FooterMixerStrip: View, Equatable {
     private var panAndFader: some View {
         VStack(spacing: 1) {
             if let track {
-                Text("Pan").font(.system(size: 8, weight: .medium)).foregroundStyle(JarasTheme.secondary)
-                FooterMixerControl(show: show, track: track.id, value: track.pan, pan: true, linked: track.stereoLink?.partner)
-                    .frame(width: 24, height: 24).jarasHelp("Pan · Double-click to center")
-                    .overlay(alignment: .leading) {
-                        TrackPeakReadout(peak: StemAudioPlayback.shared.meter(for: track.id).peakHold).offset(x: 22)
-                    }
+                VStack(spacing: 1) {
+                    Text("Pan").font(.system(size: 8, weight: .medium)).foregroundStyle(JarasTheme.secondary)
+                    FooterMixerControl(show: show, track: track.id, value: track.pan, pan: true, linked: track.stereoLink?.partner)
+                        .frame(width: 24, height: 24).jarasHelp("Pan · Double-click to center")
+                }
             } else { Color.clear.frame(height: 35) }
             HStack(spacing: 2) {
-                FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner)
-                    .frame(width: 27).jarasHelp("Double-click to reset to 0 dB")
+                VStack(spacing: 3) {
+                    TrackPeakReadout(peak: id.map { StemAudioPlayback.shared.meter(for: $0).peakHold } ?? StemAudioPlayback.shared.masterMeter.peakHold)
+                        .frame(height: 12)
+                    FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner)
+                        .frame(width: 27).jarasHelp("Double-click to reset to 0 dB")
+                }.frame(width: 27)
                 if active {
-                    VerticalTrackMeter(meter: id.map { StemAudioPlayback.shared.meter(for: $0) } ?? StemAudioPlayback.shared.masterMeter, showScale: false).frame(width: 8)
+                    VerticalTrackMeter(meter: id.map { StemAudioPlayback.shared.meter(for: $0) } ?? StemAudioPlayback.shared.masterMeter, showScale: false)
+                        .frame(width: 8).padding(.top, 15)
                 } else { Color.clear.frame(width: 8) }
                 if active, let track, track.kind == .standard {
-                    TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)).frame(width: 3).padding(.vertical, 4)
+                    TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)).frame(width: 3).padding(.vertical, 4).padding(.top, 15)
                 }
             }
         }.frame(width: 50)

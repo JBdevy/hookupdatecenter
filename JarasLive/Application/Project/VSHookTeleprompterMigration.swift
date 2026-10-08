@@ -31,7 +31,7 @@ public enum VSHookTeleprompterMigration {
         if let appData = ProcessInfo.processInfo.environment["APPDATA"] {
             candidates.append(URL(fileURLWithPath: appData).appendingPathComponent("REAPER/reaper-extstate.ini"))
         }
-        #else
+        #elseif os(macOS)
         candidates.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/REAPER/reaper-extstate.ini"))
         #endif
         for url in candidates {
@@ -137,7 +137,7 @@ public enum VSHookTeleprompterMigration {
         }
         if let depth = number(source["localClockDepth"]) { source["localClockScale"] = depth > 3 ? 1.0 : depth }
         // Optional fields are omitted by JSONEncoder when nil.
-        merged["clearMode"] = false; merged["mediaStretch"] = false
+        merged["clearMode"] = false; merged["mediaStretch"] = false; merged["ignorePreview"] = false
         for key in Array(merged.keys) {
             guard let value = source[key] else { continue }
             if key.hasSuffix("Color"), let color = color(value) { merged[key] = color; changed = true }

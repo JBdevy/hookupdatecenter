@@ -84,6 +84,11 @@ event.modifiers = .shift; event.delta = -10
 let heightAfterVerticalZoom = rowHeight, updatesBeforePan = zoomUpdates
 precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 220)
 precondition(rowHeight == heightAfterVerticalZoom && zoomUpdates == updatesBeforePan, "Shift pans without changing either zoom")
+event.delta = 0; event.horizontalDelta = -10
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 240,
+             "Shift also pans when AppKit delivers the wheel on its horizontal axis")
+precondition(rowHeight == heightAfterVerticalZoom && zoomUpdates == updatesBeforePan)
+scroll.contentView.scroll(to: NSPoint(x: 220, y: 0))
 event.modifiers = []; event.delta = 0; event.horizontalDelta = -8
 precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX == 228, "a horizontal trackpad gesture remains independent of track-height zoom")
 event.horizontalDelta = 0
@@ -685,6 +690,23 @@ let beforeCancelled = intervals.count
 ruler.rightMouseDragged(with: selectionEvent(.rightMouseDragged, x: 300))
 ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 300))
 precondition(intervals.count == beforeCancelled, "opening a modal cancels the pending interval gesture")
+let retainedRulerFrame = ruler.frame
+var projectedRulerSeeks: [Double] = []
+ruler.seek = { fraction, _, _ in projectedRulerSeeks.append(fraction) }
+for width: CGFloat in [800, 200, 400] {
+    ruler.documentWidth = width
+    ruler.mouseDown(with: pointer(.leftMouseDown))
+    ruler.mouseUp(with: pointer(.leftMouseUp))
+    precondition(projectedRulerSeeks.last == 100 / width && ruler.frame == retainedRulerFrame,
+                 "ruler seeks follow logical zoom without resizing its cursor surface")
+    ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 40))
+    ruler.rightMouseDragged(with: selectionEvent(.rightMouseDragged, x: 120))
+    ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 120))
+    precondition(intervals.last!.0 == 40 / width && intervals.last!.1 == 120 / width,
+                 "ruler range selection follows the same logical projection")
+}
+ruler.documentWidth = nil
+print("RULER_RETAINED_SURFACE_LOGICAL_ZOOM_SEEK_AND_RANGE_OK")
 if #available(macOS 14.0, *) {
     window.orderBack(nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
@@ -715,6 +737,61 @@ for live in [0.2, 0.8, 0.4] {
 }
 wheel.changeZoom = originalZoomCallback
 print("ZOOM_LIVE_TRANSPORT_ANCHOR_WITHOUT_GRID_REBUILD_OK")
+
+// Reuse the real input paths with physical capacity larger than logical time.
+resetZoomInput()
+scroll.contentView = TimelineClipView()
+scroll.documentView = document
+scroll.tile()
+wheel.observeHorizontalScroll()
+document.setFrameSize(NSSize(width: 10000, height: 300))
+scroll.logicalDocumentWidth = 1800
+wheel.focus(request: UUID(), x: 9999)
+precondition(scroll.contentView.bounds.minX == 1400,
+             "far-right cursor focus stops at logical end inside larger capacity")
+wheel.acceptRenderedZoom(TimelineZoomLimits.maximum)
+wheel.position = 0.5
+scroll.contentView.scroll(to: .zero)
+event.delta = 10
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.midX == 900,
+             "zoom-limit centering uses the logical musical width")
+resetZoomInput()
+var logicalExtensions = 0
+wheel.extend = { logicalExtensions += 1; scroll.logicalDocumentWidth! += 300 }
+scroll.contentView.scroll(to: CGPoint(x: 1370, y: 0))
+event.modifiers = .shift; event.delta = -20
+precondition(wheel.handleWheelEvent(event) && logicalExtensions == 1 && scroll.contentView.bounds.minX == 1410,
+             "Shift pan requests extension at logical end and uses the updated extent")
+scroll.contentView.scroll(to: CGPoint(x: 1670, y: 0))
+event.modifiers = []; event.delta = 0; event.horizontalDelta = -40
+event.gesturePhase = .began; event.inputTime += 1
+precondition(wheel.handleWheelEvent(event) && logicalExtensions == 2 && scroll.contentView.bounds.minX == 1710,
+             "horizontal trackpad extension is independent of physical capacity")
+wheel.extend = nil
+event.gesturePhase = []; event.momentum = .changed; event.horizontalDelta = -10000; event.inputTime += 1
+precondition(wheel.handleWheelEvent(event) && scroll.contentView.bounds.minX <= 2000,
+             "horizontal momentum cannot scroll into the retained physical tail")
+scroll.contentView.setBoundsOrigin(CGPoint(x: 99999, y: 0))
+precondition(scroll.contentView.bounds.minX == 2000)
+// Ruler drag has a separate native panning route and must use the same end.
+scroll.contentView.scroll(to: CGPoint(x: 1970, y: 0))
+ruler.selectedTime = nil
+ruler.extend = { logicalExtensions += 1 }
+let rulerDown = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 300, y: 100), modifierFlags: [],
+    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+    eventNumber: 1, clickCount: 1, pressure: 1)!
+let rulerDrag = NSEvent.mouseEvent(with: .leftMouseDragged, location: CGPoint(x: 100, y: 100), modifierFlags: [],
+    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+    eventNumber: 1, clickCount: 1, pressure: 1)!
+ruler.mouseDown(with: rulerDown); ruler.mouseDragged(with: rulerDrag); ruler.mouseUp(with: rulerDrag)
+precondition(logicalExtensions == 3 && scroll.contentView.bounds.minX == 2000,
+             "ruler drag requests logical extension and clamps its native scroll")
+scroll.zoomAnchor = (0.5, 200, 1500)
+scroll.logicalDocumentWidth = 1500
+scroll.applyZoomAnchor()
+precondition(scroll.zoomAnchor == nil && scroll.contentView.bounds.minX == 550 && document.frame.width == 10000,
+             "logical geometry acknowledges zoom without resizing physical capacity")
+print("RETAINED_CAPACITY_WHEEL_FOCUS_ZOOM_LIMIT_EXTEND_MOMENTUM_RULER_AND_ANCHOR_OK")
 window.close()
 let boundedScroll = GridNativeScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
 boundedScroll.contentView = TimelineClipView()

@@ -9,7 +9,7 @@ namespace jaras {
 class TempoEditMap {
     struct Span { double start, end, output, scale; };
     std::vector<Span> spans;
-    std::unordered_map<ID,double> clipDurations,regionDurations;
+    std::unordered_map<ID,double> clipStarts,clipDurations,regionDurations;
     static bool folder(const Song& song,const Part& part) {
         return std::any_of(song.parts.begin(),song.parts.end(),[&](const auto& child){return child.parentRegionID==part.id;});
     }
@@ -23,16 +23,33 @@ class TempoEditMap {
             (!result || part.startTime>result->startTime || (part.startTime==result->startTime && part.id>result->id))) result=&part;
         return result;
     }
+    static const Part* owner(const Song& song,const AudioClip& clip) {
+        if(clip.regionOwnerID) {
+            const auto found=std::find_if(song.parts.begin(),song.parts.end(),[&](const auto& part){return part.id==*clip.regionOwnerID;});
+            if(found==song.parts.end()) return nullptr;
+            if(!folder(song,*found)) return &*found;
+            // Importers may assign a crossing item to its unified parent.
+            // Resolve its child once from the onset, never from the tail.
+            const Part* result=nullptr;
+            for(const auto& child:song.parts) if(child.parentRegionID==found->id && child.startTime<=clip.startTime &&
+                (!result || child.startTime>result->startTime || (child.startTime==result->startTime && child.id>result->id))) result=&child;
+            return result?result:&*found;
+        }
+        return song.regionOwnershipInitialized?nullptr:owner(song,clip.startTime);
+    }
     static double ownerLimit(const Song& song,const Part& part) {
         double end=ownershipEnd(song,part);
-        for(const auto& next:song.parts) if(!folder(song,next) && next.startTime>part.startTime) end=std::min(end,next.startTime);
+        for(const auto& next:song.parts) if(!folder(song,next) && next.startTime>part.startTime &&
+            (!part.parentRegionID || next.parentRegionID==part.parentRegionID)) end=std::min(end,next.startTime);
         return end;
     }
     static double rate(const Song& song, double time, const Part* part=nullptr) {
         const double limit=part?ownerLimit(song,*part):0;
         const TimelineMarker* active=nullptr;
         if(song.markers) for(const auto& marker:*song.markers)
-            if(marker.tempoBPM && (!part || (marker.position>=part->startTime && marker.position<limit)) && marker.position<=time && (!active || marker.position>active->position || (marker.position==active->position && marker.id>active->id))) active=&marker;
+            if(marker.tempoBPM && (!part || (marker.position>=part->startTime && marker.position<limit &&
+                (!marker.regionOwnerID || marker.regionOwnerID==part->id || marker.regionOwnerID==part->parentRegionID))) &&
+                marker.position<=time && (!active || marker.position>active->position || (marker.position==active->position && marker.id>active->id))) active=&marker;
         if(!active) return 1;
         const auto mode=active->tempoTimebase.value_or("global");
         const bool relative=mode=="relative" || (mode=="global" && song.timeSettings.value_or(ProjectTimeSettings{}).timebase==ProjectTimebase::relative);
@@ -44,7 +61,7 @@ public:
         std::vector<std::pair<double,double>> occupied;
         for(const auto& part:before.parts) if(!folder(before,part)) occupied.emplace_back(part.startTime,part.endTime);
         for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty())
-            for(const auto& clip:track.clips) if((clip.audioFile || track.audioFile) && !owner(before,clip.startTime)) occupied.emplace_back(clip.startTime,clip.startTime+clip.duration);
+            for(const auto& clip:track.clips) if((clip.audioFile || track.audioFile) && !owner(before,clip)) occupied.emplace_back(clip.startTime,clip.startTime+clip.duration);
         std::sort(occupied.begin(),occupied.end());
         std::vector<std::pair<double,double>> merged;
         for(const auto& interval:occupied) if(interval.second>interval.first) {
@@ -65,6 +82,8 @@ public:
             spans.push_back({start,end,output,scale}); output+=(end-start)*scale;
         }
         auto resizedDuration=[&](double start,double end,const Part& part) {
+            const bool reversed=end<start;
+            if(reversed) std::swap(start,end);
             const auto found=std::find_if(after.parts.begin(),after.parts.end(),[&](const auto& value){return value.id==part.id;});
             const Part* next=found==after.parts.end()?&part:&*found;
             std::vector<double> edges{start,end};
@@ -76,11 +95,14 @@ public:
                 const double middle=edges[i-1]+(edges[i]-edges[i-1])/2;
                 duration+=(edges[i]-edges[i-1])*rate(before,middle,&part)/rate(after,middle,next);
             }
-            return duration;
+            return reversed?-duration:duration;
         };
         for(const auto& part:before.parts) if(!folder(before,part)) regionDurations[part.id]=resizedDuration(part.startTime,part.endTime,part);
         for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty()) for(const auto& clip:track.clips)
-            if(const auto* part=owner(before,clip.startTime)) clipDurations[clip.id]=resizedDuration(clip.startTime,clip.startTime+clip.duration,*part);
+            if(const auto* part=owner(before,clip)) {
+                clipStarts[clip.id]=position(part->startTime)+resizedDuration(part->startTime,clip.startTime,*part);
+                clipDurations[clip.id]=resizedDuration(clip.startTime,clip.startTime+clip.duration,*part);
+            }
     }
     bool changesTime() const {return std::any_of(spans.begin(),spans.end(),[](const auto& span){return std::abs(span.scale-1)>1e-12;});}
     double position(double time) const {
@@ -93,7 +115,8 @@ public:
         if(!changesTime()) return;
         for(auto& track:song.tracks) for(auto& clip:track.clips) {
             const double start=position(clip.startTime),end=position(clip.startTime+clip.duration);
-            clip.startTime=start;const auto duration=clipDurations.find(clip.id);clip.duration=duration==clipDurations.end()?end-start:duration->second;
+            const auto onset=clipStarts.find(clip.id);clip.startTime=onset==clipStarts.end()?start:onset->second;
+            const auto duration=clipDurations.find(clip.id);clip.duration=duration==clipDurations.end()?end-start:duration->second;
         }
         for(auto& part:song.parts) {
             part.startTime=position(part.startTime);const auto duration=regionDurations.find(part.id);

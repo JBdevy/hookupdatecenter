@@ -12,9 +12,10 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     let timerValue: () -> (text: String, opacity: Double, expired: Bool)
     @ViewBuilder let media: () -> Media
     private var settings: TeleprompterSettings { content.resolvedSettings }
+    private var preview: Bool { settings.displaysPreview(content.preview) }
     var body: some View {
         GeometryReader { geometry in
-            if settings.isClear { media().frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
+            if settings.isClear { media().scaleEffect(settings.mediaScale / 100).frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
             else {
                 let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
                 TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
@@ -23,7 +24,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                         GeometryReader { area in
                             ZStack {
                                 Color.clear
-                                if content.preview { previewGrid(size: area.size) }
+                                if preview { previewGrid(size: area.size) }
                                 else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
                             }.clipped()
                         }
@@ -32,7 +33,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                         .background {
                             ZStack {
                                 Color.black
-                                if !content.preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+                                if !preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
                             }
                         }
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))
@@ -50,7 +51,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         if settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
             title(content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
         }
-        if !content.preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
+        if !preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
             Text(settings.display(content.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
                 .foregroundStyle(Color(hex: settings.chordColor)).lineLimit(2).minimumScaleFactor(0.4).padding(6)
                 .frame(maxWidth: .infinity)
@@ -65,12 +66,20 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
         let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
         let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
-        let height = max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
+        let sameSide = side && timer && local && settings.clockPosition.hasPrefix(settings.localClockPosition)
+        let height = sameSide ? font + localSideFont + 24 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
         // Keep a real clock column on narrow phone screens, including fullscreen.
         let timerLimit = compactPhone && local && !side ? max(1, width - 152) : width
         let timerWidth = min(timerLimit,max(118,tpTimerTextWidth(font) + 36))
         return ZStack {
-            if side && timer && local {
+            if sameSide {
+                // Both controls may be assigned to the same edge. Stack them
+                // there instead of silently overriding the local-clock setting.
+                VStack(alignment: settings.localClockPosition == "left" ? .leading : .trailing, spacing: 4) {
+                    timerText(font: font,date: date)
+                    localClock(date,font: localSideFont)
+                }.frame(maxWidth: .infinity, alignment: settings.localClockPosition == "left" ? .leading : .trailing)
+            } else if side && timer && local {
                 HStack(spacing: 8) {
                     if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
                     timerText(font: font,date: date).frame(maxWidth: .infinity)
@@ -159,9 +168,17 @@ struct TeleprompterProjectionLayout<Media: View>: View {
 }
 
 private func tpFont(_ name: String,size: CGFloat) -> Font {
-    let names = ["arial":"Arial-BoldMT","segoe":"SegoeUI-Bold","bahnschrift":"Bahnschrift","verdana":"Verdana-Bold","tahoma":"Tahoma-Bold","georgia":"Georgia-Bold","trebuchet":"TrebuchetMS-Bold","impact":"Impact","mono":"CourierNewPS-BoldMT"]
-    if let font = names[name], tpFontAvailable(font, size: size) { return .custom(font,size: size) }
+    // Imported Windows families may not be installed on Mac/iOS. Choose their
+    // native counterpart instead of making several menu choices all render as
+    // the same default font. Use the original whenever it is available.
+    let names = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
+    if let font = names[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
     return .system(size: size,weight: .bold,design: name == "mono" ? .monospaced : .default)
+}
+func tpNoticeFont(_ name: String,size: CGFloat) -> Font {
+    let substitutes = ["Segoe UI": ["SegoeUI", "HelveticaNeue"], "Bahnschrift": ["Bahnschrift", "DINAlternate-Bold"]]
+    if let font = substitutes[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
+    return .custom(name,size: size)
 }
 private func tpTime(_ seconds: Int,spaced: Bool = false) -> String {
     let value = abs(seconds), separator = spaced ? " : " : ":"
@@ -280,7 +297,7 @@ private struct LocalizedTeleprompterConfig: View {
             // next main-queue turn so progress mode also changes while stopped.
             DispatchQueue.main.async { [weak self] in
                 guard let self, let show = self.show else { return }
-                self.video.setProjectionEnabled(self.visible && (!self.previewActive || self.preferences.settings.isClear))
+                self.video.setProjectionEnabled(self.visible && (!self.preferences.settings.displaysPreview(self.previewActive) || self.preferences.settings.isClear))
                 self.update(show.snapshot,revision: show.projectRevision)
             }
         }
@@ -295,7 +312,7 @@ private struct LocalizedTeleprompterConfig: View {
         window.contentView = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
         self.window = window; visible = true; display.fullscreen = false
         if index == 2 { previewActive = Self.shared.previewActive; display.previewActive = previewActive }
-        video.setProjectionEnabled(!previewActive || preferences.settings.isClear)
+        video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive) || preferences.settings.isClear)
         cachedRevision = nil
         update(show.snapshot,revision: show.projectRevision)
         window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); window.makeKeyAndOrderFront(nil)
@@ -308,7 +325,7 @@ private struct LocalizedTeleprompterConfig: View {
     private func setPreview(_ active: Bool) {
         previewActive = active
         display.previewActive = active
-        video.setProjectionEnabled(visible && (!active || preferences.settings.isClear))
+        video.setProjectionEnabled(visible && (!preferences.settings.displaysPreview(active) || preferences.settings.isClear))
     }
     func selectPreviewPage(_ page: Int) {
         previewPage = min(5,max(0,page))
@@ -446,6 +463,7 @@ private struct LocalizedTeleprompterConfig: View {
 }
 
 struct TeleprompterToggleButton: View {
+    @Environment(\.transportControlWidth) private var buttonWidth
     let show: ShowController
     var directory: URL? = nil
     let index: Int
@@ -460,7 +478,7 @@ struct TeleprompterToggleButton: View {
         Button { controller.toggle(show: show) } label: {
             Label("TP-\(index)",systemImage: "text.alignleft").font(.system(size: TransportControlMetrics.font,weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.8)
-                    .frame(width: TransportControlMetrics.width, height: TransportControlMetrics.height)
+                    .frame(width: buttonWidth, height: TransportControlMetrics.height)
                 .foregroundStyle(controller.visible ? Color.black : JarasTheme.text)
                 .background(RoundedRectangle(cornerRadius: 5).fill(controller.visible ? JarasTheme.green : Color(hex: 0xc44545)))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.visible ? JarasTheme.green : Color(hex: 0xc44545)))
@@ -475,12 +493,13 @@ struct TeleprompterToggleButton: View {
     }
 }
 struct TeleprompterPreviewButton: View {
+    @Environment(\.transportControlWidth) private var buttonWidth
     @ObservedObject private var controller = TeleprompterWindow.shared
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
             Text("Preview").font(.system(size: TransportControlMetrics.font,weight: .semibold))
-                .frame(width: TransportControlMetrics.width, height: TransportControlMetrics.height)
+                .frame(width: buttonWidth, height: TransportControlMetrics.height)
                 .foregroundStyle(controller.previewActive ? Color.black : JarasTheme.text)
                 .background(RoundedRectangle(cornerRadius: 5).fill(controller.previewActive ? JarasTheme.green : Color(hex: 0xc44545)))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.previewActive ? JarasTheme.green : Color(hex: 0xc44545)))
@@ -643,6 +662,7 @@ struct TPNoticeAppearance: Codable {
     }
 }
 struct TPNoticeButton: View {
+    @Environment(\.transportControlWidth) private var buttonWidth
     var body: some View {
         Button { TPNoticeController.shared.open() } label: {
             HStack(spacing: 3) {
@@ -650,7 +670,7 @@ struct TPNoticeButton: View {
                 Text("Messages")
             }
         }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: TransportControlMetrics.width, height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
     }
 }
 private struct TPNoticeEditor: View {
@@ -701,24 +721,6 @@ struct TPNoticeSettingsView: View {
                 if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
             }
             Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
-            Divider()
-            Text("Saved messages").font(.headline).foregroundStyle(JarasTheme.green)
-            ForEach(0..<3) { index in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Message \(index + 1)").font(.subheadline.bold())
-                    TextEditor(text: Binding(get: { model.templates[index] }, set: { model.templates[index] = String($0.prefix(500)) }))
-                        .frame(height: 64)
-                    HStack {
-                        Button("Add image") { model.chooseImage(for: index) }
-                        if let data = model.images[index], let image = NSImage(data: data) {
-                            Image(nsImage: image).resizable().scaledToFit().frame(width: 72, height: 42)
-                            Button("Remove image") { model.images[index] = nil }
-                        }
-                        Spacer()
-                        Text("\(model.templates[index].count) / 500").font(.caption).foregroundStyle(.secondary)
-                    }
-                }.padding(12).background(JarasTheme.display).cornerRadius(6)
-            }
         }.padding(16)
     }
     private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {
@@ -728,7 +730,7 @@ struct TPNoticeSettingsView: View {
     }
 }
 private struct TPNoticeOverlay: View {
-    @ObservedObject private var model = TPNoticeController.shared
+    @ObservedObject var model: TPNoticeController = .shared
     let index: Int
     var body: some View {
         if model.active && (index == 1 ? model.appearance.window1 : model.appearance.window2) {
@@ -742,7 +744,7 @@ private struct TPNoticeOverlay: View {
                         else {
                             let text = model.message.uppercased()
                             Text(appearance.emojiEnabled ? "\(appearance.emoji) \(text) \(appearance.emoji)" : text)
-                                .font(.custom(appearance.font,size: min(72,max(24,geometry.size.width * 0.078)) * appearance.scale / 100))
+                                .font(tpNoticeFont(appearance.font,size: min(72,max(24,geometry.size.width * 0.078)) * appearance.scale / 100))
                                 .foregroundStyle(Color(hex: appearance.text)).multilineTextAlignment(.center).minimumScaleFactor(0.3)
                         }
                     }.padding(24).frame(maxWidth: .infinity,maxHeight: appearance.cleanDisplay ? .infinity : nil)

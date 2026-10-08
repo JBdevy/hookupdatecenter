@@ -20,7 +20,7 @@ models = Path('Application/Project/ProjectModels.swift').read_text()
 transport = models[models.index('public struct QueueState:'):models.index('public struct AudioRoute:')]
 multi = Path('Application/Project/MultiLoop.swift').read_text()
 start = multi.index('public struct MultiLoopPlayback:')
-multi = multi[start:multi.index('\npublic extension Song', start)]
+multi = multi[start:multi.index('\n}', start) + 2]
 # Only the track payload type is irrelevant to this view; all transport fields,
 # the presentation helper, the SwiftUI layer and native follow remain real code.
 presentation = Path('Application/Transport/TimelinePlaybackPresentation.swift').read_text().split('/// Song names and explicit tempo metadata')[0]

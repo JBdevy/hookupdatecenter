@@ -28,6 +28,7 @@ final class NativeEffectsChain {
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
     private let outputMix = AVAudioMixerNode()
+    private var outputDestination: AVAudioNode?
     private var instanceNodes: [String: AVAudioNode] = [:]
     private var instanceDelayProbes: [String: (JarasAudioAnalysisProbe, JarasAudioAnalysisProbe)] = [:]
     private var observedEffects = Set<String>()
@@ -138,7 +139,7 @@ final class NativeEffectsChain {
         return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
         #endif
     }
-    var output: AVAudioNode { outputMix }
+    var output: AVAudioNode { outputDestination ?? outputMix }
     func setSourceChannelMode(_ mode: Int) { JarasEqualizer.setInputChannelMode(equalizer, mode: Int32(mode)) }
     private var itemFadeClock: (position: Double, host: UInt64, sample: Double) = (0, 0, 0)
     func configureItemFade(_ clip: AudioClip, position: Double, hostTime: UInt64 = 0, sampleTime: Double = 0) {
@@ -166,8 +167,14 @@ final class NativeEffectsChain {
         settings = nil; sampleRate = 0
         preparedEffects = reorderable ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
         for node in nodes { engine.attach(node) }
-        engine.attach(outputMix)
-        if !destinations.isEmpty { engine.connect(output, to: destinations, fromBus: 0, format: format) }
+        // Tracks already end at their printed-MIDI mixer and items at their
+        // gain unit. Use that stable sink directly instead of rendering an
+        // additional unity mixer for every chain on every device cycle.
+        outputDestination = destinations.count == 1 && destinations[0].bus == 0 ? destinations[0].node : nil
+        if outputDestination == nil {
+            engine.attach(outputMix)
+            if !destinations.isEmpty { engine.connect(outputMix, to: destinations, fromBus: 0, format: format) }
+        }
         apply(NativeFXSettings())
     }
     private func connect(_ next: NativeFXSettings) {
@@ -202,9 +209,9 @@ final class NativeEffectsChain {
         // Keep the upstream players connected to a live destination while
         // rebuilding the processors. Disconnecting the input first causes
         // AVAudioEngine to discard their scheduled PCM during a live reorder.
-        engine.connect(input, to: outputMix, fromBus: 0, toBus: 0, format: format)
+        engine.connect(input, to: output, fromBus: 0, toBus: 0, format: format)
         for node in connected { engine.disconnectNodeOutput(node) }
-        var destination: AVAudioNode = outputMix
+        var destination: AVAudioNode = output
         for node in ordered.reversed() {
             if let mixer = destination as? AVAudioMixerNode { engine.connect(node, to: mixer, fromBus: 0, toBus: 0, format: format) }
             else { engine.connect(node, to: destination, format: format) }
@@ -226,7 +233,8 @@ final class NativeEffectsChain {
         for node in instanceNodes.values { engine.detach(node) }; instanceNodes.removeAll()
         for node in nodes { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
-        engine.detach(outputMix); connected.removeAll(); self.engine = nil; input = nil
+        if outputDestination == nil { engine.detach(outputMix) }
+        outputDestination = nil; connected.removeAll(); self.engine = nil; input = nil
         preparedEffects = ["EQ"]
         instrumentMix = nil
         #if os(macOS)

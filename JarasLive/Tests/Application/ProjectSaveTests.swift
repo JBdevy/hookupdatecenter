@@ -51,6 +51,11 @@ import XCTest
         map.apply(to: &project.songs[0]); tempoBatches += 1
     }
     func setTempoMarkers(_ markers: [TimelineMarker]) throws { try setTempoMarkers(markers, removing: []) }
+    func setMarker(_ marker: TimelineMarker) throws {
+        if project.songs[0].markers == nil { project.songs[0].markers = [] }
+        if let index = project.songs[0].markers!.firstIndex(where: { $0.id == marker.id }) { project.songs[0].markers![index] = marker }
+        else { project.songs[0].markers!.append(marker) }
+    }
     func setTempoMarkers(_ markers: [TimelineMarker], removing: [UUID]) throws {
         if project.songs[0].markers == nil { project.songs[0].markers = [] }
         project.songs[0].markers!.removeAll { removing.contains($0.id) || markers.map(\.id).contains($0.id) }
@@ -113,6 +118,97 @@ private actor SaveTestStore: ProjectPersistence {
     }
 }
 final class ProjectSaveTests: XCTestCase {
+    private func markerOwnershipProject() -> Project {
+        var project = Project.empty(name: "Marker ownership")
+        project.songs[0].duration = 60
+        project.songs[0].regionOwnershipInitialized = true
+        project.songs[0].parts = [Part(id: UUID(), name: "Delete", startTime: 10, endTime: 30),
+                                  Part(id: UUID(), name: "Keep", startTime: 30, endTime: 50)]
+        project.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0, tempoBPM: 120, tempoTimebase: .free)]
+        return project
+    }
+    @MainActor func testCreatedMarkersAreDeletedWithAllRegionsAndRestoredByUndo() throws {
+        var project = markerOwnershipProject()
+        let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+        let loose = TimelineMarker(id: UUID(), name: "Loose", position: 21, color: 0)
+        let foreign = TimelineMarker(id: UUID(), name: "Other song", position: 24, color: 0, regionOwnerID: next.id, tempoBPM: 95, tempoTimebase: .free)
+        project.songs[0].markers! += [loose, foreign]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let placed = [TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0, tempoBPM: 130, tempoTimebase: .free),
+                      TimelineMarker(id: UUID(), name: "TEMPO", position: 15, color: 0, tempoBPM: 150, tempoTimebase: .free),
+                      TimelineMarker(id: UUID(), name: "Cue", position: 16, color: 0),
+                      TimelineMarker(id: UUID(), name: "$VERSE", position: 17, color: 0),
+                      TimelineMarker(id: UUID(), name: "*LOOP", position: 18, color: 0)]
+        for marker in placed { show.setMarker(marker) }
+        let boundary = TimelineMarker(id: UUID(), name: "Next tempo", position: 30, color: 0, tempoBPM: 90, tempoTimebase: .free)
+        show.setMarker(boundary)
+        var renamed = placed[1]; renamed.name = "Edited BPM"; renamed.tempoBPM = 151
+        show.setMarker(renamed) // Incoming editor value has no owner.
+        for marker in placed {
+            XCTAssertEqual(show.current?.markers?.first { $0.id == marker.id }?.regionOwnerID, first.id)
+        }
+        XCTAssertEqual(show.current?.markers?.first { $0.id == boundary.id }?.regionOwnerID, next.id)
+        XCTAssertEqual(executor.project.songs[0].markers, show.current?.markers)
+        let beforeDelete = show.snapshot.project
+        let restored = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(beforeDelete))
+        XCTAssertEqual(restored.songs[0].markers, beforeDelete.songs[0].markers)
+        XCTAssertTrue(show.deleteSetlistEntries([first.id]))
+        XCTAssertEqual(show.current?.parts.map(\.id), [next.id])
+        XCTAssertEqual(Set(show.current?.markers?.map(\.id) ?? []), Set(project.songs[0].markers!.map(\.id) + [boundary.id]))
+        show.undo(); XCTAssertEqual(show.current?.markers, beforeDelete.songs[0].markers)
+        show.redo(); XCTAssertFalse(show.current?.markers?.contains { placed.map(\.id).contains($0.id) } ?? true)
+    }
+    @MainActor func testTempoAdjustmentAttachesNewBoundariesToCorrectSongs() throws {
+        var project = markerOwnershipProject()
+        let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+        let inside = TimelineMarker(id: UUID(), name: "TEMPO", position: 20, color: 0, regionOwnerID: first.id, tempoBPM: 140, tempoTimebase: .free)
+        let loose = TimelineMarker(id: UUID(), name: "Unattached tempo", position: 22, color: 0, tempoBPM: 150, tempoTimebase: .free)
+        project.songs[0].markers! += [inside, loose]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        show.focusRegion(first.id); show.adjustTempo(1)
+        XCTAssertEqual(show.current?.markers?.first { $0.position == 10 }?.regionOwnerID, first.id)
+        XCTAssertEqual(show.current?.markers?.first { $0.position == 30 }?.regionOwnerID, next.id)
+        XCTAssertEqual(show.current?.markers?.first { $0.id == inside.id }?.regionOwnerID, first.id)
+        XCTAssertNil(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID)
+        XCTAssertEqual(executor.project.songs[0].markers, show.current?.markers)
+        XCTAssertTrue(show.deleteSetlistEntries([first.id]))
+        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 30])
+    }
+    @MainActor func testDetectedTempoKeepsExistingOwnershipAndAssignsNewMarkers() throws {
+        var project = markerOwnershipProject()
+        let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+        let owned = TimelineMarker(id: UUID(), name: "Owned tempo", position: 20, color: 0, regionOwnerID: first.id, tempoBPM: 140, tempoTimebase: .free)
+        let loose = TimelineMarker(id: UUID(), name: "Loose tempo", position: 22, color: 0, tempoBPM: 140, tempoTimebase: .free)
+        project.songs[0].markers! += [owned, loose]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let detected = [10.0, 15, 20, 22, 30].map { TimelineMarker(id: UUID(), name: "TEMPO", position: $0, color: 0, tempoBPM: 125, tempoTimebase: .free) }
+        XCTAssertTrue(show.applyDetectedTempo(detected, project: project.id, song: project.songs[0].id, region: first.id))
+        for position in [10.0, 15, 20] {
+            XCTAssertEqual(show.current?.markers?.first { $0.position == position }?.regionOwnerID, first.id)
+        }
+        XCTAssertEqual(show.current?.markers?.first { $0.position == 20 }?.id, owned.id)
+        XCTAssertNil(show.current?.markers?.first { $0.position == 22 }?.regionOwnerID)
+        XCTAssertEqual(show.current?.markers?.first { $0.position == 30 }?.regionOwnerID, next.id)
+        XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position }, show.current?.markers?.sorted { $0.position < $1.position })
+        XCTAssertTrue(show.deleteSetlistEntries([first.id]))
+        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 30])
+    }
+    @MainActor func testMovingMarkerAttachesItButEditingInPlaceDoesNotCaptureLooseMaterial() throws {
+        var project = markerOwnershipProject()
+        let first = project.songs[0].parts[0]
+        var loose = TimelineMarker(id: UUID(), name: "TEMPO", position: 15, color: 0, tempoBPM: 120, tempoTimebase: .free)
+        project.songs[0].markers!.append(loose)
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        loose.tempoBPM = 130; show.setMarker(loose)
+        XCTAssertNil(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID)
+        loose.position = 16; show.setMarker(loose)
+        XCTAssertEqual(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID, first.id)
+        XCTAssertTrue(show.deleteSetlistEntries([first.id]))
+        XCTAssertFalse(show.current?.markers?.contains { $0.id == loose.id } ?? true)
+    }
     @MainActor func testRegionFromTimeSelectionPreservesExactBoundsAndSupportsUndo() throws {
         let project = Project.empty(name: "Time selection")
         let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
@@ -550,7 +646,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.hasUnsavedChanges)
     }
 
-    @MainActor func testRenamePlaylistAndDeleteMultipleAllRegionsPreserveAudioAndUndo() throws {
+    @MainActor func testRenamePlaylistAndDeleteMultipleAllRegionsWithUndo() throws {
         var project = Project.empty(name: "Setlist editing")
         let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0*10), endTime: Double($0*10+8)) }
         project.songs[0].parts = regions; project.songs[0].duration = 40
@@ -592,8 +688,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(executor.projectEditCount, 0)
         XCTAssertTrue(show.deleteSetlistEntries([block, group, third.id, first.id]))
         XCTAssertEqual(executor.projectEditCount, 1, "one project update for the whole mixed selection")
-        XCTAssertEqual(Set(show.current!.parts.map(\.id)), [first.id, second.id], "deleting the special wrapper restores its songs while deleting the other selected region")
-        XCTAssertTrue(show.current!.parts.allSatisfy { $0.parentRegionID == nil })
+        XCTAssertTrue(show.current!.parts.isEmpty, "All Regions deletes the wrapper and its drawer songs")
         XCTAssertTrue(show.listedBlocks.isEmpty)
         XCTAssertEqual(show.current!.tracks, before.songs[0].tracks)
         show.undo()
@@ -1064,5 +1159,45 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertFalse(show.saving)
         XCTAssertEqual(show.message, "Disk unavailable")
         XCTAssertNil(show.lastSavedAt, "failed writes must not advance the displayed saved date")
+    }
+}
+
+
+extension ProjectSaveTests {
+    @MainActor func testContentEditSaveUndoRedoPreservesDirtyBoundaryAndSavedContents() async throws {
+        let store = MemoryProjectStore()
+        let executor = SaveTestExecutor()
+        var project = Project.empty(name: "Dirty save and history")
+        project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 0)
+        let show = try ShowController(executor: executor, persistence: store, initialProject: project)
+        XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertFalse(show.needsSave)
+        let track = try XCTUnwrap(show.addTrack(name: "Recorded vocal", role: .other))
+        XCTAssertTrue(show.hasUnsavedChanges)
+        XCTAssertTrue(show.needsSave)
+        XCTAssertTrue(show.canUndo)
+        try await show.flushProject()
+        var stored = await store.load()
+        XCTAssertTrue(try XCTUnwrap(stored).songs[0].tracks.contains { $0.id == track })
+        XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertFalse(show.needsSave)
+
+        show.undo()
+        XCTAssertFalse(show.current!.tracks.contains { $0.id == track })
+        XCTAssertTrue(show.hasUnsavedChanges, "Undo after Save changes the saved document")
+        XCTAssertTrue(show.canRedo)
+        try await show.flushProject()
+        stored = await store.load()
+        XCTAssertFalse(try XCTUnwrap(stored).songs[0].tracks.contains { $0.id == track })
+        XCTAssertFalse(show.needsSave)
+
+        show.redo()
+        XCTAssertTrue(show.current!.tracks.contains { $0.id == track })
+        XCTAssertTrue(show.hasUnsavedChanges, "Redo after saving the undone state is another real content edit")
+        try await show.flushProject()
+        stored = await store.load()
+        XCTAssertTrue(try XCTUnwrap(stored).songs[0].tracks.contains { $0.id == track })
+        XCTAssertFalse(show.hasUnsavedChanges)
+        XCTAssertFalse(show.needsSave)
     }
 }

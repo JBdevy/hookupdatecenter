@@ -5,6 +5,11 @@ import AVFoundation
 // Cache, refresh, worker scheduling and file decoding stay unchanged.
 enum WaveformHeaderNormalizationProbe {
     static var calls = 0
+    static var pathCalls = 0
+    static func path(_ url: URL) -> String {
+        pathCalls += 1
+        return url.path
+    }
     static func normalize(_ url: URL) -> URL {
         calls += 1
         return url.standardizedFileURL
@@ -57,6 +62,17 @@ precondition(cache.header(alias, refresh: true) === original && WaveformHeaderNo
 let systemTemporary = FileManager.default.temporaryDirectory
 print("WAVEFORM_HEADER_TEMPORARY_PATH_ALIAS=\(systemTemporary.path != systemTemporary.standardizedFileURL.path)")
 print("WAVEFORM_HEADER_WARM_CANONICAL_AND_ALIAS_10000_ZERO_NORMALIZATIONS_OK")
+
+let sourcePath = url.path, aliasPath = alias.path
+let pathCalls = WaveformHeaderNormalizationProbe.pathCalls
+for _ in 0..<10_000 {
+    precondition(cache.header(url, sourcePath: sourcePath) === original)
+    precondition(cache.header(alias, sourcePath: aliasPath) === original)
+}
+precondition(WaveformHeaderNormalizationProbe.pathCalls == pathCalls &&
+             WaveformHeaderNormalizationProbe.calls == aliasWarmed,
+             "Media URL cache paths bypass repeated URL decoding without changing alias lookup")
+print("WAVEFORM_HEADER_CACHED_CANONICAL_AND_ALIAS_PATHS_ZERO_URL_DECODES_OK")
 
 // The pinned project cache must still serve a canonical header after NSCache
 // evicts it. The harness exposes this private cache transition only in its copy.
@@ -126,7 +142,7 @@ Thread.sleep(forTimeInterval: 1.05)
 try writeAudio(url, frames: 4096)
 let aliasAged = WaveformHeaderNormalizationProbe.calls
 precondition(cache.header(alias) === updated)
-precondition(cache.header(alias, refresh: true) === updated)
+precondition(cache.header(alias, refresh: true, sourcePath: aliasPath) === updated)
 precondition(WaveformHeaderNormalizationProbe.calls == aliasAged + 1,
              "Aged alias refresh re-resolves the original path and checks its current file")
 worker.sync {}
@@ -151,7 +167,7 @@ try FileManager.default.removeItem(at: link)
 try FileManager.default.createSymbolicLink(at: link, withDestinationURL: destination)
 Thread.sleep(forTimeInterval: 1.05)
 let retarget = WaveformHeaderNormalizationProbe.calls
-_ = cache.header(linked, refresh: true)
+_ = cache.header(linked, refresh: true, sourcePath: linked.path)
 worker.sync {}
 precondition(cache.header(linked)?.frames == 3072,
              "Refreshing a redirected alias must use its new target")

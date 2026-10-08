@@ -220,3 +220,63 @@ cancelledWheel.change(factor: exp(1.0 / 64), current: 80, smoothWheel: true) { c
 precondition(cancelledValues.last == 81, "a sub-two-point correction stays direct and starts at the new height")
 cancelledWheel.cancel()
 print("TRACK_HEIGHT_WHEEL_FULL_RANGE_BOUNDS_CANCEL_AND_SMALL_CORRECTION_OK")
+
+// Exercise each supported modifier and both directions with native event data.
+_ = NSApplication.shared
+let heightWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 240, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+heightWindow.isReleasedWhenClosed = false
+let wheelView = TimelineMixerHeightWheelView(frame: CGRect(x: 0, y: 0, width: 240, height: 100))
+heightWindow.contentView = wheelView
+var wheelPublications = 0
+var wheelFactors: [Double] = [], wheelSmoothing: [Bool] = []
+wheelView.change = { factor, smooth in
+    wheelPublications += 1; wheelFactors.append(factor); wheelSmoothing.append(smooth)
+}
+final class HeightWheelFixtureEvent: NSEvent {
+    weak var fixtureWindow: NSWindow?
+    var flags: NSEvent.ModifierFlags = []
+    var point = CGPoint.zero
+    var delta: CGFloat = 1
+    var precise = false
+    override var window: NSWindow? { fixtureWindow }
+    override var type: NSEvent.EventType { .scrollWheel }
+    override var locationInWindow: NSPoint { point }
+    override var modifierFlags: NSEvent.ModifierFlags { flags }
+    override var scrollingDeltaY: CGFloat { delta }
+    override var momentumPhase: NSEvent.Phase { [] }
+    override var phase: NSEvent.Phase { [] }
+    override var hasPreciseScrollingDeltas: Bool { precise }
+    override var timestamp: TimeInterval { 10 }
+}
+func heightWheel(_ flags: NSEvent.ModifierFlags, delta: CGFloat = 1, precise: Bool = false) -> NSEvent {
+    let event = HeightWheelFixtureEvent()
+    event.fixtureWindow = heightWindow; event.flags = flags
+    event.delta = delta; event.precise = precise
+    event.point = wheelView.convert(CGPoint(x: 100, y: 40), to: nil)
+    return event
+}
+// A native fixture supplies only event/window data; the production handler decides its action.
+for flags: NSEvent.ModifierFlags in [.command, .control, .shift] {
+    for precise in [false, true] {
+        for delta: CGFloat in [-1, 1] {
+            let before = wheelPublications
+            precondition(wheelView.handle(heightWheel(flags, delta: delta, precise: precise)),
+                         "Command, Control and Shift each reach the mixer's height callback")
+            precondition(wheelPublications == before + 1)
+            precondition(delta > 0 ? wheelFactors.last! > 1 : wheelFactors.last! < 1,
+                         "each modifier preserves shrinking and expanding input")
+            precondition(wheelSmoothing.last == !precise, "only a physical wheel requests smoothing")
+        }
+    }
+}
+let publicationsBeforePlain = wheelPublications
+precondition(!wheelView.handle(heightWheel([])) && wheelPublications == publicationsBeforePlain,
+             "plain scrolling keeps native vertical movement")
+NativeTimelineInputGate.shared.setBlocked(true, for: heightWindow)
+for flags: NSEvent.ModifierFlags in [.command, .control, .shift] {
+    precondition(!wheelView.handle(heightWheel(flags)) && wheelPublications == publicationsBeforePlain,
+                 "modal gate blocks all shared-height shortcuts")
+}
+NativeTimelineInputGate.shared.setBlocked(false, for: heightWindow)
+heightWindow.close()
+print("TRACK_HEIGHT_NATIVE_COMMAND_CONTROL_SHIFT_BOTH_DIRECTIONS_PRECISE_DISCRETE_AND_MODAL_GATE_OK")

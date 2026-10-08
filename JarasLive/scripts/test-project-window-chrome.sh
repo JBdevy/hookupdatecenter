@@ -11,6 +11,9 @@ start = source.index('/// Keep project controls in AppKit')
 end = source.index('\n#endif', start)
 stubs = '''import AppKit
 import SwiftUI
+extension Notification.Name {
+    static let catliveTrialTitleChanged = Notification.Name("catliveTrialTitleChanged")
+}
 enum JarasTheme {
     static let titlebar = Color(red: 39.0 / 255, green: 46.0 / 255, blue: 56.0 / 255)
 }

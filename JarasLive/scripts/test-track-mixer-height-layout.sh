@@ -19,11 +19,12 @@ final class TrackReorderState: ObservableObject {
 }
 final class TrackSelectionRouter {
  static let shared = TrackSelectionRouter()
+ var pinnedTracks = Set<UUID>()
  func perform(track: UUID, event: NSEvent, action: () -> Void) { action() }
 }
 '''
 with root.joinpath('layout.swift').open('a') as f: f.write('\n'+stubs+'\n'+title)
 root.joinpath('main.swift').write_text(Path('Tests/Apple/TrackMixerHeightLayoutTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/JarasLegacyLayout.swift "$test_dir/layout.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/JarasLegacyLayout.swift "$test_dir/layout.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

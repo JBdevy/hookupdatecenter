@@ -74,6 +74,27 @@ MainActor.assumeIsolated {
         }
         precondition(cached(height, top: top) === projected,"identical frames reuse the whole layout")
     }
+    // Individual height changes keep the global row height and project key unchanged.
+    var individual = geometry(64)
+    individual.heights[17] = 91
+    var offset: CGFloat = 0
+    for index in lanes.indices {
+        individual.offsets[index] = offset
+        offset += CGFloat(lanes[index]) * individual.heights[index]
+    }
+    let individualLayout = cache.layout(key: TimelineRenderKey(revision: 1), rowHeight: 64, rulerHeight: 71,
+                                       rowOffsets: individual.offsets, laneHeights: individual.heights) {
+        metadataBuilds += 1; return items(individual, top: 71)
+    }
+    let rebuiltIndividual = GridSelectionLayout(items: items(individual, top: 71), timeCoordinates: true)
+    precondition(metadataBuilds == 1 && individualLayout.items.withUnsafeBufferPointer { $0.baseAddress } == initialStorage)
+    for track in [16, 17, 18, 111, 199] {
+        let index = track * clipsPerTrack + 18
+        let actual = individualLayout.projectedItem(at: index, pixelsPerSecond: 10)
+        precondition(actual.rect == rebuiltIndividual.projectedItem(at: index, pixelsPerSecond: 10).rect)
+        precondition(individualLayout.candidates(in: actual.rect, pixelsPerSecond: 10) == rebuiltIndividual.candidates(in: actual.rect, pixelsPerSecond: 10))
+    }
+    print("INDIVIDUAL_HEIGHT_50K_SHARED_METADATA_LANES_OFFSETS_HIT_TEST_OK")
     let sorted = projectedTimes.dropFirst(5).sorted(), baseline = rebuildTimes.sorted()
     print("HEIGHT_SELECTION_50K_PROJECT_MS median=\(sorted[sorted.count/2]) p95=\(sorted[Int(Double(sorted.count-1)*0.95)]) max=\(sorted.last!)")
     print("HEIGHT_SELECTION_50K_REBUILD_MS median=\(baseline[baseline.count/2]) metadataBuilds=\(metadataBuilds) hits=\(hits)")

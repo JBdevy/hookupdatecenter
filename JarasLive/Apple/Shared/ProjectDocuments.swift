@@ -964,7 +964,14 @@ private final class ProjectTitlebarHostingView<Content: View>: NSHostingView<Con
 }
 
 private final class ProjectTitlebarVersionView: NSView {
-    static let text = "CatLive Version 1.00"
+    static let text = text(for: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0")
+    static func text(for version: String) -> String {
+        let components = version.split(separator: ".")
+        guard components.count >= 2, let major = Int(components[0]), let minor = Int(components[1]) else {
+            return "CatLive Version " + version
+        }
+        return "CatLive Version " + String(major) + "." + String(format: "%02d", minor)
+    }
     private let label = NSTextField(labelWithString: text)
     var preferredWidth: CGFloat { ceil(label.intrinsicContentSize.width) + 20 }
     init() {

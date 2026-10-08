@@ -2,6 +2,66 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testSubPlayDefaultsToShiftSpaceWithoutEnterAliases() {
+        var bindings = DAWActionBindings()
+        let shortcut = ControlInput(kind: "keyboard", label: "⇧Space", key: 49, modifiers: 1 << 17)
+        XCTAssertEqual(bindings.binding(.subPlayStop).keyboard, shortcut)
+        XCTAssertEqual(bindings.matching(shortcut), .subPlayStop)
+        XCTAssertEqual(bindings.matching(ControlInput(kind: "keyboard", label: "", key: 49, modifiers: 0)), .playStop)
+        for key: UInt16 in [36, 76] {
+            XCTAssertNil(bindings.matching(ControlInput(kind: "keyboard", label: "", key: key, modifiers: 0)))
+        }
+        let custom = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        XCTAssertTrue(bindings.setInput(custom, action: .subPlayStop, kind: "keyboard"))
+        XCTAssertNil(bindings.matching(shortcut))
+        bindings.reset(.subPlayStop, kind: "keyboard")
+        XCTAssertEqual(bindings.matching(shortcut), .subPlayStop)
+    }
+    func testOldSubPlayDefaultMigratesWhilePreservingMIDIAndTrackTarget() throws {
+        var old = DAWActionBinding(action: .subPlayStop)
+        old.keyboard = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0)
+        old.midi = ControlInput(kind: "midi", label: "CC 42", device: 2, channel: 1, status: 0xb0, number: 42)
+        old.trackNumber = 3
+        let migrated = DAWActionBindings(stored: [old])
+        XCTAssertEqual(migrated.binding(.subPlayStop).keyboard, DAWAction.subPlayStop.defaultKeyboard)
+        XCTAssertEqual(migrated.binding(.subPlayStop).midi, old.midi)
+        XCTAssertEqual(migrated.binding(.subPlayStop).trackNumber, old.trackNumber)
+        XCTAssertNil(migrated.matching(old.keyboard!))
+        XCTAssertEqual(migrated.matching(old.midi!), .subPlayStop)
+        let saved = try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(migrated.entries))
+        XCTAssertEqual(DAWActionBindings(stored: saved), migrated)
+    }
+    func testSubPlayMigrationPreservesCustomAndUnboundShortcuts() {
+        let shortcuts: [ControlInput?] = [nil,
+            ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0),
+            ControlInput(kind: "keyboard", label: "⇧Enter", key: 36, modifiers: 1 << 17),
+            ControlInput(kind: "keyboard", label: "Keypad Enter", key: 76, modifiers: 0),
+            DAWAction.subPlayStop.defaultKeyboard]
+        for shortcut in shortcuts {
+            var stored = DAWActionBinding(action: .subPlayStop)
+            stored.keyboard = shortcut
+            XCTAssertEqual(DAWActionBindings(stored: [stored]).binding(.subPlayStop), stored)
+        }
+    }
+    func testSubPlayMigrationPreservesExistingShiftSpaceMappingsInEitherOrder() {
+        var old = DAWActionBinding(action: .subPlayStop)
+        old.keyboard = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0)
+        let shortcut = DAWAction.subPlayStop.defaultKeyboard!
+        for action in [DAWAction.pause, .toggleAuto] {
+            var existing = DAWActionBinding(action: action)
+            existing.keyboard = shortcut
+            for stored in [[old, existing], [existing, old]] {
+                let migrated = DAWActionBindings(stored: stored)
+                XCTAssertEqual(migrated.binding(.subPlayStop), old)
+                XCTAssertEqual(migrated.binding(action), existing)
+                XCTAssertEqual(migrated.matching(shortcut), action)
+                XCTAssertEqual(migrated.matching(old.keyboard!), .subPlayStop)
+            }
+            let missing = DAWActionBindings(stored: [existing])
+            XCTAssertNil(missing.binding(.subPlayStop).keyboard)
+            XCTAssertEqual(missing.matching(shortcut), action)
+        }
+    }
     func testGlobalMultiloopBypassIsAssignableWithoutAnyDefaultInput() throws {
         let action = DAWAction.toggleMultiLoopBypass
         var bindings = DAWActionBindings()

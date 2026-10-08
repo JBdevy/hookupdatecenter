@@ -15,6 +15,9 @@ source = Path('Apple/Shared/TimelineAudioWaveform.swift').read_text()
 normalization = '            resolvedURL = url.standardizedFileURL\n'
 assert source.count(normalization) == 1, 'Update the targeted header normalization probe after a source change'
 source = source.replace(normalization, '            resolvedURL = WaveformHeaderNormalizationProbe.normalize(url)\n')
+path_lookup = '        let path = sourcePath ?? url.path\n'
+assert source.count(path_lookup) == 1, 'Update the targeted header path probe after a source change'
+source = source.replace(path_lookup, '        let path = sourcePath ?? WaveformHeaderNormalizationProbe.path(url)\n')
 source += '''
 // Test-only access to the existing pinned project cache and NSCache eviction.
 extension TimelineAudioWaveform {

@@ -1,7 +1,35 @@
 import AppKit
+import ObjectiveC
 
+private enum CursorSetProbe {
+    static var enabled = false
+    static var calls = 0
+}
+private extension NSCursor {
+    @objc func catliveRecordedSet() {
+        if CursorSetProbe.enabled { CursorSetProbe.calls += 1 }
+        catliveRecordedSet()
+    }
+}
+// Instrument the real public set method, including calls from the production
+// implementation. The fixture restores the original method before finishing.
+let cursorSetMethod = class_getInstanceMethod(NSCursor.self, NSSelectorFromString("set"))!
+let cursorProbeMethod = class_getInstanceMethod(NSCursor.self, NSSelectorFromString("catliveRecordedSet"))!
+method_exchangeImplementations(cursorSetMethod, cursorProbeMethod)
+
+final class GridCursorWindow: NSWindow {
+    var gridCursorInvalidations = 0
+    var pointerLocation: CGPoint?
+    override var mouseLocationOutsideOfEventStream: NSPoint {
+        pointerLocation ?? super.mouseLocationOutsideOfEventStream
+    }
+    override func invalidateCursorRects(for view: NSView) {
+        if view is GridSelectionView { gridCursorInvalidations += 1 }
+        super.invalidateCursorRects(for: view)
+    }
+}
 let application = NSApplication.shared
-let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+let window = GridCursorWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
 let grid = GridSelectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 window.contentView = grid
 grid.headerHeight = 71
@@ -14,6 +42,46 @@ for offset in 0..<120 {
                  "scrolling retains automatic visible-rect mouse tracking")
 }
 grid.setBoundsOrigin(.zero)
+grid.updateTrackingAreas()
+let cursorLayout = GridSelectionLayout(items: [
+    GridSelectionItem(id: UUID(), rect: CGRect(x: 10, y: 100, width: 40, height: 80), duration: 40)
+], timeCoordinates: true)
+grid.updateLayout(cursorLayout, pixelsPerSecond: 1)
+let cursorInvalidationsBeforeZoom = window.gridCursorInvalidations
+for scale: CGFloat in [1.2, 1.5, 0.75, 0.25, 16, 1] {
+    grid.updateLayout(cursorLayout, pixelsPerSecond: scale)
+    grid.updateTrackingAreas()
+}
+window.pointerLocation = grid.convert(CGPoint(x: 101, y: 140), to: nil)
+grid.updateLayout(cursorLayout, pixelsPerSecond: 10)
+precondition(NSCursor.current == NSCursor.resizeLeftRight,
+             "zoom immediately refreshes the stationary pointer's item edge cursor")
+grid.updateLayout(cursorLayout, pixelsPerSecond: 1)
+precondition(NSCursor.current == NSCursor.arrow,
+             "zoom removes a stale item edge cursor without rebuilding cursor rectangles")
+window.pointerLocation = nil
+precondition(window.gridCursorInvalidations == cursorInvalidationsBeforeZoom,
+             "scale-only updates retain the fixed body cursor rectangle")
+let cursorInvalidationsBeforeResize = window.gridCursorInvalidations
+grid.setFrameSize(CGSize(width: 760, height: 560))
+grid.updateTrackingAreas()
+precondition(window.gridCursorInvalidations > cursorInvalidationsBeforeResize,
+             "native frame resizing still invalidates cursor coverage")
+grid.setFrameSize(CGSize(width: 800, height: 600))
+grid.updateTrackingAreas()
+let cursorInvalidationsBeforeBounds = window.gridCursorInvalidations
+grid.setBoundsOrigin(CGPoint(x: 4, y: 7))
+grid.updateTrackingAreas()
+precondition(window.gridCursorInvalidations > cursorInvalidationsBeforeBounds,
+             "changed view bounds update body cursor coverage")
+grid.setBoundsOrigin(.zero)
+grid.updateTrackingAreas()
+let cursorInvalidationsBeforeHeader = window.gridCursorInvalidations
+grid.headerHeight = 87
+precondition(window.gridCursorInvalidations > cursorInvalidationsBeforeHeader,
+             "changing the ruler height updates body cursor coverage")
+grid.headerHeight = 71
+print("GRID_ZOOM_REUSES_CURSOR_RECTANGLES_RESIZE_AND_HEADER_INVALIDATE_OK")
 let first = UUID(), second = UUID(), third = UUID()
 grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 60,height: 30)),
               GridSelectionItem(id: second, rect: CGRect(x: 230,y: 150,width: 60,height: 30)),
@@ -147,6 +215,8 @@ grid.timelineOrigin = CGPoint(x: -23,y: -44) // Deliberately stale hosted state.
 precondition(grid.frame.origin == CGPoint(x: 200,y: 100) && headerHost.frame.origin == CGPoint(x: 0,y: 100))
 let fixedHeaderWindowY = headerHost.convert(CGPoint.zero, to: nil).y
 let fixedSelectionWindowOrigin = grid.convert(CGPoint.zero, to: nil)
+grid.updateTrackingAreas()
+let cursorInvalidationsBeforePinnedScroll = window.gridCursorInvalidations
 for origin in [CGPoint(x: 420,y: 160),CGPoint(x: 800,y: 400),CGPoint(x: 780,y: 300)] {
     inner.contentView.scroll(to: CGPoint(x: origin.x,y: 0))
     outer.contentView.scroll(to: CGPoint(x: 0,y: origin.y))
@@ -155,7 +225,10 @@ for origin in [CGPoint(x: 420,y: 160),CGPoint(x: 800,y: 400),CGPoint(x: 780,y: 3
     precondition(headerHost.frame.origin == CGPoint(x: 0,y: origin.y),"ruler host pins vertically while retaining its horizontal timeline coordinates")
     precondition(abs(headerHost.convert(CGPoint.zero,to: nil).y - fixedHeaderWindowY) < 0.001,"vertical scrolling never moves the ruler on screen")
     precondition(grid.convert(CGPoint.zero,to: nil) == fixedSelectionWindowOrigin,"the viewport-sized input host stays at one window position")
+    grid.updateTrackingAreas()
 }
+precondition(window.gridCursorInvalidations == cursorInvalidationsBeforePinnedScroll,
+             "pinned scrolling retains the same body cursor coverage without invalidation")
 let liveOrigin = CGPoint(x: 780,y: 300)
 grid.items = [GridSelectionItem(id: first,rect: CGRect(x: liveOrigin.x+160,y: liveOrigin.y+230,width: 120,height: 50))]
 let blank = CGPoint(x: 340,y: 210)
@@ -172,6 +245,89 @@ precondition(grid.selected == [first],"marquee selection uses the same live nati
 precondition(grid.timelineOrigin == CGPoint(x: -23,y: -44),"all native scroll interactions succeeded without a hosted offset update")
 print("GRID_NATIVE_PINNED_HEADER_BOTH_AXES_INPUT_AND_STALE_HOSTED_ORIGIN_OK")
 
+// A stationary pointer must follow controls moving beneath it, while repeated
+// refreshes over the same target must not resend its image to WindowServer.
+let stationaryItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 1000, y: 550, width: 400, height: 90),
+                                       name: "Stationary pointer", duration: 10)
+grid.items = [stationaryItem]
+let cursorTargets: [(CGPoint, NSCursor)] = [
+    (CGPoint(x: 1002, y: 590), .resizeLeftRight),
+    (CGPoint(x: 1002, y: 570), .crosshair),
+    (CGPoint(x: stationaryItem.panKnobRect!.midX, y: stationaryItem.panKnobRect!.midY), .resizeUpDown),
+    (CGPoint(x: stationaryItem.gainKnobRect!.midX, y: stationaryItem.gainKnobRect!.midY), .resizeUpDown),
+    (CGPoint(x: stationaryItem.muteRect!.midX, y: stationaryItem.muteRect!.midY), .pointingHand)
+]
+for (target, expected) in cursorTargets {
+    let point = CGPoint(x: 200, y: target.y - outer.contentView.bounds.minY)
+    window.pointerLocation = grid.convert(point, to: nil)
+    let targetOffset = target.x - point.x
+    inner.contentView.scroll(to: CGPoint(x: targetOffset, y: 0))
+    grid.cursorUpdate(with: event(.mouseMoved, point))
+    precondition(NSCursor.current === expected, "scrolling a target beneath the stationary pointer updates its cursor")
+    CursorSetProbe.calls = 0; CursorSetProbe.enabled = true
+    for frame in 1...60 {
+        inner.contentView.scroll(to: CGPoint(x: targetOffset + CGFloat(frame) * 0.005, y: 0))
+        grid.cursorUpdate(with: event(.mouseMoved, point))
+        grid.mouseMoved(with: event(.mouseMoved, point))
+    }
+    CursorSetProbe.enabled = false
+    precondition(CursorSetProbe.calls == 0, "unchanged cursor identity sends no redundant set calls during follow")
+    NSCursor.closedHand.set()
+    CursorSetProbe.calls = 0; CursorSetProbe.enabled = true
+    grid.cursorUpdate(with: event(.mouseMoved, point))
+    CursorSetProbe.enabled = false
+    precondition(NSCursor.current === expected && CursorSetProbe.calls == 1,
+                 "an external cursor change is corrected even when the desired timeline cursor is unchanged")
+    inner.contentView.scroll(to: CGPoint(x: targetOffset + 40, y: 0))
+    grid.cursorUpdate(with: event(.mouseMoved, point))
+    precondition(NSCursor.current === NSCursor.arrow, "moving the target away restores the body arrow")
+}
+let stationaryEdgePoint = CGPoint(x: 200, y: 290)
+window.pointerLocation = grid.convert(stationaryEdgePoint, to: nil)
+inner.contentView.scroll(to: CGPoint(x: 802, y: 0))
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.resizeLeftRight)
+grid.mouseExited(with: event(.mouseMoved, CGPoint(x: -1, y: 290)))
+precondition(NSCursor.current === NSCursor.arrow, "leaving the grid clears its cursor")
+NSCursor.resizeUpDown.set() // The adjacent divider owns its own cursor.
+window.pointerLocation = grid.convert(CGPoint(x: -1, y: 290), to: nil)
+inner.contentView.scroll(to: CGPoint(x: 803, y: 0))
+precondition(NSCursor.current === NSCursor.resizeUpDown, "background follow cannot override an adjacent divider")
+window.pointerLocation = grid.convert(CGPoint(x: 200, y: 30), to: nil)
+NSCursor.pointingHand.set() // Region/header input above the body.
+inner.contentView.scroll(to: CGPoint(x: 804, y: 0))
+precondition(NSCursor.current === NSCursor.pointingHand, "the region/header retains its cursor during follow")
+
+window.pointerLocation = grid.convert(stationaryEdgePoint, to: nil)
+grid.interactionBlocked = true
+NSCursor.closedHand.set()
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.closedHand, "a blocked grid cannot replace the modal cursor")
+grid.interactionBlocked = false
+NativeTimelineInputGate.shared.setBlocked(true, for: window)
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.closedHand, "the window input gate also preserves the modal cursor")
+NativeTimelineInputGate.shared.setBlocked(false, for: window)
+let cursorSheet = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 100, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+cursorSheet.isReleasedWhenClosed = false
+window.beginSheet(cursorSheet)
+NSCursor.closedHand.set()
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.closedHand, "an attached sheet owns its cursor")
+window.endSheet(cursorSheet); cursorSheet.orderOut(nil)
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.resizeLeftRight, "closing a sheet restores the live target on the next native cursor update")
+// Activation can replace AppKit's actual cursor without changing the timeline
+// target. Reproduce that handoff and the cursor-update event after activation.
+NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: application)
+NSCursor.closedHand.set()
+NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: application)
+grid.cursorUpdate(with: event(.mouseMoved, stationaryEdgePoint))
+precondition(NSCursor.current === NSCursor.resizeLeftRight, "activation handoff consults AppKit's actual current cursor")
+window.pointerLocation = nil
+method_exchangeImplementations(cursorSetMethod, cursorProbeMethod)
+print("GRID_CURSOR_FOLLOW_DEDUP_ACTUAL_IDENTITY_RECOVERY_TARGET_DRIFT_NEIGHBOR_MODAL_AND_ACTIVATION_OK")
+
 // Item edges and mini gain knob own their drag until release, regardless of crossing another item.
 grid.timelineOrigin = .zero
 outer.documentView = nil; window.contentView = grid; grid.frame = NSRect(x: 0,y: 0,width: 800,height: 600)
@@ -184,7 +340,7 @@ for points in [(CGPoint(x: 102,y: 130),CGPoint(x: 80,y: 130)),(CGPoint(x: 218,y:
     _ = grid.handlePointerEvent(event(.leftMouseUp,points.1))
 }
 precondition(resized.count == 4 && resized[0].0 && !resized[2].0 && resized[3].1)
-precondition(grid.items[0].muteRect!.minX - grid.items[0].rect.minX == 2,
+precondition(abs(grid.items[0].muteRect!.minX - grid.items[0].rect.minX - 2 * GridSelectionItem.headerScale) < 0.000001,
              "header controls start near the left edge with the repeat notch below")
 let edgeSeeksBefore = seeks.count
 for x in [101.0, 219.0] {
@@ -208,6 +364,7 @@ precondition(resized.count == edgeResizesBefore + 6 && resized[edgeResizesBefore
              "item edges resize from the header and from a narrow grip just outside the item")
 var gains: [Double] = []
 grid.gain = { _,value,_ in gains.append(value) }
+grid.items[0].rect.size.width = 200
 let gainX = grid.items[0].gainKnobRect!.midX
 _ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: gainX,y: 106)))
 _ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: gainX,y: 226)))
@@ -216,8 +373,8 @@ precondition(gains.count == 2 && gains.last == 0, "gain knob reaches silence wit
 print("GRID_ITEM_EDGES_AND_GAIN_KNOB_GESTURE_OWNERSHIP_OK")
 
 // Continuous motion updates the original item only; one release commits the gain.
-grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 120,height: 80)),
-              GridSelectionItem(id: second, rect: CGRect(x: 100,y: 180,width: 120,height: 80))]
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 200,height: 80)),
+              GridSelectionItem(id: second, rect: CGRect(x: 100,y: 180,width: 200,height: 80))]
 var gainMotions: [(UUID,Double,Bool)] = []
 var unexpectedMoves = 0
 grid.gain = { gainMotions.append(($0,$1,$2)) }
@@ -392,7 +549,7 @@ precondition(grid.heldItemGuide == nil, "modal cancellation removes guides witho
 print("GRID_ITEM_GUIDES_PRESS_RELEASE_AND_MODAL_CANCELLATION_OK")
 
 let longHeader = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 10000, height: 60), name: "LONG ITEM")
-let nameWidth = ("LONG ITEM" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 9, weight: .semibold)]).width
+let nameWidth = ("LONG ITEM" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)]).width
 for left in [0.0, 500.0, 5000.0, 9800.0] {
     let viewport = CGRect(x: left, y: 0, width: 800, height: 600)
     let displayed = longHeader.visibleLeftHeader(in: viewport, titleWidth: nameWidth)
@@ -416,21 +573,21 @@ grid.timelineOrigin = .zero
 grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 400, height: 80), duration: 10)]
 let fadeLayout = grid.items[0]
 for side in [true, false] {
-    precondition(fadeLayout.fadeHandleRect(side)!.minY == 114, "fade grip must sit below the control strip")
+    precondition(fadeLayout.fadeHandleRect(side)!.minY == 118, "fade grip must sit below the control strip")
 }
 precondition(fadeLayout.fadeSide(at: CGPoint(x: 102, y: 102)) == nil, "title/controls must never initiate fade")
 precondition(fadeLayout.fadeSide(at: CGPoint(x: 498, y: 102)) == nil, "right title edge must never initiate fade")
 var fades: [(Bool, Double, Bool)] = []
 grid.fade = { _, left, seconds, ended in fades.append((left, seconds, ended)) }
-for pair in [(CGPoint(x: 102, y: 116), CGPoint(x: 502, y: 116)),
-             (CGPoint(x: 498, y: 116), CGPoint(x: 98, y: 116))] {
+for pair in [(CGPoint(x: 102, y: 120), CGPoint(x: 502, y: 120)),
+             (CGPoint(x: 498, y: 120), CGPoint(x: 98, y: 120))] {
     _ = grid.handlePointerEvent(event(.leftMouseDown, pair.0))
     _ = grid.handlePointerEvent(event(.leftMouseDragged, pair.1))
     _ = grid.handlePointerEvent(event(.leftMouseUp, pair.1))
 }
 precondition(fades.count == 4 && fades[0].0 && !fades[2].0 && fades.allSatisfy { $0.1 == 10 }, "both fades can span the entire expanded item")
 precondition(fades[1].2 && fades[3].2, "release commits once per fade gesture")
-precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 116)) === NSCursor.crosshair)
+precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 120)) === NSCursor.crosshair)
 precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 130)) === NSCursor.resizeLeftRight)
 grid.updateSelection([])
 precondition(grid.hitTest(grid.convert(CGPoint(x: 102, y: 130), to: grid.superview)) === grid,
@@ -441,10 +598,11 @@ grid.mouseEntered(with: event(.mouseMoved, CGPoint(x: 102, y: 130)))
 precondition(NSCursor.current == NSCursor.resizeLeftRight && grid.selected.isEmpty,
              "unselected item edges expose a native resize cursor immediately")
 grid.resetCursorRects()
+NSCursor.arrow.set() // Standard AppKit cursor-rectangle processing can restore the default.
 grid.cursorUpdate(with: event(.mouseMoved, CGPoint(x: 498, y: 130)))
 precondition(NSCursor.current == NSCursor.resizeLeftRight,
              "right edges keep the resize cursor after AppKit cursor-rect resets")
-grid.mouseMoved(with: event(.mouseMoved, CGPoint(x: 102, y: 116)))
+grid.mouseMoved(with: event(.mouseMoved, CGPoint(x: 102, y: 120)))
 precondition(NSCursor.current == NSCursor.crosshair,
              "below-header fades use their distinct cursor instead of the trim cursor")
 print("GRID_FADE_CORNERS_FULL_ITEM_LENGTH_PREVIEW_COMMIT_AND_EDGE_CURSOR_OK")
@@ -608,3 +766,73 @@ _ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: panRect.midX, y: pa
 _ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: panRect.midX, y: panRect.midY), clicks: 2))
 precondition(panEdits.last!.1 == 0 && panEdits.last!.2)
 print("ITEM_HEADER_PHASE_PAN_ORDER_DRAG_COMMIT_AND_CENTER_OK")
+
+var labeledPan = grid.items[0]
+let originalGainKnob = labeledPan.gainKnobRect
+for (value, text) in [(0.0, "Center"), (-0.5, "L-50%"), (0.75, "R-75%"), (-1.0, "L-100%"), (1.0, "R-100%"), (0.001, "Center")] {
+    labeledPan.pan = value
+    precondition(labeledPan.panLabel == text)
+    precondition(labeledPan.panLabelRect!.minX > labeledPan.panKnobRect!.maxX)
+    precondition(labeledPan.panLabelRect!.maxX < labeledPan.gainKnobRect!.minX)
+    precondition(labeledPan.gainKnobRect == originalGainKnob, "pan values must not shift the volume control")
+}
+for width in 20...200 {
+    labeledPan.rect.size.width = CGFloat(width)
+    if let label = labeledPan.panLabelRect {
+        precondition(label.maxX <= labeledPan.rect.maxX)
+        precondition(labeledPan.titleInset >= label.maxX - labeledPan.rect.minX)
+    }
+}
+print("ITEM_PAN_VALUE_LABEL_AND_STABLE_NON_OVERLAPPING_HEADER_OK")
+
+// Growing the title strip only consumes body space; track/item bounds and time
+// coordinates remain identical, including the collapsed representation.
+for height: CGFloat in [24, 27, 60, 180] {
+    let bounds = CGRect(x: 10, y: 20, width: 400, height: height)
+    let item = GridSelectionItem(id: UUID(), rect: bounds, duration: 12)
+    precondition(item.rect == bounds)
+    precondition(item.muteRect!.height == GridSelectionItem.headerHeight)
+    precondition(item.fadeTop == bounds.minY + GridSelectionItem.bodyInset)
+    for control in [item.muteRect, item.fxRect, item.phaseRect, item.panKnobRect, item.panLabelRect, item.gainKnobRect, item.gainLabelRect].compactMap({ $0 }) {
+        precondition(control.maxY < item.fadeTop && bounds.contains(control))
+    }
+}
+print("ITEM_ENLARGED_HEADER_PRESERVES_BOUNDS_AND_SEPARATES_CONTROLS_FROM_WAVEFORM_OK")
+
+// A requested zoom may precede its native layout. Stable editing callbacks
+// must continue seeking in the displayed scale until that layout commits.
+let projectionWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+projectionWindow.isReleasedWhenClosed = false
+let projectionView = GridSelectionView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+projectionWindow.contentView = projectionView
+let projection = GridSelectionProjection()
+var projectedSeeks: [CGFloat] = []
+let inputTemplate = GridSelectionInput(origin: .zero, headerHeight: 20, items: [], selected: [],
+    selectionChanged: { _ in }, mute: { _ in }, move: { _, _, _, _ in },
+    seek: { x, _ in projectedSeeks.append(x / projection.pixelsPerSecond) }, createRegion: { _ in }, projection: projection)
+inputTemplate.projected(pixelsPerSecond: 10, itemGuide: nil).apply(to: projectionView)
+let pendingProjection = inputTemplate.projected(pixelsPerSecond: 20, itemGuide: nil)
+func clickProjectedInput() {
+    let location = projectionView.convert(CGPoint(x: 240, y: 100), to: nil)
+    for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+        let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: projectionWindow.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        precondition(projectionView.handlePointerEvent(event))
+    }
+}
+clickProjectedInput()
+pendingProjection.apply(to: projectionView)
+clickProjectedInput()
+precondition(projectedSeeks == [24, 12], "seek uses committed geometry before and after zoom, without recreating the callback")
+let projectionGuide = CGRect(x: 80, y: 0, width: 120, height: 0)
+inputTemplate.applyProjection(to: projectionView, pixelsPerSecond: 40, itemGuide: projectionGuide)
+clickProjectedInput()
+precondition(projectedSeeks == [24, 12, 6], "direct native zoom updates the scale used by retained editing callbacks")
+precondition(projectionView.itemGuide == projectionGuide, "native scale changes update the drag guide with the same projection")
+inputTemplate.applyProjection(to: projectionView, pixelsPerSecond: 5, itemGuide: nil)
+clickProjectedInput()
+precondition(projectedSeeks == [24, 12, 6, 48] && projectionView.itemGuide == nil,
+             "zoom reversals use the new scale and clear a completed drag guide")
+projectionWindow.close()
+print("STABLE_ITEM_ACTIONS_FOLLOW_COMMITTED_ZOOM_GEOMETRY_OK")

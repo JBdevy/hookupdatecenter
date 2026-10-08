@@ -183,10 +183,11 @@ function decorations(d,position){const s=d.settings,host=$(position);host.replac
  if(clockHere){const e=textNode('div','timer'+(d.expired?' expired':''),d.timer);e.style.color=hex(d.expired?s.clockExpiredColor:s.clockColor);e.style.fontSize=timerFont+'px';if(s.clockBorderEnabled)e.style.borderColor=color(s.clockBorderColor,s.rgbClockBorderEnabled);if(d.expired)e.style.animationDelay='-'+Date.now()%1000+'ms';row.append(e)}
  if(localHere){const e=textNode('div','clock',d.localTime);e.style.color=hex(s.localClockColor);const side=clockHere&&!s.clockPosition.startsWith('center');e.style.fontSize=(side?Math.max(innerHeight>innerWidth?15:18,Math.min((innerWidth-16)/11,innerHeight/8)*s.localClockScale/100):Math.max(10,Math.min(24,innerHeight/28)*s.localClockScale/100))+'px';if(s.localClockBorderEnabled)e.style.borderColor=hex(s.localClockBorderColor);if(s.localClockPosition==='left')row.prepend(e);else row.append(e)}
  row.style.justifyContent=s.clockPosition.startsWith('left')?'flex-start':s.clockPosition.startsWith('right')?'flex-end':'center';
- if(clockHere&&localHere){const timer=row.querySelector('.timer'),clock=row.querySelector('.clock');if(s.clockPosition.startsWith('center')){clock.style.position='absolute';clock.style[s.localClockPosition==='left'?'left':'right']='0';clock.style[s.clockPosition.endsWith('bottom')?'bottom':'top']='0';clock.style.maxWidth='calc((100% - '+(timer.textContent.length*parseFloat(timer.style.fontSize)*.65+36)+'px) / 2 - 8px)';clock.style.overflow='hidden'}else{row.replaceChildren(...(s.clockPosition.startsWith('right')?[clock,timer]:[timer,clock]));for(const e of [timer,clock]){e.style.flex='1';e.style.textAlign='center'}}}
+ if(clockHere&&localHere){const timer=row.querySelector('.timer'),clock=row.querySelector('.clock');if(s.clockPosition.startsWith('center')){clock.style.position='absolute';clock.style[s.localClockPosition==='left'?'left':'right']='0';clock.style[s.clockPosition.endsWith('bottom')?'bottom':'top']='0';clock.style.maxWidth='calc((100% - '+(timer.textContent.length*parseFloat(timer.style.fontSize)*.65+36)+'px) / 2 - 8px)';clock.style.overflow='hidden'}else if(s.clockPosition.startsWith(s.localClockPosition)){row.replaceChildren(timer,clock);row.style.flexDirection='column';row.style.alignItems=s.localClockPosition==='left'?'flex-start':'flex-end'}else{row.replaceChildren(...(s.clockPosition.startsWith('right')?[clock,timer]:[timer,clock]));for(const e of [timer,clock]){e.style.flex='1';e.style.textAlign='center'}}}
  else if(localHere){row.style.justifyContent=s.localClockPosition==='left'?'flex-start':'flex-end'}
  const side=clockHere&&localHere&&!s.clockPosition.startsWith('center');
- row.style.height=Math.max(28,(side?Math.max(timerFont,parseFloat(row.querySelector('.clock').style.fontSize)):timerFont)+(side?10:18))+'px';
+ const sameSide=side&&s.clockPosition.startsWith(s.localClockPosition),localFont=localHere?parseFloat(row.querySelector('.clock').style.fontSize):0;
+ row.style.height=(sameSide?timerFont+localFont+24:Math.max(28,(side?Math.max(timerFont,localFont):timerFont)+(side?10:18)))+'px';
  host.append(row)}
  for(const [enabled,pos,value,col,scale,font] of [[s.songNameEnabled,s.songNamePosition,d.song,s.songNameColor,s.songNameScale,s.songNameFontFamily],[s.queueNameEnabled,s.queueNamePosition,d.queued,s.queueNameColor,s.queueNameScale,s.queueNameFontFamily]])if(enabled&&value&&pos===position){const e=textNode('div','title',applyCase(value,s));e.style.color=hex(col);e.style.fontSize=22*scale/100+'px';e.style.fontFamily=fonts[font];host.append(e)}
  if(!d.preview&&s.chordsEnabled&&d.chords&&s.chordPosition===position){const e=textNode('div','chords',applyCase(d.chords,s));e.style.color=hex(s.chordColor);e.style.fontSize=s.chordScale+'px';e.style.fontFamily=fonts[s.chordFontFamily];e.style.borderColor=color(s.chordColor,s.rgbChordBorderEnabled);host.append(e)}
@@ -202,7 +203,7 @@ function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s
  const maxSongs=Math.max(1,...d.blocks.map(b=>b.songs.length+(b.name?1:0)));const font=Math.max(9,Math.min((innerWidth/Math.max(1,d.blocks.length)-20)/13,($('content').clientHeight-20)/maxSongs/1.1)*s.previewScale/100);
  for(const b of d.blocks){const e=document.createElement('div');e.className='block';e.style.borderColor=hex(b.color);e.style.fontSize=font+'px';e.style.fontFamily=fonts[s.previewFontFamily];if(b.name){const t=textNode('div','',applyCase(b.name,s)+(s.previewBlockDurationEnabled&&b.duration?' • '+duration(b.duration):''));t.style.color=hex(b.color);e.append(t)}for(const song of b.songs){const t=textNode('div','',applyCase(song.name,s)+(s.previewSongDurationEnabled?' • '+duration(song.duration):''));t.style.color=hex(song.color);if(s.previewUnderlineEnabled)t.style.textDecoration='underline';e.append(t)}$('blocks').append(e)}
  const v=$('video'),im=$('image');v.hidden=(d.preview&&!s.clearMode)||d.mediaKind!=='video';im.hidden=(d.preview&&!s.clearMode)||d.mediaKind!=='image';
- v.style.objectFit=d.mediaStretch?'fill':'contain';for(const media of [v,im])media.style.transform='scale('+(s.clearMode?1:s.mediaScale/100)+')';
+ for(const media of [v,im]){media.style.objectFit=d.mediaStretch?'fill':'contain';media.style.transform='scale('+s.mediaScale/100+')'}
  if((d.preview&&!s.clearMode)||!d.mediaID){v.pause();if(mediaID){v.removeAttribute('src');v.load();im.removeAttribute('src');mediaID=''}}
  else if(mediaID!==d.mediaID){mediaID=d.mediaID;if(d.mediaKind==='video'){v.src='media/'+encodeURIComponent(mediaID);v.load()}else {v.pause();im.src='media/'+encodeURIComponent(mediaID)}}
  if(!v.hidden){if(v.readyState>=1&&Math.abs(v.currentTime-d.mediaTime)>.3)v.currentTime=d.mediaTime;if(d.mediaRate>0){v.playbackRate=d.mediaRate;v.play().catch(()=>{})}else v.pause()}
@@ -271,11 +272,11 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
     func update(text: String, chords: String, song: String, queued: String, progress: Double, preview: Bool, blocks: [TeleprompterRemoteBlock], snapshot: ShowSnapshot) {
         guard enabled, ProcessInfo.processInfo.systemUptime - lastPublish >= 0.1 else { return }
         payload.text = text; payload.chords = chords; payload.song = song; payload.queued = queued
-        payload.progress = progress; payload.preview = preview; payload.blocks = blocks
+        payload.progress = progress; payload.preview = TeleprompterPreferences.shared.settings.displaysPreview(preview); payload.blocks = blocks
         payload.mediaStretch = TeleprompterPreferences.shared.settings.stretchesMedia
         mediaURL = nil; payload.mediaID = nil; payload.mediaKind = nil
         let t = snapshot.transport, position = t.playing || t.paused == true ? t.position : t.editPosition ?? t.position
-        if !preview || TeleprompterPreferences.shared.settings.isClear, let directory,
+        if !payload.preview || TeleprompterPreferences.shared.settings.isClear, let directory,
            let song = snapshot.project.songs.first(where: { $0.id == t.songId }),
            let clip = song.tracks.lazy.filter({ $0.kind == .teleprompt && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && position >= $0.startTime && position < $0.startTime + $0.duration }),
            let file = clip.audioFile {

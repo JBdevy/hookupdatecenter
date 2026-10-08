@@ -189,7 +189,9 @@ private struct LocalizedClipFXEditor: View {
             if let preferredEffect { (panel.contentView as? TrackFXChainView)?.select(preferredEffect) }
             panel.makeKeyAndOrderFront(nil); return
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 740,height: 560), styleMask: [.titled,.closable,.resizable,.utilityWindow], backing: .buffered, defer: false)
+        // The normal titlebar provides full-size native window controls for
+        // both track chains and item FX, including third-party editors.
+        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 740,height: 560), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
         panel.title = title(key, in: show)
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentMinSize = NSSize(width: 640,height: 540)

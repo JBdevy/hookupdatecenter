@@ -9,6 +9,20 @@ import AppKit
     func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1, flags: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
+    view.mouseEntered(with: event(.mouseMoved, 8))
+    precondition(NSCursor.current == .resizeLeftRight, "region left edge advertises resizing")
+    view.mouseMoved(with: event(.mouseMoved, 110))
+    precondition(NSCursor.current == .arrow, "moving from an edge into the same region restores the arrow")
+    view.mouseMoved(with: event(.mouseMoved, 212))
+    precondition(NSCursor.current == .resizeLeftRight, "region right edge advertises resizing")
+    view.mouseExited(with: event(.mouseMoved, 225))
+    precondition(NSCursor.current == .arrow, "leaving the region cannot retain its resize cursor")
+    view.mouseMoved(with: event(.mouseMoved, 225))
+    precondition(NSCursor.current == .arrow, "outside points are not region resize handles")
+    view.resizable = false
+    view.mouseMoved(with: event(.mouseMoved, 8))
+    precondition(NSCursor.current == .arrow, "non-resizable regions never advertise resizing")
+    view.resizable = true
     var original: [(CGFloat, Bool, Int)] = [], replacement: [(CGFloat, Bool, Int)] = []
     view.drag = { original.append(($0, $1, $2)) }
     // Grab beside the cap and above its painted band; keep the captured edge

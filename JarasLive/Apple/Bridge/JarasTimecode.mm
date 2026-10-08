@@ -171,8 +171,9 @@ struct MetronomeSignal {
     double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
     double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
     MetronomeProgram* renderedProgram=nullptr;
-    struct Voice { size_t frame=0; bool a=true, active=false; };
+    struct Voice { size_t frame=0; bool a=true; };
     std::array<Voice,32> voices{};
+    uint32_t activeVoices=0;
     size_t nextVoice=0; float gain=0;
     explicit MetronomeSignal(double rate):sampleRate(rate) {
         mach_timebase_info_data_t info; mach_timebase_info(&info); ticksPerSecond=1e9*info.denom/info.numer;
@@ -204,10 +205,10 @@ struct MetronomeSignal {
             if(std::isfinite(reference)) { anchorSample=reference; anchorPosition=position.load(); }
             else anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
             previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
-            if(p && p->bounded) for(auto& voice:voices) voice.active=false;
+            if(p && p->bounded) activeVoices=0;
         }
         previousSample=time->mSampleTime;
-        if(renderedProgram!=p) { renderedProgram=p; for(auto& voice:voices) voice.active=false; previousBeat=-1; }
+        if(renderedProgram!=p) { renderedProgram=p; activeVoices=0; previousBeat=-1; }
         const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate : clock(mach_absolute_time());
         const float step=float(1.0/(sampleRate*0.003));
         const float targetA=gainA.load(std::memory_order_relaxed), targetB=gainB.load(std::memory_order_relaxed);
@@ -227,26 +228,32 @@ struct MetronomeSignal {
                 const int64_t beat=int64_t(std::floor(std::max(0.0,exact)+1e-9));
                 const double phase=(exact-double(beat))*beatSeconds;
                 if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
-                    auto& voice=voices[nextVoice++%voices.size()];
-                    voice={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),true};
+                    const auto index=nextVoice++%voices.size();
+                    voices[index]={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0)};
+                    activeVoices|=uint32_t(1)<<index;
                 }
                 previousBeat=beat; previousSection=section; previousPosition=position;
                 }
             }
             if(!inside) {
-                for(auto& voice:voices) voice.active=false;
+                activeVoices=0;
                 previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
             }
             gain=active ? std::min(1.0f,gain+step) : std::max(0.0f,gain-step);
             renderedA += (targetA-renderedA)*step;
             renderedB += (targetB-renderedB)*step;
             float value=0;
-            if(p && gain>0) for(auto& voice:voices) if(voice.active) {
+            // Visit only sounding slots, from lowest to highest index, so
+            // overlapping one-shots retain the exact original summation order.
+            if(p && gain>0) for(uint32_t pending=activeVoices;pending;pending&=pending-1) {
+                const auto index=unsigned(__builtin_ctz(pending));
+                auto& voice=voices[index];
                 const auto& data=voice.a ? p->a : p->b;
-                if(voice.frame<data.size()) value+=data[voice.frame++]*(voice.a ? renderedA : renderedB); else voice.active=false;
+                if(voice.frame<data.size()) value+=data[voice.frame++]*(voice.a ? renderedA : renderedB);
+                else activeVoices&=~(uint32_t(1)<<index);
             }
             value*=gain;
-            if(!active && gain==0) for(auto& voice:voices) voice.active=false;
+            if(!active && gain==0) activeVoices=0;
             for(unsigned b=0;b<list->mNumberBuffers;++b) {
                 auto& buffer=list->mBuffers[b]; auto* data=static_cast<float*>(buffer.mData);
                 if(data) for(unsigned ch=0;ch<buffer.mNumberChannels;++ch) data[sample*buffer.mNumberChannels+ch]=value;

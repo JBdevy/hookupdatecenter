@@ -33,6 +33,225 @@ do {
     for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = 0.1 } }
     try file.write(from: buffer)
 }
+// First use of dormant group/internal sends must preserve scheduled file
+// position, item tails and the continuously attached live input.
+do {
+    let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+    let routeFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    do {
+        let file = try AVAudioFile(forWriting: directory.appendingPathComponent("routing-phase.wav"), settings: routeFormat.settings)
+        let sourcePCM = AVAudioPCMBuffer(pcmFormat: routeFormat, frameCapacity: AVAudioFrameCount(rate * 3))!
+        sourcePCM.frameLength = sourcePCM.frameCapacity
+        for channel in 0..<2 { for frame in 0..<Int(sourcePCM.frameLength) {
+            let t = Double(frame) / rate
+            sourcePCM.floatChannelData![channel][frame] = Float(0.06 * sin(2 * .pi * Double(331 + channel * 97) * t) + 0.02 * t)
+        } }
+        try file.write(from: sourcePCM)
+    }
+    var project = Project.empty(name: "Dormant sends")
+    let parent = Track(id: UUID(), name: "Parent", role: .other)
+    let receiver = Track(id: UUID(), name: "Receiver", role: .other)
+    var child = Track(id: UUID(), name: "Source", role: .other)
+    child.parentTrackID = parent.id; child.outputs = [.master]
+    var fx = NativeFXSettings()
+    fx.delayEnabled = true; fx.delayTime = 0.15; fx.delayMix = 35; fx.feedback = 55
+    fx.reverbEnabled = true; fx.reverbMix = 30; fx.reverbDecay = 1
+    child.clips = [AudioClip(id: UUID(), name: "Continuous phase", startTime: 0, duration: 96 * 512 / rate,
+                            audioFile: AudioFile(path: "routing-phase.wav"), fx: fx)]
+    project.songs[0].tracks = [parent, receiver, child]
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+        position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    func makeRenderer() throws -> (AVAudioEngine, StemAudioPlayback) {
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: routeFormat, maximumFrameCount: 512)
+        let audio = StemAudioPlayback(engine: engine, realtime: false)
+        audio.open(directory: directory)
+        try audio.update(state, revision: 1)
+        let monitor = AVAudioSourceNode(format: routeFormat) { silent, _, frames, buffers in
+            silent.pointee = false
+            for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                buffer.mData!.assumingMemoryBound(to: Float.self).update(repeating: 0.003, count: Int(frames))
+            }
+            return noErr
+        }
+        audio.setInputMonitor(child.id, source: monitor, format: routeFormat)
+        return (engine, audio)
+    }
+    let (referenceEngine, referenceAudio) = try makeRenderer()
+    let (changingEngine, changingAudio) = try makeRenderer()
+    defer { referenceAudio.prepareForClosing(); changingAudio.prepareForClosing() }
+    let referencePCM = AVAudioPCMBuffer(pcmFormat: routeFormat, frameCapacity: 512)!
+    let changingPCM = AVAudioPCMBuffer(pcmFormat: routeFormat, frameCapacity: 512)!
+    let originalNodes = changingEngine.attachedNodes
+    var capturedMIDI: [UInt8] = []
+    changingAudio.armedMIDIRecordingTracks = [child.id]
+    changingAudio.onLiveKeyboardMIDI = { _, status, _, _ in capturedMIDI.append(status) }
+    var changedAt = -100, largestError: Float = 0, tailPeak: Float = 0
+    for block in 0..<224 {
+        state.transport.position = Double(block * 512) / rate
+        try referenceAudio.update(state, revision: 1); try changingAudio.update(state, revision: 1)
+        if block > 0 && block % 24 == 0 && block <= 192 {
+            switch (block / 24 - 1) % 4 {
+            case 0: changingAudio.previewPatches(child.id, patches: [.masterGroup])
+            case 1: changingAudio.previewPatches(child.id, patches: [.master])
+            case 2:
+                changingAudio.previewPatches(child.id, patches: [.none])
+                changingAudio.previewRouting([child.id: TrackRouting(transmitters: [receiver.id])])
+            default:
+                changingAudio.previewPatches(child.id, patches: [.master])
+                changingAudio.previewRouting([child.id: TrackRouting()])
+            }
+            changingAudio.playKeyboardNote(60); changingAudio.releaseKeyboardNote(60)
+            changedAt = block
+        }
+        let referenceStatus = try referenceEngine.renderOffline(512, to: referencePCM)
+        let changingStatus = try changingEngine.renderOffline(512, to: changingPCM)
+        precondition(referenceStatus == .success && changingStatus == .success)
+        precondition(changingEngine.isRunning && changingEngine.attachedNodes == originalNodes,
+                     "routing activates prepared sends without replacing players, effects or live input")
+        if block > 8 && block - changedAt > 4 {
+            for channel in 0..<2 { for frame in 0..<512 {
+                largestError = max(largestError, abs(referencePCM.floatChannelData![channel][frame] - changingPCM.floatChannelData![channel][frame]))
+                if block >= 160 { tailPeak = max(tailPeak, abs(changingPCM.floatChannelData![channel][frame] - 0.003)) }
+            } }
+        }
+    }
+    precondition(largestError < 0.0001, "routing preserves sample position and wet PCM through live Master/group/internal cycles: \(largestError)")
+    precondition(tailPeak > 0.00001, "item effect tails remain audible across routing changes after the file ends")
+    precondition(changingAudio.hasInputMonitor(child.id) && capturedMIDI == Array(repeating: [UInt8(0x90), 0x80], count: 8).flatMap { $0 },
+                 "live monitoring and MIDI capture stay attached through all routing changes")
+    print("DORMANT_SEND_LIVE_MASTER_GROUP_INTERNAL_CYCLE_PHASE_TAIL_MONITOR_MIDI_OK rate=\(rate)")
+}
+// Compare each rendered sample with the established manual-fader path. This
+// covers the same DSP smoothing, tails, monitor, linked controls and hardware
+// fanout, with no engine reconnects while the automatic amount changes.
+do {
+    let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+    let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4)!
+    let hardware = AVAudioFormat(standardFormatWithSampleRate: rate, channelLayout: layout)
+    let stereo = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    var project = Project.empty(name: "Internal Auto Fader PCM")
+    let group = Track(id: UUID(), name: "Group", role: .other)
+    var child = Track(id: UUID(), name: "Wet source", role: .other)
+    child.parentTrackID = group.id
+    child.outputs = [.masterGroup, OutputPatch(firstChannel: 3, channelCount: 2)]
+    var wet = NativeFXSettings(); wet.delayEnabled = true; wet.delayTime = 0.07; wet.delayMix = 35; wet.feedback = 40
+    child.clips = [AudioClip(id: UUID(), name: "Tail source", startTime: 0, duration: 0.6,
+        audioFile: AudioFile(path: "routing-phase.wav"), fx: wet)]
+    let left = Track(id: UUID(), name: "Linked L", role: .other)
+    let right = Track(id: UUID(), name: "Linked R", role: .other)
+    project.songs[0].tracks = [group, child, left, right]
+    project.songs[0].linkTracks([left.id, right.id], firstInput: 1, color: 0)
+    project.masterVolume = 0.8; project.masterFX = wet
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+        position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    var rule = MultiLoopTrack(id: child.id, gain: 0.2); rule.autoFader = true
+    var pairRule = MultiLoopTrack(id: left.id, gain: 0.3); pairRule.autoFader = true
+    var masterRule = MultiLoopTrack(id: MultiLoopTrack.masterID, gain: 0); masterRule.autoFader = true
+    let loopID = UUID()
+    func attachMonitors(_ audio: StemAudioPlayback) {
+        for (id, amplitude) in [(child.id, Float(0.011)), (left.id, Float(0.017)), (right.id, Float(0.029))] {
+            let source = AVAudioSourceNode(format: stereo) { silent, _, frames, buffers in
+                silent.pointee = false
+                for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                    buffer.mData!.assumingMemoryBound(to: Float.self).update(repeating: amplitude, count: Int(frames))
+                }
+                return noErr
+            }
+            audio.setInputMonitor(id, source: source, format: stereo)
+        }
+    }
+    func makeAudio() throws -> (AVAudioEngine, StemAudioPlayback) {
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: hardware, maximumFrameCount: 512)
+        let audio = StemAudioPlayback(engine: engine, realtime: false)
+        audio.open(directory: directory); try audio.update(state, revision: 1); attachMonitors(audio)
+        return (engine, audio)
+    }
+    let (referenceEngine, reference) = try makeAudio(), (automatedEngine, automated) = try makeAudio()
+    defer { reference.prepareForClosing(); automated.prepareForClosing() }
+    let expected = AVAudioPCMBuffer(pcmFormat: hardware, frameCapacity: 512)!
+    let actual = AVAudioPCMBuffer(pcmFormat: hardware, frameCapacity: 512)!
+    var nodes = automatedEngine.attachedNodes
+    var manualChild = 1.0, manualPair = 1.0, manualMaster = 0.8
+    var largestError: Float = 0, directAtMasterZero: Float = 0, masterAtZero: Float = 0, tailPeak: Float = 0
+    for block in 0..<208 {
+        let amount: Double = block < 12 ? 0 : block < 52 ? Double(block - 12) / 40 : block < 76 ? 1 : block < 116 ? Double(116 - block) / 40 : 0.5
+        let bypassed = (156..<164).contains(block) || block >= 196
+        state.transport.position = Double(block * 512) / rate
+        state.transport.playing = !(164..<168).contains(block) && block < 196
+        state.transport.paused = (164..<168).contains(block)
+        state.transport.multiLoop = bypassed ? nil : MultiLoopPlayback(id: loopID, start: 0, end: 9,
+            amount: amount, gates: block >= 52, released: block >= 76, tracks: [rule, pairRule, masterRule])
+        state.project.songs[0].tracks[1].volume = manualChild
+        state.project.songs[0].tracks[2].volume = manualPair; state.project.songs[0].tracks[3].volume = manualPair
+        state.project.masterVolume = manualMaster
+        let a = bypassed ? 0 : amount
+        func target(_ manual: Double, _ ceiling: Double) -> Double { manual + (min(manual, ceiling) - manual) * a }
+        if (132..<140).contains(block) {
+            // Conflicting linked presets still arrive through the controller's
+            // existing mixer callbacks, and must not receive a second envelope.
+            state.transport.multiLoop?.tracks.append(MultiLoopTrack(id: right.id, gain: 0.8))
+            state.project.songs[0].tracks[2].volume = target(manualPair, 0.3)
+            state.project.songs[0].tracks[3].volume = target(manualPair, 0.3)
+            automated.previewVolume(left.id, gain: target(manualPair, 0.3))
+            automated.previewVolume(right.id, gain: target(manualPair, 0.3))
+        } else if block == 140 {
+            automated.previewVolume(left.id, gain: manualPair); automated.previewVolume(right.id, gain: manualPair)
+        }
+        var referenceState = state; referenceState.transport.multiLoop = nil
+        referenceState.project.songs[0].tracks[1].volume = target(manualChild, 0.2)
+        referenceState.project.songs[0].tracks[2].volume = target(manualPair, 0.3)
+        referenceState.project.songs[0].tracks[3].volume = target(manualPair, 0.3)
+        referenceState.project.masterVolume = target(manualMaster, 0)
+        reference.previewVolume(child.id, gain: target(manualChild, 0.2))
+        reference.previewVolume(left.id, gain: target(manualPair, 0.3)); reference.previewVolume(right.id, gain: target(manualPair, 0.3))
+        reference.previewVolume(nil, gain: target(manualMaster, 0))
+        let revision: UInt64 = block < 124 ? 1 : 2
+        try reference.update(referenceState, revision: revision); try automated.update(state, revision: revision)
+        // The gesture happens after the transport update. Its first rendered
+        // buffer must already include the cached envelope, without a loud frame.
+        if block == 32 {
+            manualChild = 0.7; manualPair = 0.6; manualMaster = 0.75
+            automated.previewVolume(child.id, gain: manualChild)
+            automated.previewVolume(left.id, gain: manualPair); automated.previewVolume(right.id, gain: manualPair)
+            automated.previewVolume(nil, gain: manualMaster)
+            reference.previewVolume(child.id, gain: target(manualChild, 0.2))
+            reference.previewVolume(left.id, gain: target(manualPair, 0.3)); reference.previewVolume(right.id, gain: target(manualPair, 0.3))
+            reference.previewVolume(nil, gain: target(manualMaster, 0))
+        }
+        if block == 144 {
+            try reference.reconfigureDevice(); try automated.reconfigureDevice()
+        }
+        if block == 180 {
+            reference.open(directory: directory); automated.open(directory: directory)
+            try reference.update(referenceState, revision: revision); try automated.update(state, revision: revision)
+            attachMonitors(reference); attachMonitors(automated); nodes = automatedEngine.attachedNodes
+        }
+        // A real device stays clocked for live input while transport is paused.
+        // Keep that same monitor condition in the offline test engine.
+        if !referenceEngine.isRunning { try referenceEngine.start() }
+        if !automatedEngine.isRunning { try automatedEngine.start() }
+        let referenceStatus = try referenceEngine.renderOffline(512, to: expected)
+        let automatedStatus = try automatedEngine.renderOffline(512, to: actual)
+        precondition(referenceStatus == .success && automatedStatus == .success)
+        precondition(automatedEngine.attachedNodes == nodes && automated.hasInputMonitor(child.id), "Auto Fader cannot reconnect sources or monitoring")
+        if block > 8 {
+            for channel in 0..<4 { for frame in 0..<512 {
+                largestError = max(largestError, abs(expected.floatChannelData![channel][frame] - actual.floatChannelData![channel][frame]))
+                if (64..<76).contains(block) {
+                    if channel < 2 { masterAtZero = max(masterAtZero, abs(actual.floatChannelData![channel][frame])) }
+                    else { directAtMasterZero = max(directAtMasterZero, abs(actual.floatChannelData![channel][frame])) }
+                }
+                if (100..<116).contains(block) && channel == 2 { tailPeak = max(tailPeak, abs(actual.floatChannelData![channel][frame] - 0.011 * Float(target(manualChild, 0.2)))) }
+            } }
+        }
+    }
+    precondition(largestError < 0.0001, "internal envelopes must match existing manual-fader PCM, including first gesture buffer and resets: \(largestError)")
+    precondition(masterAtZero < 0.00001 && directAtMasterZero > 0.001, "zero Master silences its FX output while direct hardware remains audible")
+    precondition(tailPeak > 0.00001, "file effect tails continue through the envelope after the source ends")
+    print("INTERNAL_AUTOFADER_PCM_REFERENCE_MONITOR_GROUP_HARDWARE_TAILS_MASTER_ZERO_LINKED_GESTURE_PAUSE_BYPASS_RELOAD_OK rate=\(rate) maxError=\(largestError)")
+}
 // Item phase/pan use the live production graph and remain local to that item.
 do {
     func itemPCM(inverted: Bool, pan: Double, live: Bool = false) throws -> [[Float]] {
@@ -189,6 +408,66 @@ do {
 }
 let engine = AVAudioEngine()
 let outputFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channels: 2)!
+// A monitor may prepare its track bus before the snapshot creates meter banks.
+// Removing and restoring that track must not revive an unread historical peak.
+do {
+    let meterEngine = AVAudioEngine()
+    try meterEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: meterEngine, realtime: false)
+    audio.open(directory: directory)
+    let track = Track(id: UUID(), name: "Meter lifecycle", role: .other)
+    var project = Project.empty(name: "Meter lifecycle")
+    project.songs[0].tracks = [track]
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+        position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    var amplitude: Float = 0.4
+    let source = AVAudioSourceNode(format: outputFormat) { silent, _, frames, buffers in
+        silent.pointee = ObjCBool(amplitude == 0)
+        for (channel, buffer) in UnsafeMutableAudioBufferListPointer(buffers).enumerated() {
+            buffer.mData!.assumingMemoryBound(to: Float.self).update(repeating: amplitude * (channel == 0 ? 1 : 0.5), count: Int(frames))
+        }
+        return noErr
+    }
+    audio.setInputMonitor(track.id, source: source, format: outputFormat)
+    let level = audio.meter(for: track.id)
+    var revision: UInt64 = 1
+    try audio.update(state, revision: revision)
+    try meterEngine.start()
+    let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+    func renderBlocks(_ count: Int) throws {
+        for _ in 0..<count {
+            let status = try meterEngine.renderOffline(512, to: pcm); precondition(status == .success)
+        }
+    }
+    func poll() throws {
+        Thread.sleep(forTimeInterval: 0.04)
+        try audio.update(state, revision: revision)
+    }
+    try renderBlocks(8); try poll()
+    precondition(abs(level.levels.x - 0.4) < 0.0001 && abs(level.levels.y - 0.2) < 0.0001,
+                 "a bus prepared before its meter bank must capture both channels")
+    amplitude = 0.9
+    try renderBlocks(2) // Leave this larger peak unread when the track is removed.
+    state.project.songs[0].tracks = []; revision += 1
+    try audio.update(state, revision: revision)
+    try renderBlocks(4)
+    amplitude = 0
+    state.project.songs[0].tracks = [track]; revision += 1
+    try audio.update(state, revision: revision)
+    try renderBlocks(8); try poll()
+    precondition(level.levels.x <= 0.4001 && level.levels.y <= 0.2001,
+                 "restoring a silent track must discard peaks from its former meter bank")
+    audio.prepareForClosing()
+    precondition(level.levels.x == 0 && level.levels.y == 0 && audio.masterMeter.level == 0)
+    audio.open(directory: directory)
+    try audio.update(state, revision: revision)
+    try meterEngine.start()
+    try renderBlocks(8); try poll()
+    precondition(level.levels.x == 0 && level.levels.y == 0 && audio.masterMeter.level == 0,
+                 "closing and rebuilding a silent graph must not republish prior track or Master peaks")
+    audio.prepareForClosing()
+    print("INLINE_METER_PREPARED_BUS_REMOVE_RESTORE_AND_REBUILD_LIFECYCLE_OK")
+}
 try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
 let renderer = StemAudioPlayback(engine: engine, realtime: false)
 renderer.open(directory: directory)
@@ -233,18 +512,14 @@ let restoredMaster = try peak()
 precondition(abs(restoredMaster - leftOnly) < 0.001 && abs(output.floatChannelData![1][256]) < 0.0001)
 renderer.previewPan(id, pan: 0)
 print("MASTER_POST_FX_MONO_SUM_AND_LIVE_STEREO_RESTORE_PCM_OK")
-// Multiloops now use the normal mixer path. The controller regression verifies
-// the commands and visible state; here those same callbacks must alter PCM once.
+// Internal envelopes consume the manual snapshot volume exactly once. M/S
+// remains on the ordinary mixer callbacks, and leaving restores manual gain.
 var loopRule = MultiLoopTrack(id: id, gain: 0.2); loopRule.autoFader = true
 snapshot.transport.multiLoop = MultiLoopPlayback(id: UUID(), start: 1, end: 9, amount: 1, gates: true, released: false, tracks: [loopRule])
-snapshot.project.songs[0].tracks[0].volume = 0.2
-renderer.previewVolume(id, gain: 0.2)
 try renderer.update(snapshot, revision: 1)
 let loopQuiet = try peak()
 precondition(abs(loopQuiet - mainPeak * 0.2) < 0.001, "multiloop target gain reaches actual PCM")
 snapshot.transport.multiLoop?.amount = 0.5; snapshot.transport.multiLoop?.released = true
-snapshot.project.songs[0].tracks[0].volume = 0.6
-renderer.previewVolume(id, gain: 0.6)
 try renderer.update(snapshot, revision: 1)
 let loopRecovering = try peak()
 precondition(abs(loopRecovering - mainPeak * 0.6) < 0.001, "release fade restores proportionally without reload")
@@ -257,12 +532,12 @@ precondition(loopMuted < 0.0001, "multiloop mute reaches actual PCM")
 snapshot.transport.multiLoop = nil
 snapshot.project.songs[0].tracks[0].volume = 1
 snapshot.project.songs[0].tracks[0].mute = false
-renderer.previewVolume(id, gain: 1); renderer.previewMute(id, muted: false)
+renderer.previewMute(id, muted: false)
 try renderer.update(snapshot, revision: 1)
 let loopRestored = try peak()
 precondition(abs(loopRestored - mainPeak) < 0.001, "leaving multiloop restores gain and mute")
 precondition(snapshot.project.songs[0].tracks[0].volume == 1 && !snapshot.project.songs[0].tracks[0].mute, "leaving the loop restores the visible mixer state")
-print("MULTILOOP_NORMAL_MIXER_GAIN_RELEASE_MUTE_RESTORE_PCM_OK")
+print("MULTILOOP_INTERNAL_GAIN_RELEASE_VISIBLE_MUTE_RESTORE_PCM_OK")
 let heldPeak = TrackMeterLevel()
 heldPeak.update(peak: 0.99, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == nil)
 heldPeak.update(peak: 1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 0)
@@ -890,14 +1165,14 @@ let importedSpan = TimecodePlaybackSpan(song: spanProject.songs[0], track: impor
 precondition(abs(importedSpan.time - 3602.8) < 0.000001 && importedSpan.end == 3604, "imported generator uses its own item origin and clock settings")
 var spanState = ShowSnapshot(project: spanProject, transport: TransportState(playing: true, songId: spanProject.songs[0].id, position: 0.3, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 let spanBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func timecodeSpanPeak(at position: Double, revision: UInt64) throws -> Float {
+func timecodeSpanPeak(at position: Double, revision: UInt64, warmup: Int = 0) throws -> Float {
     spanState.transport.position = position
     try spanAudio.update(spanState, revision: revision)
     var peak: Float = 0
-    for _ in 0..<4 {
+    for block in 0..<(warmup + 4) {
         let status = try spanEngine.renderOffline(512, to: spanBuffer)
         precondition(status == .success)
-        for sample in 0..<Int(spanBuffer.frameLength) { peak = max(peak, abs(spanBuffer.floatChannelData![0][sample])) }
+        if block >= warmup { for sample in 0..<Int(spanBuffer.frameLength) { peak = max(peak, abs(spanBuffer.floatChannelData![0][sample])) } }
     }
     return peak
 }
@@ -911,6 +1186,26 @@ try spanAudio.update(spanState, revision: 1)
 precondition(timecodeMeter.levels.x > 0.2 && timecodeMeter.levels.y > 0.2, "Timecode track meter reads real stereo LTC independently of Master")
 let rightSpanPCM = try timecodeSpanPeak(at: 2.25, revision: 1)
 precondition(rightSpanPCM > 0.2, "extended right timecode span emits LTC after original region ends: \(rightSpanPCM)")
+var timecodeRule = MultiLoopTrack(id: spanTrack.id, gain: 0.2); timecodeRule.autoFader = true
+var timecodeMasterRule = MultiLoopTrack(id: MultiLoopTrack.masterID, gain: 0); timecodeMasterRule.autoFader = true
+spanState.transport.multiLoop = MultiLoopPlayback(id: UUID(), start: 0.5, end: 2.5, amount: 0.5,
+    gates: true, released: false, tracks: [timecodeRule, timecodeMasterRule])
+// LTC retains its existing 10 ms gain smoothing. Exclude the transition when
+// checking the settled amplitude; the PCM reference above checks transitions.
+let fadedTimecode = try timecodeSpanPeak(at: 1.3, revision: 1, warmup: 16)
+precondition(abs(fadedTimecode - rightSpanPCM * 0.6) < 0.00001, "LTC consumes one envelope on its direct hardware route: original=\(rightSpanPCM) faded=\(fadedTimecode) manual=\(spanTrack.volume)")
+spanAudio.previewVolume(spanTrack.id, gain: 0.8); spanAudio.previewPhase(spanTrack.id, inverted: true)
+let manualTimecode = try timecodeSpanPeak(at: 1.3, revision: 1, warmup: 16)
+precondition(abs(manualTimecode - rightSpanPCM * 0.5) < 0.00001, "LTC manual preview retains the active envelope")
+spanState.project.songs[0].tracks[0].volume = 0.8
+spanState.transport.multiLoop?.amount = 1
+let timecodeWithSilentMaster = try timecodeSpanPeak(at: 1.3, revision: 1, warmup: 16)
+precondition(abs(timecodeWithSilentMaster - rightSpanPCM * 0.2) < 0.00001, "Master Auto Fader zero cannot gate the independent LTC route")
+spanState.transport.multiLoop = nil; spanState.project.songs[0].tracks[0].volume = 1
+spanAudio.previewVolume(spanTrack.id, gain: 1)
+let restoredTimecode = try timecodeSpanPeak(at: 1.3, revision: 1, warmup: 16)
+precondition(abs(restoredTimecode - rightSpanPCM) < 0.00001, "LTC restores manual gain when the loop ends")
+print("INTERNAL_AUTOFADER_TIMECODE_SINGLE_GAIN_PREVIEW_PHASE_DIRECT_MASTER_BYPASS_OK")
 let afterSpanPCM = try timecodeSpanPeak(at: 2.6, revision: 1)
 precondition(afterSpanPCM < 0.000001, "LTC stops at resized item end: \(afterSpanPCM)")
 spanState.project.songs[0].tracks[0].clips[0].startTime = 1.2

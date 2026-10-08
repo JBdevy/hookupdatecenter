@@ -36,6 +36,7 @@ struct Strip: View {
 }
 @MainActor func run() throws {
  _ = NSApplication.shared
+ if ProcessInfo.processInfo.environment["CATLIVE_TEST_EDITORS_ONLY"] != "1" {
  for count in [44,200] {
  for lazy in [false,true] {
   let state=FixtureState(count), host=NSHostingView(rootView: Strip(state: state, lazy: lazy))
@@ -55,11 +56,12 @@ struct Strip: View {
   window.close()
  }
  }
+ }
  func settle(_ host: NSView) { for _ in 0..<5 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date(timeIntervalSinceNow:0.03)) } }
  var frames:[CGRect]=[]
  for lazy in [false,true] {
   let state=FixtureState(3), host=NSHostingView(rootView: Strip(state: state, lazy: lazy))
-  let window=NSWindow(contentRect: CGRect(x:500,y:250,width:720,height:80), styleMask: [.titled], backing: .buffered, defer: false)
+  let window=NSWindow(contentRect: CGRect(x: ProcessInfo.processInfo.environment["CATLIVE_TEST_OFFSCREEN"] == "1" ? -10000 : 500, y:250,width:720,height:80), styleMask: [.titled], backing: .buffered, defer: false)
   window.isReleasedWhenClosed=false; window.contentView=host; window.orderFront(nil); settle(host)
   let originalIDs=descendants(Hit.self,host).map { ObjectIdentifier($0) }
   state.editing=state.parts[1].id; settle(host)

@@ -362,7 +362,7 @@ struct DAWRemoteClientView: View {
                           volume: track.volume, pan: track.pan, mute: track.mute, solo: track.solo,
                           clips: items?.clips ?? [],
                           nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
-                          emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner)
+                          emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale)
                 }, regions: show.listedRegions.map(region), timelineRegions: (song?.parts ?? []).map(region),
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
                 position: transport.position, duration: song?.duration ?? 0,
@@ -559,8 +559,8 @@ struct DAWRemoteClientView: View {
         let queueName = queued?.name ?? snapshot.project.songs.first { $0.id == transport.queue.songId }?.name ?? ""
         var result = DAWRemoteTeleprompter(index: index, text: settings.display(lyric?.text ?? ""), chords: settings.display(chord?.text ?? ""),
             song: settings.display(region?.name ?? ""), queued: settings.display(queueName), progress: progress,
-            style: style, preview: controller.previewActive, settings: settings)
-        if controller.previewActive, let song {
+            style: style, preview: settings.displaysPreview(controller.previewActive), settings: settings)
+        if result.preview, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
             let playlist = setlist.playlists.first { $0.id == setlist.selectedId && $0.songId == song.id }
             let lookup = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
@@ -579,7 +579,7 @@ struct DAWRemoteClientView: View {
             blocks += (headers[nil] ?? []).map { .init(id: $0.id, name: settings.display($0.name), color: $0.color, rows: []) }
             result.blocks = Array(blocks.filter { !$0.name.isEmpty || !$0.rows.isEmpty }.dropFirst(controller.previewPage * 4).prefix(4))
         }
-        if !controller.previewActive || settings.isClear, let media, let file = media.audioFile, let directory,
+        if !result.preview || settings.isClear, let media, let file = media.audioFile, let directory,
            UTType(filenameExtension: URL(fileURLWithPath: file.path).pathExtension)?.conforms(to: .image) == true {
             result.imageID = remote.imageID(for: directory.appendingPathComponent(file.path), project: snapshot.project.id)
             result.mediaName = media.name
@@ -1744,15 +1744,17 @@ private struct RemoteNativeGridItem: View {
     @Environment(\.isEnabled) private var controlsEnabled
     @State private var editorOpen = false
     var body: some View {
+        GeometryReader { geometry in
+        let headerHeight = min(28 * GridSelectionItem.headerScale, geometry.size.height)
         VStack(spacing: 0) {
             HStack(spacing: 4) {
-                Button(action: mute) { Text(verbatim: "M").font(.system(size: 11, weight: .bold)).frame(width: 28, height: 28) }
+                Button(action: mute) { Text(verbatim: "M").font(.system(size: 11 * GridSelectionItem.headerScale, weight: .bold)).frame(width: 28 * GridSelectionItem.headerScale, height: headerHeight) }
                     .buttonStyle(.plain).foregroundStyle(clip.muted == true ? Color.black : Color.white)
                     .background(clip.muted == true ? Color.red : Color.black.opacity(0.28)).cornerRadius(2)
                     .accessibilityLabel("Mute do item " + clip.name)
-                Text(verbatim: clip.name).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                Text(verbatim: clip.name).font(.system(size: 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.horizontal, 3).frame(height: 28)
+            }.padding(.horizontal, 3).frame(height: headerHeight)
             Canvas { context, size in
                 var wave = Path()
                 let seed = clip.id.uuidString.utf8.reduce(0) { ($0 + Int($1)) % 997 }
@@ -1764,7 +1766,8 @@ private struct RemoteNativeGridItem: View {
                     wave.addRect(CGRect(x: CGFloat(index) * 3, y: (size.height - height) / 2, width: 1.5, height: height))
                 }
                 context.fill(wave, with: .color(clip.muted == true ? .gray : remoteColor(nameColor).opacity(0.75)))
-            }.allowsHitTesting(false)
+            }.frame(height: max(0, geometry.size.height - headerHeight)).allowsHitTesting(false)
+        }
         }.background(remoteColor(color).opacity(clip.muted == true ? 0.25 : 0.60)).cornerRadius(3)
             .background(RemoteGridItemHoldProbe(controller: scrolling, hold: { editorOpen = true }))
             .popover(isPresented: $editorOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
@@ -2522,7 +2525,8 @@ private struct RemoteNativeNoticeOverlay: View {
     let notice: DAWRemoteNotices
     let project: UUID
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.175)) { context in
+        GeometryReader { geometry in
+          TimelineView(.periodic(from: .now, by: 0.175)) { context in
             let elapsed = context.date.timeIntervalSince1970 - notice.sentAt
             let flash = elapsed >= 0 && elapsed < 1.05 && Int(elapsed / 0.175) % 2 == 0
             VStack {
@@ -2531,12 +2535,13 @@ private struct RemoteNativeNoticeOverlay: View {
                 } else {
                     let text = notice.message.uppercased()
                     Text(notice.emoji.isEmpty ? text : "\(notice.emoji) \(text) \(notice.emoji)")
-                        .font(.custom(notice.font, size: 56 * notice.scale / 100)).minimumScaleFactor(0.3)
+                        .font(tpNoticeFont(notice.font, size: min(72, max(24, geometry.size.width * 0.078)) * notice.scale / 100)).minimumScaleFactor(0.3)
                         .foregroundStyle(remoteColor(notice.textColor)).multilineTextAlignment(.center)
                 }
             }.padding(24).frame(maxWidth: .infinity, maxHeight: notice.cleanDisplay ? .infinity : nil)
                 .background(remoteColor(flash ? notice.flashColor : notice.backgroundColor))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+          }
         }.allowsHitTesting(false)
     }
 }

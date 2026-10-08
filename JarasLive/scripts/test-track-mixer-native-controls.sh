@@ -19,7 +19,7 @@ parts.append('''
 private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
-private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
+private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
 private enum Counts { static var origin=0; static var size=0; static var slotLayouts=0; static var update=0; static func reset(){origin=0;size=0;slotLayouts=0;update=0} }
 ''')
 # Count only calls from the actual native implementations, without changing behavior.
@@ -36,7 +36,7 @@ for i,p in enumerate(parts):
 parts.append(Path('Tests/Apple/TrackMixerNativeControlsTests.swift').read_text())
 root.joinpath('main.swift').write_text('\n'.join(parts))
 PY
-swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" --geometry
 "$test_dir/test" --behavior
 if [[ "${1:-}" == "--benchmark" ]]; then

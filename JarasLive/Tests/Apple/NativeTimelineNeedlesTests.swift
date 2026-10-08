@@ -25,15 +25,23 @@ MainActor.assumeIsolated {
     pump(0.2)
     let needles = find(host)!
     func position(_ index: Int) -> Double { (needles.layer!.sublayers![index].frame.minX + 14) / 10 }
+    func unchangedProjection() {
+        needles.updateProjection(size: CGSize(width: 10000, height: 240), rulerHeight: 48, extent: 1000)
+    }
     let initialLayouts = host.layouts
     show.publish(main: 20); pump(0.035)
-    let first = position(1); pump(0.02); let second = position(1)
+    let first = position(1)
+    usleep(4_000)
+    unchangedProjection()
+    precondition(position(1) == first,
+                 "unchanged projection must not interpolate and reschedule follow between timer ticks")
+    pump(0.02); let second = position(1)
     precondition(needles.layer!.sublayers![1].animationKeys()?.isEmpty != false,
                  "playback positions update directly without implicit animation lag")
     precondition(first >= 20 && second > first, "native layers interpolate between authoritative samples")
     pump(0.1)
     let stable = position(1)
-    for _ in 0..<6 { show.resetSampleClockForTest(); pump(0.015) }
+    for _ in 0..<6 { show.resetSampleClockForTest(); unchangedProjection(); pump(0.015) }
     precondition(position(1) >= stable - 0.00001, "clock resets cannot pull an old sample backwards")
     precondition(host.layouts == initialLayouts, "moving needles must not request SwiftUI document layout")
     print("NATIVE_NEEDLES_INTERPOLATION_EPOCH_AND_NO_HOST_LAYOUT_OK")
@@ -42,14 +50,26 @@ MainActor.assumeIsolated {
         precondition(scroll.contentView.bounds.minX >= minimum - 0.00001 && scroll.contentView.bounds.minX <= minimum + 1,
             "native scroll follows the active needle")
     }
-    show.publish(main: 700, sub: 120, subPlaying: true); pump(0.12); expectOrigin(120)
+    show.publish(main: 700, sub: 120, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(120)
     precondition(!needles.layer!.sublayers![2].isHidden, "Sub Play is visible")
-    show.publish(main: 800, sub: 130, subPlaying: true); pump(0.12); expectOrigin(130)
-    show.publish(main: 300, sub: 130, subPlaying: false); pump(0.12); expectOrigin(300)
-    show.publish(main: 500, playing: false); pump(0.12)
+    show.publish(main: 800, sub: 130, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(130)
+    show.publish(main: 300, sub: 130, subPlaying: false); unchangedProjection(); pump(0.12); expectOrigin(300)
+    show.publish(main: 500, playing: false); unchangedProjection(); pump(0.12)
     let origin = scroll.contentView.bounds.minX
     pump(0.12); precondition(scroll.contentView.bounds.minX == origin)
     precondition(needles.layer!.sublayers![1].isHidden, "stopped head is hidden")
+    show.snapshot.transport.paused = true; unchangedProjection(); pump(0.03)
+    precondition(!needles.layer!.sublayers![1].isHidden && position(1) == 500,
+                 "pause publications update the main head with identical projection geometry")
+    show.publish(main: 140, playing: false); unchangedProjection(); pump(0.03)
+    precondition(position(0) == 140 && needles.layer!.sublayers![1].isHidden,
+                 "a stopped seek updates the editing head with identical projection geometry")
+    needles.updateProjection(size: CGSize(width: 20000, height: 240), rulerHeight: 64, extent: 1000)
+    precondition(position(0) == 280, "a changed projection immediately updates the head's document position")
+    unchangedProjection()
+    precondition(position(0) == 140, "restoring the projection updates immediately without a transport event")
+    show.publish(main: 500, playing: false); unchangedProjection(); pump(0.03)
+    print("NATIVE_NEEDLES_UNCHANGED_PROJECTION_TIMER_EPOCH_PAUSE_SEEK_AND_ZOOM_OK")
     let pausedLayouts = host.layouts
     let editLine = needles.layer!.sublayers![0].sublayers![1] as! CAShapeLayer
     let previousColor = editLine.strokeColor
@@ -98,4 +118,36 @@ MainActor.assumeIsolated {
     }
     print("NATIVE_NEEDLES_SWIFTUI_HOST_SHRINK_AND_DOCUMENT_ALIGNMENT_OK")
     needles.stop()
+
+    // Production pins the native needle view vertically. A scroll must move
+    // that host immediately even when stopped, with no timer or extra paint.
+    let pinnedWindow = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 800, height: 240),
+        styleMask: [.titled], backing: .buffered, defer: false)
+    pinnedWindow.isReleasedWhenClosed = false
+    let outer = GridNativeScrollView(frame: CGRect(x: 0, y: 0, width: 800, height: 240))
+    let inner = GridNativeScrollView(frame: CGRect(x: 0, y: 0, width: 800, height: 800))
+    let document = NativeTimelinePinnedView(frame: CGRect(x: 0, y: 0, width: 10000, height: 800))
+    let pin = NativeTimelinePinnedView(frame: document.bounds)
+    let pinnedNeedles = NativeTimelineNeedlesView(frame: document.bounds)
+    let stopped = ShowController()
+    pinnedNeedles.configure(show: stopped, size: document.bounds.size, rulerHeight: 48,
+        verticalOffset: 0, extent: 1000, seek: { _, _ in }, marker: { _ in })
+    pin.host = pinnedNeedles; pin.addSubview(pinnedNeedles); document.addSubview(pin)
+    inner.documentView = document; outer.documentView = inner
+    pinnedWindow.contentView = outer; outer.tile(); inner.tile(); pin.observeScroll()
+    pinnedWindow.orderFrontRegardless(); pump(0.03)
+    let tip = CGPoint(x: 1000, y: 48)
+    let screenY = pinnedNeedles.convert(tip, to: nil).y
+    let layerPosition = pinnedNeedles.layer!.sublayers![0].position
+    for y: CGFloat in [150, 350, 40, 0] {
+        outer.contentView.scroll(to: CGPoint(x: 0, y: y))
+        pinnedNeedles.updateProjection(size: document.bounds.size, rulerHeight: 48, extent: 1000)
+        precondition(pinnedNeedles.frame.minY == outer.contentView.bounds.minY,
+                     "vertical scrolling pins the native host synchronously while stopped")
+        precondition(abs(pinnedNeedles.convert(tip, to: nil).y - screenY) < 0.001 &&
+                     pinnedNeedles.layer!.sublayers![0].position == layerPosition,
+                     "vertical pinning preserves the screen position without repainting needle geometry")
+    }
+    pinnedNeedles.stop(); pinnedWindow.orderOut(nil); pinnedWindow.close()
+    print("NATIVE_NEEDLES_VERTICAL_PINNING_WITH_UNCHANGED_PROJECTION_AND_STOPPED_TIMER_OK")
 }

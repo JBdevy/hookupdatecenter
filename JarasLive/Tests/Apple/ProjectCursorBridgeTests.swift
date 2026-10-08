@@ -38,6 +38,46 @@ import Foundation
         precondition(next.current!.tracks[0].volume == 0.5)
         precondition(next.current!.tracks[0].clips[0].phaseInverted == true)
         precondition(next.current!.tracks[0].clips[0].pan == -0.75)
+        // Persisted visual metadata survives the real Objective-C++ / C++ bridge,
+        // one undo record, encrypted save, and a new native executor on reopen.
+        next.send(.play)
+        precondition(next.snapshot.transport.playing)
+        let heightTransport = next.snapshot.transport
+        let heightTrack = next.current!.tracks[0].id, heightSong = next.current!.id
+        let originalHeight = next.current!.tracks[0].heightScale
+        var audioRevisions: [UInt64] = []
+        next.audioUpdate = { _, revision in audioRevisions.append(revision) }
+        next.preparePlayback()
+        let initialAudioRevision = audioRevisions.last!, initialProjectRevision = next.projectRevision
+        next.setTrackHeightScale(heightTrack, scale: 1.75, project: next.snapshot.project.id, song: heightSong)
+        precondition(next.current!.tracks[0].heightScale == 1.75 && next.projectRevision == initialProjectRevision + 1)
+        precondition(audioRevisions.last == initialAudioRevision && next.canUndo)
+        precondition(next.snapshot.transport.playing && next.snapshot.transport.songId == heightTransport.songId &&
+                     next.snapshot.transport.regionId == heightTransport.regionId && next.snapshot.transport.loop == heightTransport.loop,
+                     "visual height metadata preserves active transport")
+        let editedHeightRevision = next.projectRevision
+        next.setTrackHeightScale(heightTrack, scale: 1.75, project: next.snapshot.project.id, song: heightSong)
+        next.setTrackHeightScale(heightTrack, scale: .nan, project: next.snapshot.project.id, song: heightSong)
+        next.setTrackHeightScale(heightTrack, scale: 2, project: UUID(), song: heightSong)
+        next.setTrackHeightScale(heightTrack, scale: 2, project: next.snapshot.project.id, song: UUID())
+        precondition(next.projectRevision == editedHeightRevision, "no-op, invalid and stale drags never commit")
+        next.undo()
+        precondition(next.current!.tracks[0].heightScale == originalHeight)
+        next.redo()
+        precondition(next.current!.tracks[0].heightScale == 1.75)
+        try await next.flushProject()
+        let heightDocument = try await store.load()!
+        let heightReopened = try ShowController(executor: LocalCommandExecutor(), persistence: store, initialProject: heightDocument)
+        precondition(heightReopened.current!.tracks[0].heightScale == 1.75 && !heightReopened.needsSave)
+        precondition(heightReopened.current!.tracks[0].clips == next.current!.tracks[0].clips)
+        heightReopened.setTrackHeightScale(heightTrack, scale: 1, project: heightReopened.snapshot.project.id, song: heightSong)
+        precondition(heightReopened.current!.tracks[0].heightScale == nil, "standard row heights keep legacy JSON compact")
+        var legacy = Project.demo()
+        let encodedLegacy = try JSONEncoder().encode(legacy)
+        precondition(!(String(data: encodedLegacy, encoding: .utf8)!.contains("heightScale")))
+        legacy.songs[0].tracks[0].heightScale = 0
+        do { try legacy.validate(); fatalError("invalid visual scale accepted") } catch {}
+        print("TRACK_HEIGHT_REAL_CORE_ROUNDTRIP_SINGLE_EDIT_AUDIO_REVISION_UNDO_ENCRYPTED_SAVE_REOPEN_OK")
         for kind in TrackKind.allCases where kind != .video {
             let executor = LocalCommandExecutor()
             var project = Project.empty(name: "Movie on " + kind.title)

@@ -161,6 +161,8 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     NSDictionary* tempoMarker=[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject];
     expect([tempoMarker[@"tempoBPM"] doubleValue]==180 && [tempoMarker[@"tempoBeats"] intValue]==3 && [tempoMarker[@"tempoUnit"] intValue]==8, "tempo marker BPM and meter survive bridge snapshot");
+    NSString* tempoOwner=tempoSnapshot[@"project"][@"songs"][0][@"parts"][0][@"id"];
+    expect([tempoMarker[@"regionOwnerID"] isEqual:tempoOwner], "manual tempo creation persists its region owner through the bridge");
     expect(equalJSON(snapshot[@"transport"],tempoSnapshot[@"transport"]), "tempo marker preserves both playback heads");
     expect([tempoMarker[@"tempoTimebase"] isEqual:@"global"], "new tempo marker follows global timebase");
     expect(![core setTempoMarker:tempoID position:8 bpm:301 beats:3 unit:8 timebase:@"global" error:&error], "reject out-of-range marker tempo");
@@ -191,6 +193,8 @@ int main(int argc,char**argv){@autoreleasepool{
     detectedTempo[@"tempoReferenceBPM"] = @120;
     NSData* detectedBatch = [NSJSONSerialization dataWithJSONObject:@[detectedTempo] options:0 error:&error];
     expect([core setTempoMarkers:detectedBatch error:&error], "detected marker batch accepts original tempo reference");
+    NSDictionary* batchTempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect([[[batchTempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject] objectForKey:@"regionOwnerID"] isEqual:tempoOwner], "batch tempo edit retains the existing region owner before another single-marker edit");
     expect([core setTempoMarker:tempoID position:8 bpm:240 beats:4 unit:4 timebase:@"global" error:&error], "detected BPM remains editable");
     tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     NSDictionary* editedDetected = [tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject];
@@ -200,6 +204,16 @@ int main(int argc,char**argv){@autoreleasepool{
     expect([tempoCore loadProjectData:tempoData error:&error], "reload tempo marker metadata");
     NSDictionary* tempoReloaded=[NSJSONSerialization JSONObjectWithData:[tempoCore snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(tempoSnapshot[@"project"],tempoReloaded[@"project"]), "tempo map project round trip");
+    NSMutableDictionary* looseTempoProject=[NSJSONSerialization JSONObjectWithData:tempoData options:NSJSONReadingMutableContainers error:&error];
+    NSMutableDictionary* looseTempo=[looseTempoProject[@"songs"][0][@"markers"] lastObject];
+    [looseTempo removeObjectForKey:@"regionOwnerID"];
+    looseTempoProject[@"songs"][0][@"regionOwnershipInitialized"]=@YES;
+    JarasCoreBridge* looseTempoCore=[JarasCoreBridge new];
+    expect([looseTempoCore loadProjectData:[NSJSONSerialization dataWithJSONObject:looseTempoProject options:0 error:&error] error:&error], "load a tempo explicitly persisted without region ownership");
+    looseTempo[@"tempoBPM"]=@230;
+    expect([looseTempoCore setTempoMarkers:[NSJSONSerialization dataWithJSONObject:@[looseTempo] options:0 error:&error] error:&error], "edit an imported loose tempo in place through the batch bridge");
+    NSDictionary* looseTempoSnapshot=[NSJSONSerialization JSONObjectWithData:[looseTempoCore snapshotWithError:&error] options:0 error:&error];
+    expect(![[looseTempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject] objectForKey:@"regionOwnerID"], "initialized imported nil ownership is preserved instead of inferred from overlap");
     NSString* correctedTempoID = NSUUID.UUID.UUIDString;
     NSDictionary* correctedTempo = @{@"id":correctedTempoID,@"name":@"TEMPO",@"position":@7.9,@"tempoBPM":@140,@"tempoBeats":@4,@"tempoUnit":@4,@"tempoTimebase":@"global",@"tempoReferenceBPM":@140};
     NSData* correctedData = [NSJSONSerialization dataWithJSONObject:@[correctedTempo] options:0 error:&error];
@@ -208,6 +222,7 @@ int main(int argc,char**argv){@autoreleasepool{
     NSArray* correctedMarkers = correctedSnapshot[@"project"][@"songs"][0][@"markers"];
     expect(![correctedMarkers filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id == %@", tempoID]].count, "wrong marker is gone");
     expect([correctedMarkers filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id == %@", correctedTempoID]].count == 1, "one corrected marker exists");
+    expect([[[correctedMarkers filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id == %@", correctedTempoID]] firstObject][@"regionOwnerID"] isEqual:tempoOwner], "redetected tempo placement receives its region owner through the batch bridge");
     expect(equalJSON(tempoReloaded[@"project"][@"songs"][0][@"tracks"], correctedSnapshot[@"project"][@"songs"][0][@"tracks"]), "redetect leaves audio positions and rates intact");
     expect(equalJSON(tempoReloaded[@"project"][@"songs"][0][@"timeSettings"] ?: NSNull.null, correctedSnapshot[@"project"][@"songs"][0][@"timeSettings"] ?: NSNull.null), "redetect restores project timebase");
     expect([core deleteManualMarker:tempoID error:&error], "delete tempo marker");

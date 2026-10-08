@@ -96,3 +96,65 @@ precondition(dragged.contains { $0.id == dense.last!.id }, "dragged targets stay
 verify([], scale: 1, viewport: viewport, facesLeft: false, ends: [:], dragging: nil,
     labels: realLabels, label: labels, measure: fontMeasure)
 print("MARKER_TARGET_CULLING_GEOMETRY_CACHE_AND_DRAG_OK cases=\(cases) initialMeasurements=\(warmCount)/2000")
+
+// Compare the retained native lane against both unmodified reference paths.
+// Medium raster widths and semibold hit widths deliberately differ, including
+// at the 18-point flag threshold; neither may be substituted for the other.
+import CoreText
+private func mediumDrawingWidth(_ text: String) -> Double {
+    let line = CTLineCreateWithAttributedString(NSAttributedString(string: text,
+        attributes: [.font: NSFont.systemFont(ofSize: 9, weight: .medium)]))
+    return ceil(CTLineGetTypographicBounds(line, nil, nil, nil))
+}
+private func verifyNativeLayout(_ source: [TimelineMarker], ends: [UUID: Double]) -> Int {
+    let inputWidths = Dictionary(uniqueKeysWithValues: source.map { ($0.id, fontMeasure($0.name)) })
+    let drawingWidths = Dictionary(uniqueKeysWithValues: source.map { ($0.id, mediumDrawingWidth($0.name)) })
+    let retained = NativeTimelineMarkerLayout(source, drawingWidths: drawingWidths,
+        inputWidths: inputWidths, regionEnds: ends)
+    var checked = 0
+    for scale in [0.01, 0.125, 0.99999, 1.0, 1.00001, 5.2, 10.23, 123.0, 1280.0, 81920.0] {
+        for x in [-12.0, 0, 7.999, 8, 11, 90, 511, 1234, 4000, 90_000] {
+            for width in [0.0, 13, 320, 1200] {
+                for dragging in [nil, source.last?.id] {
+                    let viewport = CGRect(x: x, y: 0, width: width, height: 16)
+                    let expectedDrawing = TimelineMarker.flagWidths(source, scale: scale,
+                        widths: drawingWidths, regionEnds: ends)
+                    let expectedTargets = MarkerTargetGeometry.visible(source, scale: scale,
+                        viewport: viewport, facesLeft: false, regionEnds: ends,
+                        draggingID: dragging, labels: realLabels, label: { $0.name })
+                    var actualTargets: [MarkerTargetGeometry] = [], visited: [UUID] = []
+                    retained.forEachProjection(scale: scale, viewport: viewport, draggingID: dragging) { marker, projectedX, drawingWidth, target in
+                        visited.append(marker.id)
+                        precondition(projectedX == marker.position * scale,
+                            "cached layout preserves exact floating-point positions")
+                        precondition(drawingWidth == (expectedDrawing[marker.id] ?? 0),
+                            "native flag width must match the original raster-font constraints exactly")
+                        if let target { actualTargets.append(target) }
+                    }
+                    precondition(visited == source.map(\.id), "storage and overlap precedence must remain unchanged")
+                    precondition(actualTargets.map(\.id) == expectedTargets.map(\.id),
+                        "cached native targets preserve culling, dragged items and tied-marker order")
+                    for (actual, expected) in zip(actualTargets, expectedTargets) {
+                        precondition(actual.left == expected.left && actual.width == expected.width,
+                            "cached native target frames match the original semibold measurements exactly")
+                    }
+                    checked += 1
+                }
+            }
+        }
+    }
+    return checked
+}
+var nativeCases = verifyNativeLayout(markers, ends: ends)
+var editedMarkers = markers
+editedMarkers[0].name = "日本語 Árvores 👩🏽‍🚀 e\u{301} \u{1F1E7}\u{1F1F7}"
+editedMarkers[1].position = 0
+editedMarkers[2].position += 0.003
+editedMarkers[3].unifiedRegionID = UUID()
+editedMarkers[4].sourceRegionID = UUID()
+var editedEnds = ends
+editedEnds[editedMarkers[3].id] = editedMarkers[3].position + 0.1
+editedEnds[editedMarkers[4].id] = editedMarkers[4].position
+nativeCases += verifyNativeLayout(Array(editedMarkers.reversed()), ends: editedEnds)
+nativeCases += verifyNativeLayout([], ends: [:])
+print("NATIVE_MARKER_RETAINED_LAYOUT_EXACT_GEOMETRY_AND_METRICS_OK cases=\(nativeCases)")
