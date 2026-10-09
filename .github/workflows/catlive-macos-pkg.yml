@@ -44,7 +44,9 @@ jobs:
 
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive
-        run: python3 scripts/prepare-catstem.py
+        run: |
+          python3 scripts/prepare-catstem.py
+          python3 scripts/prepare-catstem-realtime.py
 
       - name: Build universal CatLive app
         shell: bash
@@ -69,7 +71,8 @@ jobs:
           ARCHS_FOUND="$(lipo -archs "$APP/Contents/MacOS/CatLive")"
           [[ " $ARCHS_FOUND " == *" arm64 "* ]]
           [[ " $ARCHS_FOUND " == *" x86_64 "* ]]
-          python3 JarasLive/scripts/test-macos-deployment.py "$APP" --minimum 12.0
+          python3 JarasLive/scripts/test-macos-deployment.py "$APP" --minimum 12.0 \
+            --optional-helper 'Contents/Resources/StemSeparationRuntime/realtime-arm64=14.0'
 
       - name: Import Developer ID certificates
         shell: bash

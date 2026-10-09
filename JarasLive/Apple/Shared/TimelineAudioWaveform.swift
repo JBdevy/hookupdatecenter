@@ -1383,10 +1383,12 @@ final class TimelineAudioWaveform: ObservableObject {
         let maximum = peaks.max() ?? 0
         guard maximum > 0.00001 else { return [] }
         let threshold = maximum * 0.04
-        let silence = maximum * 0.001
         var result: [(position: Double, peak: Double, shape: [Double])] = []
         var armed = true, previous = -Double.infinity
-        let capacity = WaveformSource.baseStep * 2
+        // A cache bin only locates a candidate. Inspect the complete attack
+        // ahead of it: compression pre-echo can cross a low noise threshold
+        // several milliseconds before the audible click.
+        let capacity = WaveformSource.baseStep * 2 + Int(ceil(header.rate * 0.03))
         let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(capacity))!
         for (index, peak) in peaks.enumerated() {
             if index % 4096 == 0 { try Task.checkCancellation() }
@@ -1398,9 +1400,21 @@ final class TimelineAudioWaveform: ObservableObject {
             file.framePosition = Int64(first)
             try file.read(into: pcm, frameCount: AVAudioFrameCount(min(capacity, Int(file.length) - first)))
             guard let channels = pcm.floatChannelData else { continue }
+            var attackPeak: Float = 0
+            for channel in 0..<header.channels {
+                for sample in 0..<Int(pcm.frameLength) {
+                    attackPeak = max(attackPeak, abs(channels[channel][sample * pcm.stride]))
+                }
+            }
+            // Use this pulse's amplitude, not the loudest accent in the file.
+            // The leading edge stays sample-resolved; neither cache boundaries
+            // nor the later maximum of a ringing click become the beat origin.
+            let attackThreshold = max(0.00001, attackPeak * 0.2)
             var onset: Int?
             for sample in 0..<Int(pcm.frameLength) {
-                if (0..<header.channels).contains(where: { abs(channels[$0][sample * pcm.stride]) >= silence }) { onset = first + sample; break }
+                if (0..<header.channels).contains(where: { abs(channels[$0][sample * pcm.stride]) >= attackThreshold }) {
+                    onset = first + sample; break
+                }
             }
             if let onset {
                 previous = Double(onset) / header.rate

@@ -2,10 +2,10 @@ import AppKit
 
 _ = NSApplication.shared
 enum GridHeaderRasterProbe { static var count = 0 }
-func oldAttributes(centered: Bool? = nil, color: NSColor = .white) -> [NSAttributedString.Key: Any] {
+func oldAttributes(centered: Bool? = nil, color: NSColor = .white, fontSize: CGFloat = GridSelectionItem.headerFontSize) -> [NSAttributedString.Key: Any] {
     let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
     if let centered { paragraph.alignment = centered ? .center : .left }
-    return [.font: NSFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold),
+    return [.font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
             .foregroundColor: color, .paragraphStyle: paragraph]
 }
 struct HeaderRaster {
@@ -107,17 +107,39 @@ let labels: [(String, GridSelectionHeaderText.Title, Bool, NSColor)] = [
     ("M", GridSelectionHeaderText.mute, true, .white), ("FX", GridSelectionHeaderText.fx, true, .white),
     ("FX", GridSelectionHeaderText.activeFX, true, .systemGreen), ("Edit", GridSelectionHeaderText.edit, true, .white),
     ("−∞ dB", GridSelectionHeaderText.gain("−∞ dB"), false, .white), ("+3.5 dB", GridSelectionHeaderText.gain("+3.5 dB"), false, .white),
+    ("Center", GridSelectionHeaderText.gain("Center"), false, .white), ("R-100%", GridSelectionHeaderText.gain("R-100%"), false, .white),
+    ("-60.0 dB", GridSelectionHeaderText.gain("-60.0 dB"), false, .white), ("+24.0 dB", GridSelectionHeaderText.gain("+24.0 dB"), false, .white),
 ]
 for (label, cached, centered, color) in labels {
     for width: CGFloat in [17, 20, 30, 60] { for scale in [1, 2] { for flipped in [false, true] {
         let rect = CGRect(x: 0, y: 10, width: width, height: GridSelectionItem.headerHeight).insetBy(dx: 1, dy: 0)
         let expected = bitmap(scale: scale, flipped: flipped) {
-            (label as NSString).draw(in: rect, withAttributes: oldAttributes(centered: centered, color: color))
+            (label as NSString).draw(in: rect, withAttributes: oldAttributes(centered: centered, color: color,
+                fontSize: centered ? GridSelectionItem.headerFontSize : GridSelectionItem.headerReadoutFontSize))
         }
         precondition(expected.bytes == bitmap(scale: scale, flipped: flipped) { cached.draw(in: rect) }.bytes,
             "control labels retain exact AppKit pixels: \(label)")
     } } }
 }
+// Readouts must fit completely in their compact reservations, including their
+// one-point drawing inset, without moving the controls or reducing title text.
+var compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
+precondition(GridSelectionItem.headerReadoutFontSize < GridSelectionItem.headerFontSize)
+precondition(compactItem.rect.width - compactItem.titleInset >= 40,
+    "a 240-point audio item leaves useful title space after all controls and readouts")
+precondition(compactItem.gainKnobRect!.minX - compactItem.panLabelRect!.maxX <= 1,
+    "the volume knob sits immediately after the complete pan readout")
+for percent in -100...100 {
+    compactItem.pan = Double(percent) / 100
+    precondition(GridSelectionHeaderText.gain(compactItem.panLabel).width <= compactItem.panLabelRect!.width - 2,
+        "every pan percentage fits without truncation")
+}
+for gain in [0.0] + (-600...240).map({ pow(10, Double($0) / 200) }) {
+    compactItem.gain = gain
+    precondition(GridSelectionHeaderText.gain(compactItem.gainLabel).width <= compactItem.gainLabelRect!.width - 2,
+        "every selectable gain, including silence and the range endpoints, fits without truncation")
+}
+print("GRID_HEADER_COMPACT_READOUTS_OK: all pan/gain values fit, title space retained, title/control fonts unchanged")
 for scale in [1, 2] { for flipped in [false, true] {
     let cached = GridSelectionHeaderText.title("Repeated Coração 🎸")
     let naturalWidth = ceil(cached.width) + 4

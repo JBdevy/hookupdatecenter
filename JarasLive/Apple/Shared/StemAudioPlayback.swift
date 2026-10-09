@@ -141,20 +141,22 @@ import SwiftUI
     @MainActor final class PeakHold: ObservableObject {
         @Published private(set) var decibels: Double?
         private var maximum = 0.0
+        static let displayThreshold = pow(10.0, -24.0 / 20)
         static let muteThreshold = pow(10.0, 20.0 / 20)
         func record(_ amplitude: Double) {
-            guard amplitude.isFinite, amplitude >= 1, amplitude > maximum else { return }
+            guard amplitude.isFinite, amplitude >= Self.displayThreshold, amplitude > maximum else { return }
             maximum = amplitude
             let db = (20 * log10(amplitude) * 100).rounded() / 100
             if decibels != db { decibels = db }
         }
-        func clear() { maximum = 0; decibels = nil }
+        func clear() { maximum = 0; if decibels != nil { decibels = nil } }
     }
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
     var level: Double { max(levels.x, levels.y) }
     // Instant attack, with no peak hold on the moving bars. The separate
-    // clipping readout retains its maximum until explicitly cleared.
+    // numeric readout retains its maximum until explicitly cleared. Silence,
+    // Stop and elapsed time never reset this separately held number.
     static let releaseDecibelsPerSecond = 48.0
     private var envelope = SIMD2<Double>(repeating: 0)
     func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
@@ -295,28 +297,38 @@ struct TimecodePlaybackSpan {
         var destination: Double
         var host: UInt64
         var section: UUID?
+        var region: UUID?
         var revision: UInt64
     }
     private var preparedJump: PreparedJump?
     private var appliedJumpBoundaries: [ObjectIdentifier: UInt64] = [:]
     private var boundaryTails: [(Voice, UInt64)] = []
     private func cancelPreparedJump() {
+        if preparedJump != nil { metronome?.cancelJump(); clickGenerators.first?.cancelJump() }
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for key in Array(voices.keys) where key.head == 2 { remove(key) }
         for voice in voices.values { voice.effects?.setPlaybackBoundary() }
         headAudioClock[2] = nil; lastPosition[2] = nil; preparedJump = nil
     }
-    private func upcomingJump(_ transport: TransportState, song: Song) -> (Double, Double, UUID?)? {
+    private func upcomingJump(_ transport: TransportState, song: Song, setlist: RegionSetlist?) -> (Double, Double, UUID?, UUID?)? {
         guard transport.playing else { return nil }
-        var result: (Double, Double, UUID?)?
+        var result: (Double, Double, UUID?, UUID?)?
         if transport.loop.enabled, let a = transport.loop.start, let b = transport.loop.end, b > a, b > transport.position,
-           transport.multiLoop?.released != true { result = (b, a, nil) }
+           transport.multiLoop?.released != true { result = (b, a, nil, nil) }
+        // Queues share the sample-clock scheduling/promotion used for section
+        // jumps. A loop still owns its boundary; an already-running Sub Play
+        // owns its handoff. Prepare-only must never schedule incoming audio.
+        if result == nil, !transport.subPlay.playing, setlist?.preparesWithoutPlayback != true,
+           let queued = song.parts.first(where: { $0.id == transport.queuedRegionId }),
+           let active = song.parts.first(where: { $0.id == transport.regionId }) {
+            let parent = active.parentRegionID.flatMap { id in song.parts.first(where: { $0.id == id }) }
+            let boundary = transport.ignoreNextEnd ?? parent?.endTime ?? active.endTime
+            if boundary > transport.position { result = (boundary, queued.startTime, nil, queued.id) }
+        }
         if let id = transport.queuedSectionMarkerId,
            let destination = song.sectionDestinationPosition(id),
-           let region = song.parts.filter({ transport.position >= $0.startTime && transport.position < $0.endTime })
-            .min(by: { $0.endTime - $0.startTime < $1.endTime - $1.startTime }),
-           let trigger = song.markers?.filter({ $0.isSection && $0.position > transport.position + 1e-9 && $0.position <= region.endTime }).min(by: { $0.position < $1.position }),
-           result == nil || trigger.position <= result!.0 { result = (trigger.position, destination, id) }
+           let trigger = song.nextSectionTrigger(for: transport),
+           result == nil || trigger <= result!.0 { result = (trigger, destination, id, nil) }
         return result
     }
     private var subPlayPromotion: UInt64 = 0
@@ -431,6 +443,15 @@ struct TimecodePlaybackSpan {
     private var masterSolo = false
     private var lastPosition: [Int: Double] = [:]
     private var headAudioClock: [Int: (position: Double, host: UInt64)] = [:]
+    /// Position scheduled at the output, expressed at the UI sample epoch.
+    /// The transport is ahead while players fill their processing latency.
+    func presentationPosition(head: Int, sampledAt: Double) -> Double? {
+        guard realtime, let anchor = headAudioClock[head] else { return nil }
+        let host = mach_absolute_time()
+        let elapsed = host >= anchor.host ? AVAudioTime.seconds(forHostTime: host - anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host - host)
+        let sinceSample = ProcessInfo.processInfo.systemUptime - sampledAt
+        return max(0, anchor.position + elapsed - sinceSample)
+    }
     private func audioHostTime(position: Double, head: Int) -> UInt64? {
         guard let anchor = headAudioClock[head] else { return nil }
         let delta = position - anchor.position
@@ -442,10 +463,24 @@ struct TimecodePlaybackSpan {
         let elapsed = host >= anchor.hostTime ? AVAudioTime.seconds(forHostTime: host - anchor.hostTime) : -AVAudioTime.seconds(forHostTime: anchor.hostTime - host)
         return anchor.sampleTime + AVAudioFramePosition((elapsed * anchor.sampleRate / (anchor.audioTimeStamp.mRateScalar > 0 ? anchor.audioTimeStamp.mRateScalar : 1)).rounded())
     }
-    private func configureStretch(_ stretch: AVAudioUnitTimePitch, rate: Float, pitch: Float) {
-        if stretch.rate != rate { stretch.rate = rate }
-        if stretch.pitch != pitch { stretch.pitch = pitch }
-        // Keep a prepared tempo processor continuous across live rate edits.
+    private func configureStretch(_ stretch: AVAudioUnitTimePitch, clock: AVAudioUnitVarispeed, rate: Float, pitch: Float) {
+        // TimePitch rounds fractional rates to its analysis hop: 61/60 can
+        // render as 521/512, accumulating ~54 ms/min against the sample clock.
+        // Use an exact binary-fraction stretch and resample the remainder.
+        // Keep already-exact ratios (1, 1.25, 1.5, 2...) unchanged. Compensate
+        // resampling's pitch, using small corrections within the pitch range.
+        let quantum = pow(Float(2), floor(log2(rate)) - 3)
+        var coarseRate = (rate / quantum).rounded() * quantum
+        var remainder = rate / coarseRate
+        var tuning = pitch - 1200 * log2(remainder)
+        if tuning > 2400 { coarseRate -= quantum }
+        if tuning < -2400 { coarseRate += quantum }
+        coarseRate = min(32, max(1.0/32, coarseRate))
+        remainder = rate / coarseRate
+        tuning = pitch - 1200 * log2(remainder)
+        if stretch.rate != coarseRate { stretch.rate = coarseRate }
+        if stretch.pitch != tuning { stretch.pitch = tuning }
+        if clock.rate != remainder { clock.rate = remainder }
         if stretch.bypass { stretch.bypass = false }
     }
     private var lastUpdate = ProcessInfo.processInfo.systemUptime
@@ -458,13 +493,31 @@ struct TimecodePlaybackSpan {
         let player: AVAudioPlayerNode
         let gain: AVAudioUnitEffect
         let stretch: AVAudioUnitTimePitch
+        let rateClock: AVAudioUnitVarispeed
+        var pitch: Float
         let usesStretch: Bool
         let track: UUID
         var clip: AudioClip
         var file: AVAudioFile
         var effects: NativeEffectsChain?
         var scheduledUntil = 0.0
+        var scheduledOnset: AVAudioTime?
+        var scheduledProcessingDelay = 0.0
+        var scheduledSourceStart: AVAudioFramePosition = 0
+        var scheduledSourceEnd: AVAudioFramePosition = 0
         var mixInputBus: AVAudioNodeBus = 0
+    }
+    private func sourcePositionAtRenderClock(_ voice: Voice, protectingOnsetFor leadTime: Double = 0) -> Double? {
+        guard let onset = voice.scheduledOnset, let node = voice.player.lastRenderTime,
+              let clock = voice.player.playerTime(forNodeTime: node) else { return nil }
+        let first: AVAudioFramePosition
+        if onset.isSampleTimeValid { first = onset.sampleTime }
+        else if onset.isHostTimeValid, let sample = nodeSampleTime(host: onset.hostTime, anchor: node) {
+            first = clock.sampleTime + sample - node.sampleTime
+        } else { return nil }
+        let lead = AVAudioFramePosition((leadTime * clock.sampleRate).rounded(.up))
+        guard clock.sampleTime + lead >= first else { return nil }
+        return Double(voice.scheduledSourceStart + max(0, clock.sampleTime - first)) / voice.file.processingFormat.sampleRate
     }
     init(engine: AVAudioEngine, realtime: Bool = true) {
         self.engine = engine; self.realtime = realtime
@@ -806,6 +859,7 @@ struct TimecodePlaybackSpan {
                 voice.player.stop()
                 JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                 voice.stretch.auAudioUnit.reset()
+                voice.rateClock.auAudioUnit.reset()
                 voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
             }
         }
@@ -862,6 +916,7 @@ struct TimecodePlaybackSpan {
         voice.player.volume = 0
         voice.player.stop()
         voice.stretch.auAudioUnit.reset()
+        voice.rateClock.auAudioUnit.reset()
         voice.effects?.resetTails()
         voice.gain.auAudioUnit.reset()
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
@@ -886,15 +941,25 @@ struct TimecodePlaybackSpan {
         // Each player owns its reader; scheduling overlapping copies must not share a mutable file cursor.
         let playbackFile = try AVAudioFile(forReading: file.url)
         let player = AVAudioPlayerNode(), gain = JarasVoiceGain.makeNode(), stretch = AVAudioUnitTimePitch()
+        let rateClock = AVAudioUnitVarispeed()
+        // Rate conversion may request more input frames than the device's
+        // output block. Reserve the upstream capacity before allocating the
+        // live graph so a BPM edit cannot exceed a processor's default slice.
+        for node in [player, stretch, rateClock, gain] as [AVAudioNode] {
+            node.auAudioUnit.maximumFramesToRender = 8192
+        }
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
         let usesStretch = !realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
-        configureStretch(stretch, rate: Float(clip.audioRate), pitch: pitch); stretch.overlap = 8
-        engine.attach(player); engine.attach(gain); engine.attach(stretch)
+        configureStretch(stretch, clock: rateClock, rate: Float(clip.audioRate), pitch: pitch); stretch.overlap = 8
+        engine.attach(player); engine.attach(gain); engine.attach(stretch); engine.attach(rateClock)
         let bus = trackBus(for: track).input(for: clip)
         let inputBus = availableInputBus(track: track, node: bus)
-        if usesStretch { engine.connect(player, to: stretch, format: file.processingFormat) }
-        var voice = Voice(player: player, gain: gain, stretch: stretch, usesStretch: usesStretch, track: track, clip: clip, file: playbackFile)
+        if usesStretch {
+            engine.connect(player, to: stretch, format: file.processingFormat)
+            engine.connect(stretch, to: rateClock, format: file.processingFormat)
+        }
+        var voice = Voice(player: player, gain: gain, stretch: stretch, rateClock: rateClock, pitch: pitch, usesStretch: usesStretch, track: track, clip: clip, file: playbackFile)
         voice.mixInputBus = inputBus
         applyClipFX(clip.fx ?? emptyFX, to: &voice)
         engine.connect(gain, to: bus, fromBus: 0, toBus: inputBus, format: file.processingFormat)
@@ -909,10 +974,28 @@ struct TimecodePlaybackSpan {
         return inputBus
     }
     private func takeVoice(track: UUID, clip: AudioClip, file: AVAudioFile) throws -> Voice {
-        if let index = idleVoices[track]?.firstIndex(where: { ($0.clip.frozenMIDI == true) == (clip.frozenMIDI == true) && $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001 && $0.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001) }) {
+        let pool = idleVoices[track] ?? []
+        func matches(_ voice: Voice) -> Bool {
+            (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true) &&
+                voice.file.processingFormat.isEqual(file.processingFormat) &&
+                voice.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
+        }
+        if let index = pool.firstIndex(where: matches) {
             var voice = idleVoices[track]!.remove(at: index)
+            // A pooled player's render gate may have been suspended for an
+            // entire song. Format converters can then report a fresh sample
+            // count with an old host timestamp. Rebase this silent player before
+            // scheduling; extrapolating that stale pair delays PCM by the idle time.
+            if voice.player.isPlaying {
+                voice.player.stop()
+                voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
+                voice.stretch.auAudioUnit.reset()
+                voice.rateClock.auAudioUnit.reset()
+                voice.effects?.resetTails()
+            }
             if voice.file.url != file.url { voice.file = try AVAudioFile(forReading: file.url) }
             voice.clip = clip
+            voice.scheduledOnset = nil
             JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
             voice.effects?.setPlaybackBoundary()
             if suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain)) != nil {
@@ -972,24 +1055,9 @@ struct TimecodePlaybackSpan {
                     }
                 } catch { self.onError(error); return }
             }
-            // Finish graph construction before starting any idle player. Start
-            // outside the preparation task, on the graph's main control queue.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.realtime, self.preparationKey == key,
-                      self.latestPlayback?.snapshot.transport.playing != true,
-                      self.latestPlayback?.snapshot.transport.subPlay.playing != true else { return }
-                guard self.deviceSessionActive, self.engine.isRunning, self.deviceRecovery == nil else { return }
-                let prepared = self.idleVoices.values.flatMap { $0 }.filter { !($0.player.isPlaying) && self.trackBuses[$0.track] != nil }
-                for voice in prepared {
-                    if self.suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain)) != nil, let bus = self.trackBuses[voice.track] {
-                        self.engine.connect(voice.gain, to: bus.input(for: voice.clip), fromBus: 0, toBus: voice.mixInputBus, format: voice.file.processingFormat)
-                    }
-                }
-                // Prepared players receive I/O cycles even while transport is stopped.
-                self.setGraphRenderEnabled(true)
-                defer { self.setGraphRenderEnabled(self.transportWasRunning || self.instrumentRenderPending) }
-                for voice in prepared { self.warmPlayer(voice) }
-            }
+            // Keep decoded onsets and attached voices ready, but do not loop
+            // silence through every stretcher while stopped. takeVoice/warmPlayer
+            // starts and rebases only the players actually needed for playback.
         }
     }
     private func warmPlayer(_ voice: Voice) {
@@ -1010,7 +1078,7 @@ struct TimecodePlaybackSpan {
         suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain))
         voice.player.stop()
         voice.effects?.detach(from: engine)
-        engine.detach(voice.player); engine.detach(voice.gain); engine.detach(voice.stretch)
+        engine.detach(voice.player); engine.detach(voice.gain); engine.detach(voice.stretch); engine.detach(voice.rateClock)
     }
     private func remove(_ key: VoiceKey, keepingTailAt position: Double? = nil) {
         guard let voice = voices.removeValue(forKey: key) else { return }
@@ -1104,7 +1172,7 @@ struct TimecodePlaybackSpan {
         // rewiring can invalidate an active player's scheduled file segments.
         if voice.effects == nil {
             let chain = NativeEffectsChain(reorderable: false)
-            chain.attach(to: engine, input: voice.usesStretch ? voice.stretch : voice.player, format: voice.file.processingFormat,
+            chain.attach(to: engine, input: voice.usesStretch ? voice.rateClock : voice.player, format: voice.file.processingFormat,
                          destinations: [AVAudioConnectionPoint(node: voice.gain, bus: 0)])
             chain.observe(analysisEffects[voice.clip.id.uuidString] ?? [])
             voice.effects = chain
@@ -1591,7 +1659,9 @@ struct TimecodePlaybackSpan {
         guard onset.frameLength > 0, let channels = onset.floatChannelData else {
             throw ProjectError.invalid("Could not read audio onset")
         }
-        let length = min(Int(onset.frameLength), Int(ceil(file.processingFormat.sampleRate * 0.003)))
+        // A file's natural attack is already intentional PCM: a blanket ramp
+        // erases short drum/click impulses. Ramp only a seek into existing audio.
+        let length = first == 0 ? 0 : min(Int(onset.frameLength), Int(ceil(file.processingFormat.sampleRate * 0.003)))
         for channel in 0..<Int(onset.format.channelCount) {
             for sample in 0..<length { channels[channel][sample * onset.stride] *= Float(sample) / Float(max(1, length - 1)) }
         }
@@ -1754,6 +1824,28 @@ struct TimecodePlaybackSpan {
     }
     func update(_ snapshot: ShowSnapshot, revision: UInt64) throws {
         guard directory != nil else { return }
+        var tempoResetCommands: [@Sendable () -> Void] = []
+        func cancelPendingTempoVoice(_ key: VoiceKey, _ voice: Voice) {
+            // Stop only pending sources: interrupting a buffer does not clear
+            // the separately queued file continuation. Keep the graph attached.
+            voice.player.volume = 0
+            JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+            let player = voice.player
+            tempoResetCommands.append { player.stop() }
+            voiceClockAnchors[ObjectIdentifier(player)] = nil
+            voices[key] = nil
+            idleVoices[voice.track, default: []].append(voice)
+        }
+        let previousPlayback = latestPlayback
+        let previousTransportPositions = lastPosition
+        var previousSourcePositions = lastPosition
+        if realtime {
+            let host = mach_absolute_time()
+            for (head, anchor) in headAudioClock {
+                let elapsed = host >= anchor.host ? AVAudioTime.seconds(forHostTime: host - anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host - host)
+                previousSourcePositions[head] = anchor.position + elapsed
+            }
+        }
         latestPlayback = (snapshot, revision)
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = now - lastUpdate; lastUpdate = now
@@ -1767,6 +1859,16 @@ struct TimecodePlaybackSpan {
         let changedLoopGains = updateLoopGainContext(song: song, transport: transport, revision: revision)
         let timelineScale = songID == song.id && song.projectTime.timebase == .relative ? (tempo ?? song.bpm) / song.bpm : 1
         let tempoChanged = abs(timelineScale - 1) > 0.0000001
+        let previousSong = previousPlayback?.snapshot.project.songs.first { $0.id == song.id }
+        let markerTempoChanged = self.revision != revision && songID == song.id && previousSong.map { old in
+            let before = Dictionary(uniqueKeysWithValues: (old.markers ?? []).filter(\.isTempo).map { ($0.id, $0) })
+            let after = (song.markers ?? []).filter(\.isTempo)
+            return before.count != after.count || after.contains { marker in
+                guard let prior = before[marker.id] else { return true }
+                return prior.tempoBPM != marker.tempoBPM || prior.tempoTimebase != marker.tempoTimebase ||
+                    prior.tempoReferenceBPM != marker.tempoReferenceBPM
+            }
+        } == true
         if tempoChanged {
             for head in Array(lastPosition.keys) {
                 let old = lastPosition[head]!
@@ -1790,6 +1892,9 @@ struct TimecodePlaybackSpan {
             }
             allowsTempoChanges = song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio
             let tempoSections = song.tempoSections(until: song.duration)
+            let previousFragmentOwners = Dictionary(uniqueKeysWithValues: clipFragments.flatMap { original, fragments in
+                fragments.map { ($0, original) }
+            })
             clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true)
             clips = song.tracks.flatMap { track in
                 track.clips.filter { clip in
@@ -1836,21 +1941,148 @@ struct TimecodePlaybackSpan {
             masterSolo = snapshot.project.masterSolo ?? false
             masterMono = snapshot.project.masterMono ?? false
             let byID = Dictionary(uniqueKeysWithValues: clips.map { ($0.1.id, $0) })
+            // Tempo-marker edits retime only their occupied regions; song.bpm
+            // need not change. Match the same source span after that retiming
+            // instead of stopping its player because its timeline bounds moved.
+            var retainedTempoVoices = Set<VoiceKey>()
+            var tempoAppendCommands: [@Sendable () -> Void] = []
+            var rebasedHeads = Set<Int>()
+            let previousHeadPositions = previousSourcePositions
+            var committedTempoSources: [ObjectIdentifier: Double] = [:]
+            var audibleTempoPlayers = Set<ObjectIdentifier>()
+            if tempoChanged || markerTempoChanged {
+                // An edit can arrive after the old fragment ended but before
+                // the next ordinary update retired it. Free that identity
+                // before the sounding successor claims a merged fragment.
+                for key in Array(voices.keys) {
+                    if let voice = voices[key], let old = previousHeadPositions[key.head],
+                       voice.clip.startTime + voice.clip.duration <= old { remove(key, keepingTailAt: old) }
+                }
+                for (key, voice) in voices {
+                    let identity = ObjectIdentifier(voice.player)
+                    // A replacement needs the same preroll as a fresh start.
+                    // Keep an imminent queued onset even before the player has
+                    // consumed it; stopping/rewarming all stems can otherwise
+                    // spend its remaining deadline and create a silent edge.
+                    let lead = realtime ? 0.05 + voice.scheduledProcessingDelay : 0
+                    committedTempoSources[identity] = sourcePositionAtRenderClock(voice, protectingOnsetFor: lead)
+                    if let old = previousHeadPositions[key.head], old >= voice.clip.startTime,
+                       old < voice.clip.startTime + voice.clip.duration { audibleTempoPlayers.insert(identity) }
+                }
+            }
+            func hasCommittedOnset(_ voice: Voice) -> Bool {
+                committedTempoSources[ObjectIdentifier(voice.player)] != nil
+            }
+            if tempoChanged || markerTempoChanged {
+                // Remove pending identities before remapping sounding voices.
+                // When fragments merge, a future source must never claim the
+                // merged item's key ahead of the player already being heard.
+                for key in Array(voices.keys) {
+                    guard let voice = voices[key], let old = previousHeadPositions[key.head],
+                          voice.clip.startTime > old, !hasCommittedOnset(voice) else { continue }
+                    cancelPendingTempoVoice(key, voice)
+                }
+            }
+            if markerTempoChanged {
+                let nextFragmentOwners = Dictionary(uniqueKeysWithValues: clipFragments.flatMap { original, fragments in
+                    fragments.map { ($0, original) }
+                })
+                let fragmentsByOwner = Dictionary(grouping: clips, by: { nextFragmentOwners[$0.1.id] ?? $0.1.id })
+                // The audible source owns a merged fragment before a source
+                // whose onset has only reached the stretcher's preroll.
+                let orderedKeys = voices.keys.sorted { left, right in
+                    let a = voices[left]!, b = voices[right]!
+                    let aAudible = audibleTempoPlayers.contains(ObjectIdentifier(a.player))
+                    let bAudible = audibleTempoPlayers.contains(ObjectIdentifier(b.player))
+                    if aAudible != bAudible { return aAudible }
+                    return a.clip.startTime < b.clip.startTime
+                }
+                for key in orderedKeys {
+                    guard var voice = voices[key], let owner = previousFragmentOwners[key.clip],
+                          let old = previousHeadPositions[key.head], old < voice.clip.startTime + voice.clip.duration else { continue }
+                    let identity = ObjectIdentifier(voice.player)
+                    let audible = audibleTempoPlayers.contains(identity)
+                    let sourcePosition: Double
+                    if audible {
+                        sourcePosition = voice.clip.sourceOffset + (old - voice.clip.startTime) * voice.clip.audioRate
+                    } else if let rendered = committedTempoSources[identity] {
+                        let end = voice.clip.sourceOffset + voice.clip.duration * voice.clip.audioRate
+                        sourcePosition = min(max(voice.clip.sourceOffset, rendered), end - 0.5 / voice.file.processingFormat.sampleRate)
+                    } else { continue }
+                    guard let current = fragmentsByOwner[owner]?.first(where: { track, clip in
+                        track == voice.track && clip.audioFile?.path == voice.clip.audioFile?.path &&
+                        sourcePosition >= clip.sourceOffset && sourcePosition < clip.sourceOffset + clip.duration * clip.audioRate
+                    }) else { continue }
+                    let nextKey = VoiceKey(clip: current.1.id, head: key.head)
+                    if nextKey != key {
+                        guard voices[nextKey] == nil else { continue }
+                        voices[nextKey] = voices.removeValue(forKey: key)
+                    }
+                    // Returning markers to the same rate may merge fragments.
+                    // Append any newly exposed source frames to the running
+                    // queue instead of restarting its decoder and stretcher.
+                    if current.1.loopLength == nil {
+                        let end = min(voice.file.length, AVAudioFramePosition((current.1.sourceOffset + current.1.duration * current.1.audioRate) * voice.file.processingFormat.sampleRate))
+                        let count = end - voice.scheduledSourceEnd
+                        if count > 0 && count <= Int64(UInt32.max) {
+                            let player = voice.player, file = voice.file, first = voice.scheduledSourceEnd
+                            tempoAppendCommands.append {
+                                player.scheduleSegment(file, startingFrame: first,
+                                    frameCount: AVAudioFrameCount(count), at: nil, completionHandler: nil)
+                            }
+                            voice.scheduledSourceEnd = end
+                        }
+                    }
+                    voices[nextKey] = voice
+                    retainedTempoVoices.insert(nextKey)
+                    if audible, !tempoChanged, !rebasedHeads.contains(key.head), let old = previousHeadPositions[key.head],
+                       old >= voice.clip.startTime, old < voice.clip.startTime + voice.clip.duration {
+                        let mapped = current.1.startTime + (sourcePosition - current.1.sourceOffset) / current.1.audioRate
+                        if abs(mapped - old) > 0.0000001 {
+                            if let host = audioHostTime(position: old, head: key.head) { headAudioClock[key.head] = (mapped, host) }
+                            // Keep the UI snapshot's age separate from the
+                            // audible head. Initial source preparation/preroll
+                            // can put them on opposite sides of a tempo edge.
+                            if let previous = previousTransportPositions[key.head] {
+                                let source = voice.clip.sourceOffset + (previous - voice.clip.startTime) * voice.clip.audioRate
+                                lastPosition[key.head] = current.1.startTime + (source - current.1.sourceOffset) / current.1.audioRate
+                            }
+                            rebasedHeads.insert(key.head)
+                        }
+                    }
+                }
+            }
+            for command in tempoAppendCommands { command() }
             for key in Array(voices.keys) {
-                guard let current = byID[key.clip], let voice = voices[key], current.0 == voice.track,
-                      abs(current.1.startTime - voice.clip.startTime * timelineScale) < 0.000001,
-                      abs(current.1.duration - voice.clip.duration * timelineScale) < 0.000001,
-                      current.1.sourceOffset == voice.clip.sourceOffset, current.1.loopStart == voice.clip.loopStart, current.1.loopLength == voice.clip.loopLength,
+                guard let voice = voices[key] else { continue }
+                guard let current = byID[key.clip], current.0 == voice.track,
+                      (retainedTempoVoices.contains(key) ||
+                       (abs(current.1.startTime - voice.clip.startTime * timelineScale) < 0.000001 &&
+                        abs(current.1.duration - voice.clip.duration * timelineScale) < 0.000001)),
+                      (retainedTempoVoices.contains(key) || abs(current.1.sourceOffset - voice.clip.sourceOffset) < 0.000001), current.1.loopStart == voice.clip.loopStart, current.1.loopLength == voice.clip.loopLength,
                       current.1.audioFile?.path == voice.clip.audioFile?.path,
-                      (current.1.frozenMIDI == true) == (voice.clip.frozenMIDI == true) else { remove(key); continue }
+                      (current.1.frozenMIDI == true) == (voice.clip.frozenMIDI == true) else {
+                    if (tempoChanged || markerTempoChanged), let previous = previousHeadPositions[key.head],
+                       voice.clip.startTime > previous, !hasCommittedOnset(voice) {
+                        cancelPendingTempoVoice(key, voice)
+                    } else { remove(key) }
+                    continue
+                }
                 // A scheduled future onset has a wall-clock deadline, so only
                 // that pending voice needs a new deadline after a tempo edit.
                 let position = key.head == 0 ? transport.position : transport.subPlay.position
-                if tempoChanged && current.1.startTime > position { remove(key); continue }
-                let requiresStretch = !realtime || allowsTempoChanges || abs(current.1.audioRate - 1) >= 0.000001 || abs(voice.stretch.pitch) >= 0.000001
+                if (tempoChanged || markerTempoChanged) && current.1.startTime > position &&
+                    !retainedTempoVoices.contains(key) && !hasCommittedOnset(voice) {
+                    // This pending source has only rendered silence. Cancel its
+                    // old deadline without disconnecting the track converter.
+                    // Rebuilding that graph for every future stem stalls the UI.
+                    cancelPendingTempoVoice(key, voice)
+                    continue
+                }
+                let requiresStretch = !realtime || allowsTempoChanges || abs(current.1.audioRate - 1) >= 0.000001 || abs(voice.pitch) >= 0.000001
                 if voice.usesStretch != requiresStretch { remove(key); continue }
                 if current.1.audioRate != voice.clip.audioRate {
-                    configureStretch(voice.stretch, rate: Float(current.1.audioRate), pitch: voice.stretch.pitch)
+                    configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(current.1.audioRate), pitch: voice.pitch)
                 }
                 var updated = voice
                 updated.clip = current.1
@@ -1858,6 +2090,10 @@ struct TimecodePlaybackSpan {
                 voices[key] = updated
 
             }
+            // Pending DSP has only processed silence. Resetting those audio
+            // units synchronously can stall the graph; clearing the source
+            // queue is sufficient, and warmPlayer establishes a fresh clock.
+            for command in tempoResetCommands { command() }
             for key in Array(effectTails.keys) {
                 guard var tail = effectTails[key], let current = byID[key.clip], current.0 == tail.voice.track,
                       (current.1.frozenMIDI == true) == (tail.voice.clip.frozenMIDI == true) else {
@@ -1918,6 +2154,16 @@ struct TimecodePlaybackSpan {
             lastPosition[0] = lastPosition[1]
             lastPosition[1] = nil
         }
+        if tempoChanged || markerTempoChanged {
+            // An edit publishes a remapped transport sample, not a fresh clock
+            // tick. Preserve that sample's age, including time spent computing
+            // the edit, so the following tick cannot look like a forward seek.
+            let head = transport.playing ? 0 : 1
+            let position = head == 0 ? transport.position : transport.subPlay.position
+            if let previous = lastPosition[head] {
+                lastUpdate = now - max(0, elapsed - max(0, position - previous))
+            }
+        }
         let nowHost = mach_absolute_time()
         for (voice, end) in boundaryTails where nowHost >= end { recycle(voice) }
         boundaryTails.removeAll { nowHost >= $0.1 }
@@ -1945,15 +2191,15 @@ struct TimecodePlaybackSpan {
                 for key in Array(voices.keys) where key.head == 0 { remove(key) }
             }
         }
-        let nextJump = upcomingJump(transport, song: song)
+        let nextJump = upcomingJump(transport, song: song, setlist: snapshot.project.regionSetlist)
         if let jump = preparedJump, !transport.playing || jump.revision != revision || nextJump == nil ||
-            nextJump!.0 != jump.boundary || nextJump!.1 != jump.destination || nextJump!.2 != jump.section {
+            nextJump!.0 != jump.boundary || nextJump!.1 != jump.destination || nextJump!.2 != jump.section || nextJump!.3 != jump.region {
             cancelPreparedJump()
         }
         if realtime, preparedJump == nil, let next = nextJump, next.0 - transport.position <= 1.0,
            let host = audioHostTime(position: next.0, head: 0), host > nowHost + AVAudioTime.hostTime(forSeconds: 0.015) {
             appliedJumpBoundaries.removeAll(keepingCapacity: true)
-            preparedJump = PreparedJump(boundary: next.0, destination: next.1, host: host, section: next.2, revision: revision)
+            preparedJump = PreparedJump(boundary: next.0, destination: next.1, host: host, section: next.2, region: next.3, revision: revision)
             headAudioClock[2] = (next.1, host)
         }
         var heads = [(0, transport.playing, transport.position), (1, transport.subPlay.playing, transport.subPlay.position)]
@@ -1965,13 +2211,17 @@ struct TimecodePlaybackSpan {
                 lastPosition[head] = nil; headAudioClock[head] = nil
                 continue
             }
-            if head != 2, let previous = lastPosition[head], abs(position - previous - elapsed) > 0.15 {
+            // A tempo edit remaps project time explicitly. Time spent applying
+            // that edit is not a user seek: restarting here interrupts every
+            // stem and synchronously rebuilds the live audio graph.
+            if head != 2, !tempoChanged, !markerTempoChanged,
+               let previous = lastPosition[head], abs(position - previous - elapsed) > 0.15 {
                 headAudioClock[head] = nil
                 clearEffectTails(head: head)
                 for key in Array(voices.keys) where key.head == head { remove(key) }
             }
             lastPosition[head] = position
-            let regionID = head == 0 ? transport.regionId : head == 1 ? transport.queuedRegionId : nil
+            let regionID = head == 0 ? transport.regionId : head == 1 ? transport.queuedRegionId : preparedJump?.region
             let ignoredAfter = head == 0 ? transport.ignoreNextAfter : nil
             if let ignoredAfter {
                 for key in Array(voices.keys) where key.head == head {
@@ -2011,25 +2261,33 @@ struct TimecodePlaybackSpan {
                 }
             }
             for key in Array(voices.keys) where key.head == head {
-                if let voice = voices[key] {
+                if var voice = voices[key] {
                     let cents = clipPitches[voice.clip.id] ?? 0
                     if voice.usesStretch != (!realtime || allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
-                    if voice.stretch.pitch != cents { configureStretch(voice.stretch, rate: voice.stretch.rate, pitch: cents) }
+                    if voice.pitch != cents {
+                        configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(voice.clip.audioRate), pitch: cents)
+                        voice.pitch = cents; voices[key] = voice
+                    }
                 }
             }
             let prepareEnd: Double? = head == 0 && snapshot.project.regionSetlist?.preparesWithoutPlayback == true && transport.queuedRegionId != nil
                 ? song.parts.first(where: { $0.id == transport.regionId }).map { part in
                     part.parentRegionID.flatMap { id in song.parts.first(where: { $0.id == id }) }?.endTime ?? part.endTime
                 } : nil
+            // Preparation/preroll can leave the UI ahead of rendered audio.
+            // A not-yet-audible fragment still needs its full onset and its
+            // original deadline even when the UI has crossed its start.
+            let schedulingPosition = audiblePosition
             var scheduled: [(VoiceKey, Voice, AVAudioFramePosition, AVAudioFrameCount, Double)] = []
-            for index in playbackClipIndex.candidates(at: position) {
+            let lookahead = 2 + max(0, position - schedulingPosition)
+            for index in playbackClipIndex.candidates(at: schedulingPosition, lookahead: lookahead) {
                 let (track, clip) = clips[index]
                 guard minimumStart == nil || (fragmentStarts[clip.id] ?? clip.startTime) >= minimumStart! else { continue }
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
                 if let ignoredAfter, (fragmentStarts[clip.id] ?? clip.startTime) >= ignoredAfter { continue }
                 let key = VoiceKey(clip: clip.id, head: head)
                 if var voice = voices[key], clip.loopLength != nil {
-                    let deadline = min(clip.startTime + clip.duration, position + 5)
+                    let deadline = min(clip.startTime + clip.duration, schedulingPosition + 5)
                     if voice.scheduledUntil < deadline - 1 {
                         voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: voice.scheduledUntil, until: deadline, onset: false)
                         voices[key] = voice
@@ -2042,15 +2300,16 @@ struct TimecodePlaybackSpan {
                     if (try? audioFile(audio)) == nil { silentVideoFiles.insert(audio.path); continue }
                 }
                 let file = try audioFile(audio)
-                let offset = clip.sourceOffset + max(0, position - clip.startTime) * clip.audioRate
+                let offset = clip.sourceOffset + max(0, schedulingPosition - clip.startTime) * clip.audioRate
                 let first = AVAudioFramePosition(offset * file.processingFormat.sampleRate)
-                let count = min(file.length - first, AVAudioFramePosition((clip.duration - max(0, position - clip.startTime)) * clip.audioRate * file.processingFormat.sampleRate))
+                let count = min(file.length - first, AVAudioFramePosition((clip.duration - max(0, schedulingPosition - clip.startTime)) * clip.audioRate * file.processingFormat.sampleRate))
                 guard clip.loopLength != nil || (first >= 0 && count > 0 && count <= Int64(UInt32.max)) else { continue }
-                let voice = try takeVoice(track: track, clip: clip, file: file)
+                var voice = try takeVoice(track: track, clip: clip, file: file)
                 let player = voice.player
                 // Recycled processors are reset before warming. Do not reset a
                 // running prepared stretcher here: that breaks its input clock.
-                configureStretch(voice.stretch, rate: Float(clip.audioRate), pitch: clipPitches[clip.id] ?? 0)
+                voice.pitch = clipPitches[clip.id] ?? 0
+                configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(clip.audioRate), pitch: voice.pitch)
                 if realtime && !player.isPlaying {
                     if !engine.isRunning { engine.prepare(); try engine.start() }
                     warmPlayer(voice)
@@ -2064,7 +2323,7 @@ struct TimecodePlaybackSpan {
                 JarasVoiceGain.setDecibels(voice.gain, decibels: Double(clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
                 // Register the reserved bus before preparing another overlapping item.
                 voices[key] = voice
-                scheduled.append((key, voice, first, AVAudioFrameCount(max(0, min(Int64(UInt32.max), count))), max(0, clip.startTime - position)))
+                scheduled.append((key, voice, first, AVAudioFrameCount(max(0, min(Int64(UInt32.max), count))), max(0, clip.startTime - schedulingPosition)))
             }
             if !engine.isRunning { engine.prepare(); try engine.start() }
             startMeterClock()
@@ -2093,7 +2352,7 @@ struct TimecodePlaybackSpan {
                 let (key, prepared, first, count, delay) = entry
                 var voice = prepared
                 let clip = voice.clip
-                var playbackTime = realtime ? AVAudioTime(hostTime: audioHostTime(position: position + delay - preparedDelays[index], head: head)!) : nil
+                var playbackTime = realtime ? AVAudioTime(hostTime: audioHostTime(position: schedulingPosition + delay - preparedDelays[index], head: head)!) : nil
                 if !realtime && delay > 0 {
                     playbackTime = AVAudioTime(sampleTime: AVAudioFramePosition((delay * voice.file.processingFormat.sampleRate * clip.audioRate).rounded()), atRate: voice.file.processingFormat.sampleRate)
                 }
@@ -2105,17 +2364,21 @@ struct TimecodePlaybackSpan {
                         playbackTime = AVAudioTime(sampleTime: anchor.player.sampleTime + sample - anchor.node.sampleTime, atRate: anchor.player.sampleRate)
                     }
                 }
+                voice.scheduledOnset = playbackTime ?? AVAudioTime(sampleTime: 0, atRate: voice.file.processingFormat.sampleRate)
+                voice.scheduledProcessingDelay = preparedDelays[index]
+                voice.scheduledSourceStart = first
                 let fadeLatency = realtime ? max(0, (voice.effects?.equalizer.outputPresentationLatency ?? referenceLatency) - referenceLatency) : 0
-                let fadeHost = realtime ? (audioHostTime(position: position + delay - fadeLatency, head: head) ?? 0) : 0
+                let fadeHost = realtime ? (audioHostTime(position: schedulingPosition + delay - fadeLatency, head: head) ?? 0) : 0
                 let fadeSample = realtime ? 0 : (Double(engine.manualRenderingSampleTime) / engine.manualRenderingFormat.sampleRate + delay) * voice.file.processingFormat.sampleRate
-                voice.effects?.configureItemFade(clip, position: max(clip.startTime, position), hostTime: fadeHost, sampleTime: fadeSample)
+                voice.effects?.configureItemFade(clip, position: max(clip.startTime, schedulingPosition), hostTime: fadeHost, sampleTime: fadeSample)
                 if clip.loopLength != nil {
-                    voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: max(clip.startTime, position), until: max(clip.startTime, position) + 5, onset: true, at: playbackTime)
+                    voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: max(clip.startTime, schedulingPosition), until: max(clip.startTime, schedulingPosition) + 5, onset: true, at: playbackTime)
                 } else {
                     let command = commands[index]!
                     let time = playbackTime
                     startCommands.append { command(time) }
                     voice.scheduledUntil = clip.startTime + clip.duration
+                    voice.scheduledSourceEnd = first + AVAudioFramePosition(count)
                 }
                 voices[key] = voice
             }
@@ -2128,6 +2391,15 @@ struct TimecodePlaybackSpan {
             if !realtime { for (_, voice, _, _, _) in scheduled { voice.player.play() } }
         }
         if let jump = preparedJump {
+            // The generator deduplicates this deadline. Retry until its previous
+            // edge has rendered, so a short loop cannot overwrite the first beat
+            // while the UI is already preparing the following jump.
+            for generator in [metronome, clickGenerators.first].compactMap({ $0 }) {
+                let sample = nodeSampleTime(host: jump.host, anchor: generator.node.lastRenderTime ?? engine.outputNode.lastRenderTime)
+                generator.scheduleJump(jump.destination, hostTime: jump.host, sampleTime: sample.map(Double.init) ?? .nan,
+                    loopStart: jump.section == nil && jump.region == nil ? transport.loop.start ?? 0 : 0,
+                    loopEnd: jump.section == nil && jump.region == nil ? transport.loop.end ?? 0 : 0)
+            }
             // Both heads use the same host clock. Rendering fades the outgoing
             // source at the boundary; no UI timer stops or restarts the audio.
             var reference: Double?
@@ -2173,7 +2445,7 @@ struct TimecodePlaybackSpan {
     func observeTrackPeak(_ id: UUID, left: Double, right: Double, elapsed: Double) {
         let peak = max(left, right)
         if let meter = meters[id] { meter.update(left: left, right: right, elapsed: elapsed) }
-        else if peak >= 1 { meter(for: id).update(left: left, right: right, elapsed: elapsed) }
+        else if peak >= TrackMeterLevel.PeakHold.displayThreshold { meter(for: id).update(left: left, right: right, elapsed: elapsed) }
         if peak >= TrackMeterLevel.PeakHold.muteThreshold, tracks[id]?.mute == false, let onPeakLimit {
             previewMute(id, muted: true)
             onPeakLimit(id)
@@ -2225,13 +2497,15 @@ import Combine
 struct VerticalTrackMeter: NSViewRepresentable {
     let meter: TrackMeterLevel
     let showScale: Bool
+    var foreground: Color = .white
+    var peakOnly = false
     func makeNSView(context: Context) -> NativeVerticalTrackMeterView {
         let view = NativeVerticalTrackMeterView()
-        view.bind(meter, showScale: showScale)
+        view.bind(meter, showScale: showScale, foreground: NSColor(foreground), peakOnly: peakOnly)
         return view
     }
     func updateNSView(_ view: NativeVerticalTrackMeterView, context: Context) {
-        view.bind(meter, showScale: showScale)
+        view.bind(meter, showScale: showScale, foreground: NSColor(foreground), peakOnly: peakOnly)
     }
 }
 
@@ -2301,6 +2575,8 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private var peakDB: Double?
     private var levels = SIMD2<Double>(repeating: 0)
     private var showScale = false
+    private var textColor = NSColor.white
+    private var peakOnly = false
     private var pendingDrawing = true
     private var pendingPeak = true
     private weak var observedWindow: NSWindow?
@@ -2320,13 +2596,11 @@ struct VerticalTrackMeter: NSViewRepresentable {
         .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .semibold),
         .foregroundColor: NSColor.white
     ]
-    private static let peakAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .bold), .foregroundColor: NSColor.systemRed
-    ]
+    private static let peakFont = NSFont.monospacedSystemFont(ofSize: 6.5, weight: .bold)
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         let actions = Dictionary(uniqueKeysWithValues:
-            ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity"].map { ($0, NSNull()) })
+            ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity", "backgroundColor", "borderColor"].map { ($0, NSNull()) })
         for content in backgrounds + levelClips + gradients + scaleLabels + [peakLabel] { content.actions = actions }
         wantsLayer = true
         layer?.masksToBounds = true
@@ -2349,11 +2623,10 @@ struct VerticalTrackMeter: NSViewRepresentable {
             let label = scaleLabels[index]
             label.name = "meter-scale-\(index)"
             label.string = NSAttributedString(string: text, attributes: Self.scaleAttributes)
-            label.backgroundColor = NSColor.black.withAlphaComponent(0.68).cgColor
-            label.cornerRadius = 1.5
             layer?.addSublayer(label)
         }
         peakLabel.name = "meter-peak"; peakLabel.isHidden = true
+        peakLabel.alignmentMode = .center
         layer?.addSublayer(peakLabel)
         installedLayer = layer
         setAccessibilityRole(.image)
@@ -2372,8 +2645,31 @@ struct VerticalTrackMeter: NSViewRepresentable {
         super.viewWillDraw()
         refreshVisibleDrawing()
     }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    func bind(_ meter: TrackMeterLevel, showScale: Bool) {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Only the reserved number rectangle consumes a click. The bars and
+        // scale remain transparent to track selection, scrolling and dragging.
+        let local = convert(point, from: superview)
+        guard showScale, !isHiddenOrHasHiddenAncestor, bounds.contains(local), peakLabel.frame.contains(local) else { return nil }
+        return self
+    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        guard showScale, peakLabel.frame.contains(convert(event.locationInWindow, from: nil)) else { return }
+        meter?.peakHold.clear()
+    }
+    func bind(_ meter: TrackMeterLevel, showScale: Bool, foreground: NSColor = .white, peakOnly: Bool = false) {
+        let color = foreground
+        if self.peakOnly != peakOnly || !textColor.isEqual(color) {
+            if self.peakOnly != peakOnly { geometryScale = 0 }
+            self.peakOnly = peakOnly; textColor = color
+            layer?.backgroundColor = nil
+            var attributes = Self.scaleAttributes
+            attributes[.foregroundColor] = color
+            for (index, text) in ["0", "−24", "−∞"].enumerated() {
+                scaleLabels[index].string = NSAttributedString(string: text, attributes: attributes)
+            }
+            pendingPeak = true
+        }
         if self.showScale != showScale { self.showScale = showScale; pendingDrawing = true; pendingPeak = true }
         if self.meter !== meter {
             self.meter = meter
@@ -2425,8 +2721,13 @@ struct VerticalTrackMeter: NSViewRepresentable {
         guard geometrySize != bounds.size || geometryScale != scale || geometryShowsScale != showScale else { return }
         geometrySize = bounds.size; geometryScale = scale; geometryShowsScale = showScale
         let width = floor(max(0, min(4.5, (bounds.width - 1) / 2)) * scale) / scale
+        // The Track Mixer keeps full-height bars and a transparent peak number
+        // after the separate MIDI meter, leaving four points between the bars.
+        let sidePeak = peakOnly && showScale
+        let peakHeight = min(12, bounds.height)
+        let barHeight = bounds.height
         for channel in 0..<2 {
-            let rect = CGRect(x: CGFloat(channel) * (width + 1), y: 0, width: width, height: bounds.height)
+            let rect = CGRect(x: CGFloat(channel) * (width + 1), y: 0, width: width, height: barHeight)
             backgrounds[channel].frame = rect
             levelClips[channel].frame = rect
             // A fixed full-height gradient is clipped from the bottom. Scaling
@@ -2439,9 +2740,14 @@ struct VerticalTrackMeter: NSViewRepresentable {
             let size = (label.string as! NSAttributedString).size()
             let x = 13 + max(0, (bounds.width - 13 - size.width) / 2)
             label.frame = CGRect(x: x, y: max(0, bounds.height - size.height) * fraction, width: size.width, height: size.height)
-            label.contentsScale = scale; label.isHidden = !showScale
+            label.contentsScale = scale; label.isHidden = !showScale || peakOnly
         }
         peakLabel.contentsScale = scale
+        peakLabel.backgroundColor = nil
+        peakLabel.frame = sidePeak
+            ? CGRect(x: 21, y: 0, width: max(0, bounds.width - 21), height: peakHeight)
+            : CGRect(x: 13, y: max(0, bounds.height - peakHeight) * 0.75,
+                     width: max(0, bounds.width - 13), height: peakHeight)
         pendingDrawing = true; pendingPeak = true
     }
     fileprivate func resumeVisibleDrawing() {
@@ -2451,6 +2757,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
     fileprivate func refreshVisibleDrawing() {
         if let layer, installedLayer !== layer || backgrounds.contains(where: { $0.superlayer !== layer }) || levelClips.contains(where: { $0.superlayer !== layer }) {
             layer.masksToBounds = true
+            layer.backgroundColor = nil
             for channel in 0..<2 { layer.addSublayer(backgrounds[channel]); layer.addSublayer(levelClips[channel]) }
             for label in scaleLabels { layer.addSublayer(label) }
             layer.addSublayer(peakLabel); installedLayer = layer
@@ -2468,18 +2775,17 @@ struct VerticalTrackMeter: NSViewRepresentable {
                 let level = levels[channel]
                 let fraction = level > 0 && level.isFinite ? min(1, max(0, (20 * log10(level) + 60) / 60)) : 0
                 var rect = levelClips[channel].frame
-                rect.size.height = bounds.height * fraction
+                rect.size.height = backgrounds[channel].bounds.height * fraction
                 if levelClips[channel].frame != rect { levelClips[channel].frame = rect }
             }
             pendingDrawing = false
         }
         if pendingPeak {
-            peakLabel.isHidden = !showScale || peakDB == nil
-            if let peakDB, showScale {
-                let text = NSAttributedString(string: String(format: "%+.2f", peakDB), attributes: Self.peakAttributes)
+            peakLabel.isHidden = !showScale
+            if showScale {
+                let text = NSAttributedString(string: peakDB.map { String(format: "%+.2f", $0) } ?? "",
+                    attributes: [.font: Self.peakFont, .foregroundColor: textColor])
                 if (peakLabel.string as? NSAttributedString) != text { peakLabel.string = text }
-                let size = text.size()
-                peakLabel.frame = CGRect(x: 13, y: max(0, bounds.height - size.height) * 0.75, width: size.width, height: size.height)
             }
             pendingPeak = false
         }
@@ -2490,6 +2796,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
 struct VerticalTrackMeter: View {
     @ObservedObject var meter: TrackMeterLevel
     let showScale: Bool
+    var foreground: Color = .white
+    var peakOnly = false
+    private var textColor: Color { foreground }
     var body: some View {
         HStack(spacing: 3) {
             HStack(spacing: 1) {
@@ -2498,21 +2807,23 @@ struct VerticalTrackMeter: View {
             }.frame(width: 10)
             if showScale {
                 VStack(spacing: 0) {
-                    scaleLabel("0")
+                    scaleSlot("0")
                     Spacer(minLength: 0)
-                    if let db = meter.peakHold.decibels { Text(String(format: "%+.2f", db)).foregroundStyle(.red) }
+                    TrackPeakReadout(peak: meter.peakHold, compact: true, foreground: textColor)
                     Spacer(minLength: 0)
-                    scaleLabel("−24")
+                    scaleSlot("−24")
                     Spacer(minLength: 0)
-                    scaleLabel("−∞")
-                }.font(.system(size: 7, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+                    scaleSlot("−∞")
+                }.font(.system(size: 7, design: .monospaced)).foregroundStyle(textColor)
             }
-        }.allowsHitTesting(false).accessibilityLabel("Stereo meter, L and R")
+        }.frame(maxWidth: peakOnly ? .infinity : nil)
+            .accessibilityLabel("Stereo meter, L and R")
     }
-    private func scaleLabel(_ text: String) -> some View {
-        Text(verbatim: text).font(.system(size: 7, weight: .semibold, design: .monospaced))
-            .foregroundStyle(.white)
-            .background(Color.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 1.5))
+    private func scaleSlot(_ text: String) -> some View {
+        // Blank typography preserves the existing peak position without drawing
+        // or exposing the fixed scale numbers in the Track Mixer style.
+        Text(verbatim: peakOnly ? " " : text).font(.system(size: 7, weight: .semibold, design: .monospaced))
+            .foregroundStyle(textColor).accessibilityHidden(peakOnly)
     }
     private func channel(_ level: Double) -> some View {
         GeometryReader { geometry in
@@ -2534,9 +2845,17 @@ private final class PreparedSoundFont: @unchecked Sendable {
 
 struct TrackPeakReadout: View {
     @ObservedObject var peak: TrackMeterLevel.PeakHold
+    var compact = false
+    var foreground: Color = .white
+    var redAtZero = false
     var body: some View {
-        Group {
-            if let db = peak.decibels { Text(verbatim: String(format: "%+.2f", db)).font(.system(size: 8, weight: .bold, design: .monospaced)).foregroundStyle(.red).fixedSize() }
-        }.allowsHitTesting(false)
+        Button { peak.clear() } label: {
+            Text(verbatim: peak.decibels.map { String(format: "%+.2f", $0) } ?? "")
+                .font(.system(size: compact ? 6.5 : 8, weight: .bold, design: .monospaced))
+                .foregroundStyle(redAtZero && (peak.decibels ?? -24) >= 0 ? Color.red : foreground)
+                .frame(width: compact ? 27 : 34, height: 12)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Reset peak")
+            .accessibilityValue(peak.decibels.map { String(format: "%+.2f dB", $0) } ?? "")
     }
 }

@@ -19,6 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound;
 - (void)setGainA:(float)a gainB:(float)b;
 - (void)setEnabled:(BOOL)enabled;
+// Execute a discontinuity on the audio clock, even if the UI delivers its next tick late.
+- (void)scheduleJump:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime loopStart:(double)loopStart loopEnd:(double)loopEnd;
+- (void)cancelJump;
 - (void)configurePosition:(double)position hostTime:(uint64_t)hostTime running:(BOOL)running loopStart:(double)loopStart loopEnd:(double)loopEnd sampleTime:(double)sampleTime;
 @end
 NS_ASSUME_NONNULL_END

@@ -6,6 +6,8 @@ import SwiftUI
     var pinnedTracks = Set<UUID>()
 }
 
+final class NativeVerticalTrackMeterView: NSView {}
+
 // INSERT_NATIVE_TRACK_MIXER_VISIBILITY
 
 private final class VisibilityDocument: NSView {

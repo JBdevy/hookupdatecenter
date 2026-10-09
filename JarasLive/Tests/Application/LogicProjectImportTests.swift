@@ -80,7 +80,11 @@ final class LogicProjectImportTests: XCTestCase {
         var openedProject = result.project
         GlobalProjectTiming(bpm: 200).applyOnOpen(to: &openedProject)
         XCTAssertEqual(openedProject, result.project, "global timing cannot move imported clips or markers")
-        XCTAssertFalse(openedProject.songs[0].tempoMarkersAffectAudio)
+        XCTAssertEqual(openedProject.songs[0].projectTime.timebase, .relative)
+        for track in openedProject.songs[0].tracks { for clip in track.clips {
+            XCTAssertTrue(openedProject.songs[0].tempoAudioSegments(clip).allSatisfy { abs($0.audioRate - clip.audioRate) < 1e-9 },
+                          "Imported tempo markers preserve the recorded audio until explicitly edited")
+        } }
         let destination = directory.appendingPathComponent("Migrated.jl")
         try LogicProjectImporter.save(result, to: destination)
         let loaded = try await ProjectStore(url: destination).load()

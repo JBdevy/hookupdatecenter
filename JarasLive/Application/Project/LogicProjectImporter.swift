@@ -68,7 +68,7 @@ public enum LogicProjectImporter {
         var project = Project.empty(name: name)
         project.importedTimeline = true
         var song = project.songs[0]
-        song.name = name; song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = .legacy
+        song.name = name; song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = ProjectTimeSettings()
         let rate = (metadata["SampleRate"] as? NSNumber)?.doubleValue ?? 44100
         let defaultBPM = (metadata["BeatsPerMinute"] as? NSNumber)?.doubleValue ?? 120
         guard (8000...768000).contains(rate), (1...1000).contains(defaultBPM) else { throw invalid("Invalid sample rate or tempo.") }
@@ -110,7 +110,7 @@ public enum LogicProjectImporter {
         let beats = song.meterBeats, unit = song.meterUnit
         for point in tempos where point.tick >= 0 {
             song.markers?.append(TimelineMarker(id: UUID(), name: String(format: "%g", point.bpm), position: seconds(point.tick), color: 0xAAAAAA,
-                tempoBPM: point.bpm, tempoBeats: beats, tempoUnit: unit, tempoTimebase: .free))
+                tempoBPM: point.bpm, tempoBeats: beats, tempoUnit: unit, tempoTimebase: .global, tempoReferenceBPM: point.bpm))
         }
         var files: [Int: FileReference] = [:]
         var regions: [String: Bytes] = [:]

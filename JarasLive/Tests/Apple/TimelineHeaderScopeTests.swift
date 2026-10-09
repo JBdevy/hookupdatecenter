@@ -11,13 +11,14 @@ final class HeaderTestState: ObservableObject {
 }
 private struct Song {}
 private final class HeaderSnapShow {
-    struct Transport { var editPosition: Double? = 10; var position = 5.0 }
+    struct SubPlay { var playing = false; var position = 0.0 }
+    struct Transport { var editPosition: Double? = 10; var position = 5.0; var subPlay = SubPlay() }
     struct Snapshot { var transport = Transport() }
     var snapshot = Snapshot()
 }
 private enum TimelineTempo {
     static var lastCursor: Double?
-    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool, cursor: Double, gridTolerancePixels: Double = .infinity) -> Double {
+    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool, cursor: Double, otherCursors: [Double], excludingRegion: UUID?) -> Double {
         lastCursor = cursor
         return time
     }

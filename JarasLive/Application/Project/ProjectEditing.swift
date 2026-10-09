@@ -151,11 +151,7 @@ public extension Project {
                 guard let index = songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
                 if songs[song].tracks[track].clips[index].isProjectionMedia {
-                    let clip = songs[song].tracks[track].clips[index]
-                    if clip.isImage {
-                        songs[song].tracks[track].clips[index].startTime = start
-                        songs[song].tracks[track].clips[index].duration = end - start
-                    } else { songs[song].tracks[track].clips[index] = clip.resized(start: start, end: end) }
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
                 } else if songs[song].tracks[track].kind == .timecode {
                     if songs[song].tracks[track].importedTimecodeItems == true {
                         songs[song].tracks[track].clips[index].startTime = start
@@ -169,8 +165,7 @@ public extension Project {
                     songs[song].tracks[track].clips[index].startTime = start
                     songs[song].tracks[track].clips[index].duration = end - start
                 } else if songs[song].tracks[track].kind.isText && !songs[song].tracks[track].clips[index].isProjectionMedia {
-                    songs[song].tracks[track].clips[index].startTime = start
-                    songs[song].tracks[track].clips[index].duration = end - start
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
                 } else if songs[song].tracks[track].kind == .standard {
                     songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
                 } else { continue }
@@ -188,7 +183,7 @@ public extension Project {
                     var left = clip, right = clip
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
-                    if textTrack && !clip.isProjectionMedia { return [left, right] }
+                    if textTrack && !clip.isProjectionMedia && clip.loopLength == nil { return [left, right] }
                     right.sourceOffset += left.duration * clip.audioRate
                     let fraction = left.duration / clip.duration
                     func pieces(_ peaks: [Double]) -> ([Double], [Double]) {

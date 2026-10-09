@@ -81,6 +81,9 @@ enum StemProjectImporter {
         let batch = UUID().uuidString
         var audioNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Stems"))
         var videoNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Videos"))
+        let projectDirectory = destination.deletingLastPathComponent().resolvingSymlinksInPath()
+        var audioMedia = ExistingProjectMedia(directory: projectDirectory.appendingPathComponent("Stems"))
+        var videoMedia = ExistingProjectMedia(directory: projectDirectory.appendingPathComponent("Videos"))
         var folders: [URL] = []
         do {
             var tracks: [Track] = []
@@ -91,19 +94,29 @@ enum StemProjectImporter {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 progress?(index, sources.count, url.lastPathComponent)
-                let name = isVideo ? videoNames.allocate(url.lastPathComponent) : audioNames.allocate(url.lastPathComponent)
-                let relative = (isVideo ? "Videos/" : "Stems/") + batch
-                let folder = destination.deletingLastPathComponent().appendingPathComponent(relative, isDirectory: true)
-                if !folders.contains(folder) {
-                    try fm.createDirectory(at: folder, withIntermediateDirectories: true); folders.append(folder)
+                let existing = try (isVideo ? videoMedia : audioMedia).identical(to: url)
+                let copied: URL
+                if let existing {
+                    copied = existing
+                } else {
+                    let name = isVideo ? videoNames.allocate(url.lastPathComponent) : audioNames.allocate(url.lastPathComponent)
+                    let folder = projectDirectory.appendingPathComponent((isVideo ? "Videos/" : "Stems/") + batch, isDirectory: true)
+                    if !folders.contains(folder) {
+                        try fm.createDirectory(at: folder, withIntermediateDirectories: true); folders.append(folder)
+                    }
+                    copied = folder.appendingPathComponent(name)
+                    try fm.copyItem(at: url, to: copied)
+                    if isVideo { try videoMedia.register(copied) } else { try audioMedia.register(copied) }
                 }
-                let copied = folder.appendingPathComponent(name)
-                try fm.copyItem(at: url, to: copied)
+                let basePath = (projectDirectory.path as NSString).resolvingSymlinksInPath
+                let copiedPath = (copied.path as NSString).resolvingSymlinksInPath
+                guard copiedPath.hasPrefix(basePath + "/") else { throw ProjectError.invalid("Imported media must stay inside the project folder") }
+                let mediaPath = String(copiedPath.dropFirst(basePath.count + 1))
                 if isVideo && !AVURLAsset(url: copied).tracks(withMediaType: .audio).isEmpty { _ = try AudioFileRead.openMedia(copied) }
                 let overview = isVideo ? (waveform: [Double](), peak: 0.0, channels: [[Double]]()) : try audioOverview(copied, duration: source.duration)
                 let itemName = url.deletingPathExtension().lastPathComponent
                 let clip = AudioClip(id: UUID(), name: itemName, startTime: layout == .sameTrack ? cursor : start, duration: source.duration,
-                                     waveform: overview.waveform, audioFile: AudioFile(path: relative + "/" + name), waveformChannels: overview.channels)
+                                     waveform: overview.waveform, audioFile: AudioFile(path: mediaPath), waveformChannels: overview.channels)
                 if layout == .sameTrack, !tracks.isEmpty { tracks[0].clips.append(clip) }
                 else {
                     let trackID = tracks.count < destinationTracks.count ? destinationTracks[tracks.count] : UUID()

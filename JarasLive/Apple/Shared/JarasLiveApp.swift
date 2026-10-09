@@ -39,7 +39,14 @@ import UIKit
             appContent.handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .windowStyle(.hiddenTitleBar)
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .pasteboard) {
+                Button("Cut") { RegionShortcutView.performClipboard("x") }.keyboardShortcut("x")
+                Button("Copy") { RegionShortcutView.performClipboard("c") }.keyboardShortcut("c")
+                Button("Paste") { RegionShortcutView.performClipboard("v") }.keyboardShortcut("v")
+            }
+        }
         #else
         WindowGroup("CatLive") {
             appContent.statusBarHidden(true).persistentSystemOverlays(.hidden)

@@ -86,19 +86,76 @@ let nextClock = RemoteLocalTimer.localTime(at: now.addingTimeInterval(1))
 precondition(firstClock.count == 8 && firstClock != nextClock, "wall-clock readout uses local Date independently of the countdown")
 
 let app = NSApplication.shared
-let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 260), styleMask: [.titled], backing: .buffered, defer: false)
-window.isReleasedWhenClosed = false
-let host = NSHostingView(rootView: RemoteNativeTimerView(timer: timer, send: { _, _, _ in fatalError("test must not send bridge commands") }, close: {}))
-window.contentView = host
-window.orderFront(nil)
-host.layoutSubtreeIfNeeded()
-RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+app.setActivationPolicy(.regular); app.finishLaunching()
+func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
 func editableFields(_ view: NSView) -> [NSTextField] {
     if let field = view as? NSTextField, field.isEditable { return [field] }
     return view.subviews.flatMap(editableFields)
 }
-precondition(editableFields(host).count == 3, "small floating timer has exactly three native editable duration fields")
-precondition(host.fittingSize.width <= 310, "timer remains a compact floating control")
-window.close()
+func nativeButtons(_ view: NSView) -> [NSButton] {
+    (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(nativeButtons)
+}
+func press(_ title: String, in object: Any) {
+    if let sheet = object as? NSWindow, let content = sheet.contentView,
+       let button = nativeButtons(content).first(where: { $0.title == title }) {
+        let parent = sheet.sheetParent
+        button.performClick(nil)
+        for _ in 0..<25 { settle(); if parent?.attachedSheet == nil { break } }
+        return
+    }
+    guard let view = object as? NSView, let window = view.window else { fatalError("Missing button container") }
+    let compact = title == "Start timer" || title == "Stop timer"
+    let local = NSPoint(x: compact ? view.bounds.maxX - 17 : view.bounds.midX,
+                        y: compact ? view.bounds.midY : view.isFlipped ? view.bounds.maxY - 33 : view.bounds.minY + 33)
+    let point = view.convert(local, to: nil)
+    func event(_ type: NSEvent.EventType) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    NSApp.postEvent(event(.leftMouseUp), atStart: false)
+    window.sendEvent(event(.leftMouseDown))
+    if let up = NSApp.nextEvent(matching: .leftMouseUp, until: Date(timeIntervalSinceNow: 0.01), inMode: .default, dequeue: true) { window.sendEvent(up) }
+    settle()
+}
+for compact in [false, true] {
+    let uiTimer = RemoteLocalTimer(now: { uptime })
+    uiTimer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: false, remainingSeconds: 0))
+    var commands: [(DAWRemoteCommand.Action, Double, UUID)] = []
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: compact ? 60 : 260), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let host = NSHostingView(rootView: RemoteNativeTimerView(timer: uiTimer, send: { commands.append(($0, $1, $2)) }, close: {}, compact: compact))
+    window.contentView = host; window.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true)
+    host.layoutSubtreeIfNeeded(); window.setContentSize(host.fittingSize); settle()
+    precondition(editableFields(host).count == 3, "each remote timer has three editable duration fields")
+    precondition(host.fittingSize.width <= 310, "timer remains a compact floating control")
+    let startLabel = compact ? "Start timer" : "Start", stopLabel = compact ? "Stop timer" : "Stop"
+    press(startLabel, in: host)
+    precondition(uiTimer.running && commands.count == 1 && commands[0].0 == .timerStart && window.attachedSheet == nil,
+                 "remote Start changes local state and sends immediately without a dialog")
+    let pendingRun = uiTimer.runID
+    press(stopLabel, in: host)
+    precondition(uiTimer.running && commands.count == 1 && uiTimer.runID == pendingRun,
+                 "opening Stop confirmation neither stops locally nor sends a remote command")
+    guard let cancelAlert = window.attachedSheet else { fatalError("remote Stop must show confirmation") }
+    uptime += 1
+    precondition(uiTimer.displayText() == "00:01:29", "timer continues counting while confirmation is visible")
+    press("Cancel", in: cancelAlert)
+    precondition(uiTimer.running && commands.count == 1 && uiTimer.runID == pendingRun, "Cancel keeps timer running and sends nothing")
+    press(stopLabel, in: host)
+    guard let stopAlert = window.attachedSheet else { fatalError("remote Stop confirmation can reopen") }
+    press("Stop timer", in: stopAlert)
+    precondition(!uiTimer.running && uiTimer.displayText() == "00:00:00" && uiTimer.targetText == "00:01:30" &&
+                 commands.count == 2 && commands[1].0 == .timerStop,
+                 "confirmed Stop performs the existing local reset and sends exactly one timerStop")
+    press(startLabel, in: host)
+    let staleRun = uiTimer.runID
+    press(stopLabel, in: host)
+    uiTimer.resetSynchronization()
+    uiTimer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: true, remainingSeconds: 89))
+    settle()
+    precondition(uiTimer.running && uiTimer.runID != staleRun && uiTimer.stop(ifRunID: staleRun) == nil && commands.count == 3,
+                 "an observed host restart invalidates pending confirmation without stopping or sending")
+    window.close()
+}
 withExtendedLifetime(observation) {}
-print("REMOTE_LOCAL_TIMER_MONOTONIC_NO_TICK_BRIDGE_SYNC_RECONNECT_AND_COMPACT_INPUTS_OK")
+print("REMOTE_LOCAL_TIMER_SYNC_COMPACT_FLOATING_START_STOP_CONFIRM_CANCEL_STALE_RUN_OK")

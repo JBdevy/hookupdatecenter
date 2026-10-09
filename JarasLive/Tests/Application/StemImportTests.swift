@@ -3,6 +3,29 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testGridDropReusesOnlyMatchingNameAndContents() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try fixture(root, folder: "Source", file: "Song.wav").appendingPathComponent("Song.wav")
+        let project = root.appendingPathComponent("Project/Show.jl")
+        func drop(_ url: URL) throws -> StemProjectImporter.DroppedAudio {
+            try StemProjectImporter.prepareDroppedAudio([url], start: 0, destinationTracks: [], destination: project)
+        }
+        let first = try drop(source)
+        let second = try drop(source)
+        XCTAssertEqual(first.tracks[0].clips[0].audioFile?.path, second.tracks[0].clips[0].audioFile?.path)
+        XCTAssertNotEqual(first.tracks[0].clips[0].id, second.tracks[0].clips[0].id)
+        XCTAssertTrue(second.folders.isEmpty)
+        let renamed = source.deletingLastPathComponent().appendingPathComponent("Renamed.wav")
+        try FileManager.default.copyItem(at: source, to: renamed)
+        let third = try drop(renamed)
+        XCTAssertNotEqual(first.tracks[0].clips[0].audioFile?.path, third.tracks[0].clips[0].audioFile?.path)
+        let different = try fixture(root, folder: "Different", file: "Song.wav", seconds: 0.2).appendingPathComponent("Song.wav")
+        let fourth = try drop(different)
+        XCTAssertTrue(fourth.tracks[0].clips[0].audioFile!.path.hasSuffix("/Song-001.wav"))
+        let retained = project.deletingLastPathComponent().appendingPathComponent(first.tracks[0].clips[0].audioFile!.path)
+        XCTAssertTrue(FileManager.default.contentsEqual(atPath: source.path, andPath: retained.path))
+    }
     func testOverviewAcceptsMP3WithShortOverstatedGaplessTail() throws {
         guard let path = ProcessInfo.processInfo.environment["JARAS_MP3_EOF_FIXTURE"] else {
             throw XCTSkip("Set JARAS_MP3_EOF_FIXTURE to exercise a real MP3 gapless-header mismatch")

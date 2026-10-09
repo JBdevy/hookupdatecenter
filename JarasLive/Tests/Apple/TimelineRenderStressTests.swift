@@ -1,5 +1,37 @@
 
 @MainActor func renderStress() throws {
+    // The Canvas fallback must retain the same cutout as the native Metal
+    // surface for media and text, not just ordinary audio tracks.
+    for role in ["standard", "teleprompt", "video"] {
+        for path in [String?.none, "Videos/image.jpg", "Videos/video.mp4"] {
+            if role != "teleprompt" && path == nil { continue }
+            var clip = AudioClip(id: UUID(), name: "Repeat", startTime: 0, duration: 6,
+                audioFile: path.map { AudioFile(path: $0) }, text: path == nil ? "Lyrics" : nil)
+            clip.loopLength = 2; clip.sourceOffset = 0.5
+            let track = Track(id: UUID(), name: "Media", role: TrackRole(rawValue: role))
+            let area = CGRect(x: 0, y: 0, width: 240, height: 64)
+            let canvas = Canvas { context, _ in
+                drawTimelineItem(clip, track: track, rect: area, selected: false, silenced: false,
+                    scale: 40, tile: area, context: &context)
+            }.frame(width: 240, height: 64)
+            let renderer = ImageRenderer(content: canvas); renderer.scale = 1
+            guard let image = renderer.cgImage else { preconditionFailure("repeated media must render") }
+            var bytes = [UInt8](repeating: 0, count: 240 * 64 * 4)
+            bytes.withUnsafeMutableBytes { buffer in
+                let context = CGContext(data: buffer.baseAddress, width: 240, height: 64, bitsPerComponent: 8,
+                    bytesPerRow: 240 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(image, in: area)
+            }
+            for x in [60, 140, 220] {
+                precondition(bytes[(62 * 240 + x) * 4 + 3] < 10,
+                    "\(role) / \(path ?? "lyrics"): repeat start has a transparent bottom triangle")
+                precondition(bytes[(62 * 240 + x + 10) * 4 + 3] > 100,
+                    "the area beside the repetition remains filled")
+            }
+        }
+    }
+    print("CANVAS_TEXT_IMAGE_VIDEO_REPEAT_CUTOUT_PIXELS_OK")
     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("jaras-many-items-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: temporary) }

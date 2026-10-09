@@ -267,7 +267,7 @@ func verifyFrozenItem() throws {
                                   settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
     precondition(a.id == original.id && a.startTime == original.startTime && a.duration == original.duration)
     precondition(a.muted == true && a.gain == 1 && a.normalizationGain == nil && a.fx == nil && a.audioRate == 1 && a.sourceOffset == 0)
-    precondition(a.audioFile?.path == "Stems/click-01.wav")
+    precondition(a.audioFile?.path == "Stems/click-001.wav")
     let audio = try AVAudioFile(forReading: root.appendingPathComponent(a.audioFile!.path))
     let pcm = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(audio.length))!
     try audio.read(into: pcm)
@@ -275,10 +275,10 @@ func verifyFrozenItem() throws {
     precondition(abs(maximum - 0.05) < 0.003, "freeze bakes normalization and item gain once while leaving track volume, pan and mute live")
     let b = try ItemReRender.render(project: freeze, song: freeze.songs[0], track: channel, clip: original, directory: root,
                                   settings: MediaProcessingFormat(format: .aiff, bitDepth: 32, bitrate: 320), cancellation: AudioExportCancellation())
-    precondition(b.audioFile?.path == "Stems/click-01.aiff")
+    precondition(b.audioFile?.path == "Stems/click-001.aiff")
     let c = try ItemReRender.render(project: freeze, song: freeze.songs[0], track: channel, clip: a, directory: root,
                                   settings: MediaProcessingFormat(format: .wav, bitDepth: 24, bitrate: 320), cancellation: AudioExportCancellation())
-    precondition(c.audioFile?.path == "Stems/click-02.wav")
+    precondition(c.audioFile?.path == "Stems/click-002.wav")
     precondition(FileManager.default.fileExists(atPath: root.appendingPathComponent(original.audioFile!.path).path))
     precondition(FileManager.default.fileExists(atPath: root.appendingPathComponent(a.audioFile!.path).path), "all previous sources remain available for Undo")
     print("FREEZE_ITEM_GAIN_ONCE_SOURCE_PRESERVATION_EXACT_POSITION_AND_SEQUENTIAL_SUFFIX_OK")

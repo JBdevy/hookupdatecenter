@@ -11,3 +11,4 @@
 #import "../../Core/ThirdParty/EBUR128/ebur128.h"
 
 #import "JarasVST3.h"
+#import "JarasStemSeparator.h"

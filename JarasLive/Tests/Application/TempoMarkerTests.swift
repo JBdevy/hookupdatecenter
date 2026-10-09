@@ -47,15 +47,14 @@ final class TempoMarkerTests: XCTestCase {
         XCTAssertEqual(zoomed.map(\.number), [3, 4])
         XCTAssertEqual(zoomed.map(\.time), [4, 6])
     }
-    func testItemSnapOnlyCapturesNearbyGridButCursorKeepsNearestDivision() {
+    func testItemSnapAlwaysUsesNearestDivisionUnlessShiftIsHeld() {
         let song = resizeSong()
         for scale in [50.0, 100.0, 200.0] {
             let near = 4 + 3 / scale
             let far = 4 + 6 / scale
-            XCTAssertEqual(TimelineTempo.snap(near, song: song, pixelsPerSecond: scale, gridTolerancePixels: 4), 4, accuracy: 0.000001)
-            XCTAssertEqual(TimelineTempo.snap(far, song: song, pixelsPerSecond: scale, gridTolerancePixels: 4), far, accuracy: 0.000001)
+            XCTAssertEqual(TimelineTempo.snap(near, song: song, pixelsPerSecond: scale), 4, accuracy: 0.000001)
             XCTAssertEqual(TimelineTempo.snap(far, song: song, pixelsPerSecond: scale), 4, accuracy: 0.000001)
-            XCTAssertEqual(TimelineTempo.snap(near, song: song, pixelsPerSecond: scale, enabled: false, gridTolerancePixels: 4), near, accuracy: 0.000001)
+            XCTAssertEqual(TimelineTempo.snap(near, song: song, pixelsPerSecond: scale, enabled: false), near, accuracy: 0.000001)
         }
     }
     private func resizeSong() -> Song {

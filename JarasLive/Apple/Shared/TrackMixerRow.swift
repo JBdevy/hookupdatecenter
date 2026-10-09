@@ -1,6 +1,37 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// Modifier handling belongs to mouse controls, not MIDI/remote commands.
+@MainActor private extension ShowController {
+    func sendTrackMixerButton(_ command: ShowCommand, target: UUID?) {
+        #if os(macOS)
+        let clear = target != nil && (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command)
+        #else
+        let clear = false
+        #endif
+        sendMixerControl(command, target: target, clearAll: clear)
+    }
+}
+
+// Visual toggle only until the Env processing behavior is defined. Keep its
+// preference keyed by project/track so row virtualization cannot reset it.
+private struct TrackEnvelopeButton: View {
+    @AppStorage private var enabled: Bool
+    init(project: UUID, track: UUID) {
+        _enabled = AppStorage(wrappedValue: false, "catlive.track.env.\(project.uuidString).\(track.uuidString)")
+    }
+    var body: some View {
+        Button("Env") { enabled.toggle() }
+            .buttonStyle(CompactTrackButtonStyle(activeColor: enabled ? JarasTheme.green : .red, width: 28))
+            .accessibilityValue(enabled ? "On" : "Off")
+    }
+}
+
+private func trackShowsMeterReadouts(_ kind: TrackKind?) -> Bool {
+    guard let kind else { return true } // Master
+    return !kind.isText && kind != .timecode
+}
+
 #if os(macOS)
 /// One stable set of controls moves between the thin strip and expanded mixer.
 /// No native fader, title or meter is mounted/unmounted at height thresholds.
@@ -21,7 +52,8 @@ struct TrackMixerHeightGeometry {
                        lowerTitle: Bool, controlsWidth: CGFloat, folder: Bool = false) -> [CGRect] {
         let p = progress(height)
         func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * p }
-        let bodyX = (meterWidth + 4 + (standard ? 8 : 0)) * p
+        let bodyX = (max(meterWidth, standard ? 18 : 0) + 4) * p
+        let meterTop: CGFloat = 4
         let bodyWidth = max(0, width - bodyX - 4)
         let centeredY = max(0, (height - 21) / 2)
         // At the minimum sidebar width, Patch/FX/REC/pan/M/S fill the top
@@ -35,7 +67,7 @@ struct TrackMixerHeightGeometry {
         let titleWidth = thinWidth + (max(0, width - titleX - 4) - thinWidth) * clear
         return [
             CGRect(x: 0, y: 4, width: meterWidth * p, height: max(0, height - 8)),
-            CGRect(x: (meterWidth + 4) * p, y: 8, width: standard ? 4 * p : 0, height: max(0, height - 16)),
+            CGRect(x: 14 * p, y: meterTop, width: standard ? 4 * p : 0, height: max(0, height - meterTop - 4)),
             CGRect(x: titleX, y: titleY, width: titleWidth, height: titleHeight(height)),
             CGRect(x: max(0, width - controlsWidth - 4), y: mix(centeredY, 3), width: controlsWidth, height: mix(21, 24)),
             CGRect(x: bodyX, y: 27, width: bodyWidth, height: volumeHeight(height)),
@@ -105,7 +137,7 @@ private struct TrackMixerButtonsContainer<Content: View>: View {
         } else if standard {
             let expanded = height >= 64
             let controlHeight: CGFloat = expanded ? 24 : 21
-            let widths: [CGFloat] = [34, expanded && !showsFader ? 0 : 22, 22, expanded ? 42 : 0, 22, 22]
+            let widths: [CGFloat] = [34, 28, expanded && !showsFader ? 0 : 22, 22, expanded ? 42 : 0, 22, 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
             let frames = widths.indices.map { index in
@@ -148,23 +180,23 @@ struct TrackMixerContinuousLayout: Layout {
 @available(macOS 13, *)
 struct TrackMixerButtonsLayout: Layout {
     let showsFader: Bool
-    // Standard-track controls have explicit widths: Patch, FX, REC, pan, M, S.
+    // Standard-track controls have explicit widths: Patch, Env, FX, REC, pan, M, S.
     // Reuse those metrics without querying every control on each resize.
-    private static let controlWidths: [CGFloat] = [34, 22, 22, 42, 22, 22]
+    private static let controlWidths: [CGFloat] = [34, 28, 22, 22, 42, 22, 22]
     // These containers use explicit frames, not their children's alignment guides.
     // The default Layout implementation walks every control to merge guides.
     func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let expanded = (proposal.height ?? 24) >= 24
-        let visible = subviews.indices.filter { !($0 == 3 && !expanded) && !($0 == 1 && expanded && !showsFader) }
+        let visible = subviews.indices.filter { !($0 == 4 && !expanded) && !($0 == 2 && expanded && !showsFader) }
         return CGSize(width: visible.reduce(CGFloat(0)) { $0 + Self.controlWidths[$1] } + CGFloat(max(0, visible.count - 1)) * 3, height: expanded ? 24 : 21)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let expanded = bounds.height >= 24
         var x = bounds.minX
         for i in subviews.indices {
-            let hidden = (i == 3 && !expanded) || (i == 1 && expanded && !showsFader)
+            let hidden = (i == 4 && !expanded) || (i == 2 && expanded && !showsFader)
             let width = Self.controlWidths[i]
             subviews[i].place(at: CGPoint(x: hidden ? bounds.maxX + 1024 : x, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
             if !hidden { x += width + 3 }
@@ -223,9 +255,14 @@ private struct NativeTrackMixerControlsBridge: NSViewRepresentable {
 }
 private final class TrackMixerControlHost: NSHostingView<AnyView> {
     var passThrough = false
+    var peakOnly = false
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
-    override func hitTest(_ point: NSPoint) -> NSView? { passThrough ? nil : super.hitTest(point) }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !passThrough else { return nil }
+        let hit = super.hitTest(point)
+        return peakOnly && !(hit is NativeVerticalTrackMeterView) ? nil : hit
+    }
 }
 /// Warm row slots retain their controls, but only nearby rows need to take part
 /// in AppKit's window-wide tracking/layout walks during horizontal playback.
@@ -298,13 +335,18 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
     fileprivate func removeControlArea(_ view: NSView) { controlAreas.remove(view) }
     func hitTestTimelineControl(atWindowPoint point: NSPoint) -> NSView? {
         let local = convert(point, from: nil)
-        guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local),
-              controlAreas.allObjects.contains(where: { area in
+        guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local) else { return nil }
+        if let peak = hitTestMeterPeak(local) { return peak }
+        guard controlAreas.allObjects.contains(where: { area in
                   let location = area.convert(point, from: nil)
                   return area.window === window && !area.isHiddenOrHasHiddenAncestor &&
                       area.isDescendant(of: controls) && area.bounds.contains(location) && area.visibleRect.contains(location)
               }) else { return nil }
         return controls.hitTest(local)
+    }
+    private func hitTestMeterPeak(_ point: NSPoint) -> NSView? {
+        guard !meter.isHidden, meter.frame.contains(point) else { return nil }
+        return meter.hitTest(point)
     }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -315,7 +357,7 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             addSubview(host)
         }
-        meter.passThrough = true; activity.passThrough = true
+        meter.peakOnly = true; activity.passThrough = true
     }
     required init?(coder: NSCoder) { fatalError() }
     override var isFlipped: Bool { true }
@@ -395,6 +437,9 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         observeViewport()
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local),
+           let peak = hitTestMeterPeak(local) { return peak }
         let hit = super.hitTest(point)
         return hit === self ? nil : hit
     }
@@ -435,6 +480,10 @@ struct TrackMixerRow: View, Equatable {
     let selected: Bool
     let silenced: Bool
     let showsMeterScale: Bool
+    private var showsTrackMeterScale: Bool { showsMeterScale && trackShowsMeterReadouts(track.kind) }
+    private var meterTextColor: Color {
+        Color(hex: JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced))
+    }
     let showsFader: Bool
     var compactHeight = false
     var minimalHeight = false
@@ -514,6 +563,7 @@ struct TrackMixerRow: View, Equatable {
                         if track.kind == .standard {
                             Button("Patch") { patchTarget = editorTarget(project: project) }
                                 .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
+                            TrackEnvelopeButton(project: project, track: track.id)
                             Button("FX") {
                                 openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
                             }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text)
@@ -523,16 +573,17 @@ struct TrackMixerRow: View, Equatable {
                             Button("Insert") { show.insertClickItems(track: track.id) }
                                 .buttonStyle(CompactTrackButtonStyle(width: 47)).fixedSize(horizontal: true, vertical: false)
                         }
-                        Button("M") { show.sendMixerControl(.mute, target: track.id) }
+                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
                             .modifier(MappingRightClick(track: track.id, command: "mute"))
                             .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        Button("S") { show.sendMixerControl(.solo, target: track.id) }
+                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
                             .modifier(MappingRightClick(track: track.id, command: "solo"))
                             .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     }.trackControlSelectionExclusion()
                 }.padding(.horizontal, 4)
             } else {
-            VerticalTrackMeter(meter: StemAudioPlayback.shared.meter(for: track.id), showScale: showsMeterScale)
+            VerticalTrackMeter(meter: StemAudioPlayback.shared.meter(for: track.id), showScale: showsTrackMeterScale,
+                               foreground: meterTextColor, peakOnly: trackShowsMeterReadouts(track.kind))
                 .frame(width: showsMeterScale ? 40 : 12).padding(.vertical, 4)
             if track.kind == .standard {
                 TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id))
@@ -553,19 +604,20 @@ struct TrackMixerRow: View, Equatable {
                     if showsFader {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
                             .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
+                        TrackEnvelopeButton(project: project, track: track.id)
                         Button("FX") {
                             openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
                         }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
                     }
                     TrackRecordButton(show: show, track: track).buttonStyle(CompactTrackButtonStyle())
                     TrackPanFader(show: show, track: track.id, pan: track.pan, compact: compactHeight).frame(width: 42, height: compactHeight ? 21 : 24)
-                    Button("M") { show.sendMixerControl(.mute, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                    Button("S") { show.sendMixerControl(.solo, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
+                    Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                    Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     } else if track.kind == .click {
                         Button("Insert") { show.insertClickItems(track: track.id) }.buttonStyle(TrackControlButtonStyle())
                             .fixedSize(horizontal: true, vertical: false)
-                        Button("M") { show.sendMixerControl(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil))
-                        Button("S") { show.sendMixerControl(.solo, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil))
+                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil))
+                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil))
                     } else if track.kind == .timecode {
                         HStack(spacing: 3) {
                             Button { patchTarget = editorTarget(project: project) } label: { Image(systemName: "gearshape") }
@@ -576,11 +628,11 @@ struct TrackMixerRow: View, Equatable {
                                     .buttonStyle(TrackControlButtonStyle(activeColor: active ? JarasTheme.green : nil))
                             }
                         }.buttonStyle(TrackControlButtonStyle()).fixedSize(horizontal: true, vertical: false)
-                        Button("M") { show.sendMixerControl(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
                     } else if track.kind == .video {
                         Button("Add media", action: importVideo).buttonStyle(TrackControlButtonStyle())
-                        Button("M") { show.sendMixerControl(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        Button("S") { show.sendMixerControl(.solo, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
+                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     } else if track.kind.isText {
                         Button("Add text") {
                             if let item = show.addTextItem(track: track.id) { editTextItem(item) }
@@ -672,7 +724,7 @@ struct TrackMixerRow: View, Equatable {
     #if os(macOS)
     @ViewBuilder private func continuousControls(title: String, color: UInt32, project: UUID) -> some View {
         if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy {
-            NativeTrackMixerControls(track: track.id, meterWidth: showsMeterScale ? 40 : 12, standard: track.kind == .standard,
+            NativeTrackMixerControls(track: track.id, meterWidth: showsTrackMeterScale ? 52 : 12, standard: track.kind == .standard,
                 meter: { continuousMeter }, activity: { continuousMIDIIndicator }, controls: {
                     continuousControlSlots(title: title, color: color, project: project, separateMeters: true)
                 })
@@ -681,8 +733,9 @@ struct TrackMixerRow: View, Equatable {
         }
     }
     private var continuousMeter: some View {
-        VerticalTrackMeter(meter: StemAudioPlayback.shared.meter(for: track.id), showScale: showsMeterScale)
-            .clipped().allowsHitTesting(false)
+        VerticalTrackMeter(meter: StemAudioPlayback.shared.meter(for: track.id), showScale: showsTrackMeterScale,
+                           foreground: meterTextColor, peakOnly: trackShowsMeterReadouts(track.kind))
+            .clipped()
     }
     private var continuousMIDIIndicator: some View {
         Group {
@@ -692,7 +745,7 @@ struct TrackMixerRow: View, Equatable {
     }
     private func continuousControlSlots(title: String, color: UInt32, project: UUID, separateMeters: Bool) -> some View {
             let lowerTitle = track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click
-            return TrackMixerContinuousContainer(meterWidth: showsMeterScale ? 40 : 12,
+            return TrackMixerContinuousContainer(meterWidth: showsTrackMeterScale ? 52 : 12,
                                        standard: track.kind == .standard, lowerTitle: lowerTitle, folder: isFolder) {
                 Group {
                     if separateMeters { Color.clear } else { continuousMeter }
@@ -714,12 +767,14 @@ struct TrackMixerRow: View, Equatable {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
                             .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
                             .frame(width: 34).jarasPlaced(at: 0)
+                        TrackEnvelopeButton(project: project, track: track.id)
+                            .frame(width: 28).jarasPlaced(at: 1)
                         Button("FX") { openFX(track.id, track.fx?.effectKeys.first ?? "Chain") }
                             .foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
-                            .frame(width: 22).jarasPlaced(at: 1)
-                        TrackRecordButton(show: show, track: track).jarasPlaced(at: 2)
+                            .frame(width: 22).jarasPlaced(at: 2)
+                        TrackRecordButton(show: show, track: track).jarasPlaced(at: 3)
                         TrackPanFader(show: show, track: track.id, pan: track.pan)
-                            .frame(width: 42, height: 24).clipped().jarasPlaced(at: 3)
+                            .frame(width: 42, height: 24).clipped().jarasPlaced(at: 4)
                     } else if track.kind == .click {
                         Button("Insert") { show.insertClickItems(track: track.id) }
                             .buttonStyle(CompactTrackButtonStyle(width: 47))
@@ -742,14 +797,14 @@ struct TrackMixerRow: View, Equatable {
                         }.buttonStyle(TrackControlButtonStyle())
                             .fixedSize()
                     }
-                    Button("M") { show.sendMixerControl(.mute, target: track.id) }
+                    Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
                         .modifier(MappingRightClick(track: track.id, command: "mute"))
                         .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        .frame(width: 22).jarasPlaced(at: 4)
-                    Button("S") { show.sendMixerControl(.solo, target: track.id) }
+                        .frame(width: 22).jarasPlaced(at: 5)
+                    Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
                         .modifier(MappingRightClick(track: track.id, command: "solo"))
                         .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
-                        .frame(width: 22).jarasPlaced(at: 5)
+                        .frame(width: 22).jarasPlaced(at: 6)
                 }.buttonStyle(CompactTrackButtonStyle()).trackControlSelectionExclusion().clipped()
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
@@ -1197,6 +1252,95 @@ private struct DirectVolumeSlider: NSViewRepresentable {
         slider.finishPointerEditing(deferred: true)
     }
 }
+/// The footer value follows the existing fader mirror path, without publishing
+/// a new SwiftUI row or polling the audio meter while the user drags.
+private struct FooterMixerGainReadout: NSViewRepresentable {
+    let identity: TrackControlIdentity
+    let gain: Double
+    func makeNSView(context: Context) -> FooterMixerGainLabel { FooterMixerGainLabel() }
+    func updateNSView(_ view: FooterMixerGainLabel, context: Context) { view.bind(identity: identity, gain: gain) }
+}
+private final class FooterMixerGainLabel: NSView {
+    fileprivate var identity: TrackControlIdentity?
+    private var modelGain: Double?
+    private(set) var stringValue = ""
+    private static let attributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold), .foregroundColor: NSColor.white
+    ]
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel("Track volume")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        let text = NSAttributedString(string: stringValue, attributes: Self.attributes)
+        text.draw(at: NSPoint(x: max(0, (bounds.width - text.size().width) / 2),
+                             y: max(0, (bounds.height - text.size().height) / 2)))
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { VolumeDoubleClickRouter.shared.removeGainLabel(self) }
+        else { VolumeDoubleClickRouter.shared.addGainLabel(self) }
+    }
+    func bind(identity: TrackControlIdentity, gain: Double) {
+        guard self.identity != identity || modelGain != gain else { return }
+        self.identity = identity; modelGain = gain
+        setDecibels(gain > 0 ? min(12, max(-60, 20 * log10(gain))) : -60)
+    }
+    fileprivate func setDecibels(_ value: Double) {
+        let text = value <= -60 ? "−∞" : String(format: "%+.1f", value)
+        let next = text + " dB"
+        if stringValue != next { stringValue = next; needsDisplay = true; setAccessibilityValue(text + " dB") }
+    }
+}
+/// Pan uses the same direct updates as the knob, so dragging does not rebuild
+/// the mixer strip just to change its percentage label.
+private struct FooterMixerPanReadout: NSViewRepresentable {
+    let identity: TrackControlIdentity
+    let pan: Double
+    let linkedTrack: UUID?
+    func makeNSView(context: Context) -> FooterMixerPanLabel { FooterMixerPanLabel() }
+    func updateNSView(_ view: FooterMixerPanLabel, context: Context) {
+        view.linkedTrack = linkedTrack
+        view.bind(identity: identity, pan: pan)
+    }
+}
+private final class FooterMixerPanLabel: NSView {
+    fileprivate var identity: TrackControlIdentity?
+    fileprivate var linkedTrack: UUID?
+    private var modelPan: Double?
+    private(set) var stringValue = ""
+    private static let attributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .medium), .foregroundColor: NSColor.white
+    ]
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true); setAccessibilityRole(.staticText); setAccessibilityLabel("Pan")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        let text = NSAttributedString(string: stringValue, attributes: Self.attributes)
+        text.draw(at: NSPoint(x: max(0, (bounds.width - text.size().width) / 2),
+                             y: max(0, (bounds.height - text.size().height) / 2)))
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { VolumeDoubleClickRouter.shared.removePanLabel(self) }
+        else { VolumeDoubleClickRouter.shared.addPanLabel(self) }
+    }
+    func bind(identity: TrackControlIdentity, pan: Double) {
+        guard self.identity != identity || modelPan != pan else { return }
+        self.identity = identity; modelPan = pan
+        setPan(pan)
+    }
+    fileprivate func setPan(_ value: Double) {
+        let percent = Int((min(1, abs(value.isFinite ? value : 0)) * 100).rounded())
+        let next = percent == 0 ? "Center" : "\(value < 0 ? "L" : "R")-\(percent)%"
+        if stringValue != next { stringValue = next; needsDisplay = true; setAccessibilityValue(next) }
+    }
+}
 private final class DirectVolumeSliderView: NSView {
     var groupValues: (() -> [UUID: Double])?
     var mini = false { didSet { updatePanTooltip() } }
@@ -1375,7 +1519,13 @@ private final class DirectVolumeSliderView: NSView {
 @MainActor private final class VolumeDoubleClickRouter {
     static let shared = VolumeDoubleClickRouter()
     private let sliders = NSHashTable<DirectVolumeSliderView>.weakObjects()
+    private let gainLabels = NSHashTable<FooterMixerGainLabel>.weakObjects()
+    private let panLabels = NSHashTable<FooterMixerPanLabel>.weakObjects()
     private var monitor: Any?
+    func addGainLabel(_ label: FooterMixerGainLabel) { gainLabels.add(label) }
+    func removeGainLabel(_ label: FooterMixerGainLabel) { gainLabels.remove(label) }
+    func addPanLabel(_ label: FooterMixerPanLabel) { panLabels.add(label) }
+    func removePanLabel(_ label: FooterMixerPanLabel) { panLabels.remove(label) }
     func mirror(_ source: DirectVolumeSliderView) {
         let group = source.groupValues?() ?? [:]
         for target in sliders.allObjects where target !== source && target.window != nil &&
@@ -1389,6 +1539,21 @@ private final class DirectVolumeSliderView: NSView {
                 target.doubleValue = source.mini ? grouped : (grouped <= 0 ? -60 : min(12, max(-59.9, 20 * log10(grouped))))
             } else { target.doubleValue = partner && source.mini ? -source.doubleValue : source.doubleValue }
             target.displayIfNeeded()
+        }
+        if source.mini {
+            for label in panLabels.allObjects where label.window != nil && label.identity?.project == source.boundProject {
+                let grouped = label.identity?.track.flatMap { group[$0] }
+                let partner = source.linkedTrack != nil && label.identity?.track == source.linkedTrack && label.linkedTrack == source.boundTrack
+                if let grouped { label.setPan(grouped) }
+                else if label.identity?.track == source.boundTrack { label.setPan(source.doubleValue) }
+                else if partner { label.setPan(-source.doubleValue) }
+            }
+        } else {
+            for label in gainLabels.allObjects where label.window != nil && label.identity?.project == source.boundProject {
+                let grouped = label.identity?.track.flatMap { group[$0] }
+                if let grouped { label.setDecibels(grouped > 0 ? min(12, max(-60, 20 * log10(grouped))) : -60) }
+                else if label.identity?.track == source.boundTrack { label.setDecibels(source.doubleValue) }
+            }
         }
     }
 
@@ -1665,7 +1830,13 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         if let root = window.contentView {
             var hit = root.hitTest(root.convert(event.locationInWindow, from: nil))
             var isTitle = false
-            while let view = hit { if view is TrackDragTitleView { isTitle = true; break }; hit = view.superview }
+            while let view = hit {
+                // Native meters only hit-test their peak readout. Resetting it
+                // is a control action, not a track selection or drag gesture.
+                if view is NativeVerticalTrackMeterView { return }
+                if view is TrackDragTitleView { isTitle = true; break }
+                hit = view.superview
+            }
             if !isTitle { dragRow = row; dragStart = event.locationInWindow; dragProject = row.project }
         }
 
@@ -2332,14 +2503,21 @@ private struct FooterMixerStrip: View, Equatable {
         VStack(spacing: 5) {
             Button("FX") { openFX(id, "Chain") }
                 .foregroundStyle(settings.inserted.isEmpty ? JarasTheme.text : JarasTheme.green).jarasHelp("FX Manager")
-            Button("M") { show.sendMixerControl(.mute, target: id) }
+            Button("M") { show.sendTrackMixerButton(.mute, target: id) }
                 .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.mute ?? (show.snapshot.project.masterMute == true)) ? .red : nil))
                 .modifier(MappingRightClick(track: id, command: "mute")).jarasHelp("Mute")
-            Button("S") { show.sendMixerControl(.solo, target: id) }
+            Button("S") { show.sendTrackMixerButton(.solo, target: id) }
                 .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.solo ?? (show.snapshot.project.masterSolo == true)) ? JarasTheme.yellow : nil))
                 .modifier(MappingRightClick(track: id, command: "solo")).jarasHelp("Solo")
             if let track, track.kind == .standard { TrackRecordButton(show: show, track: track) }
-            if let track { PhaseInvertButton(show: show, track: track.id, inverted: track.phaseInverted == true) }
+            if let track {
+                PhaseInvertButton(show: show, track: track.id, inverted: track.phaseInverted == true)
+            }
+            if trackShowsMeterReadouts(track?.kind) {
+                TrackPeakReadout(peak: id.map { StemAudioPlayback.shared.meter(for: $0).peakHold } ?? StemAudioPlayback.shared.masterMeter.peakHold,
+                                 compact: true, foreground: .white)
+                    .frame(width: 22, height: 12)
+            }
             Spacer(minLength: 0)
         }.frame(width: 22).buttonStyle(CompactTrackButtonStyle()).font(.system(size: 10, weight: .bold))
     }
@@ -2359,24 +2537,38 @@ private struct FooterMixerStrip: View, Equatable {
         VStack(spacing: 1) {
             if let track {
                 VStack(spacing: 1) {
-                    Text("Pan").font(.system(size: 8, weight: .medium)).foregroundStyle(JarasTheme.secondary)
+                    #if os(macOS)
+                    FooterMixerPanReadout(identity: TrackControlIdentity(project: show.snapshot.project.id, track: track.id),
+                                          pan: track.pan, linkedTrack: track.stereoLink?.partner)
+                        .frame(width: 50, height: 10)
+                    #else
+                    let percent = Int((min(1, abs(track.pan)) * 100).rounded())
+                    Text(verbatim: percent == 0 ? "Center" : "\(track.pan < 0 ? "L" : "R")-\(percent)%")
+                        .font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(.white)
+                        .frame(width: 50, height: 10)
+                    #endif
                     FooterMixerControl(show: show, track: track.id, value: track.pan, pan: true, linked: track.stereoLink?.partner)
                         .frame(width: 24, height: 24).jarasHelp("Pan · Double-click to center")
                 }
             } else { Color.clear.frame(height: 35) }
+            let gain = track?.volume ?? show.snapshot.project.masterVolume ?? 1
+            #if os(macOS)
+            FooterMixerGainReadout(identity: TrackControlIdentity(project: show.snapshot.project.id, track: id), gain: gain)
+                .frame(width: 50, height: 12)
+            #else
+            Text(verbatim: (gain <= 0 ? "−∞" : String(format: "%+.1f", min(12, max(-60, 20 * log10(gain))))) + " dB")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
+                .frame(width: 50, height: 12)
+            #endif
             HStack(spacing: 2) {
-                VStack(spacing: 3) {
-                    TrackPeakReadout(peak: id.map { StemAudioPlayback.shared.meter(for: $0).peakHold } ?? StemAudioPlayback.shared.masterMeter.peakHold)
-                        .frame(height: 12)
-                    FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner)
-                        .frame(width: 27).jarasHelp("Double-click to reset to 0 dB")
-                }.frame(width: 27)
+                FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner)
+                    .frame(width: 27).jarasHelp("Double-click to reset to 0 dB")
                 if active {
                     VerticalTrackMeter(meter: id.map { StemAudioPlayback.shared.meter(for: $0) } ?? StemAudioPlayback.shared.masterMeter, showScale: false)
-                        .frame(width: 8).padding(.top, 15)
+                        .frame(width: 8)
                 } else { Color.clear.frame(width: 8) }
                 if active, let track, track.kind == .standard {
-                    TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)).frame(width: 3).padding(.vertical, 4).padding(.top, 15)
+                    TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)).frame(width: 3).padding(.vertical, 4)
                 }
             }
         }.frame(width: 50)

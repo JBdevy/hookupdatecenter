@@ -51,6 +51,8 @@ public:
 private:
     void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
     const Part* sectionRegion(double position) const;
+    const Part* sectionPlaybackRegion() const;
+    std::optional<double> nextSectionTrigger() const;
     std::optional<TimelineMarker> sectionDestination(const ID& id) const;
     void resetMultiLoop();
     void refreshMultiLoop();
@@ -67,10 +69,13 @@ private:
     const Part* playbackBounds(const Part* part) const;
     void syncRegion();
     void promoteSubPlay(std::optional<ID> preferredRegion = {});
+    std::optional<ID> automaticRegionQueueTarget() const;
+    void refreshAutomaticRegionQueue();
     void autoQueueRegion();
     void clearIgnoreNext();
     void toggleIgnoreNext();
     bool autoRegionQueue_ = false;
     std::optional<ID> automaticSubplayQueue_;
+    bool automaticSubplayActive_ = false;
 };
 }

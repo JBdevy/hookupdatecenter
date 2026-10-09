@@ -159,7 +159,8 @@ def read_macho(path: Path) -> list[Slice] | None:
         return slices
 
 
-def audit(app: Path, minimum: tuple[int, int, int], required: set[str]) -> tuple[list[str], dict[Path, list[Slice]]]:
+def audit(app: Path, minimum: tuple[int, int, int], required: set[str],
+          optional_helpers: dict[str, tuple[int, int, int]] | None = None) -> tuple[list[str], dict[Path, list[Slice]]]:
     app = app.resolve(strict=True)
     errors = []
     binaries = {}
@@ -170,6 +171,12 @@ def audit(app: Path, minimum: tuple[int, int, int], required: set[str]) -> tuple
     if not isinstance(executable_name, str) or Path(executable_name).name != executable_name:
         raise ValueError("Info.plist has no valid CFBundleExecutable")
     executable = (app / "Contents/MacOS" / executable_name).resolve()
+    helpers = {}
+    for relative, deployment in (optional_helpers or {}).items():
+        folder = (app / relative).resolve(strict=True)
+        if not folder.is_relative_to(app / 'Contents/Resources') or not folder.is_dir():
+            raise ValueError('Optional process helpers must live inside Contents/Resources')
+        helpers[folder] = deployment
     seen = set()
     for directory, directories, filenames in os.walk(app):
         directories.sort()
@@ -182,6 +189,7 @@ def audit(app: Path, minimum: tuple[int, int, int], required: set[str]) -> tuple
                 continue
             seen.add(resolved)
             relative = path.relative_to(app)
+            allowed = next((value for folder, value in helpers.items() if resolved.is_relative_to(folder)), minimum)
             try:
                 slices = read_macho(path)
                 if slices is not None:
@@ -189,7 +197,7 @@ def audit(app: Path, minimum: tuple[int, int, int], required: set[str]) -> tuple
                         errors.append(f"{relative}: Mach-O symlink resolves outside the app")
                     binaries[resolved] = slices
                     for item in slices:
-                        if item.minimum > minimum:
+                        if item.minimum > allowed:
                             errors.append(f"{relative} [{item.arch}]: {item.command} requires macOS {version_text(item.minimum)}")
                 if name == "Info.plist":
                     with path.open("rb") as stream:
@@ -198,10 +206,10 @@ def audit(app: Path, minimum: tuple[int, int, int], required: set[str]) -> tuple
                     if resolved == info_path.resolve():
                         if not isinstance(declared, str) or version(declared) != minimum:
                             errors.append(f"{relative}: LSMinimumSystemVersion={declared!r}, expected {version_text(minimum)}")
-                    elif declared is not None and version(declared) > minimum:
+                    elif declared is not None and version(declared) > allowed:
                         errors.append(f"{relative}: requires macOS {declared}")
                     for arch, value in metadata.get("LSMinimumSystemVersionByArchitecture", {}).items():
-                        if version(value) > minimum:
+                        if version(value) > allowed:
                             errors.append(f"{relative} [{arch}]: requires macOS {value}")
             except (OSError, ValueError, struct.error, plistlib.InvalidFileException) as error:
                 errors.append(f"{relative}: {error}")
@@ -220,10 +228,16 @@ def main() -> int:
     parser.add_argument("app", type=Path)
     parser.add_argument("--minimum", default="12.0", help="exact app minimum and maximum embedded deployment target (default: 12.0)")
     parser.add_argument("--architectures", nargs="+", default=["arm64", "x86_64"], help="required main executable slices")
+    parser.add_argument("--optional-helper", action="append", default=[], metavar="RESOURCE_PATH=VERSION",
+                        help="Explicit deployment target for an isolated process helper, never an app/framework dependency")
     args = parser.parse_args()
     try:
         minimum = version(args.minimum)
-        errors, binaries = audit(args.app, minimum, set(args.architectures))
+        helpers = {}
+        for option in args.optional_helper:
+            relative, deployment = option.rsplit('=', 1)
+            helpers[relative] = version(deployment)
+        errors, binaries = audit(args.app, minimum, set(args.architectures), helpers)
     except (OSError, ValueError, plistlib.InvalidFileException) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
@@ -236,7 +250,9 @@ def main() -> int:
         print(f"FAIL: {error}", file=sys.stderr)
     if errors:
         return 1
-    print(f"PASS: Info.plist, executable architectures and all embedded Mach-O deployment targets support macOS {version_text(minimum)}.")
+    print(f"PASS: App deployment target macOS {version_text(minimum)}; embedded targets match their explicit limits.")
+    for folder, value in helpers.items():
+        print(f"  Optional helper: {folder} requires macOS {version_text(value)}.")
     return 0
 
 

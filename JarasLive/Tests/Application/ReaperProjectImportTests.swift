@@ -43,6 +43,7 @@ final class ReaperProjectImportTests: XCTestCase {
         """, in: directory)
         let original = try Data(contentsOf: url)
         let result = try ReaperProjectImporter.read(url)
+        XCTAssertEqual(result.project.songs[0].projectTime.timebase, .relative)
         let tracks = result.project.songs[0].tracks
         XCTAssertEqual(tracks.map(\.volume), [0.5, 1.9952623149688795, 0, 0.125, 1])
         XCTAssertEqual(tracks.map(\.pan), [-1, 1, 0, 0.35, 0])

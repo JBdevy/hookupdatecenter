@@ -4,6 +4,21 @@ import Combine
 import AppKit
 #endif
 
+struct SectionButtonsIcon: View {
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 3) {
+                Capsule().frame(width: 6, height: 2)
+                Capsule().frame(width: 6, height: 2)
+            }
+            HStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 1).stroke(lineWidth: 1.4).frame(width: 6, height: 6)
+                RoundedRectangle(cornerRadius: 1).stroke(lineWidth: 1.4).frame(width: 6, height: 6)
+            }
+        }.frame(width: 17, height: 16).accessibilityHidden(true)
+    }
+}
+
 /// Button layout changes at section boundaries, never for each position sample.
 /// The small native progress layers read the same authoritative clock directly.
 @MainActor private final class SectionPanelObserver: ObservableObject {
@@ -11,7 +26,7 @@ import AppKit
         let controls: ShowPresentationState
         let section: UUID?
         let secondarySection: UUID?
-        let trigger: UUID?
+        let trigger: Double?
         let idlePosition: Double?
     }
     let objectWillChange = ObservableObjectPublisher()
@@ -39,12 +54,12 @@ import AppKit
             guard let song, let region = song.sectionRegion(at: position) else { return [] }
             return song.sectionMarkers(in: region)
         }
-        let main = sections(at: transport.position)
+        let main = song.flatMap { song in song.sectionPlaybackRegion(for: transport).map { song.sectionMarkers(in: $0) } } ?? []
         let sub = transport.subPlay.playing ? sections(at: transport.subPlay.position) : []
         return State(controls: show.presentationState,
             section: main.last(where: { $0.position <= transport.position })?.id,
             secondarySection: sub.last(where: { $0.position <= transport.subPlay.position })?.id,
-            trigger: main.first(where: { $0.position > transport.position + 0.000001 })?.id,
+            trigger: transport.queuedSectionMarkerId == nil ? nil : song?.nextSectionTrigger(for: transport),
             idlePosition: show.isPlaying ? nil : transport.editPosition ?? transport.position)
     }
 }
@@ -129,7 +144,7 @@ struct SmoothSeekPanel: View {
     var body: some View {
         let transport = show.snapshot.transport
         let current = show.current.flatMap { song in
-            transport.playing ? song.sectionRegion(at: transport.position) :
+            transport.playing ? song.sectionPlaybackRegion(for: transport) :
                 song.parts.first(where: { $0.id == show.focusedRegion }) ?? song.sectionRegion(at: transport.editPosition ?? transport.position)
         }
         let queued = show.current.flatMap { song in
@@ -137,9 +152,24 @@ struct SmoothSeekPanel: View {
                 song.parts.first(where: { $0.id == transport.queuedRegionId })
         }
         if verticalList {
-            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing) { secondary in
-                bank(region: secondary ? queued : current, secondary: secondary)
-            }
+            VStack(spacing: 0) {
+                #if os(macOS)
+                Button { show.send(.cancelSection) } label: {
+                    Text("Cancel").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.black)
+                        .frame(maxWidth: .infinity).frame(height: 26)
+                        .background(Color(hex: 0xffd600))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .disabled(transport.queuedSectionMarkerId == nil)
+                    .accessibilityLabel("Cancel queued section")
+                    .padding(4)
+                #endif
+                SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing) { secondary in
+                    bank(region: secondary ? queued : current, secondary: secondary)
+                }
+            }.background(JarasTheme.panel)
         } else {
             HStack(spacing: 1) {
                 bank(region: current, secondary: false)
@@ -151,11 +181,10 @@ struct SmoothSeekPanel: View {
     private func bank(region: Part?, secondary: Bool) -> some View {
         let markers = region.flatMap { part in show.current?.sectionMarkers(in: part) } ?? []
         let transport = show.snapshot.transport
-        let trigger = show.current?.sectionRegion(at: transport.position).flatMap { part in
-            show.current?.sectionMarkers(in: part).first(where: { $0.position > transport.position + 0.000001 })?.position
-        }
+        let trigger = transport.queuedSectionMarkerId == nil ? nil : show.current?.nextSectionTrigger(for: transport)
+        let end = !secondary && transport.playing ? transport.ignoreNextEnd ?? region?.endTime ?? 0 : region?.endTime ?? 0
         return SmoothSeekBankView(title: secondary ? (transport.subPlay.playing ? "Sub Play" : "Queued") : "Playing / Selected",
-            name: region?.name ?? "—", markers: markers, end: region?.endTime ?? 0,
+            name: region?.name ?? "—", markers: markers, end: end,
             position: secondary && transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position,
             showsPosition: !secondary || transport.subPlay.playing, positionRunning: secondary ? transport.subPlay.playing : transport.playing, queued: transport.queuedSectionMarkerId,
             trigger: trigger, queueStartedAt: transport.sectionQueueStartedAt, playbackPosition: transport.position, playbackRunning: transport.playing,
@@ -232,7 +261,13 @@ struct SmoothSeekBankView: View {
         let selected = queued || (self.queued == nil && active)
         return Button { select(marker.id) } label: {
             ZStack(alignment: .bottomLeading) {
+                #if os(iOS)
+                RemoteSurface.fill(selected ? JarasTheme.green.opacity(0.35) : isStart ? Color.blue.opacity(0.4) : JarasTheme.display)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(RemoteSurface.edge, lineWidth: 0.5).allowsHitTesting(false))
+                #else
                 RoundedRectangle(cornerRadius: 5).fill(selected ? JarasTheme.green.opacity(0.35) : isStart ? Color.blue.opacity(0.4) : JarasTheme.display)
+                #endif
                 if queued, let trigger {
                     SectionCountdownBar(position: playbackPosition, trigger: trigger,
                         startedAt: queueStartedAt, running: playbackRunning, liveSample: livePlayback)
@@ -240,7 +275,7 @@ struct SmoothSeekBankView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 5)).allowsHitTesting(false)
                 } else if active, positionRunning {
                     SectionPlaybackBar(position: position, start: marker.position,
-                        end: displayMarkers.first(where: { $0.position > marker.position })?.position ?? end,
+                        end: min(end, displayMarkers.first(where: { $0.position > marker.position })?.position ?? end),
                         running: positionRunning, liveSample: livePosition)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).allowsHitTesting(false)
                 }
@@ -249,7 +284,7 @@ struct SmoothSeekBankView: View {
                     Text(verbatim: marker.name.uppercased()).font(.system(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
                 }.foregroundStyle(Color.white).padding(.horizontal, 3).frame(maxWidth: .infinity, maxHeight: .infinity)
                 RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : isStart ? Color.blue : JarasTheme.line, lineWidth: selected || isStart ? 1.5 : 0.5)
-            }
+            }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")
     }
 }
@@ -353,8 +388,16 @@ struct SectionListTabs<Content: View>: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }.padding(4).frame(maxWidth: .infinity).frame(height: 42)
                 .foregroundStyle(secondary == target ? Color.white : JarasTheme.secondary)
+                #if os(iOS)
+                .background {
+                    RemoteSurface.fill(secondary == target ? (target ? Color.orange : JarasTheme.green).opacity(0.55) : JarasTheme.display)
+                }
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(RemoteSurface.edge, lineWidth: 0.5).allowsHitTesting(false))
+                #else
                 .background(secondary == target ? (target ? Color.orange : JarasTheme.green).opacity(0.55) : JarasTheme.display)
+                #endif
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(name ?? "—").accessibilityValue(secondary == target ? "Selected" : "")
     }
 }

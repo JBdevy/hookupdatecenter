@@ -5,7 +5,276 @@
 #include <stdexcept>
 using namespace jaras;
 static void expect(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+static void testAutoUntilBlockEnd() {
+    Project project; project.id = "block-project"; project.name = "Blocks";
+    project.songs = {{"block-song", "Songs", 80, 120, {},
+        {{"a", "A", 0, 10}, {"b", "B", 10, 20}, {"c", "C", 20, 30},
+         {"d", "D", 30, 40}, {"e", "E", 40, 50}, {"f", "F", 50, 60}}}};
+    RegionSetlist state; state.autoAdvance = true; state.selectedId = "block-list";
+    state.playlists = {{"block-list", "Show", "block-song", {"a", "b", "c", "d", "e", "f"}}};
+    state.blocks = std::vector<SetlistBlock>{
+        {"opening", "block-song", "block-list", "Opening", 0, "a"},
+        {"middle", "block-song", "block-list", "Middle", 0, "c"},
+        {"closing", "block-song", "block-list", "Closing", 0, "e"}};
+    project.regionSetlist = state;
+    const auto start = [](Engine& engine, const ID& id) {
+        engine.execute({CommandKind::selectRegion, id}); engine.execute({CommandKind::play});
+    };
+    Engine legacy; legacy.loadProject(project); start(legacy, "b");
+    expect(legacy.transport().queuedRegionId == "c", "block limit defaults off for existing projects");
+    legacy.advance(10);
+    expect(legacy.transport().playing && legacy.transport().regionId == "c", "default Auto crosses block headings");
+
+    state.autoUntilBlockEnd = true; project.regionSetlist = state;
+    Engine limited; limited.loadProject(project); start(limited, "a");
+    expect(limited.transport().queuedRegionId == "b", "block limit queues songs within the current block");
+    limited.advance(80);
+    expect(!limited.transport().playing && limited.transport().position == 20 && limited.transport().regionId == "b" && !limited.transport().queuedRegionId,
+           "large ticks stop exactly at the last song of the block");
+    expect(limited.project().regionSetlist->autoAdvance && limited.project().regionSetlist->autoUntilBlockEnd,
+           "reaching a block boundary leaves Auto and its block policy enabled");
+    auto cosmetic = *limited.project().regionSetlist;
+    cosmetic.blocks->front().name = "Cosmetic"; cosmetic.blocks->front().color = 0x987654;
+    cosmetic.liveEnabled = true; cosmetic.playedLiveRegionIDs = std::vector<ID>{"b"};
+    const auto stopped = limited.transport();
+    limited.configureRegionSetlist(cosmetic);
+    expect(limited.transport().regionId == stopped.regionId && limited.transport().position == stopped.position &&
+           limited.transport().editPosition == stopped.editPosition && limited.transport().playing == stopped.playing &&
+           limited.transport().queuedRegionId == stopped.queuedRegionId && limited.transport().queueStartedAt == stopped.queueStartedAt &&
+           limited.transport().subPlay.position == stopped.subPlay.position && limited.transport().subPlay.playing == stopped.subPlay.playing,
+           "cosmetic and Live edits preserve stopped transport exactly at a contiguous block boundary");
+    start(limited, "c");
+    expect(limited.transport().queuedRegionId == "d", "manual selection starts automatic queueing in the new block");
+    limited.advance(30);
+    expect(!limited.transport().playing && limited.transport().position == 40, "manually selected block also stops before its following block");
+
+    Engine manual; manual.loadProject(project); start(manual, "a");
+    manual.execute({CommandKind::queueRegion, "c"});
+    auto edited = state; edited.blocks->at(1).name = "Renamed";
+    manual.configureRegionSetlist(edited);
+    expect(manual.transport().queuedRegionId == "c" && manual.project().regionSetlist->autoUntilBlockEnd,
+           "manual queue crosses a block boundary without disabling the persistent policy");
+    manual.advance(30);
+    expect(!manual.transport().playing && manual.transport().position == 40 && manual.transport().regionId == "d",
+           "after a manual cross-block queue, Auto runs only to the end of that destination block");
+
+    Engine rename; rename.loadProject(project); start(rename, "a"); rename.advance(2);
+    const double queueOrigin = rename.transport().queueStartedAt;
+    edited = state; edited.blocks->front().name = "New name"; edited.blocks->front().color = 0x123456; edited.blocks->front().symbol = false;
+    rename.configureRegionSetlist(edited);
+    expect(rename.transport().queuedRegionId == "b" && rename.transport().queueStartedAt == queueOrigin,
+           "block name, color and symbol edits preserve the existing queue countdown");
+    edited.blocks->at(1).beforeRegionId = "b";
+    rename.configureRegionSetlist(edited);
+    expect(!rename.transport().queuedRegionId && rename.transport().position == 2, "moving a block heading retracts a newly forbidden automatic queue");
+    edited.blocks->at(1).beforeRegionId = "c";
+    rename.configureRegionSetlist(edited);
+    expect(rename.transport().queuedRegionId == "b", "moving the heading back restores a permitted automatic queue");
+    auto projectEdit = rename.project(); projectEdit.regionSetlist->blocks->at(1).beforeRegionId = "b";
+    rename.applyProjectEdit(projectEdit);
+    expect(!rename.transport().queuedRegionId, "full project edits also revalidate block boundaries");
+    projectEdit.regionSetlist->blocks->at(1).beforeRegionId = "c"; rename.applyProjectEdit(projectEdit);
+    expect(rename.transport().queuedRegionId == "b", "undoing a boundary edit restores queueing without a transport restart");
+
+    auto reordered = project;
+    reordered.regionSetlist->playlists[0].regionIds = {"c", "a", "b", "d", "e", "f"};
+    reordered.regionSetlist->blocks->at(1).beforeRegionId = "d";
+    reordered.regionSetlist->blocks->front().beforeRegionId = "c";
+    Engine order; order.loadProject(reordered); start(order, "c");
+    expect(order.transport().queuedRegionId == "a", "block policy follows playlist sequence rather than timeline order");
+    order.advance(30);
+    expect(!order.transport().playing && order.transport().position == 20 && order.transport().regionId == "b",
+           "reordered playlist stops at its next heading even when time moves backwards");
+
+    auto all = project; all.regionSetlist->selectedId.reset();
+    all.regionSetlist->blocks->push_back({"all-boundary", "block-song", {}, "All regions", 0, "c"});
+    all.regionSetlist->blocks->push_back({"empty-end", "block-song", {}, "Empty", 0, {}});
+    Engine allRegions; allRegions.loadProject(all); start(allRegions, "a");
+    expect(allRegions.transport().queuedRegionId == "b", "All regions ignores headings belonging to a playlist");
+    allRegions.advance(20);
+    expect(!allRegions.transport().playing && allRegions.transport().position == 20,
+           "an unheaded leading group in All regions stops before its first applicable heading");
+    Engine scoped; scoped.loadProject(project); start(scoped, "b");
+    edited = state; edited.blocks->at(1).playlistId.reset(); scoped.configureRegionSetlist(edited);
+    expect(scoped.transport().queuedRegionId == "c", "playlist playback ignores a boundary belonging to All regions");
+
+    for (bool applyWholeProject : {false, true}) {
+        auto runningProject = project; runningProject.regionSetlist->autoUntilBlockEnd = false;
+        runningProject.regionSetlist->automaticSubplay = true;
+        Engine running; running.loadProject(runningProject); start(running, "b"); running.advance(9);
+        expect(running.transport().subPlay.playing && running.transport().queuedRegionId == "c", "fixture starts next-block automatic Subplay before enabling limit");
+        auto next = running.project(); next.regionSetlist->autoUntilBlockEnd = true;
+        if (applyWholeProject) running.applyProjectEdit(next); else running.configureRegionSetlist(*next.regionSetlist);
+        expect(!running.transport().queuedRegionId && !running.transport().subPlay.playing && running.transport().playing && running.transport().position == 19,
+               "enabling the limit retracts next-block queue and its automatic Subplay without moving main playback");
+        running.advance(2);
+        expect(!running.transport().playing && running.transport().position == 20, "changed policy takes effect at the current block end");
+    }
+    for (int manualSubplay : {0, 1, 2}) {
+        auto runningProject = project; runningProject.regionSetlist->autoUntilBlockEnd = false;
+        runningProject.regionSetlist->automaticSubplay = manualSubplay != 0;
+        Engine running; running.loadProject(runningProject); start(running, "b"); running.advance(9);
+        if (manualSubplay == 1) running.execute({CommandKind::subStop});
+        if (manualSubplay == 2) running.execute({CommandKind::subSeek, "", 21});
+        else running.execute({CommandKind::subPlay});
+        const double manualPosition = running.transport().subPlay.position;
+        auto next = *running.project().regionSetlist; next.autoUntilBlockEnd = true;
+        running.configureRegionSetlist(next);
+        expect(!running.transport().queuedRegionId && running.transport().subPlay.playing && running.transport().subPlay.position == manualPosition,
+               "enabling the limit preserves manually started, restarted or repositioned Subplay");
+    }
+    auto crossProject = project; crossProject.regionSetlist->automaticSubplay = true;
+    Engine cross; cross.loadProject(crossProject); start(cross, "a"); cross.advance(9); cross.advance(1);
+    expect(cross.transport().regionId == "b" && cross.transport().subPlayPromotion == 1 && !cross.transport().queuedRegionId,
+           "automatic Subplay still promotes inside a block and never prepares its next block");
+    cross.advance(9);
+    expect(!cross.transport().playing && cross.transport().position == 20 && !cross.transport().subPlay.playing,
+           "Subplay handoff preserves the block end stop");
+    Engine manualCross; manualCross.loadProject(crossProject); start(manualCross, "b");
+    manualCross.execute({CommandKind::queueRegion, "c"}); manualCross.advance(9);
+    manualCross.configureRegionSetlist(*manualCross.project().regionSetlist);
+    expect(manualCross.transport().queuedRegionId == "c" && manualCross.transport().subPlay.playing,
+           "automatic Subplay for a manually chosen cross-block queue remains allowed");
+    manualCross.advance(1); manualCross.advance(19);
+    expect(!manualCross.transport().playing && manualCross.transport().position == 40 && manualCross.project().regionSetlist->autoUntilBlockEnd,
+           "manual queue with automatic Subplay resumes the same limit in its destination block");
+
+    auto pausedProject = crossProject; pausedProject.regionSetlist->autoUntilBlockEnd = false;
+    Engine paused; paused.loadProject(pausedProject); start(paused, "b"); paused.advance(9); paused.execute({CommandKind::pause});
+    edited = *paused.project().regionSetlist; edited.autoUntilBlockEnd = true; paused.configureRegionSetlist(edited);
+    paused.execute({CommandKind::play});
+    expect(!paused.transport().subPlay.playing && !paused.transport().queuedRegionId, "invalidated automatic Subplay cannot resume from Pause");
+    paused.advance(2);
+    expect(!paused.transport().playing && paused.transport().position == 20, "paused policy change stops at the same block boundary");
+
+    auto readyProject = crossProject; readyProject.regionSetlist->prepareWithoutPlayback = true;
+    Engine ready; ready.loadProject(readyProject); start(ready, "a"); ready.advance(10);
+    expect(!ready.transport().playing && ready.transport().regionId == "b" && ready.transport().position == 10,
+           "Without playback prepares the next song within a block");
+    ready.execute({CommandKind::play}); ready.advance(10);
+    expect(!ready.transport().playing && ready.transport().regionId == "b" && ready.transport().position == 20 && !ready.transport().queuedRegionId,
+           "Without playback does not prepare the first song of the next block");
+
+    auto drawer = project;
+    Part child{"drawer-child", "Child", 2, 5}; child.parentRegionID = "a";
+    drawer.songs[0].parts.push_back(child);
+    drawer.regionSetlist->playlists[0].regionIds.insert(drawer.regionSetlist->playlists[0].regionIds.begin() + 1, child.id);
+    drawer.regionSetlist->blocks->at(1).beforeRegionId = "b";
+    Engine unified; unified.loadProject(drawer); start(unified, child.id);
+    expect(!unified.transport().queuedRegionId, "drawer child inherits its listed parent's block boundary, skipping hidden child IDs");
+    unified.advance(20);
+    expect(!unified.transport().playing && unified.transport().position == 10,
+           "unified playback stops at the parent's end, not the child end");
+    drawer.regionSetlist->blocks->at(1).beforeRegionId = child.id;
+    Engine hidden; hidden.loadProject(drawer); start(hidden, child.id);
+    expect(hidden.transport().queuedRegionId == "b", "hidden drawer child anchors do not introduce a visible block boundary");
+
+    Engine toggle; toggle.loadProject(project); start(toggle, "b");
+    edited = state; edited.autoUntilBlockEnd = false; toggle.configureRegionSetlist(edited);
+    expect(toggle.transport().queuedRegionId == "c", "turning off block limit immediately restores normal Auto queue");
+    toggle.execute({CommandKind::queueRegion, "e"});
+    edited.autoUntilBlockEnd = true; toggle.configureRegionSetlist(edited);
+    auto manualEdit = toggle.project(); manualEdit.regionSetlist->blocks->at(1).beforeRegionId = "b";
+    toggle.applyProjectEdit(manualEdit);
+    expect(toggle.transport().queuedRegionId == "e", "setting and full project edits never retract a manually chosen cross-block queue");
+}
+static void testSubplaySurvivesOutgoingEnd() {
+    for (bool automatic : {false, true}) for (bool stop : {false, true}) for (bool queued : {false, true}) {
+        Project project; project.id = "sub-end"; project.name = "Subplay boundary";
+        project.songs = {{"song", "Timeline", 100, 120, {}, {{"a", "Outgoing", 0, 10}, {"b", "Incoming", 30, 50}, {"c", "Queued", 60, 80}}}};
+        RegionSetlist list; list.autoAdvance = automatic; list.stopAtRegionEnd = stop;
+        project.regionSetlist = list;
+        Engine engine; engine.loadProject(project);
+        engine.execute({CommandKind::selectRegion, "a"}); engine.execute({CommandKind::play});
+        engine.advance(8);
+        if (queued) engine.execute({CommandKind::queueRegion, "b"});
+        engine.execute({CommandKind::subPlay}); engine.execute({CommandKind::subSeek, "", 30});
+        engine.advance(2.25);
+        expect(engine.transport().playing && !engine.transport().subPlay.playing && engine.transport().subPlayPromotion == 1 &&
+               engine.transport().regionId == "b" && engine.transport().position == 32.25,
+               "outgoing end promotes running Subplay before STOP, with or without Auto/queue");
+        expect(engine.transport().editPosition == 32.25,
+               "promotion carries the edit cursor to the incoming Subplay position");
+        engine.advance(0.5);
+        expect(engine.transport().playing && engine.transport().position == 32.75 && engine.transport().subPlayPromotion == 1,
+               "incoming playback keeps advancing without repeating or inheriting outgoing STOP");
+        expect(engine.transport().editPosition == 32.25, "promoted edit cursor remains at the handoff position");
+        engine.execute({CommandKind::stopAll});
+        expect(!engine.transport().playing && !engine.transport().subPlay.playing, "explicit Stop All still stops both heads");
+    }
+    for (bool prepare : {false, true}) {
+        Project project; project.id = "auto-sub-stop"; project.name = "Pre-roll";
+        project.songs = {{"song", "Timeline", 60, 120, {}, {{"a", "A", 0, 10}, {"b", "B", 20, 40}}}};
+        RegionSetlist list; list.autoAdvance = true; list.stopAtRegionEnd = true;
+        list.automaticSubplay = true; list.prepareWithoutPlayback = prepare;
+        project.regionSetlist = list;
+        Engine engine; engine.loadProject(project); engine.execute({CommandKind::selectRegion, "a"});
+        engine.execute({CommandKind::play}); engine.advance(9);
+        if (prepare) engine.execute({CommandKind::subPlay});
+        expect(engine.transport().subPlay.playing, "fixture has an active manual or automatic pre-roll");
+        engine.advance(1.25);
+        expect(engine.transport().playing && engine.transport().position == 21.25 && engine.transport().subPlayPromotion == 1,
+               "STOP and prepare-only policies cannot silence a song that already started");
+    }
+    // The final region may also be the end of the complete timeline. Incoming
+    // Subplay earlier in that same timeline must survive that boundary too.
+    Project project; project.id = "timeline-end"; project.name = "End";
+    project.songs = {{"song", "Timeline", 100, 120, {}, {}}};
+    Engine engine; engine.loadProject(project); engine.execute({CommandKind::seek, "", 98});
+    engine.execute({CommandKind::play}); engine.execute({CommandKind::subPlay});
+    engine.execute({CommandKind::subSeek, "", 20}); engine.advance(2.25);
+    expect(engine.transport().playing && engine.transport().position == 22.25 && engine.transport().subPlayPromotion == 1,
+           "timeline end without a region promotes the already-running secondary head");
+}
+
+static void testRegionStopRespectsQueue() {
+    for (bool automatic : {false, true}) for (bool prepare : {false, true}) for (bool drawer : {false, true}) {
+        Project project; project.id = "stop-queue"; project.name = "STOP queue priority";
+        project.songs = {{"song", "Timeline", 80, 120, {},
+            {{"a", "Outgoing", 0, 10}, {"b", "Skipped", 20, 30}, {"c", "Queued", 40, 50}}}};
+        if (drawer) {
+            Part child{"child", "Drawer song", 0, 5}; child.parentRegionID = "a";
+            project.songs[0].parts.push_back(child);
+        }
+        RegionSetlist list; list.autoAdvance = automatic; list.stopAtRegionEnd = true;
+        list.prepareWithoutPlayback = prepare; project.regionSetlist = list;
+        Engine engine; engine.loadProject(project);
+        engine.execute({CommandKind::selectRegion, drawer ? "child" : "a"}); engine.execute({CommandKind::play});
+        engine.execute({CommandKind::queueRegion, "c"});
+        engine.execute({CommandKind::editSeek, "", 2});
+        engine.advance(9.75);
+        expect(engine.transport().playing && engine.transport().position == 9.75 && engine.transport().queuedRegionId == "c",
+               "STOP preserves manual queue and waits for the whole outgoing region, including drawers");
+        expect(engine.transport().editPosition == 2, "arming a song does not move the edit cursor before the jump");
+        engine.advance(0.5);
+        expect(engine.transport().regionId == "c" && engine.transport().playing == !prepare &&
+               engine.transport().position == (prepare ? 40 : 40.25) && !engine.transport().queuedRegionId,
+               "queued song takes precedence over STOP; explicit prepare-only mode still prepares without playing");
+        expect(engine.transport().editPosition == 40, "queue handoff carries the edit cursor to the exact song start");
+        expect(engine.transport().sectionJumpSerial == (prepare ? 0 : 1),
+               "queue transition emits the same discontinuity serial as a smooth seek, without emitting it for prepare-only");
+        if (!prepare) {
+            engine.advance(10);
+            expect(!engine.transport().playing && engine.transport().position == 50,
+                   "STOP still stops at the incoming song's own end when its queue is empty");
+        }
+    }
+    Project project; project.id = "stop-auto-queue"; project.name = "Automatic queue";
+    project.songs = {{"song", "Timeline", 40, 120, {}, {{"a", "A", 0, 10}, {"b", "B", 20, 30}}}};
+    RegionSetlist list; list.autoAdvance = true; list.stopAtRegionEnd = true; project.regionSetlist = list;
+    Engine engine; engine.loadProject(project); engine.execute({CommandKind::selectRegion, "a"}); engine.execute({CommandKind::play});
+    engine.advance(10.25);
+    expect(engine.transport().playing && engine.transport().regionId == "b" && engine.transport().position == 20.25,
+           "STOP also honors a queue populated by AUTO without Subplay");
+    engine.advance(10);
+    expect(!engine.transport().playing && engine.transport().position == 30,
+           "AUTO plus STOP ends normally after the final queued song");
+}
+
 int main() {
+    testRegionStopRespectsQueue();
+    testSubplaySurvivesOutgoingEnd();
+    testAutoUntilBlockEnd();
     Project p; p.id="project"; p.name="Show"; p.songs={{"one","One",10,120,{{"track","Click",{"click"}}},{}},{"two","Two",20,100,{},{}},{"three","Three",30,90,{},{}}};
     p.setlists={{"setlist","Setlist",{"one","two","three"}}};
     ProjectTimeSettings relativeTime; relativeTime.timebase = ProjectTimebase::relative;
@@ -254,6 +523,19 @@ int main() {
     }
     expect(textTracks.transport().playing && textTracks.transport().position == 0.5 && textTracks.transport().subPlay.playing && textTracks.transport().subPlay.position == 4, "text creation and edits preserve both live clocks");
     validate(textTracks.project());
+    {
+        auto repeatedText = textTracks.project();
+        repeatedText.songs[0].duration = std::max(repeatedText.songs[0].duration, 26.0);
+        auto& repeated = repeatedText.songs[0].tracks[2].clips[0];
+        repeated.startTime = 0; repeated.duration = 26;
+        repeated.loopStart = 0; repeated.loopLength = 10; repeated.sourceOffset = 8;
+        Engine textRepeat; textRepeat.loadProject(repeatedText);
+        expect(textRepeat.project().songs[0].tracks[2].clips[0].loopLength == 10 && textRepeat.project().songs[0].tracks[2].clips[0].sourceOffset == 8,
+               "stretched lyrics retain visual repeat timing through core project load");
+        repeated.audioFile = AudioFile{"Stems/not-text.wav", {}};
+        bool rejected = false; try { validate(repeatedText); } catch (...) { rejected = true; }
+        expect(rejected, "visual text repetition cannot permit audio media on text items");
+    }
     for (const auto* role : {"teleprompt", "video", "chords"}) {
         auto singleLane = editable;
         auto& track = singleLane.songs[0].tracks[0];
@@ -682,7 +964,7 @@ int main() {
     expect(!gated.transport().playing && gated.transport().position == 2, "next stop returns to promoted playback start");
     gated.execute({CommandKind::select,"three"}); gated.execute({CommandKind::seek,"",29});
     gated.execute({CommandKind::play}); gated.execute({CommandKind::subPlay}); gated.advance(2);
-    expect(!gated.transport().playing && !gated.transport().subPlay.playing, "natural main ending stops sub play too");
+    expect(gated.transport().playing && !gated.transport().subPlay.playing && gated.transport().position == 2 && gated.transport().subPlayPromotion == 2, "natural main ending promotes Subplay just like stopping the outgoing head manually");
     Engine returning; returning.loadProject(p);
     returning.execute({CommandKind::seek,"",3}); returning.execute({CommandKind::play}); returning.advance(2);
     returning.execute({CommandKind::play}); returning.execute({CommandKind::stop});
@@ -845,7 +1127,8 @@ int main() {
     drawerPlayback.execute({CommandKind::stopAll}); drawerPlayback.execute({CommandKind::selectRegion, "child-one"});
     drawerList.stopAtRegionEnd = true; drawerPlayback.configureRegionSetlist(drawerList);
     drawerPlayback.execute({CommandKind::play}); drawerPlayback.execute({CommandKind::subPlay}); drawerPlayback.advance(55);
-    expect(!drawerPlayback.transport().playing && !drawerPlayback.transport().subPlay.playing && drawerPlayback.transport().position == 60, "region Stop ends exactly at boundary before queued or SubPlay handoff");
+    expect(drawerPlayback.transport().playing && !drawerPlayback.transport().subPlay.playing && drawerPlayback.transport().position == 135 && drawerPlayback.transport().subPlayPromotion == 1, "region Stop preserves and promotes an already-running Subplay");
+    drawerPlayback.execute({CommandKind::stopAll});
     drawerList.stopAtRegionEnd = false; drawerPlayback.configureRegionSetlist(drawerList);
     drawerPlayback.execute({CommandKind::selectRegion, "child-one"}); drawerPlayback.execute({CommandKind::play}); drawerPlayback.advance(55);
     expect(drawerPlayback.transport().playing && drawerPlayback.transport().regionId == "after-group" && drawerPlayback.transport().position == 85, "disabling region Stop restores gapless Auto transition");
@@ -857,7 +1140,7 @@ int main() {
     drawerPlayback.execute({CommandKind::selectRegion, "after-group"}); drawerPlayback.execute({CommandKind::play});
     drawerPlayback.execute({CommandKind::queueRegion, "child-one"}); drawerPlayback.execute({CommandKind::subPlay}); drawerPlayback.execute({CommandKind::subSeek, "", 35});
     drawerPlayback.advance(15); drawerPlayback.advance(5);
-    expect(drawerPlayback.transport().playing && drawerPlayback.transport().regionId == "child-one" && drawerPlayback.transport().subPlayPromotion == 1 && drawerPlayback.transport().position == 55, "incoming drawer subplay promotion preserves its running position");
+    expect(drawerPlayback.transport().playing && drawerPlayback.transport().regionId == "child-one" && drawerPlayback.transport().subPlayPromotion == 2 && drawerPlayback.transport().position == 55, "incoming drawer subplay promotion preserves its running position");
     bool expandingGroupRejected = false; try { unifiedEngine.resizeRegion("unified", 40, 120); } catch (...) { expandingGroupRejected = true; }
     expect(expandingGroupRejected, "unified regions cannot expand even when all children fit");
 

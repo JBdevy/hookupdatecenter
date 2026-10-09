@@ -159,61 +159,51 @@ private enum CatStemRenderer {
     }
 }
 
-/// CatStem is hosted inside the track/item FX window. Its worker remains offline
-/// and only starts after the user selects a source and presses Separar.
+/// The processor belongs to the track/item FX chain, independent of this window.
+/// Closing the editor never stops the worker or removes the saved stem mix.
 struct CatStemFXEditor: View {
     let show: ShowController
     let track: UUID?
     var clip: UUID? = nil
-    var body: some View {
-        if let documents = FXWindows.shared.documents {
-            CatStemFXSourceEditor(show: show, documents: documents, track: track, clip: clip)
-        } else { Text("Abra um projeto para usar CatStemSeparation 5.").padding(20) }
+    @State private var settings = NativeFXSettings()
+    @State private var project: UUID?
+    @State private var status = ""
+    @State private var failed = false
+    @State private var available = false
+    @State private var changed = false
+    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    private var current: NativeFXSettings { clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track) }
+    private var title: String {
+        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—" }
+        return track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Master"
     }
-}
-private struct CatStemFXSourceEditor: View {
-    @ObservedObject var show: ShowController
-    @ObservedObject var documents: ProjectDocuments
-    let track: UUID?
-    let clip: UUID?
-    @State private var selected: UUID?
-    @StateObject private var session = CatStemSession()
-    private var sources: [(track: Track, clip: AudioClip)] {
-        (show.current?.tracks ?? []).filter { $0.kind == .standard && (track == nil || $0.id == track) }.flatMap { track in
-            track.clips.filter { (clip == nil || $0.id == clip) && ($0.audioFile ?? track.audioFile) != nil }.map { (track, $0) }
+    private func refreshStatus() {
+        guard available else { return }
+        guard settings.isEnabled(NativeFXSettings.stemSeparator) else { status = "Bypass"; failed = false; return }
+        guard let report = StemAudioPlayback.shared.effects(for: clip ?? track)?.stemSeparatorStatus else {
+            status = "Preparando CatStem…"; failed = false; return
         }
+        let state = report["state"] as? String ?? "loading"
+        failed = state == "error" || state == "fault" || state == "unavailable"
+        if failed { status = report["error"] as? String ?? "Não foi possível iniciar o processamento." }
+        else if state == "ready" || state == "running" { status = "Tempo real · 5 stems" }
+        else { status = "Preparando CatStem…" }
     }
-    var body: some View {
-        VStack(spacing: 8) {
-            if clip == nil && !sources.isEmpty {
-                Picker("Item de áudio", selection: Binding(get: { selected ?? sources.first?.clip.id }, set: { selected = $0; session.error = ""; session.status = "" })) {
-                    ForEach(sources.map(\.clip)) { clip in Text(verbatim: clip.name).tag(Optional(clip.id)) }
-                }.disabled(session.running).padding(.horizontal, 20).padding(.top, 12)
-            }
-            if let song = show.current,
-               let source = sources.first(where: { $0.clip.id == (selected ?? clip ?? sources.first?.clip.id) }),
-               let directory = documents.currentURL?.deletingLastPathComponent() {
-                CatStemEditor(request: .init(project: show.snapshot.project, song: song, track: source.track, clip: source.clip, directory: directory),
-                              show: show, documents: documents, session: session)
-            } else {
-                Text("Esta pista não tem itens de áudio para separar.").foregroundStyle(JarasTheme.secondary).padding(20)
-            }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
-            .onDisappear { session.cancel() }
+    private func update(_ value: NativeFXSettings, commit: Bool) {
+        guard project == show.snapshot.project.id else { return }
+        settings = value
+        if let clip { show.updateClipFX(clip, effect: NativeFXSettings.stemSeparator, settings: value) }
+        else { show.updateFX(track, effect: NativeFXSettings.stemSeparator, settings: value) }
+        changed = true
+        if commit { show.commitFX(); changed = false }
+        refreshStatus()
     }
-}
-
-private struct CatStemEditor: View {
-    let request: CatStemRequest
-    @ObservedObject var show: ShowController
-    @ObservedObject var documents: ProjectDocuments
-    @ObservedObject var session: CatStemSession
-    private var source: AudioClip? {
-        show.snapshot.project.songs.first { $0.id == request.song.id }?.tracks.first { $0.id == request.track.id }?.clips.first { $0.id == request.clip.id }
-    }
-    private var tracks: [Track] {
-        let all = show.snapshot.project.songs.first { $0.id == request.song.id }?.tracks ?? []
-        return (source?.separatedStemTracks ?? []).compactMap { id in all.first { $0.id == id } }
+    private func source(_ index: Int) -> Binding<NativeStemMix.Source> {
+        Binding(get: { settings.stemParameters.sources[index] }, set: { value in
+            var next = current
+            next.stemParameters.sources[index] = value
+            update(next, commit: false)
+        })
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -221,36 +211,31 @@ private struct CatStemEditor: View {
                 Image(systemName: "waveform").font(.title2).foregroundStyle(JarasTheme.green)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(verbatim: "CatStemSeparation 5").font(.system(size: 19, weight: .semibold))
-                    Text(verbatim: request.clip.name).font(.caption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+                    Text(verbatim: title).font(.caption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                 }
                 Spacer()
-                Text(verbatim: "5 STEMS").font(.system(size: 10, weight: .bold)).foregroundStyle(JarasTheme.green)
+                Toggle("Enabled", isOn: Binding(get: { settings.isEnabled(NativeFXSettings.stemSeparator) }, set: { enabled in
+                    var next = current; next.setEnabled(NativeFXSettings.stemSeparator, enabled: enabled)
+                    update(next, commit: true)
+                })).toggleStyle(.switch).labelsHidden().tint(JarasTheme.green).disabled(!available)
             }.padding(.bottom, 4)
-            ForEach(Array(CatStem.allCases.enumerated()), id: \.element) { index, stem in
-                CatStemRow(stem: stem, track: tracks.count == 5 ? tracks[index] : nil, show: show)
-            }
-            if session.running {
-                ProgressView(value: session.progress).tint(JarasTheme.green)
-                HStack {
-                    Text(verbatim: session.status).font(.caption)
-                    Spacer()
-                    Button("Cancelar") { session.cancel() }.buttonStyle(.bordered)
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(Array(CatStem.allCases.enumerated()), id: \.element) { index, stem in
+                    CatStemRealtimeRow(stem: stem, source: source(index)) {
+                        if changed { show.commitFX(); changed = false }
+                    }
                 }
-            } else if tracks.count == 5 {
-                Text("Separação pronta. Os controles ajustam as cinco pistas.").font(.caption).foregroundStyle(JarasTheme.secondary)
-            } else {
-                HStack(alignment: .center) {
-                    Text(source?.separatedStemTracks == nil ? "Cria cinco pistas e preserva o original silenciado." : "Uma das pistas separadas foi removida.")
-                        .font(.caption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                    Button("Separar") { session.start(request, show: show, documents: documents) }
-                        .buttonStyle(.borderedProminent).tint(JarasTheme.green).foregroundStyle(.black)
-                        .disabled(documents.busy || source == nil || source?.separatedStemTracks != nil || source != request.clip)
-                }
+            }.disabled(!available || !settings.isEnabled(NativeFXSettings.stemSeparator))
+            Text(verbatim: status).font(.caption).foregroundStyle(failed ? Color.red : JarasTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(width: 560).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .onAppear {
+                project = show.snapshot.project.id; settings = current
+                do { _ = try CatStemRealtimeRuntime.paths(); available = true; refreshStatus() }
+                catch { available = false; failed = true; status = error.localizedDescription }
             }
-            if !session.error.isEmpty { Text(verbatim: session.error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-            else if !session.running && tracks.count != 5 && !session.status.isEmpty { Text(verbatim: session.status).font(.caption) }
-        }.padding(20).frame(width: 470).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .onReceive(timer) { _ in settings = current; refreshStatus() }
+            .onDisappear { if changed && project == show.snapshot.project.id { show.commitFX() } }
     }
 }
 
@@ -264,53 +249,59 @@ private struct CatStemButtonStyle: ButtonStyle {
     }
 }
 
-private struct CatStemRow: View {
+private struct CatStemRealtimeRow: View {
     let stem: CatStem
-    let track: Track?
-    @ObservedObject var show: ShowController
-    @State private var dragging: Double?
-    private var gain: Double { dragging ?? track?.volume ?? 1 }
+    @Binding var source: NativeStemMix.Source
+    let commit: () -> Void
+    private var gain: Double { source.gain }
     private var level: Double { gain <= 0 ? 0 : min(1, max(0, (20 * log10(gain) + 60) / 72)) }
     private var tint: Color { Color(red: Double((stem.color >> 16) & 255) / 255, green: Double((stem.color >> 8) & 255) / 255, blue: Double(stem.color & 255) / 255) }
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(spacing: 3) {
-                Button("M") { if let track { show.sendMixerControl(.mute, target: track.id) } }
-                    .buttonStyle(CatStemButtonStyle(activeColor: track?.mute == true ? .red : nil))
-                    .accessibilityLabel("Mute " + stem.rawValue)
-                Button("S") { if let track { show.sendMixerControl(.solo, target: track.id) } }
-                    .buttonStyle(CatStemButtonStyle(activeColor: track?.solo == true ? JarasTheme.yellow : nil))
-                    .accessibilityLabel("Solo " + stem.rawValue)
-            }.frame(width: 26)
-            VStack(spacing: 5) {
-                HStack {
-                    Text(verbatim: stem.rawValue).font(.system(size: 12, weight: .semibold)).foregroundStyle(tint)
-                    Spacer()
-                    Text(verbatim: gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain))).font(.system(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+    private var readout: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
+    private var gainSlider: some View {
+        GeometryReader { geometry in
+            let travel: CGFloat = max(1, geometry.size.height - 22)
+            let position = travel * CGFloat(1 - level)
+            ZStack(alignment: .top) {
+                RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.5))
+                    .frame(width: 6, height: travel + 12).offset(y: 5)
+                RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.75))
+                    .frame(width: 6, height: travel * CGFloat(level) + 6).offset(y: position + 11)
+                RoundedRectangle(cornerRadius: 4).fill(tint).frame(width: 36, height: 22)
+                    .overlay(Rectangle().fill(Color.black.opacity(0.7)).frame(width: 28, height: 2))
+                    .offset(y: position)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { event in
+                    let fraction = Double(min(1, max(0, 1 - (event.location.y - 11) / travel)))
+                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
+                }.onEnded { _ in commit() })
+                .onTapGesture(count: 2) { source.gain = 1; commit() }
+                .accessibilityElement().accessibilityLabel(stem.rawValue)
+                .accessibilityValue(readout)
+                .accessibilityAdjustableAction { direction in
+                    let db = gain <= 0 ? -60 : 20 * log10(gain)
+                    source.gain = pow(10, min(12, max(-60, db + (direction == .increment ? 1 : -1))) / 20)
+                    commit()
                 }
-                GeometryReader { geometry in
-                    let width = max(1, geometry.size.width - 12)
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2).fill(JarasTheme.line).frame(height: 4)
-                        RoundedRectangle(cornerRadius: 2).fill(tint.opacity(0.7)).frame(width: width * level + 6, height: 4)
-                        Rectangle().fill(tint).frame(width: 12, height: 20).overlay(Rectangle().fill(Color.black.opacity(0.55)).frame(width: 2, height: 12))
-                            .offset(x: width * level)
-                    }.frame(height: 22).contentShape(Rectangle())
-                        .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                            guard let track else { return }
-                            let fraction = min(1, max(0, (event.location.x - 6) / width))
-                            let value = fraction <= 0 ? 0 : pow(10, (fraction * 72 - 60) / 20)
-                            dragging = value; show.previewTrackVolume(track.id, gain: value)
-                        }.onEnded { _ in
-                            if let track, let dragging { show.sendMixerControl(.volume, target: track.id, value: dragging) }
-                            dragging = nil
-                        })
-                        .onTapGesture(count: 2) { if let track { show.sendMixerControl(.volume, target: track.id, value: 1) } }
-                }.frame(height: 22)
+        }.frame(height: 240)
+    }
+    var body: some View {
+        VStack(spacing: 12) {
+            Text(verbatim: stem.rawValue).font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.8)
+            HStack(spacing: 7) {
+                Button("M") { source.mute.toggle(); commit() }
+                    .buttonStyle(CatStemButtonStyle(activeColor: source.mute ? .red : nil))
+                    .accessibilityLabel("Mute " + stem.rawValue)
+                Button("S") { source.solo.toggle(); commit() }
+                    .buttonStyle(CatStemButtonStyle(activeColor: source.solo ? JarasTheme.yellow : nil))
+                    .accessibilityLabel("Solo " + stem.rawValue)
             }
-        }.padding(.horizontal, 12).padding(.vertical, 8)
+            gainSlider
+            Text(verbatim: readout).font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(JarasTheme.text).lineLimit(1).minimumScaleFactor(0.8)
+        }.padding(.horizontal, 8).padding(.vertical, 14).frame(maxWidth: .infinity)
             .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 7))
-            .disabled(track == nil).opacity(track == nil ? 0.6 : 1)
     }
 }
 #endif

@@ -388,6 +388,9 @@ struct MappingTransferRequest: Identifiable {
               event.window?.attachedSheet == nil,
               !NativeTimelineInputGate.shared.isBlocked(event.window),
               !(event.window?.firstResponder is NSTextView), !(event.window?.firstResponder is NSTextField) else { return false }
+        // Standard editing shortcuts belong to the menu/grid or the active
+        // text editor; a user mapping must not intermittently consume them.
+        if flags == .command, [8, 7, 9].contains(event.keyCode) { return false }
         if [125, 126].contains(event.keyCode), flags.isEmpty { return false }
         let input = ControlInput(kind: "keyboard", label: "", key: event.keyCode, modifiers: flags.rawValue)
         let mappedAction = actions.matching(input)

@@ -488,8 +488,10 @@ func peak() throws -> Float {
     }
     return value
 }
+// A seek into existing audio still needs an anti-click ramp. Natural file
+// attacks are preserved and measured separately in JumpTransientAudioTests.
+snapshot.transport.position = 0.25
 try renderer.update(snapshot, revision: 1)
-// A nonzero first sample must enter smoothly, including when resampled to 48 kHz.
 var onsetSamples: [Float] = []
 for _ in 0..<2 {
     if try engine.renderOffline(512, to: output) == .success {
@@ -498,6 +500,8 @@ for _ in 0..<2 {
 }
 let maximumStep = zip(onsetSamples, onsetSamples.dropFirst()).map { abs($0 - $1) }.max() ?? 1
 precondition(maximumStep < 0.01, "start must not jump from silence to full signal: \(maximumStep)")
+snapshot.transport.position = 0
+try renderer.update(snapshot, revision: 1)
 let mainPeak = try peak()
 precondition(mainPeak > 0.09 && mainPeak < 0.11, "real file audio must reach output: \(mainPeak)")
 renderer.previewPan(id, pan: -1)
@@ -539,11 +543,22 @@ precondition(abs(loopRestored - mainPeak) < 0.001, "leaving multiloop restores g
 precondition(snapshot.project.songs[0].tracks[0].volume == 1 && !snapshot.project.songs[0].tracks[0].mute, "leaving the loop restores the visible mixer state")
 print("MULTILOOP_INTERNAL_GAIN_RELEASE_VISIBLE_MUTE_RESTORE_PCM_OK")
 let heldPeak = TrackMeterLevel()
-heldPeak.update(peak: 0.99, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == nil)
+heldPeak.update(peak: pow(10, -24.01 / 20), elapsed: 0.03); precondition(heldPeak.peakHold.decibels == nil)
+heldPeak.update(peak: pow(10, -24.0 / 20), elapsed: 0.03); precondition(heldPeak.peakHold.decibels == -24)
+heldPeak.update(peak: 0.99, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == -0.09)
 heldPeak.update(peak: 1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 0)
 heldPeak.update(peak: pow(10, 3.0 / 20), elapsed: 0.03)
 heldPeak.update(peak: 1.1, elapsed: 0.03); precondition(heldPeak.peakHold.decibels == 3)
 heldPeak.reset(); precondition(heldPeak.peakHold.decibels == 3, "Stop retains the maximum clip peak")
+let hiddenTrack = UUID()
+renderer.observeTrackPeak(hiddenTrack, left: pow(10, -18.0 / 20), right: 0, elapsed: 0.03)
+renderer.observeTrackPeak(hiddenTrack, left: 0, right: 0, elapsed: 30)
+precondition(renderer.meter(for: hiddenTrack).peakHold.decibels == -18,
+             "a track never displayed by the mixer still captures its sub-zero held peak")
+renderer.meter(for: hiddenTrack).peakHold.clear()
+renderer.observeTrackPeak(hiddenTrack, left: 0, right: pow(10, -24.0 / 20), elapsed: 0.03)
+precondition(renderer.meter(for: hiddenTrack).peakHold.decibels == -24,
+             "clearing a hidden track peak also resets its previous maximum")
 var automaticMutes: [UUID] = []
 renderer.onPeakLimit = { automaticMutes.append($0) }
 renderer.observeTrackPeak(id, left: pow(10, 19.99 / 20), right: 0, elapsed: 0.03)
@@ -833,6 +848,45 @@ for channel in 0..<2 {
     let maximumStep = (first+1..<last).map { abs(changedPCM[channel][$0]-changedPCM[channel][$0-1]) }.max() ?? 1
     precondition(maximumStep < 0.03, "Live tempo edit must not introduce a click: \(maximumStep)")
 }
+// Region BPM controls edit markers without changing song.bpm. Exercise the
+// merged-to-split fragments produced by editing a detected accelerando.
+for editAt in [0.7, 1.8] {
+    renderer.open(directory: directory)
+    var project = Project.empty(name: "Live region tempo")
+    var track = Track(id: UUID(), name: "Tempo", role: .other)
+    track.clips = [AudioClip(id: UUID(), name: "Stereo", startTime: 0.2, duration: 3, audioFile: AudioFile(path: "tempo.wav"))]
+    project.songs[0].tracks = [track]
+    project.songs[0].parts = [Part(id: UUID(), name: "Region", startTime: 0.2, endTime: 3.2)]
+    project.songs[0].markers = [
+        TimelineMarker(id: UUID(), name: "TEMPO", position: 0.2, color: 0, tempoBPM: 120, tempoTimebase: .global, tempoReferenceBPM: 120),
+        TimelineMarker(id: UUID(), name: "TEMPO", position: 1.2, color: 0, tempoBPM: 140, tempoTimebase: .global, tempoReferenceBPM: 140)]
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+        position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    var samples = [Float](), position = 0.0, edits = 0
+    while samples.count < Int(outputFormat.sampleRate * 2.8) {
+        if edits < 3 && Double(samples.count) / outputFormat.sampleRate >= editAt + Double(edits) * 0.12 {
+            let before = state.project.songs[0]
+            var after = before
+            for i in after.markers!.indices { after.markers![i].tempoBPM! += 1 }
+            let map = TempoEditMap(before: before, after: after)
+            map.apply(to: &after); position = map.position(position)
+            state.project.songs[0] = after; edits += 1
+        }
+        state.transport.position = position
+        try renderer.update(state, revision: UInt64(400 + edits))
+        let status = try engine.renderOffline(512, to: output)
+        precondition(status == .success)
+        samples += Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
+        position += Double(output.frameLength) / outputFormat.sampleRate
+    }
+    let window = Int(outputFormat.sampleRate * 0.01)
+    for start in stride(from: Int((editAt - 0.1) * outputFormat.sampleRate), to: Int((editAt + 0.45) * outputFormat.sampleRate), by: window) {
+        let rms = sqrt(samples[start..<start+window].reduce(0.0) { $0 + Double($1*$1) } / Double(window))
+        precondition(rms > 0.01, "Region BPM edit must keep audio flowing: edit \(editAt), frame \(start), RMS \(rms)")
+    }
+    renderer.stop()
+}
+print("REGION_MARKER_BPM_LIVE_CONTINUITY_OK repeated edits, merged/split spans")
 print("TEMPO_STEREO_PITCH_DURATION_LIVE_CONTINUITY_OK")
 let unchangedFreePCM = try renderTempo(1, change: true, timebase: .free)
 let changedFreePCM = try renderTempo(1.5, change: true, timebase: .free)
@@ -1690,6 +1744,16 @@ pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = -12
 try pitchAudio.update(pitchState, revision: 4); try expectFrequency(220)
 pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = nil
 try pitchAudio.update(pitchState, revision: 5); try expectFrequency(440)
+// Fractional clock correction must preserve the requested note, including
+// when rate and item tuning change on an already playing/reused voice.
+pitchState.project.songs[0].tracks[0].clips[0].playbackRate = 61.0/60.0
+try pitchAudio.update(pitchState, revision: 6); try expectFrequency(440)
+pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = 12
+try pitchAudio.update(pitchState, revision: 7); try expectFrequency(880)
+pitchState.project.songs[0].tracks[0].clips[0].playbackRate = 0.99
+pitchState.project.songs[0].tracks[0].clips[0].pitchSemitones = -12
+try pitchAudio.update(pitchState, revision: 8); try expectFrequency(220)
+print("FRACTIONAL_RATE_CLOCK_PRESERVES_PITCH_AND_LIVE_ITEM_TUNING_OK")
 print("ITEM_TUNER_LIVE_AND_PRINTED_AUDIO_PITCH_OK")
 pitchAudio.prepareForClosing()
 print("NATIVE_PITCH_REGION_TARGETS_LAZY_ALLOCATION_AND_TRANSPORT_REUSE_PCM_OK")

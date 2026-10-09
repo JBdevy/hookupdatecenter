@@ -143,6 +143,42 @@
     precondition(body.fillsForTest!.items[0].firstSeamX != nil && body.fillsForTest!.items[0].repeatSpacing == 150)
     print("NATIVE_BODY_REAL_REPEAT_SEAMS_ONLY_OK")
 
+    // Media/text use the same original-length boundary as audio, including a
+    // trim into the source. Their retained ink cannot fill the triangular cut.
+    var repeatedText = textTrack
+    repeatedText.clips = [AudioClip(id: UUID(), name: "Repeated lyrics", startTime: 1, duration: 7, text: "Verse\nChorus")]
+    var repeatedImage = textTrack
+    repeatedImage.clips = [AudioClip(id: UUID(), name: "Repeated image", startTime: 1, duration: 7,
+        audioFile: AudioFile(path: "Videos/image.jpg"))]
+    var repeatedVideo = Track(id: UUID(), name: "Video", role: TrackRole(rawValue: "video"))
+    repeatedVideo.clips = [AudioClip(id: UUID(), name: "Repeated video", startTime: 1, duration: 7,
+        audioFile: AudioFile(path: "Videos/video.mp4"))]
+    var repeatedTracks = [repeatedText, repeatedImage, repeatedVideo]
+    for index in repeatedTracks.indices {
+        repeatedTracks[index].clips[0].loopLength = 2
+        repeatedTracks[index].clips[0].sourceOffset = 0.5
+    }
+    let repeatedSong = Song(id: UUID(), name: "Repeating media", duration: 10, bpm: 120, tracks: repeatedTracks, parts: [])
+    body.configure(configuration(repeatedSong))
+    body.project(viewport: CGRect(x: 0, y: 0, width: 800, height: 300),
+        documentSize: CGSize(width: 1000, height: 400), scale: 80)
+    precondition(body.fillsForTest!.items.count == 3 && body.inkForTest.count == 3)
+    for (fill, ink) in zip(body.fillsForTest!.items, body.inkForTest) {
+        precondition(fill.firstSeamX == 200 && fill.repeatSpacing == 160,
+            "lyrics, image and video show repetition at the original boundary, adjusted for trim offset")
+        let path = ink.clippingPath(visible: body.bounds)
+        for x: CGFloat in [200, 360, 520] {
+            precondition(!path.contains(CGPoint(x: x, y: ink.rect.maxY - 1), using: .evenOdd),
+                "native text/media ink must preserve each bottom triangular opening")
+            precondition(path.contains(CGPoint(x: x + 10, y: ink.rect.maxY - 1), using: .evenOdd))
+        }
+    }
+    body.configure(configuration(repeatedSong, height: 24))
+    body.project(viewport: viewport, documentSize: CGSize(width: 1000, height: 400), scale: 80)
+    precondition(body.inkForTest.isEmpty && body.fillsForTest!.items.allSatisfy { $0.firstSeamX == 200 && $0.repeatSpacing == 160 },
+        "collapsed media/text bars retain repetition cuts without preparing body ink")
+    print("NATIVE_BODY_TEXT_IMAGE_VIDEO_REPEAT_SEAMS_AND_INK_CUTOUTS_OK")
+
     // Projects made entirely of retained text and media must release the
     // hosted scale path, while mixed MIDI/click projects retain their coverage.
     var imageClip = AudioClip(id: UUID(), name: "Image", startTime: 5, duration: 2,

@@ -4,8 +4,11 @@
     return own + (ax.accessibilityChildren() ?? []).flatMap { axButtons($0, depth: depth + 1) }
 }
 @MainActor private func verifyBehavior() {
+    verifyFooterGainReadout()
+    verifyFooterPanReadout()
     let fixture = FixtureWindow(candidate: true, kinds: [.standard])
     fixture.change(80)
+    verifyPeakResetInput(fixture)
     let title = descendants(fixture.host, of: TrackDragTitleView.self).first!
     let faders = descendants(fixture.host, of: DirectVolumeSliderView.self)
     let original = faders.map(ObjectIdentifier.init)
@@ -62,6 +65,109 @@
     print("NATIVE_ROW_BEHAVIOR_OK actions rebind state focus locale disabled hit-area")
     fixture.window.close()
 }
+@MainActor private func verifyFooterGainReadout() {
+    let project = UUID(), track = UUID(), linked = UUID()
+    let window = NSWindow(contentRect: NSRect(x: 300, y: 300, width: 160, height: 100), styleMask: [], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 100))
+    window.contentView = root
+    let fader = DirectVolumeSliderView(frame: NSRect(x: 0, y: 0, width: 27, height: 100))
+    let own = FooterMixerGainLabel(frame: NSRect(x: 30, y: 40, width: 50, height: 12))
+    let grouped = FooterMixerGainLabel(frame: NSRect(x: 90, y: 40, width: 50, height: 12))
+    root.addSubview(fader); root.addSubview(own); root.addSubview(grouped)
+    window.orderFront(nil)
+    defer { window.close() }
+    fader.rebind(project: project, track: track)
+    own.bind(identity: TrackControlIdentity(project: project, track: track), gain: 1)
+    grouped.bind(identity: TrackControlIdentity(project: project, track: linked), gain: 1)
+    expect(own.stringValue == "+0.0 dB", "Footer gain reports the fader's unity value, not the held audio peak")
+    fader.doubleValue = -12
+    fader.groupValues = { [track: pow(10, -12.0 / 20), linked: pow(10, -18.0 / 20)] }
+    VolumeDoubleClickRouter.shared.mirror(fader)
+    expect(own.stringValue == "-12.0 dB" && grouped.stringValue == "-18.0 dB", "Both touched and grouped faders update gain labels during the native gesture")
+    own.bind(identity: TrackControlIdentity(project: project, track: track), gain: 1)
+    expect(own.stringValue == "-12.0 dB", "An unrelated row refresh cannot replace the current drag with the old model gain")
+    fader.mini = true; fader.doubleValue = 0.5
+    VolumeDoubleClickRouter.shared.mirror(fader)
+    expect(own.stringValue == "-12.0 dB", "Pan gestures never overwrite the footer gain value")
+    fader.mini = false; fader.doubleValue = -60; fader.groupValues = { [track: 0] }
+    VolumeDoubleClickRouter.shared.mirror(fader)
+    expect(own.stringValue == "−∞ dB", "A fully closed fader displays minus infinity")
+    fader.groupValues = nil; fader.resetToUnity()
+    expect(own.stringValue == "+0.0 dB", "Double-click reset restores the displayed fader gain immediately")
+    own.bind(identity: TrackControlIdentity(project: UUID(), track: track), gain: pow(10, 6.0 / 20))
+    fader.doubleValue = -9; VolumeDoubleClickRouter.shared.mirror(fader)
+    expect(own.stringValue == "+6.0 dB", "A recycled label cannot receive edits from the previous project")
+    expect(own.frame.size == NSSize(width: 50, height: 12) && own.hitTest(NSPoint(x: 40, y: 50)) == nil,
+        "The gain readout fits above the fader in the pan column and lets empty-space track dragging pass through")
+    print("FOOTER_FADER_DB_BELOW_PAN_LIVE_GROUP_PAN_RESET_REBIND_AND_COMPACT_GEOMETRY_OK")
+}
+@MainActor private func verifyFooterPanReadout() {
+    let project = UUID(), track = UUID(), partner = UUID(), selected = UUID()
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60), styleMask: [], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = NSView(frame: window.contentLayoutRect); window.contentView = root
+    let knob = DirectVolumeSliderView(frame: NSRect(x: 0, y: 20, width: 24, height: 24))
+    knob.mini = true; knob.rotary = true; knob.minValue = -1; knob.maxValue = 1
+    knob.rebind(project: project, track: track); knob.linkedTrack = partner
+    let labels = [track, partner, selected].enumerated().map { index, id in
+        let label = FooterMixerPanLabel(frame: NSRect(x: index * 60, y: 0, width: 50, height: 10))
+        label.bind(identity: TrackControlIdentity(project: project, track: id), pan: 0)
+        root.addSubview(label); return label
+    }
+    labels[1].linkedTrack = track; root.addSubview(knob); window.orderFront(nil)
+    defer { window.close() }
+    expect(labels.allSatisfy { $0.stringValue == "Center" }, "Centered knobs display Center")
+    knob.doubleValue = -0.25; VolumeDoubleClickRouter.shared.mirror(knob)
+    expect(labels[0].stringValue == "L-25%" && labels[1].stringValue == "R-25%", "Linked pan labels must show opposite directions during the drag")
+    knob.groupValues = { [track: 0.5, partner: -0.5, selected: 1] }
+    knob.doubleValue = 0.5; VolumeDoubleClickRouter.shared.mirror(knob)
+    expect(labels.map(\.stringValue) == ["R-50%", "L-50%", "R-100%"], "Each selected track shows its actual pan, preserving offsets and clamps")
+    labels[0].bind(identity: TrackControlIdentity(project: project, track: track), pan: 0)
+    expect(labels[0].stringValue == "R-50%", "An unchanged model cannot overwrite the live gesture value")
+    knob.mini = false; knob.doubleValue = -12; VolumeDoubleClickRouter.shared.mirror(knob)
+    expect(labels[0].stringValue == "R-50%", "Volume updates must not overwrite pan labels")
+    knob.mini = true; knob.groupValues = nil; knob.resetToUnity()
+    expect(labels[0].stringValue == "Center" && labels[1].stringValue == "Center", "Double-click pan reset updates both linked labels immediately")
+    labels[0].bind(identity: TrackControlIdentity(project: UUID(), track: track), pan: -1)
+    knob.doubleValue = 0.75; VolumeDoubleClickRouter.shared.mirror(knob)
+    expect(labels[0].stringValue == "L-100%", "Recycled labels reject gestures from the old project")
+    expect(labels[0].frame.size == NSSize(width: 50, height: 10) && labels[0].hitTest(.zero) == nil,
+           "Pan text keeps the knob layout and lets selection/dragging pass through")
+    print("FOOTER_PAN_VALUE_LIVE_LINKED_GROUP_GAIN_ISOLATION_RESET_REBIND_OK")
+}
+@MainActor private func verifyPeakResetInput(_ fixture: FixtureWindow) {
+    fixture.window.orderFront(nil); fixture.settle()
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let meter = descendants(fixture.host, of: NativeVerticalTrackMeterView.self).first!
+    fixture.state.meter.update(peak: 1.25, elapsed: 0.05)
+    fixture.settle(); meter.refreshVisibleDrawing()
+    let peak = meter.layer!.sublayers!.first { $0.name == "meter-peak" }!
+    expect(!peak.isHidden && peak.frame.width > 0 && peak.frame.height > 0, "Peak number must reserve a visible input rectangle")
+    let peakPoint = meter.convert(NSPoint(x: peak.frame.midX, y: peak.frame.midY), to: nil)
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Timeline control shortcut must route the peak number to its native meter")
+    expect(row.hitTest(row.superview!.convert(peakPoint, from: nil)) === meter,
+        "The ordinary native route must reach the peak even underneath the full-width controls host")
+    expect(peak.frame.minX == 21 && peak.backgroundColor == nil,
+        "The peak reset target is transparent and sits after the MIDI bar")
+    let bar = meter.layer!.sublayers!.first { $0.name == "meter-background-0" }!
+    let barPoint = meter.convert(NSPoint(x: 2, y: bar.frame.midY), to: nil)
+    let scalePoint = meter.convert(NSPoint(x: meter.bounds.maxX - 2, y: 2), to: nil)
+    for point in [barPoint, scalePoint] {
+        expect(row.hitTestTimelineControl(atWindowPoint: point) == nil, "The meter bars and scale must remain available for selecting and dragging the track")
+        expect(row.meter.hitTest(row.convert(point, from: nil)) == nil, "The meter hosting view cannot intercept blank meter space")
+    }
+    expect(fixture.state.meter.peakHold.decibels != nil, "Fixture must record an actual held peak")
+    let event = NSEvent.mouseEvent(with: .leftMouseDown, location: peakPoint, modifierFlags: [], timestamp: 1,
+        windowNumber: fixture.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    row.hitTestTimelineControl(atWindowPoint: peakPoint)!.mouseDown(with: event)
+    expect(fixture.state.meter.peakHold.decibels == nil, "Clicking the held peak must reset the actual meter model")
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Clearing a peak keeps the same rectangle available for the next peak")
+    fixture.change(36)
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) == nil, "Collapsed rows cannot retain a hidden peak hit target")
+    fixture.change(80)
+    print("NATIVE_ROW_PEAK_RESET_ONLY_NUMBER_HIT_AREA_BARS_PASS_THROUGH_AND_COLLAPSED_GUARD_OK")
+}
 private final class StatefulProbeView: NSView {
     var value = 0; var locale = ""; var enabled = false; var action: (() -> Void)?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -106,10 +212,10 @@ private struct FixtureRow: View, Equatable {
     let track: UUID
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.project == rhs.project && lhs.track == rhs.track }
     private var lowerTitle: Bool { kind != .teleprompter }
-    private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true).clipped().allowsHitTesting(false) }
+    private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true, peakOnly: true).clipped() }
     private var midi: some View { Color.green.frame(width: 4).allowsHitTesting(false) }
     @ViewBuilder private func controls(split: Bool) -> some View {
-        TrackMixerContinuousContainer(meterWidth: 40, standard: kind == .standard, lowerTitle: lowerTitle) {
+        TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
             Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
             Group { if split { Color.clear } else { midi } }.jarasPlaced(at: 1)
             TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += 1 }).jarasPlaced(at: 2)
@@ -136,7 +242,7 @@ private struct FixtureRow: View, Equatable {
     }
     var body: some View {
         Group {
-            if candidate { NativeTrackMixerControls(track: track, meterWidth: 40, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
+            if candidate { NativeTrackMixerControls(track: track, meterWidth: 52, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
             else { controls(split: false) }
         }.frame(maxHeight: .infinity).clipped()
          .background { HStack(spacing: 0) { Color(red: 0.12, green: 0.2, blue: 0.16).opacity(0.5) }.allowsHitTesting(false) }

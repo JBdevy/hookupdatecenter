@@ -1,6 +1,7 @@
 import AppKit
 
 let app = NSApplication.shared
+app.setActivationPolicy(.regular); app.finishLaunching()
 let suite = "jaras.timer.ui-test." + UUID().uuidString
 let defaults = UserDefaults(suiteName: suite)!
 defer { defaults.removePersistentDomain(forName: suite) }
@@ -37,6 +38,31 @@ func displayedText(_ view: NSView) -> [String] {
     if let field = view as? NSTextField { return [field.stringValue] }
     return view.subviews.flatMap { displayedText($0) }
 }
+func nativeButtons(_ view: NSView) -> [NSButton] {
+    (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(nativeButtons)
+}
+func press(_ title: String, in object: Any) {
+    if let sheet = object as? NSWindow, let content = sheet.contentView,
+       let button = nativeButtons(content).first(where: { $0.title == title }) {
+        let parent = sheet.sheetParent
+        button.performClick(nil)
+        for _ in 0..<25 { settle(); if parent?.attachedSheet == nil { break } }
+        return
+    }
+    guard let view = object as? NSView, let window = view.window else { fatalError("Missing button container") }
+    let toolbar = title == "Timer Stop" || title == "Timer Play"
+    let local = NSPoint(x: toolbar ? view.bounds.maxX - 30 : 45,
+                        y: toolbar ? view.bounds.midY : view.isFlipped ? view.bounds.maxY - 30 : view.bounds.minY + 30)
+    let point = view.convert(local, to: nil)
+    func event(_ type: NSEvent.EventType) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    NSApp.postEvent(event(.leftMouseUp), atStart: false)
+    window.sendEvent(event(.leftMouseDown))
+    if let up = NSApp.nextEvent(matching: .leftMouseUp, until: Date(timeIntervalSinceNow: 0.01), inMode: .default, dequeue: true) { window.sendEvent(up) }
+    settle()
+}
 
 clock = 219
 RunLoop.main.run(until: Date().addingTimeInterval(0.65))
@@ -55,10 +81,43 @@ precondition(displayedText(host).contains("−00"), "the visible hours field gai
 precondition(timer.displayText() == "−00:00:01", "timer continues below zero")
 clock = 282
 precondition(timer.displayText() == "−00:01:02", "negative minutes continue counting")
-timer.stopAndReset(); settle()
+window.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true); settle()
+let pendingRun = timer.runID
+press("Timer Stop", in: host)
+precondition(timer.running && timer.runID == pendingRun, "opening Stop confirmation keeps the timer running")
+guard let firstAlert = window.attachedSheet else { fatalError("toolbar Stop must present a confirmation") }
+press("Cancel", in: firstAlert)
+precondition(timer.running && timer.runID == pendingRun, "Cancel leaves the timer and current run untouched")
+press("Timer Stop", in: host)
+guard let stopAlert = window.attachedSheet else { fatalError("toolbar confirmation can be reopened") }
+press("Stop timer", in: stopAlert)
 precondition(timer.displayText() == "00:00:00" && timer.targetText == "00:02:00", "Stop resets the independent clock and retains its target")
 precondition(fields(in: host).map(\.stringValue) == ["00","02","00"], "Stop restores the editable target fields")
+press("Timer Play", in: host)
+precondition(timer.running && window.attachedSheet == nil, "Start runs immediately without confirmation")
+let staleRun = timer.runID
+press("Timer Stop", in: host)
+timer.stopAndReset(); timer.start(); settle()
+precondition(timer.running && timer.runID != staleRun && !timer.stopAndReset(ifRunID: staleRun),
+             "a pending confirmation cannot stop a timer restarted elsewhere")
+timer.stopAndReset(); settle()
 let reopened = TeleprompterTimerController(defaults: defaults, now: { clock })
 precondition(reopened.mode == .countdown && reopened.targetSeconds == 120)
 window.close()
-print("TIMER_TOOLBAR_NATIVE_INPUT_ENTER_FOCUS_RUNNING_DISPLAY_AND_RESET_OK")
+let configurationWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 405), styleMask: [.titled], backing: .buffered, defer: false)
+configurationWindow.isReleasedWhenClosed = false
+let configuration = NSHostingView(rootView: TeleprompterTimerConfiguration(controller: timer, close: {}))
+configurationWindow.contentView = configuration; configurationWindow.makeKeyAndOrderFront(nil); settle()
+press("Start", in: configuration)
+precondition(timer.running && configurationWindow.attachedSheet == nil, "configuration Start is immediate")
+press("Stop", in: configuration)
+guard let configurationCancel = configurationWindow.attachedSheet else { fatalError("configuration Stop asks for confirmation") }
+precondition(timer.running)
+press("Cancel", in: configurationCancel)
+precondition(timer.running, "configuration Cancel keeps running")
+press("Stop", in: configuration)
+guard let configurationStop = configurationWindow.attachedSheet else { fatalError("configuration Stop confirmation can reopen") }
+press("Stop timer", in: configurationStop)
+precondition(!timer.running && timer.displayText() == "00:00:00", "configuration confirmation performs existing Stop/reset")
+configurationWindow.close()
+print("TIMER_TOOLBAR_CONFIGURATION_START_IMMEDIATE_STOP_CONFIRM_CANCEL_STALE_RUN_AND_RESET_OK")

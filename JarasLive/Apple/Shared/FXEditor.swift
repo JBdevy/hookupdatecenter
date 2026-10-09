@@ -188,6 +188,19 @@ struct FXEditor: View {
                             .jarasHelp(String(format: "%.0f Hz · %.1f dB", band.frequency, band.gain))
                     }
                 }.coordinateSpace(name: "eqPlot").clipped().cornerRadius(6)
+                #if os(macOS)
+                .background(EQBandWheelInput(bands: settings.bands) { id, steps in
+                    guard let index = settings.bands.firstIndex(where: { $0.id == id }) else { return }
+                    selected = id
+                    if settings.bands[index].type.hasSuffix("Cut") {
+                        let slopes = [6, 12, 24, 36, 48, 72, 96, 192]
+                        let current = slopes.firstIndex(of: settings.bands[index].slope) ?? 1
+                        settings.bands[index].slope = slopes[min(slopes.count - 1, max(0, current + steps))]
+                    } else {
+                        settings.bands[index].q = min(18, max(0.1, settings.bands[index].q * pow(1.12, Double(steps))))
+                    }
+                })
+                #endif
             }
             Text("Right-click the zero line to add a band.").font(.caption2).foregroundStyle(JarasTheme.secondary)
             if let selected, let index = settings.bands.firstIndex(where: { $0.id == selected }) {
@@ -318,6 +331,56 @@ struct TabbedClipFXEditor: View {
 }
 #if os(macOS)
 import AppKit
+private struct EQBandWheelInput: NSViewRepresentable {
+    let bands: [EQBand]
+    let adjust: (UUID, Int) -> Void
+    func makeNSView(context: Context) -> EQBandWheelView { EQBandWheelView() }
+    func updateNSView(_ view: EQBandWheelView, context: Context) { view.bands = bands; view.adjust = adjust }
+}
+private final class EQBandWheelView: NSView {
+    var bands: [EQBand] = []
+    var adjust: ((UUID, Int) -> Void)?
+    private var held: UUID?
+    private var remainder: CGFloat = 0
+    private var monitor: Any?
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        held = nil; remainder = 0
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .scrollWheel]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .leftMouseUp { self.held = nil; self.remainder = 0; return event }
+            guard event.window === self.window, (event.type == .leftMouseDown || self.window?.isKeyWindow == true),
+                  self.window?.attachedSheet == nil, !self.isHiddenOrHasHiddenAncestor else {
+                self.held = nil; self.remainder = 0; return event
+            }
+            if event.type == .leftMouseDown {
+                self.held = nil; self.remainder = 0
+                let point = self.convert(event.locationInWindow, from: nil)
+                guard self.bounds.contains(point), self.visibleRect.contains(point) else { return event }
+                self.held = self.bands.reversed().first { band in
+                    let x = log(band.frequency / 20) / log(1000) * self.bounds.width
+                    let y = (24 - band.gain) / 48 * self.bounds.height
+                    return hypot(point.x - x, point.y - y) <= 13
+                }?.id
+                return event // preserve the existing band click/drag gesture
+            }
+            guard let held = self.held, NSEvent.pressedMouseButtons & 1 != 0,
+                  self.bands.contains(where: { $0.id == held }) else { return event }
+            guard event.momentumPhase.isEmpty else { return nil }
+            let delta = event.scrollingDeltaY
+            guard delta.isFinite else { return nil }
+            self.remainder += event.hasPreciseScrollingDeltas ? delta / 10 : (delta == 0 ? 0 : delta > 0 ? 1 : -1)
+            let steps = Int(self.remainder.rounded(.towardZero))
+            if steps != 0 { self.remainder -= CGFloat(steps); self.adjust?(held, steps) }
+            return nil
+        }
+    }
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+}
 private struct EQAddBandInput: NSViewRepresentable {
     let add: (CGFloat, CGFloat) -> Void
     func makeNSView(context: Context) -> EQAddBandView { EQAddBandView() }

@@ -207,6 +207,12 @@ static NSDictionary* regionSetlistJSON(const RegionSetlist& state) {
         [lists addObject:@{@"id":text(list.id),@"name":text(list.name),@"songId":text(list.songId),@"regionIds":ids}];
     }
     NSMutableDictionary* result=[@{@"playlists":lists,@"autoAdvance":@(state.autoAdvance)} mutableCopy];
+    if(state.autoUntilBlockEnd) result[@"autoUntilBlockEnd"]=@YES;
+    if(state.liveEnabled) result[@"liveEnabled"]=@(*state.liveEnabled);
+    if(state.playedLiveRegionIDs) {
+        NSMutableArray* ids=[NSMutableArray new]; for(const auto& id:*state.playedLiveRegionIDs) [ids addObject:text(id)];
+        result[@"playedLiveRegionIDs"]=ids;
+    }
     if(state.automaticSubplay) result[@"automaticSubplay"]=@(*state.automaticSubplay);
     if(state.automaticSubplaySeconds) result[@"automaticSubplaySeconds"]=@(*state.automaticSubplaySeconds);
     if(state.prepareWithoutPlayback) result[@"prepareWithoutPlayback"]=@(*state.prepareWithoutPlayback);
@@ -227,6 +233,12 @@ static NSDictionary* regionSetlistJSON(const RegionSetlist& state) {
 }
 static RegionSetlist readRegionSetlist(NSDictionary* d) {
     RegionSetlist state; state.autoAdvance=number(d[@"autoAdvance"])!=0;
+    if(d[@"autoUntilBlockEnd"] && d[@"autoUntilBlockEnd"]!=NSNull.null) state.autoUntilBlockEnd=clipFXBypass(d[@"autoUntilBlockEnd"]);
+    if(d[@"liveEnabled"] && d[@"liveEnabled"]!=NSNull.null) state.liveEnabled=clipFXBypass(d[@"liveEnabled"]);
+    if(d[@"playedLiveRegionIDs"] && d[@"playedLiveRegionIDs"]!=NSNull.null) {
+        state.playedLiveRegionIDs=std::vector<ID>{};
+        for(id value in array(d[@"playedLiveRegionIDs"])) state.playedLiveRegionIDs->push_back(str(value));
+    }
     if(d[@"automaticSubplay"] && d[@"automaticSubplay"]!=NSNull.null) state.automaticSubplay=clipFXBypass(d[@"automaticSubplay"]);
     if(d[@"automaticSubplaySeconds"] && d[@"automaticSubplaySeconds"]!=NSNull.null) state.automaticSubplaySeconds=std::clamp(number(d[@"automaticSubplaySeconds"]),1.0,5.0);
     if(d[@"prepareWithoutPlayback"] && d[@"prepareWithoutPlayback"]!=NSNull.null) state.prepareWithoutPlayback=clipFXBypass(d[@"prepareWithoutPlayback"]);

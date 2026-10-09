@@ -153,11 +153,12 @@ struct RegionRightClick: NSViewRepresentable {
     var detectBPM: (() -> Void)? = nil
     var disunify: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
+    var exportAudio: (() -> Void)? = nil
     var resizable = true
     var seek: (() -> Void)? = nil
     var drag: (CGFloat, Bool, Int) -> Void = { _, _, _ in }
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
-    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.drag = drag; view.resizable = resizable; view.seek = seek }
+    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.drag = drag; view.resizable = resizable; view.seek = seek }
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
@@ -165,6 +166,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var unify: (() -> Void)?
     var disunify: (() -> Void)?
     var delete: (() -> Void)?
+    var exportAudio: (() -> Void)?
     var drag: ((CGFloat, Bool, Int) -> Void)?
     var seek: (() -> Void)?
     var resizable = true { didSet {
@@ -224,7 +226,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         hoverEdge = 0
         nativeGrip.isHidden = true
         nativeGrip.path = nil
-        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil
+        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil
         drag = nil; seek = nil
         guard !presentingProjectedMenu else { return false }
         timelineInputGateChanged(blocked: true)
@@ -385,9 +387,11 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if detectBPM != nil { add("Detect BPM…", #selector(detectSelected)) }
         if unify != nil { add("Unify", #selector(unifySelected)) }
         if disunify != nil { add("Disunify", #selector(disunifySelected)) }
+        if exportAudio != nil { add("Export Audio", #selector(exportAudioSelected)) }
         if delete != nil { add("Delete region", #selector(deleteSelected)) }
         return menu
     }
+    @objc private func exportAudioSelected() { exportAudio?() }
     @objc private func detectSelected() { detectBPM?() }
     @objc private func deleteSelected() { delete?() }
     @objc private func unifySelected() { unify?() }

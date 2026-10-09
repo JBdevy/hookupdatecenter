@@ -86,10 +86,14 @@ final class MediaDropRestrictionsTests: XCTestCase {
             project.resizeItem(movie.id, start: 11, end: 18)
             XCTAssertEqual(project.songs[0].tracks[0].clips[0].sourceOffset, 1)
             XCTAssertEqual(project.songs[0].tracks[0].clips[0].duration, 7)
-            project.resizeItem(image.id, start: 25, end: 38)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 13)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[1].sourceOffset, 0)
+            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[0], visible: 0...100)), [15])
+            project.resizeItem(image.id, start: 27, end: 38)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 11)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].sourceOffset, 2)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].loopLength, 5)
+            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[1], visible: 0...100)), [30,35])
             XCTAssertNoThrow(try project.validate())
+            XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
         }
     }
     func testMovieSoundtrackIsDecodedOnceAndSurvivesRemovingOriginals() async throws {

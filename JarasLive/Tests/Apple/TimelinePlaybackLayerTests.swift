@@ -14,6 +14,7 @@ private struct PresentationTestSnapshot { var transport: TransportState }
         snapshot = PresentationTestSnapshot(transport: TransportState(playing: false, position: 100,
             queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 30)))
     }
+    var timelinePlaybackTransport: TransportState { snapshot.transport }
     var timelinePlaybackSampleTime: Double { sampledAt }
     func resetSampleClockForTest() { sampledAt = ProcessInfo.processInfo.systemUptime }
     func publish(main: Double, sub: Double = 30, playing: Bool = true, subPlaying: Bool = false) {

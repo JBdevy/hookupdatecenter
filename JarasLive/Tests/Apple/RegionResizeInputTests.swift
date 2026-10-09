@@ -87,6 +87,13 @@ import AppKit
     view.mouseUp(with: event(.leftMouseUp, 110, flags: .option))
     precondition(deletes == 1, "cancelled Option clicks cannot delete")
     deletes = 0
+    var exports = 0
+    view.exportAudio = { exports += 1 }
+    let exportMenu = view.regionMenu()
+    let exportItem = exportMenu.items.first { $0.action == NSSelectorFromString("exportAudioSelected") }!
+    NSApp.sendAction(exportItem.action!, to: exportItem.target, from: exportItem)
+    precondition(exports == 1, "Export menu dispatches exactly once")
+    view.exportAudio = nil
     let menu = view.regionMenu()
     precondition(menu.items.count == 2, "normal regions offer edit and delete before opening an editor")
     for item in menu.items { NSApp.sendAction(item.action!, to: item.target, from: item) }

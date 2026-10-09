@@ -1,0 +1,10 @@
+# Optional Apple Silicon helper, isolated from the macOS 12/Intel runtime.
+# Always select macosx_14_0 wheels, even when building on a newer macOS.
+mlx==0.32.3 --hash=sha256:8439baa207db769df1df82a722b0ee0c2362f75c23c0740b7472c3d279253bae
+mlx-metal==0.32.3 --hash=sha256:fdba88ed9131448cf163be2c7ad6374746d8818205f28657aa91b6c69050f691
+mlx-spectro==0.9.10 --hash=sha256:4c15f0a652a6dbd8012c619245bcccd4995ecfca1e8f8fbcc2b03f2ba68f507c
+mlx-audio-io==1.3.24 --hash=sha256:e6c58d3a773aff4baf6ea6730ed23fca1268af7a4842a1e8035679474fe9852f
+numpy==1.26.4 --hash=sha256:edd8b5fe47dab091176d21bb6de568acdd906d1887a4584a15a9a96a1dca06ef
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+tqdm==4.70.1 --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73
+demucs-mlx==1.6.1 --hash=sha256:a24635d9a1a1e712180738420fa84d69f8cd35a8125f6f7de2f639558cf737c1

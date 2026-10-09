@@ -14,6 +14,24 @@ import UIKit
 struct DAWRemotePeer: Hashable { let id: String; let displayName: String }
 enum DAWRemoteRole: UInt8 { case host = 1, client = 2 }
 
+enum DAWRemoteSnapshotComparison {
+    /// Transport changes on almost every playback packet. Test its small
+    /// values before synthesized equality walks all freshly decoded clips.
+    /// Full equality still detects every edit when the transport is unchanged.
+    static func differs(_ candidate: DAWRemoteState, from current: DAWRemoteState?) -> Bool {
+        guard let current else { return true }
+        if candidate.position != current.position || candidate.subPlayPosition != current.subPlayPosition ||
+            candidate.editPosition != current.editPosition || candidate.playing != current.playing ||
+            candidate.paused != current.paused || candidate.subPlaying != current.subPlaying ||
+            candidate.loop != current.loop || candidate.currentRegion != current.currentRegion ||
+            candidate.queuedRegion != current.queuedRegion || candidate.focusedRegion != current.focusedRegion ||
+            candidate.sectionPlayback != current.sectionPlayback || candidate.footerLoopBeatPhase != current.footerLoopBeatPhase {
+            return true
+        }
+        return candidate != current
+    }
+}
+
 private func remoteName(_ value: String) -> String {
     var name = ""
     for character in value {
@@ -742,7 +760,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                     timer.remainingSeconds = current.remainingSeconds
                     if timer == current { comparable.timer = timer }
                 }
-                if comparable != remoteState { remoteState = state }
+                if DAWRemoteSnapshotComparison.differs(comparable, from: remoteState) { remoteState = state }
             }
             if reconnecting {
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil

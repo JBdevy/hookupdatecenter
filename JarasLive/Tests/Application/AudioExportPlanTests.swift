@@ -1,6 +1,25 @@
 import XCTest
 @testable import JarasApplication
 final class AudioExportPlanTests: XCTestCase {
+    func testContextExportPreservesExplicitParentAndChildrenAndIgnoresBlocks() {
+        var project = Project.empty(name: "Live")
+        let parent = Part(id: UUID(), name: "Whole", startTime: 0, endTime: 20)
+        let first = Part(id: UUID(), name: "Song", startTime: 0, endTime: 8, parentRegionID: parent.id)
+        let second = Part(id: UUID(), name: "Song", startTime: 8, endTime: 20, parentRegionID: parent.id)
+        project.songs[0].parts = [parent, first, second]
+        let song = project.songs[0], block = UUID()
+        let selected: Set<UUID> = [parent.id, first.id, second.id, block]
+        let regions = AudioExportPlan.contextRegions(clicked: first.id, selected: selected, in: song)
+        XCTAssertEqual(regions, [parent.id, first.id, second.id])
+        let plan = AudioExportPlan(project: project, song: song, source: .master, bounds: .regions,
+            template: "%region", tracks: [], clips: [], regions: regions)
+        XCTAssertEqual(plan.jobs.count, 3)
+        XCTAssertEqual(plan.jobs.map(\.duration), [20, 8, 12])
+        XCTAssertEqual(Set(plan.jobs.map(\.fileName)).count, 3)
+        XCTAssertEqual(AudioExportPlan.contextRegions(clicked: second.id, selected: [parent.id, first.id], in: song), [second.id])
+        XCTAssertEqual(AudioExportPlan.contextRegions(clicked: parent.id, selected: [], in: song), [parent.id])
+        XCTAssertTrue(AudioExportPlan.contextRegions(clicked: block, selected: [block], in: song).isEmpty)
+    }
     func testDrawerSongExportsExcludePreviousItemsOnlyForThatSong() {
         var project = Project.empty(name: "Drawer")
         var track = Track(id: UUID(), name: "Track", role: .other)

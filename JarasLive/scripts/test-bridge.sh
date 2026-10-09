@@ -48,6 +48,8 @@ project.songs[0].parts[0].uppercaseName = true
 project.songs[0].parts[1].uppercaseName = false
 let list = RegionPlaylist(id: UUID(), name: "Show order", songId: project.songs[0].id, regionIds: [second.id, first.id])
 project.regionSetlist = RegionSetlist(playlists: [list], selectedId: list.id, autoAdvance: false)
+project.regionSetlist?.liveEnabled = true
+project.regionSetlist?.playedLiveRegionIDs = [first.id]
 let gridID = project.songs[0].id
 project.regionSetlist?.blocks = [
     SetlistBlock(id: UUID(), songId: gridID, playlistId: list.id, name: "Bloco 01", color: 0x45c68b, beforeRegionId: second.id, symbol: false),

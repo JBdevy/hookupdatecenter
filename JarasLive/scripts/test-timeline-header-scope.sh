@@ -23,7 +23,12 @@ private struct HeaderCursorSnapProbe {
     }
 }
 '''
-Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n' + source[start:end] + source[key_start:key_end] + snap_probe + Path('Tests/Apple/TimelineHeaderScopeTests.swift').read_text())
+coverage_start = source.index('private enum TimelineCanvasCoverage {')
+coverage_end = source.index('private struct ViewportTimelineCanvas:', coverage_start)
+waveform = Path('Apple/Shared/TimelineMetalWaveforms.swift').read_text()
+waveform_start = waveform.index('enum TimelineWaveformCoverage {')
+waveform_end = waveform.index('/// File kind', waveform_start)
+Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n' + source[coverage_start:coverage_end] + waveform[waveform_start:waveform_end] + source[start:end] + source[key_start:key_end] + snap_probe + Path('Tests/Apple/TimelineHeaderScopeTests.swift').read_text())
 PYTHON
 swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

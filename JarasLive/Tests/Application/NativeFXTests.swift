@@ -1,6 +1,32 @@
 import XCTest
 @testable import JarasApplication
 final class NativeFXTests: XCTestCase {
+    func testStemRealtimeMixPersistenceAndIndependentEdits() throws {
+        let key = NativeFXSettings.stemSeparator
+        var fx = NativeFXSettings()
+        fx.appendNative(key)
+        var draft = fx
+        draft.stemParameters.sources[0].solo = true
+        draft.stemParameters.sources[0].gain = 0.5
+        draft.stemParameters.sources[4].solo = true
+        draft.stemParameters.sources[4].mute = true
+        fx.makeup = 6
+        let result = fx.merging(effect: key, from: draft)
+        XCTAssertEqual(result.makeup, 6)
+        XCTAssertEqual(result.stemParameters.gains, [0.5, 0, 0, 0, 0])
+        try result.validate()
+        XCTAssertEqual(try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(result)), result)
+        var legacy = NativeFXSettings()
+        legacy.inserted = [key]; legacy.stemSeparatorEnabled = true
+        XCTAssertFalse(legacy.isEnabled(key), "Offline projects must not automatically acquire processing latency")
+        legacy.setEnabled(key, enabled: true)
+        XCTAssertTrue(legacy.isEnabled(key))
+        legacy.stemParameters.sources.removeLast()
+        XCTAssertThrowsError(try legacy.validate())
+        legacy.stemParameters = NativeStemMix()
+        legacy.stemParameters.sources[0].gain = .nan
+        XCTAssertThrowsError(try legacy.validate())
+    }
     func testStemSeparatorIsExplicitRemovableAndPersisted() throws {
         var fx = NativeFXSettings()
         let key = NativeFXSettings.stemSeparator

@@ -47,13 +47,13 @@ for lowerTitle in [false,true] {
     }
 }
 
-// Patch added a sixth control in the top row. At the minimum sidebar width
+// Env added a seventh control in the top row. At the minimum sidebar width
 // the old folder action overlapped it; folder/title must own separate hit areas.
 for width: CGFloat in [184, 212, 232, 248.6796875, 400] {
-    for meterWidth: CGFloat in [12, 40] {
+    for meterWidth: CGFloat in [12, 40, 52] {
         for height: CGFloat in [64, 64.1, 80, 240] {
             let frames = TrackMixerHeightGeometry.frames(width: width, height: height,
-                meterWidth: meterWidth, standard: true, lowerTitle: true, controlsWidth: 179, folder: true)
+                meterWidth: meterWidth, standard: true, lowerTitle: true, controlsWidth: 210, folder: true)
             let folder = frames[5]
             precondition(folder.width == 28 && folder.height == 16 && folder.maxY <= height)
             precondition(!folder.intersects(frames[3]), "folder action must not cover Patch or another top-row control")
@@ -63,13 +63,23 @@ for width: CGFloat in [184, 212, 232, 248.6796875, 400] {
         }
     }
 }
+for height: CGFloat in [64, 80, 160] {
+    let frames = TrackMixerHeightGeometry.frames(width: 248, height: height, meterWidth: 52,
+        standard: true, lowerTitle: true, controlsWidth: 210)
+    precondition(frames[0].width == 52 && frames[1].minX == 14 && frames[1].width == 4,
+        "Four points separate MIDI from the ten-point stereo bars")
+    precondition(frames[1].minY == frames[0].minY && frames[1].maxY == frames[0].maxY,
+        "Audio and MIDI keep matching full-height bars")
+    precondition(frames[4].minX == 56, "Volume does not overlap the peak readout")
+}
+print("MIXER_AUDIO_MIDI_GAP_AND_SIDE_PEAK_OK")
 private struct FolderFixture: View {
     let counts: Counts
     var body: some View {
         TrackMixerContinuousLayout(meterWidth: 40, standard: true, lowerTitle: true, folder: true) {
             ForEach(0..<7) { slot in
                 Probe(counts: counts, slot: slot)
-                    .frame(width: slot == 3 ? 179 : nil, height: slot == 5 ? 16 : nil)
+                    .frame(width: slot == 3 ? 210 : nil, height: slot == 5 ? 16 : nil)
             }
         }.frame(width: 232, height: 64)
     }

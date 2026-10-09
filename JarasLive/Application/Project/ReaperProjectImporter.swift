@@ -116,7 +116,7 @@ public enum ReaperProjectImporter {
         var project = Project.empty(name: source.deletingPathExtension().lastPathComponent)
         project.importedTimeline = true
         var song = project.songs[0]
-        song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = .legacy
+        song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = ProjectTimeSettings()
         song.bpm = try root.number("TEMPO", default: 120)
         song.beatsPerBar = try root.integer("TEMPO", 2, default: 4)
         song.beatUnit = try root.integer("TEMPO", 3, default: 4)
@@ -372,7 +372,7 @@ public enum ReaperProjectImporter {
                     let signature = row.count > 4 ? Int(row[4]) ?? 0 : 0
                     if signature != 0 { song.beatsPerBar = signature & 0xffff; song.beatUnit = signature >> 16 }
                     let meterBeats = song.meterBeats, meterUnit = song.meterUnit
-                    song.markers?.append(TimelineMarker(id: UUID(), name: String(format: "%g", bpm), position: position, color: 0xAAAAAA, tempoBPM: bpm, tempoBeats: meterBeats, tempoUnit: meterUnit, tempoTimebase: .free))
+                    song.markers?.append(TimelineMarker(id: UUID(), name: String(format: "%g", bpm), position: position, color: 0xAAAAAA, tempoBPM: bpm, tempoBeats: meterBeats, tempoUnit: meterUnit, tempoTimebase: .global, tempoReferenceBPM: bpm))
                 } else { warnings.insert("Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged.") }
                 if row.count > 3 && row[3] != "1" { warnings.insert("REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged.") }
             }

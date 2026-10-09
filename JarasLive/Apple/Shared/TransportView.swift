@@ -711,9 +711,16 @@ struct TransportButtonStyle: ButtonStyle {
             .padding(.horizontal, width == nil ? horizontalPadding : 0)
             .frame(width: width, height: height)
             .foregroundStyle(active ? Color.black : JarasTheme.text)
+            #if os(iOS)
+            .background {
+                RemoteSurface.fill(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
+            }
+            #else
             .background(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
+            #endif
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)))
+            .contentShape(Rectangle())
     }
 }
 struct TransportPreview: PreviewProvider { static var previews: some View { TransportView(show: try! AppContainer(preview: true).show).frame(width: 980) } }
@@ -855,11 +862,17 @@ private struct MetronomeEditor: View {
                 Text("Clave").tag("Clave")
                 Text(verbatim: "User").tag("User")
             }
-            Picker("Click mode", selection: $settings.mode) {
-                Text(verbatim: "A–B").tag(0)
-                Text("Only A").tag(1)
-                Text("Only B").tag(2)
-            }.pickerStyle(.segmented)
+            HStack(spacing: 12) {
+                // A segmented picker's native label can renegotiate its width
+                // on every gain update. Keep the caption outside that layout.
+                Text("Click mode").fixedSize(horizontal: true, vertical: false)
+                Picker("Click mode", selection: $settings.mode) {
+                    Text(verbatim: "A–B").tag(0)
+                    Text("Only A").tag(1)
+                    Text("Only B").tag(2)
+                }.pickerStyle(.segmented).labelsHidden()
+                    .frame(maxWidth: .infinity)
+            }
             Picker("Output", selection: $settings.output) {
                 let choices = OutputPatch.choices(channels: audio.channels, includeMaster: false)
                 if !choices.contains(settings.output) {

@@ -128,6 +128,35 @@ public extension Project {
 }
 
 public extension Song {
+    /// Ignore Next can keep the previous song audible after the next song's
+    /// region begins. Its identity, rather than the head position, owns cues.
+    func sectionPlaybackRegion(for transport: TransportState) -> Part? {
+        if transport.ignoreNextEnd != nil, let owner = transport.ignoreNextRegionId,
+           let region = parts.first(where: { $0.id == owner }) { return region }
+        var selected: Part?
+        for region in parts where transport.position >= region.startTime && transport.position < region.endTime {
+            guard let previous = selected else { selected = region; continue }
+            if (region.parentRegionID != nil && previous.parentRegionID == nil) ||
+                ((region.parentRegionID != nil) == (previous.parentRegionID != nil) &&
+                 region.endTime - region.startTime < previous.endTime - previous.startTime) { selected = region }
+        }
+        return selected
+    }
+    /// Shared by the countdown and native audio pre-scheduler. Song end is a
+    /// real seek boundary even when no additional section marker exists.
+    func nextSectionTrigger(for transport: TransportState) -> Double? {
+        guard transport.playing, let region = sectionPlaybackRegion(for: transport) else { return nil }
+        var trigger = transport.ignoreNextEnd ?? region.endTime
+        guard trigger > transport.position + 1e-9 else { return nil }
+        for marker in markers ?? [] where marker.isSection && !marker.isTempo {
+            if let ignoredAfter = transport.ignoreNextAfter, marker.position >= ignoredAfter,
+               marker.regionOwnerID != region.id { continue }
+            if marker.position > transport.position + 1e-9 && marker.position <= region.endTime && marker.position < trigger {
+                trigger = marker.position
+            }
+        }
+        return trigger
+    }
     /// A region ID addresses its current start, including after moving the region.
     func sectionDestinationPosition(_ id: UUID) -> Double? {
         if let region = parts.first(where: { $0.id == id }) { return region.startTime }

@@ -2,6 +2,46 @@ import XCTest
 import Combine
 @testable import JarasApplication
 
+final class SectionBoundaryTests: XCTestCase {
+    private func fixture() -> (Song, TransportState) {
+        var song = Project.empty(name: "Section ends").songs[0]
+        song.duration = 100
+        let root = Part(id: UUID(), name: "Special", startTime: 0, endTime: 60)
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 20, parentRegionID: root.id)
+        let second = Part(id: UUID(), name: "Second", startTime: 20, endTime: 60, parentRegionID: root.id)
+        song.parts = [root, first, second]
+        song.markers = [TimelineMarker(id: UUID(), name: "Verse", position: 10, color: 0, section: true),
+                        TimelineMarker(id: UUID(), name: "Following song", position: 21, color: 0, regionOwnerID: second.id, section: true)]
+        let transport = TransportState(playing: true, songId: song.id, position: 5,
+                                       queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+        return (song, transport)
+    }
+    func testSectionMarkerThenRegionEndAreSharedCountdownAndAudioBoundaries() {
+        let (song, initial) = fixture(); var transport = initial
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 10)
+        transport.position = 15
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 20)
+        transport.position = 22
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 60)
+        transport.playing = false
+        XCTAssertNil(song.nextSectionTrigger(for: transport), "Stopped selection starts directly rather than counting down")
+    }
+    func testIgnoreNextPreservesOwnerAndUsesActualAudioEndOnEitherSideOfRegionEnd() {
+        let (song, initial) = fixture(); var transport = initial
+        transport.position = 15; transport.ignoreNextRegionId = song.parts[1].id
+        transport.ignoreNextAfter = 20; transport.ignoreNextEnd = 18
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 18)
+        transport.ignoreNextEnd = 25
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 25)
+        transport.position = 22
+        XCTAssertEqual(song.sectionPlaybackRegion(for: transport)?.id, song.parts[1].id)
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 25, "A following song's marker cannot hijack the audible tail")
+        transport.ignoreNextEnd = nil; transport.ignoreNextAfter = nil; transport.ignoreNextRegionId = nil
+        XCTAssertEqual(song.sectionPlaybackRegion(for: transport)?.id, song.parts[2].id)
+        XCTAssertEqual(song.nextSectionTrigger(for: transport), 60)
+    }
+}
+
 @MainActor private final class SectionExecutor: CommandExecutor {
     var project = Project.demo()
     var transport = TransportState(playing: true, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
@@ -13,8 +53,19 @@ import Combine
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         commands.append(command)
         scalarWrites.append((command, target, value))
-        if command == .escape, transport.queuedSectionMarkerId != nil {
+        if command == .cancelSection {
             transport.queuedSectionMarkerId = nil; transport.sectionQueueStartedAt = nil
+            return
+        }
+        if command == .escape {
+            if transport.loop.enabled {
+                transport.loop.enabled = false; transport.loop.start = nil; transport.loop.end = nil
+            } else if transport.queuedSectionMarkerId != nil {
+                transport.queuedSectionMarkerId = nil; transport.sectionQueueStartedAt = nil
+            } else {
+                transport.queuedRegionId = nil; transport.queue.songId = nil
+                project.regionSetlist?.autoAdvance = false
+            }
             return
         }
         if command == .toggleMultiLoopBypass {
@@ -77,24 +128,56 @@ final class SmoothSeekTests: XCTestCase {
         XCTAssertNil(song.sectionDestinationPosition(region.id))
         XCTAssertEqual(song.markers?.count, 2)
     }
-    @MainActor func testCancellingSectionKeepsAutoAndQueuedSong() throws {
+    @MainActor func testEscapeCancelsLoopThenSectionThenSongAndAuto() throws {
         var project = Project.demo()
         project.regionSetlist = RegionSetlist()
         project.regionSetlist?.autoAdvance = true
         let backend = SectionExecutor()
         let show = try ShowController(executor: backend, persistence: MemoryProjectStore(), initialProject: project)
         let queuedSong = UUID()
-        backend.transport.queuedSectionMarkerId = UUID()
+        let section = UUID()
+        backend.transport.queuedSectionMarkerId = section
+        backend.transport.sectionQueueStartedAt = 2
         backend.transport.queuedRegionId = queuedSong
         backend.transport.loop.enabled = true
         show.tick()
         let revision = show.projectRevision
         show.send(.escape)
+        XCTAssertFalse(show.snapshot.transport.loop.enabled)
+        XCTAssertEqual(show.snapshot.transport.queuedSectionMarkerId, section)
+        XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
+        XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
+        XCTAssertEqual(show.projectRevision, revision, "loop release is a transport change only")
+        show.send(.escape)
+        XCTAssertNil(show.snapshot.transport.queuedSectionMarkerId)
+        XCTAssertNil(show.snapshot.transport.sectionQueueStartedAt)
+        XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
+        XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
+        XCTAssertEqual(show.projectRevision, revision, "cancelled section is a transport change only")
+        show.send(.escape)
+        XCTAssertNil(show.snapshot.transport.queuedRegionId)
+        XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, false)
+        XCTAssertEqual(show.projectRevision, revision + 1, "disabling Auto is persisted exactly once")
+        XCTAssertEqual(backend.project.regionSetlist?.autoAdvance, false)
+        show.send(.escape)
+        XCTAssertEqual(show.projectRevision, revision + 1)
+    }
+    @MainActor func testDedicatedSectionCancelKeepsLoopAutoAndQueuedSong() throws {
+        var project = Project.demo()
+        project.regionSetlist = RegionSetlist(); project.regionSetlist?.autoAdvance = true
+        let backend = SectionExecutor()
+        let show = try ShowController(executor: backend, persistence: MemoryProjectStore(), initialProject: project)
+        let queuedSong = UUID()
+        backend.transport.queuedSectionMarkerId = UUID()
+        backend.transport.queuedRegionId = queuedSong; backend.transport.loop.enabled = true
+        show.tick()
+        let revision = show.projectRevision
+        show.send(.cancelSection); show.send(.cancelSection)
         XCTAssertNil(show.snapshot.transport.queuedSectionMarkerId)
         XCTAssertTrue(show.snapshot.transport.loop.enabled)
         XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
         XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
-        XCTAssertEqual(show.projectRevision, revision, "cancelled section is a transport change only")
+        XCTAssertEqual(show.projectRevision, revision)
     }
     func testSectionsSurviveDocumentAndOrdinaryCuesAreNotLoopChoices() throws {
         var p = Project.demo()

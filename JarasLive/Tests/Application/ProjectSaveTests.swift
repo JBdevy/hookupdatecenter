@@ -14,6 +14,8 @@ import XCTest
     var regionCommands: [ShowCommand] = []
     var playing = false
     var tempoBatches = 0
+    var advancedTime = 0.0
+    var timeAtTempoEdit = 0.0
     var regionItems: [UUID] = []
     func regionsFromClips(_ ids: [UUID]) throws { regionItems = ids }
     func load(_ project: Project) throws { self.project = project }
@@ -45,6 +47,7 @@ import XCTest
         project.songs[0].tracks[channel].clips[item] = clip
     }
     func retimeTempoMarkers(_ markers: [TimelineMarker]) throws {
+        timeAtTempoEdit = advancedTime
         let before = project.songs[0]
         try setTempoMarkers(markers)
         let map = TempoEditMap(before: before, after: project.songs[0])
@@ -105,7 +108,7 @@ import XCTest
         project.songs[0].tracks.insert(track, at: destination)
     }
     func configureRegionSetlist(_ state: RegionSetlist) throws { project.regionSetlist = state; try project.validate() }
-    func advance(_ elapsed: Double) {}
+    func advance(_ elapsed: Double) { if playing { advancedTime += elapsed } }
     func finishCurrentSong(_ enabled: Bool) {}
 }
 private actor SaveTestStore: ProjectPersistence {
@@ -176,7 +179,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
         XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 30])
     }
-    @MainActor func testDetectedTempoKeepsExistingOwnershipAndAssignsNewMarkers() throws {
+    @MainActor func testRedetectedTempoReplacesOldMarkersAndAssignsRegionOwnership() throws {
         var project = markerOwnershipProject()
         let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
         let owned = TimelineMarker(id: UUID(), name: "Owned tempo", position: 20, color: 0, regionOwnerID: first.id, tempoBPM: 140, tempoTimebase: .free)
@@ -189,8 +192,8 @@ final class ProjectSaveTests: XCTestCase {
         for position in [10.0, 15, 20] {
             XCTAssertEqual(show.current?.markers?.first { $0.position == position }?.regionOwnerID, first.id)
         }
-        XCTAssertEqual(show.current?.markers?.first { $0.position == 20 }?.id, owned.id)
-        XCTAssertNil(show.current?.markers?.first { $0.position == 22 }?.regionOwnerID)
+        XCTAssertNotEqual(show.current?.markers?.first { $0.position == 20 }?.id, owned.id)
+        XCTAssertEqual(show.current?.markers?.first { $0.position == 22 }?.regionOwnerID, first.id)
         XCTAssertEqual(show.current?.markers?.first { $0.position == 30 }?.regionOwnerID, next.id)
         XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position }, show.current?.markers?.sorted { $0.position < $1.position })
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
@@ -458,6 +461,39 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(executor.snapshotCount, snapshotCount, "finishing a take must not serialize and decode every existing waveform")
         XCTAssertEqual(updates, 1)
         XCTAssertTrue(show.hasUnsavedChanges)
+    }
+    @MainActor func testTimelinePresentationUsesAudioClockWithoutMovingTransport() throws {
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: Project.empty(name: "Audio presentation"), playbackClock: { 100 })
+        let original = show.snapshot.transport
+        show.audioPresentationPosition = { head, sampledAt in
+            XCTAssertEqual(sampledAt, 100)
+            XCTAssertEqual(head, 0)
+            return 11.75
+        }
+        XCTAssertEqual(show.timelinePlaybackTransport.position, 11.75)
+        XCTAssertEqual(show.timelinePlaybackTransport.editPosition, original.editPosition)
+        XCTAssertEqual(show.snapshot.transport.position, original.position)
+        executor.playing = false
+        show.tick()
+        XCTAssertEqual(show.timelinePlaybackTransport.position, show.snapshot.transport.position)
+    }
+    @MainActor func testLiveRegionTempoConsumesElapsedTimeBeforeRetimeWithoutObsoleteAudioUpdate() throws {
+        var project = Project.empty(name: "Tempo clock")
+        project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+        let executor = SaveTestExecutor(); executor.playing = true
+        var now = 100.0
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project, playbackClock: { now })
+        var audioUpdates = 0
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+        for _ in 0..<20 {
+            now += 0.04
+            show.adjustTempo(-1)
+            XCTAssertEqual(executor.timeAtTempoEdit, now - 100, accuracy: 0.000001)
+        }
+        XCTAssertEqual(audioUpdates, 20, "Publish only the new tempo, not an obsolete audio update before it")
+        show.tick()
+        XCTAssertEqual(executor.advancedTime, 0.8, accuracy: 0.000001, "The next timer tick must not consume edit time twice")
     }
     @MainActor func testRegionTempoShiftsAllMarkersAndKeepsNextSong() throws {
         var project = Project.empty(name: "Tempo batch")
@@ -847,7 +883,7 @@ final class ProjectSaveTests: XCTestCase {
         show.redo(); XCTAssertEqual(show.current?.markers, saved)
     }
 
-    @MainActor func testRedetectReplacesOnlyDetectedMarkersInTheRegionAndCanUndo() throws {
+    @MainActor func testRedetectReplacesEveryTempoMarkerInTheRegionAndCanUndo() throws {
         var project = Project.empty(name: "Redetect")
         let region = Part(id: UUID(), name: "Song", startTime: 10, endTime: 40)
         project.songs[0].parts = [region]; project.songs[0].duration = 50
@@ -855,16 +891,21 @@ final class ProjectSaveTests: XCTestCase {
             TimelineMarker(id: UUID(), name: "TEMPO", position: time, color: 0x999999,
                 tempoBPM: 140, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global, tempoReferenceBPM: 140)
         }
-        let outside = tempo(42), wrong = tempo(25), first = tempo(11)
+        let outside = tempo(42), wrong = tempo(25), first = tempo(11), endBoundary = tempo(40)
+        let startBoundary = TimelineMarker(id: UUID(), name: "Old start", position: 10, color: 0,
+            tempoBPM: 95, tempoTimebase: .free)
+        let manualTempo = TimelineMarker(id: UUID(), name: "Manual tempo", position: 18, color: 0,
+            tempoBPM: 130, tempoTimebase: .relative)
         let manual = TimelineMarker(id: UUID(), name: "Cue", position: 22, color: 0xffffff)
-        project.songs[0].markers = [first, wrong, outside, manual]
+        project.songs[0].markers = [startBoundary, first, manualTempo, wrong, endBoundary, outside, manual]
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         let reads = executor.snapshotCount
         let corrected = [tempo(11), tempo(24)]
         XCTAssertTrue(show.applyDetectedTempo(corrected, project: project.id, song: project.songs[0].id, region: region.id))
         let updated = try XCTUnwrap(show.current?.markers)
-        XCTAssertFalse(updated.contains(wrong)); XCTAssertTrue(updated.contains(outside)); XCTAssertTrue(updated.contains(manual))
+        for old in [startBoundary, first, manualTempo, wrong] { XCTAssertFalse(updated.contains { $0.id == old.id }) }
+        XCTAssertTrue(updated.contains(outside)); XCTAssertTrue(updated.contains(endBoundary)); XCTAssertTrue(updated.contains(manual))
         XCTAssertEqual(updated.filter { $0.isTempo && $0.position >= 10 && $0.position < 40 }.map(\.position).sorted(), [11,24])
         XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position }, show.current?.markers?.sorted { $0.position < $1.position })
         XCTAssertEqual(executor.snapshotCount, reads, "detection publishes a batch without reloading the arrangement")

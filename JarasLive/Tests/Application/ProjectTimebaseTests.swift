@@ -2,6 +2,13 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectTimebaseTests: XCTestCase {
+    func testNewProjectDefaultsToRelativeAndExplicitFreePersists() throws {
+        var project = Project.empty(name: "Default")
+        XCTAssertEqual(project.songs[0].projectTime.timebase, .relative)
+        project.songs[0].timeSettings?.timebase = .free
+        let reopened = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        XCTAssertEqual(reopened.songs[0].projectTime.timebase, .free)
+    }
     func testDefaultsAndProjectPersistence() throws {
         var project = Project.demo()
         XCTAssertEqual(project.songs[0].projectTime.divisions, 4)

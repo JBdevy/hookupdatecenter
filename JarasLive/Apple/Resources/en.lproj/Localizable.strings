@@ -548,6 +548,7 @@
 "INIT AUTO" = "INIT AUTO";
 "Start timer automatically when a song starts" = "Start timer automatically when a song starts";
 "Stop timer?" = "Stop timer?";
+"Stop timer" = "Stop timer";
 "The timer will be reset." = "The timer will be reset.";
 "Timer settings" = "Timer settings";
 "Timer duration" = "Timer duration";
@@ -1256,3 +1257,35 @@
 "Ignore Preview" = "Ignore Preview";
 
 "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder." = "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.";
+
+"Hide setlist controls" = "Hide setlist controls";
+"Show setlist controls" = "Show setlist controls";
+"Reset peak" = "Reset peak";
+"Toggle region drawer" = "Toggle region drawer";
+"Tap to reset the peak" = "Tap to reset the peak";
+"Hide sidebar" = "Hide sidebar";
+"Show sidebar" = "Show sidebar";
+
+"Export Audio" = "Export Audio";
+
+"Export region audio" = "Export region audio";
+
+"Copy to share" = "Copy to share";
+"Playlist copied successfully" = "Playlist copied successfully";
+"Could not copy playlist" = "Could not copy playlist";
+"Paste the list wherever you want to share it." = "Paste the list wherever you want to share it.";
+"Please try copying the playlist again." = "Please try copying the playlist again.";
+"Total duration" = "Total duration";
+
+"Run queue until the end of the block" = "Run queue until the end of the block";
+
+"Turn off Live?" = "Turn off Live?";
+
+"Stop timer?" = "Stop timer?";
+"The timer will stop and the current count will be reset." = "The timer will stop and the current count will be reset.";
+"Turn off Live" = "Turn off Live";
+"Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero." = "Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero.";
+
+"Render each selected region through the Master, including tracks routed to hardware outputs." = "Render each selected region through the Master, including tracks routed to hardware outputs.";
+
+"Cut" = "Cut";

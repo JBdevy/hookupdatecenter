@@ -70,11 +70,27 @@ int main(int argc,char**argv){@autoreleasepool{
     stopList[@"stopAtRegionEnd"] = @YES;
     stopList[@"prepareWithoutPlayback"] = @YES;
     stopList[@"automaticSubplay"] = @YES; stopList[@"automaticSubplaySeconds"] = @3;
+    stopList[@"autoUntilBlockEnd"] = @YES;
+    stopList[@"liveEnabled"] = @NO;
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:stopList options:0 error:&error] error:&error], "enable region Stop through bridge");
     NSDictionary* stopSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplay"] boolValue] && [stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplaySeconds"] doubleValue] == 3, "automatic subplay settings survive native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"prepareWithoutPlayback"] boolValue], "prepare without playback survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"stopAtRegionEnd"] boolValue], "region Stop survives native serialization");
+    expect([stopSnapshot[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "block queue limit survives native serialization");
+    expect([stopSnapshot[@"project"][@"regionSetlist"][@"liveEnabled"] isEqual:@NO] &&
+           equalJSON(stopSnapshot[@"project"][@"regionSetlist"][@"playedLiveRegionIDs"], original[@"regionSetlist"][@"playedLiveRegionIDs"]),
+           "disabling Live preserves the portable played-region history");
+    expect([core loadProjectData:[NSJSONSerialization dataWithJSONObject:stopSnapshot[@"project"] options:0 error:&error] error:&error], "reload project with enabled block queue limit");
+    NSDictionary* blockReloaded = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect([blockReloaded[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "enabled block queue limit survives project save and reload");
+    stopList[@"autoUntilBlockEnd"] = @NO;
+    expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:stopList options:0 error:&error] error:&error], "disable block queue limit explicitly");
+    NSDictionary* blockDisabled = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(![blockDisabled[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "explicit false disables the block queue limit");
+    expect([core loadProjectData:[NSJSONSerialization dataWithJSONObject:blockDisabled[@"project"] options:0 error:&error] error:&error], "reload project with disabled block queue limit");
+    blockReloaded = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    expect(![blockReloaded[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "disabled block queue limit stays disabled after reload");
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:original[@"regionSetlist"] options:0 error:&error] error:&error], "restore disabled region Stop");
     NSString* midiTrack=original[@"songs"][0][@"tracks"][0][@"id"];
     expect([core setMIDIInput:midiTrack slot:2 error:&error],"select MIDI slot");
@@ -301,7 +317,9 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* textSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     NSDictionary* chordsTrack = nil;
     for (NSDictionary* track in textSnapshot[@"project"][@"songs"][0][@"tracks"]) if ([track[@"id"] isEqual:chordsTrackID]) chordsTrack = track;
-    expect(equalJSON(chordsTrack[@"clips"][0], textItem), "text content persists independently of fixed item and track names");
+    NSMutableDictionary* ownedTextItem = [textItem mutableCopy];
+    ownedTextItem[@"regionOwnerID"] = regionID;
+    expect(equalJSON(chordsTrack[@"clips"][0], ownedTextItem), "text content persists with the region owning this newly inserted item");
     NSString* maximumEmoji = [@"" stringByPaddingToLength:60 withString:@"🎵" startingAtIndex:0];
     expect([core setClipText:textItemID text:maximumEmoji error:&error], "30 non-ASCII emoji are accepted through native scalar setter");
     NSDictionary* textEditedSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];

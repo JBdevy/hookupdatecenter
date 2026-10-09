@@ -59,6 +59,7 @@ import AVFoundation
     }
     @Published var missingAudioPrompt: MissingAudioPrompt?
     @Published var importingAudio = false
+    @Published var audioImportProgress: Double? = nil
     @Published var audioImportError = ""
     @Published var migrationNotice = ""
     struct PendingAudioDrop: Identifiable {
@@ -85,9 +86,9 @@ import AVFoundation
         let targets = track.flatMap { id in arrangement.tracks.contains { $0.id == id } ? [id] : nil } ?? []
         let dropLayout = layout ?? .separateTracks
         let videoTrackAvailable = arrangement.tracks.contains { $0.kind == .video }
-        busy = true; importingAudio = true; status = "Importing audio…"; audioImportError = ""
+        busy = true; importingAudio = true; audioImportProgress = nil; status = "Importing audio…"; audioImportError = ""
         Task {
-            defer { busy = false; importingAudio = false }
+            defer { busy = false; importingAudio = false; audioImportProgress = nil }
             var prepared: StemProjectImporter.DroppedAudio?
             do {
                 var urls: [URL] = []
@@ -109,7 +110,10 @@ import AVFoundation
                 let sources = urls
                 prepared = try await Task.detached(priority: .userInitiated) {
                     try StemProjectImporter.prepareDroppedAudio(sources, start: start, destinationTracks: targets, destination: destination, layout: dropLayout, gap: gap, destinationKind: destinationKind, videoTrackAvailable: videoTrackAvailable) { [weak self] current, total, name in
-                        Task { @MainActor [weak self] in self?.status = "Importing \(current)/\(total): \(name)" }
+                        Task { @MainActor [weak self] in
+                            self?.status = "Importing \(current)/\(total): \(name)"
+                            self?.audioImportProgress = total > 0 ? min(1, Double(current) / Double(total)) : nil
+                        }
                     }
                 }.value
                 if let prepared {

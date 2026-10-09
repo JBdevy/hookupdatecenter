@@ -11,14 +11,17 @@ import AppKit
     @Published var progress: AudioExportProgress?
     private var cancellation = AudioExportCancellation()
     func cancel() { cancellation.cancel() }
-    func start(project: Project, song: Song, plan: AudioExportPlan, media: URL, output: URL, rate: Double, encoding: AudioExportEncoding, secondaryEncoding: AudioExportEncoding?) {
+    func start(project: Project, song: Song, plan: AudioExportPlan, media: URL, output: URL, rate: Double, encoding: AudioExportEncoding, secondaryEncoding: AudioExportEncoding?, includeHardwareOutputs: Bool = false) {
         guard !running else { return }
         cancellation = AudioExportCancellation()
         let token = cancellation
+        let instruments = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.clips.contains { $0.midi != nil } }
+            .map { ($0.id, ItemReRender.midiInstruments(for: $0)) })
         running = true; finished = false; error = ""; progress = nil
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try OfflineAudioExport.run(project: project,song: song,plan: plan,mediaDirectory: media,outputDirectory: output,sampleRate: rate,encoding: encoding,secondaryEncoding: secondaryEncoding,cancellation: token) { update in
+                try OfflineAudioExport.run(project: project,song: song,plan: plan,mediaDirectory: media,outputDirectory: output,sampleRate: rate,encoding: encoding,secondaryEncoding: secondaryEncoding,cancellation: token,
+                    includeHardwareOutputs: includeHardwareOutputs, midiInstrumentsByTrack: instruments) { update in
                     Task { @MainActor in self.progress = update }
                 }
                 Task { @MainActor in self.running = false; self.finished = true }
@@ -33,6 +36,7 @@ struct AudioExportView: View {
     let project: Project
     let song: Song?
     let mediaDirectory: URL?
+    var regionSelection: Set<UUID>? = nil
     @ObservedObject private var area = TimelineAreaSelection.shared
     @StateObject private var session = AudioExportSession()
     @Environment(\.dismiss) private var dismiss
@@ -56,13 +60,18 @@ struct AudioExportView: View {
     @AppStorage("jaras.export.secondaryBitrate") private var secondaryBitrate = 320
     @AppStorage("jaras.export.directory") private var directory = ""
     @AppStorage("jaras.export.fileName") private var fileName = "%project"
+    @AppStorage("catlive.export.regionFileName") private var regionFileName = "%region"
+    private var regionMode: Bool { regionSelection != nil }
+    private var effectiveSource: AudioExportSource { regionMode ? .master : source }
+    private var effectiveBounds: AudioExportBounds { regionMode ? .regions : bounds }
+    private var outputName: Binding<String> { regionMode ? $regionFileName : $fileName }
     private var plan: AudioExportPlan {
         guard let song else { return AudioExportPlan(jobs: []) }
         let range = area.range.flatMap { $0.song == song.id ? $0.start...$0.end : nil }
-        let primary = AudioExportPlan(project: project,song: song,source: source,bounds: bounds,template: fileName,
+        let primary = AudioExportPlan(project: project,song: song,source: effectiveSource,bounds: effectiveBounds,template: outputName.wrappedValue,
                                       tracks: tracks,clips: clips,regions: regions,area: range,format: format)
         guard secondaryEnabled else { return primary }
-        let secondary = AudioExportPlan(project: project,song: song,source: source,bounds: bounds,template: fileName,
+        let secondary = AudioExportPlan(project: project,song: song,source: effectiveSource,bounds: effectiveBounds,template: outputName.wrappedValue,
                                         tracks: tracks,clips: clips,regions: regions,area: range,format: secondaryFormat)
         return AudioExportPlan.combining(primary: primary,secondary: secondary)
 
@@ -70,7 +79,7 @@ struct AudioExportView: View {
     var body: some View {
         VStack(alignment: .leading,spacing: 14) {
             HStack {
-                Text(renderScreen ? "Rendering" : "Export").font(.headline)
+                Text(renderScreen ? "Rendering" : regionMode ? "Export region audio" : "Export").font(.headline)
                 Spacer()
                 Text("\(renderedPlan?.jobs.count ?? plan.jobs.count) files").font(.caption).foregroundStyle(JarasTheme.secondary)
                 if !session.running {
@@ -86,7 +95,7 @@ struct AudioExportView: View {
                 guard let song else { return }
                 tracks = AudioExportSelection.shared.tracks(song.id)
                 clips = AudioExportSelection.shared.clips(song.id)
-                regions = AudioExportSelection.shared.regions(song.id)
+                regions = regionSelection ?? AudioExportSelection.shared.regions(song.id)
                 if UserDefaults.standard.object(forKey: "jaras.export.sampleRate") == nil {
                     rate = [44100.0,48000.0].contains(AudioDeviceSettings.shared.sampleRate) ? AudioDeviceSettings.shared.sampleRate : 48000
                 }
@@ -97,11 +106,14 @@ struct AudioExportView: View {
     }
     private var configuration: some View {
         VStack(alignment: .leading,spacing: 12) {
-            HStack(spacing: 18) {
+            if regionMode {
+                Text("Render each selected region through the Master, including tracks routed to hardware outputs.")
+                    .font(.caption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
+            } else { HStack(spacing: 18) {
                 Picker("Source",selection: $source) { ForEach(AudioExportSource.allCases,id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }
                 Picker("Bounds",selection: $bounds) { ForEach(AudioExportBounds.allCases,id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.disabled(source == .stems)
-            }.pickerStyle(.menu)
-            if source != .master || bounds == .regions { selectionList }
+            }.pickerStyle(.menu) }
+            if effectiveSource != .master || effectiveBounds == .regions { selectionList }
             GroupBox("Output") {
                 LazyVGrid(columns: [GridItem(.flexible(minimum: 80, maximum: 120), spacing: 10, alignment: .leading),
                                     GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
@@ -111,12 +123,12 @@ struct AudioExportView: View {
                         Button { choosingDirectory = true } label: { Image(systemName: "folder").frame(width: 24,height: 20) }.accessibilityLabel("Choose folder")
                     }
                     Text("File name:")
-                    TextField("%project",text: $fileName)
+                    TextField(regionMode ? "%region" : "%project",text: outputName)
                 }.textFieldStyle(.roundedBorder).padding(10)
             }
             HStack(spacing: 8) {
                 ForEach(["%track","%region","%stem","%project"],id: \.self) { token in
-                    Button { fileName += token } label: { Text(verbatim: token).font(.system(size: 11,design: .monospaced)) }
+                    Button { outputName.wrappedValue += token } label: { Text(verbatim: token).font(.system(size: 11,design: .monospaced)) }
                         .buttonStyle(.bordered).help(token)
                 }
             }
@@ -145,7 +157,8 @@ struct AudioExportView: View {
                     let snapshot = plan
                     renderedPlan = snapshot
                     renderScreen = true
-                    session.start(project: project,song: song,plan: snapshot,media: mediaDirectory,output: URL(fileURLWithPath: directory),rate: rate,encoding: AudioExportEncoding(format: format,bitDepth: bits,channels: channels,bitrate: bitrate,sampleRate: rate),secondaryEncoding: secondaryEnabled ? AudioExportEncoding(format: secondaryFormat,bitDepth: secondaryBits,channels: channels,bitrate: secondaryBitrate,sampleRate: rate) : nil)
+                    session.start(project: project,song: song,plan: snapshot,media: mediaDirectory,output: URL(fileURLWithPath: directory),rate: rate,encoding: AudioExportEncoding(format: format,bitDepth: bits,channels: channels,bitrate: bitrate,sampleRate: rate),secondaryEncoding: secondaryEnabled ? AudioExportEncoding(format: secondaryFormat,bitDepth: secondaryBits,channels: channels,bitrate: secondaryBitrate,sampleRate: rate) : nil,
+                        includeHardwareOutputs: regionMode)
                 }.buttonStyle(.borderedProminent).tint(JarasTheme.green).keyboardShortcut(.defaultAction).disabled(plan.jobs.isEmpty || directory.isEmpty || mediaDirectory == nil)
             }
         }
@@ -171,7 +184,7 @@ struct AudioExportView: View {
     }
     private var selectionList: some View {
         VStack(alignment: .leading,spacing: 4) {
-            if source == .stems {
+            if effectiveSource == .stems {
                 selectionHeader("Items",all: Set(song?.tracks.flatMap(\.clips).filter { $0.audioFile != nil }.map(\.id) ?? []),value: $clips)
                 ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
                     ForEach(song?.tracks.filter { $0.kind == .standard } ?? []) { track in
@@ -182,7 +195,7 @@ struct AudioExportView: View {
                 } }.frame(height: 90)
             } else {
                 HStack(alignment: .top, spacing: 20) {
-                if source != .master {
+                if effectiveSource != .master {
                     VStack(alignment: .leading, spacing: 4) {
                     selectionHeader("Tracks",all: Set(song?.tracks.filter { $0.kind == .standard }.map(\.id) ?? []),value: $tracks)
                     ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
@@ -192,7 +205,7 @@ struct AudioExportView: View {
                     } }.frame(height: 115)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if bounds == .regions {
+                if effectiveBounds == .regions {
                     VStack(alignment: .leading, spacing: 4) {
                     selectionHeader("Regions",all: Set(song?.parts.map(\.id) ?? []),value: $regions)
                     ScrollView(showsIndicators: false) { LazyVStack(alignment: .leading) {
@@ -252,6 +265,14 @@ struct AudioExportView: View {
             }
         }
     }
+}
+
+struct RegionAudioExportRequest: Identifiable {
+    let id = UUID()
+    let project: Project
+    let song: Song
+    let regions: Set<UUID>
+    let mediaDirectory: URL?
 }
 
 struct ItemAudioExportRequest: Identifiable {

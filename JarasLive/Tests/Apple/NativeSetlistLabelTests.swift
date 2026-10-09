@@ -209,9 +209,188 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
     print("NATIVE_SETLIST_RETAINED_PROGRESS_NO_STATIC_REDRAW_COUNTDOWN_QUEUE_LOOP_RESIZE_BACKING_AND_PROMOTION_OK")
 }
 MainActor.assumeIsolated {
+ testFocusPreservesManualDrawerState()
+ testLiveMarkKeepsCachedTextAndPlaybackFeedback()
+ testSetlistFooterActionsAndCollapse()
  testProgressLayersPreserveStaticDrawingAndTransitions()
  testPlaybackUpdatesWithoutRebuildingRows()
  try! testVisualParity()
  try! testActions()
  try! benchmarkLabels()
+}
+
+@MainActor func testLiveMarkKeepsCachedTextAndPlaybackFeedback() {
+    _ = NSApplication.shared
+    let view = NativeRegionSetlistLabelView(frame: CGRect(x: 0, y: 0, width: 340, height: 34))
+    let window = NSWindow(contentRect: view.frame, styleMask: [], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = view; window.orderFront(nil)
+    defer { window.close() }
+    func configure(played: Bool, selected: Bool = false, active: Bool = false, queued: Bool = false) {
+        view.configure(number: 1, name: "PLAYED SONG", duration: "30s", color: 0x44ff88,
+            selected: selected, active: active, queued: queued, prepareOnly: false,
+            progress: 0.5, queueProgress: 0.25, playedLive: played)
+        view.displayIfNeeded(); view.layer?.displayIfNeeded()
+    }
+    func field<T>(_ name: String, _: T.Type) -> T { Mirror(reflecting: view).children.first { $0.label == name }!.value as! T }
+    func backgroundColor() -> NSColor {
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        return bitmap.colorAt(x: bitmap.pixelsWide / 2, y: 5)!.usingColorSpace(.deviceRGB)!
+    }
+    configure(played: false)
+    let shaped = field("nameLine", CTLine.self)
+    let idle = backgroundColor()
+    configure(played: true)
+    precondition(field("playedLive", Bool.self))
+    precondition(shaped === field("nameLine", CTLine.self), "A played mark must reuse the existing shaped name")
+    let played = backgroundColor()
+    precondition(played.redComponent > played.blueComponent + 0.1 && played.redComponent > played.greenComponent + 0.1
+        && abs(played.blueComponent - played.greenComponent) < 0.03 && played.redComponent > idle.redComponent + 0.03,
+        "An idle played row changes from its neutral background to dark red, across display color profiles")
+    configure(played: true, selected: true)
+    let selected = backgroundColor()
+    precondition(selected.blueComponent > selected.redComponent, "Selection remains visible for a played row")
+    configure(played: true, active: true)
+    let clip = view.layer!.sublayers!.first { $0.name == "setlist-progress-clip" }!
+    let bar = clip.sublayers!.first { $0.name == "setlist-progress-bar" }!
+    precondition(!clip.isHidden && bar.backgroundColor == NSColor(JarasTheme.green).cgColor && abs(bar.frame.width - 170) < 0.01)
+    configure(played: true, queued: true)
+    precondition(!clip.isHidden && bar.backgroundColor == NSColor(JarasTheme.yellow).cgColor && abs(bar.frame.width - 85) < 0.01)
+    precondition(shaped === field("nameLine", CTLine.self), "Playback and live state changes do not rebuild text")
+    print("SETLIST_LIVE_DARK_RED_AND_CACHED_NAME_PRESERVE_SELECTION_QUEUE_AND_PROGRESS_OK")
+}
+
+private func testFocusPreservesManualDrawerState() {
+    let parent = UUID(), child = UUID(), normal = UUID()
+    var expanded: Set<UUID> = []
+    for _ in 0..<3 {
+        precondition(setlistVisibleRegionID(child, parent: parent, expanded: expanded) == parent,
+            "Repeated playback/selection focus must target the visible parent while the drawer is closed")
+        precondition(expanded.isEmpty)
+    }
+    expanded.insert(parent)
+    precondition(setlistVisibleRegionID(child, parent: parent, expanded: expanded) == child,
+        "Manual expansion or an explicit search result may reveal the child")
+    expanded.remove(parent)
+    precondition(setlistVisibleRegionID(child, parent: parent, expanded: expanded) == parent,
+        "Closing a playing child's drawer must move its visible highlight back to the parent")
+    precondition(setlistVisibleRegionID(normal, parent: nil, expanded: expanded) == normal)
+    precondition(setlistVisibleRegionID(parent, parent: nil, expanded: expanded) == parent)
+    print("SETLIST_FOCUS_PRESERVES_MANUAL_DRAWER_AND_HIGHLIGHTS_VISIBLE_PARENT_OK")
+}
+
+private final class FooterTestState: ObservableObject {
+    @Published var projectID = UUID()
+    @Published var bypassed = false
+    @Published var live = false
+    @Published var parts = false
+    var calls = [0, 0, 0]
+}
+private final class FooterFrameView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+private struct FooterFrameProbe: NSViewRepresentable {
+    func makeNSView(context: Context) -> FooterFrameView { FooterFrameView() }
+    func updateNSView(_ view: FooterFrameView, context: Context) {}
+}
+private struct SetlistFooterFixture: View {
+    @ObservedObject var state: FooterTestState
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Songs").frame(maxWidth: .infinity, maxHeight: .infinity)
+            SetlistFooterControls(projectID: state.projectID, bypassed: state.bypassed, liveEnabled: state.live, partsOpen: state.parts,
+                toggleBypass: { state.calls[0] += 1; state.bypassed.toggle() },
+                toggleLive: { state.calls[1] += 1; state.live.toggle() },
+                toggleParts: { state.calls[2] += 1; state.parts.toggle() })
+                .background(FooterFrameProbe())
+        }
+    }
+}
+@MainActor func testSetlistFooterActionsAndCollapse() {
+    let name = "catlive.footer.test." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: name)!
+    defer { defaults.removePersistentDomain(forName: name) }
+    let state = FooterTestState()
+    let host = NSHostingView(rootView: SetlistFooterFixture(state: state).defaultAppStorage(defaults))
+    host.sizingOptions = []
+    let window = NSWindow(contentRect: CGRect(x: 300, y: 300, width: 305, height: 150), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+    defer { window.close() }
+    func pump() { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.04)); host.layoutSubtreeIfNeeded() }
+    func frame() -> CGRect { let probe = descendants(FooterFrameView.self, host).first!; return probe.convert(probe.bounds, to: host) }
+    func click(x: CGFloat) {
+        let point = host.convert(CGPoint(x: x, y: frame().midY), to: nil)
+        func event(_ type: NSEvent.EventType) -> NSEvent { NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)! }
+        NSApp.postEvent(event(.leftMouseUp), atStart: false)
+        window.sendEvent(event(.leftMouseDown))
+        if let up = NSApp.nextEvent(matching: .leftMouseUp, until: Date(timeIntervalSinceNow: 0.01), inMode: .default, dequeue: true) { window.sendEvent(up) }
+        pump()
+    }
+    pump()
+    precondition(abs(frame().height - 28) < 0.5)
+    precondition(abs((host.isFlipped ? frame().maxY - host.bounds.maxY : frame().minY - host.bounds.minY)) < 0.5,
+        "The compact footer ends at the bottom of its setlist without reserved empty space")
+    let expectedFrame = frame()
+    click(x: 48); click(x: 148); click(x: 240)
+    precondition(state.calls == [1, 1, 1] && state.bypassed && state.live && state.parts, "All three compact footer controls remain independently clickable")
+    precondition(window.attachedSheet == nil, "Enabling Live acts immediately without a confirmation")
+    precondition(frame() == expectedFrame, "Blinking ByPass cannot resize the footer or the song list")
+    click(x: 296)
+    precondition(abs(frame().height - 16) < 0.5 && defaults.object(forKey: "catlive.setlist.footerVisible") as? Bool == false,
+        "The chevron collapses only the footer controls and keeps its handle reachable")
+    click(x: 296)
+    precondition(abs(frame().height - 28) < 0.5 && state.calls == [1, 1, 1])
+
+    func liveConfirmation() -> NSWindow {
+        for _ in 0..<25 {
+            if let sheet = window.attachedSheet { return sheet }
+            pump()
+        }
+        preconditionFailure("Turning Live off must present a confirmation sheet")
+    }
+    func pressAlertButton(_ title: String, in sheet: NSWindow) {
+        guard let content = sheet.contentView,
+              let button = descendants(NSButton.self, content).first(where: { $0.title == title }) else {
+            preconditionFailure("The Live confirmation must offer the \(title) action")
+        }
+        button.performClick(nil)
+    }
+    func awaitDismissal() {
+        for _ in 0..<25 {
+            pump()
+            if window.attachedSheet == nil { return }
+        }
+        preconditionFailure("The Live confirmation must dismiss after its action or a stale request")
+    }
+
+    click(x: 148)
+    let cancelledSheet = liveConfirmation()
+    precondition(state.live && state.calls[1] == 1, "Opening the confirmation cannot clear Live or played-song marks")
+    let warning = descendants(NSTextField.self, cancelledSheet.contentView!).map(\.stringValue).joined(separator: " ")
+    precondition(warning.contains("played-song marks") && warning.contains("unified regions") && warning.contains("from zero"),
+        "The confirmation explains that disabling clears every played mark and restarting resets playback counting")
+    pressAlertButton("Cancel", in: cancelledSheet); awaitDismissal()
+    precondition(state.live && state.calls[1] == 1, "Cancel must leave Live and its playback history untouched")
+
+    click(x: 148)
+    pressAlertButton("Turn off Live", in: liveConfirmation()); awaitDismissal()
+    precondition(!state.live && state.calls[1] == 2, "Confirmation executes the Live reset exactly once")
+
+    click(x: 148)
+    precondition(state.live && state.calls[1] == 3 && window.attachedSheet == nil)
+    click(x: 148)
+    _ = liveConfirmation()
+    state.projectID = UUID(); awaitDismissal()
+    precondition(state.live && state.calls[1] == 3, "Changing projects dismisses a stale confirmation without toggling the new project")
+
+    click(x: 148)
+    _ = liveConfirmation()
+    state.live = false; awaitDismissal()
+    precondition(!state.live && state.calls[1] == 3, "A remote Live-off update dismisses the dialog without dispatching a second reset")
+    precondition(frame() == expectedFrame, "Opening and dismissing Live confirmation keeps the footer geometry stable")
+    print("SETLIST_LIVE_REAL_CONFIRMATION_CANCEL_CONFIRM_PROJECT_CHANGE_AND_REMOTE_OFF_OK")
+
+    window.setContentSize(CGSize(width: 486, height: 150)); pump()
+    precondition(abs(frame().width - 486) < 0.5 && abs(frame().height - 28) < 0.5)
+    click(x: 477)
+    precondition(abs(frame().height - 16) < 0.5, "The chevron stays in the trailing gutter after resizing")
+    print("SETLIST_FOOTER_THREE_ACTIONS_BLINK_GEOMETRY_AND_COLLAPSE_REOPEN_RESIZE_OK")
 }

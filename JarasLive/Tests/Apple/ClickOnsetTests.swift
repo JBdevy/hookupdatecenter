@@ -28,7 +28,7 @@ for rate in [44100.0, 48000.0] {
     let sections = ClickTempoDetector.sections(onsets: actual)
     precondition(sections.count == 2 && abs(sections[0].bpm-rates[0]) < 0.02 && abs(sections[1].bpm-rates[1]) < 0.02)
     precondition(abs(sections[1].position - change) <= 1/rate)
-    precondition(FileManager.default.fileExists(atPath: directory.appendingPathComponent("WF/" + url.lastPathComponent + ".waveform").path))
+    precondition(FileManager.default.fileExists(atPath: TimelineAudioWaveform.diskCacheURL(url).path))
  }
 }
 print("CLICK_PEAK_CACHE_SAMPLE_EXACT_ONSETS_44100_48000_STEREO_AND_TEMPO_CHANGES_OK")
@@ -61,3 +61,68 @@ for rate in [44100.0, 48000.0] {
     }
 }
 print("CLICK_METER_PCM_AMPLITUDE_AND_TIMBRE_2_3_4_6_7_OVER_4_OK")
+
+// Low-amplitude pre-echo must not become the tempo origin. Keep exact attacks
+// across cache-bin boundaries, stereo channels and quiet unaccented clicks.
+for rate in [44100.0, 48000.0] {
+    let url = directory.appendingPathComponent("pre-echo-\(Int(rate)).wav")
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 9))!
+    pcm.frameLength = pcm.frameCapacity
+    for ch in 0..<2 { pcm.floatChannelData![ch].initialize(repeating: 0, count: Int(pcm.frameLength)) }
+    let beats = (0..<16).map { Int(((0.127 + Double($0) * 0.5) * rate).rounded()) }
+    for (index, frame) in beats.enumerated() {
+        let amplitude = index % 4 == 0 ? 0.8 : 0.24
+        for offset in -Int(rate * 0.012)..<0 {
+            pcm.floatChannelData![index % 2][frame + offset] = Float(amplitude * 0.015 * cos(Double(offset) * 0.27))
+        }
+        for offset in 0..<Int(rate * 0.025) {
+            pcm.floatChannelData![index % 2][frame + offset] = Float(amplitude * exp(-Double(offset) / (rate * 0.004)) * cos(Double(offset) * 0.4))
+        }
+    }
+    do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: pcm) }
+    let actual = try TimelineAudioWaveform.clickOnsets(url)
+    precondition(actual.count == beats.count)
+    for (time, frame) in zip(actual, beats) {
+        precondition(abs(time - Double(frame) / rate) <= 1 / rate, "Pre-echo must not shift the marker before the actual click attack")
+    }
+    let sections = ClickTempoDetector.sections(onsets: actual)
+    precondition(sections.count == 1 && sections[0].bpm == 120)
+    precondition(abs(sections[0].position - Double(beats[0]) / rate) <= 1 / rate)
+}
+print("CLICK_PRE_ECHO_REJECTED_SAMPLE_EXACT_MARKER_ANCHOR_44100_48000_OK")
+
+// Exercise the complete PCM -> onset -> tempo map path, not just synthetic
+// timestamps. A gradual acceleration and fractional final rate must stay in
+// phase after many bars at either common audio sample rate.
+for rate in [44100.0, 48000.0] {
+    let url = directory.appendingPathComponent("accelerando-\(Int(rate)).wav")
+    let rates = [Double](repeating: 130, count: 32)
+        + (0..<64).map { 130 + Double($0) * 10 / 63 }
+        + [Double](repeating: 140.4270739, count: 160)
+    var time = 0.123, beats: [Double] = []
+    for bpm in rates { beats.append((time * rate).rounded() / rate); time += 60 / bpm }
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount((time + 1) * rate))!
+    pcm.frameLength = pcm.frameCapacity
+    for ch in 0..<2 { pcm.floatChannelData![ch].initialize(repeating: 0, count: Int(pcm.frameLength)) }
+    for (index, beat) in beats.enumerated() {
+        let first = Int((beat * rate).rounded())
+        for offset in 0..<Int(rate * 0.02) {
+            pcm.floatChannelData![index % 2][first + offset] = Float(0.7 * exp(-Double(offset) / (rate * 0.004)) * cos(Double(offset) * 0.3))
+        }
+    }
+    do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: pcm) }
+    let onsets = try TimelineAudioWaveform.clickOnsets(url)
+    precondition(onsets.count == beats.count)
+    let sections = ClickTempoDetector.sections(onsets: onsets)
+    precondition(sections.contains { $0.bpm > 130.1 && $0.bpm < 139.9 })
+    precondition(abs(sections.last!.bpm - 140.4270739) < 0.0001)
+    for (index, onset) in onsets.enumerated() {
+        let section = sections.last { $0.position <= onset }!
+        let anchor = onsets.firstIndex(of: section.position)!
+        let predicted = section.position + Double(index - anchor) * 60 / section.bpm
+        precondition(abs(predicted - onset) <= 0.001001, "tempo map must stay within 1 ms throughout acceleration and the long final section")
+    }
+}
+print("CLICK_PCM_ACCELERANDO_AND_FRACTIONAL_FINAL_TEMPO_NO_DRIFT_44100_48000_OK")

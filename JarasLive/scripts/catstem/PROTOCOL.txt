@@ -1,0 +1,97 @@
+CatStem streaming candidate — CST1 version1
+
+Process: <isolated python> -I -B <Resources>/StemSeparation/stream.py
+         --model-dir <runtime>/realtime-arm64/models
+--model-cache is an alias. --probe prints capability JSON without importing
+MLX/torch or executing the model. Normal stdout contains ONLY binary messages.
+stderr contains JSON diagnostics. No item selection, audio file or temp WAV
+is involved in the production path. The native callback uses bounded rings;
+dedicated native threads perform all pipe I/O and streaming sample conversion.
+--offline is reserved for explicit offline export. It removes only wall-time
+deadlines, retaining canonical PCM, bounded queues and epoch validation; READY
+reports offlineRendering=true. Changing render modes requires worker restart.
+
+HEADER — 64 bytes, little endian, Python struct <4sHHQQQqIIHHIII
+Offset Size Field
+0      4    magic = ASCII CST1
+4      2    protocolVersion =1
+6      2    type (below)
+8      8    streamID (nonzero, fixed for process lifetime)
+16     8    generation
+24     8    sequence
+32     8    firstSampleFrame, SIGNED int64 at44100Hz in the current generation
+40     4    sampleRate
+44     4    frames
+48     2    channels
+50     2    stems
+52     4    payloadBytes
+56     4    flags =0
+60     4    reserved =0
+
+1 READY worker->host: bounded UTF8JSON payload after loading/warming model.
+  protocolVersion1, sampleRate44100,channels2,stems5,hopFrames8192,
+  contextFrames44100,rightContextFrames3072,latencyFrames24576,maxStreams1,
+  backend,modelSHA,sourceCheckpointSHA,outputNames,crossfadeFrames,warmupSeconds.
+2 AUDIO host->worker: frames8192,channels2,stems0,sampleRate44100,payload65536.
+  PCM float32 little endian [frame][L,R], contiguous. Finite values required.
+3 OUTPUT worker->host: frames8192,channels2,stems5,sampleRate44100,payload327680.
+  PCM float32 little endian [stem][frame][L,R], stem-major:
+  Vocal,Drum,Bass,Guitar,Other. Other includes model's Other+Piano.
+  Same stream/generation/sequence as AUDIO; firstFrame = AUDIO.firstFrame-3072.
+4 FLUSH host->worker: no payload/frames, sequence0, nonzero streamID and a
+  generation greater than the last accepted epoch. firstFrame sets new input
+  clock origin. Initial FLUSH generation1 required afterREADY.
+5 FLUSHED worker->host: echoes accepted FLUSH once context/tail have reset.
+  Wait for FLUSHED before sending sequence0 PCM.
+6 ERROR worker->host: UTF8JSON {code,message,recoverable} with related IDs.
+  Input gap, bad format, overload, inference failure or missed deadline require
+  a fresh FLUSH. Never interpret ERROR as a valid silent separated block.
+7 CLOSE host->worker: no payload; abandons outstanding work and terminates.
+8 CLOSED worker->host: final acknowledgement.
+Control headers may leave sampleRate44100 and channels/stems0.
+
+FLOW / CLOCK
+Every AUDIO advances sequence by1 and firstFrame by8192, with no discontinuity.
+Seek, stop/restart, source replacement and format changes use a new generation.
+FLUSH discards queued old work; in-flight inference is allowed to finish but its
+output is discarded. Native must ALSO reject stale generations because a packet
+may already be in the pipe when FLUSH arrives. New generation resets all history
+and crossfade predictions; old samples can never carry across it.
+The initial context is left-padded with zeros, not delayed for a full second.
+First output may start at-3072; discard negative source frames, retaining the
+remaining5120 valid frames. Later blocks are contiguous in source time.
+To render a finite validation fixture, send a final zero block to flush right
+context and trim the assembled output to the original source frame count.
+
+BOUNDARIES
+One admitted stream per process, model kept loaded. Max2 queued AUDIO packets
+in addition to one in-flight call. Output queue4 messages is bounded, including
+control messages. Native limits outstanding AUDIO to2 and continuously drains.
+Worker input->output CPU-ready deadline=(24576-8192-3072)/44100=301.86ms.
+A missed deadline invalidates the epoch and reports ERROR, instead of allowing
+an unbounded queue to increase latency. Native must detect late pipe delivery
+and surface bypass/error state using its exact source-clock placement.
+Fixed node latency: ceil(24576*hostRate/44100) host frames, ~557.28ms, including
+the302ms compute/SRC allowance. This is an experimental configuration, not a
+claim of drop-free operation on all devices. Three-pass smoke is insufficient.
+
+Stereo source conversion and output conversion must run off the audio callback,
+with persistent filter state and clock conversion. Never resample each block
+independently. Mono duplicates into L/R; host downmixes wider layouts before
+conversion. No rate conversion or unsupported-format fallback is hidden here.
+
+MODEL
+Exact original HTDemucs6 source5c90dfd2-34c22ccb.th;44100Hz. Converted local
+htdemucs_6s.safetensors + htdemucs_6s_config.json. MLX loader auto_convert=False;
+no torch or network is needed at runtime. Weights remain unchanged, context is
+experimentally reduced to1s; output readout[C-R-H,C-R). Default crossfade1024
+samples blends the previous window's already-predicted future tail into the
+next window's first1024 samples with complementary linear weights. This uses
+only captured input and does not shift the source clock. --crossfade-frames0
+supports controlled seam-quality comparison, not a product preference.
+
+SUPPORT
+The current backend requires macOS14+ Apple Silicon. Keep CatLive's macOS12
+minimum and Intel support independent. The existing offline separator may
+remain available there; continuous real-time separation on that backend is
+unverified and must not be advertised as an equivalent fallback.

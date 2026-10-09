@@ -300,7 +300,8 @@ void validate(const Project& p) {
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
                 if (clip.text) validateClipText(*clip.text, t.role.id == "chords" ? 30 : 400);
                 const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
-                require(!textTrack || media || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && clip.sourceOffset == 0 && !clip.loopStart && !clip.loopLength), "Text items cannot contain audio");
+                // Text can retain source timing for its visual repeat seams, without audio.
+                require(!textTrack || media || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && (clip.loopLength || (clip.sourceOffset == 0 && !clip.loopStart))), "Text items cannot contain audio");
                 require(!clip.fxJSON || fixed.empty() || media, "Item FX requires an audio item");
                 require(!clip.fxBypassed || fixed.empty() || media, "Item FX requires an audio item");
                 if (clip.fxJSON) validateClipFXJSON(*clip.fxJSON);

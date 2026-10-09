@@ -8,6 +8,7 @@ import AppKit
 @MainActor final class TeleprompterTimerController: NSObject, ObservableObject {
     static let shared = TeleprompterTimerController()
     @Published private(set) var state: TeleprompterTimer
+    @Published private(set) var runID = UUID()
     private let defaults: UserDefaults
     private let now: () -> Double
     private static let preferenceKey = "jaras.teleprompter.timer"
@@ -51,6 +52,11 @@ import AppKit
     func setInitAutoEnabled(_ enabled: Bool) { change { $0.setInitAutoEnabled(enabled) } }
     func start() { change { $0.start(at: now()) } }
     func stopAndReset() { change { $0.stopAndReset() } }
+    @discardableResult func stopAndReset(ifRunID id: UUID) -> Bool {
+        guard running, runID == id else { return false }
+        stopAndReset()
+        return true
+    }
     func observePlayback(_ snapshot: ShowSnapshot) {
         change { $0.observePlayback(project: snapshot.project.id,region: snapshot.transport.regionId,playing: snapshot.transport.playing,paused: snapshot.transport.paused == true,at: now()) }
     }
@@ -59,6 +65,7 @@ import AppKit
         guard next != state else { return }
         let old = Preferences(mode: state.mode,targetSeconds: state.targetSeconds,initAutoEnabled: state.initAutoEnabled)
         let saved = Preferences(mode: next.mode,targetSeconds: next.targetSeconds,initAutoEnabled: next.initAutoEnabled)
+        if next.running && !state.running { runID = UUID() }
         state = next
         if saved != old, let encoded = try? JSONEncoder().encode(saved) { defaults.set(encoded,forKey: Self.preferenceKey) }
     }
@@ -101,6 +108,7 @@ struct TeleprompterTimerConfiguration: View {
     @State private var field = 0
     @State private var caret = 0
     @State private var confirmStop = false
+    @State private var stopRunID: UUID?
     var body: some View {
         VStack(spacing: 12) {
             TimelineView(.periodic(from: .now,by: 0.5)) { _ in
@@ -131,7 +139,7 @@ struct TeleprompterTimerConfiguration: View {
             .disabled(controller.running)
             HStack(spacing: 10) {
                 Button(controller.running ? "Stop" : "Start") {
-                    if controller.running { confirmStop = true } else { controller.start() }
+                    if controller.running { stopRunID = controller.runID; confirmStop = true } else { controller.start() }
                 }.buttonStyle(.borderedProminent).tint(controller.running ? .red : JarasTheme.green)
                 Button("INIT AUTO") { controller.setInitAutoEnabled(!controller.initAutoEnabled) }
                     .buttonStyle(.bordered).tint(controller.initAutoEnabled ? JarasTheme.green : JarasTheme.secondary)
@@ -142,10 +150,15 @@ struct TeleprompterTimerConfiguration: View {
         }.padding(16).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { synchronizeDigits() }
             .onChange(of: controller.targetSeconds) { _ in synchronizeDigits() }
+            .onChange(of: controller.runID) { _ in confirmStop = false; stopRunID = nil }
+            .onChange(of: controller.running) { running in if !running { confirmStop = false; stopRunID = nil } }
             .alert("Stop timer?",isPresented: $confirmStop) {
-                Button("Cancel",role: .cancel) {}
-                Button("Stop",role: .destructive) { controller.stopAndReset() }
-            } message: { Text("The timer will be reset.") }
+                Button("Cancel",role: .cancel) { stopRunID = nil }
+                Button("Stop timer",role: .destructive) {
+                    if let stopRunID { controller.stopAndReset(ifRunID: stopRunID) }
+                    stopRunID = nil
+                }
+            } message: { Text("The timer will stop and the current count will be reset.") }
     }
     private func synchronizeDigits() { digits = controller.targetText.components(separatedBy: ":") }
     private func edit(_ key: String) {

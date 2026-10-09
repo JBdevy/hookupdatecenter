@@ -346,6 +346,8 @@ public struct RegionSetlist: Codable, Equatable, Sendable {
     public var playlists: [RegionPlaylist] = []
     public var selectedId: UUID?
     public var autoAdvance = false
+    /// Limit generated queues to this setlist block; manual choices stay unrestricted.
+    public var autoUntilBlockEnd: Bool?
     public var automaticSubplay: Bool?
     public var automaticSubplaySeconds: Double?
     public var subplayLeadTime: Double { min(5, max(1, automaticSubplaySeconds ?? 1)) }
@@ -354,6 +356,9 @@ public struct RegionSetlist: Codable, Equatable, Sendable {
     public var stopAtRegionEnd: Bool?
     public var stopsAtRegionEnd: Bool { stopAtRegionEnd ?? false }
     public var blocks: [SetlistBlock]?
+    /// Live performance history is portable with this project, not other sessions.
+    public var liveEnabled: Bool?
+    public var playedLiveRegionIDs: [UUID]?
 }
 public extension RegionSetlist {
     @discardableResult mutating func clonePlaylist(_ id: UUID) -> UUID? {
@@ -494,7 +499,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard track.kind != .click || clip.audioFile == nil || clip.isProjectionMedia else { throw ProjectError.invalid("Click items use the built-in sound") }
                     guard clip.text == nil || track.kind.isText else { throw ProjectError.invalid("Text items require a Teleprompter or Chords track") }
                     if let text = clip.text { try AudioClip.validateText(text, maximum: track.kind.maximumTextLength ?? AudioClip.maximumTextLength) }
-                    if track.kind.isText && !clip.isProjectionMedia { guard clip.audioFile == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.sourceOffset == 0, clip.loopStart == nil, clip.loopLength == nil else { throw ProjectError.invalid("Text items cannot contain audio") } }
+                    // Source timing also locates the visual repeat seams of stretched text.
+                    if track.kind.isText && !clip.isProjectionMedia { guard clip.audioFile == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.loopLength != nil || (clip.sourceOffset == 0 && clip.loopStart == nil) else { throw ProjectError.invalid("Text items cannot contain audio") } }
                     guard clip.fx == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
                     guard clip.fxBypassed == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
                     try clip.fx?.validateForClip()

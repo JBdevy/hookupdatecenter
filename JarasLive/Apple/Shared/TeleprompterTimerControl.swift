@@ -11,6 +11,8 @@ import Combine
     private var draft: String { digits.joined(separator: ":") }
     @State private var invalid = false
     @State private var shake = 0.0
+    @State private var confirmStop = false
+    @State private var stopRunID: UUID?
     @FocusState private var focused: Int?
     init() { timer = .shared }
     init(timer: TeleprompterTimerController) { self.timer = timer }
@@ -26,8 +28,20 @@ import Combine
             .onAppear(perform: refresh)
             .onChange(of: timer.targetSeconds) { _ in if focused == nil { refresh() } }
             .onChange(of: timer.mode) { _ in if focused == nil { refresh() } }
-            .onChange(of: timer.running) { _ in refresh() }
+            .onChange(of: timer.running) { running in
+                refresh()
+                if !running { confirmStop = false; stopRunID = nil }
+            }
+            .onChange(of: timer.runID) { _ in confirmStop = false; stopRunID = nil }
             .onChange(of: focused) { value in if value == nil, !timer.running { _ = commit() } }
+            .alert("Stop timer?", isPresented: $confirmStop) {
+                Button("Cancel", role: .cancel) { stopRunID = nil }
+                Button("Stop timer", role: .destructive) {
+                    if let stopRunID { timer.stopAndReset(ifRunID: stopRunID) }
+                    stopRunID = nil
+                    refresh()
+                }
+            } message: { Text("The timer will stop and the current count will be reset.") }
     }
     private func timerField(at date: Date) -> some View {
         // Capture changing display values outside ForEach so each stable field
@@ -61,7 +75,7 @@ import Combine
     }
     private var timerButton: some View {
         Button {
-            if timer.running { timer.stopAndReset(); refresh() }
+            if timer.running { stopRunID = timer.runID; confirmStop = true }
             else if commit() { focused = nil; timer.start() }
         } label: {
             Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))

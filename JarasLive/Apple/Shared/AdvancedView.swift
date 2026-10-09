@@ -5,11 +5,10 @@ struct AdvancedView: View {
     let documents: ProjectDocuments?
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", sections = "Section manager"
-        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .sections: return "line.3.horizontal.decrease" } }
+        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
+        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
     }
     @State private var tab = Tab.timeProject
-    @AppStorage("catlive.sections.displayMode") private var sectionDisplayMode = "horizontal"
     @State private var bpm: String
     @State private var beats: String
     @State private var unit: String
@@ -57,14 +56,6 @@ struct AdvancedView: View {
                     if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
-                    if tab == .sections {
-                        Picker("Section display mode", selection: $sectionDisplayMode) {
-                            Text("Vertical").tag("vertical")
-                            Text("Horizontal (footer)").tag("horizontal")
-                        }
-                        Text("The iPad follows this setting. On iPhone, sections are always vertical.")
-                            .font(.callout).foregroundStyle(JarasTheme.secondary)
-                    }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
                     Spacer(minLength: 0)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .topLeading)
@@ -195,12 +186,12 @@ private struct AdvancedTimelineSettings: View {
                 Text("Enabled").tag(true)
                 Text("Disabled").tag(false)
             }
-            SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background)
-            SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid)
-            SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid)
-            SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor)
-            SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor)
-            SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor)
+            SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background, showsReset: true)
+            SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid, showsReset: true)
+            SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid, showsReset: true)
+            SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor, showsReset: true)
+            SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor, showsReset: true)
+            SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor, showsReset: true)
             if let documents {
                 Divider()
                 HStack {
@@ -238,10 +229,14 @@ private struct AdvancedSetlistColors: View {
 
 private struct SetlistTextColorRow: View {
     let title: String
+    let defaultColor: Int
+    let showsReset: Bool
     @ObservedObject private var color: AppearanceColor
     @State private var editing = false
-    init(title: String, key: String, defaultColor: Int) {
+    init(title: String, key: String, defaultColor: Int, showsReset: Bool = false) {
         self.title = title
+        self.defaultColor = defaultColor
+        self.showsReset = showsReset
         self.color = AppearanceColor.shared(key, default: defaultColor)
     }
     var body: some View {
@@ -258,6 +253,12 @@ private struct SetlistTextColorRow: View {
                         save: { _, value in color.save(Int(value)) }, close: { editing = false }, nameEditable: false, showsName: false,
                         previewColor: { if color.value != Int($0) { color.value = Int($0) } })
                 }
+            if showsReset {
+                Button("Reset") { color.save(defaultColor) }
+                    .font(.caption)
+                    .disabled(color.value == defaultColor)
+                    .accessibilityLabel(Text("Reset") + Text(" ") + Text(LocalizedStringKey(title)))
+            }
         }
     }
 }

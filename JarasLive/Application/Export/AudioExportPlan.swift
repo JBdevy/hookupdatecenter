@@ -35,6 +35,12 @@ public struct AudioExportJob: Identifiable, Equatable, Sendable {
 public struct AudioExportPlan: Sendable {
     public var jobs: [AudioExportJob]
     public init(jobs: [AudioExportJob]) { self.jobs = jobs }
+    /// Context export preserves every explicitly selected region, including a
+    /// parent and its drawer songs. Playlist block IDs are not render targets.
+    public static func contextRegions(clicked: UUID, selected: Set<UUID>, in song: Song) -> Set<UUID> {
+        let valid = Set(song.parts.map(\.id))
+        return (selected.contains(clicked) ? selected : [clicked]).intersection(valid)
+    }
     public static func combining(primary: Self, secondary: Self) -> Self {
         var result = primary.jobs, names = Set(primary.jobs.map { $0.fileName.lowercased() })
         for var job in secondary.jobs {

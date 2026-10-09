@@ -111,9 +111,10 @@ int main() {
     assert(escape.transport().loop.start == 0 && escape.transport().loop.end == 10);
     escape.advance(12); assert(near(escape.transport().position, 2));
     escape.execute({CommandKind::escape,"",1});
-    assert(!escape.transport().loop.enabled && !escape.project().regionSetlist->autoAdvance);
+    assert(!escape.transport().loop.enabled && escape.project().regionSetlist->autoAdvance);
     assert(escape.transport().queuedRegionId == "next");
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
+    assert(!escape.project().regionSetlist->autoAdvance);
     escape.execute({CommandKind::queueRegion,"next"}); escape.execute({CommandKind::escape,"",1});
     assert(!escape.transport().queuedRegionId); // Queue cancellation wins over an area selection.
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);

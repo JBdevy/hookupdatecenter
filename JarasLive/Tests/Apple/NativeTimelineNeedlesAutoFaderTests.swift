@@ -32,6 +32,8 @@ __PRODUCTION_FLAGS__
             }
         }
     }
+    var playbackClock: () -> Double = { ProcessInfo.processInfo.systemUptime }
+    private func recordSetlistLivePlayback(before: TransportState, after: TransportState, elapsed: Double) {}
     var lastTime = ProcessInfo.processInfo.systemUptime
     var isPlaying: Bool { snapshot.transport.playing || snapshot.transport.subPlay.playing }
     let executor: AutoFaderTickExecutor

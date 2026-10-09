@@ -172,6 +172,10 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     private let flights = FrameGate()
     private var rendering = false
     private var drawableRetryUsed = false
+    #if os(macOS)
+    private var windowVisibility: NSKeyValueObservation?
+    private var windowOcclusion: NSObjectProtocol?
+    #endif
     private(set) var submittedFrameCount: UInt64 = 0
     private(set) var coalescedFrameCount: UInt64 = 0
     private(set) var lastEncodeMilliseconds: Double = 0
@@ -239,8 +243,25 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        windowVisibility = nil
+        if let windowOcclusion { NotificationCenter.default.removeObserver(windowOcclusion) }
+        windowOcclusion = nil
+        if let window {
+            windowVisibility = window.observe(\.isVisible, options: [.new]) { [weak self] window, _ in
+                guard window.isVisible else { return }
+                MainActor.assumeIsolated { self?.retryPendingContent() }
+            }
+            windowOcclusion = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard self?.window?.occlusionState.contains(.visible) == true else { return }
+                        self?.retryPendingContent()
+                    }
+                }
+        }
         if window != nil { renderLatest() }
     }
+    override func viewDidUnhide() { super.viewDidUnhide(); retryPendingContent() }
     override func layout() { super.layout(); renderLatest() }
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
@@ -261,7 +282,13 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     func submit(_ frame: MetalWaveformFrame, allowCoalescing: Bool) {
         // Playback meters and unrelated controls can invalidate their SwiftUI
         // ancestors. Identical source/transforms must not cause another GPU pass.
-        if let latestFrame, latestFrame.hasSameContent(as: frame) { return }
+        if let latestFrame, latestFrame.hasSameContent(as: frame) {
+            // A startup drawable can be unavailable through the bounded retry.
+            // Identical pending content still needs presentation; content that
+            // already submitted remains idle. A later submit can retry it.
+            retryPendingContent()
+            return
+        }
         latestFrame = frame
         // An empty viewport has no GPU work. Hide any old drawable immediately
         // and invalidate delayed presentations instead of allocating, clearing
@@ -309,6 +336,20 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         draw()
     }
 
+    /// Projection caches may not submit again when a hidden window becomes
+    /// drawable. Recover only unfinished content; ready surfaces stay idle.
+    private func retryPendingContent() {
+        guard pending != nil else { return }
+        drawableRetryUsed = false
+        renderLatest()
+    }
+
+    deinit {
+        #if os(macOS)
+        if let windowOcclusion { NotificationCenter.default.removeObserver(windowOcclusion) }
+        #endif
+    }
+
     private var backingDensity: CGFloat {
         #if os(macOS)
         window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
@@ -331,7 +372,18 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard !rendering, let frame = pending, !frame.isEmpty,
+        guard !rendering else { return }
+        // AppKit can invalidate the drawable while the timeline projection is
+        // unchanged (backing updates, unhide, resizing another panel). A draw
+        // notification is a request to restore pixels, not a new model submit.
+        // Keep the retained scene available even after pending was consumed.
+        if pending == nil, let latestFrame, !latestFrame.isEmpty {
+            pending = latestFrame
+            pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
+            requiresImmediateSubmission = true
+            drawableRetryUsed = false
+        }
+        guard let frame = pending, !frame.isEmpty,
               frame.size.width > 0, frame.size.height > 0,
               let queue = engine.commandQueue, engine.isReady, flights.begin(ignoringLimit: requiresImmediateSubmission) else { return }
         var committed = false

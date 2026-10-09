@@ -85,8 +85,8 @@ final class OfflineAudioExport {
             frames = Int64((job.duration * format.sampleRate).rounded())
             self.format = format
         }
-        func write(_ source: AVAudioPCMBuffer, channels: Int) throws {
-            let count = min(Int64(source.frameLength),frames-written)
+        func write(_ source: AVAudioPCMBuffer, channels: Int, startingAt offset: Int = 0) throws {
+            let count = min(Int64(source.frameLength) - Int64(offset),frames-written)
             guard count > 0 else { return }
             if buffer == nil {
                 if encoding.format == .mp3 {
@@ -109,9 +109,9 @@ final class OfflineAudioExport {
             let buffer = self.buffer!
             buffer.frameLength = AVAudioFrameCount(count)
             for channel in 0..<encoding.channels {
-                let input = source.floatChannelData![channels+channel], output = buffer.floatChannelData![channel]
+                let input = source.floatChannelData![channels+channel].advanced(by: offset), output = buffer.floatChannelData![channel]
                 if encoding.channels == 1 {
-                    vDSP_vadd(source.floatChannelData![channels],1,source.floatChannelData![channels+1],1,output,1,vDSP_Length(count))
+                    vDSP_vadd(source.floatChannelData![channels].advanced(by: offset),1,source.floatChannelData![channels+1].advanced(by: offset),1,output,1,vDSP_Length(count))
                     var half: Float = 0.5; vDSP_vsmul(output,1,&half,output,1,vDSP_Length(count))
                 } else { output.update(from: input,count: Int(count)) }
                 for frame in 0..<Int(count) {
@@ -147,6 +147,8 @@ final class OfflineAudioExport {
     static func run(project: Project, song: Song, plan: AudioExportPlan, mediaDirectory: URL, outputDirectory: URL,
                     sampleRate: Double, encoding: AudioExportEncoding = AudioExportEncoding(), secondaryEncoding: AudioExportEncoding? = nil, cancellation: AudioExportCancellation,
                     midiInstruments: [String: OfflineMIDIInstrument]? = nil,
+                    includeHardwareOutputs: Bool = false,
+                    midiInstrumentsByTrack: [UUID: [String: OfflineMIDIInstrument]] = [:],
                     progress: (AudioExportProgress) -> Void) throws {
         try AudioLicenseAccess.shared.requireAccess()
         guard !plan.jobs.isEmpty else { throw AudioExportFailure.empty }
@@ -199,7 +201,8 @@ final class OfflineAudioExport {
                 if cancellation.cancelled { throw CancellationError() }
                 let current = batch.map { writers[$0] }
                 try render(project: project,song: song,writers: current,mediaDirectory: mediaDirectory,format: stereo,
-                           cancellation: cancellation,midiInstruments: midiInstruments,completed: completed,total: writers.count,progress: progress)
+                           cancellation: cancellation,midiInstruments: midiInstruments,includeHardwareOutputs: includeHardwareOutputs,
+                           midiInstrumentsByTrack: midiInstrumentsByTrack,completed: completed,total: writers.count,progress: progress)
                 for writer in current { try writer.finish() }
                 completed += batch.count
             }
@@ -216,9 +219,18 @@ final class OfflineAudioExport {
         }
     }
     private static func render(project: Project, song: Song, writers: [Writer], mediaDirectory: URL, format: AVAudioFormat,
-                               cancellation: AudioExportCancellation,midiInstruments: [String: OfflineMIDIInstrument]?,completed: Int,total: Int,
+                               cancellation: AudioExportCancellation,midiInstruments: [String: OfflineMIDIInstrument]?,includeHardwareOutputs: Bool,
+                               midiInstrumentsByTrack: [UUID: [String: OfflineMIDIInstrument]],completed: Int,total: Int,
                                progress: (AudioExportProgress) -> Void) throws {
         let engine = AVAudioEngine()
+        var effectChains: [NativeEffectsChain] = []
+        defer {
+            engine.stop()
+            #if os(macOS)
+            for effects in effectChains { try? effects.stopStemSeparatorAndWait() }
+            #endif
+            effectChains.forEach { $0.detach(from: engine) }
+        }
         var laneKeys: [String: Int] = [:], writerLanes: [Int] = []
         for writer in writers {
             let key = writer.job.clip?.uuidString ?? writer.job.track?.uuidString ?? "Master"
@@ -229,12 +241,15 @@ final class OfflineAudioExport {
         let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | count)!
         let packed = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,channelLayout: layout)
         try engine.enableManualRenderingMode(.offline,format: packed,maximumFrameCount: 4096)
-        defer { engine.stop() }
         engine.connect(engine.mainMixerNode,to: engine.outputNode,format: packed)
         var buses: [UUID:Bus] = [:]
         let hasMaster = writers.contains { $0.job.track == nil }
+        func feedsMaster(_ track: Track) -> Bool {
+            track.outputPatches.contains(.master) || (includeHardwareOutputs && project.masterSolo != true &&
+                track.outputPatches.contains { $0.firstChannel > 0 })
+        }
         var needed = Set(writers.compactMap { $0.job.track })
-        if hasMaster { needed.formUnion(song.tracks.filter { $0.outputPatches.contains(.master) }.map(\.id)) }
+        if hasMaster { needed.formUnion(song.tracks.filter(feedsMaster).map(\.id)) }
         let connections = song.trackConnections
         var changed = true
         while changed {
@@ -249,20 +264,26 @@ final class OfflineAudioExport {
         var voices: [Voice] = []
         var midiSamplers: [JarasSoundFont] = []
         defer { midiSamplers.forEach { $0.silence() } }
-        var starts: [(AVAudioPlayerNode,AVAudioTime)] = []
+        var clickGenerators: [JarasMetronomeGenerator] = []
+        defer { withExtendedLifetime(clickGenerators) {} }
+        var starts: [(AVAudioPlayerNode,AVAudioTime,Double)] = []
+        var sourceClocks: [(AVAudioNode, (Double) -> Void)] = []
+        var itemFades: [(NativeEffectsChain, AudioClip, Double, Double, Double)] = []
         let preroll = 4096
-        func makeBus(fx: NativeFXSettings?, volume: Double, pan: Double, muted: Bool, mono: Bool = false) throws -> Bus {
+        func makeBus(fx: NativeFXSettings?, volume: Double, pan: Double, muted: Bool, mono: Bool = false, phaseInverted: Bool = false) throws -> Bus {
             let bus = Bus()
             for node in [bus.mix,bus.processedMix,bus.gain,bus.pan] as [AVAudioNode] { engine.attach(node) }
             engine.connect(bus.processedMix,to: bus.gain,format: format)
-            if mono {
+            if mono || phaseInverted {
                 let matrix = JarasEqualizer.makeNode(); engine.attach(matrix)
-                JarasEqualizer.setInputChannelMode(matrix, mode: 3)
+                if mono { JarasEqualizer.setInputChannelMode(matrix, mode: 3) }
+                JarasEqualizer.setPolarity(matrix, inverted: phaseInverted)
                 engine.connect(bus.gain, to: matrix, format: format)
                 engine.connect(matrix, to: bus.pan, format: format)
             } else { engine.connect(bus.gain,to: bus.pan,format: format) }
-            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty {
+            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain(); bus.effects = effects
+                effectChains.append(effects)
                 effects.attach(to: engine,input: bus.mix,format: format,destinations: [AVAudioConnectionPoint(node: bus.processedMix,bus: 0)])
                 effects.apply(fx)
                 #if os(macOS)
@@ -290,9 +311,11 @@ final class OfflineAudioExport {
         engine.attach(multiplexer)
         engine.connect(multiplexer,to: engine.mainMixerNode,format: packed)
         var capturedLanes: Set<Int> = []
+        var capturedNodes: [Int: AVAudioNode] = [:]
         func capture(_ node: AVAudioNode,index: Int) {
             let index = writerLanes[index]
             guard capturedLanes.insert(index).inserted else { return }
+            capturedNodes[index] = node
             let lane = AVAudioMixerNode(); engine.attach(lane)
             engine.connect(lane,to: multiplexer,fromBus: 0,toBus: AVAudioNodeBus(index),format: format)
             link(node,lane,0)
@@ -318,12 +341,13 @@ final class OfflineAudioExport {
             gain.globalGain = Float(max(-96,min(24,20*log10(max(0.00000001,clip.gain ?? 1)))))
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
             let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
-            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true {
+            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain()
+                effectChains.append(effects)
                 effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
                 effects.apply(fx); effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 effects.configureItemFade(clip, position: begin, sampleTime: (begin - start + Double(preroll) / format.sampleRate) * sourceFormat.sampleRate)
-                // The graph retains the configured Audio Units.
+                itemFades.append((effects, clip, begin, start, sourceFormat.sampleRate))
             } else { engine.connect(source,to: gain,format: sourceFormat) }
             // Frozen MIDI already contains the ordered track FX; item FX and
             // the track fader/pan still operate on this editable audio item.
@@ -334,22 +358,36 @@ final class OfflineAudioExport {
             let delay = begin-start + Double(preroll)/format.sampleRate
             // Player sample time is upstream of TimePitch: its waiting frames
             // are consumed at the item's rate along with the audio frames.
-            starts.append((player,AVAudioTime(sampleTime: AVAudioFramePosition((delay*sourceFormat.sampleRate*clip.audioRate).rounded()),atRate: sourceFormat.sampleRate)))
+            starts.append((player,AVAudioTime(sampleTime: AVAudioFramePosition((delay*sourceFormat.sampleRate*clip.audioRate).rounded()),atRate: sourceFormat.sampleRate),clip.audioRate))
             voices.append(voice)
         }
-        func addMIDI(_ clip: AudioClip, track: Track, bus: Bus, start: Double) throws {
-            guard let midiInstruments, let fx = track.fx, let effects = bus.effects else { return }
-            let notes = song.midiPlaybackNotes(in: clip).map {
+        func addMIDI(_ clips: [AudioClip], track: Track, bus: Bus, start: Double) throws {
+            guard !clips.isEmpty, let fx = track.fx, let effects = bus.effects else { return }
+            let instruments = midiInstrumentsByTrack[track.id] ?? midiInstruments ?? [:]
+            // One sequence per track preserves all clips for VST3, and one
+            // sampler per slot keeps overlapping notes on the same instrument.
+            var playbackNotes: [MIDIPlaybackNote] = clips.flatMap { song.midiPlaybackNotes(in: $0) }
+            playbackNotes.sort {
+                if $0.start != $1.start { return $0.start < $1.start }
+                if $0.channel != $1.channel { return $0.channel < $1.channel }
+                return $0.pitch < $1.pitch
+            }
+            let notes: [[String: Double]] = playbackNotes.map {
                 ["start": $0.start, "end": $0.end, "pitch": Double($0.pitch), "velocity": Double($0.velocity), "channel": Double($0.channel)]
             }
             let position = start - Double(preroll) / format.sampleRate
             #if os(macOS)
             effects.setMIDISequence(notes)
             effects.setMIDISequenceClock(head: 0, position: position, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+            for node in effects.externalNodes.values {
+                sourceClocks.append((node, { delay in
+                    JarasVST3.sequenceClock(node, head: 0, position: position - delay, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+                }))
+            }
             #endif
             for key in fx.instrumentKeys where fx.isEnabled(key) {
                 if cancellation.cancelled { throw CancellationError() }
-                guard let source = midiInstruments[key], let destination = effects.instrumentInput(for: key) else {
+                guard let source = instruments[key], let destination = effects.instrumentInput(for: key) else {
                     throw ProjectError.invalid(JarasLocalization.string("Download the instrument before converting this MIDI item."))
                 }
                 let sampler = try JarasSoundFont(url: source.url, sampleRate: format.sampleRate)
@@ -365,18 +403,48 @@ final class OfflineAudioExport {
                 engine.connect(sampler.node, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: format)
                 sampler.setSequenceNotes(notes)
                 sampler.sequenceHead(0, position: position, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+                sourceClocks.append((sampler.node, { delay in
+                    sampler.sequenceHead(0, position: position - delay, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+                }))
                 midiSamplers.append(sampler)
             }
         }
+        func addClick(track: Track, clips: [AudioClip], bus: Bus, start: Double, end: Double) throws {
+            var source = track; source.clips = clips
+            let sections = ClickTrackProgram.sections(song: song, track: source).compactMap { section -> [String: Double]? in
+                let first = max(start, section.start), last = min(end, section.end)
+                guard first < last else { return nil }
+                return ["start": first, "end": last, "origin": section.origin, "bpm": section.bpm,
+                    "beats": Double(section.beats), "unit": Double(section.unit)]
+            }
+            guard !sections.isEmpty else { return }
+            let url = track.clickSound.map { mediaDirectory.appendingPathComponent($0.path) }
+            // Match live playback: missing custom media stays silent.
+            if let url, !FileManager.default.fileExists(atPath: url.path) { return }
+            let sound = try ClickAudioSample.load(sampleRate: format.sampleRate, url: url)
+            let generator = JarasMetronomeGenerator(format: format)
+            generator.setClickSections(sections, sound: sound)
+            generator.configurePosition(start - Double(preroll) / format.sampleRate, hostTime: mach_absolute_time(),
+                running: true, loopStart: 0, loopEnd: 0, sampleTime: 0)
+            engine.attach(generator.node)
+            engine.connect(generator.node, to: bus.mix, fromBus: 0, toBus: bus.mix.nextAvailableInputBus, format: format)
+            sourceClocks.append((generator.node, { delay in
+                generator.configurePosition(start - Double(preroll) / format.sampleRate - delay, hostTime: mach_absolute_time(),
+                    running: true, loopStart: 0, loopEnd: 0, sampleTime: 0)
+            }))
+            clickGenerators.append(generator)
+        }
         let stems = writers.first?.job.clip != nil
+        // Legacy item freeze/glue keep track polarity live. The hardware mix
+        // explicitly prints the audible track polarity into its final Master.
         if stems {
             for (index,writer) in writers.enumerated() {
                 guard let track = song.tracks.first(where: { $0.id == writer.job.track }), let clip = track.clips.first(where: { $0.id == writer.job.clip }) else { throw AudioExportFailure.incomplete }
                 if let bus = buses[clip.id] { capture(bus.output,index: index) }
                 else {
-                    let bus = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track))
+                    let bus = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track),phaseInverted: includeHardwareOutputs && track.phaseInverted == true)
                     buses[clip.id] = bus; capture(bus.output,index: index)
-                    if clip.midi != nil { try addMIDI(clip,track: track,bus: bus,start: writer.job.start) }
+                    if clip.midi != nil { try addMIDI([clip],track: track,bus: bus,start: writer.job.start) }
                     else { for fragment in song.tempoAudioSegments(clip) {
                         try addClip(fragment,track: track,bus: bus,start: writer.job.start,end: writer.job.end,pitchStart: clip.startTime)
                     } }
@@ -384,24 +452,26 @@ final class OfflineAudioExport {
             }
         } else {
             let root = hasMaster ? try makeBus(fx: project.masterFX,volume: project.masterVolume ?? 1,pan: 0,muted: project.masterMute ?? false, mono: project.masterMono ?? false) : nil
-            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
-                buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track))
+            let tracks = song.tracks.filter { ($0.kind == .standard || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia)) && needed.contains($0.id) }
+            for track in tracks {
+                buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: song.isSilenced(track),phaseInverted: includeHardwareOutputs && track.phaseInverted == true)
             }
-            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
-                for clip in track.clips where writers[0].job.includes(clip) && (track.kind == .standard || clip.isProjectionMedia) {
-                    if clip.midi != nil {
-                        try addMIDI(clip, track: track, bus: buses[track.id]!, start: writers[0].job.start)
-                    } else {
-                        for fragment in song.tempoAudioSegments(clip) {
-                            try addClip(fragment,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end,pitchStart: clip.startTime)
-                        }
+            for track in tracks {
+                // Drawer songs share their parent's generated click item;
+                // the onset cutoff applies to stems, not that musical program.
+                let clips = track.clips.filter { writers[0].job.includes($0) || (track.kind == .click && $0.audioFile == nil) }
+                try addMIDI(clips.filter { $0.midi != nil }, track: track, bus: buses[track.id]!, start: writers[0].job.start)
+                if track.kind == .click { try addClick(track: track, clips: clips, bus: buses[track.id]!, start: writers[0].job.start, end: writers[0].job.end) }
+                for clip in clips where clip.midi == nil && (track.kind == .standard || clip.isProjectionMedia || (track.kind == .click && clip.audioFile != nil)) {
+                    for fragment in song.tempoAudioSegments(clip) {
+                        try addClip(fragment,track: track,bus: buses[track.id]!,start: writers[0].job.start,end: writers[0].job.end,pitchStart: clip.startTime)
                     }
                 }
             }
-            for track in song.tracks where (track.kind == .standard || track.clips.contains(where: \.isProjectionMedia)) && needed.contains(track.id) {
+            for track in tracks {
                 let bus = buses[track.id]!
                 let outputs = Set(track.outputPatches)
-                if let root, outputs.contains(.master) { link(bus.output,root.mix,root.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === root.mix }.count)) }
+                if let root, feedsMaster(track) { link(bus.output,root.mix,root.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === root.mix }.count)) }
                 if outputs.contains(.masterGroup), let parent = track.parentTrackID, let target = buses[parent] {
                     link(bus.output,target.mix,target.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === target.mix }.count))
                 }
@@ -419,30 +489,84 @@ final class OfflineAudioExport {
         for (id,destinations) in links { engine.connect(nodes[id]!,to: destinations,fromBus: 0,format: format) }
         let buffer = AVAudioPCMBuffer(pcmFormat: packed,frameCapacity: 4096)!
         engine.prepare(); try engine.start()
-        for (player,time) in starts { player.play(at: time) }
-        var warm = preroll, retry = 0
-        while warm > 0 {
-            if cancellation.cancelled { throw CancellationError() }
-            let status = try engine.renderOffline(AVAudioFrameCount(warm),to: buffer)
-            if status == .success { warm -= Int(buffer.frameLength); retry = 0 }
-            else { retry += 1; if retry > 100 { throw AudioExportFailure.render } }
+        #if os(macOS)
+        // This graph is owned by the export worker. A loading or failed model
+        // must finish/fail here, before any output is published as processed.
+        for effects in effectChains { try effects.waitForStemSeparator(cancellation: { cancellation.cancelled }) }
+        let compensatesLatency = effectChains.contains { $0.stemSeparatorLatency > 0 }
+        #else
+        let compensatesLatency = false
+        #endif
+        func checkProcessors() throws {
+            #if os(macOS)
+            for effects in effectChains {
+                if let status = effects.stemSeparatorStatus, status["state"] as? String == "fault" {
+                    throw ProjectError.invalid(status["error"] as? String ?? "CatStem processing failed")
+                }
+            }
+            #endif
+        }
+        let playerLatencies = starts.map { compensatesLatency ? max(0, $0.0.outputPresentationLatency) : 0 }
+        let clockLatencies = sourceClocks.map { compensatesLatency ? max(0, $0.0.latency + $0.0.outputPresentationLatency) : 0 }
+        let maximumLatency = (playerLatencies + clockLatencies).max() ?? 0
+        var captureStarts = [Int64](repeating: Int64(preroll), count: laneKeys.count)
+        if compensatesLatency {
+            for (lane, node) in capturedNodes {
+                // A track captured directly may also feed a delayed Master.
+                // Its local beginning precedes the Master beginning; trim each
+                // captured lane at its own origin instead of losing that PCM.
+                captureStarts[lane] += Int64((max(0, maximumLatency - node.outputPresentationLatency) * format.sampleRate).rounded())
+            }
+            for (index, binding) in sourceClocks.enumerated() { binding.1(max(0, maximumLatency - clockLatencies[index])) }
+            for (effects, clip, begin, origin, sourceRate) in itemFades {
+                let delay = max(0, maximumLatency - effects.equalizer.outputPresentationLatency)
+                effects.configureItemFade(clip, position: begin,
+                    sampleTime: (begin - origin + Double(preroll) / format.sampleRate + delay) * sourceRate)
+            }
+        }
+        for (index, entry) in starts.enumerated() {
+            let (player, time, rate) = entry
+            let additional = max(0, maximumLatency - playerLatencies[index])
+            let compensated = AVAudioTime(sampleTime: time.sampleTime + AVAudioFramePosition((additional * time.sampleRate * rate).rounded()), atRate: time.sampleRate)
+            player.play(at: compensatesLatency ? compensated : time)
         }
         let loopVoices = voices.filter { $0.clip.loopLength != nil }
-        let maxFrames = writers.map(\.frames).max() ?? 0
-        var rendered: Int64 = 0, lastUpdate = 0.0
-        while rendered < maxFrames {
+        func scheduleLoops(at frame: Int64) {
+            let time = max(0, Double(frame - Int64(preroll)) / format.sampleRate)
+            for voice in loopVoices { voice.schedule(until: voice.origin + time + 0.25) }
+        }
+        let warmupFrames = captureStarts.min() ?? Int64(preroll)
+        var warm = warmupFrames, retry = 0
+        while warm > 0 {
+            if cancellation.cancelled { throw CancellationError() }
+            if compensatesLatency { scheduleLoops(at: warmupFrames - warm) }
+            let status = try engine.renderOffline(AVAudioFrameCount(min(4096, warm)),to: buffer)
+            try checkProcessors()
+            if status == .success {
+                guard buffer.frameLength > 0 else { throw AudioExportFailure.render }
+                warm -= Int64(buffer.frameLength); retry = 0
+            }
+            else { retry += 1; if retry > 100 { throw AudioExportFailure.render } }
+        }
+        let renderEnd = writers.enumerated().map { captureStarts[writerLanes[$0.offset]] + $0.element.frames }.max() ?? warmupFrames
+        var rendered = warmupFrames, lastUpdate = 0.0
+        while rendered < renderEnd {
             try AudioLicenseAccess.shared.requireAccess()
             if cancellation.cancelled { throw CancellationError() }
-            let time = Double(rendered)/format.sampleRate
-            for voice in loopVoices { voice.schedule(until: voice.origin + time + 0.25) }
-            let status = try engine.renderOffline(AVAudioFrameCount(min(4096,maxFrames-rendered)),to: buffer)
+            scheduleLoops(at: rendered)
+            let status = try engine.renderOffline(AVAudioFrameCount(min(4096,renderEnd-rendered)),to: buffer)
+            try checkProcessors()
             guard status == .success else { retry += 1; if retry > 100 { throw AudioExportFailure.render }; continue }
             guard buffer.frameLength > 0 else { throw AudioExportFailure.render }
             retry = 0
-            for (index,writer) in writers.enumerated() { try writer.write(buffer,channels: writerLanes[index]*2) }
+            for (index,writer) in writers.enumerated() {
+                let lane = writerLanes[index]
+                let skip = Int(max(0, captureStarts[lane] - rendered))
+                if skip < Int(buffer.frameLength) { try writer.write(buffer,channels: lane*2,startingAt: skip) }
+            }
             rendered += Int64(buffer.frameLength)
             let now = ProcessInfo.processInfo.systemUptime
-            if now-lastUpdate >= 0.08 || rendered == maxFrames {
+            if now-lastUpdate >= 0.08 || rendered == renderEnd {
                 lastUpdate = now
                 let done = writers.filter { $0.written == $0.frames }.count
                 let current = writers.first { $0.written < $0.frames } ?? writers.last!

@@ -1,4 +1,4 @@
-CatStemSeparation 5 — CatLive internal offline stem mixer
+CatStemSeparation 5 — CatLive stem separation workers
 
 The separation worker uses Demucs 4.0.1 and Meta's pretrained HTDemucs 6-source
 model, under the MIT license (see Demucs-LICENSE.txt).
@@ -17,3 +17,16 @@ CPython and dependency licenses are retained in the bundled runtime, including
 site-packages/*.dist-info and the individual packages' license directories.
 Runtime dependencies and exact versions: scripts/catstem-requirements.lock.
 Audio is processed locally. No audio or project data is uploaded.
+
+The optional continuous PCM worker (stream.py) uses the same six-source model
+through demucs-mlx 1.6.1 by ssmall256, under MIT (Demucs-MLX-LICENSE.txt).
+https://github.com/ssmall256/demucs-mlx
+Audited upstream commit: 9950c7daaa6ee3cf9622005e8be350c6c0163142.
+Its MLX 0.32.3 backend requires macOS 14+ and Apple Silicon. The application's
+macOS 12 minimum and the existing offline worker are independent of this
+optional backend; no unmeasured continuous fallback is claimed.
+The streaming worker loads local safetensors without PyTorch, model downloads
+or writes into signed app resources. Model preparation happens at build time.
+The sliding-window readout follows the approach described by Sechet et al.:
+https://arxiv.org/abs/2609.35397
+Prototype protocol, latency limits and validation: scripts/catstem/PROTOCOL.txt.

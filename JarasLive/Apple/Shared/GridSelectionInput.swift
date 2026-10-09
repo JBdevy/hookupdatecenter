@@ -30,6 +30,9 @@ struct GridSelectionItem {
     static let headerScale: CGFloat = 1.3
     static let headerHeight: CGFloat = 17
     static let headerFontSize: CGFloat = (9 * headerScale).rounded()
+    static let headerReadoutFontSize: CGFloat = 9
+    private static let panReadoutWidth: CGFloat = 40
+    private static let readoutGap: CGFloat = 0.5
     static let bodyInset: CGFloat = headerHeight + 1
     let id: UUID
     var rect: CGRect
@@ -59,7 +62,9 @@ struct GridSelectionItem {
     private var controlStart: CGFloat { headerRect.minX + 2 * Self.headerScale }
     var muteRect: CGRect? { editable && headerRect.width >= 21 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 17 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var fxRect: CGRect? { editable && !midiEditable && headerRect.width >= 41 * Self.headerScale ? CGRect(x: controlStart + 18 * Self.headerScale, y: rect.minY, width: 20 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    var gainKnobRect: CGRect? { editable && headerRect.width >= (midiEditable ? 57 : 134) * Self.headerScale ? CGRect(x: controlStart + (midiEditable ? 39 : 115) * Self.headerScale, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
+    private var gainKnobOffset: CGFloat { midiEditable ? 39 * Self.headerScale : 70 * Self.headerScale + Self.panReadoutWidth + 2 * Self.readoutGap }
+    var gainKnobMinimumWidth: CGFloat { gainKnobOffset + (midiEditable ? 18 : 19) * Self.headerScale }
+    var gainKnobRect: CGRect? { editable && headerRect.width >= gainKnobMinimumWidth ? CGRect(x: controlStart + gainKnobOffset, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var phaseRect: CGRect? { editable && !midiEditable && headerRect.width >= 57 * Self.headerScale ? CGRect(x: controlStart + 39 * Self.headerScale, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var panKnobRect: CGRect? { editable && !midiEditable && headerRect.width >= 74 * Self.headerScale ? CGRect(x: controlStart + 55 * Self.headerScale, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var panLabel: String {
@@ -68,9 +73,9 @@ struct GridSelectionItem {
         return percent == 0 ? "Center" : "\(value < 0 ? "L" : "R")-\(percent)%"
     }
     var panLabelRect: CGRect? {
-        guard let knob = panKnobRect, headerRect.maxX - knob.maxX >= 45 * Self.headerScale else { return nil }
+        guard let knob = panKnobRect, headerRect.maxX - knob.maxX >= Self.panReadoutWidth + 2 * Self.headerScale else { return nil }
         // Reserve the same width for every value so adjusting pan never moves volume.
-        return CGRect(x: knob.maxX + Self.headerScale, y: rect.minY, width: 43 * Self.headerScale, height: min(Self.headerHeight, rect.height))
+        return CGRect(x: knob.maxX + Self.readoutGap, y: rect.minY, width: Self.panReadoutWidth, height: min(Self.headerHeight, rect.height))
     }
     var panPosition: Double { (min(1, max(-1, pan)) + 1) / 2 }
     func draggingPan(by delta: CGFloat) -> Double { min(1, max(-1, pan - Double(delta) / 60)) }
@@ -78,9 +83,9 @@ struct GridSelectionItem {
     var gainLabelRect: CGRect? { gainLabelRect(text: nil) }
     func gainLabelRect(text: String?) -> CGRect? {
         guard let knob = gainKnobRect else { return nil }
-        let width = ceil(CGFloat((text ?? gainLabel).count) * 5.5 * Self.headerScale) + 8 * Self.headerScale
+        let width = max(32, ceil(CGFloat((text ?? gainLabel).count) * 4.75) + 6)
         guard headerRect.maxX - knob.maxX >= width + 3 * Self.headerScale else { return nil }
-        return CGRect(x: knob.maxX + Self.headerScale, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
+        return CGRect(x: knob.maxX + Self.readoutGap, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
     }
     var editRect: CGRect? { textEditable && headerRect.width >= 33 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 30 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var titleInset: CGFloat { headerTitleInset(gainLabel: nil) }
@@ -397,14 +402,15 @@ enum GridSelectionHeaderText {
         }
     }
     private static let font = NSFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
-    private static func attributes(centered: Bool? = nil, color: NSColor = .white) -> [NSAttributedString.Key: Any] {
+    private static let readoutFont = NSFont.systemFont(ofSize: GridSelectionItem.headerReadoutFontSize, weight: .semibold)
+    private static func attributes(centered: Bool? = nil, color: NSColor = .white, font: NSFont? = nil) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
         if let centered { paragraph.alignment = centered ? .center : .left }
-        return [.font: font, .foregroundColor: color, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
+        return [.font: font ?? Self.font, .foregroundColor: color, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
     }
     private static let titleAttributes = attributes()
-    private static let gainAttributes = attributes(centered: false)
+    private static let gainAttributes = attributes(centered: false, font: readoutFont)
     private static let centeredAttributes = attributes(centered: true)
     private static let activeAttributes = attributes(centered: true, color: .systemGreen)
     private static let titles: NSCache<NSString, Title> = {
@@ -514,6 +520,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var normalize: (Set<UUID>) -> Void = { _ in }
     var split: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
+    var selectRow: (CGFloat) -> Void = { _ in }
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
         var input = self
@@ -537,7 +544,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -661,6 +668,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var pendingSeek: CGPoint?
     private var hasDragged = false
     private var movingAllowed = false
+    var selectRow: ((CGFloat) -> Void)?
     var seek: ((CGFloat, Bool) -> Void)?
     private var anchor: CGPoint?
     private var selectionRect: CGRect?
@@ -787,7 +795,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             var source = source
             if liveHeaderGain?.id == source.id { source.gain = liveHeaderGain!.value }
             let visibleWidth = max(0, min(source.rect.maxX, origin.x + viewport.width) - max(source.rect.minX, origin.x))
-            let gainLabel = source.editable && visibleWidth >= (source.midiEditable ? 57 : 134) * GridSelectionItem.headerScale ? source.gainLabel : nil
+            let gainLabel = source.editable && visibleWidth >= source.gainKnobMinimumWidth ? source.gainLabel : nil
             var item = positionedHeader(source, viewport: viewport, origin: origin, gainLabel: gainLabel)
             let dx = viewport.minX - origin.x, dy = viewport.minY - origin.y
             item.rect = item.rect.offsetBy(dx: dx, dy: dy)
@@ -983,6 +991,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
            !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window), window?.attachedSheet == nil {
             let released = convert(event.locationInWindow, from: nil), viewport = coordinates.viewport
             if bounds.contains(released), visibleRect.contains(released), viewport.contains(released), released.y >= viewport.minY + headerHeight {
+                selectRow?(click.y)
                 seek?(click.x, event.modifierFlags.contains(.shift))
             }
         }

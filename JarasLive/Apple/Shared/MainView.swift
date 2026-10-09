@@ -19,6 +19,7 @@ private struct WorkspaceProjectIdentity: Hashable {
     let document: URL?
     let missingAudioPaths: Set<String>
     let remotePresentation: Bool
+    let sectionsListOpen: Bool
 }
 struct MainView: View {
     @ObservedObject private var recording = TrackRecording.shared
@@ -51,9 +52,9 @@ struct MainView: View {
     @State private var navigationOpen = false
     @State private var footerMixerOpen = false
     @State private var keyboardOpen = false
-    @State private var sectionsOpen = false
-    @AppStorage("catlive.sections.displayMode") private var sectionDisplayMode = "horizontal"
-    private var horizontalSectionsVisible: Bool { sectionsOpen && sectionDisplayMode != "vertical" && setlistWidth > 0 }
+    private enum SectionsPresentation { case list, footer }
+    @State private var sectionsPresentation: SectionsPresentation?
+    private var horizontalSectionsVisible: Bool { sectionsPresentation == .footer && setlistWidth > 0 }
     @State private var keyboardSettings = false
     @State private var workspaceHeight: CGFloat = 900
     @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
@@ -93,6 +94,10 @@ struct MainView: View {
     private func toggleSetlist() {
         Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist)
     }
+    private func toggleSections(_ presentation: SectionsPresentation) {
+        sectionsPresentation = sectionsPresentation == presentation ? nil : presentation
+        if sectionsPresentation != nil { footerMixerOpen = false }
+    }
     private static func togglePanel(width: Binding<Double>, restore: Binding<Double>, minimum: CGFloat) {
         if width.wrappedValue > 0 { restore.wrappedValue = width.wrappedValue; width.wrappedValue = 0 }
         else { width.wrappedValue = max(Double(minimum), restore.wrappedValue) }
@@ -106,11 +111,12 @@ struct MainView: View {
                 TransportView(show: show, documents: documents, remotePresentation: remotePresentation, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } }, openSettings: { navigationOpen = false; panel = .settings }, mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0, toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
                     #if os(macOS)
                     GeometryReader { geometry in
-                        SectionListDock(visible: sectionsOpen && sectionDisplayMode == "vertical" && setlistWidth > 0, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
+                        SectionListDock(visible: sectionsPresentation == .list && setlistWidth > 0, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
                             minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
                             contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
-                                missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation),
+                                missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation,
+                                sectionsListOpen: sectionsPresentation == .list),
                             onToggle: toggleSetlist, onEnd: { finalWidth in
                                 if finalWidth > 0 { setlistRestoreWidth = finalWidth }
                                 setlistWidth = finalWidth
@@ -118,16 +124,23 @@ struct MainView: View {
                             TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
                                 .foregroundStyle(JarasTheme.text)
                         } trailing: {
-                            SongListView(show: show, sidebarScrollController: setlistScrollController)
+                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), sidebarScrollController: setlistScrollController,
+                                partsOpen: sectionsPresentation == .list, toggleParts: { toggleSections(.list) })
                                 .foregroundStyle(JarasTheme.text)
                         }
                         } sections: { SmoothSeekPanel(show: show, verticalList: true) }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #else
-                    HStack(spacing: 1) {
-                        TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
-                        SongListView(show: show).frame(width: 220)
+                    SectionListDock(visible: sectionsPresentation == .list, storageKey: "catlive.local.sections.width",
+                                    minimumPrimaryWidth: 480, defaultFraction: 0.22) {
+                        HStack(spacing: 1) {
+                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
+                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: sectionsPresentation == .list,
+                                toggleParts: { toggleSections(.list) }).frame(width: 220)
+                        }
+                    } sections: {
+                        SmoothSeekPanel(show: show, verticalList: true)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #endif
                 // Preserve the mixer's established expansion range while leaving
@@ -206,11 +219,17 @@ struct MainView: View {
                         .onChange(of: geometry.size.height) { workspaceHeight = $0 }
                 }
             }
-            .overlay(alignment: .top) {
+            .overlay(alignment: .center) {
                 if documents.importingAudio {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(LocalizedStringKey(documents.status)).font(.caption).lineLimit(1) }
-                        .padding(10).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 6)).padding(.top, 88)
-                        .allowsHitTesting(false)
+                    VStack(spacing: 14) {
+                        Text(LocalizedStringKey(documents.status))
+                            .font(.callout).multilineTextAlignment(.center).lineLimit(3)
+                        ProgressView(value: documents.audioImportProgress).progressViewStyle(.linear).tint(JarasTheme.green)
+                    }
+                    .padding(24).frame(width: 360)
+                    .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10))
+                    .shadow(color: .black.opacity(0.35), radius: 16)
+                    .allowsHitTesting(false)
                 }
             }
             .sheet(item: $documents.pendingAudioDrop) { drop in
@@ -380,12 +399,11 @@ struct MainView: View {
             .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
             .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
             MacProjectionRail(show: show)
-            DesktopMultiLoopBypassButton(show: show)
             Spacer(minLength: 0)
             if desktopExtras {
             Button {
                 footerMixerOpen.toggle()
-                if footerMixerOpen { sectionsOpen = false }
+                if footerMixerOpen { sectionsPresentation = nil }
             } label: {
                 Image(systemName: "slider.vertical.3")
                     .font(.system(size: 16, weight: .semibold))
@@ -407,13 +425,12 @@ struct MainView: View {
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
             Button {
-                sectionsOpen.toggle()
-                if sectionsOpen { footerMixerOpen = false }
+                toggleSections(.footer)
             } label: {
-                Image(systemName: "line.3.horizontal.decrease")
+                SectionButtonsIcon()
                     .font(.system(size: 16, weight: .semibold)).frame(width: 30, height: 32)
                     .contentShape(Rectangle())
-            }.foregroundStyle(sectionsOpen ? JarasTheme.green : JarasTheme.text)
+            }.foregroundStyle(sectionsPresentation == .footer ? JarasTheme.green : JarasTheme.text)
                 .accessibilityLabel("Smooth Seek").jarasHelp("Smooth Seek")
             }
         }

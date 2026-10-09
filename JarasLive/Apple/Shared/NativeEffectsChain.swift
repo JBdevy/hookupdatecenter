@@ -86,6 +86,69 @@ final class NativeEffectsChain {
     private var delayInputProbe: JarasAudioAnalysisProbe?
     private var delayOutputProbe: JarasAudioAnalysisProbe?
     #if os(macOS)
+    private var stemSeparatorNode: AVAudioUnitEffect?
+    private var stemSeparatorStarted = false
+    private var stemSeparatorError: String?
+    var stemSeparatorStatus: [String: Any]? {
+        if let stemSeparatorError { return ["state": "fault", "error": stemSeparatorError] }
+        return stemSeparatorNode.map { JarasStemSeparator.status($0) }
+    }
+    private func configureStemSeparator(_ next: NativeFXSettings) {
+        let inserted = next.inserted.contains(NativeFXSettings.stemSeparator)
+        // Preserve the original audio of old offline-only projects. Their
+        // editor becomes realtime when the user explicitly enables it.
+        guard inserted, next.stemMix != nil else { return }
+        if stemSeparatorNode == nil {
+            let node = JarasStemSeparator.makeNode()
+            stemSeparatorNode = node; engine?.attach(node)
+            JarasStemSeparator.setOfflineRendering(node, enabled: engine?.isInManualRenderingMode == true)
+        }
+        guard let node = stemSeparatorNode else { return }
+        if next.isEnabled(NativeFXSettings.stemSeparator), settings?.isEnabled(NativeFXSettings.stemSeparator) != true,
+           JarasStemSeparator.status(node)["state"] as? String == "fault" {
+            stemSeparatorStarted = false
+        }
+        if next.isEnabled(NativeFXSettings.stemSeparator), !stemSeparatorStarted {
+            do {
+                let paths = try CatStemRealtimeRuntime.paths()
+                try JarasStemSeparator.start(node, executable: paths.executable, worker: paths.worker, modelCache: paths.models)
+                stemSeparatorStarted = true; stemSeparatorError = nil
+            } catch { stemSeparatorError = error.localizedDescription }
+        }
+        let sources = next.stemParameters.sources
+        var muted: UInt = 0, soloed: UInt = 0
+        for (index, source) in sources.enumerated() {
+            if source.mute { muted |= 1 << index }
+            if source.solo { soloed |= 1 << index }
+        }
+        JarasStemSeparator.configure(node, enabled: next.isEnabled(NativeFXSettings.stemSeparator),
+            gains: sources.map { NSNumber(value: $0.gain) }, muteMask: muted, soloMask: soloed)
+    }
+    /// Only offline export may wait for model warmup. UI/audio control paths
+    /// start asynchronously and expose progress through stemSeparatorStatus.
+    func waitForStemSeparator(cancellation: () -> Bool) throws {
+        guard let node = stemSeparatorNode else { return }
+        if let stemSeparatorError { throw ProjectError.invalid(stemSeparatorError) }
+        guard stemSeparatorStarted else { return }
+        let limit = ProcessInfo.processInfo.systemUptime + 60
+        while ProcessInfo.processInfo.systemUptime < limit {
+            if cancellation() { throw CancellationError() }
+            let report = JarasStemSeparator.status(node)
+            let state = report["state"] as? String ?? "loading"
+            if state == "fault" { throw ProjectError.invalid(report["error"] as? String ?? "CatStem processing failed") }
+            if ["priming", "running", "bypassed"].contains(state) { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        throw ProjectError.invalid("CatStem demorou demais para iniciar.")
+    }
+    var stemSeparatorLatency: Double { stemSeparatorNode?.auAudioUnit.latency ?? 0 }
+    /// Export owns this chain on its worker thread and must release its model
+    /// lease before starting the next render batch.
+    func stopStemSeparatorAndWait() throws {
+        guard let node = stemSeparatorNode else { return }
+        try JarasStemSeparator.stopAndWait(node, timeout: 5)
+        stemSeparatorStarted = false
+    }
     private(set) var externalNodes: [String: AVAudioUnitEffect] = [:]
     var externalError: Error?
     private var instrumentMIDIInput = false
@@ -134,7 +197,7 @@ final class NativeEffectsChain {
     #endif
     private var nodes: [AVAudioUnit] {
         #if os(macOS)
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + Array(externalNodes.values)
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? []) + Array(externalNodes.values)
         #else
         return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
         #endif
@@ -196,6 +259,10 @@ final class NativeEffectsChain {
             case "Pitch": return pitch
             case "Delay": return delay
             case "Reverb": return reverb
+            #if os(macOS)
+            case NativeFXSettings.stemSeparator:
+                return next.inserted.contains(NativeFXSettings.stemSeparator) && next.stemMix != nil ? stemSeparatorNode : nil
+            #endif
             default:
                 #if os(macOS)
                 return next.externalPlugins?.first(where: { $0.effectKey == key }).flatMap { externalNodes[$0.id] }
@@ -228,6 +295,9 @@ final class NativeEffectsChain {
         meterTime = 0; meterCache.removeAll(keepingCapacity: true)
     }
     func detach(from engine: AVAudioEngine) {
+        #if os(macOS)
+        if let node = stemSeparatorNode { JarasStemSeparator.stop(node) }
+        #endif
         delayInputProbe?.detach(); delayOutputProbe?.detach()
         for probes in instanceDelayProbes.values { probes.0.detach(); probes.1.detach() }; instanceDelayProbes.removeAll()
         for node in instanceNodes.values { engine.detach(node) }; instanceNodes.removeAll()
@@ -239,6 +309,7 @@ final class NativeEffectsChain {
         instrumentMix = nil
         #if os(macOS)
         externalNodes.removeAll()
+        stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
         #endif
     }
     func apply(_ next: NativeFXSettings) {
@@ -250,6 +321,7 @@ final class NativeEffectsChain {
         guard next != settings || rate != sampleRate else { return }
         #endif
         #if os(macOS)
+        configureStemSeparator(next)
         do {
             for plugin in next.externalPlugins ?? [] where next.inserted.contains(plugin.effectKey) {
                 if plugin != settings?.externalPlugins?.first(where: { $0.id == plugin.id }) || rate != sampleRate {
@@ -277,6 +349,12 @@ final class NativeEffectsChain {
         }
         configureInstances(next, rate: rate)
         connect(next)
+        #if os(macOS)
+        if !next.inserted.contains(NativeFXSettings.stemSeparator), let node = stemSeparatorNode {
+            JarasStemSeparator.stop(node); engine?.detach(node)
+            stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
+        }
+        #endif
         let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
         for key in Set(instanceNodes.keys).subtracting(nativeRetained) {
             if let probes = instanceDelayProbes.removeValue(forKey: key) { probes.0.detach(); probes.1.detach() }

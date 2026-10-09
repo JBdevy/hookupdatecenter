@@ -84,6 +84,60 @@ int main() {
         const auto stopped=render(signal,rate,0.1);
         for(size_t i=0;i<stopped.size();++i) assert(stopped[i]==0);
     }
+    // Off-beat song boundaries must trigger the destination downbeat even
+    // when the UI never submits the post-jump position during this render.
+    for(double rate : {44100.,48000.}) for(bool bounded : {false,true}) for(bool cancel : {false,true}) {
+        MetronomeSignal signal(rate); signal.host=1000000; signal.position=0.7;
+        signal.referenceSample=0; signal.running=true;
+        auto program=std::make_unique<MetronomeProgram>(); program->bounded=bounded; program->mode=1;
+        program->sections={{0,120,4,4,4,0},{4,120,4,4,6,4}};
+        program->a.assign(size_t(rate*0.01),0.5f);
+        signal.publish(std::move(program));
+        signal.scheduleJump(4,1000000+uint64_t(1.13*signal.ticksPerSecond),1.13*rate);
+        // An early UI promotion may attempt to queue the following edge before
+        // this one reaches the speakers. The first edge must remain scheduled.
+        signal.scheduleJump(8,1000000+uint64_t(1.63*signal.ticksPerSecond),1.63*rate);
+        if(cancel) signal.cancelJump();
+        const auto samples=render(signal,rate,1.9); const auto beats=onsets(samples);
+        assert(beats.size()==4);
+        const double expected[]={0.3,0.8,cancel?1.3:1.13,cancel?1.8:1.63};
+        for(size_t i=0;i<beats.size();++i) assert(std::abs(double(beats[i])/rate-expected[i])<2/rate);
+    }
+    // A live preset change must not restart the beat or rewrite a sounding tail.
+    for(double rate : {44100.,48000.}) for(double switchTime : {0.01,0.2,0.5,0.501}) {
+        MetronomeSignal signal(rate); signal.host=1000000; signal.running=true; signal.gain=1;
+        auto preset=[&](float level) {
+            auto p=std::make_unique<MetronomeProgram>(); p->sections={{0,120,4,4}}; p->mode=1;
+            p->a.assign(size_t(rate*0.04),level); return p;
+        };
+        signal.publish(preset(0.2f));
+        std::vector<float> samples(size_t(rate*1.1));
+        const auto change=size_t(std::round(rate*switchTime));
+        bool changed=false;
+        for(size_t offset=0;offset<samples.size();) {
+            if(offset==change) { signal.publish(preset(-0.3f)); changed=true; }
+            auto count=std::min(size_t(128),samples.size()-offset);
+            if(!changed) count=std::min(count,change-offset);
+            AudioTimeStamp time{}; time.mFlags=kAudioTimeStampSampleTimeValid|kAudioTimeStampHostTimeValid;
+            time.mSampleTime=offset; time.mHostTime=1000000+uint64_t(offset/rate*signal.ticksPerSecond);
+            AudioBufferList buffers{}; buffers.mNumberBuffers=1;
+            buffers.mBuffers[0]={1,UInt32(count*sizeof(float)),samples.data()+offset};
+            signal.render(&time,unsigned(count),&buffers); offset+=count;
+            // Repeated publications while a tail still sounds exercise lifetime
+            // protection beyond the callback's single current-program hazard.
+            if(changed) signal.publish(preset(-0.3f));
+        }
+        const auto beats=onsets(samples); assert(beats.size()==3);
+        for(size_t i=0;i<beats.size();++i) {
+            const auto onset=size_t(rate*0.5*i);
+            assert(beats[i]==onset);
+            const float expected=onset<change ? 0.2f : -0.3f;
+            for(size_t j=onset;j<onset+size_t(rate*0.04);++j) assert(std::abs(samples[j]-expected)<0.00001f);
+        }
+        assert(signal.programs.size()==1); // finished tails are reclaimable
+    }
+    std::cout<<"METRONOME_PRESET_CONTINUITY_OK no extra beats, old tails preserved, reclamation 44100/48000\n";
+    std::cout<<"SCHEDULED_CLICK_JUMP_PCM_OK first beat, cancellation, metronome/click 44100/48000\n";
     std::cout<<"CLICK_TRACK_PCM_OK bounded items, gaps, meter, tempo, seek, loop, stop at 44100/48000\n";
     std::cout<<"METRONOME_PCM_OK 44100/48000 tempo changes, accents, A/B modes, loop, gain +6dB, mute, stop\n";
 }

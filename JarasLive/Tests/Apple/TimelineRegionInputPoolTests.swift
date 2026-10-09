@@ -17,7 +17,7 @@ private enum RegionPoolProbe {
     let viewport = CGRect(x: 0, y: 0, width: 700, height: 100)
     var edits: [UUID] = [], seeks: [UUID] = [], dragEvents: [(UUID, CGFloat, Bool)] = []
     func target(_ id: UUID = UUID(), at x: Double, duration: Double = 10, selected: Bool = false) -> NativeTimelineRegionTarget {
-        let input = RegionRightClick(edit: { edits.append(id) }, delete: { edits.append(id) }, seek: { seeks.append(id) },
+        let input = RegionRightClick(edit: { edits.append(id) }, delete: { edits.append(id) }, exportAudio: { edits.append(id) }, seek: { seeks.append(id) },
             drag: { delta, ended, _ in dragEvents.append((id, delta, ended)) })
         return NativeTimelineRegionTarget(id: id, start: x, end: x + duration, lane: 0, edgePadding: 0,
             selected: selected, pinned: false, input: input)
@@ -31,7 +31,7 @@ private enum RegionPoolProbe {
         for view in views {
             precondition(view.projectedInputBounds.isEmpty && !view.isHidden && view.wantsUpdateLayer)
             precondition(view.edit == nil && view.detectBPM == nil && view.unify == nil && view.disunify == nil &&
-                view.delete == nil && view.drag == nil && view.seek == nil && view.projectedInteractionEnded == nil,
+                view.delete == nil && view.exportAudio == nil && view.drag == nil && view.seek == nil && view.projectedInteractionEnded == nil,
                 "inactive slots must release all old project commands")
             view.updateTrackingAreas(); view.updateLayer()
             precondition(view.trackingAreas.isEmpty && view.layer?.contents == nil, "no per-slot tracking or bitmap backing")

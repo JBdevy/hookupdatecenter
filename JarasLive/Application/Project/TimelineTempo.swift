@@ -86,30 +86,25 @@ public enum TimelineTempo {
     public static func snap<Anchors: Sequence>(_ time: Double, bar: Double, beats: Int,
                                                pixelsPerSecond: Double, anchors: Anchors,
                                                additionalAnchors: Anchors? = nil,
-                                               cursor: Double? = nil, tolerancePixels: Double = 8, gridTolerancePixels: Double? = nil, divisions: Int? = nil, unit: Int = 4, enabled: Bool = true) -> Double where Anchors.Element == Double {
+                                               cursor: Double? = nil, divisions: Int? = nil, unit: Int = 4, enabled: Bool = true) -> Double where Anchors.Element == Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
-        let tolerance = max(0, tolerancePixels) / pixelsPerSecond
-        var nearest: Double?
-        var distance = tolerance
-        for anchor in anchors where anchor.isFinite && anchor >= 0 {
+        let step = gridStep(bar: bar, beats: beats, pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit)
+        var nearest: Double? = step > 0 ? snap(position, bar: bar, beats: beats,
+            pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit) : nil
+        var distance = nearest.map { abs($0 - position) } ?? .infinity
+        func consider(_ anchor: Double) {
+            guard anchor.isFinite, anchor >= 0 else { return }
             let delta = abs(anchor - position)
-            if delta <= distance { nearest = anchor; distance = delta }
-        }
-        if let additionalAnchors {
-            for anchor in additionalAnchors where anchor.isFinite && anchor >= 0 {
-                let delta = abs(anchor - position)
-                if delta < distance { nearest = anchor; distance = delta }
+            if delta < distance || (delta == distance && anchor < (nearest ?? .infinity)) {
+                nearest = anchor; distance = delta
             }
         }
-        if let cursor, cursor.isFinite, cursor >= 0, abs(cursor - position) < distance {
-            nearest = cursor
-        }
-        if let nearest { return nearest }
-        let grid = snap(position, bar: bar, beats: beats, pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit)
-        if let gridTolerancePixels, abs(grid - position) * pixelsPerSecond > max(0, gridTolerancePixels) { return position }
-        return grid
+        for anchor in anchors { consider(anchor) }
+        if let additionalAnchors { for anchor in additionalAnchors { consider(anchor) } }
+        if let cursor { consider(cursor) }
+        return nearest ?? position
     }
 }
 public struct TapTempo {
@@ -181,7 +176,7 @@ public extension Song {
     func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
         let target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond) }
+        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, excludingMarker: marker.id) }
         var intervals: [(Double, Double)] = []
         for part in parts.sorted(by: { $0.startTime < $1.startTime }) {
             if let last = intervals.last, part.startTime <= last.1 {
@@ -334,14 +329,37 @@ public extension Song {
 }
 
 public extension TimelineTempo {
-    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = false, cursor: Double? = nil, enabled: Bool = true, gridTolerancePixels: Double? = nil) -> Double {
+    static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
+                     cursor: Double? = nil, enabled: Bool = true,
+                     otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
-        let section = song.tempoSection(at: max(0, time))
-        let anchors = song.parts.lazy.map { $0.startTime - section.start }
-        let ends = regionEnds ? song.parts.lazy.map { $0.endTime - section.start } : nil
-        let offset = snap(time - section.start, bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
-            anchors: anchors, additionalAnchors: ends, cursor: cursor.map { $0 - section.start }, tolerancePixels: gridTolerancePixels ?? 8, gridTolerancePixels: gridTolerancePixels, divisions: song.projectTime.divisions, unit: section.unit, enabled: enabled)
-        return min(section.end, section.start + offset)
+        let position = max(0, time)
+        guard enabled else { return position }
+        let section = song.tempoSection(at: position)
+        let step = gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
+                            divisions: song.projectTime.divisions, unit: section.unit)
+        var nearest: Double = 0
+        var distance = position
+        func consider(_ anchor: Double) {
+            guard anchor.isFinite, anchor >= 0 else { return }
+            let delta = abs(anchor - position)
+            if delta < distance || (delta == distance && anchor < nearest) {
+                nearest = anchor; distance = delta
+            }
+        }
+        // Work in absolute time: anchors before the active tempo section must
+        // remain candidates too. Shift bypasses every anchor above.
+        if step > 0 {
+            consider(min(section.end, section.start + ((position - section.start) / step).rounded() * step))
+        }
+        for part in song.parts where excludingRegion == nil || (part.id != excludingRegion && part.parentRegionID != excludingRegion) {
+            consider(part.startTime)
+            if regionEnds { consider(part.endTime) }
+        }
+        for marker in song.markers ?? [] where marker.id != excludingMarker { consider(marker.position) }
+        if let cursor { consider(cursor) }
+        for cursor in otherCursors { consider(cursor) }
+        return nearest
     }
 }
 
@@ -398,10 +416,22 @@ struct TempoEditMap {
             spans.append(Span(start: start, end: end, output: output, scale: scale))
             output += (end - start) * scale
         }
+        // Every stem in a region uses the same owned tempo program. Build
+        // and sort it once, not twice per item for both its offset and length.
+        let timelineEnd = max(before.duration, after.duration,
+            before.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0,
+            before.parts.map(\.endTime).max() ?? 0)
+        let oldSections = before.tempoSections(until: timelineEnd)
+        let newSections = after.tempoSections(until: timelineEnd)
+        let nextOwners = Dictionary(uniqueKeysWithValues: after.parts.map { ($0.id, $0) })
+        var ownerSections: [UUID: (old: [TimelineTempoSection], new: [TimelineTempoSection])] = [:]
         func resizedDuration(start: Double, end: Double, owner: Part) -> Double {
-            let old = before.audioTempoSections(owner: owner, until: end)
-            let nextOwner = after.parts.first { $0.id == owner.id } ?? owner
-            let new = after.audioTempoSections(owner: nextOwner, until: end)
+            if ownerSections[owner.id] == nil {
+                ownerSections[owner.id] = (
+                    before.audioTempoSections(owner: owner, until: timelineEnd, sections: oldSections),
+                    after.audioTempoSections(owner: nextOwners[owner.id] ?? owner, until: timelineEnd, sections: newSections))
+            }
+            let (old, new) = ownerSections[owner.id]!
             let edges = Array(Set([start, end] + (old + new).flatMap { [$0.start, $0.end] }.filter { $0 > start && $0 < end })).sorted()
             func speed(_ sections: [TimelineTempoSection], _ time: Double, _ song: Song) -> Double {
                 guard let section = sections.last(where: { $0.start <= time }), section.timebase == .relative else { return 1 }

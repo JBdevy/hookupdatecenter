@@ -123,6 +123,13 @@ public struct ShowTimelinePresentationState: Equatable {
     private var publishingTimelinePlaybackTick = false
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
+            if !updatingPlaybackSnapshot &&
+                (oldValue.project.id != snapshot.project.id ||
+                 oldValue.project.regionSetlist?.playedLiveRegionIDs != snapshot.project.regionSetlist?.playedLiveRegionIDs ||
+                 !oldValue.project.songs.elementsEqual(snapshot.project.songs, by: { $0.id == $1.id && $0.parts == $1.parts })) {
+                playedLiveRegionIDs = SetlistLivePlaybackTracker.normalizedMarks(project: snapshot.project,
+                    marked: Set(snapshot.project.regionSetlist?.playedLiveRegionIDs ?? []))
+            }
             if timelineFollowPaused {
                 let before = oldValue.transport, after = snapshot.transport
                 let changedPlayback = before.playing != after.playing || before.subPlay.playing != after.subPlay.playing ||
@@ -404,6 +411,10 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setPrepareWithoutPlayback(_ enabled: Bool) {
         var state = regionSetlist; state.prepareWithoutPlayback = enabled; _ = configureRegionSetlist(state)
     }
+    public func setAutoUntilBlockEnd(_ enabled: Bool) {
+        guard (regionSetlist.autoUntilBlockEnd == true) != enabled else { return }
+        var state = regionSetlist; state.autoUntilBlockEnd = enabled; _ = configureRegionSetlist(state)
+    }
     private func focusPreparedRegion(previous: TransportState) {
         guard !snapshot.transport.playing, let queued = previous.queuedRegionId,
               snapshot.transport.regionId == queued else { return }
@@ -444,6 +455,30 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func toggleRegionStop() {
         var state = regionSetlist; state.stopAtRegionEnd = !state.stopsAtRegionEnd; _ = configureRegionSetlist(state)
+    }
+    public var setlistLiveEnabled: Bool { regionSetlist.liveEnabled == true }
+    public private(set) var playedLiveRegionIDs: Set<UUID> = []
+    private var setlistLiveTracker = SetlistLivePlaybackTracker()
+    public func toggleSetlistLive() {
+        // Account for the last active interval before changing the gate.
+        if isPlaying { tick() }
+        var state = regionSetlist; state.liveEnabled = !setlistLiveEnabled
+        if state.liveEnabled != true { state.playedLiveRegionIDs = [] }
+        if configureRegionSetlist(state), state.liveEnabled != true {
+            // Re-enabling Live starts a new performance, including songs that
+            // had only partially reached the ten-second threshold.
+            setlistLiveTracker = SetlistLivePlaybackTracker()
+        }
+    }
+    private func recordSetlistLivePlayback(before: TransportState, after: TransportState, elapsed: Double) {
+        guard setlistLiveEnabled else { return }
+        let marked = playedLiveRegionIDs
+        let added = setlistLiveTracker.record(project: snapshot.project, revision: projectRevision,
+                                              before: before, after: after, elapsed: elapsed, marked: marked)
+        guard !added.isEmpty else { return }
+        var state = regionSetlist
+        state.playedLiveRegionIDs = marked.union(added).sorted { $0.uuidString < $1.uuidString }
+        _ = configureRegionSetlist(state)
     }
     @discardableResult private func configureRegionSetlist(_ state: RegionSetlist) -> Bool {
         guard canExecute(), !finishing else { return false }
@@ -715,7 +750,8 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot.transport = try executor.playbackSnapshot().transport
         }
     }
-    private var timer: Timer?, lastTime = ProcessInfo.processInfo.systemUptime
+    private var timer: Timer?, lastTime: Double
+    private let playbackClock: () -> Double
     @Published public private(set) var hasUnsavedChanges = false
     private var lastSavedCursor: SavedProjectCursor?
     private var editingCursor: SavedProjectCursor? {
@@ -1033,10 +1069,13 @@ public struct ShowTimelinePresentationState: Equatable {
         return snapshot.project != before
     }
 
-    public init(executor: any CommandExecutor, persistence: any ProjectPersistence, initialProject: Project = .demo(), cursorMemory: ProjectCursorMemory? = nil, globalDefaults: UserDefaults? = nil) throws {
+    public init(executor: any CommandExecutor, persistence: any ProjectPersistence, initialProject: Project = .demo(), cursorMemory: ProjectCursorMemory? = nil, globalDefaults: UserDefaults? = nil, playbackClock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) throws {
         self.executor = executor; self.persistence = persistence; self.cursorMemory = cursorMemory; self.globalDefaults = globalDefaults
+        self.playbackClock = playbackClock; self.lastTime = playbackClock()
         var initialProject = initialProject; initialProject.promoteLoopSectionMarkers()
         try executor.load(initialProject); snapshot = try executor.snapshot()
+        playedLiveRegionIDs = SetlistLivePlaybackTracker.normalizedMarks(project: snapshot.project,
+            marked: Set(snapshot.project.regionSetlist?.playedLiveRegionIDs ?? []))
         lastSavedCursor = initialProject.savedCursor
         try restoreGlobalBypass(); try restoreCursor(); resetHistory()
     }
@@ -1044,7 +1083,7 @@ public struct ShowTimelinePresentationState: Equatable {
         do { if let project = try await persistence.load() { try replaceProject(project) } else { try await persistence.save(snapshot.project) } } catch { message = error.localizedDescription }
     }
     public func startClock() {
-        guard timer == nil, isPlaying else { return }; lastTime = ProcessInfo.processInfo.systemUptime
+        guard timer == nil, isPlaying else { return }; lastTime = playbackClock()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -1053,11 +1092,19 @@ public struct ShowTimelinePresentationState: Equatable {
     /// Presentation can draw between the engine's 30 Hz samples without advancing
     /// transport, decoding another snapshot, or scheduling another audio update.
     public var timelinePlaybackSampleTime: Double { lastTime }
+    public var audioPresentationPosition: (Int, Double) -> Double? = { _, _ in nil }
+    public var timelinePlaybackTransport: TransportState {
+        var value = snapshot.transport
+        if value.playing, let position = audioPresentationPosition(0, lastTime) { value.position = position }
+        if value.subPlay.playing, let position = audioPresentationPosition(1, lastTime) { value.subPlay.position = position }
+        return value
+    }
+
     /// Read synchronously from snapshot publication to distinguish a complete
     /// engine tick, including automated mixer updates, from explicit commands.
     var timelinePlaybackIsPublishingTick: Bool { publishingTimelinePlaybackTick }
     public func tick() {
-        let now = ProcessInfo.processInfo.systemUptime; let delta = now - lastTime; lastTime = now
+        let now = playbackClock(); let delta = now - lastTime; lastTime = now
         guard isPlaying else { return }
         let wasPublishing = publishingTimelinePlaybackTick
         publishingTimelinePlaybackTick = true
@@ -1071,6 +1118,7 @@ public struct ShowTimelinePresentationState: Equatable {
             updatingPlaybackSnapshot = true
             snapshot = next
             updatingPlaybackSnapshot = false
+            recordSetlistLivePlayback(before: previous, after: update.transport, elapsed: delta)
             applyLoopMixer(); focusPreparedRegion(previous: previous); rememberCursor()
             if !isPlaying { timer?.invalidate(); timer = nil; onStop() }
             audioUpdate(snapshot, audioProjectRevision)
@@ -1124,6 +1172,15 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         if let initial = updated.initialTempoMarkerIfNeeded { updated.markers!.append(initial); targets.append(initial) }
         do {
+            // Retime the position at this edit's instant, not at the last UI
+            // timer tick. Do not render an obsolete snapshot before the edit.
+            if isPlaying {
+                let now = playbackClock(), elapsed = now - lastTime
+                executor.advance(elapsed); lastTime = now
+                if setlistLiveEnabled, let advanced = try? executor.playbackSnapshot() {
+                    recordSetlistLivePlayback(before: snapshot.transport, after: advanced.transport, elapsed: elapsed)
+                }
+            }
             try executor.retimeTempoMarkers(targets)
             let map = TempoEditMap(before: before, after: updated)
             map.apply(to: &updated)
@@ -1213,8 +1270,11 @@ public struct ShowTimelinePresentationState: Equatable {
         // Advance the clock without scheduling one obsolete audio update before
         // applying Stop/Pause/Seek. Publish and render only the final command state.
         if isPlaying {
-            let now = ProcessInfo.processInfo.systemUptime
-            executor.advance(now - lastTime); lastTime = now
+            let now = playbackClock(), elapsed = now - lastTime
+            executor.advance(elapsed); lastTime = now
+            if setlistLiveEnabled, let advanced = try? executor.playbackSnapshot() {
+                recordSetlistLivePlayback(before: snapshot.transport, after: advanced.transport, elapsed: elapsed)
+            }
         }
         guard [.pause, .stop, .stopAll, .subStop].contains(command) || (canExecute() && !finishing) else { return }
         do {
@@ -1240,11 +1300,11 @@ public struct ShowTimelinePresentationState: Equatable {
             let update = try executor.playbackSnapshot()
             let cancelledRegionQueue = command == .queueRegion && previous.playing &&
                 previous.queuedRegionId != nil && update.transport.queuedRegionId == nil
-            let cancelledSection = command == .escape && previous.queuedSectionMarkerId != nil
-            let disabledAuto = ((command == .escape && !cancelledSection) || cancelledRegionQueue) && snapshot.project.regionSetlist?.autoAdvance == true
+            let escapedSongQueue = command == .escape && !previous.loop.enabled && previous.queuedSectionMarkerId == nil
+            let disabledAuto = (escapedSongQueue || cancelledRegionQueue) && snapshot.project.regionSetlist?.autoAdvance == true
             if disabledAuto { snapshot.project.regionSetlist?.autoAdvance = false; setlistRevision &+= 1 }
             if command == .subSeek { revealSubCursor() }
-            lastTime = ProcessInfo.processInfo.systemUptime
+            lastTime = playbackClock()
             snapshot.transport = update.transport; snapshot.nextSongId = update.nextSongId
             if command == .toggleMultiLoopBypass {
                 globalDefaults?.set(snapshot.transport.multiLoopsBypassed == true, forKey: Self.multiLoopBypassDefaultsKey)
@@ -1281,7 +1341,7 @@ public struct ShowTimelinePresentationState: Equatable {
     private var mixerGesture: MixerGesture?
     public private(set) var mixerPreviewValues: [UUID: Double] = [:]
     public private(set) var mixerPreviewIsPan = false
-    public func sendMixerControl(_ command: ShowCommand, target: UUID?, value: Double = 0, preview: Bool = false) {
+    public func sendMixerControl(_ command: ShowCommand, target: UUID?, value: Double = 0, preview: Bool = false, clearAll: Bool = false) {
         guard let target else { mixerPreviewValues = [:]; mixerGesture = nil; if preview { previewTrackVolume(nil, gain: value) } else { send(command, value: value) }; return }
         guard canExecute(), !finishing, let source = current?.tracks.first(where: { $0.id == target }) else { return }
         if command == .volume || command == .pan {
@@ -1341,8 +1401,10 @@ public struct ShowTimelinePresentationState: Equatable {
         func state(_ track: Track) -> Bool {
             command == .mute ? track.mute : (command == .solo ? track.solo : track.phaseInverted == true)
         }
-        let desired = !state(source)
-        let targets = mixerControlTargets(target).filter { state($0) != desired }
+        let clear = clearAll && (command == .mute || command == .solo)
+        let desired = clear ? false : !state(source)
+        let targets = (clear ? (current?.tracks ?? []) : mixerControlTargets(target)).filter { state($0) != desired }
+        guard !targets.isEmpty else { return }
         var applied: [Track] = []
         do {
             for track in targets { try executor.execute(command, target: track.id, value: 0); applied.append(track) }
@@ -2426,6 +2488,7 @@ public struct ShowTimelinePresentationState: Equatable {
         try project.validate()
         timer?.invalidate(); timer = nil
         try executor.load(project); snapshot = try executor.snapshot(); resetLoopMixer(); try restoreGlobalBypass()
+        setlistLiveTracker = SetlistLivePlaybackTracker()
         lastSavedCursor = project.savedCursor
         projectRevision &+= 1; hasUnsavedChanges = false
         audioProjectRevision &+= 1
@@ -2439,6 +2502,7 @@ public struct ShowTimelinePresentationState: Equatable {
         let project = try ProjectDocumentCodec.decode(data)
         selectedTimelineRegion = nil; timelineFollowPaused = false
         try executor.load(project); snapshot = try executor.snapshot(); resetLoopMixer(); try restoreGlobalBypass(); try restoreCursor(); markChanged()
+        setlistLiveTracker = SetlistLivePlaybackTracker()
         lastSavedCursor = project.savedCursor
     }
 }

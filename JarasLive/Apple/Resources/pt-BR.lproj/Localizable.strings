@@ -1257,3 +1257,36 @@
 "Ignore Preview" = "Ignorar Preview";
 
 "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder." = "As regiões selecionadas, seus itens e marcadores serão removidos da timeline. Os arquivos de mídia permanecerão na pasta do projeto.";
+
+"Hide setlist controls" = "Ocultar controles do setlist";
+"Show setlist controls" = "Mostrar controles do setlist";
+"Reset peak" = "Zerar pico";
+"Toggle region drawer" = "Abrir ou fechar gaveta da região";
+"Tap to reset the peak" = "Toque para zerar o pico";
+"Hide sidebar" = "Ocultar barra lateral";
+"Show sidebar" = "Mostrar barra lateral";
+
+"Export Audio" = "Exportar áudio";
+
+"Export region audio" = "Exportar áudio das regiões";
+
+"Copy to share" = "Copiar para compartilhar";
+"Playlist copied successfully" = "Playlist copiada com êxito";
+"Could not copy playlist" = "Não foi possível copiar a playlist";
+"Paste the list wherever you want to share it." = "Cole a lista onde quiser compartilhar.";
+"Please try copying the playlist again." = "Tente copiar a playlist novamente.";
+"Total duration" = "Tempo total";
+
+"Run queue until the end of the block" = "Executar fila de espera até o fim do bloco";
+
+"Turn off Live?" = "Desligar o Live?";
+
+"Stop timer?" = "Parar o cronômetro?";
+"Stop timer" = "Parar cronômetro";
+"The timer will stop and the current count will be reset." = "O cronômetro será parado e a contagem atual será zerada.";
+"Turn off Live" = "Desligar Live";
+"Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero." = "Desligar o Live limpa todas as marcações de músicas tocadas, incluindo as músicas da gaveta. Ao ligar novamente, a contagem começa do zero.";
+
+"Render each selected region through the Master, including tracks routed to hardware outputs." = "Renderiza cada região selecionada pelo Master, incluindo pistas roteadas para saídas de hardware.";
+
+"Cut" = "Recortar";

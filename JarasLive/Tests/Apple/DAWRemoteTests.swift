@@ -742,6 +742,37 @@ if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(bypas
 } else { fatalError("bypass state packet") }
 print("REMOTE_GLOBAL_MULTILOOP_BYPASS_COMMAND_AND_STATE_OK")
 
+let liveCommand = DAWRemoteCommand(project: project, action: .toggleSetlistLive)
+require(liveCommand.valid, "Live toggle is a target-free command")
+require(DAWRemoteAccessRules.allows(liveCommand, mode: .director), "Director may toggle Live")
+require(!DAWRemoteAccessRules.allows(liveCommand, mode: .observer), "Observer cannot toggle Live")
+require(!DAWRemoteAccessRules.allows(liveCommand, mode: .notices), "Messages mode cannot toggle Live")
+require(!DAWRemoteAccessRules.allows(liveCommand, mode: nil), "Unauthenticated connection cannot toggle Live")
+require(!DAWRemoteCommand(project: project, action: .toggleSetlistLive, target: UUID()).valid, "Live cannot target a region")
+require(!DAWRemoteCommand(project: project, action: .toggleSetlistLive, value: 1).valid, "Live cannot inject arbitrary numeric arguments")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(liveCommand)) {
+    require(decoded.action == .toggleSetlistLive, "Live command roundtrip")
+} else { fatalError("Live command packet") }
+var liveFixture = fixture
+let playedRegion = UUID()
+liveFixture.setlistLiveEnabled = true
+liveFixture.playedLiveRegionIDs = [playedRegion]
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(liveFixture)) {
+    require(decoded.setlistLiveEnabled == true && decoded.playedLiveRegionIDs == [playedRegion], "Remote reflects Live and played history")
+} else { fatalError("Live state packet") }
+liveFixture.setlistLiveEnabled = false
+liveFixture.playedLiveRegionIDs = []
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(liveFixture)) {
+    require(decoded.setlistLiveEnabled == false && decoded.playedLiveRegionIDs == [], "Remote receives cleared played markings when the host disables Live")
+} else { fatalError("disabled Live state packet") }
+liveFixture.playedLiveRegionIDs = [playedRegion, playedRegion]
+require(!liveFixture.valid, "Duplicate played identifiers cannot inflate Remote snapshots")
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(fixture)) {
+    require(decoded.setlistLiveEnabled == nil && decoded.playedLiveRegionIDs == nil, "Legacy host snapshots decode without Live fields")
+} else { fatalError("legacy Live state packet") }
+print("REMOTE_SETLIST_LIVE_COMMAND_AUTHORIZATION_HISTORY_AND_LEGACY_STATE_OK")
+
+
 var themed = fixture
 themed.gridBackgroundColor = 0x123456; themed.gridPrimaryColor = 0x234567; themed.gridSecondaryColor = 0x345678
 themed.playCursorColor = 0x456789; themed.editCursorColor = 0x56789a; themed.subPlayCursorColor = 0x6789ab
@@ -846,6 +877,8 @@ for panel in DAWRemotePhonePanel.allCases {
     require(panel.selecting(.grid) == .grid, "Grid closes every phone panel")
     require(panel.selecting(.mixer) == (panel == .mixer ? .grid : .mixer), "Mixer toggles exclusively")
     require(panel.selecting(.setlist) == (panel == .setlist ? .grid : .setlist), "Setlist toggles exclusively")
+    require(panel.togglingFooterParts() == (panel == .sections ? .setlist : .sections),
+        "Persistent Parts footer returns to Setlist instead of hiding into Grid")
 }
 require(DAWRemotePhonePanel.teleprompter1.subscription == 1 && DAWRemotePhonePanel.teleprompter2.subscription == 2 && DAWRemotePhonePanel.notices.subscription == 3, "phone subscribes only to its visible projection panel")
 print("REMOTE_PHONE_EXCLUSIVE_MIXER_SETLIST_GRID_AND_PROJECTION_SUBSCRIPTIONS_OK")
@@ -854,7 +887,7 @@ var sectionsDisplayFixture = fixture
 for vertical in [false, true] {
     sectionsDisplayFixture.sectionListVertical = vertical
     if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(sectionsDisplayFixture)) {
-        require(decoded.sectionListVertical == vertical, "Mac section display preference reaches the iPad")
+        require(decoded.sectionListVertical == vertical, "Legacy section display field remains decodable")
     } else { fatalError("section display mode packet") }
 }
 print("REMOTE_SECTION_DISPLAY_MODE_ROUNDTRIP_OK")
@@ -866,3 +899,207 @@ require(!DAWRemoteCommand(project: project, action: .cancelSection, target: UUID
 if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(cancelSection)) {
     require(decoded.action == .cancelSection, "dedicated cancellation survives transport")
 } else { fatalError("cancel section packet") }
+
+// Peak numbers are held by the host, not locally sampled or decayed by Remote.
+var peakFixture = fixture
+peakFixture.masterPeakDB = -24
+peakFixture.tracks[0].peakDB = -6.12
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(peakFixture)) {
+    require(decoded.masterPeakDB == -24 && decoded.tracks[0].peakDB == -6.12, "Master/track held peaks roundtrip, including threshold")
+} else { fatalError("held peak state packet") }
+peakFixture.masterPeakDB = nil; peakFixture.tracks[0].peakDB = nil
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(peakFixture)) {
+    require(decoded.masterPeakDB == nil && decoded.tracks[0].peakDB == nil, "Reset clears number; old host state also remains compatible")
+} else { fatalError("cleared peak state packet") }
+for invalidPeak in [-24.01, Double.nan, Double.infinity] {
+    peakFixture.masterPeakDB = invalidPeak
+    require(!peakFixture.valid, "Master rejects invalid/below-threshold numeric peaks")
+    peakFixture.masterPeakDB = nil; peakFixture.tracks[0].peakDB = invalidPeak
+    require(!peakFixture.valid, "Track rejects invalid/below-threshold numeric peaks")
+    peakFixture.tracks[0].peakDB = nil
+}
+for target in [Optional<UUID>.none, Optional(trackID)] {
+    let reset = DAWRemoteCommand(project: project, song: song, action: .resetMeterPeak, target: target)
+    require(reset.valid && DAWRemoteAccessRules.allows(reset, mode: .director), "Director may reset master/track")
+    for mode in [Optional<DAWRemoteAccess>.none, .observer, .notices] {
+        require(!DAWRemoteAccessRules.allows(reset, mode: mode), "Other roles cannot reset held peaks")
+    }
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(reset)) {
+        require(decoded.action == .resetMeterPeak && decoded.target == target, "Peak reset command preserves target")
+    } else { fatalError("reset peak command packet") }
+}
+require(!DAWRemoteCommand(project: project, action: .resetMeterPeak, value: 1).valid, "Peak reset rejects numeric payload")
+print("REMOTE_HELD_NUMERIC_PEAKS_MASTER_TRACK_RESET_ROLE_AUTH_AND_LEGACY_OK")
+
+var drawerFixture = fixture
+let drawerChild = UUID(), plainRegion = UUID()
+drawerFixture.regions.append(.init(id: plainRegion, name: "Regular", start: 11, end: 20, color: 0x123456))
+drawerFixture.timelineRegions = drawerFixture.regions + [.init(id: drawerChild, name: "Inside", start: 1, end: 5, color: 0x123456, parentRegion: regionID)]
+require(DAWRemoteSetlistPresentation.canToggleDrawer(regionID, in: drawerFixture), "Unified parent admits local long-press drawer toggle")
+require(!DAWRemoteSetlistPresentation.canToggleDrawer(plainRegion, in: drawerFixture), "Ordinary song cannot toggle drawer")
+require(!DAWRemoteSetlistPresentation.canToggleDrawer(drawerChild, in: drawerFixture), "Child song cannot toggle its parent's drawer")
+require(!DAWRemoteSetlistPresentation.canToggleDrawer(UUID(), in: drawerFixture), "Unknown region cannot toggle drawer")
+let closedRows = DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [], query: "")
+require(closedRows.map(\.id) == [regionID, plainRegion] && closedRows.map(\.hasDrawer) == [true, false], "Only parent row installs long-press gesture")
+let expandedRows = DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [regionID], query: "")
+require(expandedRows.map(\.id) == [regionID, drawerChild, plainRegion] && expandedRows[1].child && !expandedRows[1].hasDrawer, "Opening drawer adds children in place; child keeps ordinary gestures")
+require(DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [], query: "").map(\.id) == closedRows.map(\.id), "Closing drawer restores ordinary list")
+require(drawerFixture.focusedRegion == fixture.focusedRegion && drawerFixture.currentRegion == fixture.currentRegion, "Local drawer presentation never changes host selection/playback")
+drawerFixture.playing = true
+for activeID in [regionID, drawerChild, plainRegion] {
+    drawerFixture.currentRegion = activeID
+    drawerFixture.focusedRegion = activeID
+    require(DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [], query: "").map(\.id) == closedRows.map(\.id),
+        "Playing or focusing the parent, child or another song never opens a closed drawer")
+    require(DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [regionID], query: "").map(\.id) == expandedRows.map(\.id),
+        "Playback and focus retain a drawer that the user manually opened")
+}
+drawerFixture.playing = false
+require(DAWRemoteSetlistPresentation.rows(in: drawerFixture, expanded: [], query: "").map(\.id) == closedRows.map(\.id),
+    "Stopping playback never changes manual drawer visibility")
+print("REMOTE_LONG_PRESS_DRAWER_PARENT_ELIGIBILITY_OPEN_CLOSE_WITHOUT_SELECTION_OK")
+
+var sectionBoundaryFixture = fixture
+sectionBoundaryFixture.sectionPlayback = .init(currentRegion: regionID, secondaryRegion: nil, position: 8,
+    secondaryPosition: nil, queuedMarker: UUID(), queueStartedAt: 7, nextTrigger: 18.5, currentEnd: 18.5)
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(sectionBoundaryFixture)) {
+    require(decoded.sectionPlayback?.currentEnd == 18.5 && decoded.sectionPlayback?.nextTrigger == 18.5,
+        "Ignore Next tail beyond region end remains the last section progress and seek countdown boundary")
+} else { fatalError("section actual end packet") }
+sectionBoundaryFixture.sectionPlayback?.currentEnd = nil
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(sectionBoundaryFixture)) {
+    require(decoded.sectionPlayback?.currentEnd == nil, "Older host without currentEnd keeps region end fallback")
+} else { fatalError("legacy section actual end packet") }
+for invalidEnd in [-0.01, Double.nan, Double.infinity] {
+    sectionBoundaryFixture.sectionPlayback?.currentEnd = invalidEnd
+    require(!sectionBoundaryFixture.valid, "Current section end rejects negative and non-finite times")
+}
+print("REMOTE_SECTION_ACTUAL_END_COUNTDOWN_TAIL_AND_LEGACY_BOUNDARY_OK")
+
+require(DAWRemoteSidebarGesture.shouldReveal(horizontal: 36, vertical: 0), "Right edge pull at threshold reveals sidebar")
+require(DAWRemoteSidebarGesture.shouldReveal(horizontal: 90, vertical: 30), "Dominantly horizontal pull reveals sidebar")
+require(DAWRemoteSidebarGesture.shouldBegin(horizontal: 2, vertical: 1), "Native delegate accepts a slow rightward swipe before completion distance")
+require(!DAWRemoteSidebarGesture.shouldBegin(horizontal: 1, vertical: 2), "Native delegate fails vertical intent before taking ownership of the scroll touch")
+require(!DAWRemoteSidebarGesture.shouldBegin(horizontal: -2, vertical: 0), "Native delegate rejects leftward intent")
+for (x, y) in [(0.0, 0.0), (35.9, 0), (-60, 0), (40, 40), (0, 80), (100, 100), (Double.nan, 0), (60, Double.infinity)] {
+    require(!DAWRemoteSidebarGesture.shouldReveal(horizontal: x, vertical: y), "Taps, vertical scrolling and invalid drag cannot reveal sidebar")
+}
+print("REMOTE_SIDEBAR_REVEAL_DIRECTION_THRESHOLD_AND_SCROLL_REJECTION_OK")
+
+// Retained layout must pass new control values through without repartitioning
+// thousands of clips for each incoming transport/peak packet.
+let layoutCache = DAWRemoteItemLayoutCache()
+let layoutRegion = DAWRemoteState.Region(id: UUID(), name: "Cache region", start: 0, end: 160, color: 0x123456)
+let manyTracks: [DAWRemoteState.Track] = (0..<500).map { index in
+    .init(id: UUID(), name: "Track \(index)", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false,
+          clips: (0..<80).reversed().map { clip in
+              .init(id: UUID(), name: "Clip \(clip)", start: Double(clip), duration: 2)
+          })
+}
+let cacheColdStart = ProcessInfo.processInfo.systemUptime
+let coldLayout = layoutCache.tracks(manyTracks, within: layoutRegion)
+let cacheColdTime = ProcessInfo.processInfo.systemUptime - cacheColdStart
+require(layoutCache.rebuildCount == 500, "Initial layout builds exactly one partition per track")
+// Independent array storage models newly decoded wire packets, rather than
+// benchmarking Array equality against its own backing buffer.
+let layoutPackets = (0..<24).map { _ in manyTracks.map { track -> DAWRemoteState.Track in
+    var copy = track; copy.clips = track.clips.map { $0 }; return copy
+} }
+let uncachedStart = ProcessInfo.processInfo.systemUptime
+var uncachedChecksum = 0
+for packet in layoutPackets {
+    uncachedChecksum += DAWRemoteItemLayout.tracks(packet, within: layoutRegion).reduce(0) { $0 + ($1.laneCount ?? 0) }
+}
+let uncachedTime = ProcessInfo.processInfo.systemUptime - uncachedStart
+let warmStart = ProcessInfo.processInfo.systemUptime
+var cachedChecksum = 0
+for packet in layoutPackets {
+    cachedChecksum += layoutCache.tracks(packet, within: layoutRegion).reduce(0) { $0 + ($1.laneCount ?? 0) }
+}
+let warmTime = ProcessInfo.processInfo.systemUptime - warmStart
+require(uncachedChecksum == cachedChecksum && layoutCache.rebuildCount == 500, "24 independent snapshots reuse all 500 track partitions")
+var changedTracks = manyTracks
+changedTracks[0].volume = 0.5; changedTracks[0].pan = -0.25; changedTracks[0].mute = true
+changedTracks[0].peakDB = -4; changedTracks[0].name = "Renamed"; changedTracks[0].heightScale = 1.8
+let controlsLayout = layoutCache.tracks(changedTracks, within: layoutRegion)
+require(layoutCache.rebuildCount == 500 && controlsLayout[0].volume == 0.5 && controlsLayout[0].pan == -0.25 &&
+    controlsLayout[0].mute && controlsLayout[0].peakDB == -4 && controlsLayout[0].name == "Renamed" && controlsLayout[0].heightScale == 1.8,
+    "New track scalars and height pass through without rebuilding clip geometry")
+changedTracks[0].clips[0].start = 0.25; changedTracks[0].clips[0].name = "Edited item"
+changedTracks[0].clips[0].muted = true; changedTracks[0].clips[0].gain = 0.75
+let editedLayout = layoutCache.tracks(changedTracks, within: layoutRegion)
+let editedID = changedTracks[0].clips[0].id
+require(layoutCache.rebuildCount == 501 && editedLayout[0].clips.first(where: { $0.id == editedID })?.name == "Edited item" &&
+    editedLayout[0].clips.first(where: { $0.id == editedID })?.muted == true, "One edited clip only rebuilds its own track and refreshes metadata")
+var changedRegion = layoutRegion; changedRegion.start = 50
+require(layoutCache.tracks(changedTracks, within: changedRegion) == DAWRemoteItemLayout.tracks(changedTracks, within: changedRegion),
+    "Region bounds invalidate all affected lane partitions")
+require(layoutCache.rebuildCount == 1001, "Region change rebuilds each track exactly once")
+let afterRegionBuilds = layoutCache.rebuildCount
+let removedTrack = changedTracks.removeLast()
+_ = layoutCache.tracks(changedTracks, within: changedRegion)
+changedTracks.append(removedTrack)
+_ = layoutCache.tracks(changedTracks, within: changedRegion)
+require(layoutCache.rebuildCount == afterRegionBuilds + 1, "Removed track cache is discarded and restored track rebuilds once")
+print(String(format: "REMOTE_LAYOUT_CACHE_500_TRACKS_40000_CLIPS_COLD_MS=%.2f_UNCACHED_24_MS=%.2f_WARM_24_MS=%.2f_REBUILDS_12000_TO_0", cacheColdTime * 1000, uncachedTime * 1000, warmTime * 1000))
+
+let rowsCache = DAWRemoteSetlistRowsCache()
+var rowPacket = drawerFixture
+let cachedClosedIDs = rowsCache.rows(in: rowPacket, expanded: [], query: "").map(\.id)
+for tick in 0..<100 {
+    rowPacket.position = Double(tick) / 10; rowPacket.playing = tick > 0
+    rowPacket.currentRegion = tick % 2 == 0 ? regionID : drawerChild
+    rowPacket.focusedRegion = rowPacket.currentRegion
+    require(rowsCache.rows(in: rowPacket, expanded: [], query: "").map(\.id) == cachedClosedIDs, "Position/focus never opens or rebuilds cached drawer rows")
+}
+require(rowsCache.rebuildCount == 1, "100 transport packets reuse setlist rows")
+_ = rowsCache.rows(in: rowPacket, expanded: [regionID], query: "")
+require(rowsCache.rebuildCount == 2, "Manual drawer action rebuilds once")
+rowPacket.timelineRegions[rowPacket.timelineRegions.count - 1].name = "Renamed child"
+require(rowsCache.rows(in: rowPacket, expanded: [regionID], query: "").contains(where: { $0.region.name == "Renamed child" }), "Cached drawer name follows item edits")
+require(rowsCache.rebuildCount == 3, "Metadata edit invalidates rows")
+require(rowsCache.rows(in: rowPacket, expanded: [regionID], query: "Renamed child").count == 1, "Search remains current after caching")
+
+var mixerComparison = fixture.tracks[0]
+mixerComparison.clips[0].name = "Grid-only edit"; mixerComparison.clips[0].start += 1
+require(fixture.tracks[0].hasSameMixerControls(as: mixerComparison), "Grid-only changes do not rebuild mixer controls")
+for mutate: (inout DAWRemoteState.Track) -> Void in [
+    { $0.id = UUID() }, { $0.name += " changed" }, { $0.color = 0x112233 }, { $0.volume = 0.8 },
+    { $0.pan = 0.4 }, { $0.mute.toggle() }, { $0.solo.toggle() }, { $0.nameColor = 0xaabbcc },
+    { $0.emphasized = false }, { $0.silenced = false }, { $0.linkedTrack = UUID() }, { $0.peakDB = -7 }, { $0.canMeter = false }
+] {
+    var changed = fixture.tracks[0]; mutate(&changed)
+    require(!fixture.tracks[0].hasSameMixerControls(as: changed), "Every visible mixer control invalidates its row")
+}
+var meterCapability = fixture
+meterCapability.tracks[0].canMeter = false
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(meterCapability)) {
+    require(decoded.tracks[0].canMeter == false, "Non-audio readout capability roundtrips independently of track name")
+} else { fatalError("meter capability") }
+require(fixture.tracks[0].canMeter == nil, "Legacy tracks retain meter eligibility when capability is absent")
+print("REMOTE_CACHED_ROWS_MIXER_SCALARS_AND_METER_CAPABILITY_INVALIDATION_OK")
+
+require(DAWRemoteSnapshotComparison.differs(fixture, from: nil), "First snapshot publishes")
+require(!DAWRemoteSnapshotComparison.differs(fixture, from: fixture), "Identical snapshot remains suppressed")
+var markedLiveSnapshot = fixture
+markedLiveSnapshot.setlistLiveEnabled = true
+markedLiveSnapshot.playedLiveRegionIDs = [regionID, drawerChild]
+var clearedLiveSnapshot = markedLiveSnapshot
+clearedLiveSnapshot.setlistLiveEnabled = false
+clearedLiveSnapshot.playedLiveRegionIDs = []
+require(DAWRemoteSnapshotComparison.differs(clearedLiveSnapshot, from: markedLiveSnapshot),
+    "Disabling Live publishes removal of both unified-parent and drawer-song markings without a transport change")
+var clearedMarksSnapshot = markedLiveSnapshot
+clearedMarksSnapshot.playedLiveRegionIDs = []
+require(DAWRemoteSnapshotComparison.differs(clearedMarksSnapshot, from: markedLiveSnapshot),
+    "Clearing played markings alone invalidates Remote presentation")
+for mutate: (inout DAWRemoteState) -> Void in [
+    { $0.position += 0.1 }, { $0.subPlayPosition = 4 }, { $0.editPosition = 3 }, { $0.playing.toggle() },
+    { $0.tracks[0].clips[0].name += " edit" }, { $0.tracks[0].clips[0].duration += 1 },
+    { $0.tracks[0].name += " edit" }, { $0.tracks[0].peakDB = -5 }, { $0.selectedPlaylist = UUID() },
+    { $0.setlistLiveEnabled = true }, { $0.playedLiveRegionIDs = [regionID] }, { $0.project = UUID() }
+] {
+    var changed = fixture; mutate(&changed)
+    require(DAWRemoteSnapshotComparison.differs(changed, from: fixture) == (changed != fixture), "Fast snapshot comparison preserves full-state change semantics")
+}
+print("REMOTE_SNAPSHOT_TRANSPORT_FAST_PATH_AND_METADATA_FALLBACK_OK")

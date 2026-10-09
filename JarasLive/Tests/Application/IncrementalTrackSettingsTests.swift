@@ -416,6 +416,37 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         controller.tick()
         XCTAssertEqual(changes, afterSolo)
     }
+    @MainActor func testClearAllMixerMuteAndSoloIgnoresSelectionAndPreservesOtherControls() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        let c = Track(id: UUID(), name: "C", role: .keys)
+        a.mute = true; b.mute = true; a.solo = true; b.solo = true
+        a.volume = 0.5; b.pan = 0.25
+        project.songs[0].tracks = [a, b, c]
+        project.masterMute = true; project.masterSolo = true
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([c.id], anchor: c.id)
+        var muteUpdates: [UUID?] = [], soloUpdates: [UUID?] = []
+        controller.audioMute = { id, muted in XCTAssertFalse(muted); muteUpdates.append(id) }
+        controller.audioSolo = { id, solo in XCTAssertFalse(solo); soloUpdates.append(id) }
+        controller.sendMixerControl(.mute, target: c.id, clearAll: true)
+        XCTAssertTrue(controller.current!.tracks.allSatisfy { !$0.mute })
+        XCTAssertTrue(controller.current!.tracks[0].solo)
+        controller.sendMixerControl(.solo, target: c.id, clearAll: true)
+        XCTAssertTrue(controller.current!.tracks.allSatisfy { !$0.solo })
+        XCTAssertEqual(Set(muteUpdates.compactMap { $0 }), [a.id, b.id])
+        XCTAssertEqual(Set(soloUpdates.compactMap { $0 }), [a.id, b.id])
+        XCTAssertEqual(controller.current!.tracks[0].volume, 0.5)
+        XCTAssertEqual(controller.current!.tracks[1].pan, 0.25)
+        XCTAssertEqual(controller.snapshot.project.masterMute, true)
+        XCTAssertEqual(controller.snapshot.project.masterSolo, true)
+        XCTAssertEqual(controller.mixerTrackSelection, [c.id])
+        let count = executor.mixerCommands.count
+        controller.sendMixerControl(.solo, target: c.id, clearAll: true)
+        XCTAssertEqual(executor.mixerCommands.count, count, "Clearing an already-clear mixer does nothing")
+        XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
+    }
     @MainActor func testSelectedMixerControlsShareStatesAndPreserveUnselectedTracks() throws {
         var project = fixture()
         var a = Track(id: UUID(), name: "A", role: .keys)

@@ -73,7 +73,7 @@ final class TextTrackTests: XCTestCase {
         project.songs[0].tracks[1].fx = NativeFXSettings()
         XCTAssertThrowsError(try project.validate())
     }
-    func testTextResizeSplitAndUndoNeverCreateSourceLoops() throws {
+    func testTextResizeSplitAndUndoKeepVisualRepeatSeamsAndContent() throws {
         var project = fixture()
         let original = project
         let clip = project.songs[0].tracks[1].clips[0]
@@ -82,14 +82,33 @@ final class TextTrackTests: XCTestCase {
         let resized = project.songs[0].tracks[1].clips[0]
         XCTAssertEqual(resized.startTime, 2); XCTAssertEqual(resized.duration, 28)
         XCTAssertEqual(resized.text, clip.text)
-        XCTAssertEqual(resized.sourceOffset, 0)
-        XCTAssertNil(resized.loopStart); XCTAssertNil(resized.loopLength)
+        XCTAssertEqual(resized.sourceOffset, 7)
+        XCTAssertEqual(resized.loopStart, 0); XCTAssertEqual(resized.loopLength, 10)
+        XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: resized, visible: 0...40)), [5,15,25])
         project.splitItems([clip.id], at: 15)
         XCTAssertEqual(project.songs[0].tracks[1].clips.map(\.text), [clip.text, clip.text])
-        XCTAssertTrue(project.songs[0].tracks[1].clips.allSatisfy { $0.sourceOffset == 0 && $0.loopStart == nil && $0.loopLength == nil })
+        XCTAssertEqual(project.songs[0].tracks[1].clips.flatMap { Array(ClipRepetitionBoundaries(clip: $0, visible: 0...40)) }, [5,25], "split edge itself is already visible and must not shift subsequent seams")
         try project.validate()
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
         history.record(project)
         XCTAssertEqual(history.undo(), original)
         XCTAssertEqual(history.redo(), project)
+    }
+    func testLyricsOnBothTelepromptersRetainOriginalRepeatLengthAcrossTrims() throws {
+        for role in ["teleprompt", "teleprompt2"] {
+            var project = Project.empty(name: "Lyrics")
+            project.songs[0].duration = 100
+            var track = Track(id: UUID(), name: TrackKind(rawValue: role)!.title, role: TrackRole(rawValue: role))
+            let item = AudioClip(id: UUID(), name: "Lyrics", startTime: 20, duration: 10, text: "Verse")
+            track.clips = [item]; project.songs[0].tracks = [track]
+            project.resizeItem(item.id, start: 22, end: 28)
+            XCTAssertTrue(Array(ClipRepetitionBoundaries(clip: project.songs[0].tracks[0].clips[0], visible: 0...100)).isEmpty)
+            project.resizeItem(item.id, start: 18, end: 46)
+            let repeated = project.songs[0].tracks[0].clips[0]
+            XCTAssertEqual(repeated.loopLength, 10)
+            XCTAssertEqual(repeated.text, item.text)
+            XCTAssertEqual(Array(ClipRepetitionBoundaries(clip: repeated, visible: 0...100)), [20,30,40])
+            try project.validate()
+        }
     }
 }

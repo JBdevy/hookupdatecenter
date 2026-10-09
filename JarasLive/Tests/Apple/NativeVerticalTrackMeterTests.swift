@@ -6,6 +6,28 @@ import Foundation
     let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 80, height: 100))
     let document = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 10_000))
     scroll.documentView = document; window.contentView = scroll
+    let held = TrackMeterLevel()
+    var peakPublications = 0
+    let peakSubscription = held.peakHold.$decibels.dropFirst().sink { _ in peakPublications += 1 }
+    held.update(peak: pow(10, -24.01 / 20), elapsed: 0.03)
+    precondition(held.peakHold.decibels == nil && peakPublications == 0)
+    held.update(peak: pow(10, -24.0 / 20), elapsed: 0.03)
+    precondition(held.peakHold.decibels == -24 && peakPublications == 1)
+    held.update(peak: pow(10, -6.0 / 20), elapsed: 0.03)
+    for _ in 0..<300 { held.update(peak: 0, elapsed: 1) }
+    held.reset()
+    precondition(held.peakHold.decibels == -6 && peakPublications == 2,
+                 "silence, Stop and five minutes cannot refresh or clear the held number")
+    held.update(peak: pow(10, -12.0 / 20), elapsed: 0.03)
+    precondition(held.peakHold.decibels == -6 && peakPublications == 2,
+                 "only a higher peak updates the number")
+    held.peakHold.clear(); held.peakHold.clear()
+    precondition(held.peakHold.decibels == nil && peakPublications == 3)
+    held.update(peak: pow(10, -18.0 / 20), elapsed: 0.03)
+    precondition(held.peakHold.decibels == -18 && peakPublications == 4,
+                 "after an explicit reset a lower peak starts a new maximum")
+    withExtendedLifetime(peakSubscription) {}
+    print("PEAK_HOLD_MINUS24_THRESHOLD_HIGHER_ONLY_NO_TIMED_RESET_OK")
     let decayMeter = TrackMeterLevel()
     decayMeter.update(left: 1, right: 0.1, elapsed: 0)
     for _ in 0..<15 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
@@ -18,12 +40,16 @@ import Foundation
     decayMeter.update(left: 0.8, right: 0.3, elapsed: 1.0 / 30)
     precondition(decayMeter.levels == SIMD2(0.8, 0.3), "new peaks still attack immediately")
     print("METER_FAST_RELEASE_STEREO_SILENCE_AND_INSTANT_ATTACK_OK")
-    let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 32, height: 80))
+    let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 40, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)
     scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
     precondition(meter.visibleRect.height == 80, "meter fixture must intersect the native viewport")
     func meterLayer(_ name: String) -> CALayer { meter.layer!.sublayers!.first { $0.name == name }! }
+    let emptyPeakFrame = meterLayer("meter-peak").frame
+    precondition(!meterLayer("meter-peak").isHidden && emptyPeakFrame.width > 0 && meterLayer("meter-peak").borderWidth == 0
+        && meterLayer("meter-peak").backgroundColor == nil,
+                 "the number keeps its transparent hit area without painting a rectangle or border")
     func bitmap() -> NSBitmapImageRep {
         meter.layoutSubtreeIfNeeded(); meter.refreshVisibleDrawing()
         let scale = window.backingScaleFactor
@@ -96,12 +122,31 @@ import Foundation
     level.peakHold.record(pow(10, 3.0 / 20))
     let peakText = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
     precondition(peakText.string == "+3.00" && !meterLayer("meter-peak").isHidden)
-    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.systemRed)
+    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.white)
     precondition(meterLayer("meter-peak").frame.minX == 13 && meterLayer("meter-peak").frame.minY > meterLayer("meter-scale-1").frame.minY)
+    precondition(meterLayer("meter-peak").frame == emptyPeakFrame,
+                 "a peak never changes the rectangle geometry or surrounding meter layout")
+    let peakPoint = NSPoint(x: emptyPeakFrame.midX, y: emptyPeakFrame.midY)
+    precondition(meter.hitTest(meter.convert(peakPoint, to: meter.superview)) === meter,
+                 "only the peak-number rectangle receives the reset click")
+    let peakClick = NSEvent.mouseEvent(with: .leftMouseDown, location: meter.convert(peakPoint, to: nil), modifierFlags: [],
+                                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                     context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    meter.mouseDown(with: peakClick)
+    precondition(level.peakHold.decibels == nil && !meterLayer("meter-peak").isHidden && meterLayer("meter-peak").frame == emptyPeakFrame,
+                 "click clears the held maximum and preserves its transparent fixed hit area")
+    level.peakHold.record(pow(10, -24.0 / 20))
+    let quietPeakText = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
+    precondition(quietPeakText.string == "-24.00" && quietPeakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.white)
+    precondition(quietPeakText.size().width <= emptyPeakFrame.width - 2,
+                 "the complete negative number fits the normal mixer meter column without clipping")
+    precondition(meterLayer("meter-peak").frame == emptyPeakFrame)
     precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").contentsScale == window.backingScaleFactor },
                  "retained scale glyphs use the native display backing resolution")
     for index in 0..<3 {
         let label = meterLayer("meter-scale-\(index)")
+        precondition(label.backgroundColor == nil && label.borderWidth == 0,
+            "Scale glyphs have no black background or outline")
         let width = max(1, Int(ceil(label.bounds.width * backingScale)))
         let height = max(1, Int(ceil(label.bounds.height * backingScale)))
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -113,6 +158,94 @@ import Foundation
             (0..<image.pixelsHigh).contains { y in (image.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 }
         }, "0, −24 and −∞ scale layers must all contain visible glyph pixels")
     }
+    for kind in TrackKind.allCases.map(Optional.some) + [nil] {
+        let showsNumbers = trackShowsMeterReadouts(kind)
+        let expected = kind == nil || kind == .standard || kind == .video || kind == .click
+        precondition(showsNumbers == expected, "Only TP1/TP2, chords and timecode omit numeric meter readouts")
+        meter.bind(level, showScale: showsNumbers, foreground: .black)
+        precondition(meterLayer("meter-peak").isHidden == !expected)
+        precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden == !expected })
+        precondition(meterLayer("meter-level-0").frame.height > 0 && meterLayer("meter-level-1").frame.height > 0,
+            "Removing numerical readouts must retain stereo level bars, including LTC")
+        if expected {
+            for name in ["meter-scale-0", "meter-scale-1", "meter-scale-2", "meter-peak"] {
+                let text = (meterLayer(name) as! CATextLayer).string as! NSAttributedString
+                precondition(text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.black,
+                    "Each readout uses the provided track-name contrast color")
+            }
+            precondition(meter.hitTest(meter.convert(peakPoint, to: meter.superview)) === meter)
+        } else {
+            precondition(meter.hitTest(meter.convert(peakPoint, to: meter.superview)) == nil,
+                "Special tracks do not retain an invisible peak reset target")
+        }
+    }
+    meter.setFrameSize(NSSize(width: 52, height: 80)); meter.layoutSubtreeIfNeeded()
+    meter.bind(level, showScale: true, foreground: .black, peakOnly: true)
+    func numberColor(_ name: String) -> NSColor {
+        let text = (meterLayer(name) as! CATextLayer).string as! NSAttributedString
+        return text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as! NSColor
+    }
+    precondition(meter.layer?.backgroundColor == nil,
+        "The meter and numerical readout column does not cover the track with a black rectangle")
+    precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && !meterLayer("meter-peak").isHidden,
+        "The Track Mixer column shows only the held peak, never fixed 0, −24 or −∞ labels")
+    precondition(numberColor("meter-peak") == .black, "Peak uses the configured track-name color")
+    let bottomPeakFrame = meterLayer("meter-peak").frame
+    let bottomPeakPoint = NSPoint(x: bottomPeakFrame.midX, y: bottomPeakFrame.midY)
+    let bottomPeakClick = NSEvent.mouseEvent(with: .leftMouseDown, location: meter.convert(bottomPeakPoint, to: nil), modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 3, clickCount: 1, pressure: 1)!
+    precondition(bottomPeakFrame.minX == 21 && bottomPeakFrame.minY == meter.bounds.minY && bottomPeakFrame.width == 31,
+        "Peak stays to the right of MIDI at the bottom of the track")
+    precondition(meterLayer("meter-background-0").frame.height == 80,
+        "Audio bars keep the full height without a peak header")
+    precondition(meterLayer("meter-peak").backgroundColor == nil)
+    meter.bind(level, showScale: true, foreground: .systemGreen, peakOnly: true)
+    precondition(numberColor("meter-peak") == .systemGreen, "Name color changes propagate to the peak")
+    let transparentImage = bitmap()
+    let transparentPixel = transparentImage.colorAt(x: transparentImage.pixelsWide - 1, y: transparentImage.pixelsHigh / 3)!
+    precondition(transparentPixel.alphaComponent < 0.01,
+        "The empty space beside the peak lets the existing track color show through")
+    precondition(meterLayer("meter-background-0").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor
+        && meterLayer("meter-background-1").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor,
+        "The preexisting narrow stereo bar backgrounds are preserved")
+    for decibels in [-0.01, 0.0, 3.0] {
+        level.peakHold.clear(); level.peakHold.record(pow(10, decibels / 20))
+        precondition(numberColor("meter-peak") == .systemGreen,
+            "Peak color follows the name below, at and above zero dB")
+    }
+    meter.layer = CALayer()
+    precondition(meter.layer?.backgroundColor == nil && (0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && numberColor("meter-peak") == .systemGreen,
+        "Replacing the backing layer preserves the transparent column with only the measured peak visible")
+    precondition(meterLayer("meter-peak").frame == bottomPeakFrame && meterLayer("meter-peak").borderWidth == 0
+        && meterLayer("meter-peak").backgroundColor == nil)
+    precondition(meter.hitTest(meter.convert(bottomPeakPoint, to: meter.superview)) === meter)
+    precondition(meter.hitTest(meter.convert(NSPoint(x: 2, y: 30), to: meter.superview)) == nil,
+        "The bars still pass through selection and dragging after moving the reset target to the bottom")
+    meter.mouseDown(with: bottomPeakClick)
+    precondition(level.peakHold.decibels == nil && meter.layer?.backgroundColor == nil
+        && meterLayer("meter-peak").backgroundColor == nil,
+        "Resetting the held peak keeps the area transparent")
+    meter.setFrameSize(NSSize(width: 52, height: 56)); meter.layoutSubtreeIfNeeded()
+    level.reset(); level.update(left: 1, right: 0.1, elapsed: 1)
+    precondition(meterLayer("meter-level-0").frame.height == 56
+        && meterLayer("meter-level-0").sublayers!.first!.frame.height == 56,
+        "Levels and the fixed gradient retain the full bar height")
+    level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
+    let compactPeak = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
+    precondition(compactPeak.size().width <= 26 && meterLayer("meter-peak").frame == CGRect(x: 21, y: 0, width: 31, height: 12),
+        "The full negative peak fits beside MIDI without clipping")
+    meter.setFrameSize(NSSize(width: 40, height: 80)); meter.layoutSubtreeIfNeeded()
+    meter.bind(level, showScale: false, peakOnly: true)
+    precondition(meterLayer("meter-peak").isHidden && (0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden },
+        "Peak-only style never overrides the request to hide numeric readouts for special tracks")
+    meter.bind(level, showScale: true, foreground: .black)
+    precondition(meter.layer?.backgroundColor == nil && numberColor("meter-scale-0") == .black && numberColor("meter-scale-1") == .black
+        && (0..<3).allSatisfy { !meterLayer("meter-scale-\($0)").isHidden },
+        "Default transparent callers recover their visible scale and configured name color when a styled row is recycled")
+    meter.bind(level, showScale: true, foreground: .white)
+    print("NATIVE_METER_SIDE_PEAK_TRANSPARENT_NAME_COLOR_RESET_AND_LAYER_RECOVERY_OK")
+    print("NATIVE_METER_ROLE_VISIBILITY_TRANSPARENT_READOUTS_AND_NAME_CONTRAST_OK")
     print("NATIVE_METER_RETAINED_GRADIENTS_STATIC_SCALE_PEAK_AND_NO_TICK_REDRAW_OK")
     let replacement = TrackMeterLevel()
     replacement.update(left: 1, right: 0, elapsed: 1)

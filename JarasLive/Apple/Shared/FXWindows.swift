@@ -163,7 +163,7 @@ private struct LocalizedClipFXEditor: View {
         case .clip(let clip): return "CatLive FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
         case .track(let track, let effect):
             let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
-            if effect == "Chain" { return JarasLocalization.string("FX Manager") }
+            if effect == "Chain" { return JarasLocalization.string("FX Manager") + " - " + name }
             return (show.fxSettings(track).externalPlugins?.first(where: { $0.effectKey == effect })?.name ?? EffectPresentation.title(effect)) + " · " + name
         }
     }

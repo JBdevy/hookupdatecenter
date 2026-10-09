@@ -12,6 +12,7 @@ root.joinpath('layout.swift').write_text('import SwiftUI\n'+source[start:source.
 titleStart=source.index('private struct TrackDragTitle:')
 title=source[titleStart:source.index('\n#endif',titleStart)].replace('private ', '')
 stubs='''
+final class NativeVerticalTrackMeterView: NSView {}
 final class TrackReorderState: ObservableObject {
  var source: TrackDragSource?
  func begin(track: UUID) {}

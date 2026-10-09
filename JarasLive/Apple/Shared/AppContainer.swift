@@ -102,6 +102,7 @@ enum AppStartupPresentation {
                 guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
                 return area.start...area.end
             }
+            show.audioPresentationPosition = { [weak audio] head, time in audio?.presentationPosition(head: head, sampledAt: time) }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak show] snapshot, revision in
                 let repeatEnabled = snapshot.transport.loop.enabled
